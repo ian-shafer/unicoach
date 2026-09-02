@@ -111,6 +111,17 @@ class FitLensService(
      */
     private const val MAX_RATIONALE_CHARS = 2_048
 
+    /**
+     * How a figure the school does not report is written into the prompt.
+     *
+     * The prompt is read by a model, so the literal token `null` is not a
+     * statement of absence -- it is a word, and one printed directly under a
+     * sentence promising the number beside it is a published in-state net price
+     * (RFC 157). Every nullable SCALAR on the row says its absence in words; the
+     * program list is a list, and an empty one already reads as no programs.
+     */
+    private const val NOT_REPORTED = "not reported"
+
     const val RECORD_COLLEGE_QUERY_TOOL_NAME = "record_college_query"
     const val RECORD_FIT_REASON_TOOL_NAME = "record_fit_reason"
 
@@ -684,16 +695,27 @@ class FitLensService(
       }
       appendLine()
       appendLine("# Retrieved colleges (choose at most one, by collegeId)")
+      // RFC 157 D-A: the College Scorecard builds this net price for students
+      // paying the IN-STATE rate and publishes no out-of-state counterpart, so
+      // the key SAYS in-state here. This read goes round CollegeCostService, and
+      // so round its withholding, and the search index does not carry the
+      // family's residency -- withholding it belongs with the index (D-G). What
+      // this line can do today, it does: no model is handed a bare number whose
+      // residency basis is unstated.
+      appendLine(
+        "(inStateNetPricePerYearUsd is the school's own published in-state net price, not this family's; " +
+          "at a public school outside the family's state it is somebody else's figure.)",
+      )
       for (match in matches) {
         appendLine(
-          "- collegeId=${match.id.asString} name=${match.name} city=${match.city} state=${match.state} " +
-            "control=${match.control} " +
-            "undergradEnrollmentHeadcount=${match.undergradEnrollmentHeadcount} " +
-            "admissionRateShare=${match.admissionRateShare} " +
-            "netPricePerYearUsd=${match.netPricePerYearUsd} " +
-            "completionRate150pct4yrShare=${match.completionRate150pct4yrShare} " +
-            "medianEarnings10yAfterEntryUsd=${match.medianEarnings10yAfterEntryUsd} " +
-            "programs=${match.programTitles.orEmpty().joinToString("; ")}",
+          "- collegeId=[${match.id.asString}] name=[${match.name}] city=[${match.city}] " +
+            "state=[${match.state}] control=[${match.control}] " +
+            "undergradEnrollmentHeadcount=[${match.undergradEnrollmentHeadcount ?: NOT_REPORTED}] " +
+            "admissionRateShare=[${match.admissionRateShare ?: NOT_REPORTED}] " +
+            "inStateNetPricePerYearUsd=[${match.netPricePerYearUsd ?: NOT_REPORTED}] " +
+            "completionRate150pct4yrShare=[${match.completionRate150pct4yrShare ?: NOT_REPORTED}] " +
+            "medianEarnings10yAfterEntryUsd=[${match.medianEarnings10yAfterEntryUsd ?: NOT_REPORTED}] " +
+            "programs=[${match.programTitles.orEmpty().joinToString("; ")}]",
         )
       }
     }

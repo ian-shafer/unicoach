@@ -31,6 +31,7 @@ import ed.unicoach.db.models.LivingArrangement
 data class SingleSchoolBasis(
   val population: PopulationBasis,
   val residency: CollegeResidencyBasis,
+  val blendedFigures: CollegeBlendedFigureBasis,
   val arrangements: List<LivingArrangement>,
   val academicYears: List<DatedFigures>,
   val aid: AidBasis,
@@ -48,6 +49,10 @@ data class SingleSchoolBasis(
       buildList {
         add(population.statement)
         add(residency.statement)
+        // Immediately after the residency line, for the reason its comparison
+        // twin gives: that line is exactly what a reader carries onto the two
+        // blended rows below it (RFC 157).
+        add(blendedFigures.statement)
         add(arrangementStatement)
         academicYears.forEach { add(yearStatement(it.vintage, it.academicYear)) }
         add(aid.statement)
@@ -71,6 +76,10 @@ data class SingleSchoolBasis(
       SingleSchoolBasis(
         population = PopulationBasis,
         residency = residency,
+        // The SAME [ComparedTuition] fact the residency line above is built
+        // from, so one school cannot be called public for its tuition and
+        // something else for its published price (RFC 157 D-C).
+        blendedFigures = CollegeBlendedFigureBasis.of(residency),
         arrangements =
           cost.breakdown
             ?.arrangements

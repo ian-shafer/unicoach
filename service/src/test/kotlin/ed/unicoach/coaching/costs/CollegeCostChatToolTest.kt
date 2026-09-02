@@ -24,6 +24,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -500,11 +501,7 @@ class CollegeCostChatToolTest {
       "the copy must promise only what the data supports: no figure is guaranteed for either side",
     )
     assertTrue(
-      "tuition_and_fees_out_of_state_per_year_usd" in
-        inStateOnly
-          .getValue("data_availability")
-          .jsonArray
-          .map { it.jsonPrimitive.content },
+      "tuition_and_fees_out_of_state_per_year_usd" in dataAvailabilityOf(inStateOnly),
       "and the missing side is already reported as unavailable, which is what the coach then says",
     )
   }
@@ -705,9 +702,25 @@ class CollegeCostChatToolTest {
     val college = collegesOf(execute(student)).single()
     assertEquals(
       listOf("median_earnings_10y_after_entry_usd"),
-      college.getValue("data_availability").jsonArray.map { it.jsonPrimitive.content },
+      dataAvailabilityOf(college),
     )
     assertNull(college["median_earnings_10y_after_entry_usd"], "an unreported figure is absent, never invented")
+  }
+
+  @Test
+  fun `a college with nothing missing carries no data_availability key at all`() {
+    // Absent, never empty -- this payload's own convention, which
+    // `withheld_figures` follows two lines below it in the writer. An empty
+    // array is a sentinel the coach has to open to learn it says nothing.
+    val student = createStudent()
+    seedListedCollege(student, "Complete U")
+
+    val college = collegesOf(execute(student)).single()
+    assertEquals(emptyList(), dataAvailabilityOf(college), "this school reports every field the tool renders")
+    assertNull(
+      college[CollegeCostChatTool.DATA_AVAILABILITY_KEY],
+      "and an empty list is not written at all: [$college]",
+    )
   }
 
   @Test
@@ -803,11 +816,7 @@ class CollegeCostChatToolTest {
     // The silence belongs to the other source, so it must NOT join
     // data_availability, whose vocabulary is the Scorecard's cost fields.
     assertFalse(
-      college
-        .getValue("data_availability")
-        .jsonArray
-        .map { it.jsonPrimitive.content }
-        .contains(MeritAidWire.KEY),
+      dataAvailabilityOf(college).contains(MeritAidWire.KEY),
       "merit silence is not a Scorecard silence: [$college]",
     )
   }
@@ -1032,11 +1041,7 @@ class CollegeCostChatToolTest {
     assertNull(onCampus[CollegeCostChatTool.TOTAL_KEY], "a partial sum must not be rendered as a total")
     assertNotNull(onCampus[CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName], "the reported parts still ride")
     assertTrue(
-      college
-        .getValue("data_availability")
-        .jsonArray
-        .map { it.jsonPrimitive.content }
-        .contains(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD.wireName),
+      dataAvailabilityOf(college).contains(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD.wireName),
       "and the missing part is named in the one vocabulary both keys share",
     )
   }
@@ -1103,11 +1108,7 @@ class CollegeCostChatToolTest {
     assertNull(arrangementOf(college, LivingArrangement.ON_CAMPUS), "there is no on-campus option to price")
     assertNotNull(arrangementOf(college, LivingArrangement.OFF_CAMPUS))
     assertFalse(
-      college
-        .getValue("data_availability")
-        .jsonArray
-        .map { it.jsonPrimitive.content }
-        .contains(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
+      dataAvailabilityOf(college).contains(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
       "no dorms is an ANSWER, not a Scorecard silence: [$college]",
     )
   }
@@ -1140,11 +1141,7 @@ class CollegeCostChatToolTest {
       "a figure the school published is never withheld: [$onCampus]",
     )
     assertFalse(
-      college
-        .getValue("data_availability")
-        .jsonArray
-        .map { it.jsonPrimitive.content }
-        .contains(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
+      dataAvailabilityOf(college).contains(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
       "and a reported figure is never also called unreported: [$college]",
     )
   }
@@ -1436,9 +1433,222 @@ class CollegeCostChatToolTest {
     )
     val basis = assertNotNull(comparisonBasisOf(execute(student, """{"college_ids":["${alone.value}","${together.value}"]}""")))
     assertEquals(
-      setOf("population", "residency", "living_arrangement", "academic_years", "aid"),
+      setOf(
+        "population",
+        "residency",
+        CollegeCostChatTool.BLENDED_FIGURE_BASIS_KEY,
+        "living_arrangement",
+        "academic_years",
+        "aid",
+      ),
       basis.keys,
-      "the five facts that make a table honest, and nothing else: [$basis]",
+      "the SIX facts that make a table honest, and nothing else: [$basis]",
+    )
+  }
+
+  @Test
+  fun `the sixth fact says which residency the blended figures are on, per school`() {
+    // RFC 157 D-C. This assertion was `setOf(... five keys ...)` above, and it
+    // failed the moment the sixth fact landed. That was the correct alarm: the
+    // five-key set was a design decision -- residency means tuition -- and this
+    // slice changed it deliberately. It is UPDATED rather than deleted, so a
+    // SEVENTH fact still has to be argued for here.
+    val student = createStudent()
+    seedListedCollege(student, "Out Of State Public U", state = "CA", control = 1)
+    seedListedCollege(student, "Home Private U", state = "WA", control = 2)
+    answerResidency(student, "WA")
+
+    val basis = assertNotNull(comparisonBasisOf(execute(student)))
+    val blended = basis.getValue(CollegeCostChatTool.BLENDED_FIGURE_BASIS_KEY).jsonObject
+
+    assertEquals(
+      BlendedFigureScope.WITHHELD_AT_SOME_SCHOOLS.value,
+      blended.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
+    )
+    assertEquals("answered", blended.getValue("status").jsonPrimitive.content)
+    assertEquals("WA", blended.getValue("residency_state").jsonPrimitive.content)
+    assertTrue(
+      statementOf(blended).contains("Out Of State Public U"),
+      "the sentence names the school these figures do not describe: [${statementOf(blended)}]",
+    )
+
+    val byCollege = blended.getValue("by_college").jsonArray.map { it.jsonObject }
+    assertEquals(
+      listOf("Out Of State Public U", "Home Private U"),
+      byCollege.map { it.getValue("name").jsonPrimitive.content },
+    )
+    assertEquals(
+      listOf(false, true),
+      byCollege.map { it.getValue(CollegeCostChatTool.APPLIES_KEY).jsonPrimitive.boolean },
+      "the public school outside the family's state is not theirs; the private one is",
+    )
+    byCollege.forEach { entry ->
+      assertTrue(statementOf(entry).isNotEmpty(), "a code on the wire rides with the sentence for it: [$entry]")
+    }
+  }
+
+  @Test
+  fun `an unanswered residency writes no applies flag and withholds nothing`() {
+    // RFC 157 D-B: unknown is not false. Writing `false` here would tell the
+    // coach these figures are somebody else's when all we know is we never asked.
+    val student = createStudent()
+    seedListedCollege(student, "Unknown One U", state = "CA", control = 1)
+    seedListedCollege(student, "Unknown Two U", state = "NY", control = 1)
+
+    val result = execute(student)
+    val basis = assertNotNull(comparisonBasisOf(result))
+    val blended = basis.getValue(CollegeCostChatTool.BLENDED_FIGURE_BASIS_KEY).jsonObject
+
+    assertEquals(
+      BlendedFigureScope.RESIDENCY_NOT_ON_FILE.value,
+      blended.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
+    )
+    blended.getValue("by_college").jsonArray.map { it.jsonObject }.forEach { entry ->
+      assertNull(entry[CollegeCostChatTool.APPLIES_KEY], "an open question is not an answer: [$entry]")
+      // ...and the state itself is still SAID, so the third outcome does not
+      // ride on a key that is not there (RFC 157 tier 2).
+      assertEquals(
+        BlendedFigureApplicability.BASIS_STATED.value,
+        entry.getValue(CollegeCostChatTool.APPLIES_BASIS_KEY).jsonPrimitive.content,
+        "the open question says itself rather than being inferred from an absence: [$entry]",
+      )
+    }
+    collegesOf(result).forEach { college ->
+      assertEquals(
+        BlendedFigureApplicability.BASIS_STATED.value,
+        college.getValue(CollegeCostChatTool.APPLIES_BASIS_KEY).jsonPrimitive.content,
+        "and the per-college object says it too: [$college]",
+      )
+      assertNull(college[CollegeCostChatTool.WITHHELD_FIGURES_KEY], "nothing is withheld on an open question")
+      assertNotNull(
+        college[CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName],
+        "the only price we hold is still shown, with its basis said: [$college]",
+      )
+    }
+  }
+
+  @Test
+  fun `a non-matching public college emits neither blended figure, and says why`() {
+    // The guard RFC 157 asks for, at the surface that speaks to the model.
+    val student = createStudent()
+    seedListedCollege(student, "Far Away Public U", state = "CA", control = 1)
+    answerResidency(student, "WA")
+
+    val college = collegesOf(execute(student)).single()
+
+    assertNull(
+      college[CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName],
+      "an in-state published price must not reach an out-of-state family: [$college]",
+    )
+    assertNull(
+      college
+        .getValue(CostField.NET_PRICE.wireName)
+        .jsonObject["amount_usd"],
+      "and neither must the in-state net price: [$college]",
+    )
+
+    val withheld =
+      college
+        .getValue(CollegeCostChatTool.WITHHELD_FIGURES_KEY)
+        .jsonArray
+        .map { it.jsonObject }
+    assertEquals(
+      listOf(
+        CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName,
+        CostField.NET_PRICE.wireName,
+      ),
+      withheld.map { it.getValue("field").jsonPrimitive.content },
+    )
+    withheld.forEach { entry ->
+      assertEquals(
+        WithheldReason.IN_STATE_ONLY_FIGURE.value,
+        entry.getValue(CollegeCostChatTool.WITHHELD_REASON_KEY).jsonPrimitive.content,
+      )
+      assertTrue(
+        statementOf(entry).contains("out-of-state tuition and fees are the ones that apply"),
+        "the blank points at the figures that ARE this family's: [$entry]",
+      )
+    }
+
+    val availability = dataAvailabilityOf(college)
+    assertTrue(
+      availability.containsAll(withheld.map { it.getValue("field").jsonPrimitive.content }),
+      "a figure with no number here must be named where the coach is told not to improvise: [$availability]",
+    )
+  }
+
+  @Test
+  fun `a withheld net price says so on its own object, and keeps the band the family answered`() {
+    // Two conflations at once, both removed here (RFC 157 tier 2): an object
+    // carrying a basis and no amount read exactly like the school's silence,
+    // and a `your_income_band` basis shipped with no income_band_label breaks an
+    // invariant the tool DESCRIPTION states.
+    val student = createStudent()
+    seedListedCollege(student, "Band Withheld U", state = "CA", control = 1)
+    answerResidency(student, "WA")
+    answerBand(student, IncomeBand.OVER_110K)
+
+    val netPrice =
+      collegesOf(execute(student))
+        .single()
+        .getValue(CostField.NET_PRICE.wireName)
+        .jsonObject
+
+    assertNull(netPrice["amount_usd"], "the in-state figure is not this family's")
+    assertEquals("your_income_band", netPrice.getValue("basis").jsonPrimitive.content)
+    assertEquals(
+      IncomeBand.OVER_110K.value,
+      netPrice.getValue("income_band").jsonPrimitive.content,
+      "the family answered the income question, and that fact is theirs either way",
+    )
+    assertEquals(
+      IncomeBand.OVER_110K.bracket,
+      netPrice.getValue("income_band_label").jsonPrimitive.content,
+      "a band-specific basis always carries its label, withheld or not",
+    )
+    assertEquals(
+      WithheldReason.IN_STATE_ONLY_FIGURE.value,
+      netPrice.getValue(CollegeCostChatTool.WITHHELD_REASON_KEY).jsonPrimitive.content,
+      "our rule is never readable as the school's silence: [$netPrice]",
+    )
+    assertTrue(
+      statementOf(netPrice).contains("out-of-state tuition and fees"),
+      "and the blank points at the figures that ARE this family's: [$netPrice]",
+    )
+  }
+
+  @Test
+  fun `a ONE-college answer still states whether the blended figures are this family's`() {
+    // RFC 157 D-B: comparison_basis needs two colleges, so a one-college result
+    // is exactly where the basis would otherwise go unsaid. The per-college key
+    // is written for the two known answers and absent for the open one.
+    val student = createStudent()
+    seedListedCollege(student, "Only Public U", state = "CA", control = 1)
+    answerResidency(student, "WA")
+
+    val result = execute(student)
+    val college = collegesOf(result).single()
+
+    assertNull(comparisonBasisOf(result), "one college is not a comparison")
+    assertEquals(
+      false,
+      college.getValue(CollegeCostChatTool.APPLIES_KEY).jsonPrimitive.boolean,
+      "the coach is told these two figures are not this family's here: [$college]",
+    )
+  }
+
+  @Test
+  fun `an in-state one-college answer says the figures ARE this family's`() {
+    val student = createStudent()
+    seedListedCollege(student, "Home Public U", state = "CA", control = 1)
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+
+    assertEquals(
+      true,
+      college.getValue(CollegeCostChatTool.APPLIES_KEY).jsonPrimitive.boolean,
+      "an in-state family is the family these figures describe: [$college]",
     )
   }
 
@@ -2094,6 +2304,20 @@ class CollegeCostChatToolTest {
 }
 
 /**
+ * The `data_availability` entries of one college, or an EMPTY list when the key
+ * is absent.
+ *
+ * Absent is the normal shape for a school with nothing missing (RFC 157 tier 2):
+ * the payload's convention is absent-never-empty, so a reader that called
+ * `getValue` would throw on exactly the healthiest college.
+ */
+private fun dataAvailabilityOf(college: JsonObject): List<String> =
+  college[CollegeCostChatTool.DATA_AVAILABILITY_KEY]
+    ?.jsonArray
+    ?.map { it.jsonPrimitive.content }
+    .orEmpty()
+
+/**
  * Every key `collegeObject` rendered BEFORE the RFC 148 merit feed -- the whole
  * key vocabulary of a college, so `a cost answer with no merit row is
  * unchanged` can assert the shape rather than one absent key. The cost measures
@@ -2110,7 +2334,10 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
     "list_status",
     "tuition_applicable",
     CollegeCostChatTool.PRECISION_OFFER_KEY,
-    "data_availability",
+    CollegeCostChatTool.DATA_AVAILABILITY_KEY,
+    // RFC 157: which of the three blended-figure outcomes this school is in,
+    // ALWAYS written, so it is part of every college's key vocabulary.
+    CollegeCostChatTool.APPLIES_BASIS_KEY,
     // RFC 149's additions: the per-arrangement split, the no-dorms answer, and
     // the two academic-year labels that say which year a figure describes.
     CollegeCostChatTool.BREAKDOWN_KEY,

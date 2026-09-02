@@ -218,6 +218,6 @@ class CollegeSearchTool(
         "structured fields only; it CANNOT reason about geographic distance, " +
         "proximity to the coastline, or how close two places are — to approximate " +
         "\"near the ocean\" or a region, pass the relevant set of coastal/nearby " +
-        "state codes in `states`."
+        "state codes in `states`. " + NET_PRICE_BASIS_NOTE
   }
 }

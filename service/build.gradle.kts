@@ -1,6 +1,10 @@
 plugins {
   alias(libs.plugins.kotlin.jvm)
   alias(libs.plugins.kotlin.serialization)
+  // The UC San Diego Scorecard row RFC 157 argues from is needed by BOTH this
+  // module's cost tests and :public-web's report-page test, so it has one home
+  // here rather than being retyped in each (the :chat / :appstore precedent).
+  `java-test-fixtures`
 }
 
 dependencies {

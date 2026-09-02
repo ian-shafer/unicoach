@@ -5,6 +5,7 @@ import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.TuitionApplicable
+import ed.unicoach.coaching.costs.UcsdScorecardRow
 import ed.unicoach.db.models.IncomeBand
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -64,7 +65,7 @@ class CostReportPageTest {
   }
 
   @Test
-  fun `a two-school list states the five comparison assumptions in the domain's own words`() {
+  fun `a two-school list states the six comparison assumptions in the domain's own words`() {
     val profile = costProfile(listOf(stateSchool(), privateSchool()), answeredMoney())
     val basis = requireNotNull(profile.comparisonBasis) { "two colleges must carry a comparison basis" }
 
@@ -72,6 +73,9 @@ class CostReportPageTest {
 
     assertTrue(body.contains(basis.population.statement), "missing the population line")
     assertTrue(body.contains(basis.residency.statement), "missing the residency line")
+    // The sixth fact (RFC 157 D-C): a parent who reads the residency line and
+    // then two unlabelled blended rows carries the residency onto them.
+    assertTrue(body.contains(basis.blendedFigures.statement), "missing the blended-figure residency line")
     assertTrue(body.contains(basis.livingArrangement.statement), "missing the living-arrangement line")
     assertTrue(basis.academicYears.isNotEmpty(), "the fixture must date some figure")
     basis.academicYears.forEach { assertTrue(body.contains(it.statement), "missing an academic-year line") }
@@ -392,5 +396,153 @@ class CostReportPageTest {
       "a merit section with no fact under it must not be opened at all",
     )
     assertFalse(body.contains("Ashford College's 2024-25 Common Data Set"), "no citation without a fact to cite it for")
+  }
+
+  // ---------------------------------------------------------------------------
+  // RFC 157: the residency basis of the two blended figures
+  // ---------------------------------------------------------------------------
+
+  /**
+   * UC San Diego as the Scorecard actually publishes it (RFC 157's evidence).
+   *
+   * Real figures, because the defect is arithmetic: 38,701 is inside the
+   * in-state span [25,723 .. 43,459] and below the out-of-state minimum of
+   * 59,923, so no arrangement weighting on out-of-state totals can produce it.
+   * The reported 77K/77K/60K a WA family saw are reproduced exactly below.
+   */
+  private fun ucSanDiego(applicable: TuitionApplicable): CollegeCost =
+    costFixture(
+      name = "UC San Diego",
+      control = CollegeControl.Public(applicable),
+      city = "La Jolla",
+      state = UcsdScorecardRow.STATE,
+      tuitionInState = UcsdScorecardRow.TUITIONFEE_IN,
+      tuitionOutOfState = UcsdScorecardRow.TUITIONFEE_OUT,
+      publishedPrice = UcsdScorecardRow.COSTT4_A,
+      netPrice = NetPrice.BandSpecific(IncomeBand.OVER_110K, UcsdScorecardRow.NPT45_PUB),
+      housingAndFoodOnCampus = UcsdScorecardRow.ROOMBOARD_ON_CAMPUS,
+      housingAndFoodOffCampus = UcsdScorecardRow.ROOMBOARD_OFF_CAMPUS,
+      booksAndSupplies = UcsdScorecardRow.BOOKSUPPLY,
+      otherExpensesOnCampus = UcsdScorecardRow.OTHEREXPENSE_ON_CAMPUS,
+      otherExpensesOffCampus = UcsdScorecardRow.OTHEREXPENSE_OFF_CAMPUS,
+      otherExpensesWithFamily = UcsdScorecardRow.OTHEREXPENSE_WITH_FAMILY,
+      offersOnCampusHousing = true,
+    )
+
+  @Test
+  fun `a WA family at UC San Diego reads the out-of-state totals and NEITHER blended figure`() {
+    // The page Ian's report showed: correct 77K/77K/60K totals, and two rows
+    // below them a $39K "published price" that is a California family's number,
+    // with nothing on the page saying so.
+    val profile =
+      costProfile(
+        listOf(ucSanDiego(TuitionApplicable.OUT_OF_STATE)),
+        answeredMoney(band = IncomeBand.OVER_110K, state = "WA"),
+      )
+
+    val body = render(profile)
+
+    assertTrue(body.contains("\$77,102"), "the on-campus total, built from out-of-state tuition and fees")
+    assertTrue(body.contains("\$77,659"), "the off-campus total")
+    assertTrue(body.contains("\$59,923"), "the with-family total")
+
+    assertFalse(body.contains("\$38,701"), "COSTT4_A is a California family's published price, never this family's")
+    assertFalse(body.contains("\$28,785"), "the top-band net price is in-state too, and understates by ~48,000")
+
+    assertTrue(
+      body.contains("this school publishes this figure for in-state students"),
+      "the blank names the reason rather than reading as a school that reported nothing",
+    )
+    assertTrue(
+      body.contains("Your family would pay the out-of-state price"),
+      "and it points at the figures that ARE theirs",
+    )
+    assertTrue(
+      body.contains("so neither figure is shown for them"),
+      "the assumption block states the sixth fact for this one school too",
+    )
+    assertFalse(
+      body.contains("Not reported by this school"),
+      "a withheld figure must never be labelled as the school's silence: this school published both numbers",
+    )
+  }
+
+  @Test
+  fun `the same school prints both blended figures for a family in its own state`() {
+    // The withholding is about residency and about nothing else: an in-state
+    // family is exactly the family these two figures describe.
+    val profile =
+      costProfile(
+        listOf(ucSanDiego(TuitionApplicable.IN_STATE)),
+        answeredMoney(band = IncomeBand.OVER_110K, state = "CA"),
+      )
+
+    val body = render(profile)
+
+    assertTrue(body.contains("\$38,701"), "the published price is theirs")
+    assertTrue(body.contains("\$28,785"), "and so is the top-band price after a financial aid offer")
+    assertTrue(body.contains("\$42,902"), "the in-state on-campus total")
+    assertFalse(
+      body.contains("this school publishes this figure for in-state students"),
+      "nothing is withheld from the family the figures describe",
+    )
+  }
+
+  @Test
+  fun `an unanswered residency shows both figures with the basis said, and hides nothing`() {
+    // RFC 157 D-B, and brief 0001 D11/D12: an unanswered question is not licence
+    // to hide the only price we hold, and no answer is gated on a full profile.
+    val profile = costProfile(listOf(ucSanDiego(TuitionApplicable.UNKNOWN)), UNANSWERED_MONEY)
+
+    val body = render(profile)
+
+    assertTrue(body.contains("\$38,701"), "the published price is still shown")
+    assertFalse(
+      body.contains("this school publishes this figure for in-state students. Your family"),
+      "an open question withholds nothing",
+    )
+    assertTrue(
+      body.contains("so both are shown on that basis rather than withheld"),
+      "but the basis those figures are on is stated plainly, in the domain's own sentence",
+    )
+  }
+
+  @Test
+  fun `the cross-school table withholds the same figures, and points at the table that has the totals`() {
+    // The summary has no arrangement totals in it, so its blank cannot say "the
+    // totals above": the pointer has to be true where it is printed.
+    val profile =
+      costProfile(
+        listOf(ucSanDiego(TuitionApplicable.OUT_OF_STATE), campusSchool()),
+        answeredMoney(band = IncomeBand.OVER_110K, state = "WA"),
+      )
+
+    val summary = summaryOf(render(profile))
+
+    assertFalse(summary.contains("\$38,701"), "the in-state published price must not reach the comparison either")
+    assertTrue(
+      summary.contains("the totals in this school's own table below"),
+      "the summary sends the parent to the table that does hold their totals: [$summary]",
+    )
+    assertTrue(summary.contains("\$52,000"), "the other school's own published price is unaffected")
+  }
+
+  @Test
+  fun `the blended-figure hint under both tables says which residency those figures are on`() {
+    val body = render(costProfile(listOf(stateSchool(), campusSchool()), answeredMoney()))
+
+    // The clause is appended to BOTH hint sentences, not to one of them: the
+    // summary and the per-school table print the two blended rows alike.
+    val clause =
+      "At a public school it, and the likely price after a financial aid offer, are figures for " +
+        "students paying in-state tuition."
+    assertTrue(
+      body.contains("so it is not the sum of the parts quoted below. $clause"),
+      "the summary hint must carry the residency clause",
+    )
+    assertTrue(
+      body.contains("so it is not the sum of the parts above it. $clause"),
+      "and so must the per-school hint",
+    )
   }
 }

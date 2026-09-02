@@ -98,6 +98,11 @@ class CollegeCostChatTool(
         put(STATEMENT_KEY, basis.population.statement)
       }
       put("residency", residencyBasisObject(basis.residency))
+      // The SIXTH fact (RFC 157 D-C), emitted directly after the residency fact
+      // it completes: the residency line is about the tuition and fees column,
+      // and this one says which residency the two blended figures are on and
+      // which schools here they therefore do not describe.
+      put(BLENDED_FIGURE_BASIS_KEY, blendedFigureBasisObject(basis.blendedFigures))
       put("living_arrangement", arrangementBasisObject(basis.livingArrangement))
       // Absent, never empty -- the same convention `comparable` and
       // `incomplete_by_college` follow below, and the one D-B gates the whole
@@ -119,21 +124,44 @@ class CollegeCostChatTool(
    * exactly as the money-profile echo renders it.
    */
   private fun residencyBasisObject(residency: ResidencyBasis): JsonObject =
+    // WHICH schools here charge by residency: the decision the statement speaks,
+    // shipped as a code beside it (D-D), so no reader parses the sentence to
+    // learn whether this table is all-public, mixed, or none.
+    residencyAnsweredBasisObject(
+      scope = residency.scope.value,
+      answer = residency.answer,
+      statement = residency.statement,
+      byCollege = residency.byCollege,
+      objectOfEntry = ::collegeResidencyObject,
+    )
+
+  /**
+   * The shape EVERY residency-answered per-call fact rides in (RFC 151 D-D):
+   * the scope code, the family's own answer, the sentence the coach may say, and
+   * one entry per school.
+   *
+   * Written ONCE, so a key added here reaches the residency fact and the
+   * blended-figure fact together rather than being remembered for one of them.
+   */
+  private fun <T> residencyAnsweredBasisObject(
+    scope: String,
+    answer: ComparedResidency,
+    statement: String,
+    byCollege: List<T>,
+    objectOfEntry: (T) -> JsonObject,
+  ): JsonObject =
     buildJsonObject {
-      // WHICH schools here charge by residency: the decision the statement
-      // speaks, shipped as a code beside it (D-D), so no reader parses the
-      // sentence to learn whether this table is all-public, mixed, or none.
-      put(BASIS_KEY, residency.scope.value)
-      put("status", residency.answer.status.value)
+      put(BASIS_KEY, scope)
+      put("status", answer.status.value)
       // The state rides on the answered case and nowhere else, and EXHAUSTIVELY
       // so: a case added to [ComparedResidency] must fail to compile here rather
       // than silently ship without the state it carries.
-      when (val answer = residency.answer) {
+      when (answer) {
         is ComparedResidency.Answered -> put("residency_state", answer.state)
         ComparedResidency.Unanswered, ComparedResidency.Declined -> Unit
       }
-      put(STATEMENT_KEY, residency.statement)
-      putJsonArray("by_college") { residency.byCollege.forEach { add(collegeResidencyObject(it)) } }
+      put(STATEMENT_KEY, statement)
+      putJsonArray("by_college") { byCollege.forEach { add(objectOfEntry(it)) } }
     }
 
   /**
@@ -159,6 +187,66 @@ class CollegeCostChatTool(
       }
       put(STATEMENT_KEY, college.statement)
     }
+
+  /**
+   * Which residency the published price and the price after a financial aid
+   * offer are on, and which schools in this call they do not describe (RFC 157
+   * D-C).
+   *
+   * The same shape as every other basis fact: a [BASIS_KEY] code, the family's
+   * own answer echoed, the [STATEMENT_KEY] the coach may say, and one entry per
+   * school -- so a reader never has to work out from an absent figure that a
+   * figure was withheld.
+   */
+  private fun blendedFigureBasisObject(basis: BlendedFigureBasis): JsonObject =
+    residencyAnsweredBasisObject(
+      scope = basis.scope.value,
+      answer = basis.answer,
+      statement = basis.statement,
+      byCollege = basis.byCollege,
+      objectOfEntry = ::collegeBlendedFigureObject,
+    )
+
+  /**
+   * One school's blended-figure line: the code, whether the two figures are this
+   * family's, and the sentence. [putBlendedFiguresApply] owns the known-only
+   * rule for [APPLIES_KEY] and says why.
+   */
+  private fun collegeBlendedFigureObject(college: CollegeBlendedFigureBasis): JsonObject =
+    buildJsonObject {
+      put("college_id", college.collegeId.value.toString())
+      put("name", college.name)
+      put(BASIS_KEY, college.code.value)
+      putBlendedFiguresApply(college.applies)
+      put(STATEMENT_KEY, college.statement)
+    }
+
+  /**
+   * Whether the two blended figures are this family's at one school, on the wire
+   * in ONE form wherever it is said (RFC 157 D-B).
+   *
+   * TWO keys, and both are load-bearing. [APPLIES_BASIS_KEY] carries the state
+   * itself and is always written, so the payload is self-describing and no
+   * reader infers an outcome from a key that is not there. [APPLIES_KEY] stays
+   * the known-only boolean -- the `offers_on_campus_housing` convention (RFC 149
+   * D-B) -- because an open residency question is not a `false`, and writing one
+   * would tell the coach these figures are somebody else's when all we know is
+   * that we have not asked.
+   *
+   * Exhaustive, so a fourth outcome must say what boolean it ships rather than
+   * falling through to silence.
+   */
+  private fun JsonObjectBuilder.putBlendedFiguresApply(applies: BlendedFigureApplicability) {
+    // The state ITSELF, always present: three outcomes cannot ride on a boolean
+    // plus an absence, and an absent key has two causes (an open residency
+    // question, an unrecognised control) that a reader cannot tell apart.
+    put(APPLIES_BASIS_KEY, applies.value)
+    when (applies) {
+      BlendedFigureApplicability.APPLIES -> put(APPLIES_KEY, true)
+      BlendedFigureApplicability.WITHHELD -> put(APPLIES_KEY, false)
+      BlendedFigureApplicability.BASIS_STATED -> Unit
+    }
+  }
 
   /**
    * The living arrangement held constant (RFC 151 D-E, RFC 152 D5): what the
@@ -361,11 +449,70 @@ class CollegeCostChatTool(
       // and carrying its OWN citation, because merit aid is not a Scorecard
       // fact and must never fold into the payload's Scorecard `source` string.
       cost.meritAid?.let { put(MeritAidWire.KEY, MeritAidWire.objectOf(it)) }
-      putJsonArray("data_availability") {
-        cost.notReported.forEach { add(JsonPrimitive(it.wireName)) }
-      }
+      putFieldsWithNoAmount(cost)
+      putWithheldFigures(cost)
+      // The blended-figure basis for THIS school, stated per college as well as
+      // in COMPARISON_BASIS_KEY: that fact needs two colleges, and a one-college
+      // result is exactly where the basis would otherwise go unsaid (RFC 157
+      // D-B).
+      putBlendedFiguresApply(cost.blendedFiguresApply)
     }
   }
+
+  /**
+   * The figures the coach has NO number for here, whichever of the two reasons
+   * it is: the school did not report it, or it is not a figure for this family
+   * (RFC 157 D-A).
+   *
+   * ONE list, because the instruction it drives is one instruction -- say so
+   * plainly, never estimate -- and a field withheld from a list called
+   * `data_availability` would be a silence with nothing said about it. WHICH
+   * reason applies is [putWithheldFigures]' to say, with the words for it.
+   *
+   * The union is the DOMAIN's ([CollegeCost.fieldsWithNoAmount]), already in
+   * enum declaration order: this writer spells out a set the cost answer names,
+   * and never derives a third field category the page and the service cannot
+   * share.
+   *
+   * ABSENT, never empty -- the payload's own convention, the one
+   * [putWithheldFigures] follows and the one every other list here follows. An
+   * empty array would say "we checked" in a shape a reader has to open to learn
+   * it says nothing.
+   */
+  private fun JsonObjectBuilder.putFieldsWithNoAmount(cost: CollegeCost) {
+    if (cost.fieldsWithNoAmount.isEmpty()) return
+    putJsonArray(DATA_AVAILABILITY_KEY) { cost.fieldsWithNoAmount.forEach { add(JsonPrimitive(it.wireName)) } }
+  }
+
+  /**
+   * The figures we hold and are not showing this family, each with its reason
+   * (RFC 157 D-A).
+   *
+   * Absent, never empty. Its presence means exactly one thing: a
+   * `data_availability` entry here is OURS rather than the school's silence.
+   */
+  private fun JsonObjectBuilder.putWithheldFigures(cost: CollegeCost) {
+    if (cost.withheld.isEmpty()) return
+    putJsonArray(WITHHELD_FIGURES_KEY) { cost.withheld.forEach { add(withheldFigureObject(it)) } }
+  }
+
+  /**
+   * One withheld figure: which field, the reason code, and the sentence that
+   * both names the reason and points at the figures that ARE this family's (RFC
+   * 157 D-A).
+   *
+   * The statement is the [WithheldReason]'s own, never re-worded HERE, so the
+   * coach explains the blank in the domain's words. The report page prints the
+   * same reason in [WithheldReason.cellPhrase], the short form beside this one,
+   * with its own pointer at the table the reader is looking at (RFC 157 D-A):
+   * one vocabulary, two lengths, and neither file invents a third.
+   */
+  private fun withheldFigureObject(withheld: WithheldFigure): JsonObject =
+    buildJsonObject {
+      put("field", withheld.field.wireName)
+      put(WITHHELD_REASON_KEY, withheld.reason.value)
+      put(STATEMENT_KEY, withheld.reason.statement)
+    }
 
   /**
    * The per-arrangement split, RECORDING the fields it renders in [emitted] so
@@ -561,7 +708,7 @@ class CollegeCostChatTool(
           // in: the list is a fact about the payload, so it must not depend on
           // set iteration.
           putJsonArray(DATED_FIGURES_KEY) {
-            CostField.entries.filter { it in dated }.forEach { add(JsonPrimitive(it.wireName)) }
+            CostField.listInDeclarationOrder(dated).forEach { add(JsonPrimitive(it.wireName)) }
           }
         }
       }
@@ -612,10 +759,16 @@ class CollegeCostChatTool(
     }
 
   /**
-   * The `net_price` sub-object: `amount_usd` when reported, the basis label, and —
-   * only on the band-specific case — the band's code and its spoken dollar
-   * range (`IncomeBand.bracket`, RFC 142). The label rides beside the code so
-   * the model never has to invent a phrase for the bucket it is naming aloud.
+   * The `net_price` sub-object: `amount_usd` when reported, the basis label, the
+   * band's code and its spoken dollar range on a band-specific basis
+   * (`IncomeBand.bracket`, RFC 142), and — when we hold the figure back — the
+   * reason and the words for it. The label rides beside the code so the model
+   * never has to invent a phrase for the bucket it is naming aloud.
+   *
+   * A withheld figure SAYS SO HERE, and not only in [WITHHELD_FIGURES_KEY]: an
+   * object carrying a basis and no amount is otherwise indistinguishable from
+   * the school's own silence, which is the very conflation the domain type
+   * removed.
    */
   private fun netPriceObject(netPrice: NetPrice): JsonObject =
     buildJsonObject {
@@ -630,8 +783,32 @@ class CollegeCostChatTool(
         }
 
         is NetPrice.OverallAverage -> {}
+
+        // The basis the family's own answer selected rides above, so the label
+        // that basis PROMISES rides with it -- a `your_income_band` object with
+        // no band label would break an invariant the prompt states. Only the
+        // amount is withheld, and the reason for that is said right here.
+        is NetPrice.Withheld -> {
+          putBasisLabel(netPrice.publishedBasis)
+          put(WITHHELD_REASON_KEY, netPrice.reason.value)
+          put(STATEMENT_KEY, netPrice.reason.statement)
+        }
       }
     }
+
+  /**
+   * The qualifier one net-price BASIS owes, whether or not an amount came with
+   * it: the band's code and spoken range on the band-specific basis, nothing on
+   * the all-family average.
+   *
+   * Exhaustive, so a basis added to the vocabulary must say what label it ships.
+   */
+  private fun JsonObjectBuilder.putBasisLabel(basis: NetPriceBasis) {
+    when (basis) {
+      is NetPriceBasis.YourIncomeBand -> putIncomeBand(basis.band)
+      NetPriceBasis.OverallAverage -> Unit
+    }
+  }
 
   /**
    * The money-profile echo: all three field statuses, values only when answered.
@@ -758,6 +935,54 @@ class CollegeCostChatTool(
     const val BASIS_KEY = "basis"
 
     /**
+     * The SIXTH fact inside [COMPARISON_BASIS_KEY] (RFC 157 D-C): which
+     * residency the published price and the price after a financial aid offer
+     * are on, and which schools in this call they do not describe.
+     *
+     * Its own key beside `residency` rather than folded into it, because they
+     * are two different facts about two different columns: `residency` says
+     * which of a PAIR of published tuition figures this family is charged, and
+     * this one says that the two blended figures have no pair at all.
+     */
+    const val BLENDED_FIGURE_BASIS_KEY = "blended_figure_basis"
+
+    /**
+     * Whether the two blended figures describe THIS family at one school --
+     * written only when the answer is known. [putBlendedFiguresApply] owns that
+     * rule and says why.
+     */
+    const val APPLIES_KEY = "applies_to_this_family"
+
+    /**
+     * The figures we hold and are not showing this family, each with its reason
+     * (RFC 157 D-A) -- absent, never empty. Its presence is the ONE signal that
+     * a [DATA_AVAILABILITY_KEY] entry is ours rather than the school's silence.
+     */
+    const val WITHHELD_FIGURES_KEY = "withheld_figures"
+
+    /**
+     * The fields this answer carries NO number for, whichever of the two reasons
+     * it is -- absent, never empty, like every other list in this payload.
+     */
+    const val DATA_AVAILABILITY_KEY = "data_availability"
+
+    /**
+     * WHICH of the three blended-figure outcomes applies at one school
+     * ([BlendedFigureApplicability]), ALWAYS written beside the known-only
+     * [APPLIES_KEY] boolean.
+     *
+     * The boolean has two readable values and the fact has three, so its
+     * absence would have to carry the third -- and absence has two causes here
+     * (the residency question is open, or we did not recognise the control),
+     * which a reader cannot tell apart. The code says which, in one field, with
+     * nothing to remember.
+     */
+    const val APPLIES_BASIS_KEY = "applies_to_this_family_basis"
+
+    /** Why one figure is withheld ([WithheldReason]) -- beside the field it is withheld for. */
+    const val WITHHELD_REASON_KEY = "reason"
+
+    /**
      * WHICH published tuition figure the comparison holds constant at ONE school
      * (RFC 151), inside `comparison_basis.residency.by_college`.
      *
@@ -844,13 +1069,26 @@ class CollegeCostChatTool(
       "Read the real cost facts for the colleges on the student's list: sticker cost, tuition, " +
         "the net price their family would actually pay, median debt and median earnings. " +
         "Data comes from the U.S. Department of Education College Scorecard - always attribute figures " +
-        "to it, and when a field appears in data_availability the college does not report it: say so " +
-        "plainly, never estimate. Each net_price is an object carrying amount_usd (whole US dollars per " +
+        "to it, and when a field appears in $DATA_AVAILABILITY_KEY there is no number for it in this result: " +
+        "say so plainly, never estimate. That happens for one of two reasons, and they are not the same fact - " +
+        "either the college does not report the field, or it is a figure that does not describe this family and " +
+        "was withheld, which a $WITHHELD_FIGURES_KEY entry names and explains. Never say a school reported " +
+        "nothing when the entry is ours. Every college carries $APPLIES_BASIS_KEY, which says which of three " +
+        "states it is in: ${BlendedFigureApplicability.APPLIES.value} means the published price and the price " +
+        "after a financial aid offer are this family's there, ${BlendedFigureApplicability.WITHHELD.value} " +
+        "means they are withheld, and ${BlendedFigureApplicability.BASIS_STATED.value} means we cannot say " +
+        "whose they are - either we have not asked where the family lives, or the data does not record what " +
+        "kind of school it is - so both figures are shown on the in-state basis with that basis said. " +
+        "$APPLIES_KEY rides beside it as a true/false only when the answer is known. " +
+        "Each net_price is an object carrying amount_usd (whole US dollars per " +
         "academic year) and a basis: your_income_band means it is " +
         "specific to the student's answered household income band; overall_average means the band is not " +
         "on file and the figure is the all-family average - say which it is. When a net price is band-specific it " +
         "also carries income_band_label, the band's dollar range in plain words (e.g. \"${IncomeBand.OVER_110K.bracket}\") - say that " +
         "range when you name the band aloud, never the income_band code and never a data-source bucket name. " +
+        "A net_price with no amount_usd but a $WITHHELD_REASON_KEY is one WE withheld, never the school's " +
+        "silence: it keeps its basis and its band label, and the statement beside the reason is the one to " +
+        "say. " +
         "When a college's result carries " +
         "$PRECISION_OFFER_KEY, it is a list of upgrade invitations for that result, each naming the money-profile field " +
         "it would fill (${MoneyProfileChatTool.TOOL_NAME} records them) and carrying the sentence you may say. Raise them " +
@@ -878,8 +1116,15 @@ class CollegeCostChatTool(
         "one for a student living at home; " +
         "that is missing data about the arrangement, never a housing cost of zero. " +
         "${CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName} is a separate figure - an average blended " +
-        "across all three arrangements and from an earlier year - so never compare it with an arrangement total and " +
-        "never present one as the other. Aid applies to the whole price and not to any one part of it, so never " +
+        "across all three arrangements, from an earlier year, and at a public school built for students paying " +
+        "in-state tuition, so never compare it with an arrangement total and " +
+        "never present one as the other. ${CostField.NET_PRICE.wireName} is on that same in-state basis at a " +
+        "public school. Never offer either of them to a family from another state as their price: at a public " +
+        "school outside the family's state neither figure is in this result at all, and the arrangement totals in " +
+        "$BREAKDOWN_KEY, built from that school's out-of-state tuition and fees, are the figures that apply to " +
+        "them, so quote those instead. A private school publishes one price, so the question does not arise " +
+        "there. When the state the family lives in is not on file, both figures ARE shown: say what basis they " +
+        "are on and never gate an answer on the question. Aid applies to the whole price and not to any one part of it, so never " +
         "subtract ${CostField.NET_PRICE.wireName} from tuition or from any of these components, or one from the " +
         "other. When a college carries \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": false, IPEDS reports that school has no " +
         "residence halls: say so, and do not treat the absent ${LivingArrangement.ON_CAMPUS.value} arrangement as " +
@@ -922,7 +1167,9 @@ class CollegeCostChatTool(
         "so say those numbers without a year rather than borrowing one from another figure. " +
         "When the result carries two or more colleges it also carries $COMPARISON_BASIS_KEY, the assumptions a " +
         "side-by-side holds constant: who the figures describe, the residency (stated per school under " +
-        "by_college), the way of living every school here is priced for, the academic years, and what aid means " +
+        "by_college), which residency the blended figures are on ($BLENDED_FIGURE_BASIS_KEY, also stated per " +
+        "school, with $APPLIES_KEY saying whether those two figures are this family's there), the way of living " +
+        "every school here is priced for, the academic years, and what aid means " +
         "in a net price. Each one carries a $BASIS_KEY code and the $STATEMENT_KEY you may say: say those " +
         "sentences as ordinary copy above the table, never as a footnote under it, and never build a column " +
         "from two different bases - one residency and one way of living per column, or say it as two tables. " +

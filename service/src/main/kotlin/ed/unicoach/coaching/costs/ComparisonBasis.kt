@@ -8,10 +8,18 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.LivingArrangement
 
 /**
- * The five facts that make a multi-school cost table honest (RFC 151): whose
- * price these figures are, the residency held constant, the living arrangement
- * held constant, the academic year the figures come from, and what "aid" means
- * inside them.
+ * The SIX facts that make a multi-school cost table honest (RFC 151, RFC 157
+ * D-C): whose price these figures are, the residency held constant, which
+ * residency the blended figures are on, the living arrangement held constant,
+ * the academic year the figures come from, and what "aid" means inside them.
+ *
+ * The sixth is here because the second did not cover what its own docstring
+ * claimed. [ResidencyBasis] is scoped to TUITION by construction -- its
+ * vocabulary is [ComparedTuition] and every sentence it makes says "tuition and
+ * fees" -- while the published price and the price after a financial aid offer
+ * were printed with no residency said at all, directly under a correct and
+ * emphatic out-of-state tuition claim. [BlendedFigureBasis] states the basis
+ * those two figures were always on.
  *
  * PER CALL, not per college (D-A). Four of the five are identical for every
  * school a call answers, and repeating them beside each school invites the coach
@@ -35,6 +43,7 @@ import ed.unicoach.db.models.LivingArrangement
 data class ComparisonBasis(
   val population: PopulationBasis,
   val residency: ResidencyBasis,
+  val blendedFigures: BlendedFigureBasis,
   val livingArrangement: ArrangementBasis,
   val academicYears: List<DatedFigures>,
   val aid: AidBasis,
@@ -57,6 +66,11 @@ data class ComparisonBasis(
       buildList {
         add(population.statement)
         add(residency.statement)
+        // Said IMMEDIATELY after the residency line, because that line is what
+        // makes the omission dangerous: a parent who has just read "the tuition
+        // and fees figure that applies to this family is its out-of-state one"
+        // reads the next two rows as out-of-state too (RFC 157).
+        add(blendedFigures.statement)
         add(livingArrangement.statement)
         academicYears.forEach { add(it.statement) }
         add(aid.statement)
@@ -77,9 +91,14 @@ data class ComparisonBasis(
       moneyProfile: MoneyProfileStatuses,
     ): ComparisonBasis? {
       if (colleges.size < 2) return null
+      val residency = ResidencyBasis.of(colleges, moneyProfile)
       return ComparisonBasis(
         population = PopulationBasis,
-        residency = ResidencyBasis.of(colleges, moneyProfile),
+        residency = residency,
+        // Built FROM the residency fact rather than from the college list a
+        // second time: the fifth fact and the sixth read one control -> tuition
+        // vocabulary map, so they cannot disagree about one school.
+        blendedFigures = BlendedFigureBasis.of(residency),
         livingArrangement = ArrangementBasis.of(colleges, moneyProfile),
         academicYears = DatedFigures.of(colleges),
         aid = AidBasis,
@@ -149,6 +168,43 @@ sealed interface ComparedTuition {
   val code: String
 
   /**
+   * Whether where the family lives selects between two published figures here
+   * -- the question both per-call scopes ask before they say anything about
+   * residency (RFC 157).
+   *
+   * A member for the reason [publishesOnePriceForEveryone] is one: an
+   * `is Public` test at each site would have answered `false` for a new
+   * residency-charging case without anybody being told.
+   */
+  val chargesByResidency: Boolean
+
+  /**
+   * Whether a figure published ONLY on the in-state basis
+   * ([ResidencyAxis.IN_STATE_ONLY]) describes this family here (RFC 157
+   * D-A/D-B) -- and [BlendedFigureApplicability.BASIS_STATED] while the
+   * residency question is open, which withholds nothing.
+   *
+   * THE one home for that rule, and a member of the vocabulary rather than a
+   * `when` at each site that asks: [blendedFigureApplicabilityOf] reads it through the
+   * control -> vocabulary map to decide what [CollegeCostService] withholds, and
+   * [CollegeBlendedFigureBasis] reads it to say why. The figure that is missing
+   * and the sentence explaining it are ONE expression, and a case added here
+   * must answer it to compile.
+   */
+  val blendedFiguresApply: BlendedFigureApplicability
+
+  /**
+   * The stable wire code for [blendedFiguresApply], BESIDE the rule it names
+   * (RFC 157 D-C), so the two cannot drift.
+   *
+   * Here rather than in [CollegeBlendedFigureBasis], for the reason the rule
+   * itself is here: a case added to this vocabulary must answer both to compile,
+   * and a per-school object that re-derived the mapping with literals would be
+   * free to disagree with the applicability it ships beside them.
+   */
+  val blendedFigureCode: CollegeBlendedFigureCode
+
+  /**
    * Whether this school is KNOWN to publish exactly one price for everyone.
    *
    * A member of the vocabulary rather than an equality test at the two sites
@@ -165,6 +221,19 @@ sealed interface ComparedTuition {
     override val code: String get() = tuitionApplicable.value
 
     override val publishesOnePriceForEveryone: Boolean get() = false
+
+    override val chargesByResidency: Boolean get() = true
+
+    override val blendedFiguresApply: BlendedFigureApplicability get() = tuitionApplicable.blendedFiguresApply
+
+    /** DERIVED from the rule above, so the code and the applicability are one decision at a public school. */
+    override val blendedFigureCode: CollegeBlendedFigureCode
+      get() =
+        when (blendedFiguresApply) {
+          BlendedFigureApplicability.APPLIES -> CollegeBlendedFigureCode.IN_STATE_FIGURES_APPLY
+          BlendedFigureApplicability.WITHHELD -> CollegeBlendedFigureCode.IN_STATE_FIGURES_WITHHELD
+          BlendedFigureApplicability.BASIS_STATED -> CollegeBlendedFigureCode.IN_STATE_FIGURES_BASIS_STATED
+        }
   }
 
   /** A private school: one published price, so where the family lives changes nothing there. */
@@ -172,6 +241,13 @@ sealed interface ComparedTuition {
     override val code: String get() = "single_published_price"
 
     override val publishesOnePriceForEveryone: Boolean get() = true
+
+    override val chargesByResidency: Boolean get() = false
+
+    /** One published price, so no residency basis for the blended figures to fail to match (RFC 135). */
+    override val blendedFiguresApply: BlendedFigureApplicability get() = BlendedFigureApplicability.APPLIES
+
+    override val blendedFigureCode: CollegeBlendedFigureCode get() = CollegeBlendedFigureCode.NO_RESIDENCY_BASIS
   }
 
   /**
@@ -195,8 +271,38 @@ sealed interface ComparedTuition {
 
     /** Unknown is not one price: we never recognised what kind of school this is. */
     override val publishesOnePriceForEveryone: Boolean get() = false
+
+    /** Unknown is not a residency-charging school either: we never recognised what kind of school this is. */
+    override val chargesByResidency: Boolean get() = false
+
+    /**
+     * Outside the vocabulary we cannot say which residency these figures are on,
+     * and inventing an answer is the failure the cost domain exists against. It
+     * withholds nothing (RFC 157 D-B): it states the basis instead.
+     */
+    override val blendedFiguresApply: BlendedFigureApplicability get() = BlendedFigureApplicability.BASIS_STATED
+
+    override val blendedFigureCode: CollegeBlendedFigureCode get() = CollegeBlendedFigureCode.RESIDENCY_BASIS_UNKNOWN
   }
 }
+
+/**
+ * The control -> comparison vocabulary map. Exhaustive with no `else`, as every
+ * other `when` over [CollegeControl] is: a control added to the vocabulary must
+ * fail to compile here rather than quietly lose its residency line.
+ *
+ * File-level rather than private to [ResidencyBasis], because the vocabulary it
+ * builds now owns a rule the SERVICE asks too ([ComparedTuition.blendedFiguresApply],
+ * RFC 157): a second control -> answer map beside this one is exactly the drift
+ * that lets a withheld figure and the sentence explaining it disagree.
+ */
+internal fun comparedTuitionOf(control: CollegeControl): ComparedTuition =
+  when (control) {
+    is CollegeControl.Public -> ComparedTuition.Public(control.tuitionApplicable)
+    CollegeControl.PrivateNonprofit -> ComparedTuition.SinglePublishedPrice
+    CollegeControl.PrivateForProfit -> ComparedTuition.SinglePublishedPrice
+    is CollegeControl.Unrecognized -> ComparedTuition.PublishedPriceUnknown(control)
+  }
 
 /** One school's residency line inside the comparison: the code, and the sentence the coach may say. */
 data class CollegeResidencyBasis(
@@ -328,10 +434,18 @@ data class ResidencyBasis(
   }
 
   /** The schools where residency actually selects a figure -- the only ones a residency caveat is about. */
-  private val publics: List<CollegeResidencyBasis> get() = byCollege.filter { it.tuition is ComparedTuition.Public }
+  private val publics: List<CollegeResidencyBasis> get() = byCollege.filter { it.tuition.chargesByResidency }
 
-  /** The rest: one published price, or a control we could not recognise. */
-  private val others: List<CollegeResidencyBasis> get() = byCollege.filterNot { it.tuition is ComparedTuition.Public }
+  /**
+   * The rest: one published price, or a control we could not recognise.
+   *
+   * The COMPLEMENT of [publics] by the same predicate, never a second test that
+   * happens to agree today: [ComparedTuition.chargesByResidency] exists because
+   * an `is Public` test answers wrongly for a new residency-charging case, and
+   * asking it on one side only would put such a school in BOTH lists -- making
+   * [ResidencyScope.ALL_PUBLIC] unreachable and describing one school twice.
+   */
+  private val others: List<CollegeResidencyBasis> get() = byCollege.filterNot { it.tuition.chargesByResidency }
 
   /**
    * WHICH schools in this call charge tuition and fees by residency -- decided
@@ -448,20 +562,6 @@ data class ResidencyBasis(
         AnswerStatus.DECLINED -> {
           ComparedResidency.Declined
         }
-      }
-
-    /**
-     * The control -> comparison vocabulary map. Exhaustive with no `else`, as
-     * every other `when` over [CollegeControl] is: a control added to the
-     * vocabulary must fail to compile here rather than quietly lose its
-     * residency line.
-     */
-    private fun comparedTuitionOf(control: CollegeControl): ComparedTuition =
-      when (control) {
-        is CollegeControl.Public -> ComparedTuition.Public(control.tuitionApplicable)
-        CollegeControl.PrivateNonprofit -> ComparedTuition.SinglePublishedPrice
-        CollegeControl.PrivateForProfit -> ComparedTuition.SinglePublishedPrice
-        is CollegeControl.Unrecognized -> ComparedTuition.PublishedPriceUnknown(control)
       }
   }
 }

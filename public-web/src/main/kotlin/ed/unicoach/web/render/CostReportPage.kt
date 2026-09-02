@@ -8,6 +8,7 @@ import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.CollegeResidencyBasis
 import ed.unicoach.coaching.costs.ComparisonBasis
 import ed.unicoach.coaching.costs.ComponentRole
+import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.CostSources
 import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.MoneyProfileStatuses
@@ -15,6 +16,7 @@ import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.ResidencyBasis
 import ed.unicoach.coaching.costs.SingleSchoolBasis
 import ed.unicoach.coaching.costs.TuitionApplicable
+import ed.unicoach.coaching.costs.WithheldReason
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.LivingArrangement
@@ -82,6 +84,36 @@ private const val NOT_REPORTED = "Not reported by this school"
 /** The blank for a public school's tuition when the family's state is not on file. */
 private const val TUITION_WITHHELD = "Not shown \u2014 the state the family lives in is not on file"
 
+/**
+ * The blank for a blended figure this school publishes for in-state students
+ * while this family would pay the out-of-state price (RFC 157 D-A).
+ *
+ * NOT a caveat under the number, and not a footnote: RFC 142 landed because a
+ * labelled `net_price_q1..q5` was still read as "the Q5 net price", and a number
+ * printed beside a family's own name is read as theirs whatever the note says.
+ * This page has no coach in the loop -- a parent reads it alone -- so the figure
+ * goes and the reason stays.
+ *
+ * The REASON is the domain's own, in [WithheldReason.cellPhrase] -- the short
+ * form beside the sentence the coach ships -- so a page and a coach explain one
+ * blank with one vocabulary. Only [totals] is this page's, and it is a parameter
+ * because the pointer has to be true where it is printed: the per-school table
+ * has the family's own totals directly above this row, and the summary table has
+ * none at all. A blank with no destination is a number taken away; the totals
+ * built from out-of-state tuition and fees are in the same report and the parent
+ * is sent to them.
+ */
+private fun withheldBlankFor(
+  reason: WithheldReason,
+  totals: String,
+): String = "Not shown \u2014 ${reason.cellPhrase} \u2014 $totals."
+
+/** The blank in the per-school table, where the family's own totals are directly above this row. */
+private const val TOTALS_ABOVE = "the totals above"
+
+/** The blank in the cross-school table, where this school's own totals are below rather than above. */
+private const val TOTALS_IN_SCHOOL_TABLE_BELOW = "the totals in this school's own table below"
+
 /** The blank for a component that is not part of a way of living at all (no with-family housing figure exists). */
 private const val NOT_PART_OF_ARRANGEMENT = "Not a part of this way of living"
 
@@ -135,15 +167,28 @@ private const val SUMMARY_NO_HELD_ARRANGEMENT =
 /** The blank for a summary tuition cell whose school publishes a different figure per way of living. */
 private const val SUMMARY_TUITION_VARIES = "Quoted per way of living below"
 
+/**
+ * The in-state basis of BOTH blended figures, written once and joined onto each
+ * table's hint (RFC 157): the two hints differ in whose figure it is and what
+ * the parts are, never in what the figures are on.
+ *
+ * One SENTENCE, with no glue on either end -- the join is written at the two
+ * call sites below, where it can be seen, rather than hidden in a leading space
+ * every caller has to remember.
+ */
+private const val BLENDED_IN_STATE_CLAUSE =
+  "At a public school it, and the likely price after a financial aid offer, are figures for students paying " +
+    "in-state tuition."
+
 /** Said under the summary table, because two published prices side by side invite exactly this arithmetic. */
 private const val SUMMARY_HINT =
   "The published price is each school's own published cost of attendance, an average blended across the ways " +
-    "of living, so it is not the sum of the parts quoted below."
+    "of living, so it is not the sum of the parts quoted below. " + BLENDED_IN_STATE_CLAUSE
 
 /** The same warning under ONE school's table, where "each school's" would be false. Written once, like its twin. */
 private const val SCHOOL_BLENDED_HINT =
   "The published price is this school's own published cost of attendance, an average blended across the ways " +
-    "of living, so it is not the sum of the parts above it."
+    "of living, so it is not the sum of the parts above it. " + BLENDED_IN_STATE_CLAUSE
 
 /**
  * The Family Cost Report for one student's [profile].
@@ -347,8 +392,8 @@ private fun TBODY.summaryRow(
       }
     }
     valueCell(TUITION_COLUMN, summaryTuitionCell(cost, held))
-    valueCell(PUBLISHED_PRICE_COLUMN, publishedPriceCell(cost))
-    valueCell(NET_PRICE_COLUMN, netPriceCell(cost))
+    valueCell(PUBLISHED_PRICE_COLUMN, publishedPriceCell(cost, TOTALS_IN_SCHOOL_TABLE_BELOW))
+    valueCell(NET_PRICE_COLUMN, netPriceCell(cost, TOTALS_IN_SCHOOL_TABLE_BELOW))
   }
 }
 
@@ -446,8 +491,8 @@ private fun FlowContent.priceTable(cost: CollegeCost) {
       tuitionRow(cost, arrangements)
       componentRows(arrangements)
       if (arrangements.isNotEmpty()) totalRow(arrangements)
-      wholeSchoolRow(PUBLISHED_PRICE_COLUMN, publishedPriceCell(cost), columnCount)
-      wholeSchoolRow(NET_PRICE_COLUMN, netPriceCell(cost), columnCount)
+      wholeSchoolRow(PUBLISHED_PRICE_COLUMN, publishedPriceCell(cost, TOTALS_ABOVE), columnCount)
+      wholeSchoolRow(NET_PRICE_COLUMN, netPriceCell(cost, TOTALS_ABOVE), columnCount)
     }
   }
 }
@@ -586,21 +631,44 @@ private fun figureOf(
   note: String? = null,
 ): SchoolFigure = amountUsd?.let { SchoolFigure.Amount(it, note) } ?: SchoolFigure.Blank(blank)
 
-/** The school's own published cost of attendance -- a blended average, and labelled as one. */
-private fun publishedPriceCell(cost: CollegeCost): SchoolFigure =
-  figureOf(amountUsd = cost.stickerCostOfAttendancePerYearUsd, blank = NOT_REPORTED)
+/**
+ * The school's own published cost of attendance -- a blended average, and
+ * labelled as one.
+ *
+ * [totals] points at the figures that ARE this family's, for the OTHER reason
+ * this cell can be empty (RFC 157 D-A): the school published the figure and it
+ * is not this family's. The amount is already null by then -- the cost answer
+ * holds it back, so this page cannot print it even by mistake -- and the caller
+ * passes the pointer that is true where the cell is printed.
+ */
+private fun publishedPriceCell(
+  cost: CollegeCost,
+  totals: String,
+): SchoolFigure =
+  figureOf(
+    amountUsd = cost.stickerCostOfAttendancePerYearUsd,
+    blank = blendedBlankFor(cost, CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, totals),
+  )
 
 /**
  * The likely price after a financial aid offer, with its basis attached at the
  * figure (RFC 135's ethos label): an overall average can never be printed here
  * looking like a price for this family.
+ *
+ * [totals] plays the same part it plays for the published price above, and for
+ * the same reason: this figure is the more dangerous half of RFC 157's defect,
+ * because the arrangement totals beside it are at least residency-correct.
  */
-private fun netPriceCell(cost: CollegeCost): SchoolFigure =
-  when (val netPrice = cost.netPrice) {
+private fun netPriceCell(
+  cost: CollegeCost,
+  totals: String,
+): SchoolFigure {
+  val blank = blendedBlankFor(cost, CostField.NET_PRICE, totals)
+  return when (val netPrice = cost.netPrice) {
     is NetPrice.BandSpecific -> {
       figureOf(
         amountUsd = netPrice.amount,
-        blank = NOT_REPORTED,
+        blank = blank,
         note = "the average for families with a household income of ${netPrice.band.bracket}",
       )
     }
@@ -608,10 +676,43 @@ private fun netPriceCell(cost: CollegeCost): SchoolFigure =
     is NetPrice.OverallAverage -> {
       figureOf(
         amountUsd = netPrice.amount,
-        blank = NOT_REPORTED,
+        blank = blank,
         note = "an overall average across all families, not a figure for this family",
       )
     }
+
+    // The case that says itself: there is no number, and [blank] carries the
+    // reason. A note about a band or an average would describe a figure this
+    // cell is not printing.
+    is NetPrice.Withheld -> {
+      SchoolFigure.Blank(blank)
+    }
+  }
+}
+
+/**
+ * WHY one of the two blended figures is absent, said as itself -- the twin of
+ * [tuitionBlankFor].
+ *
+ * The withheld set is the cost DOMAIN's own ([CollegeCost.withheld]), never
+ * re-derived here from the control and the family's state: the service decides
+ * what this family may be shown, and a second rule in a renderer would be free
+ * to disagree with the number the same page prints.
+ *
+ * EXHAUSTIVE over the reason, not a boolean test on the field: a member added to
+ * [WithheldReason] must fail to compile here -- the one site on this page that
+ * owes it copy -- rather than have its blank explained with the in-state
+ * sentence. The null branch is the school's own silence, which is what
+ * [NOT_REPORTED] has always meant.
+ */
+private fun blendedBlankFor(
+  cost: CollegeCost,
+  field: CostField,
+  totals: String,
+): String =
+  when (val reason = cost.withheldReasonFor(field)) {
+    WithheldReason.IN_STATE_ONLY_FIGURE -> withheldBlankFor(reason, totals)
+    null -> NOT_REPORTED
   }
 
 /** The row's own label, in the leading header cell. */

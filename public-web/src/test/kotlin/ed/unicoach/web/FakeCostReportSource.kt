@@ -145,7 +145,7 @@ fun costFixture(
   tuitionInState: Int? = null,
   tuitionOutOfState: Int? = null,
   publishedPrice: Int? = null,
-  netPrice: NetPrice = NetPrice.OverallAverage(null),
+  netPrice: NetPrice.Reported = NetPrice.OverallAverage(null),
   housingAndFoodOnCampus: Int? = null,
   housingAndFoodOffCampus: Int? = null,
   booksAndSupplies: Int? = null,
@@ -178,6 +178,10 @@ fun costFixture(
   // read makes of it. The two local copies these replace had already drifted.
   val tuitionLine = tuitionLineOf(college, control)
   val reported = reportedOf(college, netPrice)
+  // RFC 157 D-A is NOT re-applied here. This fixture hands [CollegeCost] the
+  // figures as PUBLISHED, exactly as the service does, and the type withholds
+  // what this family may not see -- so the page's tests can never pass over a
+  // rule the real read no longer makes.
   return CollegeCost(
     collegeId = college.id,
     name = name,
@@ -185,16 +189,16 @@ fun costFixture(
     state = state,
     control = control,
     listStatus = listStatus,
-    stickerCostOfAttendancePerYearUsd = publishedPrice,
+    publishedStickerCostOfAttendancePerYearUsd = publishedPrice,
     tuitionAndFeesInStatePerYearUsd = tuitionInState,
     tuitionAndFeesOutOfStatePerYearUsd = tuitionOutOfState,
-    netPrice = netPrice,
+    publishedNetPrice = netPrice,
     medianDebtAtCompletionUsd = medianDebt,
     medianEarnings10yAfterEntryUsd = null,
     reportsBandPricing = netPrice is NetPrice.BandSpecific,
     reportsPublishedTuition = tuitionInState != null || tuitionOutOfState != null,
-    notReported = CostField.entries.filterNot { it in reported },
-    reported = reported,
+    publishedNotReported = CostField.entries.filterNot { it in reported },
+    publishedReported = reported,
     breakdown = CostBreakdown.of(college, tuitionLine, offersOnCampusHousing),
     offersOnCampusHousing = offersOnCampusHousing,
     meritAid = meritAid,

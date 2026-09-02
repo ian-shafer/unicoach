@@ -1003,6 +1003,43 @@ class FitLensServiceTest {
     }
 
   @Test
+  fun `call 2 names the retrieved net price as the school's IN-STATE figure, never a bare number`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      // A PUBLIC school (control = 1), the only case where the Scorecard's
+      // in-state basis can fail to be the reader's -- RFC 157 D-A.
+      val college = createCollege(name = "Public Candidate U")
+
+      val provider =
+        ScriptedProvider(
+          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(college), toolName = "record_fit_reason")),
+        )
+      service(provider).discover(student)
+
+      val call2Text =
+        ed.unicoach.chat.ContentBlocks
+          .renderText(
+            provider.requests[1]
+              .messages
+              .single()
+              .content,
+          )
+      assertTrue(
+        call2Text.contains("inStateNetPricePerYearUsd=[20000]"),
+        "the retrieved net price must reach the model labelled as the in-state figure, message=[$call2Text]",
+      )
+      assertTrue(
+        call2Text.contains("is the school's own published in-state net price, not this family's"),
+        "the label must say whose figure it is, message=[$call2Text]",
+      )
+      assertTrue(
+        !call2Text.contains("netPricePerYearUsd=[20000]"),
+        "no unlabelled net price may reach the model, message=[$call2Text]",
+      )
+    }
+
+  @Test
   fun `dead-letter - FitLensHandler over a malformed-output pass returns Success and does not retry`() =
     runBlocking {
       val student = createStudent()

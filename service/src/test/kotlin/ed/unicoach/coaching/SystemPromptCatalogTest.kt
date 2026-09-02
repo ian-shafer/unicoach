@@ -47,6 +47,30 @@ import kotlin.test.fail
  */
 class SystemPromptCatalogTest {
   companion object {
+    /**
+     * The ONLY prefix that may precede the word "subtract" in coach copy: the
+     * rule has to be stated as a prohibition, never as a licence.
+     */
+    private const val PERMITTED_SUBTRACT_PREFIX = "never "
+
+    /**
+     * Every mention of subtracting, with the words in front of it.
+     *
+     * The lookback is the permitted prefix's own LENGTH, derived rather than
+     * retyped: the scan only works because the window and the string it is
+     * compared against are the same size, and that coupling was written out by
+     * hand at seven sites, in none of which it was said aloud.
+     */
+    private val SUBTRACT_MENTIONS = Regex("""(.{0,${PERMITTED_SUBTRACT_PREFIX.length}})subtract""")
+
+    /** Every mention of subtracting in [copy] that does NOT forbid it -- empty, or the copy is wrong. */
+    private fun listSubtractionsNotForbidden(copy: String): List<String> =
+      SUBTRACT_MENTIONS
+        .findAll(copy)
+        .map { it.groupValues[1] }
+        .filterNot { it == PERMITTED_SUBTRACT_PREFIX }
+        .toList()
+
     /** The first words of v4's cost paragraph — the boundary v5 replaces from. */
     private const val COST_PARAGRAPH_OPENER = " When the student has schools on their college list"
 
@@ -556,11 +580,11 @@ class SystemPromptCatalogTest {
         .getOrThrow()
         .body
 
-    val subtractions = Regex("""(.{0,6})subtract""").findAll(served).map { it.groupValues[1] }.toList()
+    val subtractions = SUBTRACT_MENTIONS.findAll(served).map { it.groupValues[1] }.toList()
     assertTrue(subtractions.isNotEmpty(), "the rule must actually be stated, or this assertion is vacuous")
     assertEquals(
       emptyList(),
-      subtractions.filterNot { it == "never " },
+      listSubtractionsNotForbidden(served),
       "every mention of subtracting a price in the coach prompt must forbid it: [$subtractions]",
     )
 
@@ -661,11 +685,7 @@ class SystemPromptCatalogTest {
     // as v11's own rather than as the catalog's.
     assertEquals(
       emptyList(),
-      Regex("""(.{0,6})subtract""")
-        .findAll(appended)
-        .map { it.groupValues[1] }
-        .toList()
-        .filterNot { it == "never " },
+      listSubtractionsNotForbidden(appended),
       "every mention of subtracting in the new paragraph must forbid it",
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
@@ -769,11 +789,7 @@ class SystemPromptCatalogTest {
     assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
     assertEquals(
       emptyList(),
-      Regex("""(.{0,6})subtract""")
-        .findAll(appended)
-        .map { it.groupValues[1] }
-        .toList()
-        .filterNot { it == "never " },
+      listSubtractionsNotForbidden(appended),
       "every mention of subtracting in the new paragraph must forbid it",
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
@@ -868,11 +884,7 @@ class SystemPromptCatalogTest {
     // reported as v15's own rather than as the catalog's.
     assertEquals(
       emptyList(),
-      Regex("""(.{0,6})subtract""")
-        .findAll(appended)
-        .map { it.groupValues[1] }
-        .toList()
-        .filterNot { it == "never " },
+      listSubtractionsNotForbidden(appended),
       "every mention of subtracting in the new paragraph must forbid it",
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
@@ -928,6 +940,128 @@ class SystemPromptCatalogTest {
     assertTrue(v14.body.contains(v7MoneyParagraph()), "v14 must still carry v7's money paragraph byte-for-byte")
     assertFalse(v14.body.contains(SHARE_REPORT_TOOL_NAME), "the rollback target must not already name the v15 share tool")
   }
+
+  /**
+   * The 0076 seed's structural contract (RFC 157 D-F). v16 is ADDITIVE like
+   * every coach seed since 0047: the whole v15 body byte-identical as a prefix,
+   * joined by a single space to exactly one appended paragraph — the
+   * residency-basis instruction. The paragraph's markers are asserted, not its
+   * full copy: the seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v16 is v15 plus one appended residency-basis paragraph`() {
+    val appended = residencyBasisParagraph()
+
+    assertTrue(
+      appended.startsWith(" At a public school, the published price"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(
+      appended.contains("students paying in-state tuition and fees"),
+      "RFC 157: the basis the two blended figures have always had and never stated",
+    )
+    assertTrue(
+      appended.contains("Never offer either of those two figures to a family from another state as their price"),
+      "D-A: a figure whose residency does not apply to this family is never offered as theirs",
+    )
+    assertTrue(
+      appended.contains("Say the out-of-state total instead"),
+      "and the family is pointed at the figure that IS theirs, not left with a blank",
+    )
+    assertTrue(
+      appended.contains("out-of-state tuition and fees"),
+      "the out-of-state total is named by what it is built from",
+    )
+    assertTrue(
+      appended.contains("A private school publishes one price for every family"),
+      "at a private college the distinction does not exist (RFC 135), so nothing changes there",
+    )
+    assertTrue(
+      appended.contains("show both figures still and say what basis they are on"),
+      "D-B: residency unknown states the basis and withholds nothing",
+    )
+    assertTrue(
+      appended.contains("never make an answer wait on it"),
+      "guided, not gated (brief 0001 D11): no answer is ever gated on the residency question",
+    )
+    // RFCs 141/142 money language, carried into the new paragraph.
+    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
+    assertTrue(appended.contains("published price"), "the published price, stated positively")
+    assertTrue(appended.contains("financial aid offer"), "a financial aid offer, stated positively")
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertFalse(appended.contains("without need"), "the banned denominator: no source reports a count of students without need")
+    // The served-body guard elsewhere sweeps the WHOLE prompt; this says the
+    // rule holds inside the span v16 actually adds, so a relaxation here is
+    // reported as v16's own rather than as the catalog's.
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(appended),
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+  }
+
+  /**
+   * RFC 142's source-jargon sentence, RFC 141's money paragraph, RFC 151's
+   * comparison paragraph, RFC 154's name-lookup paragraph, RFC 153's
+   * similar-colleges paragraph, RFC 152's living-plan paragraph and RFC 155's
+   * cost-report paragraph must all survive RFC 157's append. They do so by
+   * construction — v16 keeps the whole v15 body as a prefix — but they are the
+   * copy every prior version has already had to preserve, so they are asserted
+   * rather than assumed. All are extracted at runtime, never retyped here.
+   */
+  @Test
+  fun `coach v16 preserves the source-jargon, money, comparison, name-lookup, similar, plan and report copy verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v16 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v16").getOrThrow().body
+
+    assertTrue(
+      v16.contains(sentence),
+      "v16 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+    assertTrue(v16.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+    assertTrue(v16.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
+    assertTrue(v16.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
+    assertTrue(
+      v16.contains(similarCollegesParagraph()),
+      "v13's similar-colleges paragraph must survive the append byte-for-byte",
+    )
+    assertTrue(v16.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
+    assertTrue(v16.contains(costReportParagraph()), "v15's cost-report paragraph must survive the append byte-for-byte")
+  }
+
+  /**
+   * The rollback RFC 157 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v15`), which is only real if the v15 row is
+   * still in the insert-only catalog and still carries the copy it was approved
+   * with. Asserted here rather than assumed, on the same precedent as the v15
+   * rollback test above: a rollback nobody checks is discovered to be broken at
+   * the worst moment.
+   */
+  @Test
+  fun `coach v15 stays selectable so the v16 rollback is real`() {
+    val v15 =
+      SystemPromptsDao
+        .findByNameAndVersion(session, "coach", "v15")
+        .getOrElse { fail("the v15 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v15 is not a rollback") }
+    val v16 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v16").getOrThrow().body
+
+    assertTrue(v15.body.isNotEmpty(), "the v15 body must be the copy it was seeded with, not an empty row")
+    assertTrue(v15.body != v16, "v15 and v16 must be different bodies, or the pin bought nothing")
+    assertTrue(v15.body.contains(sourceJargonSentence()), "v15 must still carry v6's source-jargon sentence byte-for-byte")
+    assertTrue(v15.body.contains(v7MoneyParagraph()), "v15 must still carry v7's money paragraph byte-for-byte")
+    assertFalse(
+      v15.body.contains("students paying in-state tuition and fees"),
+      "the rollback target must not already carry v16's residency-basis rule",
+    )
+  }
+
+  /** The v16 residency-basis paragraph: everything v16 appends to the v15 body. The guards are [appendedParagraph]'s. */
+  private fun residencyBasisParagraph(): String = appendedParagraph(base = "v15", revised = "v16")
 
   /**
    * Everything [revised] appends to the [base] coach body — the ONE extractor
@@ -1023,11 +1157,7 @@ class SystemPromptCatalogTest {
     // as v12's own rather than as the catalog's.
     assertEquals(
       emptyList(),
-      Regex("""(.{0,6})subtract""")
-        .findAll(appended)
-        .map { it.groupValues[1] }
-        .toList()
-        .filterNot { it == "never " },
+      listSubtractionsNotForbidden(appended),
       "every mention of subtracting in the new paragraph must forbid it",
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
@@ -1120,11 +1250,7 @@ class SystemPromptCatalogTest {
     // holds inside the span v13 actually adds.
     assertEquals(
       emptyList(),
-      Regex("""(.{0,6})subtract""")
-        .findAll(appended)
-        .map { it.groupValues[1] }
-        .toList()
-        .filterNot { it == "never " },
+      listSubtractionsNotForbidden(appended),
       "every mention of subtracting in the new paragraph must forbid it",
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")

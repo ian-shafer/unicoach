@@ -12,6 +12,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -27,7 +28,9 @@ import kotlin.test.assertTrue
  *
  * It touches no database on purpose: the suite's DB fixtures are shared, and a
  * seed-free test in a seeding class would leave the shared tables in a state its
- * neighbours do not expect.
+ * neighbours do not expect. The RFC 157 cases below are here for the same
+ * reason: they are facts about the VOCABULARY -- which reason may describe which
+ * field, and what a drifted control withholds -- and need no row to be true.
  */
 class ComparisonBasisTest {
   @Test
@@ -69,6 +72,37 @@ class ComparisonBasisTest {
     )
   }
 
+  @Test
+  fun `a drifted control states the blended-figure basis and withholds nothing`() {
+    // RFC 157 D-B, on the one control the DB cannot store: an unrecognised
+    // school is not an out-of-state one, so nothing is held back from it.
+    val control = CollegeControl.Unrecognized(9)
+
+    assertEquals(BlendedFigureApplicability.BASIS_STATED, blendedFigureApplicabilityOf(control))
+    assertEquals(
+      emptyList(),
+      withheldFiguresFor(control, CostField.IN_STATE_ONLY_FIELDS.toSet()),
+      "a control nobody recognised is not licence to hide the only price we hold",
+    )
+  }
+
+  @Test
+  fun `a withheld figure can only be paired with a reason its own axis carries`() {
+    // The pair is built from the field, so a sentence about in-state tuition can
+    // never be attached to a figure that is on no residency basis at all.
+    assertNull(
+      WithheldFigure.of(CostField.MEDIAN_DEBT_AT_COMPLETION_USD),
+      "median debt is not a price, so no reason's axis describes it",
+    )
+    assertEquals(
+      WithheldReason.IN_STATE_ONLY_FIGURE,
+      assertNotNull(WithheldFigure.of(CostField.NET_PRICE)).reason,
+    )
+    assertFailsWith<IllegalArgumentException>("a mismatched pair has no constructor") {
+      WithheldFigure(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, WithheldReason.IN_STATE_ONLY_FIGURE)
+    }
+  }
+
   /**
    * A [CollegeCost] with nothing on it but the facts a comparison basis reads:
    * the id, the name, and the control. Built here rather than through the DB
@@ -86,16 +120,19 @@ class ComparisonBasisTest {
       state = "CA",
       control = control,
       listStatus = CollegeListEntryStatus.CONSIDERING,
-      stickerCostOfAttendancePerYearUsd = null,
+      publishedStickerCostOfAttendancePerYearUsd = null,
       tuitionAndFeesInStatePerYearUsd = null,
       tuitionAndFeesOutOfStatePerYearUsd = null,
-      netPrice = NetPrice.OverallAverage(null),
+      publishedNetPrice = NetPrice.OverallAverage(null),
       medianDebtAtCompletionUsd = null,
       medianEarnings10yAfterEntryUsd = null,
       reportsBandPricing = false,
       reportsPublishedTuition = false,
-      notReported = emptyList(),
-      reported = emptySet(),
+      // The figures AS PUBLISHED. RFC 157's withholding is [CollegeCost]'s own,
+      // derived from the control this fixture chooses, so no test file re-states
+      // what that control means for the two blended figures.
+      publishedNotReported = emptyList(),
+      publishedReported = emptySet(),
       breakdown = null,
       offersOnCampusHousing = null,
       meritAid = null,
@@ -168,6 +205,59 @@ class ComparisonBasisTest {
       listOf(listOf(publicOne, publicTwo), listOf(privateOne, privateTwo), listOf(publicOne, privateOne))
         .map { assertNotNull(ComparisonBasis.of(it, answered)).residency.statement }
     assertEquals(statements.size, statements.toSet().size, "one sentence per shape: [$statements]")
+  }
+
+  @Test
+  fun `an unrecognised control is named by the blended-figure scope, never spoken for`() {
+    // The quantifiers range over the schools that CHARGE by residency, and a
+    // school whose control we did not recognise is not one of them -- so before
+    // this scope existed, {in-state public, unrecognised} claimed "both figures
+    // are theirs in this table" while that school's own line said we cannot say
+    // which residency its figures are for (RFC 157 tier 2).
+    val inState = college("Scope In State U", CollegeControl.Public(TuitionApplicable.IN_STATE))
+    val drifted = college("Scope Drifted U", CollegeControl.Unrecognized(9))
+    val privateOne = college("Scope Private U", CollegeControl.PrivateNonprofit)
+    val answered = moneyProfile(AnswerStatus.ANSWERED, "CA")
+
+    val mixed = assertNotNull(ComparisonBasis.of(listOf(inState, drifted), answered)).blendedFigures
+    assertEquals(BlendedFigureScope.BASIS_UNKNOWN_AT_SOME_SCHOOLS, mixed.scope)
+    assertTrue(
+      mixed.statement.contains("Scope Drifted U") && mixed.statement.contains("read that school's own line"),
+      "the sentence names the school no claim is true of, and sends the reader to its line: [${mixed.statement}]",
+    )
+    assertEquals(
+      BlendedFigureScope.BASIS_UNKNOWN_AT_SOME_SCHOOLS,
+      assertNotNull(ComparisonBasis.of(listOf(privateOne, drifted), answered)).blendedFigures.scope,
+      "and a table of one-price schools plus a drifted one is not 'no residency basis here' either",
+    )
+    assertEquals(
+      BlendedFigureScope.IN_STATE_EVERYWHERE,
+      assertNotNull(ComparisonBasis.of(listOf(inState, privateOne), answered)).blendedFigures.scope,
+      "while a table with no drifted school still answers for itself",
+    )
+  }
+
+  @Test
+  fun `a blended-figure basis that compares fewer than two colleges is refused by the type`() {
+    // The stated boundary is TWO: a comparison fact about one school holds
+    // nothing constant across anything, and the one-school answer is
+    // [CollegeBlendedFigureBasis]. [ComparisonBasis.of] already refuses below
+    // two; the type refuses it too (RFC 157 tier 2).
+    val one =
+      CollegeBlendedFigureBasis(
+        collegeId = CollegeId(UUID.randomUUID()),
+        name = "Lonely U",
+        tuition = ComparedTuition.SinglePublishedPrice,
+      )
+    val failure =
+      assertFailsWith<IllegalArgumentException> {
+        BlendedFigureBasis(answer = ComparedResidency.Unanswered, byCollege = listOf(one))
+      }
+
+    assertTrue(
+      failure.message.orEmpty().contains("colleges=[1]"),
+      "the refusal prints what it refused: [${failure.message}]",
+    )
   }
 
   @Test

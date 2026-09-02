@@ -26,6 +26,9 @@ dependencies {
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.ktor.server.test.host)
+  // The one home of the UC San Diego Scorecard row (RFC 157), shared with the
+  // :service cost tests that seed the same row.
+  testImplementation(testFixtures(project(":service")))
 }
 
 tasks.withType<Test> {

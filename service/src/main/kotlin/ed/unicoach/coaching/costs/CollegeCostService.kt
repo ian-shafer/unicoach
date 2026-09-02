@@ -26,32 +26,99 @@ import org.slf4j.LoggerFactory
 import java.time.ZoneOffset
 
 /**
+ * WHICH published net-price figure the family's own answer selected -- the label
+ * alone, with no amount anywhere inside it.
+ *
+ * Its own vocabulary so a [NetPrice.Withheld] can carry the basis without
+ * carrying the number it is withholding: the absence is the type, not a nulled
+ * field policed by a runtime check, and `amount == null` goes back to meaning
+ * exactly one thing (the college reports nothing).
+ *
+ * [YourIncomeBand] carries the band, because the family answered the income
+ * question or they did not, and that fact is theirs whether or not this school's
+ * figure is one we can show them -- so the band label survives withholding while
+ * the amount does not.
+ */
+sealed interface NetPriceBasis {
+  /** The serialized `basis` label -- derived from the case, never stored beside it. */
+  val value: String
+
+  /** The student's answered household income band selected the bracket column. */
+  data class YourIncomeBand(
+    val band: IncomeBand,
+  ) : NetPriceBasis {
+    override val value: String get() = "your_income_band"
+  }
+
+  /** The band is unanswered or declined; the figure is the all-family average. */
+  data object OverallAverage : NetPriceBasis {
+    override val value: String get() = "overall_average"
+  }
+}
+
+/**
  * The net-price answer for one college — the ethos label (RFC 135): the coach
  * can never silently present an overall average as a personal number, because
  * the case says which one it is, and only [BandSpecific] can carry a band —
- * a band on an overall average is unrepresentable. [amount] is null when the
- * college does not report the selected figure (it then also appears in
- * [CollegeCost.notReported]).
+ * a band on an overall average is unrepresentable.
+ *
+ * THREE cases, not two, because a missing number has three different causes and
+ * only one of them is the college's (RFC 157 D-A): the college reports the
+ * selected figure ([Reported] with an [amount]), the college reports nothing
+ * for it ([Reported] with a null [amount], which also appears in
+ * [CollegeCost.notReported]), or we hold the figure back because it is not this
+ * family's ([Withheld], which appears in [CollegeCost.withheld] and in NEITHER
+ * reported list).
+ *
+ * A bare null therefore never says which: a site that has not handled
+ * [Withheld] fails to compile rather than printing the school's silence over
+ * our own rule.
  */
 sealed interface NetPrice {
   val amount: Int?
 
-  /** The serialized `basis` label — derived from the case, never stored beside it. */
-  val basis: String
+  /** WHICH figure this answer is, whether or not it carries a number. */
+  val publishedBasis: NetPriceBasis
+
+  /** The serialized `basis` label — read from [publishedBasis], so one case cannot label itself twice. */
+  val basis: String get() = publishedBasis.value
+
+  /**
+   * The two cases that come from the SCHOOL's own row: a figure, or its silence.
+   * [Withheld] carries the BASIS of one of these rather than being one, so a
+   * withheld figure can never wrap a withheld figure -- or the amount it is
+   * withholding.
+   */
+  sealed interface Reported : NetPrice
 
   /** The student's answered household income band selected the bracket column. */
   data class BandSpecific(
     val band: IncomeBand,
     override val amount: Int?,
-  ) : NetPrice {
-    override val basis: String get() = "your_income_band"
+  ) : Reported {
+    override val publishedBasis: NetPriceBasis get() = NetPriceBasis.YourIncomeBand(band)
   }
 
   /** The band is unanswered or declined; the amount is the all-family average. */
   data class OverallAverage(
     override val amount: Int?,
+  ) : Reported {
+    override val publishedBasis: NetPriceBasis get() = NetPriceBasis.OverallAverage
+  }
+
+  /**
+   * The school publishes this figure and it is not this family's, so we hold it
+   * back (RFC 157 D-A). The reason travels WITH the blank rather than beside it.
+   *
+   * It carries the BASIS the family's own answer selected and NO amount: there
+   * is no field for the withheld number to ride in, so no `require` has to check
+   * that it does not.
+   */
+  data class Withheld(
+    override val publishedBasis: NetPriceBasis,
+    val reason: WithheldReason,
   ) : NetPrice {
-    override val basis: String get() = "overall_average"
+    override val amount: Int? get() = null
   }
 }
 
@@ -69,6 +136,30 @@ enum class TuitionApplicable(
 
   /** Public college, residency unanswered or declined. */
   UNKNOWN("unknown"),
+  ;
+
+  /**
+   * Whether a figure published ONLY on the in-state basis
+   * ([ResidencyAxis.IN_STATE_ONLY]) describes this family at this public
+   * college (RFC 157).
+   *
+   * The public half of the rule [ComparedTuition.blendedFiguresApply] owns for
+   * every kind of school, so the figure that is missing and the sentence
+   * explaining it are one decision rather than two.
+   *
+   * [BlendedFigureApplicability.BASIS_STATED] is NOT
+   * [BlendedFigureApplicability.WITHHELD]: an unanswered residency withholds
+   * nothing (RFC 157 D-B). The only price we hold is still shown, with its basis
+   * said, because hiding it until a question is answered would gate the answer
+   * on a completed profile -- which brief 0001 D11/D12 forbids.
+   */
+  val blendedFiguresApply: BlendedFigureApplicability
+    get() =
+      when (this) {
+        IN_STATE -> BlendedFigureApplicability.APPLIES
+        OUT_OF_STATE -> BlendedFigureApplicability.WITHHELD
+        UNKNOWN -> BlendedFigureApplicability.BASIS_STATED
+      }
 }
 
 /**
@@ -116,7 +207,18 @@ sealed interface CollegeControl {
   }
 }
 
-/** One college's cost facts, composed from its list entry, the `colleges` row, and the money profile. */
+/**
+ * One college's cost facts, composed from its list entry, the `colleges` row,
+ * and the money profile.
+ *
+ * It takes the figures AS PUBLISHED and applies RFC 157 D-A itself. What this
+ * family may be SHOWN -- [stickerCostOfAttendancePerYearUsd], [netPrice],
+ * [reported], [notReported] and [withheld] -- is derived here from [control] and
+ * what the school published, so a caller cannot hand this type a set of fields
+ * its own control contradicts, and `copy()` cannot build one for free. The
+ * withholding rule therefore has ONE home, inside the only type that can see
+ * every fact it needs.
+ */
 data class CollegeCost(
   val collegeId: CollegeId,
   val name: String,
@@ -124,10 +226,23 @@ data class CollegeCost(
   val state: String,
   val control: CollegeControl,
   val listStatus: CollegeListEntryStatus,
-  val stickerCostOfAttendancePerYearUsd: Int?,
+  /**
+   * The school's own published cost of attendance, AS PUBLISHED -- the INPUT to
+   * RFC 157 D-A and never a figure to render, so it is PRIVATE: the constructor
+   * stays public and every caller still names it, while the exact number this
+   * rule exists to withhold is unreadable from a page, a tool, or a `toString()`
+   * in a log line. What this family may be shown is
+   * [stickerCostOfAttendancePerYearUsd]; read that one.
+   */
+  private val publishedStickerCostOfAttendancePerYearUsd: Int?,
   val tuitionAndFeesInStatePerYearUsd: Int?,
   val tuitionAndFeesOutOfStatePerYearUsd: Int?,
-  val netPrice: NetPrice,
+  /**
+   * The net-price answer AS PUBLISHED, and private for the same reason: what
+   * this family may be shown is [netPrice], which is a [NetPrice.Withheld] when
+   * D-A holds this figure back.
+   */
+  private val publishedNetPrice: NetPrice.Reported,
   val medianDebtAtCompletionUsd: Int?,
   val medianEarnings10yAfterEntryUsd: Int?,
   /** True when the college reports at least one `net_price_per_year_income_qN_usd` bracket column. */
@@ -138,11 +253,15 @@ data class CollegeCost(
    * so a college that publishes neither has no upgrade to promise.
    */
   val reportsPublishedTuition: Boolean,
-  /** The cost fields this college does not report, so the coach says so instead of improvising. */
-  val notReported: List<CostField>,
   /**
-   * The cost fields this college DOES carry a figure for -- the positive twin of
-   * [notReported], and exactly the set [CollegeCostChatTool] renders for it.
+   * The cost fields this college does not report, AS PUBLISHED -- a fact about
+   * the school alone. [notReported] is the one a reader wants.
+   */
+  private val publishedNotReported: List<CostField>,
+  /**
+   * The cost fields this college DOES carry a figure for, AS PUBLISHED -- the
+   * positive twin of [publishedNotReported], and the input the withholding rule
+   * reads: only a figure the school published can be held back from anybody.
    *
    * Derived in [CollegeCostService] from [CostField.reportedAmountOf], the one
    * primitive that answers "does this college report this field", so no reader
@@ -150,11 +269,9 @@ data class CollegeCost(
    * gains its column there and is classified here without a second edit nobody
    * would fail for forgetting.
    *
-   * Not the complement of [notReported]: the two on-campus components a
-   * no-dorms school suppresses (RFC 149 D-B) are in neither list -- they are
-   * inapplicable rather than silent, and they are also not rendered.
+   * [reported] is the one a reader wants.
    */
-  val reported: Set<CostField>,
+  private val publishedReported: Set<CostField>,
   /**
    * The published price split by living arrangement (RFC 149), or null when
    * this school reports no component at all. The arithmetic lives in
@@ -195,7 +312,194 @@ data class CollegeCost(
    * comparison column holds constant, never what exists.
    */
   val chosen: ChosenLivingPlan,
-)
+) {
+  /**
+   * The figures we HOLD and are not showing this family, each with its reason
+   * (RFC 157 D-A) -- a third category beside [reported] and [notReported], and
+   * necessarily its own: the school published these numbers, so calling them
+   * unreported would blame its price list for our applicability rule.
+   *
+   * DERIVED, never handed in, from [control] and what this school actually
+   * published: empty in every case but one, a public school in a state this
+   * family does not live in, and even there only for the in-state-only figures
+   * this school reports. The two figures there are in-state figures with no
+   * out-of-state counterpart published anywhere, so there is nothing to
+   * substitute and nothing is substituted.
+   *
+   * A getter, unlike [shown] below: this list is at most two entries built from
+   * two fields, so recomputing it per reader costs less than a lazy holder --
+   * [shown] is cached because a FOLD over it runs per rendered figure.
+   */
+  val withheld: List<WithheldFigure> get() = withheldFiguresFor(control, publishedReported)
+
+  /** The withheld figures as a field set -- the shape every reader of [withheld] actually asks for. */
+  val withheldFields: Set<CostField> get() = withheld.mapTo(mutableSetOf()) { it.field }
+
+  /** The membership test [notReported] and [reported] both subtract with, so neither writes its own. */
+  fun isWithheld(field: CostField): Boolean = field in withheldFields
+
+  /**
+   * WHY [field] carries no number for this family, or null when the answer is
+   * not ours to give -- the school's own silence, or a figure that is shown.
+   *
+   * The lookup lives here rather than in each renderer, so no surface scans
+   * [withheld] with its own predicate and none of them can disagree about which
+   * blank belongs to which reason.
+   */
+  fun withheldReasonFor(field: CostField): WithheldReason? = withheld.firstOrNull { it.field == field }?.reason
+
+  /**
+   * Every field this answer carries NO number for, in enum declaration order:
+   * the school's silence and our own withholding together (RFC 157 D-A).
+   *
+   * ONE list because the instruction it drives is one instruction -- say so
+   * plainly, never estimate. WHICH reason applies is [withheld]'s to say, and
+   * naming the union here is what stops a renderer and a wire builder each
+   * deriving their own.
+   */
+  val fieldsWithNoAmount: List<CostField> get() = CostField.listInDeclarationOrder(notReported + withheldFields)
+
+  /**
+   * The school's own published cost of attendance as this family may see it:
+   * null when the school reports none, and null when D-A holds it back.
+   */
+  val stickerCostOfAttendancePerYearUsd: Int? get() = shown.stickerCostOfAttendancePerYearUsd
+
+  /**
+   * The net price as this family may see it -- a [NetPrice.Withheld] carrying
+   * the reason when D-A holds it back, so no reader can mistake our rule for the
+   * school's silence.
+   */
+  val netPrice: NetPrice get() = shown.netPrice
+
+  /**
+   * The cost fields this college does not report, so the coach says so instead
+   * of improvising.
+   *
+   * A figure in [withheld] is in NEITHER this list nor [reported]: the college
+   * published it and we are holding it back from this family (RFC 157 D-A), so
+   * calling it unreported would blame the price list for our own rule.
+   */
+  val notReported: List<CostField> get() = publishedNotReported.filterNot(::isWithheld)
+
+  /**
+   * The cost fields this college DOES carry a figure for and this family may be
+   * shown -- the positive twin of [notReported], and exactly the set
+   * [CollegeCostChatTool] renders for it.
+   *
+   * Not the complement of [notReported], and TWICE not: the two on-campus
+   * components a no-dorms school suppresses (RFC 149 D-B) are in neither list,
+   * and neither is a figure in [withheld]. Both are inapplicable to this reader
+   * rather than silent, and neither is rendered.
+   */
+  val reported: Set<CostField> get() = publishedReported.filterNot(::isWithheld).toSet()
+
+  /**
+   * Whether the two BLENDED figures -- [stickerCostOfAttendancePerYearUsd] and
+   * [netPrice] -- describe THIS family at this school (RFC 157 D-A/D-B).
+   *
+   * DERIVED from [control] by [blendedFigureApplicabilityOf], the rule that sits beside
+   * [applicableTuitionFor], so ONE rule decides both which tuition column fills
+   * an arrangement and whether the in-state-only figures are this family's.
+   *
+   * NOT the same question as [withheld]. That list says which figures were taken
+   * away; this says whether the in-state basis describes this family at all,
+   * which is still [BlendedFigureApplicability.WITHHELD] at a school that
+   * publishes neither figure and therefore withholds nothing.
+   */
+  val blendedFiguresApply: BlendedFigureApplicability get() = blendedFigureApplicabilityOf(control)
+
+  /**
+   * The published figures with the withheld list folded through them, once.
+   *
+   * `by lazy` rather than a getter, so the fold runs once per answer however
+   * many times a renderer asks.
+   */
+  private val shown: ShownFigures by lazy {
+    withheld.fold(
+      ShownFigures(collegeId, publishedStickerCostOfAttendancePerYearUsd, publishedNetPrice),
+      ShownFigures::deleteFigure,
+    )
+  }
+}
+
+/**
+ * The two blended amounts as this family may see them -- the ONE place a
+ * withheld field is turned into an absent number.
+ */
+private data class ShownFigures(
+  /**
+   * The school this fold is for, so a refusal below names the ROW it fired on
+   * -- the house standard [CollegeCostService] already holds itself to.
+   */
+  val collegeId: CollegeId,
+  val stickerCostOfAttendancePerYearUsd: Int?,
+  val netPrice: NetPrice,
+) {
+  /**
+   * The same figures with this one's AMOUNT gone and every fact around it kept
+   * (RFC 157 D-A).
+   *
+   * Exhaustive with no `else`: a field added to [CostField] must say what
+   * withholding means for it HERE -- the one place the withheld list becomes an
+   * absent number -- rather than being named in [CollegeCost.withheld] and in
+   * `data_availability` while its figure is still printed.
+   */
+  fun deleteFigure(figure: WithheldFigure): ShownFigures =
+    when (figure.field) {
+      CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD -> {
+        copy(stickerCostOfAttendancePerYearUsd = null)
+      }
+
+      CostField.NET_PRICE -> {
+        copy(netPrice = netPriceWithheldFor(figure.reason))
+      }
+
+      // No residency axis, so nothing here is ever withheld for one --
+      // [WithheldFigure.of] cannot even build the pair.
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+      CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
+      CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
+      CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD,
+      CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
+      CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD,
+      CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
+      CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
+      CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD,
+      CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
+      -> {
+        error(
+          "this cost field carries no in-state-only residency axis and is never withheld: " +
+            "college_id=[${collegeId.value}] field=[${figure.field.wireName}] " +
+            "field_axis=[${figure.field.residency}] reason=[${figure.reason.value}] " +
+            "reason_axis=[${figure.reason.axis}]",
+        )
+      }
+    }
+
+  /**
+   * The net price with its number held back and the basis the family's own
+   * answer selected kept (RFC 157 D-A) -- the net-price vocabulary one level
+   * down, so the `when` above stays a field router.
+   *
+   * A figure already held back cannot be held back a SECOND time: the second
+   * reason would vanish here without a word, and the withheld list naming one
+   * field twice is a defect in the list, not a fact about the family.
+   */
+  private fun netPriceWithheldFor(reason: WithheldReason): NetPrice =
+    when (netPrice) {
+      is NetPrice.Reported -> {
+        NetPrice.Withheld(netPrice.publishedBasis, reason)
+      }
+
+      is NetPrice.Withheld -> {
+        error(
+          "a net price is already withheld and cannot be withheld twice: " +
+            "college_id=[${collegeId.value}] held=[${netPrice.reason.value}] second=[${reason.value}]",
+        )
+      }
+    }
+}
 
 /** The money-profile field statuses echoed with every result, so the coach knows the history. */
 data class MoneyProfileStatuses(
@@ -628,7 +932,7 @@ class CollegeCostService(
     merit: CollegeMeritAid?,
     offersOnCampusHousing: Boolean?,
   ): CollegeCost {
-    val netPrice = netPriceOf(college, moneyProfile)
+    val published = netPriceOf(college, moneyProfile)
     val control = controlOf(college, moneyProfile)
     warnOnHousingContradiction(college, offersOnCampusHousing)
     val breakdown = CostBreakdown.of(college, tuitionLineOf(college, control), offersOnCampusHousing)
@@ -639,16 +943,27 @@ class CollegeCostService(
       state = college.state,
       control = control,
       listStatus = entry.status,
-      stickerCostOfAttendancePerYearUsd = college.costOfAttendancePerYearUsd,
+      // Every figure here is the one the SCHOOL published. RFC 157 D-A -- which
+      // of them this family may be shown -- is applied by [CollegeCost] itself,
+      // from the same `control` this call hands it, so this assembly reads
+      // exactly as it did before that rule existed and no rule is smeared across
+      // three argument positions.
+      publishedStickerCostOfAttendancePerYearUsd = college.costOfAttendancePerYearUsd,
       tuitionAndFeesInStatePerYearUsd = college.tuitionAndFeesInStatePerYearUsd,
       tuitionAndFeesOutOfStatePerYearUsd = college.tuitionAndFeesOutOfStatePerYearUsd,
-      netPrice = netPrice,
+      publishedNetPrice = published,
       medianDebtAtCompletionUsd = college.medianDebtAtCompletionUsd,
       medianEarnings10yAfterEntryUsd = college.medianEarnings10yAfterEntryUsd,
       reportsBandPricing = reportsBandPricing(college),
       reportsPublishedTuition = reportsPublishedTuition(college),
-      notReported = notReportedOf(college, netPrice, offersOnCampusHousing),
-      reported = reportedOf(college, netPrice),
+      // Both lists are statements about what this SCHOOL reports, and that does
+      // not change with who is reading. [CollegeCost] subtracts the withheld
+      // fields from both -- a withheld field belongs to neither, exactly as the
+      // on-campus components suppressed at a no-dorms school belong to neither
+      // (RFC 149 D-B) -- and reads the published set to decide what can be
+      // withheld at all.
+      publishedNotReported = notReportedOf(college, published, offersOnCampusHousing),
+      publishedReported = reportedOf(college, published),
       breakdown = breakdown,
       offersOnCampusHousing = offersOnCampusHousing,
       // A row with no merit measure under it is a citation with no facts, which
@@ -804,7 +1119,7 @@ class CollegeCostService(
   private fun netPriceOf(
     college: College,
     moneyProfile: MoneyProfileStatuses,
-  ): NetPrice {
+  ): NetPrice.Reported {
     val band = moneyProfile.incomeBand.takeIf { moneyProfile.incomeBandStatus == AnswerStatus.ANSWERED }
     return if (band != null) {
       NetPrice.BandSpecific(band, band.netPriceFor(college))
@@ -976,6 +1291,72 @@ fun tuitionLineOf(
   val field = applicableTuitionFor(control) ?: return null
   return field.amountOn(college)?.let { CostLine(field, it) }
 }
+
+/**
+ * Whether the two BLENDED figures -- the published price and the price after a
+ * financial aid offer -- describe this family at this school (RFC 157 D-A/D-B).
+ *
+ * Beside [applicableTuitionFor] and not inside a renderer, because it is the
+ * same decision about the same student and the same school: one rule decides
+ * which tuition column fills an arrangement and whether the in-state-only
+ * figures are this family's, so the two answers cannot drift apart.
+ *
+ * ONE expression, not a second `when`: the rule itself lives on
+ * [ComparedTuition.blendedFiguresApply], the vocabulary [CollegeBlendedFigureBasis]
+ * speaks, reached here through [comparedTuitionOf] -- the control -> vocabulary
+ * map that already exists. The number withheld and the sentence that explains it
+ * are therefore the same decision, and a control added to the vocabulary fails
+ * to compile in exactly one place.
+ *
+ * THREE outcomes, and [BlendedFigureApplicability.BASIS_STATED] is not
+ * [BlendedFigureApplicability.WITHHELD]: an open residency question withholds
+ * NOTHING (D-B). Both figures print with their basis stated, because no answer
+ * of ours is gated on a completed profile.
+ */
+internal fun blendedFigureApplicabilityOf(control: CollegeControl): BlendedFigureApplicability =
+  comparedTuitionOf(control).blendedFiguresApply
+
+/**
+ * The figures this answer holds back from THIS family, and why (RFC 157 D-A).
+ *
+ * Empty except at a public school in a state the family does not live in, and
+ * even there only for the figures this school actually REPORTS ([reported], as
+ * [reportedOf] read them from the row BEFORE any withholding): a figure the row
+ * does not carry is the school's own silence, and calling it withheld would tell
+ * a family "this school publishes this figure" about a figure that does not
+ * exist -- and would delete that silence from [CollegeCost.notReported], where
+ * it belongs.
+ *
+ * The fields come from [CostField.IN_STATE_ONLY_FIELDS], derived from the
+ * residency axis itself and already in declaration order, so a third
+ * in-state-only figure added to the vocabulary is withheld by this same rule
+ * rather than needing to be remembered here.
+ */
+internal fun withheldFiguresFor(
+  control: CollegeControl,
+  reported: Set<CostField>,
+): List<WithheldFigure> =
+  when (blendedFigureApplicabilityOf(control)) {
+    BlendedFigureApplicability.WITHHELD -> {
+      CostField.IN_STATE_ONLY_FIELDS.filter { it in reported }.map { field ->
+        // A null here is a reason MISSING from the vocabulary, and dropping the
+        // item would un-withhold the figure: it would print this school's
+        // in-state number to a family the in-state basis does not describe, the
+        // exact defect RFC 157 exists against. It is refused, as the sibling
+        // impossible branch in [ShownFigures.deleteFigure] refuses its own.
+        checkNotNull(WithheldFigure.of(field)) {
+          "no withholding reason names this field's residency basis, so its figure would be shown to a " +
+            "family it does not describe: field=[${field.wireName}] field_axis=[${field.residency}]"
+        }
+      }
+    }
+
+    // Shown: the basis describes this family, or the residency question is open
+    // and an open question hides nothing (D-B).
+    BlendedFigureApplicability.APPLIES, BlendedFigureApplicability.BASIS_STATED -> {
+      emptyList()
+    }
+  }
 
 /**
  * WHICH published tuition figure applies, decided from the control alone --

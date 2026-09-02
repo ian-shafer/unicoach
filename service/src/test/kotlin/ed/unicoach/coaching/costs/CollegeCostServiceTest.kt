@@ -2115,4 +2115,388 @@ class CollegeCostServiceTest {
       "a declined plan is reachable as itself, never as an absent value",
     )
   }
+
+  // ---------------------------------------------------------------------------
+  // RFC 157: the residency basis of the two blended figures
+  // ---------------------------------------------------------------------------
+
+  /**
+   * UC San Diego (IPEDS 110680) as the Scorecard actually publishes it -- every
+   * figure below is the live value recorded in RFC 157's evidence.
+   *
+   * A REAL row rather than a round-numbered one, because the whole defect is
+   * arithmetic: `COSTT4_A` = 38,701 sits inside the in-state span and BELOW the
+   * out-of-state minimum of 59,923, and a weighted average cannot fall below its
+   * own smallest input. Fixture numbers chosen for readability would have proved
+   * nothing about it.
+   */
+  private fun seedUcSanDiego(name: String = "UC San Diego"): CollegeId =
+    seedCollege(
+      name,
+      state = UCSD_STATE,
+      control = 1,
+      costOfAttendancePerYearUsd = UCSD_COSTT4_A,
+      netPricePerYearUsd = UCSD_NPT4_PUB,
+      netPricePerYearIncomeQ1Usd = UcsdScorecardRow.NPT41_PUB,
+      netPricePerYearIncomeQ2Usd = UcsdScorecardRow.NPT42_PUB,
+      netPricePerYearIncomeQ3Usd = UcsdScorecardRow.NPT43_PUB,
+      netPricePerYearIncomeQ4Usd = UcsdScorecardRow.NPT44_PUB,
+      netPricePerYearIncomeQ5Usd = UCSD_NPT45_PUB,
+      tuitionAndFeesInStatePerYearUsd = UcsdScorecardRow.TUITIONFEE_IN,
+      tuitionAndFeesOutOfStatePerYearUsd = UcsdScorecardRow.TUITIONFEE_OUT,
+      housingAndFoodOnCampusPerYearUsd = UcsdScorecardRow.ROOMBOARD_ON_CAMPUS,
+      housingAndFoodOffCampusPerYearUsd = UcsdScorecardRow.ROOMBOARD_OFF_CAMPUS,
+      booksAndSuppliesPerYearUsd = UcsdScorecardRow.BOOKSUPPLY,
+      otherExpensesOnCampusPerYearUsd = UcsdScorecardRow.OTHEREXPENSE_ON_CAMPUS,
+      otherExpensesOffCampusPerYearUsd = UcsdScorecardRow.OTHEREXPENSE_OFF_CAMPUS,
+      otherExpensesWithFamilyPerYearUsd = UcsdScorecardRow.OTHEREXPENSE_WITH_FAMILY,
+    )
+
+  /** One arrangement's settled total, or null -- read off the breakdown the payload itself renders. */
+  private fun totalOf(
+    cost: CollegeCost,
+    arrangement: LivingArrangement,
+  ): Int? =
+    cost.breakdown
+      ?.arrangements
+      ?.firstOrNull { it.arrangement == arrangement }
+      ?.totalPerYearUsd
+
+  @Test
+  fun `a WA family at UC San Diego gets the out-of-state totals and NEITHER blended figure`() {
+    // The report Ian read: correct 77K/77K/60K totals with a $39K "published
+    // price" two rows below them, and nothing saying the two were on different
+    // residency bases (RFC 157 D-A).
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    answerResidency(student, "WA")
+
+    val cost = profileOf(student).colleges.single()
+
+    assertEquals(77102, totalOf(cost, LivingArrangement.ON_CAMPUS), "out-of-state tuition plus the parts")
+    assertEquals(77659, totalOf(cost, LivingArrangement.OFF_CAMPUS))
+    assertEquals(59923, totalOf(cost, LivingArrangement.WITH_FAMILY))
+
+    assertNull(
+      cost.stickerCostOfAttendancePerYearUsd,
+      "COSTT4_A is an in-state figure, so a WA family is never shown it",
+    )
+    assertNull(cost.netPrice.amount, "NPT4_PUB is in-state too, and it is the more dangerous half")
+    assertIs<NetPrice.Withheld>(cost.netPrice, "the blank says WHY, so no reader can mistake it for silence")
+    assertEquals(BlendedFigureApplicability.WITHHELD, cost.blendedFiguresApply)
+    assertEquals(
+      listOf(
+        CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD,
+        CostField.NET_PRICE,
+      ),
+      cost.withheld.map { it.field },
+      "both in-state-only figures are withheld, in vocabulary order",
+    )
+    assertTrue(
+      cost.withheld.all { it.reason == WithheldReason.IN_STATE_ONLY_FIGURE },
+      "one reason, and it is ours rather than the school's silence",
+    )
+  }
+
+  @Test
+  fun `a withheld figure is in NEITHER the reported nor the not-reported list`() {
+    // The school published both numbers, so calling them unreported would blame
+    // its price list for our applicability rule -- the RFC 149 D-B split, reused.
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    answerResidency(student, "WA")
+
+    val cost = profileOf(student).colleges.single()
+    val withheld = cost.withheld.map { it.field }.toSet()
+
+    assertTrue(
+      withheld.none { it in cost.reported },
+      "a withheld figure is not shown, so it is not among the figures this answer reports",
+    )
+    assertTrue(
+      withheld.none { it in cost.notReported },
+      "and it is not this school's silence either: it published both numbers",
+    )
+  }
+
+  @Test
+  fun `an in-state family at the same school is shown both blended figures`() {
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    answerResidency(student, UCSD_STATE)
+
+    val cost = profileOf(student).colleges.single()
+
+    assertEquals(42902, totalOf(cost, LivingArrangement.ON_CAMPUS), "in-state tuition plus the parts")
+    assertEquals(43459, totalOf(cost, LivingArrangement.OFF_CAMPUS))
+    assertEquals(25723, totalOf(cost, LivingArrangement.WITH_FAMILY))
+    assertEquals(UCSD_COSTT4_A, cost.stickerCostOfAttendancePerYearUsd)
+    assertEquals(UCSD_NPT4_PUB, cost.netPrice.amount)
+    assertEquals(BlendedFigureApplicability.APPLIES, cost.blendedFiguresApply)
+    assertEquals(emptyList(), cost.withheld, "an in-state family is the family these figures describe")
+  }
+
+  @Test
+  fun `an unanswered residency withholds NOTHING and shows both figures`() {
+    // RFC 157 D-B. An unanswered question is not licence to hide the only price
+    // we hold, and no answer of ours is gated on a completed profile (0001 D11).
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+
+    val cost = profileOf(student).colleges.single()
+
+    assertEquals(
+      BlendedFigureApplicability.BASIS_STATED,
+      cost.blendedFiguresApply,
+      "an open question is not a withholding",
+    )
+    assertEquals(emptyList(), cost.withheld)
+    assertEquals(UCSD_COSTT4_A, cost.stickerCostOfAttendancePerYearUsd)
+    assertEquals(UCSD_NPT4_PUB, cost.netPrice.amount)
+  }
+
+  @Test
+  fun `a declined residency also withholds nothing`() {
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    declineResidency(student)
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(BlendedFigureApplicability.BASIS_STATED, cost.blendedFiguresApply)
+    assertEquals(emptyList(), cost.withheld, "a closed topic must not cost the family the figures we hold")
+    assertEquals(UCSD_COSTT4_A, cost.stickerCostOfAttendancePerYearUsd)
+  }
+
+  @Test
+  fun `a private college is unchanged for an out-of-state family`() {
+    // In-state and out-of-state do not exist at a private school (RFC 135), so
+    // there is no residency basis for these figures to fail to match.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Private U", state = "CA", control = 2))
+    answerResidency(student, "WA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(BlendedFigureApplicability.APPLIES, cost.blendedFiguresApply)
+    assertEquals(emptyList(), cost.withheld)
+    assertEquals(40000, cost.stickerCostOfAttendancePerYearUsd)
+    assertEquals(20000, cost.netPrice.amount)
+  }
+
+  @Test
+  fun `a public school in another state that publishes NEITHER figure withholds nothing`() {
+    // The school's own silence must stay the school's (RFC 157 D-A). Withholding
+    // a figure that does not exist would tell a family "this school publishes
+    // this figure" about a figure nobody published, and would delete the real
+    // silence from `notReported`.
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "Silent Public U",
+        state = UCSD_STATE,
+        control = 1,
+        costOfAttendancePerYearUsd = null,
+        netPricePerYearUsd = null,
+        netPricePerYearIncomeQ1Usd = null,
+        netPricePerYearIncomeQ2Usd = null,
+        netPricePerYearIncomeQ3Usd = null,
+        netPricePerYearIncomeQ4Usd = null,
+        netPricePerYearIncomeQ5Usd = null,
+      ),
+    )
+    answerResidency(student, "WA")
+
+    val cost = profileOf(student).colleges.single()
+
+    assertEquals(emptyList(), cost.withheld, "there is nothing to hold back: the school published neither figure")
+    assertTrue(
+      CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD in cost.notReported &&
+        CostField.NET_PRICE in cost.notReported,
+      "a school that published nothing must still read as not reported by this school: " +
+        "not_reported=[${cost.notReported}]",
+    )
+    assertIs<NetPrice.OverallAverage>(cost.netPrice, "a silence is not a withholding")
+    assertEquals(
+      BlendedFigureApplicability.WITHHELD,
+      cost.blendedFiguresApply,
+      "the basis still does not describe this family; there is simply no figure to hold back",
+    )
+  }
+
+  @Test
+  fun `the withheld band price keeps the band the family answered, and only loses the number`() {
+    // The family answered the income question; that fact is theirs whether or
+    // not this school's figure is one we can show them.
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    answerResidency(student, "WA")
+    answerBand(student, IncomeBand.OVER_110K)
+
+    val netPrice = assertIs<NetPrice.Withheld>(profileOf(student).colleges.single().netPrice)
+    val basis = assertIs<NetPriceBasis.YourIncomeBand>(netPrice.publishedBasis)
+    assertEquals(IncomeBand.OVER_110K, basis.band, "the answered band survives the withholding")
+    assertNull(netPrice.amount, "the top band is an in-state figure and is not this family's")
+    assertEquals(WithheldReason.IN_STATE_ONLY_FIGURE, netPrice.reason, "the reason travels with the blank")
+  }
+
+  @Test
+  fun `the same top-band family in California sees that band's price`() {
+    // The other half of the case above: the withholding is about residency, and
+    // nothing else about the band selection changed.
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    answerResidency(student, UCSD_STATE)
+    answerBand(student, IncomeBand.OVER_110K)
+
+    val netPrice = assertIs<NetPrice.BandSpecific>(profileOf(student).colleges.single().netPrice)
+    assertEquals(UCSD_NPT45_PUB, netPrice.amount)
+  }
+
+  @Test
+  fun `the comparison basis carries SIX facts, and the sixth names the school it withholds at`() {
+    // RFC 157 D-C: the object claimed for five facts that residency was one of
+    // them, and for two of its columns it did not keep that promise.
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    addToCollegeList(student, seedCollege("Home State U", state = "WA", control = 1))
+    answerResidency(student, "WA")
+
+    val basis = assertNotNull(profileOf(student).comparisonBasis)
+    val blended = basis.blendedFigures
+
+    assertEquals(BlendedFigureScope.WITHHELD_AT_SOME_SCHOOLS, blended.scope)
+    assertTrue(
+      blended.statement.contains("UC San Diego") && !blended.statement.contains("Home State U"),
+      "the sentence names the schools these figures do NOT describe: [${blended.statement}]",
+    )
+    assertEquals(
+      listOf(BlendedFigureApplicability.APPLIES, BlendedFigureApplicability.WITHHELD),
+      blended.byCollege.sortedBy { it.name }.map { it.applies },
+      "Home State U is theirs; UC San Diego is not",
+    )
+    assertEquals(
+      basis.statements[basis.statements.indexOf(basis.residency.statement) + 1],
+      blended.statement,
+      "the sixth fact is said immediately after the residency line that makes it dangerous",
+    )
+  }
+
+  @Test
+  fun `an in-state family at every public school gets the in-state scope`() {
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    addToCollegeList(student, seedCollege("Also California U", state = UCSD_STATE, control = 1))
+    answerResidency(student, UCSD_STATE)
+
+    val blended = assertNotNull(profileOf(student).comparisonBasis).blendedFigures
+    assertEquals(BlendedFigureScope.IN_STATE_EVERYWHERE, blended.scope)
+    assertTrue(
+      blended.byCollege.all { it.applies == BlendedFigureApplicability.APPLIES },
+      "both schools' figures are this family's",
+    )
+  }
+
+  @Test
+  fun `an all-private comparison says these figures are on no residency basis`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Private One U", control = 2))
+    addToCollegeList(student, seedCollege("Private Two U", control = 3))
+    answerResidency(student, "WA")
+
+    val blended = assertNotNull(profileOf(student).comparisonBasis).blendedFigures
+    assertEquals(BlendedFigureScope.NO_RESIDENCY_BASIS_HERE, blended.scope)
+    assertTrue(
+      blended.statement.contains("not on any residency basis"),
+      "an all-private table must not be given a caveat about public tuition: [${blended.statement}]",
+    )
+  }
+
+  @Test
+  fun `a public school with the residency unanswered states the in-state basis rather than withholding`() {
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    addToCollegeList(student, seedCollege("Second Public U", control = 1))
+
+    val blended = assertNotNull(profileOf(student).comparisonBasis).blendedFigures
+    assertEquals(BlendedFigureScope.RESIDENCY_NOT_ON_FILE, blended.scope)
+    assertTrue(
+      blended.statement.contains("students paying in-state tuition") &&
+        blended.statement.contains("rather than withheld"),
+      "D-B: the basis is stated and nothing is hidden: [${blended.statement}]",
+    )
+  }
+
+  @Test
+  fun `the single-school basis states the blended-figure residency too`() {
+    // A one-school answer builds no comparison (RFC 151 D-B), and the parent
+    // reading it is owed the same sixth fact.
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    answerResidency(student, "WA")
+
+    val profile = profileOf(student)
+    val cost = profile.colleges.single()
+    val residency =
+      ResidencyBasis
+        .of(profile.colleges, profile.moneyProfile)
+        .byCollege
+        .single()
+    val basis = SingleSchoolBasis.of(cost, residency)
+
+    assertEquals(BlendedFigureApplicability.WITHHELD, basis.blendedFigures.applies)
+    assertTrue(
+      basis.blendedFigures.statement in basis.statements,
+      "the statement list is what every renderer prints, so a fact outside it reaches nobody",
+    )
+    assertTrue(
+      basis.blendedFigures.statement.contains("out-of-state tuition and fees are the ones that apply"),
+      "a blank with no destination is a number taken away: [${basis.blendedFigures.statement}]",
+    )
+  }
+
+  @Test
+  fun `no in-state-only figure survives for a family the in-state basis does not describe`() {
+    // The guard RFC 157 asks for, stated over the vocabulary rather than over
+    // one fixture: whatever [CostField.IN_STATE_ONLY_FIELDS] comes to hold, the
+    // read must carry no amount for any of it at a non-matching public school.
+    val student = createStudent()
+    addToCollegeList(student, seedUcSanDiego())
+    answerResidency(student, "WA")
+
+    val cost = profileOf(student).colleges.single()
+    val amounts =
+      mapOf(
+        CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD to cost.stickerCostOfAttendancePerYearUsd,
+        CostField.NET_PRICE to cost.netPrice.amount,
+      )
+
+    assertEquals(
+      CostField.IN_STATE_ONLY_FIELDS.toSet(),
+      amounts.keys,
+      "every in-state-only field must be checked here, or a third one ships unguarded",
+    )
+    assertTrue(
+      amounts.values.all { it == null },
+      "an in-state-only figure reached a family the in-state basis does not describe: amounts=[$amounts]",
+    )
+  }
+
+  companion object {
+    // The row itself lives in [UcsdScorecardRow], the one fixture home this
+    // module and :public-web both read, so a corrected Scorecard figure is one
+    // edit. The three names below are the figures these cases ASSERT on, kept
+    // short at the assertion sites that read them.
+
+    /** UC San Diego's own state, so "in-state" in these cases is a fact rather than a coincidence of literals. */
+    private const val UCSD_STATE = UcsdScorecardRow.STATE
+
+    /** `COSTT4_A`: below the out-of-state minimum of 59,923, which is what makes the in-state basis provable. */
+    private const val UCSD_COSTT4_A = UcsdScorecardRow.COSTT4_A
+
+    /** `NPT4_PUB`: the overall average net price, in-state only. */
+    private const val UCSD_NPT4_PUB = UcsdScorecardRow.NPT4_PUB
+
+    /** `NPT45_PUB`: the top band, and the figure a WA family read as theirs against a real ~77,102. */
+    private const val UCSD_NPT45_PUB = UcsdScorecardRow.NPT45_PUB
+  }
 }

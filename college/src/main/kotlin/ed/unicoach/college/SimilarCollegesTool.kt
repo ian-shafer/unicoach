@@ -1062,6 +1062,6 @@ class SimilarCollegesTool(
         "active four-year institutions; the anchor never appears among its own peers. Cite " +
         "`total_candidates` when saying how many schools were considered, and say " +
         "`excluded_unknown` in plain words -- those schools could not be judged on that axis, which " +
-        "is not the same as failing it."
+        "is not the same as failing it. " + NET_PRICE_BASIS_NOTE
   }
 }

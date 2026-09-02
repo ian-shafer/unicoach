@@ -14,6 +14,26 @@ import kotlinx.serialization.json.putJsonObject
 import java.util.Locale
 
 /**
+ * The residency basis of [matchObject]'s `net_price_per_year_usd` and of every
+ * amount in `net_price_by_income_band`, said in the tool DESCRIPTION that
+ * carries the row (RFC 157).
+ *
+ * The College Scorecard builds both for students paying the in-state rate at a
+ * public school and publishes no out-of-state counterpart, and this read goes
+ * round `CollegeCostService` -- and so round its withholding. Said ONCE here,
+ * because two tools that return "a college" must describe it the same way (RFC
+ * 153 D70). Labelling only: the search index does not carry the family's
+ * residency, so withholding belongs with the index (RFC 157 D-G).
+ *
+ * One SENTENCE, with no glue on either end: a call site joins it to the copy
+ * above it with a visible separator, rather than every call site having to
+ * remember that the value already begins with a space.
+ */
+internal const val NET_PRICE_BASIS_NOTE =
+  "At a public school net_price_per_year_usd and every net_price_by_income_band amount are figures for " +
+    "students paying in-state tuition: never offer one to a family from another state as their price."
+
+/**
  * The ONE rendering of a [CollegeMatch] as a tool result row (RFC 153 D70).
  *
  * It was `CollegeSearchTool`'s private method until `similar_colleges` needed

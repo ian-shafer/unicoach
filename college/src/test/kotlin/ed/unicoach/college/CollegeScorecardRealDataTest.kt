@@ -2,6 +2,7 @@ package ed.unicoach.college
 
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.InstitutionControl
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -203,9 +204,97 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       assertEquals(first.programsLoaded, withSession { count(it, "college_programs") })
     }
 
+  @Test
+  fun `COSTT4_A sits inside the IN-STATE arrangement span at every public row we hold (RFC 157)`() =
+    runBlocking {
+      // The falsifier for RFC 157, run over the real rows this repo actually
+      // commits rather than over numbers a fixture chose.
+      //
+      // COSTT4_A is a weighted average of the three living-arrangement totals,
+      // and the Scorecard builds it for students paying the IN-STATE rate. A
+      // weighted average cannot fall outside the span of its own inputs, so at
+      // every CONTROL=1 row that publishes all seven parts, COSTT4_A must lie
+      // between the smallest and the largest IN-STATE total. One row outside
+      // that span would break the arithmetic argument the whole RFC rests on.
+      //
+      // Only rows with all seven parts qualify: a row missing an arrangement
+      // (Ventura College publishes no on-campus figures) has no span to test.
+      loader.load(institutionCsv, fieldsCsv)
+
+      val unitIds = withSession { CollegesDao.currentVersionsByIpedsUnitId(it).getOrThrow() }.keys
+      assertTrue(unitIds.isNotEmpty(), "the real fixture must have loaded some rows for this scan to mean anything")
+
+      val checked = mutableListOf<String>()
+      unitIds.forEach { unitId ->
+        val college = withSession { CollegesDao.findByIpedsUnitId(it, unitId).getOrThrow() }
+        assertNotNull(college)
+        val costt4a = college.costOfAttendancePerYearUsd
+        val inStateTuition = college.tuitionAndFeesInStatePerYearUsd
+        val books = college.booksAndSuppliesPerYearUsd
+        val housingOn = college.housingAndFoodOnCampusPerYearUsd
+        val housingOff = college.housingAndFoodOffCampusPerYearUsd
+        val otherOn = college.otherExpensesOnCampusPerYearUsd
+        val otherOff = college.otherExpensesOffCampusPerYearUsd
+        val otherFamily = college.otherExpensesWithFamilyPerYearUsd
+        if (college.control != PUBLIC_CONTROL_CODE ||
+          costt4a == null ||
+          inStateTuition == null ||
+          books == null ||
+          housingOn == null ||
+          housingOff == null ||
+          otherOn == null ||
+          otherOff == null ||
+          otherFamily == null
+        ) {
+          return@forEach
+        }
+        val totals =
+          listOf(
+            inStateTuition + books + housingOn + otherOn,
+            inStateTuition + books + housingOff + otherOff,
+            inStateTuition + books + otherFamily,
+          )
+        checked.add("name=[${college.name}] COSTT4_A=[$costt4a] in_state_totals=[$totals]")
+        assertTrue(
+          costt4a >= totals.min() && costt4a <= totals.max(),
+          "COSTT4_A must lie inside the in-state span, or it is not built on the in-state rate: " +
+            "name=[${college.name}] COSTT4_A=[$costt4a] totals=[$totals]",
+        )
+      }
+
+      // TWO qualifying public rows, not one: Auburn University at Montgomery
+      // and UC San Diego (110680), the institution RFC 157 argues from. Both are
+      // verbatim Scorecard rows, and the scan widens by itself the day another
+      // real row is committed. A one-row falsifier is an anecdote.
+      assertTrue(
+        checked.size >= MIN_QUALIFYING_PUBLIC_ROWS && checked.any { it.startsWith("name=[$UCSD_NAME]") },
+        "the scan must test at least the two qualifying public rows this repo commits, UC San Diego among " +
+          "them, or it is an anecdote: checked=[$checked] loaded_units=[$unitIds]",
+      )
+    }
+
   // ---------------------------------------------------------------------------
   // Query helpers (no DAO program-read path exists; read the table directly)
   // ---------------------------------------------------------------------------
+
+  private companion object {
+    /**
+     * Scorecard `CONTROL` for a public institution -- the only control for which
+     * the in-state basis is a distinction at all -- read from the vocabulary's
+     * one home ([InstitutionControl]) and never restated here.
+     */
+    val PUBLIC_CONTROL_CODE = InstitutionControl.PUBLIC.code
+
+    /**
+     * The qualifying public rows this repo commits today: Auburn University at
+     * Montgomery and UC San Diego. A FLOOR, not an equality -- the scan widens
+     * by itself the day another real public row lands.
+     */
+    const val MIN_QUALIFYING_PUBLIC_ROWS = 2
+
+    /** The institution RFC 157 argues from, which must be one of the rows the scan reaches. */
+    const val UCSD_NAME = "University of California-San Diego"
+  }
 
   private fun programCipCodes(
     session: SqlSession,

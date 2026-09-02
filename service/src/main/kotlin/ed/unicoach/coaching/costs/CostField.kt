@@ -21,24 +21,53 @@ import ed.unicoach.db.models.LivingArrangement
  * (AY2021-22) -- and a figure on neither cohort basis gets no year rather than a
  * borrowed one. An undated figure is therefore also unsummable: it cannot be
  * shown to share a reporting year with anything.
+ *
+ * Each member ALSO carries the [ResidencyAxis] of the figure behind it (RFC
+ * 157 D-D), the third axis and the one that was unmodelled until a WA family
+ * read a California family's published price at UC San Diego. It is NULL for the
+ * figures that have no residency axis -- the six published components, median
+ * debt, median earnings -- and a null means "residency does not apply to this
+ * figure", never "we did not check". A figure added to this vocabulary now has
+ * to say which residency it is on before it compiles, rather than borrowing the
+ * residency of whatever the page printed above it.
  */
 enum class CostField(
   val wireName: String,
   val vintage: ScorecardVintage?,
+  val residency: ResidencyAxis?,
 ) {
-  // COSTT4_A: a BLENDED average across living arrangements and a year older
-  // than the components -- so it keeps its own key and its own label, and
-  // nothing compares it to, or substitutes it for, an arrangement total
-  // (RFC 149 D-F).
-  STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD("sticker_cost_of_attendance_per_year_usd", ScorecardVintage.BLENDED_AVERAGE),
-  TUITION_AND_FEES_IN_STATE_PER_YEAR_USD("tuition_and_fees_in_state_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
-  TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD("tuition_and_fees_out_of_state_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
+  // COSTT4_A: a BLENDED average across living arrangements, a year older than
+  // the components, and -- at a public school -- built for students paying the
+  // IN-STATE tuition rate with no out-of-state counterpart published anywhere
+  // (RFC 157). So it keeps its own key and its own label, nothing compares it
+  // to, or substitutes it for, an arrangement total (RFC 149 D-F), and nothing
+  // shows it to a family the in-state basis does not describe (RFC 157 D-A).
+  STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD(
+    "sticker_cost_of_attendance_per_year_usd",
+    ScorecardVintage.BLENDED_AVERAGE,
+    ResidencyAxis.IN_STATE_ONLY,
+  ),
+  TUITION_AND_FEES_IN_STATE_PER_YEAR_USD(
+    "tuition_and_fees_in_state_per_year_usd",
+    ScorecardVintage.PUBLISHED_PRICE,
+    ResidencyAxis.IN_STATE,
+  ),
+  TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD(
+    "tuition_and_fees_out_of_state_per_year_usd",
+    ScorecardVintage.PUBLISHED_PRICE,
+    ResidencyAxis.OUT_OF_STATE,
+  ),
 
   // The one entry that is NOT a bare dollar figure: it keys an OBJECT
   // (amount_usd + basis + optional band), and a container carries no unit --
   // the same rule that leaves `net_price_by_income_band` unsuffixed. The
   // scalar inside it says its own unit.
-  NET_PRICE("net_price", ScorecardVintage.BLENDED_AVERAGE),
+  //
+  // IN_STATE_ONLY for the same reason as COSTT4_A above: `NPT4_PUB` and the
+  // NPT41..45 band series are limited to undergraduates paying in-state tuition
+  // (RFC 157). This is the more dangerous half of that defect -- the arrangement
+  // totals beside it are at least residency-correct, and this one is not.
+  NET_PRICE("net_price", ScorecardVintage.BLENDED_AVERAGE, ResidencyAxis.IN_STATE_ONLY),
 
   // UNDATED, and deliberately so (RFC 149 D-E). Neither figure is on either
   // cohort basis this RFC dates: the debt figure is a completers' cohort and the
@@ -46,20 +75,37 @@ enum class CostField(
   // because COSTT4_A is would be exactly the false precision the vintage work
   // exists to remove, so they carry no vintage and the tool prints no academic
   // year beside them.
-  MEDIAN_DEBT_AT_COMPLETION_USD("median_debt_at_completion_usd", null),
-  MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD("median_earnings_10y_after_entry_usd", null),
+  //
+  // They carry no residency either, and for a reason of the same kind: neither
+  // is a price, so there is no tuition rate for one to have been built on.
+  MEDIAN_DEBT_AT_COMPLETION_USD("median_debt_at_completion_usd", null, null),
+  MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD("median_earnings_10y_after_entry_usd", null, null),
 
   // The six published cost components (RFC 149). The wire names ARE the column
   // names, so the JSON, `data_availability` and the schema speak one
   // vocabulary. Six, not seven: the Scorecard publishes no with-family housing
   // and food figure, which is why that arrangement renders no housing line
   // rather than a $0 one.
-  HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD("housing_and_food_on_campus_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
-  HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD("housing_and_food_off_campus_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
-  BOOKS_AND_SUPPLIES_PER_YEAR_USD("books_and_supplies_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
-  OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD("other_expenses_on_campus_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
-  OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD("other_expenses_off_campus_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
-  OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD("other_expenses_with_family_per_year_usd", ScorecardVintage.PUBLISHED_PRICE),
+  //
+  // All six carry NO residency: the Scorecard publishes one books-and-supplies,
+  // one housing-and-food and one other-expenses allowance per way of living, the
+  // same figure whichever state the family lives in. That is why an out-of-state
+  // arrangement total is obtainable at all -- out-of-state tuition and fees plus
+  // these residency-free parts (RFC 157).
+  HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD("housing_and_food_on_campus_per_year_usd", ScorecardVintage.PUBLISHED_PRICE, null),
+  HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD(
+    "housing_and_food_off_campus_per_year_usd",
+    ScorecardVintage.PUBLISHED_PRICE,
+    null,
+  ),
+  BOOKS_AND_SUPPLIES_PER_YEAR_USD("books_and_supplies_per_year_usd", ScorecardVintage.PUBLISHED_PRICE, null),
+  OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD("other_expenses_on_campus_per_year_usd", ScorecardVintage.PUBLISHED_PRICE, null),
+  OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD("other_expenses_off_campus_per_year_usd", ScorecardVintage.PUBLISHED_PRICE, null),
+  OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD(
+    "other_expenses_with_family_per_year_usd",
+    ScorecardVintage.PUBLISHED_PRICE,
+    null,
+  ),
   ;
 
   companion object {
@@ -78,6 +124,38 @@ enum class CostField(
         TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
         TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
       )
+
+    /**
+     * The BLENDED figures that exist only on the in-state basis (RFC 157): the
+     * published price and the net price. Exactly the two a family the in-state
+     * basis does not describe must not be shown.
+     *
+     * DERIVED from [residency] rather than listed again, for the reason
+     * [COMPONENTS] is derived from the arrangements: a third in-state-only
+     * figure added to the vocabulary must be withheld from a non-matching family
+     * by the same rule, and a hand-written list would simply never mention it.
+     *
+     * A computed property rather than a stored one: it reads [entries], and this
+     * companion is initialised as part of [CostField]'s own class
+     * initialisation, so evaluating it there could re-enter a half-built enum --
+     * the hazard [COMPONENTS] documents and defers past.
+     *
+     * A LIST, in declaration order, and not a `Set`: the order is already the
+     * vocabulary's own here, and returning a set threw it away only for the
+     * caller to rebuild it with a second [listInDeclarationOrder] pass.
+     */
+    val IN_STATE_ONLY_FIELDS: List<CostField>
+      get() = entries.filter { it.residency == ResidencyAxis.IN_STATE_ONLY }
+
+    /**
+     * [fields] in enum DECLARATION order, so any list this vocabulary ships is a
+     * fact about the vocabulary rather than about the set, or the concatenation,
+     * it was collected in.
+     *
+     * One home for the idiom, because it was written at three call sites and the
+     * next one would have been a fourth.
+     */
+    fun listInDeclarationOrder(fields: Collection<CostField>): List<CostField> = entries.filter { it in fields }
 
     /**
      * The published components, in enum declaration order.
