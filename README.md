@@ -417,9 +417,20 @@ To keep an existing ingest instead of re-running it, dump the old database once
 and restore it into each worktree:
 
 ```sh
-nix develop -c bin/db-dump -d unicoach -o ~/opt/unicoach/var/dumps/dev.dump   # once, from any checkout
-nix develop -c bin/db-restore ~/opt/unicoach/var/dumps/dev.dump               # in each worktree
+nix develop -c bin/db-dump -d unicoach -D   # once, from any checkout
+nix develop -c bin/db-restore               # in each worktree
 ```
+
+`POSTGRES_DUMP_DIR` is a `.env.dev` key, which owns the value — a shared
+absolute path, deliberately outside any worktree, so one checkout can dump and
+another restore. `bin/db-dump -D` resolves `$POSTGRES_DUMP_DIR/dev.dump`
+**inside the script** and creates the directory if needed; that is the point of
+the option, because a dotenv key is exported into a script's own process and the
+shell typing the command never sourced `.env.dev`, so
+`-o "$POSTGRES_DUMP_DIR/dev.dump"` would expand to the filesystem-root path
+`/dev.dump`. Without `-o` or `-D`, `bin/db-dump` still writes to **stdout**;
+`bin/db-restore` with no argument reads the same conventional artifact, and says
+which path it looked for when that file is absent.
 
 `-d` is needed because no checkout points at `unicoach` any more, and
 `POSTGRES_DB=unicoach bin/db-dump` does not work: `bin/common` layers the

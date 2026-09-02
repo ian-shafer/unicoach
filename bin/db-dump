@@ -3,11 +3,12 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-db-dump [-f] [-d <db>] [-o <file>]
+db-dump [-f] [-d <db>] [-o <file> | -D]
 
-Dumps POSTGRES_DB in pg_dump custom format (-Fc) to stdout, or to the file named
-by -o. The artifact is a compressed, self-contained snapshot of the schema, the
-data, and the schema_migrations rows; restore it with bin/db-restore.
+Dumps POSTGRES_DB in pg_dump custom format (-Fc) to stdout, to the file named by
+-o, or to the conventional artifact with -D. The artifact is a compressed,
+self-contained snapshot of the schema, the data, and the schema_migrations rows;
+restore it with bin/db-restore.
 
 -d names a DIFFERENT database to dump. It exists for the one job this pair was
 written for: lifting the legacy shared `unicoach` database into a per-worktree
@@ -19,19 +20,34 @@ target, and a restore aimed at the wrong database is the exact accident this RFC
 exists to prevent.
 
 The artifact is a regenerable CACHE, not an asset: it is never authoritative and
-it is never committed. The convention is to keep it OUTSIDE the repo, under
-$HOME/opt/unicoach/var/dumps/, so one worktree can dump and another restore:
+it is never committed. It is kept OUTSIDE the repo, in $POSTGRES_DUMP_DIR (a
+.env.dev key, which owns the value), so one worktree can dump and another
+restore:
 
-  nix develop -c bin/db-dump -o ~/opt/unicoach/var/dumps/dev.dump
-  nix develop -c bin/db-restore ~/opt/unicoach/var/dumps/dev.dump
+  nix develop -c bin/db-dump -D    # writes $POSTGRES_DUMP_DIR/dev.dump
+  nix develop -c bin/db-restore    # reads the same file
   nix develop -c bin/db-dump | ssh other-mac 'nix develop -c bin/db-restore -y'
+
+-D RESOLVES THAT PATH INSIDE THIS SCRIPT, which is the whole reason it exists.
+POSTGRES_DUMP_DIR is a dotenv key, exported by bin/common into a script's own
+process; the shell that types the command never sourced .env.dev, so
+`-o "$POSTGRES_DUMP_DIR/dev.dump"` expands to the literal "/dev.dump" — the
+filesystem root — even inside `nix develop`. A dotenv key is only visible to
+scripts that source bin/common, so the script has to do the resolving. -D also
+owns the FILENAME (bin/functions' DUMP_DEFAULT_FILENAME, the same constant
+bin/db-restore reads), so a mistyped -o path can no longer produce a valid dump
+that the default restore reports as absent.
+
+STDOUT REMAINS THE DEFAULT: $POSTGRES_DUMP_DIR names where dumps are KEPT, it
+does not redirect this script. A file destination is always an explicit -o or
+-D, which is what keeps the ssh pipe form above working. A destination directory
+that does not exist yet is created (mkdir -p), so the first dump in a fresh
+environment does not fail on a missing folder; one that exists but cannot be
+written to is refused by name rather than left to fail as a temp-file error.
 
 The stream form is for a DIFFERENT MACHINE. Piping into a bin/db-restore in this
 same checkout is not a workflow: both ends resolve the same POSTGRES_DB, so it
 drops a live dev database in order to restore it from itself.
-
-That directory is a documented convention, not configuration: there is no dotenv
-key for it, the default is stdout, and the path is always an explicit argument.
 
 A -o target is written to a temporary sibling and moved into place only after
 pg_dump succeeds, so a failed dump can never leave a PARTIAL archive under the
@@ -44,20 +60,29 @@ Local-only tooling; never deployed.
 Options:
   -d <db>:   Dump <db> instead of POSTGRES_DB (read-only; for the RFC 156 migration)
   -o <file>: Write the dump to <file> instead of stdout
-  -f:        Force — overwrite an existing -o target
+  -D:        Write the dump to the conventional artifact, $POSTGRES_DUMP_DIR/dev.dump
+             (resolved here, from .env.dev; mutually exclusive with -o)
+  -f:        Force — overwrite an existing -o / -D target
   -h:        Help
 
 Exit codes:
   2: postgres is not reachable, or the existence probe itself failed
      (repo-wide meaning; see bin/db-run)
-  3: the -o target already exists and -f was not given
+  3: the -o / -D target already exists and -f was not given
   4: the database to dump does not exist
   5: pg_dump failed, or the completed dump could not be moved into place
+  6: the directory for the -o / -D target does not exist and could not be
+     created, or it exists and is not writable
  10: unknown option
  11: option given without its value
  20: unexpected positional argument
- 22: -d or -o given an empty value
- 23: -f given without -o
+ 22: -d or -o given an empty value, or -D with POSTGRES_DUMP_DIR unset or
+     malformed
+ 23: -f given without -o or -D, or -o and -D given together
+
+Only code 5 is deliberately aligned with bin/db-restore: in both scripts it
+means "the underlying pg_* tool failed". Every other code here is private to
+bin/db-dump and carries no meaning in its sibling.
 EOF
   exit 0
 }
@@ -66,6 +91,7 @@ EOF
 EXIT_REFUSING_OVERWRITE=3
 EXIT_NO_SUCH_DATABASE=4
 EXIT_DUMP_FAILED=5
+EXIT_NO_OUTPUT_DIRECTORY=6
 
 # PRESENCE is held separately from the VALUE. An empty string is a MALFORMED
 # value, never "the option was not given": `-d ""` silently becoming POSTGRES_DB
@@ -74,13 +100,19 @@ EXIT_DUMP_FAILED=5
 # -f is meaningless without -o".
 OUT_FILE=
 OUT_FILE_GIVEN=0
+USE_DUMP_DIR=0
+# What the dump is written TO, derived once from the options below and read
+# everywhere after. The option-presence flags above answer "what did the caller
+# type"; this answers "where does the archive go", which -o and -D both reach.
+DEST_MODE=stdout
 DUMP_DB=
 DUMP_DB_GIVEN=0
 FORCE=0
-while getopts ":d:o:fh" opt; do
+while getopts ":d:o:Dfh" opt; do
   case "$opt" in
   d) DUMP_DB="$OPTARG"; DUMP_DB_GIVEN=1 ;;
   o) OUT_FILE="$OPTARG"; OUT_FILE_GIVEN=1 ;;
+  D) USE_DUMP_DIR=1 ;;
   f) FORCE=1 ;;
   h) help ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
@@ -100,15 +132,47 @@ if [ "$OUT_FILE_GIVEN" -eq 1 ] && [ -z "$OUT_FILE" ]; then
   fatal -s "$EXIT_INVALID_ARG_VALUE" "option -o requires a file path; got an empty value"
 fi
 
-if [ "$FORCE" -eq 1 ] && [ "$OUT_FILE_GIVEN" -eq 0 ]; then
-  fatal -s "$EXIT_EXCLUSIVE_OPTIONS" "option -f is meaningless without -o (stdout is never overwritten)"
+if [ "$OUT_FILE_GIVEN" -eq 1 ] && [ "$USE_DUMP_DIR" -eq 1 ]; then
+  fatal -s "$EXIT_EXCLUSIVE_OPTIONS" "options -o and -D both name a destination; give one or the other"
+fi
+
+if [ "$FORCE" -eq 1 ] && [ "$OUT_FILE_GIVEN" -eq 0 ] && [ "$USE_DUMP_DIR" -eq 0 ]; then
+  fatal -s "$EXIT_EXCLUSIVE_OPTIONS" "option -f is meaningless without -o or -D (stdout is never overwritten)"
 fi
 
 if [ "$DUMP_DB_GIVEN" -eq 0 ]; then
   DUMP_DB="$POSTGRES_DB"
 fi
 
-if [ "$OUT_FILE_GIVEN" -eq 1 ] && [ -e "$OUT_FILE" ] && [ "$FORCE" -eq 0 ]; then
+# -D resolves the conventional artifact HERE, because $POSTGRES_DUMP_DIR is a
+# dotenv key that only a script sourcing bin/common can see: the caller's shell
+# expands it to nothing, so `-o "$POSTGRES_DUMP_DIR/dev.dump"` silently becomes
+# the filesystem-root path "/dev.dump". The key's PRESENCE and its VALUE are
+# separate answers (dump_dir_status), so an unset key and a malformed one — an
+# empty string, or "/", which would make the artifact "/dev.dump" again — are
+# refused with messages that differ. Both are a bad value for an option the
+# caller did give, so both are EXIT_INVALID_ARG_VALUE.
+resolve_output_target() {
+  if [ "$USE_DUMP_DIR" -eq 1 ]; then
+    local status=0
+    dump_dir_status || status=$?
+    case "$status" in
+    0) ;;
+    1) fatal -s "$EXIT_INVALID_ARG_VALUE" \
+         "option -D needs POSTGRES_DUMP_DIR, and it is not set; it is a .env.dev key, so run this from a checkout whose .env.dev is in place, or name the destination with -o <file>" ;;
+    *) fatal -s "$EXIT_INVALID_ARG_VALUE" \
+         "option -D needs a usable POSTGRES_DUMP_DIR; it is set to [$POSTGRES_DUMP_DIR], which is not a directory a dump may be kept in (an empty value or the filesystem root). Fix the .env.dev key, or name the destination with -o <file>" ;;
+    esac
+    OUT_FILE="$(conventional_dump_path)"
+    DEST_MODE=file
+  elif [ "$OUT_FILE_GIVEN" -eq 1 ]; then
+    DEST_MODE=file
+  fi
+}
+
+resolve_output_target
+
+if [ "$DEST_MODE" = file ] && [ -e "$OUT_FILE" ] && [ "$FORCE" -eq 0 ]; then
   fatal -s "$EXIT_REFUSING_OVERWRITE" "refusing to overwrite [$OUT_FILE]; pass -f to replace it"
 fi
 
@@ -142,10 +206,26 @@ require_database_exists() {
 create_dump_destination() {
   DUMP_ARGS=(-Fc -U "$POSTGRES_USER" -d "$DUMP_DB")
   DEST_LABEL="stdout"
-  if [ "$OUT_FILE_GIVEN" -eq 1 ]; then
+  if [ "$DEST_MODE" = file ]; then
     DEST_LABEL="$OUT_FILE"
     local out_dir
     out_dir="$(dirname "$OUT_FILE")"
+    # The conventional target lives outside the repo ($POSTGRES_DUMP_DIR), so on
+    # a fresh machine the FIRST dump names a directory that does not exist yet
+    # and mktemp below would fail with a temp-file error that says nothing about
+    # the real cause. Create it instead; a directory that cannot be created is
+    # its own exit code, not a dump failure.
+    if [ ! -d "$out_dir" ] && ! mkdir -p "$out_dir"; then
+      fatal -s "$EXIT_NO_OUTPUT_DIRECTORY" "db-dump could not create the directory for the -o/-D target [$OUT_FILE]: [$out_dir]"
+    fi
+    # ABSENCE is only half of "there is nowhere to write". A directory that
+    # exists but refuses a new file fails in mktemp below with the same
+    # context-free temp-file error the block above exists to prevent — naming
+    # neither this script, nor the option, nor POSTGRES_DUMP_DIR — and under an
+    # exit code help() does not document. Same outcome, same code, said in words.
+    if [ ! -w "$out_dir" ] || [ ! -x "$out_dir" ]; then
+      fatal -s "$EXIT_NO_OUTPUT_DIRECTORY" "db-dump cannot write the -o/-D target [$OUT_FILE]: the directory [$out_dir] exists but is not writable (if it came from -D, that is \$POSTGRES_DUMP_DIR, a .env.dev key)"
+    fi
     DUMP_TMP="$(mktemp "$out_dir/.unicoach-db-dump.XXXXXX")"
     trap 'rm -f "$DUMP_TMP"' EXIT INT TERM
     DUMP_ARGS+=(-f "$DUMP_TMP")
@@ -156,7 +236,7 @@ create_dump_destination() {
 # the trusted filename only ever names a COMPLETE archive. A stdout dump has
 # nothing to publish.
 publish_dump() {
-  [ "$OUT_FILE_GIVEN" -eq 1 ] || return 0
+  [ "$DEST_MODE" = file ] || return 0
   if ! mv "$DUMP_TMP" "$OUT_FILE"; then
     fatal -s "$EXIT_DUMP_FAILED" "could not publish the dump to [$OUT_FILE]"
   fi

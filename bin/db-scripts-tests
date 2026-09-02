@@ -686,6 +686,281 @@ test_db_dump_failure_leaves_the_target_intact() {
   return 0
 }
 
+# --- The conventional artifact directory (POSTGRES_DUMP_DIR) ---------------
+# This harness's private env deliberately does NOT set POSTGRES_DUMP_DIR, so
+# every case below either sets it explicitly or proves the UNSET behaviour.
+DEFAULT_DUMP_DIR="$PRIVATE_ROOT/default-dumps"
+
+# db-restore's no-argument default is reachable ONLY when stdin is a TERMINAL —
+# without one, no argument means "the dump is on stdin" and that must not
+# change. A harness has no terminal, so one is synthesised with `script`, which
+# runs the command under a pty and propagates its exit status. Output is
+# COMBINED (the pty carries stdout and stderr together), which is fine here:
+# every assertion below looks for a message, and db-restore writes no stdout.
+run_with_terminal_stdin() {
+  script -q /dev/null "$@" < /dev/null 2>&1
+}
+
+# The discoverability fix: no argument, a terminal, and $POSTGRES_DUMP_DIR/dev.dump
+# present restores that file — the operator no longer types a 45-character path
+# in every worktree. The unconfirmed run first proves the implicit input is SHOWN
+# before anything is destroyed: the prompt has to name the database AND the
+# source, since neither was typed on the command line.
+test_db_restore_defaults_to_the_dump_dir_artifact() {
+  setup_dump_restore_test
+  rm -rf "$DEFAULT_DUMP_DIR"
+  bin/db-dump -o "$DEFAULT_DUMP_DIR/dev.dump" >/dev/null 2>&1
+  local out status=0
+  out="$(POSTGRES_DUMP_DIR="$DEFAULT_DUMP_DIR" run_with_terminal_stdin bin/db-restore)" || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "db-restore with no argument and no -y succeeded without a confirmation"
+    return 1
+  fi
+  if ! echo "$out" | grep -q "$POSTGRES_DB"; then
+    fail_test "the confirmation for an implicit input did not name the database. Got: $out"
+    return 1
+  fi
+  if ! echo "$out" | grep -q "$DEFAULT_DUMP_DIR/dev.dump"; then
+    fail_test "the confirmation for an implicit input did not name the source file. Got: $out"
+    return 1
+  fi
+  # …and with -y it actually restores that artifact.
+  bin/db-drop -y >/dev/null
+  status=0
+  POSTGRES_DUMP_DIR="$DEFAULT_DUMP_DIR" run_with_terminal_stdin bin/db-restore -y >/dev/null || status=$?
+  if [ "$status" -ne 0 ]; then
+    fail_test "db-restore with no argument did not restore \$POSTGRES_DUMP_DIR/dev.dump (exit $status)"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "the default-artifact restore did not bring the row back"
+    return 1
+  fi
+  return 0
+}
+
+# Still exit 4 when the default is absent — but the message must NAME the path it
+# looked for. "no file was named" alone is what sent the operator hunting for a
+# convention that lived only in prose.
+test_db_restore_missing_default_names_the_path() {
+  setup_dump_restore_test
+  local empty_dir="$PRIVATE_ROOT/empty-dumps" out status=0
+  rm -rf "$empty_dir"
+  mkdir -p "$empty_dir"
+  out="$(POSTGRES_DUMP_DIR="$empty_dir" run_with_terminal_stdin bin/db-restore -y)" || status=$?
+  if [ "$status" -ne 4 ]; then
+    fail_test "db-restore with no argument and no default artifact expected exit 4, got $status"
+    return 1
+  fi
+  if ! echo "$out" | grep -q "$empty_dir/dev.dump"; then
+    fail_test "the exit-4 message did not name the path it looked for. Got: $out"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-restore destroyed the database while reporting no input"
+    return 1
+  fi
+  return 0
+}
+
+# THE GUARD. With POSTGRES_DUMP_DIR unset the default would concatenate to the
+# literal "/dev.dump" — a path in the filesystem ROOT that no operator named and
+# that could belong to anyone. Unset must keep the old refusal instead of
+# inventing a target: exit 4, and "/dev.dump" must not appear anywhere in the
+# message.
+test_db_restore_unset_dump_dir_never_uses_root_dev_dump() {
+  setup_dump_restore_test
+  local out status=0
+  out="$(env -u POSTGRES_DUMP_DIR bash -c 'script -q /dev/null bin/db-restore -y < /dev/null 2>&1')" || status=$?
+  if [ "$status" -ne 4 ]; then
+    fail_test "db-restore with POSTGRES_DUMP_DIR unset expected exit 4, got $status"
+    return 1
+  fi
+  if echo "$out" | grep -q "/dev\.dump"; then
+    fail_test "db-restore with POSTGRES_DUMP_DIR unset referred to a /dev.dump path. Got: $out"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-restore with POSTGRES_DUMP_DIR unset destroyed the database"
+    return 1
+  fi
+  return 0
+}
+
+# The first dump on a fresh machine names a directory that does not exist yet
+# ($POSTGRES_DUMP_DIR is outside the repo and nothing creates it). It must be
+# created, not reported as a temp-file failure.
+test_db_dump_creates_a_missing_output_directory() {
+  setup_dump_restore_test
+  local fresh="$PRIVATE_ROOT/not-yet/created/dumps"
+  rm -rf "$PRIVATE_ROOT/not-yet"
+  if ! bin/db-dump -o "$fresh/dev.dump" >/dev/null 2>&1; then
+    fail_test "db-dump failed to write into a not-yet-existing directory"
+    return 1
+  fi
+  if [ ! -s "$fresh/dev.dump" ]; then
+    fail_test "db-dump created no archive under the new directory"
+    return 1
+  fi
+  if ! head -c 5 "$fresh/dev.dump" | grep -q "PGDMP"; then
+    fail_test "the archive written into the new directory is not a pg_dump custom archive"
+    return 1
+  fi
+  return 0
+}
+
+# ABSENCE is only half of "there is nowhere to write". A dump directory that
+# EXISTS but refuses a new file used to fail inside mktemp — exit 1, which help()
+# does not document, in a message naming neither db-dump nor -o nor
+# POSTGRES_DUMP_DIR. It must be the documented exit 6, said in words.
+test_db_dump_unwritable_output_directory_exits_6() {
+  setup_dump_restore_test
+  local readonly_dir="$PRIVATE_ROOT/readonly-dumps" out status=0
+  rm -rf "$readonly_dir"
+  mkdir -p "$readonly_dir"
+  # root ignores the mode bits, so the refusal could not fire and the assertion
+  # would be about the test runner rather than the script.
+  if [ "$(id -u)" -eq 0 ]; then
+    rm -rf "$readonly_dir"
+    return 0
+  fi
+  chmod 500 "$readonly_dir"
+  out="$(bin/db-dump -o "$readonly_dir/dev.dump" 2>&1)" || status=$?
+  chmod 700 "$readonly_dir"
+  rm -rf "$readonly_dir"
+  if [ "$status" -ne 6 ]; then
+    fail_test "db-dump into an unwritable directory expected exit 6, got $status. Got: $out"
+    return 1
+  fi
+  if ! echo "$out" | grep -q "db-dump"; then
+    fail_test "the exit-6 message did not name the script. Got: $out"
+    return 1
+  fi
+  if ! echo "$out" | grep -q "$readonly_dir"; then
+    fail_test "the exit-6 message did not name the directory. Got: $out"
+    return 1
+  fi
+  return 0
+}
+
+# THE SYMMETRY. -o "$POSTGRES_DUMP_DIR/dev.dump" cannot work from a caller's
+# shell — the key is a dotenv value only a script sourcing bin/common can see —
+# so -D resolves it INSIDE db-dump, onto the same filename db-restore reads.
+test_db_dump_D_writes_the_conventional_artifact() {
+  setup_dump_restore_test
+  local target="$PRIVATE_ROOT/dashd-dumps"
+  rm -rf "$target"
+  if ! POSTGRES_DUMP_DIR="$target" bin/db-dump -D >/dev/null 2>&1; then
+    fail_test "db-dump -D failed"
+    return 1
+  fi
+  if [ ! -s "$target/dev.dump" ]; then
+    fail_test "db-dump -D did not write \$POSTGRES_DUMP_DIR/dev.dump"
+    return 1
+  fi
+  if ! head -c 5 "$target/dev.dump" | grep -q "PGDMP"; then
+    fail_test "db-dump -D wrote something that is not a pg_dump custom archive"
+    return 1
+  fi
+  # …and db-restore with no argument reads exactly that file, which is the whole
+  # point of the pair sharing one filename constant.
+  bin/db-drop -y >/dev/null 2>&1
+  local status=0
+  POSTGRES_DUMP_DIR="$target" run_with_terminal_stdin bin/db-restore -y >/dev/null || status=$?
+  if [ "$status" -ne 0 ]; then
+    fail_test "db-restore with no argument did not read what db-dump -D wrote (exit $status)"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "the -D round trip did not bring the row back"
+    return 1
+  fi
+  return 0
+}
+
+# -D with no usable POSTGRES_DUMP_DIR is a bad value for an option the caller DID
+# give (22), never a silent write to the filesystem root. "/" is set and passes a
+# bare -z check, so it is asserted next to the unset case.
+test_db_dump_D_without_a_usable_dump_dir_exits_22() {
+  setup_dump_restore_test
+  local out status=0
+  out="$(env -u POSTGRES_DUMP_DIR bin/db-dump -D 2>&1)" || status=$?
+  if [ "$status" -ne 22 ]; then
+    fail_test "db-dump -D with POSTGRES_DUMP_DIR unset expected exit 22, got $status. Got: $out"
+    return 1
+  fi
+  if [ -e /dev.dump ]; then
+    fail_test "db-dump -D with POSTGRES_DUMP_DIR unset wrote /dev.dump"
+    return 1
+  fi
+  status=0
+  out="$(POSTGRES_DUMP_DIR=/ bin/db-dump -D 2>&1)" || status=$?
+  if [ "$status" -ne 22 ]; then
+    fail_test "db-dump -D with POSTGRES_DUMP_DIR=/ expected exit 22, got $status. Got: $out"
+    return 1
+  fi
+  status=0
+  out="$(POSTGRES_DUMP_DIR= bin/db-dump -D 2>&1)" || status=$?
+  if [ "$status" -ne 22 ]; then
+    fail_test "db-dump -D with an empty POSTGRES_DUMP_DIR expected exit 22, got $status. Got: $out"
+    return 1
+  fi
+  return 0
+}
+
+# The other half of the same shape check: POSTGRES_DUMP_DIR=/ used to PASS
+# db-restore's guard and yield "//dev.dump" — the filesystem-root path the guard
+# exists to forbid. It failed safe only because that file does not exist.
+test_db_restore_malformed_dump_dir_is_refused() {
+  setup_dump_restore_test
+  local out status=0
+  out="$(POSTGRES_DUMP_DIR=/ run_with_terminal_stdin bin/db-restore -y)" || status=$?
+  if [ "$status" -ne 4 ]; then
+    fail_test "db-restore with POSTGRES_DUMP_DIR=/ expected exit 4, got $status. Got: $out"
+    return 1
+  fi
+  if echo "$out" | grep -q "//dev\.dump"; then
+    fail_test "db-restore with POSTGRES_DUMP_DIR=/ still built a root dump path. Got: $out"
+    return 1
+  fi
+  status=0
+  out="$(POSTGRES_DUMP_DIR= run_with_terminal_stdin bin/db-restore -y)" || status=$?
+  if [ "$status" -ne 4 ]; then
+    fail_test "db-restore with an empty POSTGRES_DUMP_DIR expected exit 4, got $status. Got: $out"
+    return 1
+  fi
+  # An EMPTY value is malformed, not missing: the message must not claim the key
+  # is unset.
+  if echo "$out" | grep -q "is not set"; then
+    fail_test "db-restore called a set-but-empty POSTGRES_DUMP_DIR 'not set'. Got: $out"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-restore destroyed the database while refusing a malformed POSTGRES_DUMP_DIR"
+    return 1
+  fi
+  return 0
+}
+
+# db-restore deliberately does not run migrations, so a dump taken before a newer
+# migration leaves this checkout quietly behind. The success log must state the
+# level it landed at and name bin/db-migrate as the remedy — without running it.
+test_db_restore_success_log_names_the_migration_level() {
+  setup_dump_restore_test
+  bin/db-dump -o "$DUMP_DIR/level.dump" >/dev/null 2>&1
+  local err="$DUMP_DIR/level.err"
+  bin/db-restore -y "$DUMP_DIR/level.dump" >/dev/null 2> "$err"
+  if ! grep -q "migration level \[0001.dump-test.sql\]" "$err"; then
+    fail_test "the success log did not name the migration level. Got: $(cat "$err")"
+    return 1
+  fi
+  if ! grep -q "bin/db-migrate" "$err"; then
+    fail_test "the success log did not name bin/db-migrate as the remedy. Got: $(cat "$err")"
+    return 1
+  fi
+  return 0
+}
+
 assert_success "db-dump | db-restore round-trips row data" test_db_dump_restore_round_trip
 assert_success "db-restore replaces rather than merges" test_db_restore_replaces_rather_than_merges
 assert_success "db-restore restores schema_migrations (no pending migrations)" test_db_restore_restores_schema_migrations
@@ -703,11 +978,21 @@ assert_success "a failing db-restore rolls back (exit 5, empty database), and a 
 assert_success "db-restore with an empty path argument exits 3 and destroys nothing" test_db_restore_empty_argument_exits_3
 assert_success "db-dump -d dumps the named database, not POSTGRES_DB" test_db_dump_other_database_with_d
 assert_success "a failed db-dump leaves the existing -o target intact" test_db_dump_failure_leaves_the_target_intact
+assert_success "db-restore with no argument restores \$POSTGRES_DUMP_DIR/dev.dump and names it in the prompt" test_db_restore_defaults_to_the_dump_dir_artifact
+assert_success "db-restore names the default path it looked for when it is missing (exit 4)" test_db_restore_missing_default_names_the_path
+assert_success "db-restore with POSTGRES_DUMP_DIR unset exits 4 and never uses /dev.dump" test_db_restore_unset_dump_dir_never_uses_root_dev_dump
+assert_success "db-dump -o creates a not-yet-existing directory" test_db_dump_creates_a_missing_output_directory
+assert_success "db-dump into an existing but unwritable directory exits 6 and says so" test_db_dump_unwritable_output_directory_exits_6
+assert_success "db-dump -D writes \$POSTGRES_DUMP_DIR/dev.dump and db-restore reads it" test_db_dump_D_writes_the_conventional_artifact
+assert_success "db-dump -D without a usable POSTGRES_DUMP_DIR exits 22" test_db_dump_D_without_a_usable_dump_dir_exits_22
+assert_success "db-restore refuses a malformed POSTGRES_DUMP_DIR instead of building //dev.dump" test_db_restore_malformed_dump_dir_is_refused
+assert_success "a successful db-restore logs the migration level it landed at" test_db_restore_success_log_names_the_migration_level
 
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "db-dump -z exits 10" bin/db-dump -z
 assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "db-dump -o (no value) exits 11" bin/db-dump -o
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-dump rejects a stray positional" bin/db-dump stray
-assert_exit_code "$EXIT_EXCLUSIVE_OPTIONS" "db-dump -f without -o exits 23" bin/db-dump -f
+assert_exit_code "$EXIT_EXCLUSIVE_OPTIONS" "db-dump -f without -o or -D exits 23" bin/db-dump -f
+assert_exit_code "$EXIT_EXCLUSIVE_OPTIONS" "db-dump -o with -D exits 23 (two destinations)" bin/db-dump -o /tmp/unicoach-never-written.dump -D
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-dump -d with an empty value exits 22" bin/db-dump -d ""
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-dump -o with an empty value exits 22" bin/db-dump -o ""
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-dump -f -o with an empty value exits 22 (not 23)" bin/db-dump -f -o ""

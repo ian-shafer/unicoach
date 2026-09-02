@@ -775,7 +775,34 @@ assert_success "checkout_name refuses a name PostgreSQL would truncate" test_che
 assert_success "a listener on the dev half (+10) does not advance checkout-port" test_dev_half_listener_does_not_advance_checkout_port
 assert_success "two different checkout names derive disjoint dev port triples" test_two_checkouts_derive_disjoint_dev_port_triples
 assert_success "sourcing .env.dev yields SERVER_PORT == PORT == checkout_block_base + 10" test_env_dev_derives_port_and_server_port_from_the_block
+# POSTGRES_DUMP_DIR is where bin/db-dump keeps its artifact and where
+# bin/db-restore looks with no argument. It is a dev-only key -- a shared
+# absolute $HOME path, like POSTGRES_DATA_DIR beside it -- so it belongs in
+# .env.dev and in .env.template's .env.dev block, and in NEITHER the base .env
+# (the value is env-specific) nor a cloud .env.<env>. The same rot the
+# derivation check above guards against applies here: a template that lost the
+# key hands the next role a db-restore that cannot find anything.
+test_env_dump_dir_is_set_in_dev_and_template() {
+  local dev_line tpl_line
+  dev_line="$(grep -E '^POSTGRES_DUMP_DIR=' .env.dev | sort -u)"
+  tpl_line="$(grep -E '^POSTGRES_DUMP_DIR=' .env.template | sort -u)"
+  if [ -z "$dev_line" ]; then
+    fail_test ".env.dev does not set POSTGRES_DUMP_DIR"
+  fi
+  if [ -z "$tpl_line" ]; then
+    fail_test ".env.template does not set POSTGRES_DUMP_DIR"
+  fi
+  if [ "$dev_line" != "$tpl_line" ]; then
+    fail_test ".env.template's POSTGRES_DUMP_DIR [$tpl_line] differs from .env.dev's [$dev_line]"
+  fi
+  if grep -qE '^POSTGRES_DUMP_DIR=' .env; then
+    fail_test "POSTGRES_DUMP_DIR is set in the base .env; it is a dev-only absolute \$HOME path"
+  fi
+  return 0
+}
+
 assert_success ".env.template restates .env.dev's per-worktree derivations exactly" test_env_template_restates_the_dev_derivations
+assert_success ".env.dev and .env.template both set POSTGRES_DUMP_DIR (and .env does not)" test_env_dump_dir_is_set_in_dev_and_template
 
 # RFC 131 regression, and it MUST cross a process boundary: `.env` assigns PORT
 # unconditionally, so a PORT exported by this harness is clobbered in every child

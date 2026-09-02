@@ -9,6 +9,38 @@
 : "${EXIT_INVALID_ARG_VALUE:=22}"       # a present value that is malformed (bad port, bad mode)
 : "${EXIT_EXCLUSIVE_OPTIONS:=23}"       # two options that cannot combine (e.g. -r with -x)
 
+# The conventional dump artifact's FILENAME, owned here because it is the one
+# name bin/db-dump -D writes and bin/db-restore (no argument) reads: a constant
+# with no owner is one a typo can silently split in two, so the pair would
+# disagree with nothing able to detect it. The DIRECTORY half is a dev-only
+# dotenv key (POSTGRES_DUMP_DIR, .env.dev); only the name is shared code.
+: "${DUMP_DEFAULT_FILENAME:=dev.dump}"
+
+# The one shape check for POSTGRES_DUMP_DIR, shared so bin/db-dump -D and
+# bin/db-restore's no-argument default cannot drift apart. PRESENCE and VALUE are
+# separate answers: `[ -z ]` alone would report a set-but-EMPTY key as "not set",
+# and it would ACCEPT "/", which makes the conventional artifact "/dev.dump" --
+# the filesystem-root path both scripts exist to refuse. Callers map the three
+# outcomes onto their own exit codes; this function only classifies.
+#   0: usable
+#   1: the key is not set at all
+#   2: the key is set to a malformed value (empty, or the filesystem root)
+dump_dir_status() {
+  if [ -z "${POSTGRES_DUMP_DIR+set}" ]; then
+    return 1
+  fi
+  case "$POSTGRES_DUMP_DIR" in
+  "" | /) return 2 ;;
+  esac
+  return 0
+}
+
+# The conventional artifact's full path. Only meaningful after dump_dir_status
+# returns 0.
+conventional_dump_path() {
+  printf '%s/%s' "$POSTGRES_DUMP_DIR" "$DUMP_DEFAULT_FILENAME"
+}
+
 # Operational exit codes (1-9) that mean the same thing repo-wide. Postgres being
 # unreachable is one outcome with one number, so every script that attaches to a
 # running cluster reports it identically (bin/db-run, bin/db-repl, bin/db-dump).

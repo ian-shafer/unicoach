@@ -13,7 +13,10 @@ Restores POSTGRES_DB from a bin/db-dump artifact. DESTRUCTIVE: the target is
 dropped and recreated first (bin/db-drop -y, then bin/db-create), because
 restoring over a populated database yields a merge, not a restore. It does NOT
 run bin/db-migrate — the dump already carries the schema and the
-schema_migrations rows.
+schema_migrations rows. That is right for a CURRENT dump and quietly wrong for
+an old one, so the success line names the migration level the restore landed
+at; if this checkout expects newer migrations, run bin/db-migrate yourself.
+Nothing is migrated implicitly.
 
 bin/db-create pre-creates an empty schema_migrations, which collides with the
 same table in the dump, so the restore runs
@@ -45,11 +48,21 @@ DESTROYS what it restores over, and a restore aimed at the wrong database is the
 accident RFC 156 exists to prevent. bin/db-dump's read-only -d has no
 counterpart here.
 
-Artifacts live outside the repo by convention, under
-$HOME/opt/unicoach/var/dumps/:
+Artifacts live outside the repo, in $POSTGRES_DUMP_DIR (a .env.dev key, which
+owns the value). With NO file argument and no stdin stream, that directory's
+dev.dump is what is restored, so a fresh worktree does not have to type the
+path; bin/db-dump -D writes exactly that file:
 
-  nix develop -c bin/db-restore ~/opt/unicoach/var/dumps/dev.dump
+  nix develop -c bin/db-restore                # $POSTGRES_DUMP_DIR/dev.dump
+  nix develop -c bin/db-restore /some/other.dump
   nix develop -c bin/db-dump | ssh other-mac 'nix develop -c bin/db-restore -y'
+
+The default applies ONLY when POSTGRES_DUMP_DIR is set to a usable directory
+path. Unset, empty, or "/" — all of which would make the default the
+filesystem-root path "/dev.dump" or claim a key is missing when it is merely
+malformed — the no-argument case is exit 4 instead, with a message that says
+which of the three it was. A missing default file is exit 4 too, and the message
+names the path that was looked for.
 
 The stream form is for a DIFFERENT MACHINE. Piping a bin/db-dump from THIS
 checkout into it is not a workflow: both ends resolve the same POSTGRES_DB, so
@@ -63,13 +76,19 @@ Options:
 
 Exit codes:
   3: the named input file does not exist or is not readable
-  4: no input — stdin is a terminal, or the stdin stream was empty
+  4: no input — stdin is a terminal and neither a named file nor a
+     $POSTGRES_DUMP_DIR/dev.dump default was available, or the stdin stream was
+     empty
   5: pg_restore failed; the restore was rolled back and the target is EMPTY
   6: no terminal available to confirm a stdin restore (pass -y)
   7: the input is not a readable pg_dump custom-format archive (nothing dropped)
  10: unknown option
  11: option given without its value
  20: unexpected positional argument
+
+Only code 5 is deliberately aligned with bin/db-dump: in both scripts it means
+"the underlying pg_* tool failed". Every other code here is private to
+bin/db-restore and carries no meaning in its sibling.
 EOF
   exit 0
 }
@@ -97,29 +116,76 @@ if [ "$#" -gt 1 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "db-restore accepts at most one argument: <file>; received: [$*]"
 fi
 
-# PRESENCE of the file argument is held in its own variable, NOT inferred from
-# IN_FILE being non-empty. `bin/db-restore ""` -- the shape a caller's unset
-# variable makes, `bin/db-restore "$DUMP"` -- named a file, so it must be refused
-# as a missing file (exit 3); reading it as "no argument" turned it into a STDIN
-# restore, prompting to replace the database "with the contents of [stdin]" and
-# dropping POSTGRES_DB on any non-empty stream. IN_FILE is also REASSIGNED to the
-# buffered stdin copy below, after which "empty" could not mean "no file named"
-# anyway. Same shape the file already uses for skip_prompt.
-IN_FILE_GIVEN=false
+# WHERE the dump comes from, as one discriminant rather than a boolean, because
+# the three sources are not two: `argument` (a path the caller typed),
+# `default` (the conventional artifact this script resolved), `stdin` (a
+# stream). A boolean forced two different questions -- "was an argument given"
+# and "is there a file on disk" -- through one variable that was then MUTATED,
+# so `given=true` with `SOURCE_LABEL=stdin` was representable, and SOURCE_LABEL
+# is the string the DESTRUCTIVE confirmation shows the operator.
+#
+# Keeping `argument` distinct from `default` is what preserves exit 3 for
+# `bin/db-restore ""` -- the shape a caller's unset variable makes,
+# `bin/db-restore "$DUMP"`. That named a file, so it must be refused as a missing
+# file, never re-read as "no argument" and turned into a STDIN restore that
+# prompts to replace the database "with the contents of [stdin]".
+#
+# The three fields are one fact and are written TOGETHER, at each of the two
+# places a source is decided (here for an argument, in resolve_input for the
+# default), so a destination without its matching label cannot exist. IN_FILE
+# alone is reassigned once more, to the buffered stdin copy, which is why
+# INPUT_SOURCE and not IN_FILE answers "what am I restoring from".
+INPUT_SOURCE=stdin
 IN_FILE=
 SOURCE_LABEL=stdin
 
 # Decide WHAT is being restored, and refuse the inputs that are not restorable at
 # all. Nothing is destroyed here.
 resolve_input() {
-  if [ "$IN_FILE_GIVEN" = true ]; then
+  if [ "$INPUT_SOURCE" = argument ]; then
     if [ ! -f "$IN_FILE" ] || [ ! -r "$IN_FILE" ]; then
       fatal -s "$EXIT_NO_SUCH_INPUT_FILE" "dump file not found or not readable [$IN_FILE]"
     fi
-    SOURCE_LABEL="$IN_FILE"
-  elif [ -t 0 ]; then
-    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin is a terminal and no file was named"
+    return 0
   fi
+  [ -t 0 ] || return 0
+
+  # No file named and no stream: fall back to the conventional artifact,
+  # $POSTGRES_DUMP_DIR/dev.dump. The GUARD is the point — the key's PRESENCE and
+  # its VALUE are separate answers (dump_dir_status, shared with bin/db-dump -D
+  # so the pair cannot drift): unset is not the same as set-but-empty, and "/"
+  # is a set value that would still make the default the filesystem-root path
+  # "/dev.dump", which the operator never named. None of the three invents a
+  # target. Either way the failure message NAMES what was looked for; "no file
+  # was named" alone sent the operator hunting for a path nothing knew.
+  local status=0
+  dump_dir_status || status=$?
+  case "$status" in
+  0) ;;
+  1) fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin is a terminal, no file was named, and POSTGRES_DUMP_DIR is not set (it is a .env.dev key), so there is no default to fall back to. Name a file, or restore .env.dev and write the default with bin/db-dump -D" ;;
+  *) fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin is a terminal, no file was named, and POSTGRES_DUMP_DIR is set to [$POSTGRES_DUMP_DIR], which cannot hold a dump (an empty value or the filesystem root), so there is no default to fall back to. Fix the .env.dev key, or name a file" ;;
+  esac
+
+  # Three ways the default can be unusable, and they do not share a remedy: a
+  # directory that was never created, a file that was never written, and a file
+  # that IS there but cannot be read. Telling the third "write it with
+  # bin/db-dump" is wrong advice — that run refuses to overwrite an existing
+  # target (exit 3) and the operator learns nothing. Each branch names the path.
+  local default_file
+  default_file="$(conventional_dump_path)"
+  if [ ! -d "$POSTGRES_DUMP_DIR" ]; then
+    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin is a terminal, no file was named, and the dump directory [$POSTGRES_DUMP_DIR] does not exist, so the default [$default_file] is not there either. Write it with: bin/db-dump -D"
+  fi
+  if [ ! -e "$default_file" ]; then
+    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin is a terminal, no file was named, and the default [$default_file] does not exist. Write it with: bin/db-dump -D"
+  fi
+  if [ ! -f "$default_file" ] || [ ! -r "$default_file" ]; then
+    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin is a terminal, no file was named, and the default [$default_file] exists but is not a readable file. Fix its permissions (or replace it); bin/db-dump -D would refuse to overwrite it without -f"
+  fi
+
+  INPUT_SOURCE=default
+  IN_FILE="$default_file"
+  SOURCE_LABEL="$default_file"
 }
 
 # The prompt must not eat the dump. With a named file, stdin is free and the
@@ -136,7 +202,10 @@ confirm_destruction() {
   [ "$skip_prompt" = false ] || return 0
   local tty_device="${UNICOACH_TTY_DEVICE:-/dev/tty}"
   local description="drop database [$POSTGRES_DB] and replace it with the contents of [$SOURCE_LABEL]"
-  if [ "$IN_FILE_GIVEN" = true ]; then
+  # The question is whether stdin is FREE for the prompt, which is exactly
+  # "the dump is not coming from stdin" — a named file and the resolved default
+  # both leave it free.
+  if [ "$INPUT_SOURCE" != stdin ]; then
     require_dangerous_confirmation "$description"
     return 0
   fi
@@ -157,14 +226,22 @@ confirm_destruction() {
 # named one. That the buffering also lets a same-machine producer finish and
 # disconnect is a side effect, not the reason.
 buffer_stdin_to_file() {
-  [ "$IN_FILE_GIVEN" = false ] || return 0
+  # Only a stream needs buffering; a file is already a file.
+  [ "$INPUT_SOURCE" = stdin ] || return 0
   local tmp_base="${TMPDIR:-/tmp}"
   mkdir -p "$tmp_base"
   RESTORE_TMP="$(mktemp "$tmp_base/unicoach-db-restore.XXXXXX")"
   trap 'rm -f "$RESTORE_TMP"' EXIT INT TERM
   cat > "$RESTORE_TMP"
   if [ ! -s "$RESTORE_TMP" ]; then
-    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin was empty"
+    # The non-tty half of "the operator gave no dump", so it names the same
+    # conventional artifact the terminal half does: an empty pipe usually means
+    # the producer failed, and the remedy is the file that is already there.
+    local default_hint="\$POSTGRES_DUMP_DIR/$DUMP_DEFAULT_FILENAME"
+    if dump_dir_status; then
+      default_hint="$(conventional_dump_path)"
+    fi
+    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin was empty (the producing command wrote nothing). Restore a file instead: bin/db-restore [$default_hint], or with no argument from a terminal; write it with bin/db-dump -D"
   fi
   IN_FILE="$RESTORE_TMP"
 }
@@ -225,8 +302,9 @@ restore_into_fresh_database() {
 }
 
 if [ "$#" -eq 1 ]; then
-  IN_FILE_GIVEN=true
+  INPUT_SOURCE=argument
   IN_FILE="$1"
+  SOURCE_LABEL="$1"
 fi
 
 # The order of these steps IS the safety property: nothing is destroyed until the
@@ -239,4 +317,42 @@ buffer_stdin_to_file
 require_readable_archive
 restore_into_fresh_database
 
+# The stale-dump hint. This script deliberately does NOT run migrations — the
+# archive carries both the schema and the schema_migrations rows — which is
+# right for a current dump and silently wrong for an older one: the checkout is
+# then left behind whatever migrations landed after the dump was taken, with
+# nothing saying so. Report the level the restore landed at and name the remedy;
+# running bin/db-migrate here instead would migrate implicitly, which this
+# script does not do.
+#
+# THREE OUTCOMES, NOT TWO — the same rule bin/db-dump's require_database_exists
+# states in this pair. A probe that FAILED (cluster gone, auth refused, no
+# schema_migrations table) is not evidence that no migrations are applied, and
+# saying so would ASSERT DATABASE STATE THIS SCRIPT NEVER OBSERVED, immediately
+# after a destructive step. The status is kept (pipefail is on, so it is already
+# computed) and db-query's own diagnostic is left on stderr, because that
+# diagnostic is the only thing separating the three cases.
+#
+# Best-effort in the ONLY sense that applies: the restore has already SUCCEEDED,
+# so a failing probe is warned about and never turned into a non-zero exit — and
+# the warning says so, because a [WARNING] straight after a drop-and-recreate
+# otherwise reads as "the restore broke".
+report_migration_level() {
+  local level=
+  local status=0
+  level="$("$PROJECT_ROOT/bin/db-query" -r \
+    "SELECT filename FROM schema_migrations ORDER BY version_id DESC LIMIT 1;" \
+    < /dev/null | head -n 1 | tr -d '[:space:]')" || status=$?
+  if [ "$status" -ne 0 ]; then
+    log-warning "THE RESTORE ITSELF SUCCEEDED: database [$POSTGRES_DB] was restored from [$SOURCE_LABEL] and nothing below undoes that. Only the migration-level probe failed [status=$status] (its own diagnostic is above), so the level is UNKNOWN, not empty. Check it with bin/db-status."
+    return 0
+  fi
+  if [ -z "$level" ]; then
+    log-info "Restored database [$POSTGRES_DB] reports no applied migrations. bin/db-restore does not run migrations; run bin/db-migrate if this checkout expects any."
+    return 0
+  fi
+  log-info "Restored database [$POSTGRES_DB] is at migration level [$level]. bin/db-restore does not run migrations; run bin/db-migrate if this checkout expects newer ones."
+}
+
 log-info "Database [$POSTGRES_DB] restored from [$SOURCE_LABEL]."
+report_migration_level
