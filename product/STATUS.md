@@ -84,7 +84,25 @@ the answer to "what can I kick off?".
 
 ## TL;DR — next steps, most important first
 
-1. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
+1. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — OPENED AND GATE 1 APPROVED (Ian,
+   2026-09-02, defaults, no amendments).** The standing mistake is named: every
+   money figure is stored in its publisher's shape, and RFCs 149/151/152/157 are
+   a growing read-time compensation stack. Approved bet: a canonical money layer
+   — **PriceFigure** (college × concept × residency × arrangement × year) split
+   from **CohortMoneyStat** (measure × population basis × vintage), a six-value
+   stored missingness status, unicoach-authored vocabularies external codes map
+   into, IPEDS **IC_AY + SFA** un-deferred as keystone sources (resolves brief
+   0003 D7), a federal policy-parameter store, and a
+   beside/backfill/cut-over/drop-last migration. **GATE 2 ALSO APPROVED same day
+   (D12-D16)**: nine slices specced, and **wave 1 is startable now** —
+   `shape/01/canonical-store` (the schema + fill from pinned sources) and
+   `shape/06/pell-and-loans` (independent: policy-parameter store, "do we
+   qualify for Pell / what would loans mean" answered with cited award-year
+   facts). **Brief 0005 is PAUSED by 0006 D11** — its question IS
+   `shape/05/search-on-your-price`, decided at D14. Spec:
+   `product/0006-money-in-unicoach-shape/spec.md`.
+
+2. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
    IT BY USING THE PRODUCT. Fixed by RFC 157** (`main@29242880` + `7c7c56af`,
    2026-09-02). The Scorecard's published cost of attendance (`COSTT4_A`) and
    its net price (`NPT4` family) are figures for students paying the
@@ -107,7 +125,7 @@ the answer to "what can I kick off?".
    index still ranks every family on the in-state net price (a /chart slice, not
    a fix to fold into the next run), and `first-value/06`'s spec drift.**
 
-2. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
+3. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
    LANDED as RFC 155 (`main@47cf9d62` + `6777c7c7`, 2026-09-01), so brief 0001's
    Beat 1 is ONE SLICE from complete.** A parent no longer needs an account, a
    login, or the app. The student asks the coach to share, `share_cost_report`
@@ -130,7 +148,7 @@ the answer to "what can I kick off?".
    production; unset, the feature stays dark, declines honestly, and warns once
    at boot.
 
-3. **THE WEDGE IS NOW UNBLOCKED: `first-value/06/invite-your-parent` (S6) is the
+4. **THE WEDGE IS NOW UNBLOCKED: `first-value/06/invite-your-parent` (S6) is the
    last slice in Beat 1 and it is startable.** Its BLOCKS edge was exactly this
    slice's report surface and token, and both now exist. RFC 155 stopped short
    of the nudge on purpose: S6 owns the share CTA placement, the RFC 93
@@ -138,7 +156,7 @@ the answer to "what can I kick off?".
    Beat 2's parent-account claim path. Read the drift notes in the work table
    before writing the RFC — the sharing mechanic itself is already built.
 
-4. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
+5. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
    LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
    every slice in the brief.** The coach now leads with the one way of living
    the family said they plan, instead of offering three and letting them pick —
@@ -158,7 +176,7 @@ the answer to "what can I kick off?".
    `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable —
    the brief is done.**
 
-5. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
+6. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
    (RFCs 139, 144, 147, 150, 154 and 153, `search/04/similar-colleges`,
    2026-09-01); only `search/06/unattended-refresh` is left, and it is DEFERRED
    by intent.** A **`similar_colleges`** chat tool decides "similar" per call
@@ -174,7 +192,7 @@ the answer to "what can I kick off?".
    leaves is in the Backlog: the `NewCollege` test fixture is a 5th copy and the
    shared helper is in the wrong source set, parked twice over.
 
-6. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
+7. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
    admissions layer is user-visible: the coach can answer, with citations, what
    a school weighs in admissions, when its rounds close, and how it actually
    behaves on merit aid — and merit rides along inside cost answers. Every fact
@@ -186,7 +204,7 @@ the answer to "what can I kick off?".
    contains "without need". A school that reports only a freshman total (28 of
    368) is a silence, not a zero.
 
-7. **Before any App Store submission: brief 0002, account deletion** — parked in
+8. **Before any App Store submission: brief 0002, account deletion** — parked in
    the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR Art.
    17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
 
@@ -685,6 +703,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 
 | Pri | Work                                                  | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Where                                    |
 | --- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | Money in unicoach shape (brief 0006)                  | **Gates 1+2 APPROVED (2026-09-02, defaults, no amendments).** Canonical money layer: PriceFigure vs CohortMoneyStat, stored missingness status, authored vocabularies, IPEDS IC_AY + SFA un-deferred, policy-parameter store, staged cutover. Nine slices specced; wave 1 (`shape/01/canonical-store`, `shape/06/pell-and-loans`) READY per slice-board; nothing landed yet. Brief 0005 PAUSED into this brief (D11); D14 decided its search-ranking question.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `product/0006-money-in-unicoach-shape`   |
 | P1  | College search index (brief 0004)                     | **CORE COMPLETE** — gates 1+2 approved (2026-08-27); every specced slice has landed: `search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147), `search/03b/the-index` (RFC 150), `search/05/consumer-sweep` (RFC 154) and `search/04/similar-colleges` (RFC 153, 2026-09-01). S3b was the aha — the derived index serves both search paths. S5 turned out to be an audit (RFC 150 had already repointed every consumer, so there was nothing to delete) and closed the real gap instead with the `find_college` chat tool. S4 closes the brief: `similar_colleges` answers "schools like X" with one query-time weighted distance over the index, no similarity table, on coach prompt **v13** — and it is the first and only reader of the percentile columns S3b computed. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067). **Nothing here is startable.** `search/06/unattended-refresh` stays DEFERRED — automate the quarterly ingest only if running it by hand proves annoying. The debt S4 declined moved to the Backlog: the 5th `NewCollege` fixture copy, and genericising `CollegeSearchOutcome`.                                                  | `product/0004-college-search-index`      |
 | P1  | Clear money language (brief 0003)                     | **COMPLETE — every slice landed.** `money/01` + `01.1` + RFC 143 + `01.2` + `02` + `03` + **`04/where-youll-live`** (RFCs 141–143, 145, 149, 151, 152; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, states the assumption lines above any side-by-side, and now leads with the one way of living the family said they plan — a global default with a per-college override, because living at home is possible at the in-state school and not at the far one (D20). When it cannot show a total it says which kind of silence it is: our unanswered residency, a price we cannot select, or a part the school does not publish. Prompt v14; v13 is the rollback. Nothing left in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `product/0003-clear-money-language`      |
 | P1  | Beat 1 remainder: `first-value/06/invite-your-parent` | **ONE SLICE LEFT.** `first-value/04` COMPLETE (RFCs 140 + 148); **`first-value/05/family-cost-report` LANDED as RFC 155** (`main@47cf9d62` + `6777c7c7`, 2026-09-01) — the tokenized, revocable, login-free parent page, chat as the door, prompt v15, migrations 0073 + 0074, gate 2405 JVM tests + 431 shell assertions, 0 failures. Its two PREFER edges (`money/02`, `money/03`) were already satisfied, so nothing was overridden. **`first-value/06/invite-your-parent` is now UNBLOCKED** — its BLOCKS edge was exactly RFC 155's report surface and token. Honest state before anyone writes its RFC: RFC 155 already built the mint/revoke mechanic (`share_cost_report`, `revoke_cost_report_share`, prompt v15) and the public page, and stopped short of the nudge on purpose, so S6's remaining work is the **CTA placement, the RFC 93 synthesis commitment trigger, and share-event tracking** — and **nothing records a share or a view today** (`cost_report_shares` holds only id, created_at, student_id, token_hash, revoked_at), so tracking is new storage and hits Ian's DDL gate (0001 **D10**). The spec's "share CTA on the report surface" reads oddly now: the door is **chat**, not the parent page, and an iOS share sheet was deliberately deferred (RFC 155 **D-I**). Spec edits belong to /chart. | `product/0001-v1-differentiator/spec.md` |
@@ -738,17 +757,16 @@ Nothing here is committed work.
 **Two open follow-ups from RFC 157 (2026-09-02), at the top because they are the
 newest and the first is a product decision, not a bug:**
 
-- **THE SEARCH INDEX STILL RANKS EVERY FAMILY ON THE IN-STATE NET PRICE — a
-  /chart slice on brief 0004's surface, NOT a fix to fold into the next run.**
-  RFC 157 corrected the labels and the withholding in cost answers; it did not
-  touch ranking. `net_price_percentile_share` is `percent_rank()` over the
-  in-state net price, migration 0064 carries **no tuition column at all**, and
-  `cheaper_than_anchor` in `similar_colleges` compares two in-state figures. So
-  an out-of-state family still gets "cheaper" and price-axis ordering computed
-  from a price that is not theirs. Fixing it needs **new index columns** and a
-  **product decision about what "cheaper" means when residency is unknown** —
-  that is design work with a gate, which is why it goes to /chart rather than
-  into an implementation run.
+- **ABSORBED INTO BRIEF 0006 (2026-09-02): the "search ranks every family on the
+  in-state net price" follow-up is now `shape/05/search-on-your-price`.** RFC
+  157 corrected labels and withholding on cost surfaces; ranking waits on the
+  canonical money layer. The product decision it needed was made at 0006's gate
+  2 (D14): known non-matching residency ranks on the family's residency-correct
+  published price; unknown residency ranks on the net-price stat with the basis
+  in the metric name, never silently; one ruler per query; a search-side
+  residency offer. Do not schedule this from the Backlog — the slice board owns
+  it.
+
 - **`first-value/06/invite-your-parent` has spec drift, recorded when RFC 155
   landed.** Four things the spec assumes are no longer true or were never built:
   the share CTA is a **chat affordance**, not something on the parent page (an
@@ -811,10 +829,11 @@ newest and the first is a product decision, not a bug:**
   regardless — so this is deferred, not resolved, and it gates public launch.
   Also blocks `bin/state-apply`'s per-entity reset (RFC 138 defers to its
   engine) and repeatable clean-slate testing.
-- **IPEDS IC as a cost-data upgrade path** (brief 0003 D7) — public-domain,
-  ~300KB/yr, same UNITID key; adds in-district tuition, separately-reported
-  fees, and multi-year trend that the Scorecard lumps. Deferred, not rejected.
-  The Common Data Set stays out until someone proves the licence.
+- **IPEDS IC as a cost-data upgrade path (brief 0003 D7) — RESOLVED by brief
+  0006 D5 (2026-09-02):** un-deferred as `shape/02/ipeds-ic-ay` (plus
+  `shape/03/ipeds-sfa`). The Common Data Set licence question stays open and is
+  carried by `shape/07/need-and-forms`'s acceptance criteria.
+
 - **Beat 2: parent partner accounts** — claim-the-report onboarding, linked
   family, parent-side coaching. Deliberately unspecced until Beat 1 ships and
   share-rate is observed (0001 D9).
