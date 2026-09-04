@@ -10,6 +10,11 @@ sealed class DaoException(
   cause: Throwable? = null,
 ) : RuntimeException(message, cause)
 
+/** PostgreSQL SQLSTATE codes the write-path mappers dispatch on. */
+private const val SQLSTATE_FOREIGN_KEY_VIOLATION = "23503"
+private const val SQLSTATE_UNIQUE_VIOLATION = "23505"
+private const val SQLSTATE_CHECK_VIOLATION = "23514"
+
 /**
  * A write failure carrying PostgreSQL's own diagnostics: the violated
  * [constraint] name and the server DETAIL line, which names the offending value
@@ -265,6 +270,43 @@ internal fun mapCollegeWriteError(e: java.sql.SQLException): Exception {
     }
 
     "23505", "23514" -> {
+      ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
+    }
+
+    else -> {
+      mapDatabaseError(e)
+    }
+  }
+}
+
+/**
+ * The per-table write-path SQLSTATE mapping every child-table DAO repeats:
+ * `23503` dispatched to a caller-named message by the violated FK's name (a
+ * plain [NotFoundException] for an unregistered one), `23505`/`23514` to
+ * [ConstraintViolationException], everything else through [mapDatabaseError].
+ * Declared once here so a new SQLSTATE mapping does not have to be remembered
+ * per DAO.
+ *
+ * Both violation arms keep the same evidence the other shared mappers carry:
+ * the driver `SQLException` as the cause plus the server's violated-constraint
+ * name and DETAIL line as typed fields.
+ */
+internal fun mapChildWriteError(
+  e: java.sql.SQLException,
+  foreignKeyMessages: Map<String, String>,
+): Exception {
+  val serverError = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
+  return when (e.sqlState) {
+    SQLSTATE_FOREIGN_KEY_VIOLATION -> {
+      val named = foreignKeyMessages[serverError?.constraint]
+      if (named != null) {
+        NotFoundException(message = named, cause = e, constraint = serverError?.constraint, detail = serverError?.detail)
+      } else {
+        NotFoundException(cause = e, constraint = serverError?.constraint, detail = serverError?.detail)
+      }
+    }
+
+    SQLSTATE_UNIQUE_VIOLATION, SQLSTATE_CHECK_VIOLATION -> {
       ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
     }
 

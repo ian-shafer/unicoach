@@ -134,6 +134,36 @@ object CommitmentsDao :
     )
 
   /**
+   * The student's most recent commitment of [lens], in any status, or null when
+   * none has ever been created (RFC 160). The share-nudge step's
+   * suppression/cooldown read: an OPEN row suppresses outright, and a resolved
+   * one anchors the cooldown and the list-changed-since re-nudge condition on
+   * its `created_at`.
+   */
+  fun findLatestByStudentAndLens(
+    session: SqlSession,
+    studentId: StudentId,
+    lens: CommitmentLens,
+  ): Result<Commitment?> =
+    session
+      .queryOne(
+        """
+        SELECT * FROM commitments
+        WHERE student_id = ? AND lens = ?
+        -- id DESC is a stable tiebreak among equal created_at rows, not
+        -- recency: commitment ids are random UUIDs with no temporal order.
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """.trimIndent(),
+        bind = { stmt ->
+          stmt.setObject(1, studentId.value)
+          stmt.setString(2, lens.value)
+        },
+        map = ::mapCommitment,
+        onNoRow = { NotFoundException() },
+      ).orNullOnNotFound()
+
+  /**
    * Marks a commitment fulfilled: sets `status='fulfilled'`, `fulfilled_at=NOW()`,
    * and `disclosed_in_convo_id=convoId` in one write so the row satisfies
    * `commitments_fulfilled_consistency_check`. The `update_timestamp` trigger

@@ -890,7 +890,10 @@ class CoachingServiceTest {
       // convo soft-deleted; getConvo -> NotFound
       assertTrue(service().getConvo(student, started.convo.id).getOrThrow() is GetConvoResult.NotFound)
       val deleted = ConvosDao.findById(sqlSession, started.convo.id, SoftDeleteScope.DELETED).getOrThrow()
-      assertNotNull(deleted.deletedAt)
+      // Ends on a Unit-returning assertion on purpose: a value-returning last
+      // call in an expression-bodied @Test makes it non-void, and JUnit drops
+      // it silently at discovery.
+      assertTrue(deleted.deletedAt != null, "the soft-deleted convo must carry its stamp")
     }
   }
 
@@ -1127,6 +1130,39 @@ class CoachingServiceTest {
       // A successful first turn marks it fulfilled against this convo.
       assertEquals(CommitmentStatus.FULFILLED, commitmentStatus(commitmentId))
       assertEquals(started.convo.id, commitmentConvo(commitmentId))
+    }
+
+  @Test
+  fun `a share_report commitment rides the opener and is fulfilled like any other`() =
+    runBlocking {
+      // RFC 160: delivery is untouched — the nudge lens gets no special-casing.
+      val student = createStudent()
+      val nudgeId =
+        CommitmentsDao
+          .create(
+            sqlSession,
+            NewCommitment(
+              student,
+              CommitmentLens.SHARE_REPORT,
+              CommitmentDisclosure.EXPLICIT,
+              "MARKER_suggest_sharing_the_family_cost_report",
+            ),
+          ).getOrThrow()
+          .id
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      val systemText = captured!!.system!!
+      assertTrue(
+        systemText.contains("MARKER_suggest_sharing_the_family_cost_report"),
+        "the share nudge rides the same opener as every other explicit commitment",
+      )
+      assertEquals(CommitmentStatus.FULFILLED, commitmentStatus(nudgeId))
+      assertEquals(started.convo.id, commitmentConvo(nudgeId))
     }
 
   @Test
@@ -1804,12 +1840,20 @@ class CoachingServiceTest {
   fun `round cap forces a final no-tools call`() =
     runBlocking {
       val student = createStudent()
+      // Overrides over the packaged defaults: the hand-written whole-block
+      // config this test carried predates surfaceCommitments and friends, so it
+      // stopped parsing the day the block grew — unnoticed, because the test
+      // itself was silently dropped (see the trailing assertion note below).
       val cappedConfig =
         CoachingConfig
           .from(
-            com.typesafe.config.ConfigFactory.parseString(
-              """coaching { model="claude-sonnet-4-6", maxTokens=10, systemPromptName="coach", systemPromptVersion="v1", maxToolRounds=2 }""",
-            ),
+            com.typesafe.config.ConfigFactory
+              .parseString("""coaching { systemPromptVersion = "v1", maxToolRounds = 2 }""")
+              .withFallback(
+                ed.unicoach.common.config.AppConfig
+                  .load("service.conf")
+                  .getOrThrow(),
+              ),
           ).getOrThrow()
       var forcedRequest: ChatRequest? = null
       // Always returns tool_use except record the final (no-tools) request.
@@ -1832,7 +1876,11 @@ class CoachingServiceTest {
       // cap + 1 = 3 request rows (user + 2 tool_result), all responses recorded.
       assertEquals(3, requestKinds(started.convo.id).size)
       assertEquals(3, responseRows(started.convo.id).size)
-      assertNotNull(forcedRequest, "a forced no-tools call must be made at the cap")
+      // Ends on a Unit-returning assertion on purpose: an expression body whose
+      // last call is `assertNotNull` infers a non-Unit return type, and JUnit
+      // drops a non-void @Test at discovery -- the test would compile, pass
+      // review, and never run.
+      assertTrue(forcedRequest != null, "a forced no-tools call must be made at the cap")
     }
 
   @Test
@@ -1849,7 +1897,10 @@ class CoachingServiceTest {
       // Both calls recorded (tool_use then error), then the first-turn convo is soft-deleted.
       assertTrue(service().getConvo(student, started.convo.id).getOrThrow() is GetConvoResult.NotFound)
       val deleted = ConvosDao.findById(sqlSession, started.convo.id, SoftDeleteScope.DELETED).getOrThrow()
-      assertNotNull(deleted.deletedAt)
+      // Ends on a Unit-returning assertion on purpose: a value-returning last
+      // call in an expression-bodied @Test makes it non-void, and JUnit drops
+      // it silently at discovery.
+      assertTrue(deleted.deletedAt != null, "the soft-deleted convo must carry its stamp")
     }
 
   @Test

@@ -10,6 +10,9 @@ enum class CommitmentLens(
   GAP("gap"),
   TIMING("timing"),
   CONTRADICTION("contradiction"),
+
+  /** The deterministic share-nudge commitment (RFC 160): code-written, never LLM-proposed. */
+  SHARE_REPORT("share_report"),
   ;
 
   companion object {

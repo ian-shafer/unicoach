@@ -12,9 +12,14 @@ import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.CommitmentSupportDao
 import ed.unicoach.db.dao.CommitmentsDao
+import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.newCollegeFixture
 import ed.unicoach.db.models.ClaimId
 import ed.unicoach.db.models.ClaimKind
 import ed.unicoach.db.models.ClaimOrigin
@@ -23,16 +28,23 @@ import ed.unicoach.db.models.ClaimStatus
 import ed.unicoach.db.models.ClaimSubject
 import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
+import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CommitmentDisclosure
 import ed.unicoach.db.models.CommitmentLens
+import ed.unicoach.db.models.CommitmentStatus
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCommitment
+import ed.unicoach.db.models.NewCostReportShare
+import ed.unicoach.db.models.ShareEventKind
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.TokenHash
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterAll
@@ -47,6 +59,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -86,10 +99,14 @@ class SynthesisServiceTest {
       // partial for whoever ran next (RFC 129).
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, synthesis_runs, observations, claim_support, claims, extraction_runs, " +
-          "college_list_entries, colleges, convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, " +
-          "students, users CASCADE",
+          "college_list_entries, colleges, share_events, cost_report_shares, convos, convo_requests, " +
+          "llm_requests, llm_responses, llm_responses_raw, students, users CASCADE",
       )
     }
+    // colleges.state/locale are FKs into the codebook reference tables since
+    // migration 0067; seed them here idempotently rather than depending on
+    // whichever other suite happens to run first (CostsTestDb precedent).
+    CodebookReferenceFixture.seed(sqlSession)
   }
 
   private val sqlSession =
@@ -327,7 +344,7 @@ class SynthesisServiceTest {
         """.trimIndent()
 
       val result = service(JsonProvider(jsonDoc = doc)).synthesize(student)
-      assertTrue(result is SynthesisResult.Success, "got $result")
+      assertTrue(result is SynthesisResult.Success, "got [$result]")
 
       val commitments = CommitmentsDao.listOpenByStudent(sqlSession, student).getOrThrow()
       assertEquals(2, commitments.size)
@@ -503,7 +520,7 @@ class SynthesisServiceTest {
       createClaim(student, "some fresh belief")
 
       val result = service(JsonProvider(jsonDoc = gapDoc())).synthesize(student)
-      assertTrue(result is SynthesisResult.Success, "got $result")
+      assertTrue(result is SynthesisResult.Success, "got [$result]")
 
       val staleAfter = CommitmentsDao.findById(sqlSession, stale.id).getOrThrow()
       assertEquals("dropped", staleAfter.status.value)
@@ -540,7 +557,7 @@ class SynthesisServiceTest {
         """.trimIndent()
 
       val result = service(JsonProvider(jsonDoc = doc)).synthesize(student)
-      assertTrue(result is SynthesisResult.Success, "got $result")
+      assertTrue(result is SynthesisResult.Success, "got [$result]")
 
       val commitment = CommitmentsDao.listOpenByStudent(sqlSession, student).getOrThrow().single()
       // Only the active claim is linked; the retracted one is omitted.
@@ -560,7 +577,7 @@ class SynthesisServiceTest {
       val result =
         service(NoToolUseProvider(usage = TokenUsage(11, 22, 0, 0))).synthesize(student)
 
-      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       assertNull(
         ed.unicoach.db.dao.SynthesisRunsDao
           .lastAppliedAt(sqlSession, student)
@@ -594,7 +611,7 @@ class SynthesisServiceTest {
       val result =
         service(JsonProvider(jsonDoc = doc, usage = TokenUsage(9, 4, 0, 0))).synthesize(student)
 
-      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       connection
         .prepareStatement("SELECT outcome, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?")
         .use { stmt ->
@@ -650,7 +667,7 @@ class SynthesisServiceTest {
       val result =
         service(JsonProvider(jsonDoc = malformed, usage = TokenUsage(13, 27, 0, 0))).synthesize(student)
 
-      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       assertNull(
         ed.unicoach.db.dao.SynthesisRunsDao
           .lastAppliedAt(sqlSession, student)
@@ -694,7 +711,7 @@ class SynthesisServiceTest {
       val result =
         service(JsonProvider(jsonDoc = malformed, usage = TokenUsage(17, 23, 0, 0))).synthesize(student)
 
-      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       assertNull(
         ed.unicoach.db.dao.SynthesisRunsDao
           .lastAppliedAt(sqlSession, student)
@@ -726,7 +743,7 @@ class SynthesisServiceTest {
       val ghost = StudentId(UUID.randomUUID())
       val provider = TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null))
       val result = service(provider).synthesize(ghost)
-      assertTrue(result is SynthesisResult.Success, "got $result")
+      assertTrue(result is SynthesisResult.Success, "got [$result]")
       assertEquals(0, provider.calls)
       assertEquals(0, runRows(ghost))
     }
@@ -738,7 +755,7 @@ class SynthesisServiceTest {
       val student = createStudent()
       createClaim(student)
       val result = service(TerminalProvider(terminal = ChatEvent.Rejected("nope", null, null))).synthesize(student)
-      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       assertEquals(0, runRows(student))
     }
 
@@ -748,7 +765,7 @@ class SynthesisServiceTest {
       val student = createStudent()
       createClaim(student)
       val result = service(TerminalProvider(terminal = ChatEvent.TransientFailure("later", null, null))).synthesize(student)
-      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       assertEquals(0, runRows(student))
     }
 
@@ -760,7 +777,7 @@ class SynthesisServiceTest {
       softDeleteStudent(student)
       val provider = TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null))
       val result = service(provider).synthesize(student)
-      assertTrue(result is SynthesisResult.Success, "got $result")
+      assertTrue(result is SynthesisResult.Success, "got [$result]")
       assertEquals(0, provider.calls)
       assertEquals(0, runRows(student))
     }
@@ -771,7 +788,7 @@ class SynthesisServiceTest {
       val student = createStudent()
       val provider = TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null))
       val result = service(provider).synthesize(student)
-      assertTrue(result is SynthesisResult.Success, "got $result")
+      assertTrue(result is SynthesisResult.Success, "got [$result]")
       assertEquals(0, provider.calls)
       assertEquals(0, runRows(student))
     }
@@ -825,7 +842,7 @@ class SynthesisServiceTest {
       createClaim(student)
       val missingPromptConfig = configWith("""synthesis.promptVersion = "v-missing"""")
       val result = service(JsonProvider(jsonDoc = gapDoc()), missingPromptConfig).synthesize(student)
-      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       assertEquals(0, runRows(student))
     }
 
@@ -877,7 +894,7 @@ class SynthesisServiceTest {
       val result =
         service(JsonProvider(jsonDoc = gapDoc()), budget = exhaustedBudget).synthesize(student)
 
-      assertTrue(result is SynthesisResult.SkippedBudgetExhausted, "got $result")
+      assertTrue(result is SynthesisResult.SkippedBudgetExhausted, "got [$result]")
       assertEquals(student, result.studentId, "the skip names the student it was decided for")
       assertTrue(result.entitlement.exhausted)
       assertEquals(llmRequestsBefore, countAllLlmRequests(), "a skipped pass makes no provider call")
@@ -889,6 +906,305 @@ class SynthesisServiceTest {
           .getOrThrow(),
         "the freshness marker is untouched",
       )
+    }
+
+  // ---------------------------------------------------------------------------
+  // The share-nudge step (RFC 160)
+  // ---------------------------------------------------------------------------
+
+  // Each fixture college needs a distinct ipeds_unit_id: CollegesDao.upsert
+  // keys on it, so a repeat would silently merge two "different" schools into
+  // one row. 900000 keeps clear of real IPEDS ids in other fixtures; the
+  // nanoTime salt keeps ids unique across test classes sharing one database
+  // within a run (this suite truncates colleges, others may not).
+  private var ipedsUnitIdCounter = 900000 + (System.nanoTime() % 10000).toInt()
+
+  private fun createCollege(): CollegeId =
+    CollegesDao
+      .upsert(sqlSession, newCollegeFixture(ipedsUnitId = ipedsUnitIdCounter++, name = "Nudge Test College"))
+      .getOrThrow()
+      .id
+
+  /** One active list entry; [touchedAt] backdates both stamps so freshness and the list-changed condition are controllable. */
+  private fun addListEntry(
+    studentId: StudentId,
+    touchedAt: Instant? = null,
+  ) {
+    val collegeId = createCollege()
+    if (touchedAt == null) {
+      connection
+        .prepareStatement("INSERT INTO college_list_entries (student_id, college_id) VALUES (?, ?)")
+        .use { stmt ->
+          stmt.setObject(1, studentId.value)
+          stmt.setObject(2, collegeId.value)
+          stmt.executeUpdate()
+        }
+    } else {
+      connection
+        .prepareStatement(
+          "INSERT INTO college_list_entries (student_id, college_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        ).use { stmt ->
+          stmt.setObject(1, studentId.value)
+          stmt.setObject(2, collegeId.value)
+          stmt.setTimestamp(3, java.sql.Timestamp.from(touchedAt))
+          stmt.setTimestamp(4, java.sql.Timestamp.from(touchedAt))
+          stmt.executeUpdate()
+        }
+    }
+  }
+
+  /** A resolved (dropped) share_report commitment whose created_at is [createdAt] — the re-nudge anchor. */
+  private fun insertResolvedShareNudge(
+    studentId: StudentId,
+    createdAt: Instant,
+  ) {
+    connection
+      .prepareStatement(
+        "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason, created_at) " +
+          "VALUES (?, 'share_report', 'explicit', 'earlier nudge', 'dropped', NOW(), 'test', ?)",
+      ).use { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.setTimestamp(2, java.sql.Timestamp.from(createdAt))
+        stmt.executeUpdate()
+      }
+  }
+
+  private fun insertLiveShare(studentId: StudentId) {
+    val id = CostReportSharesDao.nextId(sqlSession).getOrThrow()
+    CostReportSharesDao
+      .create(sqlSession, NewCostReportShare(id, studentId, TokenHash.fromRawToken("raw-$id")))
+      .getOrThrow()
+  }
+
+  private fun shareNudges(studentId: StudentId): List<ed.unicoach.db.models.Commitment> =
+    CommitmentsDao
+      .listByStudent(sqlSession, studentId, limit = 100, offset = 0)
+      .getOrThrow()
+      .filter { it.lens == CommitmentLens.SHARE_REPORT }
+
+  /** A provider that must never be reached: every nudge-matrix student below has no active claims, so the LLM phases no-op. */
+  private fun executeNudgeOnlyPass(
+    student: StudentId,
+    cfg: SynthesisConfig = config,
+  ): SynthesisResult =
+    runBlocking {
+      val provider = TerminalProvider(terminal = ChatEvent.TransientFailure("LLM must not be called", null, null))
+      val result = service(provider, cfg).synthesize(student)
+      assertEquals(0, provider.calls, "the nudge step must not need the LLM")
+      assertIs<SynthesisResult.Success>(result, "a suppression must be a completed pass declining to insert, not a fault")
+      result
+    }
+
+  @Test
+  fun `an eligible student gets exactly one open explicit share_report commitment with the fixed statement and no supports`() {
+    val student = createStudent()
+    addListEntry(student)
+    addListEntry(student)
+
+    val result = executeNudgeOnlyPass(student)
+    assertTrue(result is SynthesisResult.Success, "got [$result]")
+
+    val nudge = shareNudges(student).single()
+    assertEquals(CommitmentStatus.OPEN, nudge.status)
+    assertEquals(CommitmentDisclosure.EXPLICIT, nudge.disclosure)
+    assertEquals(SynthesisService.SHARE_NUDGE_STATEMENT, nudge.statement, "template text, never LLM text")
+    assertEquals(
+      emptyList(),
+      CommitmentSupportDao.listClaimsForCommitment(sqlSession, nudge.id).getOrThrow(),
+      "no claims were reasoned over, so no support rows",
+    )
+    assertEquals(0, runRows(student), "a nudge-only pass writes no synthesis_runs row: runs log LLM work")
+
+    // A second pass the same day is a no-op: the open nudge suppresses.
+    assertTrue(executeNudgeOnlyPass(student) is SynthesisResult.Success)
+    assertEquals(1, shareNudges(student).size, "a second pass the same day must not double-nudge")
+  }
+
+  @Test
+  fun `fewer than two active list entries suppresses the nudge`() {
+    val zero = createStudent()
+    val one = createStudent()
+    addListEntry(one)
+
+    executeNudgeOnlyPass(zero)
+    executeNudgeOnlyPass(one)
+
+    assertEquals(0, shareNudges(zero).size, "no list, nothing to compare, no nudge")
+    assertEquals(0, shareNudges(one).size, "the report is a comparison; two schools make one")
+  }
+
+  @Test
+  fun `a live share suppresses the nudge`() {
+    val student = createStudent()
+    addListEntry(student)
+    addListEntry(student)
+    insertLiveShare(student)
+
+    executeNudgeOnlyPass(student)
+
+    assertEquals(0, shareNudges(student).size, "a student with a live link needs no invitation")
+  }
+
+  @Test
+  fun `an opted_out share event suppresses the nudge forever`() {
+    val student = createStudent()
+    addListEntry(student)
+    addListEntry(student)
+    ShareEventsDao.recordOptOut(sqlSession, student).getOrThrow()
+
+    executeNudgeOnlyPass(student)
+
+    assertEquals(0, shareNudges(student).size, "never ask me again is forever")
+  }
+
+  @Test
+  fun `the open-set cap suppresses the nudge`() {
+    val student = createStudent()
+    addListEntry(student)
+    addListEntry(student)
+    createCommitment(student, "one")
+    createCommitment(student, "two")
+
+    executeNudgeOnlyPass(student, configWith("synthesis.maxOpenCommitments = 2"))
+
+    assertEquals(0, shareNudges(student).size, "a saturated open set takes no nudge either")
+  }
+
+  @Test
+  fun `shareNudgeEnabled = false suppresses the nudge`() {
+    val student = createStudent()
+    addListEntry(student)
+    addListEntry(student)
+
+    executeNudgeOnlyPass(student, configWith("synthesis.shareNudgeEnabled = false"))
+
+    assertEquals(0, shareNudges(student).size, "the rollback knob stops new nudges")
+  }
+
+  // All re-nudge anchors hang off the SERVICE's pinned clock, not the wall
+  // clock: the cooldown compares commitment created_at against Instant.now(clock).
+
+  @Test
+  fun `inside the cooldown no repeat fires even when the list changed since`() {
+    // Cooldown not elapsed: the prior nudge is recent, even though the list changed since.
+    val now = fixedClock.instant()
+    val recent = createStudent()
+    insertResolvedShareNudge(recent, now.minus(config.shareNudgeCooldown.minusDays(1)))
+    addListEntry(recent)
+    addListEntry(recent)
+
+    executeNudgeOnlyPass(recent)
+
+    // The seeded resolved nudge itself is a share_report row; what must NOT appear is a new OPEN one.
+    assertEquals(0, shareNudges(recent).count { it.status == CommitmentStatus.OPEN }, "inside the cooldown no repeat fires")
+  }
+
+  @Test
+  fun `an unchanged list earns no repeat even after the cooldown`() {
+    // Cooldown elapsed but the list unchanged since: nothing new to point at.
+    val anchor = fixedClock.instant().minus(config.shareNudgeCooldown.plusDays(6))
+    val staleList = createStudent()
+    addListEntry(staleList, touchedAt = anchor.minus(java.time.Duration.ofDays(10)))
+    addListEntry(staleList, touchedAt = anchor.minus(java.time.Duration.ofDays(9)))
+    insertResolvedShareNudge(staleList, anchor)
+
+    executeNudgeOnlyPass(staleList)
+
+    assertEquals(0, shareNudges(staleList).count { it.status == CommitmentStatus.OPEN }, "an unchanged list earns no repeat")
+  }
+
+  @Test
+  fun `a re-nudge fires when the cooldown elapsed AND the list changed since`() {
+    val now = fixedClock.instant()
+    val anchor = now.minus(config.shareNudgeCooldown.plusDays(6))
+    val eligible = createStudent()
+    addListEntry(eligible, touchedAt = anchor.minus(java.time.Duration.ofDays(10)))
+    insertResolvedShareNudge(eligible, anchor)
+    addListEntry(eligible, touchedAt = now)
+
+    executeNudgeOnlyPass(eligible)
+
+    val renudge = shareNudges(eligible)
+    assertEquals(1, renudge.count { it.status == CommitmentStatus.OPEN }, "the repeat has something new to point at, so it fires")
+  }
+
+  @Test
+  fun `a pass whose LLM phases no-op on freshness still writes the nudge`() =
+    runBlocking {
+      val student = createStudent()
+      createClaim(student)
+      addListEntry(student)
+      addListEntry(student)
+
+      // First pass with the nudge dark: the LLM applies, advancing the freshness marker.
+      val first =
+        service(JsonProvider(jsonDoc = gapDoc()), configWith("synthesis.shareNudgeEnabled = false")).synthesize(student)
+      assertTrue(first is SynthesisResult.Success, "got [$first]")
+      assertEquals(0, shareNudges(student).size)
+      assertEquals(1, runRows(student))
+
+      // Second pass, nudge on, model unchanged: the freshness gate no-ops the
+      // LLM phases (no provider call, no new run) — the nudge fires anyway.
+      val provider = JsonProvider(jsonDoc = gapDoc())
+      val second = service(provider).synthesize(student)
+      assertTrue(second is SynthesisResult.Success, "got [$second]")
+      assertEquals(0, provider.calls, "share eligibility is not a freshness input, by design")
+      assertEquals(1, runRows(student), "no new run row: the LLM never ran")
+      assertEquals(1, shareNudges(student).size, "the nudge is independent of the freshness gate")
+    }
+
+  @Test
+  fun `the LLM cannot propose the share_report lens - the schema omits it and the validator rejects it`() =
+    runBlocking {
+      val student = createStudent()
+      createClaim(student)
+      val doc = """{"commitments":[{"lens":"share_report","disclosure":"explicit","statement":"x","supports":[]}]}"""
+      val provider = JsonProvider(jsonDoc = doc, usage = TokenUsage(9, 4, 0, 0))
+
+      val result = service(provider, configWith("synthesis.shareNudgeEnabled = false")).synthesize(student)
+
+      // The advertised schema never offers the nudge lens: walk the structured
+      // schema to the lens enum and assert the exact advertised set.
+      val advertisedLenses =
+        provider.lastRequest!!
+          .tools
+          .single()
+          .getValue("input_schema")
+          .jsonObject
+          .getValue("properties")
+          .jsonObject
+          .getValue("commitments")
+          .jsonObject
+          .getValue("items")
+          .jsonObject
+          .getValue("properties")
+          .jsonObject
+          .getValue("lens")
+          .jsonObject
+          .getValue("enum")
+          .jsonArray
+          .map { it.jsonPrimitive.content }
+          .toSet()
+      assertEquals(
+        setOf("gap", "timing", "contradiction"),
+        advertisedLenses,
+        "the schema offers exactly the LLM-proposable lenses, never the code-only share_report",
+      )
+
+      // ...and a model that invents it anyway is rejected like an unknown lens.
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
+      connection
+        .prepareStatement("SELECT outcome, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?")
+        .use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals("invalid_field", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").contains("lens"), rs.getString("failure_reason"))
+          }
+        }
+      assertEquals(0, shareNudges(student).size, "the invented lens must never become a commitment")
     }
 
   private fun countAllLlmRequests(): Int =

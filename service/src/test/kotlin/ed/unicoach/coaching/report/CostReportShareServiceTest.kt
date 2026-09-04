@@ -5,7 +5,16 @@ import ed.unicoach.coaching.report.ReportTestDb.SHARE_TOKEN_SECRET
 import ed.unicoach.coaching.report.ReportTestDb.SHARE_URL_BASE
 import ed.unicoach.coaching.report.ReportTestDb.serviceWith
 import ed.unicoach.coaching.report.ReportTestDb.tokenOf
+import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.ShareEventsDao
+import ed.unicoach.db.models.Commitment
+import ed.unicoach.db.models.CommitmentDisclosure
+import ed.unicoach.db.models.CommitmentLens
+import ed.unicoach.db.models.CommitmentStatus
+import ed.unicoach.db.models.CostReportShareId
+import ed.unicoach.db.models.NewCommitment
+import ed.unicoach.db.models.ShareEventKind
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
 import kotlinx.coroutines.CompletableDeferred
@@ -241,6 +250,190 @@ class CostReportShareServiceTest {
       assertEquals(1, urls.size, "every concurrent share must hand back the one live link: [$urls]")
       assertEquals(1, liveRowCount(studentId), "the index still permits exactly one live share")
       assertEquals(1, rowCount(studentId), "a lost race must not leave a revoked row behind")
+    }
+
+  // ---------------------------------------------------------------------------
+  // RFC 160: share events, recorded in the same transaction as the mutation
+  // ---------------------------------------------------------------------------
+
+  private fun eventsOf(studentId: StudentId): List<Pair<ShareEventKind, CostReportShareId?>> =
+    ShareEventsDao
+      .listByStudent(sqlSession, studentId)
+      .getOrThrow()
+      .map { it.kind to it.shareId }
+
+  private fun liveShareId(studentId: StudentId): CostReportShareId =
+    assertNotNull(CostReportSharesDao.findLiveByStudent(sqlSession, studentId).getOrThrow()).id
+
+  @Test
+  fun `each share outcome records exactly one event naming the right row`() =
+    runBlocking {
+      val studentId = createStudent()
+
+      // Minted: the new row.
+      service.share(studentId).getOrThrow()
+      val mintedId = liveShareId(studentId)
+      assertEquals(listOf(ShareEventKind.MINTED to mintedId), eventsOf(studentId))
+
+      // Repeat: the SAME live row — the previously invisible case.
+      service.share(studentId).getOrThrow()
+      assertEquals(
+        listOf(ShareEventKind.MINTED to mintedId, ShareEventKind.REPEAT to mintedId),
+        eventsOf(studentId),
+      )
+
+      // Reissued: ONE event naming the NEW row; the stale row's interior
+      // revocation is part of the reissue, never a separate 'revoked'.
+      serviceWith(ROTATED_SECRET).share(studentId).getOrThrow()
+      val reissuedId = liveShareId(studentId)
+      assertNotEquals(mintedId, reissuedId)
+      assertEquals(
+        listOf(
+          ShareEventKind.MINTED to mintedId,
+          ShareEventKind.REPEAT to mintedId,
+          ShareEventKind.REISSUED to reissuedId,
+        ),
+        eventsOf(studentId),
+      )
+
+      // Revoked: the revoked row.
+      serviceWith(ROTATED_SECRET).revoke(studentId).getOrThrow()
+      assertEquals(
+        ShareEventKind.REVOKED to reissuedId,
+        eventsOf(studentId).last(),
+      )
+      assertEquals(4, eventsOf(studentId).size)
+    }
+
+  @Test
+  fun `Unavailable and NothingLive record no event`() =
+    runBlocking {
+      val studentId = createStudent()
+
+      assertEquals(ShareCostReportOutcome.Unavailable, serviceWith(secret = null).share(studentId).getOrThrow())
+      assertEquals(RevokeCostReportOutcome.NothingLive, service.revoke(studentId).getOrThrow())
+
+      assertEquals(emptyList(), eventsOf(studentId), "nothing happened, so nothing is logged")
+    }
+
+  @Test
+  fun `the event insert is atomic with the share mutation - a failed event rolls the mint back`() =
+    runBlocking {
+      val studentId = createStudent()
+      // Make every share_events insert fail, so the only way a share row can
+      // survive is if the event were recorded in a DIFFERENT transaction.
+      CoachingTestDb.connection.createStatement().use { stmt ->
+        stmt.execute(
+          """
+          CREATE FUNCTION share_events_test_bomb() RETURNS trigger AS
+          'BEGIN RAISE EXCEPTION ''share_events insert refused by test''; END;' LANGUAGE plpgsql;
+          """.trimIndent(),
+        )
+        stmt.execute(
+          "CREATE TRIGGER trigger_zz_share_events_test_bomb BEFORE INSERT ON share_events " +
+            "FOR EACH ROW EXECUTE PROCEDURE share_events_test_bomb()",
+        )
+      }
+      try {
+        val result = service.share(studentId)
+        assertTrue(result.isFailure, "the share must fail with its event, got [$result]")
+        assertEquals(0, rowCount(studentId), "the mint must roll back with the failed event")
+        assertEquals(emptyList(), eventsOf(studentId))
+      } finally {
+        CoachingTestDb.connection.createStatement().use { stmt ->
+          stmt.execute("DROP TRIGGER trigger_zz_share_events_test_bomb ON share_events")
+          stmt.execute("DROP FUNCTION share_events_test_bomb()")
+        }
+      }
+    }
+
+  // ---------------------------------------------------------------------------
+  // RFC 160: the durable opt-out
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `stopOffers records one opted_out event and a second call records nothing new`() =
+    runBlocking {
+      val studentId = createStudent()
+
+      val recorded = assertIs<StopCostReportOffersOutcome.Recorded>(service.stopOffers(studentId).getOrThrow())
+      assertEquals(ShareEventKind.OPTED_OUT, recorded.event.kind, "the outcome carries the event the write produced")
+      assertEquals(studentId, recorded.event.studentId)
+      assertEquals(StopCostReportOffersOutcome.AlreadyStopped, service.stopOffers(studentId).getOrThrow())
+
+      assertEquals(listOf(ShareEventKind.OPTED_OUT to null as CostReportShareId?), eventsOf(studentId))
+      assertTrue(ShareEventsDao.hasOptOut(sqlSession, studentId).getOrThrow())
+    }
+
+  @Test
+  fun `stopOffers leaves a live share alone and sharing keeps working after it`() =
+    runBlocking {
+      val studentId = createStudent()
+      val link = linkOf(service.share(studentId).getOrThrow())
+
+      service.stopOffers(studentId).getOrThrow()
+
+      assertEquals(1, liveRowCount(studentId), "opting out of the suggestion revokes nothing")
+      // A student who opted out of nudges can still ask to share: same link back.
+      val again = linkOf(service.share(studentId).getOrThrow())
+      assertEquals(link.url, again.url)
+      // And needs no secret: the opt-out is about the log, not the token.
+      val noSecretStudent = createStudent()
+      val noSecretOutcome = serviceWith(secret = null).stopOffers(noSecretStudent).getOrThrow()
+      assertTrue(noSecretOutcome is StopCostReportOffersOutcome.Recorded, "got [$noSecretOutcome]")
+    }
+
+  /** An open share_report commitment, as the synthesis nudge step writes it. */
+  private fun insertOpenShareNudge(studentId: StudentId): Commitment =
+    CommitmentsDao
+      .create(
+        sqlSession,
+        NewCommitment(
+          studentId = studentId,
+          lens = CommitmentLens.SHARE_REPORT,
+          disclosure = CommitmentDisclosure.EXPLICIT,
+          statement = "suggest sharing the family cost report",
+        ),
+      ).getOrThrow()
+
+  private fun shareNudges(studentId: StudentId): List<Commitment> =
+    CommitmentsDao
+      .listByStudent(sqlSession, studentId, limit = 100, offset = 0)
+      .getOrThrow()
+      .filter { it.lens == CommitmentLens.SHARE_REPORT }
+
+  @Test
+  fun `stopOffers drops an already-written open nudge so the next opener has nothing to surface`() =
+    runBlocking {
+      val studentId = createStudent()
+      insertOpenShareNudge(studentId)
+
+      assertIs<StopCostReportOffersOutcome.Recorded>(service.stopOffers(studentId).getOrThrow())
+
+      val nudge = shareNudges(studentId).single()
+      assertEquals(CommitmentStatus.DROPPED, nudge.status, "the opt-out must resolve the standing nudge")
+      assertEquals(CostReportShareService.SHARE_OFFERS_OPTED_OUT_DROP_REASON, nudge.dropReason)
+      assertEquals(
+        emptyList(),
+        CommitmentsDao.listOpenExplicitByStudent(sqlSession, studentId).getOrThrow(),
+        "the opener reads open explicit commitments; the nudge must not be among them",
+      )
+    }
+
+  @Test
+  fun `the AlreadyStopped path sweeps a nudge that raced in after a first opt-out`() =
+    runBlocking {
+      val studentId = createStudent()
+      assertIs<StopCostReportOffersOutcome.Recorded>(service.stopOffers(studentId).getOrThrow())
+      // A sweep whose eligibility read predated the opt-out commits its nudge late.
+      insertOpenShareNudge(studentId)
+
+      assertEquals(StopCostReportOffersOutcome.AlreadyStopped, service.stopOffers(studentId).getOrThrow())
+
+      assertTrue(
+        shareNudges(studentId).none { it.status == CommitmentStatus.OPEN },
+        "the second opt-out call must sweep the raced-in nudge",
+      )
     }
 
   private companion object {

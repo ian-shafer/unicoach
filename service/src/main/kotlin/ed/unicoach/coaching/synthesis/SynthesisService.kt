@@ -21,7 +21,9 @@ import ed.unicoach.db.dao.ClaimsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CommitmentSupportDao
 import ed.unicoach.db.dao.CommitmentsDao
+import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.NotFoundException
+import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SynthesisRunsDao
@@ -32,6 +34,7 @@ import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.Commitment
 import ed.unicoach.db.models.CommitmentDisclosure
 import ed.unicoach.db.models.CommitmentLens
+import ed.unicoach.db.models.CommitmentStatus
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewSynthesisRun
@@ -142,6 +145,22 @@ class SynthesisService(
         BudgetVerdict.Entitled -> {}
       }
 
+      // The deterministic share-nudge step (RFC 160): boolean logic over DB
+      // state, no LLM. It runs HERE — after the student/budget gates, under the
+      // held advisory lock, inside this read/write transaction — and before
+      // every LLM-phase gate below, so a pass whose LLM phases no-op on
+      // freshness (or on an empty claim set, or at the open-set cap read
+      // against the post-insert state) still writes the nudge when eligible.
+      when (val verdict = computeShareNudgeVerdict(session, studentId)) {
+        ShareNudgeVerdict.Eligible -> {
+          insertShareNudge(session, studentId)
+        }
+
+        is ShareNudgeVerdict.Suppressed -> {
+          logger.debug("share-nudge suppressed for student=[{}]: [{}]", studentId.asString, verdict.reason)
+        }
+      }
+
       val lastAppliedAt = SynthesisRunsDao.lastAppliedAt(session, studentId).getOrThrow()
 
       val activeClaims = ClaimsDao.listActiveByStudent(session, studentId).getOrThrow()
@@ -176,6 +195,138 @@ class SynthesisService(
         prompt = prompt,
       )
     }
+
+  // ---------------------------------------------------------------------------
+  // The share-nudge step (RFC 160)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Why the share-nudge step did or did not fire for this student (RFC 160) —
+   * the [BudgetVerdict] shape: a skip is a named outcome, so "why did my
+   * student never get the invite?" is answerable from the log.
+   */
+  private sealed interface ShareNudgeVerdict {
+    data object Eligible : ShareNudgeVerdict
+
+    data class Suppressed(
+      val reason: ShareNudgeSuppression,
+    ) : ShareNudgeVerdict
+  }
+
+  /** The eight distinct reasons the share-nudge step declines to fire. */
+  private enum class ShareNudgeSuppression {
+    DISABLED,
+    TOO_FEW_LIST_ENTRIES,
+    LIVE_SHARE,
+    OPTED_OUT,
+    OPEN_SET_AT_CAP,
+    OPEN_SHARE_NUDGE,
+    COOLDOWN_NOT_ELAPSED,
+    LIST_UNCHANGED_SINCE_LAST_NUDGE,
+  }
+
+  /**
+   * The share-nudge eligibility decision (RFC 160 §2): config on;
+   * ≥ [SHARE_NUDGE_MIN_LIST_ENTRIES] active list entries (the report is a
+   * comparison — two schools make one); no live share (a student with a live
+   * link needs no invitation); no `opted_out` share event ("never ask me
+   * again" is forever); the open set below the cap and holding no open
+   * `share_report` row; and, when a prior `share_report` commitment exists,
+   * the re-nudge condition ([computeReNudgeSuppression]). Every negative answer is a
+   * named [ShareNudgeVerdict.Suppressed] reason, never an anonymous false.
+   */
+  private fun computeShareNudgeVerdict(
+    session: SqlSession,
+    studentId: StudentId,
+  ): ShareNudgeVerdict {
+    if (!config.shareNudgeEnabled) return ShareNudgeVerdict.Suppressed(ShareNudgeSuppression.DISABLED)
+
+    val listEntries = CollegeListEntriesDao.listActiveByStudent(session, studentId).getOrThrow()
+    if (listEntries.size < SHARE_NUDGE_MIN_LIST_ENTRIES) {
+      return ShareNudgeVerdict.Suppressed(ShareNudgeSuppression.TOO_FEW_LIST_ENTRIES)
+    }
+
+    if (CostReportSharesDao.findLiveByStudent(session, studentId).getOrThrow() != null) {
+      return ShareNudgeVerdict.Suppressed(ShareNudgeSuppression.LIVE_SHARE)
+    }
+    if (ShareEventsDao.hasOptOut(session, studentId).getOrThrow()) {
+      return ShareNudgeVerdict.Suppressed(ShareNudgeSuppression.OPTED_OUT)
+    }
+
+    val openCommitments = CommitmentsDao.listOpenByStudent(session, studentId).getOrThrow()
+    if (openCommitments.size >= config.maxOpenCommitments) {
+      return ShareNudgeVerdict.Suppressed(ShareNudgeSuppression.OPEN_SET_AT_CAP)
+    }
+    if (openCommitments.any { it.lens == CommitmentLens.SHARE_REPORT }) {
+      return ShareNudgeVerdict.Suppressed(ShareNudgeSuppression.OPEN_SHARE_NUDGE)
+    }
+
+    val latest = CommitmentsDao.findLatestByStudentAndLens(session, studentId, CommitmentLens.SHARE_REPORT).getOrThrow()
+    if (latest != null) {
+      val suppression = computeReNudgeSuppression(latest, listEntries)
+      if (suppression != null) return ShareNudgeVerdict.Suppressed(suppression)
+    }
+    return ShareNudgeVerdict.Eligible
+  }
+
+  /**
+   * RFC 160's re-nudge condition against the most recent `share_report`
+   * commitment, as the suppression it hits — or null when a repeat may fire:
+   * the commitment is resolved (belt beside the caller's open-set check), the
+   * cooldown has elapsed since it was created, AND some active entry was
+   * touched since — so a repeat points at something new.
+   */
+  private fun computeReNudgeSuppression(
+    latest: Commitment,
+    listEntries: List<CollegeListEntry>,
+  ): ShareNudgeSuppression? {
+    // Exhaustive over the status, so a new CommitmentStatus member must decide
+    // here whether it suppresses like OPEN or anchors the cooldown like the
+    // resolved pair.
+    when (latest.status) {
+      CommitmentStatus.OPEN -> {
+        return ShareNudgeSuppression.OPEN_SHARE_NUDGE
+      }
+
+      CommitmentStatus.FULFILLED, CommitmentStatus.DROPPED -> {}
+    }
+    val cooldownOver = latest.createdAt.plus(config.shareNudgeCooldown)
+    if (Instant.now(clock).isBefore(cooldownOver)) return ShareNudgeSuppression.COOLDOWN_NOT_ELAPSED
+    // The re-nudge must have something new to point at: some active entry
+    // touched since the last nudge was written.
+    if (listEntries.none { it.updatedAt.isAfter(latest.createdAt) }) {
+      return ShareNudgeSuppression.LIST_UNCHANGED_SINCE_LAST_NUDGE
+    }
+    return null
+  }
+
+  /**
+   * Inserts the student's `share_report` commitment — a fixed template
+   * statement, never LLM text, and no support links (no claims were reasoned
+   * over) — and returns the created row.
+   */
+  private fun insertShareNudge(
+    session: SqlSession,
+    studentId: StudentId,
+  ): Commitment {
+    val nudge =
+      CommitmentsDao
+        .create(
+          session,
+          NewCommitment(
+            studentId = studentId,
+            lens = CommitmentLens.SHARE_REPORT,
+            disclosure = CommitmentDisclosure.EXPLICIT,
+            statement = SHARE_NUDGE_STATEMENT,
+          ),
+        ).getOrThrow()
+    logger.info(
+      "share-nudge commitment [{}] written for student=[{}]",
+      nudge.id.asString,
+      studentId.asString,
+    )
+    return nudge
+  }
 
   // ---------------------------------------------------------------------------
   // LLM call (no transaction) + write phase
@@ -506,8 +657,11 @@ class SynthesisService(
       // where a scalar is expected returns null (a BadField), never throws (`.jsonPrimitive`
       // would). Keeps parseOutput total so a malformed Completed reaches writeFailedRun.
       val lensRaw = (obj["lens"] as? JsonPrimitive)?.contentOrNull
+      // A known-but-non-proposable lens (share_report) is rejected exactly like
+      // an unknown one: the LLM may only propose the subset its schema offers
+      // (RFC 160) — the nudge lens is written by deterministic code alone.
       val lens =
-        lensRaw?.let { CommitmentLens.fromValue(it) }
+        lensRaw?.let { CommitmentLens.fromValue(it) }?.takeIf { it in LLM_PROPOSABLE_LENSES }
           ?: return ParseResult.Failure(JsonParseFailure.BadField("lens", lensRaw ?: "missing"))
       val disclosureRaw = (obj["disclosure"] as? JsonPrimitive)?.contentOrNull
       val disclosure =
@@ -596,11 +750,53 @@ class SynthesisService(
     ) : ParseResult
   }
 
-  private companion object {
-    const val RECORD_SYNTHESIS_TOOL_NAME = "record_synthesis"
+  companion object {
+    private const val RECORD_SYNTHESIS_TOOL_NAME = "record_synthesis"
+
+    /**
+     * The fixed share-nudge statement (RFC 160): template text, never LLM
+     * output, in the money vocabulary. Delivery reads it into the opener like
+     * any other explicit commitment.
+     */
+    const val SHARE_NUDGE_STATEMENT =
+      "Their college list now has real cost figures. When the moment is right, " +
+        "suggest sharing the family cost report with a parent — it is a live link, " +
+        "revocable any time, and only shows what they have already seen."
+
+    /**
+     * The share nudge fires only for a list of at least this many active
+     * entries: the report is a comparison, and two schools make one (RFC 160,
+     * a product decision — a constant, not a tunable).
+     */
+    const val SHARE_NUDGE_MIN_LIST_ENTRIES = 2
+
+    /**
+     * The lenses the synthesis LLM may propose through `record_synthesis`
+     * (RFC 160): the tool schema enumerates exactly this set and parseOutput
+     * rejects the rest. Built through an exhaustive when, so a new
+     * [CommitmentLens] member does not compile until its proposability is
+     * decided here — [CommitmentLens.SHARE_REPORT] is written by the
+     * deterministic share-nudge step only, so it is deliberately absent.
+     */
+    private val LLM_PROPOSABLE_LENSES: Set<CommitmentLens> =
+      CommitmentLens.entries
+        .filter { lens ->
+          when (lens) {
+            CommitmentLens.GAP,
+            CommitmentLens.TIMING,
+            CommitmentLens.CONTRADICTION,
+            -> true
+
+            CommitmentLens.SHARE_REPORT -> false
+          }
+        }.toSet()
 
     // Mirrors the fields parseOutput reads, enums enumerated from the domain
     // enums. Guidance, not a hard validator (tier A) — parseOutput enforces.
+    // The lens set is the LLM-PROPOSABLE subset (LLM_PROPOSABLE_LENSES), not
+    // the whole enum: the share_report nudge lens is written by deterministic
+    // code only (RFC 160), so the schema never offers it and parseOutput
+    // rejects it.
     private val RECORD_SYNTHESIS_TOOL: JsonObject =
       ToolSchema.tool(
         name = RECORD_SYNTHESIS_TOOL_NAME,
@@ -611,7 +807,7 @@ class SynthesisService(
               ToolSchema.arrayOf(
                 ToolSchema.objectSchema(
                   "lens" to
-                    ToolSchema.enum(*CommitmentLens.entries.map { it.value }.toTypedArray()),
+                    ToolSchema.enum(*LLM_PROPOSABLE_LENSES.map { it.value }.toTypedArray()),
                   "disclosure" to
                     ToolSchema.enum(*CommitmentDisclosure.entries.map { it.value }.toTypedArray()),
                   "statement" to ToolSchema.string(),

@@ -224,4 +224,80 @@ class CostReportChatToolsTest {
       val stillLive = shareOf(shareTool.execute(other, input("{}")))
       assertEquals(otherUrl, stillLive.getValue("url").jsonPrimitive.content, "the other student's own link is untouched")
     }
+
+  // ---------------------------------------------------------------------------
+  // RFC 160: stop_cost_report_offers
+  // ---------------------------------------------------------------------------
+
+  private val stopTool = StopCostReportOffersChatTool(service)
+
+  private fun offersOf(result: JsonObject): JsonObject = result.getValue(StopCostReportOffersChatTool.RESULT_KEY).jsonObject
+
+  private fun optOutRows(studentId: StudentId): Int =
+    ed.unicoach.coaching.CoachingTestDb.connection
+      .prepareStatement("SELECT COUNT(*) FROM share_events WHERE student_id = ? AND kind = 'opted_out'")
+      .use { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getInt(1)
+        }
+      }
+
+  @Test
+  fun `the stop definition reserves the tool for a hard never, not an ordinary no`() {
+    assertEquals("stop_cost_report_offers", stopTool.name)
+    assertEquals("stop_cost_report_offers", stopTool.definition["name"]!!.jsonPrimitive.content)
+    val description = stopTool.definition["description"]!!.jsonPrimitive.content
+    assertTrue(description.contains("never want the sharing suggestion again"), "only the student's own never")
+    assertTrue(description.contains("not for an ordinary no"), "a soft decline just closes the topic")
+    assertTrue(description.contains("does not revoke any link"), "opting out of the suggestion revokes nothing")
+    assertTrue(description.contains("share_cost_report keeps working"), "the ability survives the opt-out")
+    assertTrue(description.contains("no way to undo it"), "never means never")
+  }
+
+  @Test
+  fun `stopping records one opted_out event and is idempotent`() =
+    runBlocking {
+      val studentId = createStudent()
+
+      val first = offersOf(stopTool.execute(studentId, input("{}")))
+      assertTrue(first.getValue(StopCostReportOffersChatTool.STOPPED_KEY).jsonPrimitive.boolean)
+      assertFalse(
+        first.getValue(StopCostReportOffersChatTool.ALREADY_STOPPED_KEY).jsonPrimitive.boolean,
+        "the first call wrote the opt-out, and the wire says so structurally",
+      )
+      assertEquals(StopCostReportOffersChatTool.STOPPED_STATEMENT, first.getValue("statement").jsonPrimitive.content)
+      assertEquals(1, optOutRows(studentId))
+
+      val second = offersOf(stopTool.execute(studentId, input("{}")))
+      assertTrue(second.getValue(StopCostReportOffersChatTool.STOPPED_KEY).jsonPrimitive.boolean, "the second call still confirms")
+      assertTrue(
+        second.getValue(StopCostReportOffersChatTool.ALREADY_STOPPED_KEY).jsonPrimitive.boolean,
+        "the repeat call wrote nothing, and the wire says so structurally",
+      )
+      assertEquals(StopCostReportOffersChatTool.ALREADY_STOPPED_STATEMENT, second.getValue("statement").jsonPrimitive.content)
+      assertEquals(1, optOutRows(studentId), "a second call records nothing new")
+    }
+
+  @Test
+  fun `stopping leaves a live share alone and share_cost_report still works after it`() =
+    runBlocking {
+      val studentId = createStudent()
+      val url = shareOf(shareTool.execute(studentId, input("{}"))).getValue("url").jsonPrimitive.content
+
+      stopTool.execute(studentId, input("{}"))
+
+      val again = shareOf(shareTool.execute(studentId, input("{}")))
+      assertEquals(url, again.getValue("url").jsonPrimitive.content, "the student opted out of the suggestion, not the ability")
+    }
+
+  @Test
+  fun `stop refuses a surplus field and an unscoped dispatch, writing nothing`() =
+    runBlocking {
+      val studentId = createStudent()
+      assertEquals("unknown field(s): [student_id]", errorOf(stopTool.execute(studentId, input("""{"student_id": "x"}"""))))
+      assertNotNull(errorOf(stopTool.execute(input("{}"))))
+      assertEquals(0, optOutRows(studentId), "a refused call must record no opt-out")
+    }
 }

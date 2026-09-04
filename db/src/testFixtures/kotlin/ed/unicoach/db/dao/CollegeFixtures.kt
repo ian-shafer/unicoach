@@ -3,12 +3,13 @@ package ed.unicoach.db.dao
 import ed.unicoach.db.models.NewCollege
 
 /**
- * A fully-populated `colleges` row for DAO tests. Suites that only need a
- * college to exist (so a dependent table's FK resolves) call this instead of
- * restating every column; suites asserting on college fields vary only what
- * they assert on.
+ * A fully-populated `colleges` row for tests. Suites that only need a college
+ * to exist (so a dependent table's FK resolves) call this instead of restating
+ * every column; suites asserting on college fields vary only what they assert
+ * on. A test fixture so consumers in other modules (`:service`) share the one
+ * literal.
  */
-internal fun newCollegeFixture(
+fun newCollegeFixture(
   ipedsUnitId: Int,
   name: String = "Test College",
 ): NewCollege =

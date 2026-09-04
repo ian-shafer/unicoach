@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.synthesis
 
 import com.typesafe.config.Config
+import java.time.Duration
 
 /**
  * Typed reader for the synthesis domain's config surface (the `synthesis` block
@@ -16,6 +17,11 @@ import com.typesafe.config.Config
  * - [maxOpenCommitments] is the open-set cap; a student at the cap no-ops until
  *   some resolve.
  * - [maxNewCommitmentsPerRun] is the ceiling on commitments created by one pass.
+ * - [shareNudgeEnabled] gates the deterministic share-nudge step (RFC 160).
+ * - [shareNudgeCooldown] is the minimum age of the last `share_report`
+ *   commitment before a re-nudge may fire. The config key/env contract stays
+ *   an integer day count (`synthesis.shareNudgeCooldownDays`); the unit is
+ *   attached HERE, once, so domain logic never converts a raw Int.
  */
 class SynthesisConfig private constructor(
   val enabled: Boolean,
@@ -26,6 +32,8 @@ class SynthesisConfig private constructor(
   val maxClaims: Int,
   val maxOpenCommitments: Int,
   val maxNewCommitmentsPerRun: Int,
+  val shareNudgeEnabled: Boolean,
+  val shareNudgeCooldown: Duration,
 ) {
   companion object {
     fun from(config: Config): Result<SynthesisConfig> =
@@ -39,6 +47,8 @@ class SynthesisConfig private constructor(
           maxClaims = config.getInt("synthesis.maxClaims"),
           maxOpenCommitments = config.getInt("synthesis.maxOpenCommitments"),
           maxNewCommitmentsPerRun = config.getInt("synthesis.maxNewCommitmentsPerRun"),
+          shareNudgeEnabled = config.getBoolean("synthesis.shareNudgeEnabled"),
+          shareNudgeCooldown = Duration.ofDays(config.getInt("synthesis.shareNudgeCooldownDays").toLong()),
         )
       }
   }

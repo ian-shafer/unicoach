@@ -10,6 +10,7 @@ import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.fitlens.FitLensConfig
 import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
 import ed.unicoach.coaching.report.ShareCostReportChatTool
+import ed.unicoach.coaching.report.StopCostReportOffersChatTool
 import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.college.FindCollegeTool
@@ -122,6 +123,13 @@ class SystemPromptCatalogTest {
      * under test is SEEDED COPY versus SHIPPING TOOL.
      */
     private val FEDERAL_AID_TOOL_NAME = FederalAidPolicyChatTool.TOOL_NAME
+
+    /**
+     * The opt-out tool the v17 paragraph names (RFC 160), read from the tool
+     * itself on the same precedent as [SHARE_REPORT_TOOL_NAME]: the pairing
+     * under test is SEEDED COPY versus SHIPPING TOOL.
+     */
+    private val STOP_OFFERS_TOOL_NAME = StopCostReportOffersChatTool.TOOL_NAME
 
     /** The first words of the codebook sentence v3 deletes (RFC 147). */
     private const val CODEBOOK_SENTENCE_OPENER = "The coded fields use these codebooks:"
@@ -1143,6 +1151,111 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The 0082 seed's structural contract (RFC 160). v18 is ADDITIVE like every
+   * coach seed since 0047: the whole v17 body byte-identical as a prefix,
+   * joined by a single space to exactly one appended paragraph — the
+   * share-nudge instruction. The paragraph's markers are asserted, not its full
+   * copy: the seed migration is the single home of the approved wording.
+   *
+   * v18 composes on v17 rather than on v16 because RFC 159 landed its own v16
+   * append while this run was open. Both paragraphs therefore stand, and the
+   * federal-aid copy is asserted below as interior copy v18 must preserve.
+   */
+  @Test
+  fun `coach v18 is v17 plus one appended share-nudge paragraph`() {
+    val appended = shareNudgeParagraph()
+
+    assertTrue(
+      appended.startsWith(" When your opening reflections include one about sharing"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(appended.contains(SHARE_REPORT_TOOL_NAME), "the paragraph must name the share tool it routes to")
+    assertTrue(appended.contains(STOP_OFFERS_TOOL_NAME), "the paragraph must name the opt-out tool")
+    assertTrue(
+      appended.contains("the sanctioned moment"),
+      "RFC 160: a surfaced share-nudge reflection IS the sanctioned offer",
+    )
+    assertTrue(
+      appended.contains("you still never open with the offer"),
+      "the never-open-unasked rule stands in every other conversation",
+    )
+    assertTrue(
+      appended.contains("the topic is closed for this conversation"),
+      "a decline or deferral ends the topic without residue",
+    )
+    assertTrue(
+      appended.contains("Nothing you offer is ever gated on sharing"),
+      "guided, not gated (brief 0001 D11)",
+    )
+    assertTrue(
+      appended.contains("they can still ask to share"),
+      "opting out of the suggestion never disables the ability",
+    )
+    // The paragraph states no price and no price arithmetic; the standing money
+    // guards still sweep the appended span so a relaxation is reported as v18's own.
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(appended),
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+  }
+
+  /**
+   * Every interior paragraph — including RFC 159's federal-aid paragraph, the
+   * one immediately before this append — must survive RFC 160's append. They do
+   * so by construction, v18 keeping the whole v17 body as a prefix, but they are
+   * the copy every seed since 0047 has had to preserve, so they are asserted
+   * rather than assumed. All are extracted at runtime, never retyped here.
+   */
+  @Test
+  fun `coach v18 preserves the source-jargon, money, report, residency and federal-aid copy verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v18 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v18").getOrThrow().body
+
+    assertTrue(v18.contains(sentence), "v18 must carry v6's source-jargon sentence byte-for-byte: [$sentence]")
+    assertTrue(v18.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+    assertTrue(v18.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
+    assertTrue(v18.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
+    assertTrue(
+      v18.contains(similarCollegesParagraph()),
+      "v13's similar-colleges paragraph must survive the append byte-for-byte",
+    )
+    assertTrue(v18.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
+    assertTrue(v18.contains(costReportParagraph()), "v15's cost-report paragraph must survive the append byte-for-byte")
+    assertTrue(
+      v18.contains(residencyBasisParagraph()),
+      "v16's residency-basis paragraph must survive the append byte-for-byte",
+    )
+    assertTrue(
+      v18.contains(federalAidParagraph()),
+      "v17's federal-aid paragraph must survive the append byte-for-byte",
+    )
+  }
+
+  /**
+   * The rollback RFC 160 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v17`), which is only real if the v17 row is
+   * still in the insert-only catalog, still carries the copy it was approved
+   * with, and does not already name the share-nudge tool.
+   */
+  @Test
+  fun `coach v17 stays selectable as v18's rollback target`() {
+    val v17 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v17").getOrThrow()
+
+    assertEquals("v17", v17.version, "the rollback target must still be selectable by name and version")
+    assertTrue(v17.body.contains(FEDERAL_AID_TOOL_NAME), "v17 must still carry RFC 159's federal-aid copy")
+    assertFalse(
+      v17.body.contains(STOP_OFFERS_TOOL_NAME),
+      "the rollback target must not already name the v18 opt-out tool",
+    )
+  }
+
+  /**
    * RFC 142's source-jargon sentence and the paragraphs of every prior version
    * must survive RFC 159's append. They do so by construction — v17 keeps the
    * whole v16 body as a prefix — but they are the copy every seed since 0047
@@ -1196,7 +1309,14 @@ class SystemPromptCatalogTest {
       v16.body.contains(FEDERAL_AID_TOOL_NAME),
       "the rollback target must not already name the v17 federal-aid tool",
     )
+    assertFalse(
+      v16.body.contains(STOP_OFFERS_TOOL_NAME),
+      "the rollback target must not already name the v18 opt-out tool",
+    )
   }
+
+  /** The v18 share-nudge paragraph: everything v18 appends to the v17 body. The guards are [appendedParagraph]'s. */
+  private fun shareNudgeParagraph(): String = appendedParagraph(base = "v17", revised = "v18")
 
   /** The v16 residency-basis paragraph: everything v16 appends to the v15 body. The guards are [appendedParagraph]'s. */
   private fun residencyBasisParagraph(): String = appendedParagraph(base = "v15", revised = "v16")

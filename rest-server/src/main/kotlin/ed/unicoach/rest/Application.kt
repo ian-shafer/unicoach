@@ -32,6 +32,7 @@ import ed.unicoach.coaching.report.CostReportShareService
 import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
 import ed.unicoach.coaching.report.ShareCostReportChatTool
 import ed.unicoach.coaching.report.ShareTokenDeriver
+import ed.unicoach.coaching.report.StopCostReportOffersChatTool
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
@@ -389,6 +390,10 @@ fun Application.appModule(
           ),
         ShareCostReportChatTool(costReportShareService),
         RevokeCostReportShareChatTool(costReportShareService),
+        // "Never suggest sharing again" (RFC 160): needs no secret — it writes
+        // the opted_out share event, not a link — so it stands even when the
+        // two doors above decline.
+        StopCostReportOffersChatTool(costReportShareService),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the

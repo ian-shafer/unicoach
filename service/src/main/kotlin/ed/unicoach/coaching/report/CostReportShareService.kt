@@ -2,11 +2,16 @@ package ed.unicoach.coaching.report
 
 import ed.unicoach.common.config.tokenLink
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.CommitmentLens
 import ed.unicoach.db.models.CostReportShare
 import ed.unicoach.db.models.NewCostReportShare
+import ed.unicoach.db.models.ShareEvent
+import ed.unicoach.db.models.ShareEventKind
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
 import kotlinx.coroutines.CancellationException
@@ -114,6 +119,21 @@ sealed interface RevokeCostReportOutcome {
 }
 
 /**
+ * What "never suggest sharing again" found (RFC 160). Two outcomes, both
+ * ordinary: opting out twice is allowed, and the second call records nothing
+ * new — "never" was already on file.
+ */
+sealed interface StopCostReportOffersOutcome {
+  /** The first opt-out: [event] is the `opted_out` share event that now stands, forever. */
+  data class Recorded(
+    val event: ShareEvent,
+  ) : StopCostReportOffersOutcome
+
+  /** The student had already opted out; nothing was written. */
+  data object AlreadyStopped : StopCostReportOffersOutcome
+}
+
+/**
  * Mint and revoke for the student's Family Cost Report share link (RFC 155).
  *
  * The link is a derived credential, not a stored one. The row keeps only
@@ -162,6 +182,11 @@ class CostReportShareService(
       // rule the cost read follows (CollegeCostService.getForStudent).
       throw e
     } catch (e: ConstraintViolationException) {
+      // Only the one-live-share index refusal is the benign race with a
+      // correct answer on re-read. Any OTHER violated constraint (e.g. one of
+      // the share_events constraints, now inside this transaction) is a real
+      // write failure and is reported as itself, not papered over by a re-read.
+      if (e.constraint != ONE_LIVE_SHARE_INDEX) return Result.failure(CostReportShareFailedException(e))
       logger.info("share for student=[{}] lost the one-live-share race; re-reading", studentId.value, e)
       getOrCreateShareAfterConflict(studentId, deriver)
     } catch (e: Exception) {
@@ -178,12 +203,76 @@ class CostReportShareService(
    * stands for.
    */
   suspend fun revoke(studentId: StudentId): Result<RevokeCostReportOutcome> =
+    asShareResult {
+      database.withConnection { session ->
+        val revoked = revokeLive(session, studentId)
+        if (revoked == null) {
+          // NothingLive records nothing: nothing happened (RFC 160).
+          RevokeCostReportOutcome.NothingLive
+        } else {
+          // The event rides the same transaction as the revoke it describes.
+          ShareEventsDao.record(session, studentId, revoked.id, ShareEventKind.REVOKED).getOrThrow()
+          RevokeCostReportOutcome.Revoked(revoked)
+        }
+      }
+    }
+
+  /**
+   * Records the student's durable "never suggest sharing again" (RFC 160): one
+   * `opted_out` share event, read by the synthesis share-nudge step as a
+   * permanent suppression. Idempotent — a second call finds the event already
+   * on file and writes nothing. It touches NO share row: a live link stays
+   * live, and `share_cost_report` keeps working — the student opted out of the
+   * suggestion, not of the ability. Needs no secret (it is about the log, not
+   * the token).
+   */
+  suspend fun stopOffers(studentId: StudentId): Result<StopCostReportOffersOutcome> =
+    asShareResult {
+      database.withConnection { session ->
+        dropOpenShareNudges(session, studentId)
+        recordOptOutIfNew(session, studentId)
+      }
+    }
+
+  /**
+   * An already-written nudge must not outlive the opt-out: drops any open
+   * share_report commitment in the caller's transaction, so the next opener
+   * has nothing to surface. Runs on the AlreadyStopped path too, catching a
+   * nudge that raced in after a first opt-out.
+   */
+  private fun dropOpenShareNudges(
+    session: SqlSession,
+    studentId: StudentId,
+  ) {
+    CommitmentsDao
+      .listOpenByStudent(session, studentId)
+      .getOrThrow()
+      .filter { it.lens == CommitmentLens.SHARE_REPORT }
+      .forEach { open ->
+        CommitmentsDao.drop(session, open.id, SHARE_OFFERS_OPTED_OUT_DROP_REASON).getOrThrow()
+      }
+  }
+
+  /** Writes the opted_out event unless "never" is already on file, and says which it was. */
+  private fun recordOptOutIfNew(
+    session: SqlSession,
+    studentId: StudentId,
+  ): StopCostReportOffersOutcome =
+    if (ShareEventsDao.hasOptOut(session, studentId).getOrThrow()) {
+      StopCostReportOffersOutcome.AlreadyStopped
+    } else {
+      StopCostReportOffersOutcome.Recorded(ShareEventsDao.recordOptOut(session, studentId).getOrThrow())
+    }
+
+  /**
+   * The service-wide failure envelope: cancellation is the caller unwinding and
+   * propagates; every other failure is wrapped as [CostReportShareFailedException].
+   * ([share] keeps its own catch chain for the one-live-share race and delegates
+   * the same fallthrough shape.)
+   */
+  private inline fun <T> asShareResult(block: () -> T): Result<T> =
     try {
-      Result.success(
-        database.withConnection { session ->
-          revokeLive(session, studentId)?.let(RevokeCostReportOutcome::Revoked) ?: RevokeCostReportOutcome.NothingLive
-        },
-      )
+      Result.success(block())
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
@@ -198,10 +287,25 @@ class CostReportShareService(
     database.withConnection { session ->
       when (val share = liveShareFor(session, studentId, deriver)) {
         LiveShare.None -> mintLink(session, studentId, deriver, stale = null)
-        is LiveShare.Reusable -> ShareCostReportOutcome.Existing(share.rawToken, config.shareUrlBase)
+        is LiveShare.Reusable -> reuseLink(session, studentId, share)
         is LiveShare.StaleToken -> mintLink(session, studentId, deriver, stale = share.share)
       }
     }
+
+  /**
+   * Answers a repeat ask (RFC 160): records the `repeat` event — the previously
+   * invisible case: a repeat touches no share row, so the event is its only
+   * trace, in the same transaction as the read that answered it — and returns
+   * the link the student already holds.
+   */
+  private fun reuseLink(
+    session: SqlSession,
+    studentId: StudentId,
+    share: LiveShare.Reusable,
+  ): ShareCostReportOutcome.Existing {
+    ShareEventsDao.record(session, studentId, share.share.id, ShareEventKind.REPEAT).getOrThrow()
+    return ShareCostReportOutcome.Existing(share.rawToken, config.shareUrlBase)
+  }
 
   /**
    * The second read after the one-live-share index refused our insert. It is one
@@ -210,14 +314,7 @@ class CostReportShareService(
   private suspend fun getOrCreateShareAfterConflict(
     studentId: StudentId,
     deriver: ShareTokenDeriver,
-  ): Result<ShareCostReportOutcome> =
-    try {
-      Result.success(mintOrReuse(studentId, deriver))
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      Result.failure(CostReportShareFailedException(e))
-    }
+  ): Result<ShareCostReportOutcome> = asShareResult { mintOrReuse(studentId, deriver) }
 
   /**
    * What the student's live row is worth right now: nothing, a link, or a row
@@ -237,7 +334,7 @@ class CostReportShareService(
     val live = CostReportSharesDao.findLiveByStudent(session, studentId).getOrThrow() ?: return LiveShare.None
     val rawToken = deriver.derive(live.id)
     return if (TokenHash.fromRawToken(rawToken) == live.tokenHash) {
-      LiveShare.Reusable(rawToken)
+      LiveShare.Reusable(rawToken, live)
     } else {
       LiveShare.StaleToken(live)
     }
@@ -275,11 +372,19 @@ class CostReportShareService(
         session,
         NewCostReportShare(id = id, studentId = studentId, tokenHash = TokenHash.fromRawToken(rawToken)),
       ).getOrThrow()
-    return if (stale == null) {
-      ShareCostReportOutcome.Minted(rawToken, config.shareUrlBase)
-    } else {
-      ShareCostReportOutcome.Reissued(rawToken, config.shareUrlBase)
-    }
+    // The event rides the mint's own transaction (RFC 160). The stale row's
+    // revocation inside a reissue is part of the reissue, not a separate
+    // 'revoked' event: one thing happened to the student's link, so one row.
+    // Mint-vs-reissue is decided ONCE, binding the event kind and the outcome
+    // as a pair so the correspondence cannot drift.
+    val (kind, outcome) =
+      if (stale == null) {
+        ShareEventKind.MINTED to ShareCostReportOutcome.Minted(rawToken, config.shareUrlBase)
+      } else {
+        ShareEventKind.REISSUED to ShareCostReportOutcome.Reissued(rawToken, config.shareUrlBase)
+      }
+    ShareEventsDao.record(session, studentId, id, kind).getOrThrow()
+    return outcome
   }
 
   /**
@@ -304,8 +409,17 @@ class CostReportShareService(
     studentId: StudentId,
   ): CostReportShare? = CostReportSharesDao.revokeLive(session, studentId).getOrThrow()
 
-  private companion object {
+  companion object {
     private val logger = LoggerFactory.getLogger(CostReportShareService::class.java)
+
+    /** The 0073 partial unique index whose refusal means "the winner already minted this student's link". */
+    private const val ONE_LIVE_SHARE_INDEX = "cost_report_shares_one_live_per_student_idx"
+
+    /**
+     * Persisted `commitments.drop_reason` token for the opt-out sweep, in the
+     * same machine-matchable vocabulary as SynthesisService's `stale_basis`.
+     */
+    const val SHARE_OFFERS_OPTED_OUT_DROP_REASON = "share_offers_opted_out"
   }
 }
 
@@ -319,9 +433,10 @@ private sealed interface LiveShare {
   /** The student has no live share row. */
   data object None : LiveShare
 
-  /** The live row's stored hash still derives, so [rawToken] is the link the student already holds. */
+  /** The live row's stored hash still derives, so [rawToken] is the link the student already holds. [share] is that row. */
   data class Reusable(
     val rawToken: String,
+    val share: CostReportShare,
   ) : LiveShare
 
   /** The live row's stored hash no longer derives: a link nothing can resolve, carried so it can be named. */

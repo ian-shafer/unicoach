@@ -310,4 +310,45 @@ class CommitmentsDaoTest {
     val commitment = CommitmentsDao.create(session, newCommitment(student)).getOrThrow()
     assertEquals(commitment.id, CommitmentsDao.findById(session, commitment.id).getOrThrow().id)
   }
+
+  // ---------------------------------------------------------------------------
+  // RFC 160: the share_report lens and the nudge step's suppression read
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the widened lens CHECK accepts share_report`() {
+    // The 0080 widening: the code-written nudge lens round-trips through the
+    // CHECK and the enum like any other member.
+    val student = createStudent()
+    val commitment =
+      CommitmentsDao
+        .create(session, newCommitment(student, statement = "suggest sharing the report", lens = CommitmentLens.SHARE_REPORT))
+        .getOrThrow()
+    assertEquals(CommitmentLens.SHARE_REPORT, commitment.lens)
+    assertEquals(CommitmentLens.SHARE_REPORT, CommitmentsDao.findById(session, commitment.id).getOrThrow().lens)
+  }
+
+  @Test
+  fun `findLatestByStudentAndLens is null when the lens has never been used`() {
+    val student = createStudent()
+    CommitmentsDao.create(session, newCommitment(student, lens = CommitmentLens.GAP)).getOrThrow()
+
+    assertNull(CommitmentsDao.findLatestByStudentAndLens(session, student, CommitmentLens.SHARE_REPORT).getOrThrow())
+  }
+
+  @Test
+  fun `findLatestByStudentAndLens returns the most recent row of that lens in any status`() {
+    val student = createStudent()
+    val other = createStudent()
+    val first = CommitmentsDao.create(session, newCommitment(student, lens = CommitmentLens.SHARE_REPORT)).getOrThrow()
+    // Resolve the first so a second may exist; the LATEST row wins regardless of status.
+    CommitmentsDao.drop(session, first.id, "test").getOrThrow()
+    val second = CommitmentsDao.create(session, newCommitment(student, lens = CommitmentLens.SHARE_REPORT)).getOrThrow()
+    CommitmentsDao.create(session, newCommitment(student, lens = CommitmentLens.GAP)).getOrThrow()
+    CommitmentsDao.create(session, newCommitment(other, lens = CommitmentLens.SHARE_REPORT)).getOrThrow()
+
+    val latest = assertNotNull(CommitmentsDao.findLatestByStudentAndLens(session, student, CommitmentLens.SHARE_REPORT).getOrThrow())
+
+    assertEquals(second.id, latest.id, "the newest share_report row, not the dropped older one and not another lens or student")
+  }
 }

@@ -146,7 +146,16 @@ object CostReportSharesDao : Creatable<NewCostReportShare, CostReportShare> {
    */
   private fun mapShareError(e: SQLException): Exception =
     when (e.sqlState) {
-      "23505", "23514" -> ConstraintViolationException(e)
-      else -> mapDatabaseError(e)
+      "23505", "23514" -> {
+        // Carry the server's violated-constraint name and DETAIL line: the
+        // service's race handling branches on WHICH constraint fired (the
+        // one-live-share index is a race outcome; anything else is a fault).
+        val serverError = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
+        ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
+      }
+
+      else -> {
+        mapDatabaseError(e)
+      }
     }
 }
