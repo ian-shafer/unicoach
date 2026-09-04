@@ -58,7 +58,29 @@ list). S4 SPLIT IN DESIGN into S4a (schema + seed + ingest) and S4b (cited tool
   failures. **S5's two PREFER edges (`money/02`, `money/03`) were already
   satisfied when it started, so nothing was overridden.** Next: S6
   (`first-value/06/invite-your-parent`), now UNBLOCKED — its BLOCKS edge was
-  exactly this slice's report surface and token.
+  exactly this slice's report surface and token. **S6 LANDED as RFC 160
+  (main@9104eeb7 + c23953e0, 2026-09-03)** — the invite-your-parent mechanic:
+  the synthesis pass writes a `share_report` commitment for an eligible student
+  (>= 2 active list entries, no live share, no opt-out, no open nudge, cap not
+  hit) and the existing next-session opener raises it, so the coach asks to
+  share the Family Cost Report at a moment it chose rather than waiting to be
+  asked. It is deterministic code, not an LLM lens, and it runs in the
+  read-phase transaction so it fires even when the LLM phases no-op on
+  freshness. **Ian amended the drafted design at the gate: re-nudges are
+  allowed** (14-day cooldown AND a list change since the last nudge, so a repeat
+  always has something new to point at), **and a student may say "never ask me
+  again"** — the new `stop_cost_report_offers` tool records a permanent
+  `opted_out` event and drops any open nudge in the same transaction, while
+  leaving a live share alone and keeping `share_cost_report` working on request.
+  `share_events` (append-only) finally records what the share surface does:
+  minted, repeat (invisible before, since re-asking touched no row), reissued,
+  revoked, opted_out — each written in the transaction of the mutation it
+  describes, and the substrate Beat 2's parent-claim path reads. Migrations
+  0080-0082, coach prompt **v18** (rollback
+  `COACHING_SYSTEM_PROMPT_VERSION=v17`); `SYNTHESIS_SHARE_NUDGE_ENABLED=false`
+  stops new nudges. RFC 159 landed mid-run and seeded its own v17 on v16, so
+  this seed composes on the body that reached main and both paragraphs stand.
+  Gate: 2515 JVM tests, 0 failures. **Beat 1 is complete.**
 
 ## Slice IDs
 
@@ -75,7 +97,7 @@ written.
 | S4a  | first-value/04a/admissions-data       | LANDED RFC 140 |
 | S4b  | first-value/04b/admissions-in-chat    | LANDED RFC 148 |
 | S5   | first-value/05/family-cost-report     | LANDED RFC 155 |
-| S6   | first-value/06/invite-your-parent     | NOT STARTED    |
+| S6   | first-value/06/invite-your-parent     | LANDED RFC 160 |
 
 Per-slice dependencies (`Needs:` lines) live in `spec.md`.
 
