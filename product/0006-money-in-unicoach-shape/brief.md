@@ -12,7 +12,20 @@ database in _its_ shape, not the shape _we_ need it to be in."
 ## Ledger
 
 _(one line per landed slice: ID, RFC, SHAs, one-line what — appended after each
-/ship run lands. Empty until the first slice lands.)_
+/ship run lands.)_
+
+shape/06/pell-and-loans LANDED as RFC 159 (main@fd55df26 + b9f74e2a, 2026-09-03)
+— `policy_parameters`, the award-year-keyed federal store (24-name vocabulary,
+source URL per row, 29 seed rows verified against primary FSA sources this run),
+and `federal_aid_policy`, the coach tool that answers "do we qualify for Pell,
+roughly?" and "what would loans look like?" with cited, award-year-named facts:
+Pell as eligibility and a range, loan limits never subtracted from a price, a
+prior award year said plainly (2026-27 loan limits deliberately unseeded — FSA
+Vol 8 unpublished, OBBBA changes lending from July 2026), and computations
+narrated at read time, never stored. `money_profiles.dependency` added on the
+house tri-state shape; coach prompt v17 (rollback
+`COACHING_SYSTEM_PROMPT_VERSION=v16`). No `Needs:` edges, so no gate answers
+were required.
 
 ## The question
 
