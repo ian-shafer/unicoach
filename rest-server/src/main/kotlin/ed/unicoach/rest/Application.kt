@@ -379,6 +379,14 @@ fun Application.appModule(
             ed.unicoach.coaching.admissions
               .CollegeAdmissionsService(database),
           ),
+        // Federal Pell/loan policy parameters (RFC 159): a no-input read of the
+        // migration-seeded policy_parameters store, plus the student's
+        // dependency answer.
+        ed.unicoach.coaching.aid
+          .FederalAidPolicyChatTool(
+            ed.unicoach.coaching.aid
+              .FederalAidPolicyService(database),
+          ),
         ShareCostReportChatTool(costReportShareService),
         RevokeCostReportShareChatTool(costReportShareService),
       ),

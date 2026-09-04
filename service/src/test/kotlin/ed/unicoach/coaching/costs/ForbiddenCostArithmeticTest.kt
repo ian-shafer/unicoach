@@ -29,8 +29,21 @@ import kotlin.test.assertTrue
 class ForbiddenCostArithmeticTest {
   private val sourceDirectory = File("src/main/kotlin/ed/unicoach/coaching/costs")
 
+  /**
+   * The federal-aid package (RFC 159) is scanned too: it speaks the same money
+   * vocabulary (Pell awards, loan limits) and its contract is that Kotlin
+   * computes NOTHING -- so the subtraction ban must cover it from day one
+   * rather than silently not applying (brief 0006 audit trap).
+   */
+  private val aidSourceDirectory = File("src/main/kotlin/ed/unicoach/coaching/aid")
+
+  private val scannedDirectories = listOf(sourceDirectory, aidSourceDirectory)
+
   private val sources: List<File>
-    get() = sourceDirectory.listFiles { f: File -> f.name.endsWith(".kt") }?.sortedBy { it.name } ?: emptyList()
+    get() =
+      scannedDirectories.flatMap { directory ->
+        directory.listFiles { f: File -> f.name.endsWith(".kt") }?.sortedBy { it.name } ?: emptyList()
+      }
 
   /**
    * A line that subtracts one MONEY-bearing expression from another, ignoring
@@ -89,6 +102,13 @@ class ForbiddenCostArithmeticTest {
       names.containsAll(setOf("CollegeCostService.kt", "CollegeCostChatTool.kt", "CostBreakdown.kt", "CostField.kt")),
       "the scan must cover the whole cost package, found [$names]",
     )
+    // The aid package's own read-guard (RFC 159): a moved or renamed package
+    // would otherwise fall out of the sweep and pass vacuously.
+    assertTrue(aidSourceDirectory.isDirectory, "expected the aid sources at [${aidSourceDirectory.absolutePath}]")
+    assertTrue(
+      names.contains("FederalAidPolicyService.kt"),
+      "the scan must cover the federal-aid package, found [$names]",
+    )
   }
 
   /**
@@ -144,17 +164,20 @@ class ForbiddenCostArithmeticTest {
       val copy = "this school publishes its in-state tuition and fees for out-of-state families"
       val tight = cost.netPrice.amount-college.booksAndSuppliesPerYearUsd
       val templated = "the gap is ${'$'}{cost.netPrice.amount - college.booksAndSuppliesPerYearUsd} per year"
+      val loanGap = pell.maxAwardUsd - loans.aggregateTotalUsd
       """.trimIndent() + "\n",
     )
 
     val hits = offendingLines(control).map { it.first }
     assertEquals(
-      listOf(1, 4, 7, 8),
+      listOf(1, 4, 7, 8, 9),
       hits,
       "the scan must see the plain subtraction on line 1, the wrapped one on line 4, the unspaced one on " +
-        "line 7 and the one written inside a string template on line 8, must NOT fire on the comment on " +
-        "line 2 that states the rule in words, and must NOT fire on the hyphenated English of line 6, which " +
-        "names two money words inside a string literal and subtracts nothing",
+        "line 7, the one written inside a string template on line 8 and the aid-vocabulary one on line 9 " +
+        "(RFC 159: the coaching/aid sweep is vacuous unless the aid money words are in the vocabulary), " +
+        "must NOT fire on the comment on line 2 that states the rule in words, and must NOT fire on the " +
+        "hyphenated English of line 6, which names two money words inside a string literal and subtracts " +
+        "nothing",
     )
   }
 
@@ -175,6 +198,14 @@ class ForbiddenCostArithmeticTest {
           "totalPerYearUsd",
           "Tuition",
           "tuition",
+          // The aid package's own money vocabulary (RFC 159): without these the
+          // coaching/aid sweep would scan the directory but match nothing in it.
+          "maxAwardUsd",
+          "minAwardUsd",
+          "totalUsd",
+          "subsidizedMaxUsd",
+          "aggregateTotalUsd",
+          "aggregateSubsidizedMaxUsd",
         )
 
     /**

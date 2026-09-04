@@ -113,7 +113,7 @@ class CorruptPersistedValueException(
   val value: String,
   val error: ValidationError,
   location: String? = null,
-) : DaoException("Persisted value failed reconstruction: $error" + (location?.let { " at $it" } ?: "")),
+) : DaoException("Persisted value [$value] failed reconstruction: $error" + (location?.let { " at $it" } ?: "")),
   PermanentError
 
 class LockAcquisitionFailureException(

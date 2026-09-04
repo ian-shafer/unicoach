@@ -3,6 +3,7 @@ package ed.unicoach.coaching.moneyprofile
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
+import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
@@ -42,6 +43,12 @@ data class MoneyProfileUpdate(
    * the whole answer for a given school.
    */
   val living: FieldUpdate<LivingArrangement>? = null,
+  /**
+   * Whether the student is dependent or independent for federal aid
+   * (RFC 159). The answer selects which Direct Loan limit table and which
+   * max-Pell income test the federal-aid surface leads with.
+   */
+  val dependency: FieldUpdate<DependencyStatus>? = null,
 )
 
 sealed interface GetMoneyProfileResult {
@@ -105,6 +112,7 @@ class MoneyProfileService(
               income = update.income?.let(::mapFieldUpdate),
               residency = update.residency?.let(::mapFieldUpdate),
               living = update.living?.let(::mapFieldUpdate),
+              dependency = update.dependency?.let(::mapFieldUpdate),
             ),
           )
         when {

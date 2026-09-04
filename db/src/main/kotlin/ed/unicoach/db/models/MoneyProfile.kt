@@ -4,10 +4,11 @@ import java.time.Instant
 
 /**
  * A row of the versioned mutable `money_profiles` entity (RFC 134, extended by
- * RFC 152): one per student, three tri-state profile fields. The schema's
- * value-iff-answered CHECKs guarantee [incomeBand] is non-null exactly when
- * [incomeBandStatus] is [AnswerStatus.ANSWERED], and likewise for
- * [residencyState] / [residencyStatus] and [livingPlan] / [livingPlanStatus].
+ * RFCs 152 and 159): one per student, four tri-state profile fields. The
+ * schema's value-iff-answered CHECKs guarantee [incomeBand] is non-null exactly
+ * when [incomeBandStatus] is [AnswerStatus.ANSWERED], and likewise for
+ * [residencyState] / [residencyStatus], [livingPlan] / [livingPlanStatus] and
+ * [dependency] / [dependencyStatus].
  * Mirrors [CollegeListEntry]'s shape (OCC [version], soft-delete via
  * [deletedAt]).
  *
@@ -26,6 +27,8 @@ data class MoneyProfile(
   val residencyStatus: AnswerStatus,
   val livingPlan: LivingArrangement?,
   val livingPlanStatus: AnswerStatus,
+  val dependency: DependencyStatus?,
+  val dependencyStatus: AnswerStatus,
   override val version: Int,
   override val createdAt: Instant,
   override val updatedAt: Instant,

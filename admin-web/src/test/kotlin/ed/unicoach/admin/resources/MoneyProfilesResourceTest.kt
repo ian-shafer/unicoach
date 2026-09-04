@@ -3,6 +3,7 @@ package ed.unicoach.admin.resources
 import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfileEdit
@@ -57,6 +58,8 @@ class MoneyProfilesResourceTest {
                 residencyStatus = AnswerStatus.ANSWERED,
                 livingPlan = LivingArrangement.WITH_FAMILY,
                 livingPlanStatus = AnswerStatus.ANSWERED,
+                dependency = DependencyStatus.DEPENDENT,
+                dependencyStatus = AnswerStatus.ANSWERED,
               ),
             )
           }.getOrThrow()
@@ -98,6 +101,12 @@ class MoneyProfilesResourceTest {
         body.contains(LivingArrangement.WITH_FAMILY.value),
         "The living plan value must not render (RFC 152: family finances are sensitive alike)",
       )
+      // RFC 159: the fourth tri-state pair projects exactly as its three siblings.
+      assertTrue(body.contains("Dependency Status"), "Detail must render the dependency status field")
+      assertFalse(
+        body.contains(">${DependencyStatus.DEPENDENT.value}<"),
+        "The dependency value must not render (family finances are sensitive alike)",
+      )
     }
 
   @Test
@@ -122,6 +131,8 @@ class MoneyProfilesResourceTest {
                 residencyStatus = AnswerStatus.ANSWERED,
                 livingPlan = LivingArrangement.WITH_FAMILY,
                 livingPlanStatus = AnswerStatus.ANSWERED,
+                dependency = null,
+                dependencyStatus = AnswerStatus.UNANSWERED,
               ),
             )
           }.getOrThrow()
@@ -137,6 +148,12 @@ class MoneyProfilesResourceTest {
       assertFalse(
         body.contains(LivingArrangement.WITH_FAMILY.value),
         "History must not leak the redacted living plan value",
+      )
+      // RFC 159: the fourth pair joins the same statuses-only history rule.
+      assertTrue(body.contains("Dependency Status"), "History must show the dependency status column")
+      assertFalse(
+        body.contains(">${DependencyStatus.DEPENDENT.value}<"),
+        "History must not leak the redacted dependency value",
       )
     }
 

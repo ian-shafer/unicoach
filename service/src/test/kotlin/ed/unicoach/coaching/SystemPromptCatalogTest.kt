@@ -2,6 +2,7 @@ package ed.unicoach.coaching
 
 import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
+import ed.unicoach.coaching.aid.FederalAidPolicyChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.costs.PrecisionOffer
@@ -114,6 +115,13 @@ class SystemPromptCatalogTest {
 
     /** See [SHARE_REPORT_TOOL_NAME]: the revoke half of the same pair. */
     private val REVOKE_SHARE_TOOL_NAME = RevokeCostReportShareChatTool.TOOL_NAME
+
+    /**
+     * The federal-aid tool the v17 paragraph names (RFC 159), read from the
+     * tool itself on the same precedent as [ADMISSIONS_TOOL_NAME]: the pairing
+     * under test is SEEDED COPY versus SHIPPING TOOL.
+     */
+    private val FEDERAL_AID_TOOL_NAME = FederalAidPolicyChatTool.TOOL_NAME
 
     /** The first words of the codebook sentence v3 deletes (RFC 147). */
     private const val CODEBOOK_SENTENCE_OPENER = "The coded fields use these codebooks:"
@@ -1057,6 +1065,136 @@ class SystemPromptCatalogTest {
     assertFalse(
       v15.body.contains("students paying in-state tuition and fees"),
       "the rollback target must not already carry v16's residency-basis rule",
+    )
+  }
+
+  /** The v17 federal-aid paragraph: everything v17 appends to the v16 body. The guards are [appendedParagraph]'s. */
+  private fun federalAidParagraph(): String = appendedParagraph(base = "v16", revised = "v17")
+
+  /**
+   * The 0079 seed's structural contract (RFC 159). v17 is ADDITIVE like every
+   * coach seed since 0047: the whole v16 body byte-identical as a prefix,
+   * joined by a single space to exactly one appended paragraph — the
+   * federal-aid-policy instruction. The paragraph's markers are asserted, not
+   * its full copy: the seed migration is the single home of the approved
+   * wording.
+   *
+   * One deliberate absence among the assertions: this paragraph SAYS "award
+   * year" — the July-June policy year Federal Student Aid itself names, the
+   * slice's first acceptance criterion — so the "never the word award" sweep
+   * the v12/v16 paragraphs carry does not apply to this span. No financial aid
+   * offer is called an award here, which is what RFC 141 retired.
+   */
+  @Test
+  fun `coach v17 is v16 plus one appended federal-aid paragraph`() {
+    val appended = federalAidParagraph()
+
+    assertTrue(
+      appended.startsWith(" When a family asks about the Pell Grant"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    // Seeded copy versus SHIPPING tool name, read from the tool itself: a
+    // literal here would keep passing after a rename, leaving the prompt
+    // naming a tool the registry does not serve.
+    assertTrue(appended.contains(FEDERAL_AID_TOOL_NAME), "the paragraph must name the federal-aid tool")
+    assertTrue(
+      appended.contains("rather than from memory"),
+      "policy figures come from the tool, never remembered (RFC 159 D-D)",
+    )
+    assertTrue(
+      appended.contains("Always say which award year a figure is for"),
+      "the slice's first acceptance criterion: every figure is dated by its award year",
+    )
+    assertTrue(
+      appended.contains("never a promised amount") && appended.contains("never promise a family a specific Pell amount"),
+      "Pell is eligibility and a range, never a promised amount",
+    )
+    assertTrue(
+      appended.contains("never subtract a loan or a loan limit from any price"),
+      "brief 0003: a loan limit is a cap, never a discount",
+    )
+    assertTrue(
+      appended.contains("prior award year") && appended.contains("say that plainly"),
+      "D-G: a stale award year is said, never silently served",
+    )
+    assertTrue(
+      appended.contains("dependent or independent for federal aid") &&
+        appended.contains("most students applying straight from high school are dependent"),
+      "D-F: the dependency question is invited with its value named",
+    )
+    assertTrue(
+      appended.contains("answer fully anyway with both sets of figures") &&
+        appended.contains("never raise it again yourself"),
+      "declinable, with a full answer served regardless — guided, not gated",
+    )
+    // The retired money words stay retired inside the new span.
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    // The served-body guard elsewhere sweeps the WHOLE prompt; this says the
+    // rule holds inside the span v17 actually adds, so a relaxation here is
+    // reported as v17's own rather than as the catalog's.
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(appended),
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+  }
+
+  /**
+   * RFC 142's source-jargon sentence and the paragraphs of every prior version
+   * must survive RFC 159's append. They do so by construction — v17 keeps the
+   * whole v16 body as a prefix — but they are the copy every seed since 0047
+   * has had to preserve, so they are asserted rather than assumed. All are
+   * extracted at runtime, never retyped here.
+   */
+  @Test
+  fun `coach v17 preserves the source-jargon, money, comparison, name-lookup, similar, plan, report and residency copy verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v17 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v17").getOrThrow().body
+
+    assertTrue(
+      v17.contains(sentence),
+      "v17 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+    assertTrue(v17.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+    assertTrue(v17.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
+    assertTrue(v17.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
+    assertTrue(
+      v17.contains(similarCollegesParagraph()),
+      "v13's similar-colleges paragraph must survive the append byte-for-byte",
+    )
+    assertTrue(v17.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
+    assertTrue(v17.contains(costReportParagraph()), "v15's cost-report paragraph must survive the append byte-for-byte")
+    assertTrue(
+      v17.contains(residencyBasisParagraph()),
+      "v16's residency-basis paragraph must survive the append byte-for-byte",
+    )
+  }
+
+  /**
+   * The v17 pin's documented rollback is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v16`), which is only real if the v16 row
+   * is still selectable and still carries the copy it was seeded with.
+   * Asserted here rather than assumed, on the same precedent as the v15/v16
+   * rollback tests above.
+   */
+  @Test
+  fun `coach v16 stays selectable so the v17 rollback is real`() {
+    val v16 =
+      SystemPromptsDao
+        .findByNameAndVersion(session, "coach", "v16")
+        .getOrElse { fail("the v16 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v16 is not a rollback") }
+    val v17 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v17").getOrThrow().body
+
+    assertTrue(v16.body.isNotEmpty(), "the v16 body must be the copy it was seeded with, not an empty row")
+    assertTrue(v16.body != v17, "v16 and v17 must be different bodies, or the pin bought nothing")
+    assertTrue(v16.body.contains(sourceJargonSentence()), "v16 must still carry v6's source-jargon sentence byte-for-byte")
+    assertTrue(v16.body.contains(v7MoneyParagraph()), "v16 must still carry v7's money paragraph byte-for-byte")
+    assertFalse(
+      v16.body.contains(FEDERAL_AID_TOOL_NAME),
+      "the rollback target must not already name the v17 federal-aid tool",
     )
   }
 

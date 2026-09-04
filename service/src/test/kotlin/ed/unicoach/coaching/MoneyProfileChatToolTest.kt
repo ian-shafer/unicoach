@@ -6,6 +6,7 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
@@ -377,6 +378,76 @@ class MoneyProfileChatToolTest {
       assertEquals("unanswered", profile["living_plan_status"]!!.jsonPrimitive.content)
       assertNull(profile["living_plan"], "an unanswered field must carry no value in the echo")
       assertNull(profile["living_plan_label"])
+    }
+
+  @Test
+  fun `setting a dependency answer writes it and echoes it with the words a coach says it in`() =
+    runBlocking {
+      val student = createStudent()
+      val profile = profileOf(tool.execute(student, input("""{"dependency":"dependent"}""")))
+      assertEquals("answered", profile["dependency_status"]!!.jsonPrimitive.content)
+      assertEquals("dependent", profile["dependency"]!!.jsonPrimitive.content)
+      assertEquals(
+        DependencyStatus.DEPENDENT.label,
+        profile["dependency_label"]!!.jsonPrimitive.content,
+        "the code must arrive with its spoken words (putDependency, the pair's one emitter)",
+      )
+    }
+
+  @Test
+  fun `a dependency answer can be set, declined and re-answered across separate calls`() =
+    runBlocking {
+      val student = createStudent()
+      tool.execute(student, input("""{"dependency":"dependent"}"""))
+
+      val declined = profileOf(tool.execute(student, input("""{"dependency_declined":true}""")))
+      assertEquals("declined", declined["dependency_status"]!!.jsonPrimitive.content)
+      assertNull(declined["dependency"], "a declined field must carry no value")
+
+      val resumed = profileOf(tool.execute(student, input("""{"dependency":"independent"}""")))
+      assertEquals("answered", resumed["dependency_status"]!!.jsonPrimitive.content)
+      assertEquals("independent", resumed["dependency"]!!.jsonPrimitive.content)
+
+      // The whole trail survives: a decline is a fact in history, not an erasure.
+      val id = MoneyProfilesDao.findActiveByStudent(sqlSession, student).getOrThrow().id
+      assertEquals(
+        listOf(AnswerStatus.ANSWERED, AnswerStatus.DECLINED, AnswerStatus.ANSWERED),
+        MoneyProfilesDao
+          .listVersions(sqlSession, id)
+          .getOrThrow()
+          .map { it.entity.dependencyStatus },
+      )
+    }
+
+  @Test
+  fun `a dependency value and its decline in one call is a structured error and writes nothing`() =
+    runBlocking {
+      val student = createStudent()
+      val result = tool.execute(student, input("""{"dependency":"dependent","dependency_declined":true}"""))
+      assertTrue(errorOf(result)!!.contains("cannot both be set"), "got $result")
+      assertTrue(
+        MoneyProfilesDao.findActiveByStudent(sqlSession, student).isFailure,
+        "a conflicting call must not create a profile row",
+      )
+    }
+
+  @Test
+  fun `an unknown dependency value is a structured error`() =
+    runBlocking {
+      val student = createStudent()
+      val result = tool.execute(student, input("""{"dependency":"emancipated_wizard"}"""))
+      assertTrue(errorOf(result)!!.contains("unknown dependency value"), "got $result")
+      assertTrue(errorOf(result)!!.contains("emancipated_wizard"), "the rejected value must be echoed, got $result")
+    }
+
+  @Test
+  fun `an unanswered dependency echoes its status with no value, beside the other three fields`() =
+    runBlocking {
+      val student = createStudent()
+      val profile = profileOf(tool.execute(student, input("""{"income_band":"under_30k"}""")))
+      assertEquals("unanswered", profile["dependency_status"]!!.jsonPrimitive.content)
+      assertNull(profile["dependency"], "an unanswered field must carry no value in the echo")
+      assertNull(profile["dependency_label"])
     }
 
   @Test

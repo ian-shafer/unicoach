@@ -19,9 +19,10 @@ import java.util.UUID
  * `create`/`update`/`delete`/`undelete` are all null: the entity is
  * student-writable through its own domain surfaces (REST PUT and the
  * `update_money_profile` chat tool), and admin here is read-only, not a
- * parallel write path. The three value columns (income band, residency state,
- * living plan) are `sensitive = true`: family finances get the admin UI's existing
- * sensitive-field redaction, in list, detail, and the history panel alike.
+ * parallel write path. The four value columns (income band, residency state,
+ * living plan, dependency) are `sensitive = true`: family finances get the admin
+ * UI's existing sensitive-field redaction, in list, detail, and the history
+ * panel alike.
  */
 object MoneyProfilesResource : AdminResource<MoneyProfile, MoneyProfileId> {
   override val slug = "money-profile"
@@ -39,6 +40,8 @@ object MoneyProfilesResource : AdminResource<MoneyProfile, MoneyProfileId> {
       AdminField("residencyState", "Residency State", FieldType.TEXT, editable = false, sensitive = true),
       AdminField("livingPlanStatus", "Living Plan Status", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("livingPlan", "Living Plan", FieldType.TEXT, editable = false, sensitive = true),
+      AdminField("dependencyStatus", "Dependency Status", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("dependency", "Dependency", FieldType.TEXT, editable = false, sensitive = true),
       AdminField("version", "Version", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("updatedAt", "Updated", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
@@ -65,6 +68,8 @@ object MoneyProfilesResource : AdminResource<MoneyProfile, MoneyProfileId> {
       "residencyState" to (row.residencyState ?: ""),
       "livingPlanStatus" to row.livingPlanStatus.value,
       "livingPlan" to (row.livingPlan?.value ?: ""),
+      "dependencyStatus" to row.dependencyStatus.value,
+      "dependency" to (row.dependency?.value ?: ""),
       "version" to row.version.toString(),
       "createdAt" to row.createdAt.toString(),
       "updatedAt" to row.updatedAt.toString(),
@@ -112,6 +117,7 @@ object MoneyProfilesResource : AdminResource<MoneyProfile, MoneyProfileId> {
             EdgePanel.Table.Column("Income Band Status"),
             EdgePanel.Table.Column("Residency Status"),
             EdgePanel.Table.Column("Living Plan Status"),
+            EdgePanel.Table.Column("Dependency Status"),
             EdgePanel.Table.Column("Updated", FieldType.TIMESTAMP),
             EdgePanel.Table.Column("Deleted", FieldType.TIMESTAMP),
           ),
@@ -124,6 +130,7 @@ object MoneyProfilesResource : AdminResource<MoneyProfile, MoneyProfileId> {
                   v.entity.incomeBandStatus.value,
                   v.entity.residencyStatus.value,
                   v.entity.livingPlanStatus.value,
+                  v.entity.dependencyStatus.value,
                   v.entity.updatedAt.toString(),
                   v.entity.deletedAt?.toString() ?: "",
                 ),

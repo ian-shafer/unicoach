@@ -1,5 +1,9 @@
 package ed.unicoach.coaching
 
+import java.time.Clock
+import java.time.LocalDate
+import java.time.Month
+
 /**
  * One academic year, named by its first calendar year, and the ONE home for its
  * spoken label: 2024 -> "2024-25", 2099 -> "2099-00".
@@ -29,7 +33,10 @@ package ed.unicoach.coaching
 value class AcademicYear(
   /** The first calendar year of the academic year, e.g. 2022 for AY2022-23. */
   val firstCalendarYear: Int,
-) {
+) : Comparable<AcademicYear> {
+  /** Calendar order: an academic year is earlier exactly when its first calendar year is. */
+  override fun compareTo(other: AcademicYear): Int = firstCalendarYear.compareTo(other.firstCalendarYear)
+
   /**
    * "2024-25" -- the spoken label, never a bare year.
    *
@@ -46,5 +53,17 @@ value class AcademicYear(
   companion object {
     /** The width of the trailing year in the label, and so also how much of it is said. */
     private const val TRAILING_DIGITS = 2
+
+    /**
+     * The federal award year running at [clock]'s instant: award years run
+     * July 1 to June 30, so before July the running year started last
+     * calendar year. The one home for the July 1 rule (RFC 159), so every
+     * award-year consumer derives "current" the same way.
+     */
+    fun currentFederalAwardYear(clock: Clock): AcademicYear {
+      val today = LocalDate.now(clock)
+      val startYear = if (today.month >= Month.JULY) today.year else today.year - 1
+      return AcademicYear(startYear)
+    }
   }
 }

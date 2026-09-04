@@ -4,13 +4,16 @@ import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
 import ed.unicoach.coaching.moneyprofile.UpsertMoneyProfileResult
+import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.putDependency
 import ed.unicoach.db.models.putIncomeBand
 import ed.unicoach.db.models.putLivingPlan
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -54,28 +57,12 @@ class MoneyProfileChatTool(
             IncomeBand.entries.joinToString(", ") { "${it.value} (${it.bracket})" } + ".",
         )
       }
-      putJsonObject("income_band_declined") {
-        put("type", "boolean")
-        put("const", true)
-        put(
-          "description",
-          "Literal true when the student declined to share their household income band; " +
-            "omit the field entirely to leave it unchanged (false is an error).",
-        )
-      }
+      putDeclinedFlag("income_band_declined", "share their household income band")
       putJsonObject("residency_state") {
         put("type", "string")
         put("description", "Two-letter USPS state of residency the student shared (e.g. \"CA\").")
       }
-      putJsonObject("residency_declined") {
-        put("type", "boolean")
-        put("const", true)
-        put(
-          "description",
-          "Literal true when the student declined to share their state of residency; " +
-            "omit the field entirely to leave it unchanged (false is an error).",
-        )
-      }
+      putDeclinedFlag("residency_declined", "share their state of residency")
       putJsonObject("living_plan") {
         put("type", "string")
         putJsonArray("enum") { LivingArrangement.entries.forEach { add(JsonPrimitive(it.value)) } }
@@ -87,15 +74,19 @@ class MoneyProfileChatTool(
             "decided differently about carries its own plan on the college list.",
         )
       }
-      putJsonObject("living_plan_declined") {
-        put("type", "boolean")
-        put("const", true)
+      putDeclinedFlag("living_plan_declined", "say where they plan to live")
+      putJsonObject("dependency") {
+        put("type", "string")
+        putJsonArray("enum") { DependencyStatus.entries.forEach { add(JsonPrimitive(it.value)) } }
         put(
           "description",
-          "Literal true when the student declined to say where they plan to live; " +
-            "omit the field entirely to leave it unchanged (false is an error).",
+          "Whether the student is dependent or independent for federal student aid: " +
+            DependencyStatus.entries.joinToString(", ") { "${it.value} (${it.label})" } +
+            ". Most students applying straight from high school are dependent; the answer picks " +
+            "which federal loan limits and which maximum-Pell income test apply to them.",
         )
       }
+      putDeclinedFlag("dependency_declined", "say whether they are dependent or independent for federal aid")
     }
 
   override val definition: JsonObject =
@@ -161,70 +152,39 @@ class MoneyProfileChatTool(
   private fun parseInput(input: JsonObject): ParsedInput {
     unknownFieldsReason(input, knownFields)?.let { return ParsedInput.Invalid(it) }
 
-    val incomeBandRaw =
-      when (val read = getString(input, "income_band")) {
-        is OptRead.Present -> read.value
-        OptRead.Absent -> null
-        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
-      }
-    val incomeDeclined =
-      when (val read = getBoolean(input, "income_band_declined")) {
-        is OptRead.Present -> read.value
-        OptRead.Absent -> null
-        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
-      }
-    val residencyRaw =
-      when (val read = getString(input, "residency_state")) {
-        is OptRead.Present -> read.value
-        OptRead.Absent -> null
-        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
-      }
-    val residencyDeclined =
-      when (val read = getBoolean(input, "residency_declined")) {
-        is OptRead.Present -> read.value
-        OptRead.Absent -> null
-        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
-      }
-
-    // The decline flags are literal-true (RFC 134 tool contract): `false` is
-    // not "don't decline", it is a malformed call -- omission is the only way
-    // to leave a field unchanged.
-    if (incomeDeclined == false) {
-      return ParsedInput.Invalid("income_band_declined must be true when present; omit it to leave the field unchanged")
-    }
-    if (residencyDeclined == false) {
-      return ParsedInput.Invalid("residency_declined must be true when present; omit it to leave the field unchanged")
-    }
-
-    if (incomeBandRaw != null && incomeDeclined == true) {
-      return ParsedInput.Invalid("income_band and income_band_declined cannot both be set in one call")
-    }
-    if (residencyRaw != null && residencyDeclined == true) {
-      return ParsedInput.Invalid("residency_state and residency_declined cannot both be set in one call")
-    }
-
     val incomeUpdate =
-      when (val parsed = parseIncomeUpdate(incomeBandRaw, incomeDeclined == true)) {
+      when (val parsed = getIncomeUpdate(input)) {
         is FieldParse.Ok -> parsed.update
         is FieldParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
       }
     val residencyUpdate =
-      when (val parsed = parseResidencyUpdate(residencyRaw, residencyDeclined == true)) {
+      when (val parsed = getResidencyUpdate(input)) {
         is FieldParse.Ok -> parsed.update
         is FieldParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
       }
-
     val livingUpdate =
       when (val parsed = getLivingPlanUpdate(input)) {
         is FieldParse.Ok -> parsed.update
         is FieldParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
       }
+    val dependencyUpdate =
+      when (val parsed = getDependencyUpdate(input)) {
+        is FieldParse.Ok -> parsed.update
+        is FieldParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
+      }
 
-    if (incomeUpdate == null && residencyUpdate == null && livingUpdate == null) {
+    if (incomeUpdate == null && residencyUpdate == null && livingUpdate == null && dependencyUpdate == null) {
       return ParsedInput.Invalid("nothing to update: provide a value or a decline for at least one field")
     }
 
-    return ParsedInput.Ok(MoneyProfileUpdate(income = incomeUpdate, residency = residencyUpdate, living = livingUpdate))
+    return ParsedInput.Ok(
+      MoneyProfileUpdate(
+        income = incomeUpdate,
+        residency = residencyUpdate,
+        living = livingUpdate,
+        dependency = dependencyUpdate,
+      ),
+    )
   }
 
   /** The parse outcome for one field: its [FieldUpdate] (null: untouched) or the reason it is malformed. */
@@ -238,93 +198,45 @@ class MoneyProfileChatTool(
     ) : FieldParse<Nothing>
   }
 
-  private fun parseIncomeUpdate(
-    raw: String?,
-    declined: Boolean,
-  ): FieldParse<IncomeBand> =
-    when {
-      raw != null -> {
-        IncomeBand.fromValue(raw)?.let { FieldParse.Ok(FieldUpdate.Set(it)) }
-          ?: FieldParse.Invalid("unknown income_band value: [$raw]")
-      }
-
-      declined -> {
-        FieldParse.Ok(FieldUpdate.Decline)
-      }
-
-      else -> {
-        FieldParse.Ok(null)
-      }
-    }
-
-  private fun parseResidencyUpdate(
-    raw: String?,
-    declined: Boolean,
-  ): FieldParse<String> =
-    when {
-      raw != null -> {
-        MoneyProfileService.parseResidencyState(raw)?.let { FieldParse.Ok(FieldUpdate.Set(it)) }
-          ?: FieldParse.Invalid("residency_state must be a two-letter US state postal code, got: [$raw]")
-      }
-
-      declined -> {
-        FieldParse.Ok(FieldUpdate.Decline)
-      }
-
-      else -> {
-        FieldParse.Ok(null)
-      }
-    }
-
   /**
-   * `living_plan` and `living_plan_declined` read, checked against each other,
-   * and folded into one write -- the twin of `CollegeListChatTool`'s own reader,
-   * so [parseInput] keeps the two lines it has for every other field instead of
-   * absorbing a whole field ladder in four places.
-   *
-   * The decline flag is literal-true (RFC 134 tool contract): a `false` is a
-   * malformed call rather than "leave it alone", which is what omitting the key
-   * already says.
+   * One declinable field read whole: the value key and its literal-true
+   * decline flag, checked against each other and folded into one write -- the
+   * shared shape of all four money-profile fields (RFC 134 tool contract,
+   * RFC 159). The decline flag is literal-true: a `false` is a malformed call
+   * rather than "leave it alone", which is what omitting the key already says.
    */
-  private fun getLivingPlanUpdate(input: JsonObject): FieldParse<LivingArrangement> {
+  private fun <T : Any> getDeclinableUpdate(
+    input: JsonObject,
+    valueKey: String,
+    declineKey: String,
+    parse: (String) -> T?,
+    invalidValueReason: (String) -> String = { "unknown $valueKey value: [$it]" },
+  ): FieldParse<T> {
     val raw =
-      when (val read = getString(input, "living_plan")) {
+      when (val read = getString(input, valueKey)) {
         is OptRead.Present -> read.value
         OptRead.Absent -> null
         is OptRead.Mismatch -> return FieldParse.Invalid(read.reason)
       }
     val declined =
-      when (val read = getBoolean(input, "living_plan_declined")) {
+      when (val read = getBoolean(input, declineKey)) {
         is OptRead.Present -> read.value
         OptRead.Absent -> null
         is OptRead.Mismatch -> return FieldParse.Invalid(read.reason)
       }
     if (declined == false) {
-      return FieldParse.Invalid("living_plan_declined must be true when present; omit it to leave the field unchanged")
+      return FieldParse.Invalid("$declineKey must be true when present; omit it to leave the field unchanged")
     }
     if (raw != null && declined == true) {
-      return FieldParse.Invalid("living_plan and living_plan_declined cannot both be set in one call")
+      return FieldParse.Invalid("$valueKey and $declineKey cannot both be set in one call")
     }
-    return parseLivingPlanUpdate(raw, declined == true)
-  }
-
-  /**
-   * The living-plan twin of [parseIncomeUpdate], on the same ladder. There is
-   * no normalizer beside it and none is needed: [LivingArrangement.fromValue]
-   * is the whole rule for a closed enum whose wire names the schema CHECK
-   * repeats.
-   */
-  private fun parseLivingPlanUpdate(
-    raw: String?,
-    declined: Boolean,
-  ): FieldParse<LivingArrangement> =
-    when {
+    return when {
       raw != null -> {
-        LivingArrangement.fromValue(raw)?.let { FieldParse.Ok(FieldUpdate.Set(it)) }
-          ?: FieldParse.Invalid("unknown living_plan value: [$raw]")
+        parse(raw)?.let { FieldParse.Ok(FieldUpdate.Set(it)) }
+          ?: FieldParse.Invalid(invalidValueReason(raw))
       }
 
-      declined -> {
+      declined == true -> {
         FieldParse.Ok(FieldUpdate.Decline)
       }
 
@@ -332,6 +244,22 @@ class MoneyProfileChatTool(
         FieldParse.Ok(null)
       }
     }
+  }
+
+  private fun getIncomeUpdate(input: JsonObject): FieldParse<IncomeBand> =
+    getDeclinableUpdate(input, "income_band", "income_band_declined", { IncomeBand.fromValue(it) })
+
+  /** Residency is the one field with a normalizer beside its parse, and the one custom rejection wording. */
+  private fun getResidencyUpdate(input: JsonObject): FieldParse<String> =
+    getDeclinableUpdate(input, "residency_state", "residency_declined", { MoneyProfileService.parseResidencyState(it) }) {
+      "residency_state must be a two-letter US state postal code, got: [$it]"
+    }
+
+  private fun getLivingPlanUpdate(input: JsonObject): FieldParse<LivingArrangement> =
+    getDeclinableUpdate(input, "living_plan", "living_plan_declined", { LivingArrangement.fromValue(it) })
+
+  private fun getDependencyUpdate(input: JsonObject): FieldParse<DependencyStatus> =
+    getDeclinableUpdate(input, "dependency", "dependency_declined", { DependencyStatus.fromValue(it) })
 
   /**
    * The full post-write profile echo: per-field status, value present iff
@@ -351,6 +279,9 @@ class MoneyProfileChatTool(
         // Through [putLivingPlan], the pair's one emitter: the wire name is a
         // key, never something to read out to a family.
         profile.livingPlan?.let { putLivingPlan(it) }
+        put("dependency_status", profile.dependencyStatus.value)
+        // Through [putDependency], the same one-emitter rule (RFC 159).
+        profile.dependency?.let { putDependency(it) }
       }
     }
 
@@ -362,7 +293,8 @@ class MoneyProfileChatTool(
     // The ethos contract rides the tool description verbatim (RFC 134): value
     // before ask, never force, declined stays declined.
     const val DESCRIPTION =
-      "Record household income band, state of residency, and/or where the student plans to live " +
+      "Record household income band, state of residency, where the student plans to live, and/or " +
+        "whether they are dependent or independent for federal aid " +
         "that the student just shared or declined to share, so cost estimates can use their real numbers. " +
         "Ask about money only when cost comes up naturally in the conversation - never open with it, " +
         "and always explain what the answer unlocks (their real net price, in-state vs out-of-state tuition, " +
@@ -373,5 +305,26 @@ class MoneyProfileChatTool(
         "Never re-ask a declined field unless the student reopens the topic themselves. " +
         "Setting a value and declining the same field in one call is an error. " +
         "The result echoes the full profile after the write."
+  }
+}
+
+/**
+ * One decline-flag schema block, stated once for every declinable field: a
+ * literal-true boolean whose description names what the student [declinedTo].
+ * The four flags must read identically -- the model learns the contract from
+ * any one of them -- so the shared wording has exactly one author.
+ */
+private fun JsonObjectBuilder.putDeclinedFlag(
+  key: String,
+  declinedTo: String,
+) {
+  putJsonObject(key) {
+    put("type", "boolean")
+    put("const", true)
+    put(
+      "description",
+      "Literal true when the student declined to $declinedTo; " +
+        "omit the field entirely to leave it unchanged (false is an error).",
+    )
   }
 }

@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfileEdit
@@ -79,6 +80,8 @@ class MoneyProfilesDaoTest {
       residencyStatus = AnswerStatus.UNANSWERED,
       livingPlan = null,
       livingPlanStatus = AnswerStatus.UNANSWERED,
+      dependency = null,
+      dependencyStatus = AnswerStatus.UNANSWERED,
     )
 
   private fun countVersions(id: MoneyProfileId): Int {
@@ -123,6 +126,8 @@ class MoneyProfilesDaoTest {
             residencyStatus = AnswerStatus.ANSWERED,
             livingPlan = null,
             livingPlanStatus = AnswerStatus.UNANSWERED,
+            dependency = null,
+            dependencyStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
 
@@ -324,6 +329,8 @@ class MoneyProfilesDaoTest {
           residencyStatus = AnswerStatus.UNANSWERED,
           livingPlan = LivingArrangement.WITH_FAMILY,
           livingPlanStatus = AnswerStatus.DECLINED,
+          dependency = null,
+          dependencyStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()
@@ -347,12 +354,151 @@ class MoneyProfilesDaoTest {
           residencyStatus = AnswerStatus.UNANSWERED,
           livingPlan = null,
           livingPlanStatus = AnswerStatus.ANSWERED,
+          dependency = null,
+          dependencyStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()
     assertTrue(
       error is ConstraintViolationException && error.constraint == "money_profiles_living_plan_value_iff_answered_check",
       "got $error",
+    )
+  }
+
+  @Test
+  fun `a dependency value without an answered status violates the value-iff-answered CHECK`() {
+    val student = createStudent()
+    val result =
+      MoneyProfilesDao.create(
+        session,
+        NewMoneyProfile(
+          studentId = student,
+          incomeBand = null,
+          incomeBandStatus = AnswerStatus.UNANSWERED,
+          residencyState = null,
+          residencyStatus = AnswerStatus.UNANSWERED,
+          livingPlan = null,
+          livingPlanStatus = AnswerStatus.UNANSWERED,
+          dependency = DependencyStatus.DEPENDENT,
+          dependencyStatus = AnswerStatus.DECLINED,
+        ),
+      )
+    val error = result.exceptionOrNull()
+    assertTrue(
+      error is ConstraintViolationException && error.constraint == "money_profiles_dependency_value_iff_answered_check",
+      "got $error",
+    )
+  }
+
+  @Test
+  fun `an answered dependency status without a value violates the same CHECK`() {
+    val student = createStudent()
+    val result =
+      MoneyProfilesDao.create(
+        session,
+        NewMoneyProfile(
+          studentId = student,
+          incomeBand = null,
+          incomeBandStatus = AnswerStatus.UNANSWERED,
+          residencyState = null,
+          residencyStatus = AnswerStatus.UNANSWERED,
+          livingPlan = null,
+          livingPlanStatus = AnswerStatus.UNANSWERED,
+          dependency = null,
+          dependencyStatus = AnswerStatus.ANSWERED,
+        ),
+      )
+    val error = result.exceptionOrNull()
+    assertTrue(
+      error is ConstraintViolationException && error.constraint == "money_profiles_dependency_value_iff_answered_check",
+      "got $error",
+    )
+  }
+
+  @Test
+  fun `the dependency answer upserts, carries over untouched, declines and re-answers with history`() {
+    val student = createStudent()
+
+    val answered =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, dependency = MoneyProfileUpsert.FieldWrite.Answer(DependencyStatus.DEPENDENT)),
+        ).getOrThrow()
+    assertEquals(DependencyStatus.DEPENDENT, answered.dependency)
+    assertEquals(AnswerStatus.ANSWERED, answered.dependencyStatus)
+
+    // An unrelated write leaves the dependency answer untouched (apply-or-keep).
+    val other =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, income = MoneyProfileUpsert.FieldWrite.Answer(IncomeBand.UNDER_30K)),
+        ).getOrThrow()
+    assertEquals(DependencyStatus.DEPENDENT, other.dependency)
+    assertEquals(AnswerStatus.ANSWERED, other.dependencyStatus)
+
+    val declined =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, dependency = MoneyProfileUpsert.FieldWrite.Declined),
+        ).getOrThrow()
+    assertNull(declined.dependency, "a declined field can never smuggle a stale value to a consumer")
+    assertEquals(AnswerStatus.DECLINED, declined.dependencyStatus)
+
+    val reAnswered =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, dependency = MoneyProfileUpsert.FieldWrite.Answer(DependencyStatus.INDEPENDENT)),
+        ).getOrThrow()
+    assertEquals(DependencyStatus.INDEPENDENT, reAnswered.dependency)
+
+    // Every write logged a history row carrying the new columns.
+    assertEquals(
+      listOf(AnswerStatus.ANSWERED, AnswerStatus.ANSWERED, AnswerStatus.DECLINED, AnswerStatus.ANSWERED),
+      MoneyProfilesDao
+        .listVersions(session, answered.id)
+        .getOrThrow()
+        .map { it.entity.dependencyStatus },
+    )
+  }
+
+  @Test
+  fun `a corrupt stored dependency is refused, never relabelled as never asked`() {
+    // The dependency twin of the living-plan corrupt-row test below (RFC 159):
+    // written with the CHECK dropped, restored before the assertions.
+    val student = createStudent()
+    val created =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, dependency = MoneyProfileUpsert.FieldWrite.Answer(DependencyStatus.DEPENDENT)),
+        ).getOrThrow()
+    connection.createStatement().use { stmt ->
+      stmt.execute("ALTER TABLE money_profiles DROP CONSTRAINT money_profiles_dependency_check")
+      stmt.execute(
+        "UPDATE money_profiles SET dependency = 'emancipated', version = version + 1 WHERE id = '${created.id.value}'",
+      )
+    }
+
+    val error = MoneyProfilesDao.findById(session, created.id).exceptionOrNull()
+
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        "UPDATE money_profiles SET dependency = 'dependent', version = version + 1 WHERE id = '${created.id.value}'",
+      )
+      stmt.execute(
+        "ALTER TABLE money_profiles ADD CONSTRAINT money_profiles_dependency_check " +
+          "CHECK (dependency IS NULL OR dependency IN ('dependent','independent'))",
+      )
+    }
+
+    assertTrue(error is CorruptPersistedValueException, "got $error")
+    assertTrue(
+      error.message!!.contains("money_profiles.dependency"),
+      "the failure must name the corrupt column and row: [${error.message}]",
     )
   }
 
@@ -493,6 +639,8 @@ class MoneyProfilesDaoTest {
             residencyStatus = AnswerStatus.UNANSWERED,
             livingPlan = null,
             livingPlanStatus = AnswerStatus.UNANSWERED,
+            dependency = null,
+            dependencyStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
     assertEquals(2, answered.version)
@@ -511,6 +659,8 @@ class MoneyProfilesDaoTest {
             residencyStatus = AnswerStatus.UNANSWERED,
             livingPlan = null,
             livingPlanStatus = AnswerStatus.UNANSWERED,
+            dependency = null,
+            dependencyStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
     assertEquals(3, declined.version)
@@ -530,6 +680,8 @@ class MoneyProfilesDaoTest {
             residencyStatus = AnswerStatus.UNANSWERED,
             livingPlan = null,
             livingPlanStatus = AnswerStatus.UNANSWERED,
+            dependency = null,
+            dependencyStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
     assertEquals(4, reAnswered.version)
@@ -560,6 +712,8 @@ class MoneyProfilesDaoTest {
           AnswerStatus.UNANSWERED,
           null,
           AnswerStatus.UNANSWERED,
+          null,
+          AnswerStatus.UNANSWERED,
         ),
       ).getOrThrow()
 
@@ -571,6 +725,8 @@ class MoneyProfilesDaoTest {
           created.version,
           null,
           AnswerStatus.DECLINED,
+          null,
+          AnswerStatus.UNANSWERED,
           null,
           AnswerStatus.UNANSWERED,
           null,
@@ -594,6 +750,8 @@ class MoneyProfilesDaoTest {
           residencyStatus = AnswerStatus.UNANSWERED,
           livingPlan = null,
           livingPlanStatus = AnswerStatus.UNANSWERED,
+          dependency = null,
+          dependencyStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()
@@ -617,6 +775,8 @@ class MoneyProfilesDaoTest {
           residencyStatus = AnswerStatus.ANSWERED,
           livingPlan = null,
           livingPlanStatus = AnswerStatus.UNANSWERED,
+          dependency = null,
+          dependencyStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()
@@ -640,6 +800,8 @@ class MoneyProfilesDaoTest {
           residencyStatus = AnswerStatus.ANSWERED,
           livingPlan = null,
           livingPlanStatus = AnswerStatus.UNANSWERED,
+          dependency = null,
+          dependencyStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()

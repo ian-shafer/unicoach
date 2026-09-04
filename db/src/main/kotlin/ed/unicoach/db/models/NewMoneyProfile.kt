@@ -13,4 +13,6 @@ data class NewMoneyProfile(
   val residencyStatus: AnswerStatus,
   val livingPlan: LivingArrangement?,
   val livingPlanStatus: AnswerStatus,
+  val dependency: DependencyStatus?,
+  val dependencyStatus: AnswerStatus,
 )

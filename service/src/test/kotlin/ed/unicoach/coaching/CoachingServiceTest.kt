@@ -1964,6 +1964,8 @@ class CoachingServiceTest {
     residencyStatus: ed.unicoach.db.models.AnswerStatus,
     livingPlan: ed.unicoach.db.models.LivingArrangement? = null,
     livingPlanStatus: ed.unicoach.db.models.AnswerStatus = ed.unicoach.db.models.AnswerStatus.UNANSWERED,
+    dependency: ed.unicoach.db.models.DependencyStatus? = null,
+    dependencyStatus: ed.unicoach.db.models.AnswerStatus = ed.unicoach.db.models.AnswerStatus.UNANSWERED,
   ) {
     ed.unicoach.db.dao.MoneyProfilesDao
       .create(
@@ -1976,6 +1978,8 @@ class CoachingServiceTest {
           residencyStatus = residencyStatus,
           livingPlan = livingPlan,
           livingPlanStatus = livingPlanStatus,
+          dependency = dependency,
+          dependencyStatus = dependencyStatus,
         ),
       ).getOrThrow()
   }
