@@ -4,9 +4,42 @@ import os
 protocol CollegeListClientProtocol: Sendable {
     func listEntries() async throws -> [CollegeListEntry]
     func addEntry(collegeId: UUID) async throws -> CollegeListEntry
-    func updateEntry(id: UUID, version: Int, status: CollegeListStatus, reasons: String?) async throws -> CollegeListEntry
+    func updateEntry(
+        id: UUID,
+        version: Int,
+        status: CollegeListStatus,
+        reasons: String?,
+        livingPlan: LivingPlanUpdate
+    ) async throws -> CollegeListEntry
     func removeEntry(id: UUID, version: Int) async throws
     func searchColleges(query: String) async throws -> [CollegeSummary]
+}
+
+extension CollegeListClientProtocol {
+    /// "Say nothing about a field you do not manage" is the default: a caller
+    /// that omits `livingPlan` sends `.keep`, i.e. neither wire key (RFC 164).
+    /// Swift forbids a default argument on a protocol requirement, so the
+    /// default lives here rather than in the declaration above — every existing
+    /// call site stays byte-identical on the wire.
+    ///
+    /// **A concrete type must never declare its own 4-argument overload.**
+    /// Extension methods are STATICALLY dispatched: a `CollegeListClient` that
+    /// declared this signature itself would be called by concrete-typed callers
+    /// while existential/generic callers still got this one, and the two could
+    /// drift apart silently. Both sides are pinned:
+    /// `testUpdateEntryKeepSendsNeitherLivingPlanKey` calls the 4-argument form
+    /// on the CONCRETE client and asserts the bytes it sends, and the restatus-
+    /// Save assertion in `CollegeListViewModelTests` covers the EXISTENTIAL
+    /// path the app actually takes — `CollegeListViewModel` holds a
+    /// `CollegeListClientProtocol` — by asserting it passes `.keep`.
+    func updateEntry(
+        id: UUID,
+        version: Int,
+        status: CollegeListStatus,
+        reasons: String?
+    ) async throws -> CollegeListEntry {
+        try await updateEntry(id: id, version: version, status: status, reasons: reasons, livingPlan: .keep)
+    }
 }
 
 /// The RFC 91 college-list REST surface plus the RFC 137 college search, in
@@ -41,11 +74,22 @@ final class CollegeListClient: CollegeListClientProtocol, @unchecked Sendable {
 
     /// Replaces the entry's status and reasons against `version` (OCC). A
     /// concurrent move throws the server's 409 `version_conflict`.
-    func updateEntry(id: UUID, version: Int, status: CollegeListStatus, reasons: String?) async throws -> CollegeListEntry {
+    ///
+    /// `livingPlan` says one of three things about the per-college living-plan
+    /// override (RFC 164): `.keep` sends neither key and leaves the stored value
+    /// alone, `.set(plan)` writes it, `.clear` removes it. The two are never
+    /// sent together, so the server's 400 for that pair is unreachable here.
+    func updateEntry(
+        id: UUID,
+        version: Int,
+        status: CollegeListStatus,
+        reasons: String?,
+        livingPlan: LivingPlanUpdate
+    ) async throws -> CollegeListEntry {
         logger.debug("Updating college-list entry [\(id, privacy: .public)] at version [\(version, privacy: .public)]")
         let (data, response) = try await apiClient.patch(
             "/api/v1/students/me/college-list/\(id.uuidString)",
-            body: UpdateCollegeListEntryRequest(version: version, status: status, reasons: reasons)
+            body: UpdateCollegeListEntryRequest(version: version, status: status, reasons: reasons, livingPlan: livingPlan)
         )
         let entryResponse: CollegeListEntryResponse = try apiClient.decode(data: data, response: response, expectedStatus: 200)
         return entryResponse.entry

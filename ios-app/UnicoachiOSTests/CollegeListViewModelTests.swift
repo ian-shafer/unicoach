@@ -193,6 +193,10 @@ final class CollegeListViewModelTests: XCTestCase {
         XCTAssertEqual(client.updateCalls[0].version, 1)
         XCTAssertEqual(client.updateCalls[0].status, .admitted)
         XCTAssertEqual(client.updateCalls[0].reasons, "In!")
+        XCTAssertEqual(
+            client.updateCalls[0].livingPlan, .keep,
+            "a restatus Save manages no living plan, so it must say nothing about one (RFC 164/168)"
+        )
         XCTAssertEqual(viewModel.state, .loaded([updated]))
     }
 

@@ -143,6 +143,79 @@ class CollegeListClientTests: XCTestCase {
         XCTAssertEqual(entry.version, 2)
     }
 
+    /// The living-plan tests below all assert on the outgoing REQUEST bytes and
+    /// care nothing about the response, so the preamble — decode the body as
+    /// JSON, hand it to the caller's assertions, return a plausible 200 — is
+    /// written once here instead of four times.
+    private func respond(assertingBody assert: @escaping ([String: Any]) -> Void) {
+        let responseBody = "{\"entry\":\(entryJSON(status: "applying", version: 2))}"
+        MockURLProtocol.requestHandler = { request in
+            let requestBody = try XCTUnwrap(request.resolvedBody, "the PATCH must carry a request body")
+            let json = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            )
+            assert(json)
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(responseBody.utf8))
+        }
+    }
+
+    /// RFC 164/168: the default `.keep` sends NEITHER living-plan key, so a Save
+    /// from the list screen cannot destroy a plan the coach set in chat. The
+    /// assertion is on the real request bytes, not on the Swift type, and the
+    /// call below is the 4-ARGUMENT form on the concrete client — the default
+    /// supplied by the `CollegeListClientProtocol` extension is part of what
+    /// this proves. `version`/`status`/`reasons` belong to
+    /// `testUpdateEntryPatchesStatusVersionAndReasons`; the subject here is the
+    /// ABSENCE of the two keys.
+    func testUpdateEntryKeepSendsNeitherLivingPlanKey() async throws {
+        respond(assertingBody: { json in
+            XCTAssertNil(json["livingPlan"], "an omitted key is how the wire says 'keep'")
+            XCTAssertNil(json["livingPlanClear"])
+        })
+
+        _ = try await client.updateEntry(id: entryId, version: 1, status: .applying, reasons: "Close to home")
+    }
+
+    func testUpdateEntryClearSendsLivingPlanClearOnly() async throws {
+        respond(assertingBody: { json in
+            XCTAssertEqual(json["livingPlanClear"] as? Bool, true)
+            XCTAssertNil(json["livingPlan"], "clear and set are never sent together")
+        })
+
+        _ = try await client.updateEntry(
+            id: entryId, version: 1, status: .applying, reasons: "Close to home", livingPlan: .clear
+        )
+    }
+
+    func testUpdateEntrySetSendsLivingPlanWireStringOnly() async throws {
+        respond(assertingBody: { json in
+            XCTAssertEqual(json["livingPlan"] as? String, "on_campus")
+            XCTAssertNil(json["livingPlanClear"], "set and clear are never sent together")
+        })
+
+        _ = try await client.updateEntry(
+            id: entryId, version: 1, status: .applying, reasons: "Close to home", livingPlan: .set(.onCampus)
+        )
+    }
+
+    /// RFC 164 D4's deliberate asymmetry: an omitted `reasons` CLEARS the note
+    /// and is the detail screen's Clear button, so the hand-written encoder must
+    /// keep omitting it — in all three living-plan states.
+    func testUpdateEntryNilReasonsOmitsTheKeyInEveryLivingPlanState() async throws {
+        for update in [LivingPlanUpdate.keep, .set(.withFamily), .clear] {
+            respond(assertingBody: { json in
+                XCTAssertNil(json["reasons"], "an omitted reasons is the Clear button (RFC 164 D4), livingPlan: [\(update)]")
+                XCTAssertEqual(json["version"] as? Int, 1, "version must survive every state, livingPlan: [\(update)]")
+                XCTAssertEqual(json["status"] as? String, "applying", "status must survive every state, livingPlan: [\(update)]")
+            })
+
+            _ = try await client.updateEntry(
+                id: entryId, version: 1, status: .applying, reasons: nil, livingPlan: update
+            )
+        }
+    }
+
     func testUpdateEntryVersionConflictThrowsVersionConflict() async throws {
         let errorData = try JSONEncoder().encode(
             ErrorResponse(code: "version_conflict", message: "College list entry was modified concurrently", fieldErrors: nil)

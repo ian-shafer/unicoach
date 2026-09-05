@@ -12,7 +12,7 @@ final class MockCollegeListClient: CollegeListClientProtocol, @unchecked Sendabl
 
     private(set) var listEntriesCallCount = 0
     private(set) var addedCollegeIds: [UUID] = []
-    private(set) var updateCalls: [(id: UUID, version: Int, status: CollegeListStatus, reasons: String?)] = []
+    private(set) var updateCalls: [(id: UUID, version: Int, status: CollegeListStatus, reasons: String?, livingPlan: LivingPlanUpdate)] = []
     private(set) var removeCalls: [(id: UUID, version: Int)] = []
     private(set) var searchQueries: [String] = []
 
@@ -27,8 +27,14 @@ final class MockCollegeListClient: CollegeListClientProtocol, @unchecked Sendabl
         return try result.get()
     }
 
-    func updateEntry(id: UUID, version: Int, status: CollegeListStatus, reasons: String?) async throws -> CollegeListEntry {
-        updateCalls.append((id: id, version: version, status: status, reasons: reasons))
+    func updateEntry(
+        id: UUID,
+        version: Int,
+        status: CollegeListStatus,
+        reasons: String?,
+        livingPlan: LivingPlanUpdate
+    ) async throws -> CollegeListEntry {
+        updateCalls.append((id: id, version: version, status: status, reasons: reasons, livingPlan: livingPlan))
         guard let result = updateEntryResult else { fatalError("No updateEntryResult configured") }
         return try result.get()
     }

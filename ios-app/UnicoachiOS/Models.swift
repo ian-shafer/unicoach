@@ -337,7 +337,9 @@ enum IncomeBand: String, Sendable, CaseIterable, MoneyProfileFieldValue {
 /// The living arrangements as the server spells them
 /// (`db/.../models/LivingArrangement.kt`). Onboarding neither asks nor writes it
 /// (RFC 163 §5); `PublicMoneyProfile` still decodes it, because the PUT response
-/// carries the whole profile.
+/// carries the whole profile. It has a second consumer: the per-college living
+/// plan OVERRIDE on the college list carries the same vocabulary
+/// (`LivingPlanUpdate` in CollegeListModels.swift, RFC 164/168).
 enum LivingPlan: String, Sendable, CaseIterable, MoneyProfileFieldValue {
     case onCampus = "on_campus"
     case offCampus = "off_campus"

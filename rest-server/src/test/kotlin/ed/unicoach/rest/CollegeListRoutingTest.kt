@@ -433,11 +433,14 @@ class CollegeListRoutingTest {
     runBlocking {
       val (cookie, entryId) = entryWithStoredLivingPlan()
 
-      // This is the body the shipped iOS client sends, verbatim:
+      // This is the body the iOS client sends, verbatim: it is what
       // ios-app/UnicoachiOS/CollegeListModels.swift, struct
-      // UpdateCollegeListEntryRequest, whose only keys are version, status and
-      // reasons. Keep the two in step -- if that struct gains a key, this
-      // string stops imitating the client it exists to imitate.
+      // UpdateCollegeListEntryRequest, emits in its LivingPlanUpdate.keep state
+      // -- the default for every existing call site (RFC 168). That struct's
+      // encode(to:) is hand-written and states the absence deliberately: keep
+      // emits neither livingPlan nor livingPlanClear. Keep the two in step -- if
+      // keep ever starts emitting a key, this string stops imitating the client
+      // it exists to imitate.
       val rawBody = """{"version":1,"status":"applying","reasons":"Good fit"}"""
       val omitted =
         client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
@@ -462,13 +465,56 @@ class CollegeListRoutingTest {
     }
 
   @Test
+  fun `PATCH with the iOS client's set and clear bodies, verbatim`() =
+    runBlocking {
+      val (cookie, entryId) = entryWithStoredLivingPlan()
+
+      // The other two bodies ios-app/UnicoachiOS/CollegeListModels.swift emits,
+      // byte for byte: struct UpdateCollegeListEntryRequest in its
+      // LivingPlanUpdate.set and .clear states (RFC 168). They are RAW strings
+      // and not mapper.writeValueAsString(UpdateCollegeListEntryRequest(...))
+      // on purpose -- a body built from the server DTO also carries
+      // livingPlanClear:false and addObservationIds:[], so it would keep passing
+      // after the Swift encoder drifted away from it. Keep these two in step
+      // with that encoder.
+      val setBodyRaw = """{"version":1,"status":"applying","reasons":"Good fit","livingPlan":"on_campus"}"""
+      val set =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(setBodyRaw)
+        }
+      assertEquals(HttpStatusCode.OK, set.status, "got ${set.bodyAsText()}")
+      assertEquals(
+        "on_campus",
+        storedEntry(cookie, entryId)["livingPlan"].asText(),
+        "the client's set body SETS the override",
+      )
+
+      val clearBodyRaw = """{"version":2,"status":"applying","reasons":"Good fit","livingPlanClear":true}"""
+      val cleared =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(clearBodyRaw)
+        }
+      assertEquals(HttpStatusCode.OK, cleared.status, "got ${cleared.bodyAsText()}")
+      assertTrue(
+        storedEntry(cookie, entryId)["livingPlan"].isNull,
+        "the client's clear body CLEARS the override back to the family's usual plan",
+      )
+      Unit
+    }
+
+  @Test
   fun `PATCH that OMITS reasons CLEARS the note, and that asymmetry with livingPlan is deliberate`() =
     runBlocking {
       // RFC 164 D4. reasons has the same SHAPE as the old livingPlan defect --
       // an omitted key writes null -- and the opposite meaning: omission there
       // is load-bearing. The shipped iOS client clears the note by dropping the
       // key (CollegeEntryDetailView.normalizedReasons returns nil for an
-      // emptied field, and Swift's synthesized Codable omits a nil optional),
+      // emptied field, and the struct's hand-written encoder uses
+      // encodeIfPresent for reasons, so a nil omits the key -- RFC 168),
       // so omitted-means-clear IS its Clear button. Giving reasons the
       // livingPlan treatment would silently disable clearing on every build in
       // the field, so this guard states the asymmetry rather than leaving it to

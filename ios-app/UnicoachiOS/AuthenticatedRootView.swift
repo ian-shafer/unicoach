@@ -424,7 +424,13 @@ private final class AuthenticatedRootPreviewCollegeListClient: CollegeListClient
     func addEntry(collegeId: UUID) async throws -> CollegeListEntry {
         throw ErrorResponse(code: "SERVER_ERROR", message: "Preview", fieldErrors: nil)
     }
-    func updateEntry(id: UUID, version: Int, status: CollegeListStatus, reasons: String?) async throws -> CollegeListEntry {
+    func updateEntry(
+        id: UUID,
+        version: Int,
+        status: CollegeListStatus,
+        reasons: String?,
+        livingPlan: LivingPlanUpdate
+    ) async throws -> CollegeListEntry {
         throw ErrorResponse(code: "SERVER_ERROR", message: "Preview", fieldErrors: nil)
     }
     func removeEntry(id: UUID, version: Int) async throws {}
