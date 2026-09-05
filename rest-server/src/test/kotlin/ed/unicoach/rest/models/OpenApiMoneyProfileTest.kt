@@ -16,22 +16,17 @@ import kotlin.test.assertEquals
  * published contract silently stale.
  */
 class OpenApiMoneyProfileTest {
-  private fun publishedEnum(
-    schema: String,
-    property: String,
-  ): List<String> = OpenApiSpec.get(schema, property).path("enum").map { it.asText() }
-
   @Test
   fun `spec income-band enums enumerate exactly IncomeBand's wire strings`() {
     val expected = IncomeBand.entries.map { it.value }
     assertEquals(
       expected,
-      publishedEnum("UpdateMoneyProfileRequest", "incomeBand"),
+      OpenApiSpec.enumValues("UpdateMoneyProfileRequest", "incomeBand"),
       "UpdateMoneyProfileRequest.incomeBand must list exactly IncomeBand's wire strings, in declaration order",
     )
     assertEquals(
       expected,
-      publishedEnum("PublicMoneyProfile", "incomeBand"),
+      OpenApiSpec.enumValues("PublicMoneyProfile", "incomeBand"),
       "PublicMoneyProfile.incomeBand must list exactly IncomeBand's wire strings, in declaration order",
     )
   }
@@ -41,17 +36,17 @@ class OpenApiMoneyProfileTest {
     val expected = AnswerStatus.entries.map { it.value }
     assertEquals(
       expected,
-      publishedEnum("PublicMoneyProfile", "incomeBandStatus"),
+      OpenApiSpec.enumValues("PublicMoneyProfile", "incomeBandStatus"),
       "PublicMoneyProfile.incomeBandStatus must list exactly AnswerStatus's wire strings, in declaration order",
     )
     assertEquals(
       expected,
-      publishedEnum("PublicMoneyProfile", "residencyStatus"),
+      OpenApiSpec.enumValues("PublicMoneyProfile", "residencyStatus"),
       "PublicMoneyProfile.residencyStatus must list exactly AnswerStatus's wire strings, in declaration order",
     )
     assertEquals(
       expected,
-      publishedEnum("PublicMoneyProfile", "livingPlanStatus"),
+      OpenApiSpec.enumValues("PublicMoneyProfile", "livingPlanStatus"),
       "PublicMoneyProfile.livingPlanStatus must list exactly AnswerStatus's wire strings, in declaration order",
     )
   }
@@ -64,29 +59,29 @@ class OpenApiMoneyProfileTest {
     val expected = LivingArrangement.entries.map { it.value }
     assertEquals(
       expected,
-      publishedEnum("UpdateMoneyProfileRequest", "livingPlan"),
+      OpenApiSpec.enumValues("UpdateMoneyProfileRequest", "livingPlan"),
       "UpdateMoneyProfileRequest.livingPlan must list exactly LivingArrangement's wire strings, in declaration order",
     )
     assertEquals(
       expected,
-      publishedEnum("PublicMoneyProfile", "livingPlan"),
+      OpenApiSpec.enumValues("PublicMoneyProfile", "livingPlan"),
       "PublicMoneyProfile.livingPlan must list exactly LivingArrangement's wire strings, in declaration order",
     )
     // The same vocabulary reaches the college list, where it is the per-college
     // override rather than the family's usual plan (D2a) -- one enum, two homes.
     assertEquals(
       expected,
-      publishedEnum("CreateCollegeListEntryRequest", "livingPlan"),
+      OpenApiSpec.enumValues("CreateCollegeListEntryRequest", "livingPlan"),
       "CreateCollegeListEntryRequest.livingPlan must speak the same vocabulary",
     )
     assertEquals(
       expected,
-      publishedEnum("UpdateCollegeListEntryRequest", "livingPlan"),
+      OpenApiSpec.enumValues("UpdateCollegeListEntryRequest", "livingPlan"),
       "UpdateCollegeListEntryRequest.livingPlan must speak the same vocabulary",
     )
     assertEquals(
       expected,
-      publishedEnum("PublicCollegeListEntry", "livingPlan"),
+      OpenApiSpec.enumValues("PublicCollegeListEntry", "livingPlan"),
       "PublicCollegeListEntry.livingPlan must speak the same vocabulary",
     )
   }

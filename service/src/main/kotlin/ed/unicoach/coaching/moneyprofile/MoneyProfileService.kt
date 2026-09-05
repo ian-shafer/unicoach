@@ -141,8 +141,14 @@ class MoneyProfileService(
      * MP, PR, PW, VI). Membership here, not a two-letter shape, is the
      * boundary; the schema's `^[A-Z]{2}$` CHECK stays as the coarser DB-level
      * backstop.
+     *
+     * PUBLIC because it is also the SERVED set (RFC 165): the
+     * `residency_states` vocabulary is built from this very val, so a code a
+     * picker can offer cannot be a code [parseResidencyState] rejects. The
+     * service that owns the rule owns publishing it; a second list elsewhere
+     * would be a list that can drift.
      */
-    private val USPS_STATE_CODES =
+    val USPS_STATE_CODES: Set<String> =
       (
         "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD " +
           "MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC " +

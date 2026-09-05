@@ -30,8 +30,8 @@ object OpenApiSpec {
 
   /**
    * Walks [path] from the document root, or throws naming the whole path and
-   * the step that was missing. One spelling of the navigation, so [get] and
-   * [requiredProperties] cannot drift in how they report a missing step.
+   * the step that was missing. One spelling of the navigation, so every
+   * accessor below cannot drift in how it reports a missing step.
    */
   private fun navigate(path: List<String>): JsonNode =
     path.fold(document) { parent, key ->
@@ -50,6 +50,19 @@ object OpenApiSpec {
     schema: String,
     property: String,
   ): JsonNode = navigate(listOf("components", "schemas", schema, "properties", property))
+
+  /**
+   * The whole `components.schemas.[name]` node — what a guard over a schema's
+   * own keywords (`required`, `additionalProperties`) needs, which the
+   * property-shaped [get] cannot reach.
+   */
+  fun schema(name: String): JsonNode = navigate(listOf("components", "schemas", name))
+
+  /** The `paths.[path].[method]` operation node, for guards over `security` and the published statuses. */
+  fun operation(
+    path: String,
+    method: String,
+  ): JsonNode = navigate(listOf("paths", path, method))
 
   /**
    * The property names in `components.schemas.[schema].required`, or throws naming the path
@@ -73,6 +86,64 @@ object OpenApiSpec {
       }
       element.asText()
     }
+  }
+
+  /**
+   * The strings published as the `enum` of [schema]'s [property], or throws
+   * naming the path and the step that was missing. A property that publishes
+   * no `enum` is a different document from one publishing an empty list, so
+   * the missing node is an error rather than an empty result.
+   *
+   * The property is looked up on the schema's own `properties` and, failing
+   * that, on each `allOf` branch's, so a specialization composed from a shared
+   * schema is read the same way as a flat one.
+   *
+   * The node's SHAPE is checked, exactly as in [requiredProperties]: `asText()`
+   * maps a non-array, or a non-textual element, to a plausible-looking wrong
+   * list, which would let a malformed spec satisfy a guard.
+   */
+  fun enumValues(
+    schema: String,
+    property: String,
+  ): List<String> {
+    val where = "components.schemas.$schema..properties.$property.enum"
+    val node = declaredProperty(schema, property).path("enum")
+    if (node.isMissingNode) {
+      throw AssertionError("[$specFile] has no [$where] — the property publishes no enum")
+    }
+    if (!node.isArray) {
+      throw AssertionError("[$specFile] has a non-array [$where]: [$node]")
+    }
+    return node.map { element ->
+      if (!element.isTextual) {
+        throw AssertionError("[$specFile] has a non-string entry in [$where]: [$element]")
+      }
+      element.asText()
+    }
+  }
+
+  /**
+   * [schema]'s [property], declared exactly once — on the schema's own
+   * `properties` or on one `allOf` branch's. Two declarations are an ambiguous
+   * document, not a choice this accessor may make silently: a guard that read
+   * the branch nobody meant would pass against the wrong list.
+   */
+  private fun declaredProperty(
+    schema: String,
+    property: String,
+  ): JsonNode {
+    val root = navigate(listOf("components", "schemas", schema))
+    val declarations =
+      (listOf(root) + root.path("allOf"))
+        .map { node -> node.path("properties").path(property) }
+        .filter { !it.isMissingNode }
+    if (declarations.size != 1) {
+      throw AssertionError(
+        "[$specFile] declares [$property] on [components.schemas.$schema] [${declarations.size}] times " +
+          "across its own properties and its allOf branches; exactly one is required",
+      )
+    }
+    return declarations.single()
   }
 
   /**

@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
 class OpenApiSubscriptionStatusTest {
   @Test
   fun `SubscriptionView status enumerates exactly SubscriptionStatusView's wire strings`() {
-    val published = OpenApiSpec.get("SubscriptionView", "status").path("enum").map { it.asText() }
+    val published = OpenApiSpec.enumValues("SubscriptionView", "status")
     assertEquals(
       SubscriptionStatusView.entries.map { it.wire },
       published,

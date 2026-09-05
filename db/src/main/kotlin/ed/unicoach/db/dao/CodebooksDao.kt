@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.JurisdictionKind
 import ed.unicoach.db.models.NewAdmissionTestPolicy
 import ed.unicoach.db.models.NewAthleticAssociation
 import ed.unicoach.db.models.NewCarnegieBasicClass
@@ -398,6 +399,36 @@ object CodebooksDao {
       map = { rs -> rs.getString("code") },
     )
 
+  /**
+   * Every published `us_states` row — postal code, name and jurisdiction kind —
+   * in NAME order, the order a person reads a list of states in (RFC 165).
+   *
+   * Beside [usStateCodes] rather than replacing it: that read is RFC 150's
+   * filter vocabulary and needs codes alone, while a served vocabulary needs the
+   * words a UI shows and the classification that stops it calling Palau a state.
+   * Ordering differs for the same reason — postal-code order is a machine's
+   * order, name order is display order.
+   */
+  fun usStates(session: SqlSession): Result<List<UsState>> =
+    session.queryList(
+      "SELECT ${CodebookTable.US_STATES.keyColumn} AS code, name, jurisdiction_kind " +
+        "FROM ${CodebookTable.US_STATES.tableName} ORDER BY name",
+      bind = {},
+      map = { rs ->
+        val kindValue = rs.getString("jurisdiction_kind")
+        UsState(
+          code = rs.getString("code"),
+          name = rs.getString("name"),
+          // A value the CHECK admits but [JurisdictionKind] does not name means
+          // the enum and the migration have diverged; say that here rather than
+          // hand a caller a kind it cannot interpret.
+          jurisdictionKind =
+            JurisdictionKind.fromValue(kindValue)
+              ?: throw SQLException("us_states row [${rs.getString("code")}] has unknown jurisdiction_kind [$kindValue]"),
+        )
+      },
+    )
+
   /** The row count of [table], for the loader's per-domain report. */
   fun rowCount(
     session: SqlSession,
@@ -659,6 +690,19 @@ enum class CodebookTable(
   ADMISSION_TEST_POLICIES("admission_test_policies", "slug"),
   CIP_CODES("cip_codes", "code", hasCodeColumn = false),
 }
+
+/**
+ * One published `us_states` row as a reader needs it: the postal code the write
+ * paths accept, the state's name, and its authored [JurisdictionKind] (RFC 147).
+ * The load-side [ed.unicoach.db.models.NewUsState] carries `ipedsRegion` too;
+ * this read type deliberately does not — no reader of the vocabulary asks which
+ * IPEDS region a state is in.
+ */
+data class UsState(
+  val code: String,
+  val name: String,
+  val jurisdictionKind: JurisdictionKind,
+)
 
 /** One stored codebook row: its natural key and its published code (null when the key is the code). */
 data class StoredCodebookRow(

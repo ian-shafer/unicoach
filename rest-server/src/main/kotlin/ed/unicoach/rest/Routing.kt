@@ -12,6 +12,7 @@ import ed.unicoach.rest.routing.ConvoRouteHandler
 import ed.unicoach.rest.routing.MoneyProfileRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
+import ed.unicoach.rest.routing.VocabularyRouteHandler
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -57,6 +58,7 @@ fun Application.configureRouting(
   budgetService: ed.unicoach.coaching.budget.BudgetService,
   subscriptionService: ed.unicoach.subscriptions.SubscriptionService,
   appleNotificationVerifier: ed.unicoach.appstore.AppleNotificationVerifier,
+  vocabularyService: ed.unicoach.vocabulary.VocabularyService,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
@@ -74,6 +76,8 @@ fun Application.configureRouting(
     SubscriptionRouteHandler(authService, studentService, subscriptionService, sessionConfig)
   val appleNotificationRouteHandler =
     AppleNotificationRouteHandler(appleNotificationVerifier, queueService)
+  val vocabularyRouteHandler =
+    VocabularyRouteHandler(authService, studentService, vocabularyService, sessionConfig)
   routing {
     route("/healthz") {
       get {
@@ -93,5 +97,6 @@ fun Application.configureRouting(
     coachingUsageRouteHandler.registerRoutes(this)
     subscriptionRouteHandler.registerRoutes(this)
     appleNotificationRouteHandler.registerRoutes(this)
+    vocabularyRouteHandler.registerRoutes(this)
   }
 }

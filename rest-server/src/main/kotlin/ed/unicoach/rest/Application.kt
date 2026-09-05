@@ -401,6 +401,12 @@ fun Application.appModule(
   val budgetService = BudgetService(database, budgetConfig, subscriptionPlans)
   val coachingService = CoachingService(database, llmCallLog, coachingConfig, budgetService, toolRegistry)
   val subscriptionService = SubscriptionService(database, appStoreServerApi, subscriptionPlans)
+  // The served vocabularies (RFC 165): one registry behind
+  // GET /api/v1/vocabularies, built from the very enum and validator set the
+  // write paths use, so a value a picker offers is a value the server accepts.
+  val vocabularyService =
+    ed.unicoach.vocabulary
+      .VocabularyService(database)
 
   configureEmailVerificationGate(authService, sessionConfig)
 
@@ -419,5 +425,6 @@ fun Application.appModule(
     budgetService,
     subscriptionService,
     appleNotificationVerifier,
+    vocabularyService,
   )
 }

@@ -983,6 +983,41 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/vocabularies:
+    get:
+      summary: Read the served vocabularies
+      description: >
+        The closed, user-independent lists a client renders instead of
+        transcribing, keyed by vocabulary name. Requires an authenticated
+        session but no student profile — the screen that needs the picker is
+        exactly the screen whose money profile does not exist yet. Every entry
+        carries
+        `value` (what the write path accepts) and `label` (what a person reads),
+        and may carry extra keys; entries are in DISPLAY order, so the client
+        sorts nothing.
+      operationId: getVocabularies
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Every served vocabulary, plus the content hash of exactly these bytes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VocabulariesResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students/me/coaching-usage:
     get:
       summary: Read the caller's coaching usage
@@ -1817,6 +1852,97 @@ components:
         updatedAt:
           type: string
           format: date-time
+    VocabulariesResponse:
+      type: object
+      required: [version, vocabularies]
+      properties:
+        version:
+          type: string
+          description: >-
+            Content hash of the served document. A client that has already rendered a
+            picker compares this one string instead of diffing every list. It is NOT an
+            ETag and sets no cache header.
+        vocabularies:
+          type: object
+          description: >-
+            The served vocabularies, keyed by vocabulary name. The set of names is
+            whatever the server publishes; a client reads the keys rather than expecting
+            a fixed list. The names below are typed because they are served today; they
+            are not required, and a vocabulary registered later needs no spec edit.
+          properties:
+            income_bands:
+              $ref: '#/components/schemas/IncomeBandVocabulary'
+            residency_states:
+              $ref: '#/components/schemas/ResidencyStateVocabulary'
+          additionalProperties:
+            $ref: '#/components/schemas/Vocabulary'
+    Vocabulary:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          description: The vocabulary's entries, in display order.
+          items:
+            $ref: '#/components/schemas/VocabularyEntry'
+    VocabularyEntry:
+      type: object
+      required: [value, label]
+      additionalProperties: true
+      description: >-
+        One entry. `value` and `label` are universal and required; a vocabulary may add
+        extra keys at this level, never fewer — see the per-vocabulary specializations.
+      properties:
+        value:
+          type: string
+          description: What the write path accepts for this entry.
+        label:
+          type: string
+          description: What a person reads.
+    IncomeBandVocabulary:
+      description: The income_bands vocabulary, whose entries are IncomeBandVocabularyEntry.
+      allOf:
+        - $ref: '#/components/schemas/Vocabulary'
+        - type: object
+          properties:
+            entries:
+              type: array
+              items:
+                $ref: '#/components/schemas/IncomeBandVocabularyEntry'
+    IncomeBandVocabularyEntry:
+      description: >-
+        The income_bands specialization of VocabularyEntry, published so the closed band
+        vocabulary appears in the contract. `label` is the dollar range in words.
+      allOf:
+        - $ref: '#/components/schemas/VocabularyEntry'
+        - type: object
+          properties:
+            value:
+              enum: [under_30k, 30k_to_48k, 48k_to_75k, 75k_to_110k, over_110k]
+    ResidencyStateVocabulary:
+      description: The residency_states vocabulary, whose entries are ResidencyStateVocabularyEntry.
+      allOf:
+        - $ref: '#/components/schemas/Vocabulary'
+        - type: object
+          properties:
+            entries:
+              type: array
+              items:
+                $ref: '#/components/schemas/ResidencyStateVocabularyEntry'
+    ResidencyStateVocabularyEntry:
+      description: >-
+        The residency_states specialization of VocabularyEntry, published so the closed
+        jurisdiction classification appears in the contract.
+      allOf:
+        - $ref: '#/components/schemas/VocabularyEntry'
+        - type: object
+          properties:
+            jurisdictionKind:
+              type: string
+              enum: [state, federal-district, territory, freely-associated-state]
+              description: >-
+                What kind of jurisdiction the code names, so a picker that groups its rows
+                does not call Palau a state.
     MoneyProfileResponse:
       type: object
       required: [profile]

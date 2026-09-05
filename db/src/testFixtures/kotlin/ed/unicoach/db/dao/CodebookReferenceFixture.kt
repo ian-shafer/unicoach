@@ -77,35 +77,39 @@ object CodebookReferenceFixture {
       .parseToJsonElement(COMMITTED_FILE.readText()) as JsonObject
   }
 
-  /** The nine IPEDS regions the file publishes, minus [OMITTED_REGION]. */
-  val REGIONS: List<NewIpedsRegion> by lazy {
-    codes("ipeds_region")
-      .map { row ->
-        NewIpedsRegion(
-          slug = row.text("slug"),
-          code = row.text("code").toInt(),
-          name = row.text("name"),
-          labelRaw = row.text("label_raw"),
-        )
-      }.filter { it.slug != OMITTED_REGION }
+  /** Every IPEDS region the file publishes, [OMITTED_REGION] included. */
+  private val ALL_REGIONS: List<NewIpedsRegion> by lazy {
+    codes("ipeds_region").map { row ->
+      NewIpedsRegion(
+        slug = row.text("slug"),
+        code = row.text("code").toInt(),
+        name = row.text("name"),
+        labelRaw = row.text("label_raw"),
+      )
+    }
   }
 
-  /** The 51 non-territory jurisdictions: everything the file publishes outside [OMITTED_REGION]. */
-  val STATES: List<NewUsState> by lazy {
-    codes("us_states")
-      .map { row ->
-        NewUsState(
-          uspsCode = row.text("code"),
-          name = row.text("name"),
-          jurisdictionKind =
-            requireNotNull(JurisdictionKind.fromValue(row.text("jurisdiction_kind"))) {
-              "codebooks.json publishes jurisdiction_kind [${row.text("jurisdiction_kind")}], " +
-                "which JurisdictionKind does not name"
-            },
-          ipedsRegion = row.text("ipeds_region"),
-        )
-      }.filter { it.ipedsRegion != OMITTED_REGION }
+  /** Every jurisdiction the file publishes, the eight in [OMITTED_REGION] included. */
+  private val ALL_STATES: List<NewUsState> by lazy {
+    codes("us_states").map { row ->
+      NewUsState(
+        uspsCode = row.text("code"),
+        name = row.text("name"),
+        jurisdictionKind =
+          requireNotNull(JurisdictionKind.fromValue(row.text("jurisdiction_kind"))) {
+            "codebooks.json publishes jurisdiction_kind [${row.text("jurisdiction_kind")}], " +
+              "which JurisdictionKind does not name"
+          },
+        ipedsRegion = row.text("ipeds_region"),
+      )
+    }
   }
+
+  /** The nine IPEDS regions the file publishes, minus [OMITTED_REGION]. */
+  val REGIONS: List<NewIpedsRegion> by lazy { ALL_REGIONS.filter { it.slug != OMITTED_REGION } }
+
+  /** The 51 non-territory jurisdictions: everything the file publishes outside [OMITTED_REGION]. */
+  val STATES: List<NewUsState> by lazy { ALL_STATES.filter { it.ipedsRegion != OMITTED_REGION } }
 
   /** All twelve published NCES locales. */
   val LOCALES: List<NewNcesLocale> by lazy {
@@ -126,27 +130,8 @@ object CodebookReferenceFixture {
    * present. Safe to call before each test and safe to call twice.
    */
   fun seed(session: SqlSession) {
-    insertAll(
-      session,
-      "INSERT INTO ipeds_regions (slug, code, name, label_raw) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
-      REGIONS,
-    ) { stmt, row ->
-      stmt.setString(1, row.slug)
-      stmt.setInt(2, row.code)
-      stmt.setString(3, row.name)
-      stmt.setString(4, row.labelRaw)
-    }
-    insertAll(
-      session,
-      "INSERT INTO us_states (usps_code, name, jurisdiction_kind, ipeds_region) VALUES (?, ?, ?, ?) " +
-        "ON CONFLICT DO NOTHING",
-      STATES,
-    ) { stmt, row ->
-      stmt.setString(1, row.uspsCode)
-      stmt.setString(2, row.name)
-      stmt.setString(3, row.jurisdictionKind.value)
-      stmt.setString(4, row.ipedsRegion)
-    }
+    insertRegions(session, REGIONS)
+    insertStates(session, STATES)
     insertAll(
       session,
       "INSERT INTO nces_locales (slug, code, type, detail, name, label_raw) VALUES (?, ?, ?, ?, ?, ?) " +
@@ -163,18 +148,89 @@ object CodebookReferenceFixture {
   }
 
   /**
+   * The deliberately-omitted [OMITTED_REGION] and the eight territory /
+   * freely-associated-state rows that belong to it — [seed]'s 51 jurisdictions
+   * completed to the 59 the residency vocabulary serves (RFC 165).
+   *
+   * RFC 165 serves the residency vocabulary as the money-profile validator's
+   * own 59-code set, joined to `us_states` for labels, and a code with no row
+   * FAILS the read. A suite that exercises that endpoint therefore calls
+   * [seed] and then this, which [seed] deliberately does not do for it.
+   *
+   * It is a SECOND function rather than a dropped filter because
+   * `CollegeSearchIndexRebuildTest`'s probe — a college in region 9 whose region
+   * word must come out NULL — is only a probe while no `ipeds_regions` row
+   * carries code 9. A suite calling this MUST pair it with
+   * [removeOtherJurisdictions] in its teardown, so the shared test database is
+   * handed back the way it was found; this function is that teardown's exact
+   * inverse.
+   */
+  fun seedOtherJurisdictions(connection: Connection) {
+    val session = sessionOver(connection)
+    insertRegions(session, ALL_REGIONS.filter { it.slug == OMITTED_REGION })
+    insertStates(session, ALL_STATES.filter { it.ipedsRegion == OMITTED_REGION })
+  }
+
+  /**
+   * Undoes [seedOtherJurisdictions], leaving exactly what [seed] leaves. The
+   * states go first: they foreign-key the region.
+   */
+  fun removeOtherJurisdictions(connection: Connection) {
+    connection.prepareStatement("DELETE FROM us_states WHERE ipeds_region = ?").use { stmt ->
+      stmt.setString(1, OMITTED_REGION)
+      stmt.executeUpdate()
+    }
+    connection.prepareStatement("DELETE FROM ipeds_regions WHERE slug = ?").use { stmt ->
+      stmt.setString(1, OMITTED_REGION)
+      stmt.executeUpdate()
+    }
+  }
+
+  /**
    * [seed] for a suite that holds a raw JDBC [Connection] rather than a
    * [SqlSession] — `:rest-server`'s two routing suites and `:admin-web`'s
    * support object. The adapter is ONE line, which is why it was hand-copied at
    * three call sites; one line pasted three times is still three places to fix
    * when the fixture grows a second method.
    */
-  fun seed(connection: Connection) =
-    seed(
-      object : SqlSession {
-        override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
-      },
-    )
+  fun seed(connection: Connection) = seed(sessionOver(connection))
+
+  /** The one-line [SqlSession] adapter over a raw [Connection]. */
+  private fun sessionOver(connection: Connection): SqlSession =
+    object : SqlSession {
+      override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
+    }
+
+  /** The one `ipeds_regions` insert, so every seeder writes the same columns. */
+  private fun insertRegions(
+    session: SqlSession,
+    rows: List<NewIpedsRegion>,
+  ) = insertAll(
+    session,
+    "INSERT INTO ipeds_regions (slug, code, name, label_raw) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+    rows,
+  ) { stmt, row ->
+    stmt.setString(1, row.slug)
+    stmt.setInt(2, row.code)
+    stmt.setString(3, row.name)
+    stmt.setString(4, row.labelRaw)
+  }
+
+  /** The one `us_states` insert, so every seeder writes the same columns. */
+  private fun insertStates(
+    session: SqlSession,
+    rows: List<NewUsState>,
+  ) = insertAll(
+    session,
+    "INSERT INTO us_states (usps_code, name, jurisdiction_kind, ipeds_region) VALUES (?, ?, ?, ?) " +
+      "ON CONFLICT DO NOTHING",
+    rows,
+  ) { stmt, row ->
+    stmt.setString(1, row.uspsCode)
+    stmt.setString(2, row.name)
+    stmt.setString(3, row.jurisdictionKind.value)
+    stmt.setString(4, row.ipedsRegion)
+  }
 
   /** One batched, conflict-tolerant insert — the same loop for all three tables. */
   private fun <T> insertAll(
