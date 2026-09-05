@@ -41,13 +41,17 @@ codebook — see the TL;DR.
    disagreement is exactly the in-district figure**. Fees also split from
    tuition, and four academic years land per file. **Nothing user-visible
    changed yet** — the rows are there and no consumer reads them. **Two spec
-   facts were corrected against the pinned codebook, and /chart owes brief 0006
-   a decision on the first**: `CHG7/8AY` is off campus **NOT** with family, so
-   **no source anywhere publishes with-family food and housing** — that payoff
-   is withdrawn from `shape/02` and `shape/04` must say the gap plainly instead
-   of showing a fabricated zero; and IC_AY covers 3,825 institutions, not
-   ~6,100, because program-year reporters live in a different file, so the
-   Scorecard stays the only source for the rest.
+   facts were corrected against the pinned codebook, and both are now
+   resolved**: `CHG7/8AY` is off campus **NOT** with family, so **no source
+   anywhere publishes with-family food and housing** — **Ian decided (D17,
+   2026-09-05) to treat living at home as $0 food-and-housing and say so in
+   words**, on the grounds that eating at home is negligible and is not a new
+   expense caused by enrolling, which is what a cost-of-attendance figure
+   measures. So `shape/04` shows a complete with-family total with the
+   assumption stated, never a silent zero and never a blank blamed on the
+   school. IC_AY also covers 3,825 institutions, not ~6,100, because
+   program-year reporters live in a different file, so the Scorecard stays the
+   only source for the rest.
 
 2. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
    2026-09-04).** Brief 0006's substrate: a price carries its residency, its
@@ -547,11 +551,15 @@ presented as reported.
 
 **What it does not have.** IPEDS assumes a student living with family pays
 nothing for food and housing, so it publishes no such figure — and neither does
-any other source. The earlier plan to show a with-family housing line is
-withdrawn; `shape/04` must name the gap instead of printing a zero. IC_AY also
-covers 3,825 institutions, not the full ~6,100: schools that report on a
-program-year calendar are in a different file, and for those the Scorecard
-remains the only source, in-district collapse and all.
+any other source. unicoach adopts the same assumption deliberately (**D17**):
+living at home counts as **$0** food-and-housing, and the cost answer will say
+so in words rather than printing a silent zero or blaming the school for a
+missing figure. The reasoning is that eating at home is not free but is
+negligible, and is not a _new_ expense caused by enrolling — which is what a
+cost-of-attendance figure measures. IC_AY also covers 3,825 institutions, not
+the full ~6,100: schools that report on a program-year calendar are in a
+different file, and for those the Scorecard remains the only source, in-district
+collapse and all.
 
 **How it degrades.** A run that loads no IC_AY file still rebuilds the canonical
 store from the last IC_AY data staged, so prices do not vanish between ingests.
@@ -889,7 +897,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 
 | Pri | Work                                 | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Where                                    |
 | --- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | Money in unicoach shape (brief 0006) | **Gates 1+2 APPROVED (2026-09-02, defaults, no amendments); WAVE 1 COMPLETE, WAVE 2 STARTED.** Canonical money layer: PriceFigure vs CohortMoneyStat, stored missingness status, authored vocabularies, IPEDS IC_AY + SFA un-deferred, policy-parameter store, staged cutover. Nine slices specced, **three landed**. **`shape/06/pell-and-loans` LANDED as RFC 159 (2026-09-03)**; **`shape/01/canonical-store` LANDED as RFC 158 (2026-09-04)**; **`shape/02/ipeds-ic-ay` LANDED as RFC 161 (2026-09-05)** — IPEDS charges fill the store ahead of the Scorecard, making the in-district tier real (269 institutions were served their in-district price under an in-state label) and splitting fees from tuition. Still no consumer: the door is **`shape/04/cost-answers-from-canonical`**, whose PREFER on shape/02 is now satisfied, so it is the slice to run next. **`shape/03/ipeds-sfa` is READY** and must renumber its migration to 0085 (RFC 161 took 0084). **A spec defect is open for /chart**: `CHG7/8AY` is off campus NOT with family, so no source publishes with-family food and housing — shape/04's criteria must say that gap plainly instead of promising the line. Brief 0005 PAUSED into this brief (D11); D14 decided its search-ranking question.                                                                                                                                                                      | `product/0006-money-in-unicoach-shape`   |
+| P1  | Money in unicoach shape (brief 0006) | **Gates 1+2 APPROVED (2026-09-02, defaults, no amendments); WAVE 1 COMPLETE, WAVE 2 STARTED.** Canonical money layer: PriceFigure vs CohortMoneyStat, stored missingness status, authored vocabularies, IPEDS IC_AY + SFA un-deferred, policy-parameter store, staged cutover. Nine slices specced, **three landed**. **`shape/06/pell-and-loans` LANDED as RFC 159 (2026-09-03)**; **`shape/01/canonical-store` LANDED as RFC 158 (2026-09-04)**; **`shape/02/ipeds-ic-ay` LANDED as RFC 161 (2026-09-05)** — IPEDS charges fill the store ahead of the Scorecard, making the in-district tier real (269 institutions were served their in-district price under an in-state label) and splitting fees from tuition. Still no consumer: the door is **`shape/04/cost-answers-from-canonical`**, whose PREFER on shape/02 is now satisfied, so it is the slice to run next. **`shape/03/ipeds-sfa` is READY** and must renumber its migration to 0085 (RFC 161 took 0084). **Spec defect found and closed in the same day**: `CHG7/8AY` is off campus NOT with family, so no source publishes with-family food and housing; **D17 (Ian, 2026-09-05) treats living at home as $0 and states the assumption in words**, and shape/04's criteria are rewritten to match. Brief 0005 PAUSED into this brief (D11); D14 decided its search-ranking question.                                                                                              | `product/0006-money-in-unicoach-shape`   |
 | P1  | College search index (brief 0004)    | **CORE COMPLETE** — gates 1+2 approved (2026-08-27); every specced slice has landed: `search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147), `search/03b/the-index` (RFC 150), `search/05/consumer-sweep` (RFC 154) and `search/04/similar-colleges` (RFC 153, 2026-09-01). S3b was the aha — the derived index serves both search paths. S5 turned out to be an audit (RFC 150 had already repointed every consumer, so there was nothing to delete) and closed the real gap instead with the `find_college` chat tool. S4 closes the brief: `similar_colleges` answers "schools like X" with one query-time weighted distance over the index, no similarity table, on coach prompt **v13** — and it is the first and only reader of the percentile columns S3b computed. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067). **Nothing here is startable.** `search/06/unattended-refresh` stays DEFERRED — automate the quarterly ingest only if running it by hand proves annoying. The debt S4 declined moved to the Backlog: the 5th `NewCollege` fixture copy, and genericising `CollegeSearchOutcome`.                                                                                                                                                                   | `product/0004-college-search-index`      |
 | P1  | Clear money language (brief 0003)    | **COMPLETE — every slice landed.** `money/01` + `01.1` + RFC 143 + `01.2` + `02` + `03` + **`04/where-youll-live`** (RFCs 141–143, 145, 149, 151, 152; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, states the assumption lines above any side-by-side, and now leads with the one way of living the family said they plan — a global default with a per-college override, because living at home is possible at the in-state school and not at the far one (D20). When it cannot show a total it says which kind of silence it is: our unanswered residency, a price we cannot select, or a part the school does not publish. Prompt v14; v13 is the rollback. Nothing left in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `product/0003-clear-money-language`      |
 | P1  | Beat 1: brief 0001 — COMPLETE        | **BEAT 1 IS DONE. All six slices landed.** `first-value/06/invite-your-parent` **LANDED as RFC 160** (`main@9104eeb7` + `c23953e0`, 2026-09-03): the synthesis pass writes a `share_report` commitment for an eligible student (>= 2 active list entries, no live share, no opt-out, no open nudge, cap not hit) and the existing next-session opener raises it — deterministic code, not an LLM lens, inserted in the read-phase transaction so it fires even when the LLM phases no-op on freshness. **Ian amended the drafted policy at the gate**: re-nudges are allowed (14-day cooldown AND a list change since the last nudge) and "never ask me again" is permanent via the new `stop_cost_report_offers` tool, which also drops any nudge already written. New append-only `share_events` (minted/repeat/reissued/revoked/opted_out) approved at the DDL gate (D10). Migrations 0080-0082, coach prompt v18 (rollback `COACHING_SYSTEM_PROMPT_VERSION=v17`), gate 2515 tests 0 failures. The spec's "share CTA on the report surface" was resolved as written: S5 provided the CTA and token, S6 added the trigger and the tracking; no parent-page CTA was built (RFC 155 D-G forbids upgrade cues to a logged-out parent). **Next for this brief is Beat 2** — parent partner accounts, claim-the-report onboarding — which brief 0001 D9 says is specced only after Beat 1 ships. It now has. `share_events` is the substrate it reads. | `product/0001-v1-differentiator/spec.md` |
@@ -1088,6 +1096,40 @@ What the brief left behind, if you are picking up the debt: the two Backlog
 items above (the fifth `NewCollege` fixture copy with the shared helper stranded
 in `:db`'s test source set, and genericising `CollegeSearchOutcome`). Both are
 real, both were declined with reasons, and the first has now been parked twice.
+
+### Explicit profile view (brief 0007) — START `profile/01` FIRST
+
+**The short form is all you need.** Open a NEW Prime Agent session in
+`/Users/ian/Work/unicoach` (one session per slice — a fresh context window per
+run is the point) and say:
+
+> start work on `profile/01/served-vocabulary`
+
+The `slice` skill resolves the ID in
+`product/0007-explicit-profile-view/spec.md`, checks the `Needs:` edges, claims
+the RFC and migration numbers live from every worktree, runs /ship, and writes
+the ledger and this file back. **You are /ship's approval gate in that
+session.**
+
+Order and readiness — confirm with `slice-board`, never with this line:
+
+1. **`profile/01/served-vocabulary`** — READY now. Server: serve the income-band
+   options (slug + spoken label + dollar range) and the 59 residency codes, so
+   the screen never shows a slug (RFC 142) and Swift holds no unvalidated copy
+   of the ranges.
+2. **`profile/02/your-details-screen`** — BLOCKED by `01` until it lands, then
+   start it in its own session. This is the slice where the value appears: a
+   family fixes their own income band and state without talking to the coach.
+3. **`profile/03/list-screen-parity`** — DEFERRED until RFC 164 (the
+   college-list `livingPlan` three-state fix) is on `main`. Remove the DEFERRED
+   line in `spec.md` when it lands, and the board will call it READY.
+
+Gate-1 decisions the slices already carry (do not re-litigate them in a run): a
+screen a user opened is NOT the coach re-asking; a decline must be **undoable in
+both directions**; clear and decline must **look different**; a 404 means
+"nothing answered yet"; the coach **never** mentions a screen edit in chat; the
+screen is never a gate; **no new tables anywhere in this brief** — a run that
+thinks it needs one stops and comes back to /chart.
 
 ### Account deletion (brief 0002) — parked in Backlog, kept ready
 

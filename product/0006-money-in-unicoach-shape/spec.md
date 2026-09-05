@@ -12,8 +12,11 @@ Grounded by `research/repo-money-audit.md` (file:line for everything below):
    in/out pair (in-district collapsed into "in" by the Scorecard itself);
    COSTT4_A and the NPT4 family are in-state-based cohort statistics stored as
    sibling columns of prices. Six arrangement components exist (0062); there is
-   NO with-family housing figure anywhere — the Scorecard does not publish one,
-   IPEDS IC_AY does (`CHG7/8AY`: off-campus-with-family).
+   NO with-family food-and-housing figure anywhere — not in the Scorecard, and
+   **not in IPEDS IC_AY either** (`CHG7/8AY` is off campus **NOT** with family;
+   the with-family arrangement has only `CHG9AY`, other expenses). Corrected
+   2026-09-05 by RFC 161 against the pinned codebook; resolved by **D17**, which
+   treats living at home as $0 food-and-housing and says so.
 2. **Missingness is unrecoverable at the row today.** `toIntOrNull()` collapses
    Scorecard `NULL` and `PrivacySuppressed` (`CsvIngestSupport.kt:272-275`).
    Recovering D3's status values means re-PARSING the pinned snapshots — an
@@ -125,7 +128,8 @@ list and `bin/fetch-*` plumbing; rebase risk only.\
 load it as staging, and map into `price_figures`: three-tier tuition
 (`CHG1/2/3AY*` — **in-district becomes real**), fees split from tuition
 (`*AT/*AF` → `fees_only` concept), arrangement components including
-**with-family housing-and-food** (`CHG7/8AY`) which no current source carries,
+~~**with-family housing-and-food** (`CHG7/8AY`)~~ — struck 2026-09-05: that
+variable is off campus NOT with family and no source publishes the figure (D17),
 four academic years per file, and the X-imputation flags mapped to D3 statuses
 (B/D/H → not_reported_by_institution; A → not_applicable; G/J/K/L/N/P/Z →
 imputed_by_publisher; R/C → reported).
@@ -147,8 +151,8 @@ and whether to load all four carried years or the newest two is /ship design
   `bin/fetch-ipeds` contract extended, not forked.
 - New staging DDL at the /ship gate.
 - Reachability: still substrate — the door is shape/04/05 and this slice's spec
-  says so; its user-visible payoff (in-district, fees split, with-family
-  housing) is named in shape/04's criteria.
+  says so; its user-visible payoff (in-district, fees split, and the with-family
+  $0 assumption stated per D17) is named in shape/04's criteria.
 
 **First-session test:** none user-visible yet; operator sees per-tier row counts
 and flag distribution in the ingest summary.
@@ -192,9 +196,9 @@ is /ship design.
 
 **Needs:** BLOCKS shape/01/canonical-store — reads the canonical tables. PREFER
 shape/02/ipeds-ic-ay — technically cuttable on Scorecard-only rows, but the
-user-visible payoff (in-district tier, fees split, with-family housing line,
-imputation named) is IC_AY's; cutting over before it lands ships plumbing with
-no visible change.\
+user-visible payoff (in-district tier, fees split, the stated with-family
+assumption per D17, imputation named) is IC_AY's; cutting over before it lands
+ships plumbing with no visible change.\
 **What:** The first consumer cutover (D10): `CollegeCostService`,
 `CollegeCostChatTool`, the family cost report, and `FitLensService`'s cost
 digest read ONLY canonical tables. The RFC 149/151/152/157 layer becomes a
@@ -207,9 +211,12 @@ and `ScorecardVintage`'s closed enum is deleted rather than extended.
 ask what a school costs. New user-visible truths, each an acceptance criterion:
 
 - a community-college family sees the **in-district** price, labeled;
-- **living with family** finally has a housing-and-food line where IPEDS
-  publishes one, and the blank at schools that don't is attributed to the
-  school;
+- **living with family** shows a complete total that counts food and housing as
+  **$0**, with the assumption stated in words — "living at home, we count no
+  food-and-housing cost" — never a silent zero line and never a blank attributed
+  to the school (D17). No source publishes a with-family food-and-housing
+  figure; this is unicoach's stated assumption, not a missing datum, and the
+  copy must not imply the school failed to report it;
 - fees appear split from tuition where reported;
 - a suppressed figure says "withheld by the publisher for privacy", an imputed
   figure is marked as the publisher's estimate, and "we have not collected this"
@@ -404,6 +411,19 @@ conversation wants it. Remove this Status line when scheduled.
 - **D16. Coverage: the full ingested universe (~6k UNITIDs),** not the launch
   set — canonical fill is a mapping over whatever staging holds; CDS-derived
   facts (shape/07) stay coverage-honest per school. **DEFAULT: yes.**
+- **D17. Living at home carries no food-and-housing figure, and that counts as
+  $0 in a total.** _(Added 2026-09-05, after `shape/02/ipeds-ic-ay` landed as
+  RFC 161. This corrects a factual error in this spec's DISCOVER preamble §1 and
+  in D5, both of which said IPEDS IC_AY publishes an off-campus-with-family
+  food-and-housing figure. It does not: `CHG7/8AY` is off campus **NOT** with
+  family, and the with-family arrangement has exactly one variable, `CHG9AY`
+  (other expenses). No source anywhere publishes with-family food and housing —
+  IPEDS assumes zero.)_ **Ian's call:** treat it as **$0** and say so. Eating at
+  home is not free, but it is negligible against the household's existing
+  baseline and it is **not a new expense caused by enrolling** — which is what a
+  cost-of-attendance figure is for. So a with-family total IS shown, it is
+  complete, and the surface states the assumption in words rather than printing
+  a silent zero line. **DEFAULT: yes.**
 
 Approve the gate and wave 1 (shape/01, shape/06) is startable; amendments are
 carried into the slice texts before anything runs.

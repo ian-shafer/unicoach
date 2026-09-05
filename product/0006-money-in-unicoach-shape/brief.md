@@ -239,14 +239,17 @@ AUDIT = `research/repo-money-audit.md`.
 - **D5. Un-defer IPEDS IC_AY, add IPEDS SFA (the two keystone sources).** IC_AY
   (~310KB/yr, public domain, NOT the IC file we pin) is the only bulk source
   with first-class three-tier tuition AND fees split AND all-arrangement
-  components including with-family housing-and-food, four years per file, full
-  missingness flags — everything the Scorecard structurally lacks. SFA adds
-  honestly-labeled net price, income-band aid, Pell/loan averages, aid mix by
-  source, and the residency/arrangement population counts. Scorecard is demoted
-  to what it is uniquely good at: NSLDS debt and Treasury earnings. When the
-  same fact arrives from both, the upstream (IPEDS) value wins — recorded per
-  figure with source + vintage, never averaged (SOURCES, priority order). This
-  resolves brief 0003 D7. **DEFAULT: yes.**
+  components, four years per file, full missingness flags — everything the
+  Scorecard structurally lacks. SFA adds honestly-labeled net price, income-band
+  aid, Pell/loan averages, aid mix by source, and the residency/arrangement
+  population counts. Scorecard is demoted to what it is uniquely good at: NSLDS
+  debt and Treasury earnings. When the same fact arrives from both, the upstream
+  (IPEDS) value wins — recorded per figure with source + vintage, never averaged
+  (SOURCES, priority order). This resolves brief 0003 D7. **DEFAULT: yes.**
+  _(Corrected 2026-09-05 by RFC 161: this decision originally claimed IC_AY
+  carries with-family housing-and-food. It does not — `CHG7/8AY` is off campus
+  NOT with family, and no source publishes the figure. Resolved by spec decision
+  **D17**: living at home counts as $0 food-and-housing, stated in words.)_
 
 - **D6. Vocabulary authority inverts: unicoach authors, external maps in.** The
   pattern is `subjects.json` (authored taxonomy + mapping + fatal validation at
