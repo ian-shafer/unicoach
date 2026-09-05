@@ -52,6 +52,33 @@ FK, and a missing `CONTROL` silently classified a college private (wrong NPT4
 column family, wrong residency scope). No `Needs:` edges, so no gate answers
 were required.
 
+shape/02/ipeds-ic-ay LANDED as RFC 161 (main@c7ad0dfa + 7f5b7fbf, 2026-09-05) —
+IPEDS `IC2023_AY.csv`, the published-charges file, becomes a second canonical
+source ahead of the Scorecard under RFC 158's upstream-wins rule, and it makes
+the in-district tier real: measured over the whole file, five of the six figures
+the two sources share agree 100.0%, but `TUITIONFEE_IN` agrees only 92.1% and
+all 269 mismatches equal the in-district figure exactly — Austin Community
+College was served as $2,550 "in-state" when its real in-state price is $8,580.
+Fees split from tuition (`fees_only`), four academic years land per file, and
+the X-imputation flags become D3 statuses. Migration 0084's
+`college_ipeds_charges` is narrow (one row per UNITID × charge variable ×
+academic year) so a new year needs no migration; `source` became an owned
+`MoneySource` enum with a domain CHECK on both fact tables, decided at the gate
+(D6-style reasoning, but NOT a vocabulary table: a source is provenance, not a
+unicoach concept, and precedence must not be operator-editable data). Two spec
+facts were corrected against the pinned codebook and are defects for /chart to
+carry: **`CHG7/8AY` is off campus NOT with family, so no source publishes
+with-family food and housing** — the slice's third payoff is withdrawn and the
+gap stays a labelled gap — and IC_AY covers 3,825 institutions, not ~6,100
+(program-year reporters are a different file). Review over 39 lenses found two
+future-dated bugs no test could catch: staged charges were never pruned, so an
+institution leaving IC_AY would keep rows that beat the Scorecard forever; and
+the survey year never reached the loader, so a 2024 file would have stamped
+every price one year stale and exited green. Both fixed and tested. Substrate by
+design — no consumer reads the rows; the door is shape/04. No `Needs:` gate
+answers were required (BLOCKS shape/01 was already LANDED; CONFLICTS shape/03
+had no live run).
+
 ## The question
 
 Every money figure unicoach serves today is stored in the shape its publisher
