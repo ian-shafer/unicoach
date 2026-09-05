@@ -198,6 +198,9 @@ internal object CsvIngestSupport {
   /** The per-row savepoint name; source-family neutral, so two loaders never collide. */
   private const val ROW_SAVEPOINT = "ingest_row"
 
+  /** The Scorecard's suppression sentinel, byte for byte -- the one non-numeric cell with its own status (RFC 158). */
+  const val PRIVACY_SUPPRESSED = "PrivacySuppressed"
+
   /** The provenance digest algorithm: `college_index_build.sources.sha256` is this hash. */
   private const val DIGEST_ALGORITHM = "SHA-256"
 
@@ -273,6 +276,99 @@ internal object CsvIngestSupport {
     record: CSVRecord,
     column: String,
   ): Int? = stringOrNull(record, column)?.toIntOrNull()
+
+  /**
+   * A status-preserving cell reading (RFC 158): the value, or WHY there is no
+   * value. [intOrNull] collapses `"PrivacySuppressed"`, `"NULL"`, `"NA"` and a
+   * blank into one indistinguishable `null`; the canonical money store keys
+   * absence on its reason (D3), so the canonical fill reads through these
+   * variants instead. The existing readers are untouched -- every `colleges`
+   * column keeps its RFC 139 behavior.
+   */
+  sealed interface StatusfulCell<out T> {
+    /** A parseable, in-domain value: the `reported` status. */
+    data class Reported<T>(
+      val value: T,
+    ) : StatusfulCell<T>
+
+    /** The publisher's `PrivacySuppressed` sentinel: `suppressed_by_publisher`. */
+    data object SuppressedByPublisher : StatusfulCell<Nothing>
+
+    /** A blank cell or a publisher null sentinel (`NULL`/`NA`), or a
+     * domain-coerced value (tallied by the caller's coercion map):
+     * `not_reported_by_institution`. */
+    data object NotReported : StatusfulCell<Nothing>
+  }
+
+  /**
+   * The one sentinel-to-status mapping (D3's one home): blank and the
+   * publisher null sentinels ("NULL", "NA", anything [parse] refuses) read as
+   * not-reported with the reason kept, `PrivacySuppressed` keeps its own
+   * reading. The int/double pair below differ only in [parse].
+   */
+  private fun <T : Any> statusfulCell(
+    record: CSVRecord,
+    column: String,
+    parse: (String) -> T?,
+  ): StatusfulCell<T> {
+    val raw = stringOrNull(record, column) ?: return StatusfulCell.NotReported
+    if (raw == PRIVACY_SUPPRESSED) return StatusfulCell.SuppressedByPublisher
+    val value = parse(raw) ?: return StatusfulCell.NotReported
+    return StatusfulCell.Reported(value)
+  }
+
+  /**
+   * Mechanism A over a status-preserving read: a valid value outside
+   * `[min, max]` keeps the coercion tally by [columnName] and lands as
+   * [StatusfulCell.NotReported] -- coerced-away is "no usable report", never a
+   * fabricated suppression. A suppressed or absent reading passes through
+   * untouched: it has no value to be out of domain.
+   */
+  private fun <T : Comparable<T>> StatusfulCell<T>.coercedToDomain(
+    recordNumber: Long,
+    min: T,
+    max: T,
+    columnName: String,
+    coercions: MutableMap<String, Int>,
+  ): StatusfulCell<T> {
+    if (this is StatusfulCell.Reported && (value < min || value > max)) {
+      logCoercion(columnName, recordNumber, value, min, max, coercions)
+      return StatusfulCell.NotReported
+    }
+    return this
+  }
+
+  /** [intOrNull] with the absence reason preserved; see [StatusfulCell]. */
+  fun statusfulIntCell(
+    record: CSVRecord,
+    column: String,
+  ): StatusfulCell<Int> = statusfulCell(record, column, String::toIntOrNull)
+
+  /** Mechanism A over a status-preserving int read; see [coercedToDomain]. */
+  fun statusfulIntCellInDomain(
+    record: CSVRecord,
+    column: String,
+    min: Int,
+    max: Int,
+    columnName: String,
+    coercions: MutableMap<String, Int>,
+  ): StatusfulCell<Int> = statusfulIntCell(record, column).coercedToDomain(record.recordNumber, min, max, columnName, coercions)
+
+  /** [doubleOrNull] with the absence reason preserved; see [StatusfulCell]. */
+  fun statusfulDoubleCell(
+    record: CSVRecord,
+    column: String,
+  ): StatusfulCell<Double> = statusfulCell(record, column, String::toDoubleOrNull)
+
+  /** Mechanism A over a status-preserving double read; see [coercedToDomain]. */
+  fun statusfulDoubleCellInDomain(
+    record: CSVRecord,
+    column: String,
+    min: Double,
+    max: Double,
+    columnName: String,
+    coercions: MutableMap<String, Int>,
+  ): StatusfulCell<Double> = statusfulDoubleCell(record, column).coercedToDomain(record.recordNumber, min, max, columnName, coercions)
 
   fun doubleOrNull(
     record: CSVRecord,

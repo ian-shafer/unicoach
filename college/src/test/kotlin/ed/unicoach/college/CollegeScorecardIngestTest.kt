@@ -345,9 +345,9 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
           runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
         }
       assertEquals(
-        listOf("institutions", "fields", "aliases", "name-words", "search-index"),
+        listOf("institutions", "fields", "aliases", "name-words", "search-index", "canonical-money"),
         thrown.committedPhases,
-        "the derived search index registers itself as a committed phase too (RFC 150)",
+        "the derived search index and canonical money fill register as committed phases too (RFC 150/158)",
       )
       assertEquals("provenance", thrown.failedPhase, "the report names the phase that threw, not just what landed")
       // Exactly the expected table, not merely non-empty: the independent
@@ -415,11 +415,11 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The build row exists and says what the report says.
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
-    // Deliberately 5, not 1: RFC 144 added a second source family, RFC 146 the
-    // derived name-word rebuild, RFC 148 the CDS seed load, and RFC 150 the
-    // derived search index — each is exactly the derivation change
-    // method_version exists to record.
-    assertEquals(5, row.methodVersion)
+    // Deliberately 6, not 1: RFC 144 added a second source family, RFC 146 the
+    // derived name-word rebuild, RFC 148 the CDS seed load, RFC 150 the
+    // derived search index, and RFC 158 the canonical money fill — each is
+    // exactly the derivation change method_version exists to record.
+    assertEquals(6, row.methodVersion)
     assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")

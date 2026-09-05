@@ -1883,6 +1883,9 @@ class CollegesDaoTest {
           rowsIngested = JsonObject(emptyMap()),
           nameWordsRows = 0,
           searchIndexRows = 0,
+          priceFigureRows = null,
+          cohortMoneyStatRows = null,
+          canonicalMoneySummary = null,
           changeSummary = JsonObject(emptyMap()),
           methodVersion = 1,
         ),
@@ -2070,6 +2073,9 @@ class CollegesDaoTest {
                 ).jsonObject,
             nameWordsRows = null,
             searchIndexRows = null,
+            priceFigureRows = null,
+            cohortMoneyStatRows = null,
+            canonicalMoneySummary = null,
             changeSummary =
               Json
                 .parseToJsonElement(
@@ -2111,6 +2117,9 @@ class CollegesDaoTest {
           rowsIngested = JsonObject(emptyMap()),
           nameWordsRows = null,
           searchIndexRows = null,
+          priceFigureRows = null,
+          cohortMoneyStatRows = null,
+          canonicalMoneySummary = null,
           changeSummary = JsonObject(emptyMap()),
           methodVersion = 1,
         ),

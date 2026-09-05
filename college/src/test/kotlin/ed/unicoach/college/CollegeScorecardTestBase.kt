@@ -4,6 +4,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.MoneyVocabularyFixture
 import ed.unicoach.db.dao.SqlSession
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -57,6 +58,17 @@ abstract class CollegeScorecardTestBase {
    */
   protected open val seedsCodebookReference: Boolean get() = true
 
+  /**
+   * Whether [resetDatabase] puts the five RFC 158 money-vocabulary tables
+   * back after truncating them -- [seedsCodebookReference]'s reasoning
+   * applied to the canonical money store: P2 made a loaded vocabulary a write
+   * precondition of every `price_figures`/`cohort_money_stats` row, and the
+   * `canonical-money` phase runs in every ingest. `MoneyVocabularyLoaderTest`
+   * overrides it to false: it asserts first-load INSERT counts, which a
+   * pre-seeded vocabulary would turn into UNCHANGED.
+   */
+  protected open val seedsMoneyVocabulary: Boolean get() = true
+
   @BeforeEach
   fun resetDatabase() =
     runBlocking {
@@ -73,12 +85,19 @@ abstract class CollegeScorecardTestBase {
             // `colleges`, so truncating colleges takes it. `subjects` IS named
             // — nothing cascades to it, and a leftover taxonomy would silently
             // populate the next test's `subject_slugs`.
+            // The RFC 158 canonical money tables are truncated here too:
+            // `price_figures`/`cohort_money_stats` cascade from `colleges`,
+            // but the five vocabulary tables cascade from nothing, and a
+            // leftover vocabulary would hide a suite that forgot its seed.
             "TRUNCATE TABLE colleges, college_programs, college_ipeds, college_programs_census, " +
               "subjects, ipeds_regions, us_states, nces_locales, carnegie_2021_basic_classes, " +
               "carnegie_2021_size_settings, religious_affiliations, athletic_associations, " +
-              "football_conferences, admission_test_policies, cip_codes, codebook_sources CASCADE",
+              "football_conferences, admission_test_policies, cip_codes, codebook_sources, " +
+              "price_figures, cohort_money_stats, aid_policy_facts, residency_bases, arrangements, " +
+              "figure_statuses, price_concepts, income_bands CASCADE",
           ).use { it.execute() }
         if (seedsCodebookReference) CodebookReferenceFixture.seed(session)
+        if (seedsMoneyVocabulary) MoneyVocabularyFixture.seed(session)
       }
       Unit
     }

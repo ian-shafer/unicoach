@@ -75,6 +75,14 @@ class CollegeScorecardLoader(
   // wrote and must not be able to run against a stale CIP vocabulary. That
   // ordering is observable from a test.
   private val subjectLoader: SubjectLoader = SubjectLoader(database, ioDispatcher),
+  // The authored money vocabulary (RFC 158 D6), injected like the taxonomy:
+  // its `money-vocabulary` phase runs after `subjects`, and P2 makes it a
+  // write precondition of the `canonical-money` fill below.
+  private val moneyVocabularyLoader: MoneyVocabularyLoader = MoneyVocabularyLoader(database, ioDispatcher),
+  // The canonical money fill (RFC 158, P12): a derived-phase-2 rebuild that
+  // re-parses the institution CSV with the status-preserving readers, after
+  // `search-index` and before `provenance`.
+  private val canonicalMoneyLoader: CanonicalMoneyLoader = CanonicalMoneyLoader(database),
 ) {
   private val logger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
 
@@ -445,6 +453,18 @@ class CollegeScorecardLoader(
      * every other optional group draws.
      */
     val subjects: SubjectLoader.LoadResult? = null,
+    /**
+     * The authored money vocabulary load (RFC 158), `null` when no
+     * `--money-vocabulary` source was supplied -- the same omit-vs-zero
+     * distinction the other authored inputs draw.
+     */
+    val moneyVocabulary: MoneyVocabularyLoader.LoadResult? = null,
+    /**
+     * The `canonical-money` rebuild (RFC 158, P12). NOT nullable: the phase
+     * runs in every ingest -- the loaded vocabulary TABLES are its
+     * precondition, not this run's vocabulary file.
+     */
+    val canonicalMoney: CanonicalMoneyLoader.FillResult,
     val unknownCodes: CodebookLoader.UnknownCodeReport? = null,
   ) {
     /**
@@ -571,6 +591,7 @@ class CollegeScorecardLoader(
     cds: CdsSources? = null,
     codebooks: SourceFile? = null,
     subjects: SourceFile? = null,
+    moneyVocabulary: SourceFile? = null,
   ): IngestReport {
     val startedAt = Instant.now()
     // The IPEDS half of the run is ONE nullable value: the source group and the
@@ -591,6 +612,10 @@ class CollegeScorecardLoader(
     // this early, because the vocabulary it checks against is written by the
     // very phase it loads in (RFC 150 D49).
     val parsedSubjects = subjects?.let { source -> subjectLoader.parse(source) }
+    // The money vocabulary's whole validation is file-side (shape + the
+    // both-ways enum agreement, RFC 158), so it ALL runs here, before the
+    // first phase commits -- authored repo data, the subjects contract.
+    val parsedMoneyVocabulary = moneyVocabulary?.let { source -> moneyVocabularyLoader.parse(source) }
     ipedsRun?.assertHeaders()
     // Beside the IPEDS assertion, not inside the cds phase: all TEN files are
     // header-asserted before the first phase commits, so a renamed column in a
@@ -603,7 +628,8 @@ class CollegeScorecardLoader(
           (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList()) +
           (cds?.files?.map { digest(it) } ?: emptyList()) +
           (codebooks?.let { listOf(digest(it)) } ?: emptyList()) +
-          (subjects?.let { listOf(digest(it)) } ?: emptyList())
+          (subjects?.let { listOf(digest(it)) } ?: emptyList()) +
+          (moneyVocabulary?.let { listOf(digest(it)) } ?: emptyList())
       }
 
     // Each phase below is its own transaction, so a failure in a later one
@@ -643,6 +669,17 @@ class CollegeScorecardLoader(
           subjectLoader.load(subjects?.file?.path ?: "subjects.json", parsed)
         }
       }
+    // The money vocabulary is its own phase after `subjects` (RFC 158): five
+    // authored reference tables the `canonical-money` fill below foreign-keys
+    // into (P2's write precondition). Nothing here reads the codebooks or the
+    // taxonomy; the position just keeps every authored-reference load together
+    // and ahead of the row phases.
+    val moneyVocabularyResult =
+      parsedMoneyVocabulary?.let { parsed ->
+        phase("money-vocabulary", committedPhases) {
+          moneyVocabularyLoader.load(moneyVocabulary?.file?.path ?: "money-vocabulary.json", parsed)
+        }
+      }
     val scorecard = loadScorecard(institution, fields, committedPhases, codebooks?.file?.path)
     val aliasResult = phase("aliases", committedPhases) { applyAliases(aliasEntries) }
     val ipedsReport =
@@ -678,6 +715,15 @@ class CollegeScorecardLoader(
     // phase has committed, and before `provenance`, because its row count IS
     // provenance.
     val searchIndex = phase("search-index", committedPhases) { rebuildSearchIndex() }
+    // The third derived rebuild of phase 2 (RFC 158, P12): a wholesale
+    // DELETE + re-fill of `price_figures` and `cohort_money_stats` from a
+    // re-parse of the pinned institution CSV with the status-preserving
+    // readers, in its own transaction, after `search-index` and before
+    // `provenance` -- because its row counts and per-status breakdown ARE
+    // provenance (P11). It runs whether or not this run supplied the
+    // vocabulary file: the vocabulary TABLES are the precondition (P2), and
+    // an empty one fails the fill loudly at the foreign keys.
+    val canonicalMoney = phase("canonical-money", committedPhases) { canonicalMoneyLoader.fill(institution.file) }
     // D46's report, and the reason it is here rather than inside the codebooks
     // phase: it counts the codes stored in `colleges`/`college_ipeds`/
     // `college_programs_census`, so it must read the snapshot THIS run just
@@ -715,6 +761,7 @@ class CollegeScorecardLoader(
             changeSummaryJson(nonNullBefore, nonNullAfter, scorecard.colleges.changed + aliasResult.applied, ipedsReport),
           nameWordsRows = nameWords,
           searchIndexRows = searchIndex,
+          canonicalMoney = canonicalMoney,
         )
       }
 
@@ -734,6 +781,8 @@ class CollegeScorecardLoader(
       cds = cdsResult,
       codebooks = codebookResult,
       subjects = subjectResult,
+      moneyVocabulary = moneyVocabularyResult,
+      canonicalMoney = canonicalMoney,
       unknownCodes = unknownCodes,
     )
   }
@@ -753,6 +802,7 @@ class CollegeScorecardLoader(
     changeSummary: JsonObject,
     nameWordsRows: Int,
     searchIndexRows: Int,
+    canonicalMoney: CanonicalMoneyLoader.FillResult,
   ): java.util.UUID =
     database
       .withConnection { session ->
@@ -765,11 +815,30 @@ class CollegeScorecardLoader(
             rowsIngested = rowsIngested,
             nameWordsRows = nameWordsRows,
             searchIndexRows = searchIndexRows,
+            priceFigureRows = canonicalMoney.priceFigureRows,
+            cohortMoneyStatRows = canonicalMoney.cohortMoneyStatRows,
+            canonicalMoneySummary = canonicalMoneySummaryJson(canonicalMoney),
             changeSummary = changeSummary,
             methodVersion = METHOD_VERSION,
           ),
         )
       }.getOrThrow()
+
+  /**
+   * The per-status breakdown per canonical table (RFC 158, P11). Keys are OUR
+   * vocabulary slugs -- table names at the top, status slugs inside -- so
+   * risk 6.6's frozen-key seam does not widen; statuses with no rows are
+   * omitted, never written as 0 (the skips_by_reason discipline).
+   */
+  private fun canonicalMoneySummaryJson(canonicalMoney: CanonicalMoneyLoader.FillResult): JsonObject =
+    buildJsonObject {
+      putJsonObject("price_figures") {
+        for ((slug, n) in canonicalMoney.priceFigureStatusCounts.mapKeys { it.key.value }.toSortedMap()) put(slug, n)
+      }
+      putJsonObject("cohort_money_stats") {
+        for ((slug, n) in canonicalMoney.cohortMoneyStatStatusCounts.mapKeys { it.key.value }.toSortedMap()) put(slug, n)
+      }
+    }
 
   /**
    * The IPEDS half of one run: the all-or-nothing source group and the loader
@@ -1404,8 +1473,13 @@ class CollegeScorecardLoader(
      * 5 = RFC 150's derived `college_search_index` rebuild and its subject
      * taxonomy: the derivation is new, so a build row from this ingest is not
      * comparable to one from the last.
+     *
+     * 6 = RFC 158's canonical money store: the `money-vocabulary` phase and
+     * the derived `canonical-money` fill of `price_figures` /
+     * `cohort_money_stats`, with their row counts and per-status summary on
+     * the build row.
      */
-    const val METHOD_VERSION = 5
+    const val METHOD_VERSION = 6
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")
@@ -1448,12 +1522,15 @@ class CollegeScorecardLoader(
     // CSV column names — the single source of truth (RFC 139): the row mappers
     // read through these constants and the REQUIRED_* assertion lists are
     // BUILT from them below, so adding a read means adding one constant here.
-    // [stringOrNull]'s isMapped check backstops the wiring: a read of a column
-    // absent from the asserted header fails loudly (see the coverage test in
-    // CollegeScorecardLoaderTest).
+    // The names the canonical-money fill also reads are DERIVED from the
+    // shared [ScorecardInstitutionColumns] home (RFC 158), so the two
+    // re-parses of the same pinned file cannot drift; the rest are this
+    // loader's own. [stringOrNull]'s isMapped check backstops the wiring: a
+    // read of a column absent from the asserted header fails loudly (see the
+    // coverage test in CollegeScorecardLoaderTest).
     // -------------------------------------------------------------------------
 
-    private const val COL_UNITID = "UNITID"
+    private const val COL_UNITID = ScorecardInstitutionColumns.UNITID
     private const val COL_OPEID = "OPEID"
     private const val COL_INSTNM = "INSTNM"
     private const val COL_CITY = "CITY"
@@ -1462,35 +1539,35 @@ class CollegeScorecardLoader(
     private const val COL_LOCALE = "LOCALE"
     private const val COL_LATITUDE = "LATITUDE"
     private const val COL_LONGITUDE = "LONGITUDE"
-    private const val COL_CONTROL = "CONTROL"
+    private const val COL_CONTROL = ScorecardInstitutionColumns.CONTROL
     private const val COL_UGDS = "UGDS"
     private const val COL_ADM_RATE = "ADM_RATE"
     private const val COL_SAT_AVG = "SAT_AVG"
-    private const val COL_COSTT4_A = "COSTT4_A"
-    private const val COL_TUITIONFEE_IN = "TUITIONFEE_IN"
-    private const val COL_TUITIONFEE_OUT = "TUITIONFEE_OUT"
+    private const val COL_COSTT4_A = ScorecardInstitutionColumns.COSTT4_A
+    private const val COL_TUITIONFEE_IN = ScorecardInstitutionColumns.TUITIONFEE_IN
+    private const val COL_TUITIONFEE_OUT = ScorecardInstitutionColumns.TUITIONFEE_OUT
     private const val COL_C150_4 = "C150_4"
-    private const val COL_MD_EARN_WNE_P10 = "MD_EARN_WNE_P10"
-    private const val COL_GRAD_DEBT_MDN = "GRAD_DEBT_MDN"
-    private const val COL_PCTPELL = "PCTPELL"
+    private const val COL_MD_EARN_WNE_P10 = ScorecardInstitutionColumns.MD_EARN_WNE_P10
+    private const val COL_GRAD_DEBT_MDN = ScorecardInstitutionColumns.GRAD_DEBT_MDN
+    private const val COL_PCTPELL = ScorecardInstitutionColumns.PCTPELL
     private const val COL_INSTURL = "INSTURL"
 
     // The six published cost components (RFC 149). Six, not seven: the
     // Scorecard publishes no ROOMBOARD_FAM, so a student living at home has no
     // housing-and-food allowance to read.
-    private const val COL_ROOMBOARD_ON = "ROOMBOARD_ON"
-    private const val COL_ROOMBOARD_OFF = "ROOMBOARD_OFF"
-    private const val COL_BOOKSUPPLY = "BOOKSUPPLY"
-    private const val COL_OTHEREXPENSE_ON = "OTHEREXPENSE_ON"
-    private const val COL_OTHEREXPENSE_OFF = "OTHEREXPENSE_OFF"
-    private const val COL_OTHEREXPENSE_FAM = "OTHEREXPENSE_FAM"
+    private const val COL_ROOMBOARD_ON = ScorecardInstitutionColumns.ROOMBOARD_ON
+    private const val COL_ROOMBOARD_OFF = ScorecardInstitutionColumns.ROOMBOARD_OFF
+    private const val COL_BOOKSUPPLY = ScorecardInstitutionColumns.BOOKSUPPLY
+    private const val COL_OTHEREXPENSE_ON = ScorecardInstitutionColumns.OTHEREXPENSE_ON
+    private const val COL_OTHEREXPENSE_OFF = ScorecardInstitutionColumns.OTHEREXPENSE_OFF
+    private const val COL_OTHEREXPENSE_FAM = ScorecardInstitutionColumns.OTHEREXPENSE_FAM
 
-    /** Control-keyed column suffixes: public institutions read `_PUB`, all else `_PRIV`. */
-    private const val SUFFIX_PUBLIC = "_PUB"
-    private const val SUFFIX_PRIVATE = "_PRIV"
+    /** Aliases onto [ScorecardInstitutionColumns], which documents and owns these. */
+    private const val SUFFIX_PUBLIC = ScorecardInstitutionColumns.SUFFIX_PUBLIC
+    private const val SUFFIX_PRIVATE = ScorecardInstitutionColumns.SUFFIX_PRIVATE
 
     /** The control-keyed net-price column bases: overall `NPT4` plus the five income bands. */
-    private const val COL_NET_PRICE_BASE = "NPT4"
+    private const val COL_NET_PRICE_BASE = ScorecardInstitutionColumns.NET_PRICE_BASE
     private val NET_PRICE_BASES = listOf(COL_NET_PRICE_BASE) + INCOME_BANDS.map { "$COL_NET_PRICE_BASE$it" }
 
     private const val COL_CIPCODE = "CIPCODE"
@@ -1581,16 +1658,15 @@ class CollegeScorecardLoader(
     private const val REGION_MAX = 9
     private const val LOCALE_MIN = 11
     private const val LOCALE_MAX = 43
-    private const val RATE_MIN = 0.0
-    private const val RATE_MAX = 1.0
+    private const val RATE_MIN = ScorecardInstitutionColumns.RATE_MIN
+    private const val RATE_MAX = ScorecardInstitutionColumns.RATE_MAX
 
     // A gross published cost cannot be negative -- the loader-side twin of
     // `db/schema/0062`'s `*_nonneg_check` constraints (and of the same rule on
-    // the older money columns). The upper end is the column's own INTEGER
-    // width, not a business bound: the Scorecard publishes no cap and inventing
-    // one here would silently drop a real, if startling, figure.
-    private const val GROSS_USD_MIN = 0
-    private const val GROSS_USD_MAX = Int.MAX_VALUE
+    // the older money columns), derived from the shared home the
+    // canonical-money fill reads too (RFC 158).
+    private const val GROSS_USD_MIN = ScorecardInstitutionColumns.GROSS_USD_MIN
+    private const val GROSS_USD_MAX = ScorecardInstitutionColumns.GROSS_USD_MAX
     private const val CREDENTIAL_LEVEL_MIN = 1
     private const val CREDENTIAL_LEVEL_MAX = 8
   }

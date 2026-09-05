@@ -1555,13 +1555,51 @@ test_ingest_colleges_source_flags() {
   fi
   grep -qxF -- "--institution-source=$inst" "$argv" &&
     grep -qxF -- "--fields-source=$fields" "$argv" &&
-    grep -qxF -- "--aliases-source=$root/db/data/college-aliases.json" "$argv"
+    grep -qxF -- "--aliases-source=$root/db/data/college-aliases.json" "$argv" &&
+    grep -qxF -- "--money-vocabulary-source=$root/db/data/money-vocabulary.json" "$argv"
   rc=$?
   [ "$rc" -eq 0 ] || { echo "launcher argv was:" >&2; cat "$argv" >&2; }
   rm -rf "$parent"
   return "$rc"
 }
 assert_success "ingest-colleges passes original source args to the launcher as --*-source flags" test_ingest_colleges_source_flags
+
+# Channel discipline (RFC 158 / bin conventions): on a normal run the wrapper
+# writes NOTHING of its own to stdout -- every diagnostic, including the final
+# summary, is stderr traffic. Exercised with the same stub-launcher fixture as
+# the flags test above (the stub writes its argv to a file, not to stdout), so
+# any stdout byte observed here is the wrapper's own regression.
+test_ingest_colleges_stdout_stays_empty() {
+  local root parent stub inst fields entry rc stdout stderr
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-ingeststdout"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$parent/launcher-argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  stdout="$parent/stdout"; stderr="$parent/stderr"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$stdout" 2> "$stderr" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], stderr [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  if [ -s "$stdout" ]; then
+    log-error "stdout is not empty, it holds [$(cat "$stdout")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+}
+assert_success "ingest-colleges writes nothing of its own to stdout on a normal run" \
+  test_ingest_colleges_stdout_stays_empty
 # An explicitly-empty aliases argument is a wrong value, not an omitted one: it
 # must be refused, never silently replaced by the repo default (RFC 139).
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects an explicitly-empty aliases argument" \
@@ -2273,11 +2311,19 @@ assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects the retired --c
   bin/ingest-colleges --codebooks-source=codebooks.json a.csv b.csv
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects the retired --subjects-source= long option (10)" \
   bin/ingest-colleges --subjects-source=subjects.json a.csv b.csv
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects the retired --money-vocabulary-source= long option (10)" \
+  bin/ingest-colleges --money-vocabulary-source=money-vocabulary.json a.csv b.csv
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects an unknown long option" \
   bin/ingest-colleges --hd2=HD.csv a.csv b.csv
 # A flag given with an EMPTY value is a wrong value, not an omitted flag: five
 # empty flags would otherwise look like "no IPEDS group" and silently downgrade
 # the run to Scorecard-only with a green exit.
+# The RFC 158 money-vocabulary option follows the -k/-s value rules: a value is
+# required, and an explicitly-empty one is a wrong value, never the default.
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -v without a value exits 11" \
+  bin/ingest-colleges -v
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an explicitly-empty -v value" \
+  bin/ingest-colleges -v "" a.csv b.csv
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty IPEDS flag value" \
   bin/ingest-colleges -H "" -I IC.csv -A adm.csv -C CA.csv -y 2023 a.csv b.csv
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an all-empty IPEDS group, never a silent Scorecard-only run" \

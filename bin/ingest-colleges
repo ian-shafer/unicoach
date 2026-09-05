@@ -5,6 +5,7 @@ help() {
   cat << 'EOF'
 ingest-colleges [-m <merit-aid.csv> -a <admission-factors.csv> -d <deadlines.csv>]
                 [-k <codebooks.json>] [-s <subjects.json>]
+                [-v <money-vocabulary.json>]
                 [-H <HD.csv> -I <IC.csv> -A <adm.csv> -C <C_A.csv> -y <YYYY>]
                 <institution.csv> <fields.csv> [aliases.json]
 
@@ -42,6 +43,14 @@ The taxonomy is MATERIALISED into college_search_index by the later
 `search-index` phase, so editing db/data/subjects.json changes nothing that
 search returns until this script runs again. The run prints the subject count
 and the total expanded code count so a rebuild is visibly a rebuild.
+
+Every run also loads the authored money vocabulary (RFC 158) in its own
+`money-vocabulary` phase after `subjects`: db/data/money-vocabulary.json by
+default, overridable with -v PATH. The five vocabulary tables it fills are a
+write precondition of the later `canonical-money` phase, which rebuilds
+price_figures and cohort_money_stats wholesale from the institution CSV with
+status-preserving readers (PrivacySuppressed survives as its own status). The
+run logs the canonical row counts and the per-status breakdown on stderr.
 
 The chat boundary reads that vocabulary ONCE, when rest-server and queue-worker
 start. A codebook loaded into a live deployment therefore does NOT change what a
@@ -99,6 +108,7 @@ Options:
   -d FILE: CDS deadlines seed CSV (Common Data Set)
   -k FILE: published codebook JSON (default: db/data/codebooks.json)
   -s FILE: authored subject taxonomy JSON (default: db/data/subjects.json)
+  -v FILE: authored money vocabulary JSON (default: db/data/money-vocabulary.json)
 
   The IPEDS survey group (RFC 144) — all five together, or none of them. Every
   IPEDS flag is UPPER CASE except the year:
@@ -137,6 +147,8 @@ CODEBOOKS_ARG=""
 # same reasons: a repo default, an s3:// source allowed, and an explicitly-empty
 # value refused rather than silently replaced.
 SUBJECTS_ARG=""
+# The authored money vocabulary (RFC 158). Same shape as -s above, same reasons.
+MONEY_VOCABULARY_ARG=""
 IPEDS_GIVEN=()
 
 # Presence is judged on the FLAG, not on its value, and each flag may appear
@@ -160,7 +172,7 @@ set_ipeds_flag() {
 # only, no hand-rolled argument loop). The IPEDS group is upper case throughout
 # — -H/-I/-A/-C plus the -y year — so -a (the CDS admission-factors CSV) and -A
 # (the IPEDS ADM survey file) stay distinct; the help text spells both out.
-while getopts ":m:a:d:k:s:H:I:A:C:y:h" opt; do
+while getopts ":m:a:d:k:s:v:H:I:A:C:y:h" opt; do
   case "$opt" in
   m) CDS_MERIT_AID="$OPTARG" ;;
   a) CDS_ADMISSION_FACTORS="$OPTARG" ;;
@@ -172,6 +184,10 @@ while getopts ":m:a:d:k:s:H:I:A:C:y:h" opt; do
   s) SUBJECTS_ARG="$OPTARG"
      [ -n "$SUBJECTS_ARG" ] ||
        fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-s] must have a non-empty value"
+     ;;
+  v) MONEY_VOCABULARY_ARG="$OPTARG"
+     [ -n "$MONEY_VOCABULARY_ARG" ] ||
+       fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-v] must have a non-empty value"
      ;;
   H) IPEDS_HD="$OPTARG";          set_ipeds_flag H "$IPEDS_HD" ;;
   I) IPEDS_IC="$OPTARG";          set_ipeds_flag I "$IPEDS_IC" ;;
@@ -264,6 +280,12 @@ CODEBOOKS_JSON="$(resolve_file_arg "$CODEBOOKS_ARG" "$INGEST_SCRATCH")"
 SUBJECTS_ARG="${SUBJECTS_ARG:-$PROJECT_ROOT/db/data/subjects.json}"
 SUBJECTS_JSON="$(resolve_file_arg "$SUBJECTS_ARG" "$INGEST_SCRATCH")"
 
+# The authored money vocabulary (RFC 158), loaded by its own `money-vocabulary`
+# phase after `subjects` -- the five reference tables the `canonical-money`
+# phase foreign-keys into. Resolved and forwarded exactly like the taxonomy.
+MONEY_VOCABULARY_ARG="${MONEY_VOCABULARY_ARG:-$PROJECT_ROOT/db/data/money-vocabulary.json}"
+MONEY_VOCABULARY_JSON="$(resolve_file_arg "$MONEY_VOCABULARY_ARG" "$INGEST_SCRATCH")"
+
 # Pass the CDS seed paths to the launcher as NAMED flags, so the file-to-table
 # mapping is explicit on the command line (and in `ps` output) instead of being
 # a positional convention two files have to keep in step.
@@ -314,5 +336,6 @@ LAUNCHER="$PROJECT_ROOT/$COLLEGE_DIST/bin/college"
   --institution-source="$1" --fields-source="$2" --aliases-source="$ALIASES_ARG" \
   --codebooks="$CODEBOOKS_JSON" --codebooks-source="$CODEBOOKS_ARG" \
   --subjects="$SUBJECTS_JSON" --subjects-source="$SUBJECTS_ARG" \
+  --money-vocabulary="$MONEY_VOCABULARY_JSON" --money-vocabulary-source="$MONEY_VOCABULARY_ARG" \
   ${CDS_ARGS[@]+"${CDS_ARGS[@]}"} \
   ${IPEDS_ARGV[@]+"${IPEDS_ARGV[@]}"}

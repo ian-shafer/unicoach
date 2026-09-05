@@ -1,0 +1,143 @@
+{
+  "residency_bases": [
+    {
+      "slug": "in_district",
+      "description": "The price for a student residing in the school's own district (the community-college in-district tier)."
+    },
+    {
+      "slug": "in_state",
+      "description": "The price for a student residing in the school's state."
+    },
+    {
+      "slug": "out_of_state",
+      "description": "The price for a student residing in any other state."
+    },
+    {
+      "slug": "not_applicable",
+      "description": "This figure does not vary by residency; the axis is explicitly inapplicable, never a NULL default."
+    }
+  ],
+  "arrangements": [
+    {
+      "slug": "on_campus",
+      "description": "Living on campus.",
+      "is_living_arrangement": true
+    },
+    {
+      "slug": "off_campus",
+      "description": "Renting off campus.",
+      "is_living_arrangement": true
+    },
+    {
+      "slug": "with_family",
+      "description": "Living at home with family.",
+      "is_living_arrangement": true
+    },
+    {
+      "slug": "not_applicable",
+      "description": "This concept does not vary by where the student lives; the axis is explicitly inapplicable, never a NULL default.",
+      "is_living_arrangement": false
+    }
+  ],
+  "figure_statuses": [
+    {
+      "slug": "reported",
+      "description": "The institution reported this figure and the source published it.",
+      "value_bearing": true
+    },
+    {
+      "slug": "imputed_by_publisher",
+      "description": "The source publisher imputed this figure rather than receiving it from the institution.",
+      "value_bearing": true
+    },
+    {
+      "slug": "not_reported_by_institution",
+      "description": "The institution reported nothing for this cell (a blank or NULL sentinel in the source).",
+      "value_bearing": false
+    },
+    {
+      "slug": "not_applicable",
+      "description": "The cell cannot apply to this institution, and the source says so.",
+      "value_bearing": false
+    },
+    {
+      "slug": "suppressed_by_publisher",
+      "description": "The source publisher suppressed a reported figure (the Scorecard PrivacySuppressed sentinel).",
+      "value_bearing": false
+    },
+    {
+      "slug": "not_collected_by_us",
+      "description": "A source we ingest carries this cell and we deliberately skip it; reserved, never emitted by the v1 Scorecard fill.",
+      "value_bearing": false
+    }
+  ],
+  "price_concepts": [
+    {
+      "slug": "tuition_and_fees",
+      "description": "Published tuition and required fees for one academic year.",
+      "arrangement_varies": false
+    },
+    {
+      "slug": "fees_only",
+      "description": "Published required fees alone, where a source separates them from tuition.",
+      "arrangement_varies": false
+    },
+    {
+      "slug": "housing_and_food",
+      "description": "The school's published housing-and-food allowance for one academic year.",
+      "arrangement_varies": true
+    },
+    {
+      "slug": "books_and_supplies",
+      "description": "The school's published books-and-supplies allowance for one academic year.",
+      "arrangement_varies": false
+    },
+    {
+      "slug": "other_expenses",
+      "description": "The school's published other-expenses allowance for one academic year.",
+      "arrangement_varies": true
+    },
+    {
+      "slug": "published_price",
+      "description": "A source-published all-in price for one academic year; a SUM of components is derived and is never stored.",
+      "arrangement_varies": true
+    }
+  ],
+  "income_bands": [
+    {
+      "slug": "under_30k",
+      "min_usd": 0,
+      "max_usd": 30000,
+      "bracket_label": "$0 to $30,000",
+      "sort_order": 1
+    },
+    {
+      "slug": "30k_to_48k",
+      "min_usd": 30001,
+      "max_usd": 48000,
+      "bracket_label": "$30,001 to $48,000",
+      "sort_order": 2
+    },
+    {
+      "slug": "48k_to_75k",
+      "min_usd": 48001,
+      "max_usd": 75000,
+      "bracket_label": "$48,001 to $75,000",
+      "sort_order": 3
+    },
+    {
+      "slug": "75k_to_110k",
+      "min_usd": 75001,
+      "max_usd": 110000,
+      "bracket_label": "$75,001 to $110,000",
+      "sort_order": 4
+    },
+    {
+      "slug": "over_110k",
+      "min_usd": 110001,
+      "max_usd": null,
+      "bracket_label": "$110,000 or more",
+      "sort_order": 5
+    }
+  ]
+}

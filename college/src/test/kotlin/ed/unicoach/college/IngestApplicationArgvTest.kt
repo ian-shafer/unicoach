@@ -282,6 +282,50 @@ class IngestApplicationArgvTest {
     assertEquals(listOf("institution", "fields", "aliases", "codebooks", "subjects"), named.map { it.first })
   }
 
+  // ---------------------------------------------------------------------------
+  // The authored money vocabulary (RFC 158): the subjects shape, deliberately
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a run with no money-vocabulary flag has no vocabulary source`() {
+    assertNull(ok().moneyVocabulary, "absent must stay absent — no fabricated repo default at this layer")
+  }
+
+  @Test
+  fun `the money-vocabulary flag carries the path, and its source flag the original argument`() {
+    val remote =
+      ok(
+        "--money-vocabulary=/tmp/scratch/money-vocabulary.json",
+        "--money-vocabulary-source=s3://snap/money-vocabulary.json",
+      )
+    assertEquals("/tmp/scratch/money-vocabulary.json", remote.moneyVocabulary?.file?.path)
+    assertEquals("s3://snap/money-vocabulary.json", remote.moneyVocabulary?.sourceArg)
+    assertEquals(
+      "db/data/money-vocabulary.json",
+      ok("--money-vocabulary=db/data/money-vocabulary.json").moneyVocabulary?.sourceArg,
+    )
+  }
+
+  @Test
+  fun `a money-vocabulary source flag without its file is refused, never silently ignored`() {
+    val message = usage(*positional, codebooksFlag, "--money-vocabulary-source=s3://snap/money-vocabulary.json")
+    assertTrue(message.contains("--money-vocabulary-source"), message)
+    assertTrue(message.contains("was not supplied"), message)
+  }
+
+  @Test
+  fun `a repeated or blank money-vocabulary flag is refused like any other`() {
+    assertTrue(usage(*positional, "--money-vocabulary=a.json", "--money-vocabulary=b.json").contains("more than once"))
+    assertTrue(usage(*positional, "--money-vocabulary=").contains("non-empty"))
+  }
+
+  @Test
+  fun `the vocabulary file joins the existence probe under its own role`() {
+    val named =
+      namedSources(ok("--codebooks=db/data/codebooks.json", "--money-vocabulary=db/data/money-vocabulary.json"))
+    assertEquals(listOf("institution", "fields", "aliases", "codebooks", "money-vocabulary"), named.map { it.first })
+  }
+
   private fun ipedsGroupWithYear(year: String): Array<String> =
     arrayOf("--hd=HD.csv", "--ic=IC.csv", "--adm=adm.csv", "--completions=CA.csv", "--survey-year=$year")
 }

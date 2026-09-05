@@ -29,6 +29,16 @@ data class NewCollegeIndexBuild(
   val rowsIngested: JsonObject,
   val nameWordsRows: Int?,
   val searchIndexRows: Int?,
+  /** The `price_figures` rebuild count (RFC 158, P11); NULL for every earlier-era row. */
+  val priceFigureRows: Int?,
+  /** The `cohort_money_stats` rebuild count (RFC 158, P11); NULL for every earlier-era row. */
+  val cohortMoneyStatRows: Int?,
+  /**
+   * The per-status row counts per canonical table (RFC 158, P11), keyed by OUR
+   * vocabulary slugs -- the operator-visible fact that suppression survived
+   * the fill. NULL for every earlier-era row.
+   */
+  val canonicalMoneySummary: JsonObject?,
   val changeSummary: JsonObject,
   val methodVersion: Int,
 )

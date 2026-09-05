@@ -21,6 +21,7 @@ private const val USAGE =
     "[--institution-source=ARG] [--fields-source=ARG] [--aliases-source=ARG] " +
     "--codebooks=codebooks.json [--codebooks-source=ARG] " +
     "[--subjects=subjects.json] [--subjects-source=ARG] " +
+    "[--money-vocabulary=money-vocabulary.json] [--money-vocabulary-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv>] " +
     "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY] " +
@@ -57,6 +58,16 @@ private const val CODEBOOKS_FLAG = "codebooks"
  * empty — the omit-vs-zero rule every other group follows.
  */
 private const val SUBJECTS_FLAG = "subjects"
+
+/**
+ * The authored money vocabulary (RFC 158). Optional and OPTION-shaped for
+ * exactly [SUBJECTS_FLAG]'s reasons: `bin/ingest-colleges` always supplies
+ * it, defaulting to the repo copy (`db/data/money-vocabulary.json`), so the
+ * flag exists for the direct JVM invocation. Omitted, the run loads no
+ * vocabulary FILE -- but the `canonical-money` phase still runs against the
+ * vocabulary TABLES, which are its real precondition (P2).
+ */
+private const val MONEY_VOCABULARY_FLAG = "money-vocabulary"
 
 /**
  * The three CDS admissions seed files (RFC 140), passed as NAMED flags rather
@@ -109,7 +120,8 @@ private val SURVEY_YEAR_RANGE = IpedsLoader.YEAR_RANGE
 
 private val KNOWN_FLAGS =
   SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG +
-    CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + SUBJECTS_FLAG + "$SUBJECTS_FLAG-source"
+    CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + SUBJECTS_FLAG + "$SUBJECTS_FLAG-source" +
+    MONEY_VOCABULARY_FLAG + "$MONEY_VOCABULARY_FLAG-source"
 
 /**
  * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140
@@ -132,6 +144,8 @@ internal sealed interface ArgvResult {
     val codebooks: SourceFile,
     /** The authored subject taxonomy (RFC 150), null when `--subjects` was omitted. */
     val subjects: SourceFile? = null,
+    /** The authored money vocabulary (RFC 158), null when `--money-vocabulary` was omitted. */
+    val moneyVocabulary: SourceFile? = null,
   ) : ArgvResult
 
   /** A grammar violation: [message] is logged and the process exits 2. */
@@ -231,6 +245,15 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       "Option [--$subjectsSourceFlag] names a provenance source for a subject file that was not supplied. $USAGE",
     )
   }
+  // Same refusal for the money vocabulary (RFC 158): a provenance source with
+  // no file to describe is a caller mistake, never a defaulted load.
+  val moneyVocabularySourceFlag = "$MONEY_VOCABULARY_FLAG-source"
+  if (moneyVocabularySourceFlag in flags && MONEY_VOCABULARY_FLAG !in flags) {
+    return ArgvResult.Usage(
+      "Option [--$moneyVocabularySourceFlag] names a provenance source for a money vocabulary file " +
+        "that was not supplied. $USAGE",
+    )
+  }
   return ArgvResult.Ok(
     sources =
       positional.mapIndexed { i, path ->
@@ -254,6 +277,11 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       flags[SUBJECTS_FLAG]?.let { path ->
         val file = File(path)
         SourceFile(file = file, sourceArg = flags[subjectsSourceFlag] ?: file.path)
+      },
+    moneyVocabulary =
+      flags[MONEY_VOCABULARY_FLAG]?.let { path ->
+        val file = File(path)
+        SourceFile(file = file, sourceArg = flags[moneyVocabularySourceFlag] ?: file.path)
       },
   )
 }
@@ -338,7 +366,8 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   val cds = parsed.cds?.sources?.namedFiles ?: emptyList()
   val codebooks = listOf(CODEBOOKS_FLAG to parsed.codebooks)
   val subjects = parsed.subjects?.let { listOf(SUBJECTS_FLAG to it) } ?: emptyList()
-  return scorecard + ipeds + cds + codebooks + subjects
+  val moneyVocabulary = parsed.moneyVocabulary?.let { listOf(MONEY_VOCABULARY_FLAG to it) } ?: emptyList()
+  return scorecard + ipeds + cds + codebooks + subjects + moneyVocabulary
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
@@ -430,9 +459,26 @@ fun main(args: Array<String>) {
           cds = parsed.cds?.sources,
           codebooks = parsed.codebooks,
           subjects = parsed.subjects,
+          moneyVocabulary = parsed.moneyVocabulary,
         )
       }
     println(report.humanSummary())
+    // The canonical-money summary (RFC 158, P11) goes to the LOG -- stderr,
+    // per bin/ conventions -- naming the row counts and the per-status
+    // breakdown, keyed by our status slugs. stdout keeps exactly the lines it
+    // printed before this phase existed.
+    logger.info(
+      "canonical money: {} price_figures {}; {} cohort_money_stats {}; {} college(s), {} malformed row(s), {} row(s) without " +
+        "a college, {} row(s) without a CONTROL (control-keyed cells skipped)",
+      report.canonicalMoney.priceFigureRows,
+      report.canonicalMoney.priceFigureStatusCounts.mapKeys { it.key.value },
+      report.canonicalMoney.cohortMoneyStatRows,
+      report.canonicalMoney.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
+      report.canonicalMoney.collegesMatched,
+      report.canonicalMoney.rowsMalformed,
+      report.canonicalMoney.rowsWithoutCollege,
+      report.canonicalMoney.rowsWithoutControl,
+    )
     val transientSkips =
       report.colleges.transientSkips + report.programs.transientSkips +
         (report.ipeds?.let { it.attributes.transientSkips + it.census.transientSkips } ?: 0)
@@ -485,6 +531,14 @@ fun main(args: Array<String>) {
       e.key,
       e.code,
       e.references,
+      e,
+    )
+    kotlin.system.exitProcess(1)
+  } catch (e: MoneyVocabularyLoader.InvalidFileException) {
+    logger.error(
+      "Ingest aborted before any write: money vocabulary [{}] is invalid: [{}]",
+      e.fileName,
+      e.detail,
       e,
     )
     kotlin.system.exitProcess(1)

@@ -638,7 +638,7 @@ class CodebookLoaderTest : CollegeScorecardTestBase() {
     try {
       val thrown = assertFailsWith<PartialIngestException> { ingest() }
       assertEquals(
-        listOf("codebooks", "institutions", "fields", "aliases", "name-words", "search-index"),
+        listOf("codebooks", "institutions", "fields", "aliases", "name-words", "search-index", "canonical-money"),
         thrown.committedPhases,
         "the reference vocabulary lands before the columns that are read through it",
       )
@@ -673,7 +673,10 @@ class CodebookLoaderTest : CollegeScorecardTestBase() {
     renameTable("college_index_build", "college_index_build_hidden")
     try {
       val thrown = assertFailsWith<PartialIngestException> { ingest(codebooks = null) }
-      assertEquals(listOf("institutions", "fields", "aliases", "name-words", "search-index"), thrown.committedPhases)
+      assertEquals(
+        listOf("institutions", "fields", "aliases", "name-words", "search-index", "canonical-money"),
+        thrown.committedPhases,
+      )
     } finally {
       renameTable("college_index_build_hidden", "college_index_build")
     }
