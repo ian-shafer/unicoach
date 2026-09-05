@@ -139,17 +139,18 @@ class CollegeListService(
     status: CollegeListEntryStatus,
     reasons: String?,
     /**
-     * The per-college living-plan override (RFC 152 D2a), written wholesale
-     * exactly as [status] and [reasons] are: `null` clears the override back to
-     * the family's usual plan.
+     * What this call asks of the per-college living-plan override (RFC 152 D2a,
+     * RFC 164). Three states, not two: [LivingPlanUpdate.Set] writes a value,
+     * [LivingPlanUpdate.Clear] writes `null` -- "no override, use the family's
+     * usual plan" -- and [LivingPlanUpdate.Keep] leaves the stored value alone,
+     * resolved here against the row already read for the OCC check.
      *
-     * A caller that means "leave it alone" passes the entry's current value.
-     * The chat tool does exactly that, off its three-way `LivingPlanUpdate`.
-     * REST has no such vocabulary: its `livingPlan` is REQUIRED on the wire, so
-     * the client always states the value it wants stored, and clearing stays an
-     * act a caller performs rather than one an omitted key performs for it.
+     * Non-nullable on purpose. "Leave it alone" and "drop it back to the usual
+     * plan" are two different writes onto the same nullable column, and a bare
+     * `null` cannot tell them apart; making [LivingPlanUpdate.Keep] a distinct
+     * value forces every caller to say which one it means.
      */
-    livingPlan: LivingArrangement?,
+    livingPlan: LivingPlanUpdate,
     addObservationIds: List<ObservationId>,
   ): Result<UpdateEntryResult> =
     try {
@@ -172,6 +173,10 @@ class CollegeListService(
           return@withConnection Result.success(UpdateEntryResult.ObservationNotFound(citationCheck))
         }
 
+        // [existing] is the row already read for the OCC check above, so Keep
+        // resolves against it without a second read.
+        val livingPlanToStore = livingPlan.resolveAgainst(existing.livingPlan)
+
         val updateResult =
           CollegeListEntriesDao.update(
             session,
@@ -180,7 +185,7 @@ class CollegeListService(
               version = existing.version,
               status = status,
               reasons = reasons,
-              livingPlan = livingPlan,
+              livingPlan = livingPlanToStore,
             ),
           )
         if (updateResult.isFailure) {

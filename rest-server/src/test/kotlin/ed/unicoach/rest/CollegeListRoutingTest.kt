@@ -1,5 +1,6 @@
 package ed.unicoach.rest
 
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
@@ -300,33 +301,58 @@ class CollegeListRoutingTest {
       assertEquals(HttpStatusCode.NotFound, getAfterDelete.status)
     }
 
-  @Test
-  fun `the per-college living plan round-trips, and an explicit null livingPlan on PATCH clears it`() =
-    runBlocking {
-      // RFC 152 D2a at the REST boundary. The override is written WHOLESALE,
-      // exactly as status and reasons are -- and, for the same reason, it is
-      // REQUIRED on the wire: null IS "no override, use the usual plan", so
-      // clearing must be an act the client performs, never one an omitted key
-      // performs for it. A client that forgot the field would otherwise drop a
-      // fact the family stated while meaning to change only the status.
-      val cookie = registerAndGetCookie()
-      registerStudent(cookie)
-      val college = seedCollege()
+  /**
+   * A registered student with one college-list entry whose living-plan override
+   * is `with_family`, returned as (cookie, entryId) at version 1.
+   *
+   * The living-plan tests below all need the same stored override to watch: the
+   * only interesting thing about the prologue is that a plan IS stored, so it
+   * is written once here rather than three times inline.
+   */
+  private suspend fun entryWithStoredLivingPlan(): Pair<String, String> {
+    val cookie = registerAndGetCookie()
+    registerStudent(cookie)
+    val college = seedCollege()
 
-      val createResponse =
-        client.post(buildUrl("/api/v1/students/me/college-list")) {
-          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-          header(HttpHeaders.Cookie, cookie)
-          setBody(
-            mapper.writeValueAsString(
-              CreateCollegeListEntryRequest(college, "considering", "Good fit", "with_family"),
-            ),
-          )
-        }
-      assertEquals(HttpStatusCode.Created, createResponse.status)
-      val entry = mapper.readTree(createResponse.bodyAsText())["entry"]
-      assertEquals("with_family", entry["livingPlan"].asText())
-      val entryId = entry["id"].asText()
+    val createResponse =
+      client.post(buildUrl("/api/v1/students/me/college-list")) {
+        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        header(HttpHeaders.Cookie, cookie)
+        setBody(
+          mapper.writeValueAsString(
+            CreateCollegeListEntryRequest(college, "considering", "Good fit", "with_family"),
+          ),
+        )
+      }
+    assertEquals(HttpStatusCode.Created, createResponse.status)
+    val entry = mapper.readTree(createResponse.bodyAsText())["entry"]
+    assertEquals("with_family", entry["livingPlan"].asText())
+    return cookie to entry["id"].asText()
+  }
+
+  /** The entry as the server now stores it, read back over GET -- what a PATCH actually did, not what its response said. */
+  private suspend fun storedEntry(
+    cookie: String,
+    entryId: String,
+  ): JsonNode {
+    val response =
+      client.get(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+        header(HttpHeaders.Cookie, cookie)
+      }
+    assertEquals(HttpStatusCode.OK, response.status, "got ${response.bodyAsText()}")
+    return mapper.readTree(response.bodyAsText())["entry"]
+  }
+
+  @Test
+  fun `the per-college living plan round-trips, and livingPlanClear on PATCH clears it`() =
+    runBlocking {
+      // RFC 152 D2a at the REST boundary, in RFC 164's three states: a stated
+      // value SETS the override, livingPlanClear CLEARS it back to the family's
+      // usual plan, and a body that mentions neither KEEPS what is stored.
+      // Clearing is an act the client performs by name -- never one an omitted
+      // key performs for it, which is what silently deleted a fact the family
+      // stated when the client only meant to change the status.
+      val (cookie, entryId) = entryWithStoredLivingPlan()
 
       val changed =
         client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
@@ -337,17 +363,129 @@ class CollegeListRoutingTest {
       assertEquals(HttpStatusCode.OK, changed.status)
       assertEquals("on_campus", mapper.readTree(changed.bodyAsText())["entry"]["livingPlan"].asText())
 
-      // Stated as null on the next PATCH: the override goes back to "no override".
+      // livingPlanClear on the next PATCH: the override goes back to "no override".
       val cleared =
         client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
           header(HttpHeaders.Cookie, cookie)
-          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(2, "applying", "Good fit", null)))
+          setBody("""{"version":2,"status":"applying","reasons":"Good fit","livingPlanClear":true}""")
         }
-      assertEquals(HttpStatusCode.OK, cleared.status)
+      assertEquals(HttpStatusCode.OK, cleared.status, "got ${cleared.bodyAsText()}")
       assertTrue(
         mapper.readTree(cleared.bodyAsText())["entry"]["livingPlan"].isNull,
-        "an explicitly null livingPlan CLEARS the override, exactly as a null reasons clears the reasons",
+        "livingPlanClear CLEARS the override back to the family's usual plan",
+      )
+
+      // Both keys at once is a caller error, worded as the money profile words it.
+      val both =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody("""{"version":3,"status":"applying","reasons":"Good fit","livingPlan":"on_campus","livingPlanClear":true}""")
+        }
+      assertEquals(HttpStatusCode.BadRequest, both.status)
+      val bothBody = both.bodyAsText()
+      // Asserted on the PARSED field, not on the message text: the message
+      // contains the word "livingPlan" anyway, so a contains() check passes even
+      // when the FieldError names something else entirely.
+      assertEquals(
+        "livingPlan",
+        mapper
+          .readTree(bothBody)
+          .get("fieldErrors")
+          .single()
+          .get("field")
+          .asText(),
+        "got $bothBody",
+      )
+      assertTrue(bothBody.contains("At most one of livingPlan, livingPlanClear may be set"), "got $bothBody")
+    }
+
+  @Test
+  fun `PATCH with an explicit null livingPlan and no livingPlanClear KEEPS the stored override`() =
+    runBlocking {
+      // RFC 164 D1: Jackson cannot tell an explicit null from an omitted key, so
+      // an explicit null reads as "not stated" -- KEEP, not clear. This is a
+      // behaviour change from the old contract, where null meant clear, so it
+      // gets its own guard: without it a regression to "explicit null clears"
+      // stays green.
+      val (cookie, entryId) = entryWithStoredLivingPlan()
+
+      val explicitNull =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody("""{"version":1,"status":"applying","reasons":"Good fit","livingPlan":null}""")
+        }
+      assertEquals(HttpStatusCode.OK, explicitNull.status, "got ${explicitNull.bodyAsText()}")
+
+      assertEquals(
+        "with_family",
+        storedEntry(cookie, entryId)["livingPlan"].asText(),
+        "an explicit null livingPlan reads as \"not stated\" and KEEPS the stored override; " +
+          "a client that means clear says so with livingPlanClear",
+      )
+      Unit
+    }
+
+  @Test
+  fun `PATCH with a body that OMITS livingPlan entirely (the iOS client's shape)`() =
+    runBlocking {
+      val (cookie, entryId) = entryWithStoredLivingPlan()
+
+      // This is the body the shipped iOS client sends, verbatim:
+      // ios-app/UnicoachiOS/CollegeListModels.swift, struct
+      // UpdateCollegeListEntryRequest, whose only keys are version, status and
+      // reasons. Keep the two in step -- if that struct gains a key, this
+      // string stops imitating the client it exists to imitate.
+      val rawBody = """{"version":1,"status":"applying","reasons":"Good fit"}"""
+      val omitted =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(rawBody)
+        }
+      // The shipped iOS build sends exactly this body on every restatus and
+      // every edit-reasons Save. It stays a 200 -- RFC 164 deliberately does
+      // NOT make an omitted key a 400, because that would break every client
+      // already in the field.
+      assertEquals(HttpStatusCode.OK, omitted.status, "got ${omitted.bodyAsText()}")
+
+      val storedPlan = storedEntry(cookie, entryId)["livingPlan"]
+      assertEquals(
+        "with_family",
+        storedPlan.asText(),
+        "an omitted livingPlan key KEEPS the stored override; a client that says " +
+          "nothing about the field must not delete a fact the family stated",
+      )
+      Unit
+    }
+
+  @Test
+  fun `PATCH that OMITS reasons CLEARS the note, and that asymmetry with livingPlan is deliberate`() =
+    runBlocking {
+      // RFC 164 D4. reasons has the same SHAPE as the old livingPlan defect --
+      // an omitted key writes null -- and the opposite meaning: omission there
+      // is load-bearing. The shipped iOS client clears the note by dropping the
+      // key (CollegeEntryDetailView.normalizedReasons returns nil for an
+      // emptied field, and Swift's synthesized Codable omits a nil optional),
+      // so omitted-means-clear IS its Clear button. Giving reasons the
+      // livingPlan treatment would silently disable clearing on every build in
+      // the field, so this guard states the asymmetry rather than leaving it to
+      // be "fixed" later.
+      val (cookie, entryId) = entryWithStoredLivingPlan()
+
+      val withoutReasons =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody("""{"version":1,"status":"applying"}""")
+        }
+      assertEquals(HttpStatusCode.OK, withoutReasons.status, "got ${withoutReasons.bodyAsText()}")
+
+      assertTrue(
+        storedEntry(cookie, entryId)["reasons"].isNull,
+        "an omitted reasons key CLEARS the stored note -- the shipped client's only way to clear it",
       )
     }
 

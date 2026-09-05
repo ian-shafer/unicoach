@@ -2,7 +2,6 @@ package ed.unicoach.coaching.collegelist
 
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.db.models.CollegeId
-import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
@@ -177,11 +176,26 @@ class CollegeListChatTool(
           parsed.reasons,
           // Exhaustive, not a cast: [parseInput] has already refused a clear on
           // an add, and a case added later must fail here loudly rather than
-          // vanish into "no override".
+          // vanish into "no override". [LivingPlanUpdate.Keep] maps to `null`
+          // because a brand-new row has no stored override to keep, so on an
+          // add "say nothing" and "no override" really are the same state (RFC
+          // 164 D4 says the same of the POST path).
           when (val plan = parsed.livingPlan) {
-            is LivingPlanUpdate.Set -> plan.plan
-            LivingPlanUpdate.Clear -> error("a clear on an add is refused in parseInput; this branch is unreachable")
-            null -> null
+            is LivingPlanUpdate.Set -> {
+              plan.plan
+            }
+
+            LivingPlanUpdate.Clear -> {
+              error(
+                "tool [$TOOL_NAME] action [${Action.ADD.value}] reached a clear on an add for " +
+                  "student=[${studentId.value}] college=[${parsed.collegeId.value}]: " +
+                  "a clear on an add is refused in parseInput, so this branch is unreachable",
+              )
+            }
+
+            LivingPlanUpdate.Keep -> {
+              null
+            }
           },
           emptyList(),
         ).getOrElse { e -> return writeFailed(studentId, Action.ADD, e) }
@@ -231,12 +245,15 @@ class CollegeListChatTool(
           studentId,
           entry.id,
           entry.version,
-          // Omitted = unchanged for both fields. Clearing reasons to null via
-          // chat is deliberately unsupported (RFC 136 non-goal): a student who
-          // wants the note gone restates it or removes the entry.
+          // Omitted = unchanged for all three, but by two mechanisms: status
+          // and reasons echo the current value back, while livingPlan carries a
+          // typed LivingPlanUpdate.Keep that the service resolves. Clearing
+          // reasons to null via chat is deliberately unsupported (RFC 136
+          // non-goal): a student who wants the note gone restates it or removes
+          // the entry.
           parsed.status ?: entry.status,
           parsed.reasons ?: entry.reasons,
-          resolveLivingPlan(parsed, entry),
+          parsed.livingPlan,
           emptyList(),
         ).getOrElse { e -> return writeFailed(studentId, Action.UPDATE, e) }
 
@@ -267,25 +284,6 @@ class CollegeListChatTool(
     }
   }
 
-  /**
-   * The override to store on an update: omitted leaves this school's plan alone,
-   * an explicit clear writes NULL -- "no override, use the usual plan" (RFC 152
-   * D2a).
-   *
-   * Named rather than dropped into an argument position, so the call site reads
-   * like its two siblings and the write rule is stated once, where it can be
-   * read.
-   */
-  private fun resolveLivingPlan(
-    parsed: ParsedInput.Ok,
-    entry: CollegeListEntry,
-  ): LivingArrangement? =
-    when (val plan = parsed.livingPlan) {
-      is LivingPlanUpdate.Set -> plan.plan
-      LivingPlanUpdate.Clear -> null
-      null -> entry.livingPlan
-    }
-
   private suspend fun executeRemove(
     studentId: StudentId,
     parsed: ParsedInput.Ok,
@@ -313,27 +311,16 @@ class CollegeListChatTool(
       val status: CollegeListEntryStatus?,
       val reasons: String?,
       /**
-       * The living-plan override the call asks for, or null when the call says
-       * nothing about it. Sealed rather than a nullable [LivingArrangement],
-       * because "leave it alone" and "drop it back to the usual plan" are two
-       * different writes onto the same nullable column and a bare null cannot
-       * tell them apart.
+       * The living-plan override the call asks for; [LivingPlanUpdate.Keep] when
+       * the call says nothing about it. The service's own three-state type
+       * (RFC 164), passed straight through on an update.
        */
-      val livingPlan: LivingPlanUpdate?,
+      val livingPlan: LivingPlanUpdate,
     ) : ParsedInput
 
     data class Invalid(
       val reason: String,
     ) : ParsedInput
-  }
-
-  /** What one call asks of this school's living-plan override; see [ParsedInput.Ok.livingPlan]. */
-  private sealed interface LivingPlanUpdate {
-    data class Set(
-      val plan: LivingArrangement,
-    ) : LivingPlanUpdate
-
-    data object Clear : LivingPlanUpdate
   }
 
   /** Maps the wire shape onto the typed action and fields; every malformation is a [ParsedInput.Invalid]. */
@@ -398,12 +385,12 @@ class CollegeListChatTool(
         when (livingPlanUpdate) {
           is LivingPlanUpdate.Set -> return ParsedInput.Invalid("living_plan cannot be set on a remove")
           LivingPlanUpdate.Clear -> return ParsedInput.Invalid("living_plan_clear cannot be set on a remove")
-          null -> Unit
+          LivingPlanUpdate.Keep -> Unit
         }
       }
 
       Action.UPDATE -> {
-        if (status == null && reasons == null && livingPlanUpdate == null) {
+        if (status == null && reasons == null && livingPlanUpdate == LivingPlanUpdate.Keep) {
           return ParsedInput.Invalid("nothing to update: provide a status, reasons and/or a living plan")
         }
       }
@@ -422,10 +409,10 @@ class CollegeListChatTool(
     return ParsedInput.Ok(action, collegeId, status, reasons, livingPlanUpdate)
   }
 
-  /** The parse outcome for this school's override: the write it asks for (null: untouched), or why it is malformed. */
+  /** The parse outcome for this school's override: the write it asks for ([LivingPlanUpdate.Keep]: untouched), or why it is malformed. */
   private sealed interface LivingPlanParse {
     data class Ok(
-      val update: LivingPlanUpdate?,
+      val update: LivingPlanUpdate,
     ) : LivingPlanParse
 
     data class Invalid(
@@ -470,13 +457,7 @@ class CollegeListChatTool(
     if (plan != null && clear == true) {
       return LivingPlanParse.Invalid("living_plan and living_plan_clear cannot both be set in one call")
     }
-    return LivingPlanParse.Ok(
-      when {
-        plan != null -> LivingPlanUpdate.Set(plan)
-        clear == true -> LivingPlanUpdate.Clear
-        else -> null
-      },
-    )
+    return LivingPlanParse.Ok(LivingPlanUpdate.of(plan, clear == true))
   }
 
   /** The full post-write active list echo, each school named for the coach's next message. */

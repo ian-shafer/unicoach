@@ -29,20 +29,49 @@ object OpenApiSpec {
   private val document: JsonNode = ObjectMapper(YAMLFactory()).readTree(specFile)
 
   /**
+   * Walks [path] from the document root, or throws naming the whole path and
+   * the step that was missing. One spelling of the navigation, so [get] and
+   * [requiredProperties] cannot drift in how they report a missing step.
+   */
+  private fun navigate(path: List<String>): JsonNode =
+    path.fold(document) { parent, key ->
+      val child = parent.path(key)
+      if (child.isMissingNode) {
+        throw AssertionError("[$specFile] has no [${path.joinToString(".")}] — missing at [$key]")
+      }
+      child
+    }
+
+  /**
    * The `components.schemas.[schema].properties.[property]` node, or throws
    * naming the path and the step that was missing.
    */
   fun get(
     schema: String,
     property: String,
-  ): JsonNode {
-    val path = listOf("components", "schemas", schema, "properties", property)
-    return path.fold(document) { parent, key ->
-      val child = parent.path(key)
-      if (child.isMissingNode) {
-        throw AssertionError("[$specFile] has no [${path.joinToString(".")}] — missing at [$key]")
+  ): JsonNode = navigate(listOf("components", "schemas", schema, "properties", property))
+
+  /**
+   * The property names in `components.schemas.[schema].required`, or throws naming the path
+   * and the step that was missing. A schema that publishes no `required` at
+   * all is a different document from one that publishes an empty list, so the
+   * missing node is an error rather than an empty result.
+   *
+   * The node's SHAPE is checked too: `asText()` maps a non-array, or a
+   * non-textual element, to a plausible-looking wrong list, which would let a
+   * malformed spec satisfy a guard. A wrong shape is an error here instead.
+   */
+  fun requiredProperties(schema: String): List<String> {
+    val path = listOf("components", "schemas", schema, "required")
+    val node = navigate(path)
+    if (!node.isArray) {
+      throw AssertionError("[$specFile] has a non-array [${path.joinToString(".")}]: [$node]")
+    }
+    return node.map { element ->
+      if (!element.isTextual) {
+        throw AssertionError("[$specFile] has a non-string entry in [${path.joinToString(".")}]: [$element]")
       }
-      child
+      element.asText()
     }
   }
 
@@ -57,15 +86,7 @@ object OpenApiSpec {
     method: String,
     name: String,
   ): JsonNode {
-    val steps = listOf("paths", path, method, "parameters")
-    val parameters =
-      steps.fold(document) { parent, key ->
-        val child = parent.path(key)
-        if (child.isMissingNode) {
-          throw AssertionError("[$specFile] has no [${steps.joinToString(".")}] — missing at [$key]")
-        }
-        child
-      }
+    val parameters = navigate(listOf("paths", path, method, "parameters"))
     return parameters.firstOrNull { it.path("name").asText() == name }
       ?: throw AssertionError("[$specFile] has no parameter [$name] on [paths.$path.$method]")
   }

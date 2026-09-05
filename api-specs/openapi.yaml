@@ -1853,7 +1853,7 @@ components:
     UpdateCollegeListEntryRequest:
       type: object
       additionalProperties: false
-      required: [version, status, reasons, livingPlan]
+      required: [version, status]
       properties:
         version:
           type: integer
@@ -1866,14 +1866,26 @@ components:
           type: string
           nullable: true
           maxLength: 2048
+          description: >-
+            Why this school is on the list. Omitting the key -- or sending null -- CLEARS the
+            stored note; the two are indistinguishable to the server. This is how the shipped
+            client clears it: it drops the key when the field is emptied, so "required" was
+            never true of this key and is not published.
         livingPlan:
           type: string
           enum: [on_campus, off_campus, with_family]
           nullable: true
           description: >-
-            Where the student plans to live at THIS school. Written wholesale like reasons,
-            and required for the same reason: null clears the override back to their usual
-            plan, so a client that omitted it would delete a fact it never meant to touch.
+            Where the student plans to live at THIS school. Stating a value SETS the override.
+            Omitting the key -- or sending null, which is indistinguishable from omitting it --
+            KEEPS whatever is stored. Use livingPlanClear to clear it. At most one of livingPlan
+            and livingPlanClear may be set; both together is a 400.
+        livingPlanClear:
+          type: boolean
+          default: false
+          description: >-
+            Clear this school's living-plan override back to the family's usual plan.
+            Mutually exclusive with livingPlan.
         addObservationIds:
           type: array
           items:

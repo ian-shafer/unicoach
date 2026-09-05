@@ -394,6 +394,33 @@ class CollegeListChatToolTest {
   }
 
   @Test
+  fun `an update that says nothing about the living plan KEEPS the stored override`() {
+    // RFC 164 D2/D3: the Keep arm, which replaced the read-then-echo
+    // resolveLivingPlan helper. Set and Clear are covered above; without this
+    // case a regression to "an unmentioned plan is cleared" stays green.
+    val student = createStudent()
+    val college = seedCollege("Brown University")
+    execute(student, """{"action":"add","college_id":"${college.value}","living_plan":"with_family"}""")
+    assertEquals(LivingArrangement.WITH_FAMILY, activeEntries(student).single().livingPlan)
+
+    val result = execute(student, """{"action":"update","college_id":"${college.value}","status":"applying"}""")
+
+    assertNull(errorOf(result), "got $result")
+    val row = collegeListOf(result).single()
+    assertEquals("applying", row["status"]!!.jsonPrimitive.content)
+    assertEquals(
+      "with_family",
+      row["living_plan"]!!.jsonPrimitive.content,
+      "an unmentioned living plan must survive a status-only update",
+    )
+    assertEquals(
+      LivingArrangement.WITH_FAMILY,
+      activeEntries(student).single().livingPlan,
+      "and it must survive in the row, not just in the echo",
+    )
+  }
+
+  @Test
   fun `a living plan and its clear in one call is a structured error, and a plan on a remove is refused`() {
     val student = createStudent()
     val college = seedCollege("Brown University")

@@ -4,6 +4,7 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.coaching.collegelist.AddToListResult
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.collegelist.GetEntryResult
+import ed.unicoach.coaching.collegelist.LivingPlanUpdate
 import ed.unicoach.coaching.collegelist.RemoveEntryResult
 import ed.unicoach.coaching.collegelist.UpdateEntryResult
 import ed.unicoach.db.models.CollegeId
@@ -77,23 +78,52 @@ class CollegeListRouteHandler(
   }
 
   /**
-   * The override this request asks for. An absent plan is `null` and not an
-   * error -- on an update that is the client clearing the override back to the
-   * family's usual plan (RFC 152 D2a) -- while a value no [LivingArrangement]
-   * names is handed to [onUnknown], which never returns.
+   * The [LivingArrangement] a stated plan names; a value no arrangement names
+   * is handed to [onUnknown], which never returns.
    *
    * One home, so create and update cannot word one refusal two ways, and each
-   * handler still returns its own 400.
+   * handler still returns its own 400. Callers decide what an ABSENT key means
+   * -- "no override" on create, "keep what is stored" on update (RFC 164) --
+   * which is why this takes a stated value only.
    */
   private inline fun mapLivingPlan(
-    raw: String?,
+    raw: String,
     onUnknown: (FieldError) -> Nothing,
-  ): LivingArrangement? =
-    if (raw == null) {
-      null
-    } else {
-      LivingArrangement.fromValue(raw) ?: onUnknown(FieldError("livingPlan", "Unknown living plan value: [$raw]"))
+  ): LivingArrangement = LivingArrangement.fromValue(raw) ?: onUnknown(FieldError("livingPlan", "Unknown living plan value: [$raw]"))
+
+  /** The parse outcome for the update's living-plan pair: the one write it asks for, or the field error the 400 carries. */
+  private sealed interface LivingPlanParse {
+    data class Ok(
+      val update: LivingPlanUpdate,
+    ) : LivingPlanParse
+
+    data class Invalid(
+      val error: FieldError,
+    ) : LivingPlanParse
+  }
+
+  /**
+   * `livingPlan` and `livingPlanClear` read, checked against each other and
+   * folded into the one write they name (RFC 164) -- the twin of
+   * `MoneyProfileRoutes`' per-field parsers and of
+   * `CollegeListChatTool.parseLivingPlanUpdate`, so [handleUpdate] keeps the
+   * two lines it has for every other field instead of carrying a whole wire
+   * grammar inline.
+   *
+   * Three states off two keys: a value SETS, the flag CLEARS, and a body that
+   * mentions neither KEEPS what is stored -- so the shipped client that never
+   * sends the key stops deleting the family's stated plan.
+   */
+  private fun parseLivingPlanUpdate(request: UpdateCollegeListEntryRequest): LivingPlanParse {
+    // This guard is what makes the illegal pair a 400 rather than the 500 that
+    // LivingPlanUpdate.of's require would raise: the wire boundary refuses it,
+    // and the fold below only ever maps legal input.
+    if (request.livingPlan != null && request.livingPlanClear) {
+      return LivingPlanParse.Invalid(FieldError("livingPlan", "At most one of livingPlan, livingPlanClear may be set"))
     }
+    val plan = request.livingPlan?.let { raw -> mapLivingPlan(raw) { return LivingPlanParse.Invalid(it) } }
+    return LivingPlanParse.Ok(LivingPlanUpdate.of(plan, request.livingPlanClear))
+  }
 
   private fun RoutingContext.pathEntryId(): CollegeListEntryId? {
     val raw = call.parameters["entryId"] ?: return null
@@ -113,7 +143,7 @@ class CollegeListRouteHandler(
     if (status == null) {
       return respondValidationFailed(listOf(FieldError("status", "Unknown status value")))
     }
-    val livingPlan = mapLivingPlan(request.livingPlan) { return respondValidationFailed(listOf(it)) }
+    val livingPlan = request.livingPlan?.let { raw -> mapLivingPlan(raw) { return respondValidationFailed(listOf(it)) } }
 
     val outcome =
       collegeListService
@@ -189,7 +219,11 @@ class CollegeListRouteHandler(
     if (status == null) {
       return respondValidationFailed(listOf(FieldError("status", "Unknown status value")))
     }
-    val livingPlan = mapLivingPlan(request.livingPlan) { return respondValidationFailed(listOf(it)) }
+    val livingPlan =
+      when (val parsed = parseLivingPlanUpdate(request)) {
+        is LivingPlanParse.Ok -> parsed.update
+        is LivingPlanParse.Invalid -> return respondValidationFailed(listOf(parsed.error))
+      }
 
     val outcome =
       collegeListService

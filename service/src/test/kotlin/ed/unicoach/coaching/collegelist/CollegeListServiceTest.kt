@@ -14,6 +14,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewObservation
 import ed.unicoach.db.models.NewStudent
@@ -36,6 +37,7 @@ import java.sql.PreparedStatement
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -288,7 +290,7 @@ class CollegeListServiceTest {
 
       val stale =
         service
-          .updateEntry(student, entry.id, entry.version - 1, CollegeListEntryStatus.APPLYING, null, null, emptyList())
+          .updateEntry(student, entry.id, entry.version - 1, CollegeListEntryStatus.APPLYING, null, LivingPlanUpdate.Clear, emptyList())
           .getOrThrow()
       assertTrue(stale is UpdateEntryResult.VersionConflict)
     }
@@ -303,7 +305,7 @@ class CollegeListServiceTest {
 
       val result =
         service
-          .updateEntry(otherStudent, entry.id, entry.version, CollegeListEntryStatus.APPLYING, null, null, emptyList())
+          .updateEntry(otherStudent, entry.id, entry.version, CollegeListEntryStatus.APPLYING, null, LivingPlanUpdate.Clear, emptyList())
           .getOrThrow()
       assertTrue(result is UpdateEntryResult.NotFound)
     }
@@ -325,7 +327,7 @@ class CollegeListServiceTest {
       val obs2 = observation(student, convo, "second")
       val updated =
         service
-          .updateEntry(student, entry.id, entry.version, CollegeListEntryStatus.APPLYING, "notes", null, listOf(obs2))
+          .updateEntry(student, entry.id, entry.version, CollegeListEntryStatus.APPLYING, "notes", LivingPlanUpdate.Clear, listOf(obs2))
           .getOrThrow()
       assertTrue(updated is UpdateEntryResult.Success)
 
@@ -337,6 +339,57 @@ class CollegeListServiceTest {
           assertEquals(setOf(obs1.value, obs2.value), ids)
         }
       }
+    }
+
+  @Test
+  fun `updateEntry resolves the three living-plan states - Keep preserves, Clear nulls, Set writes`() =
+    runTest {
+      val student = createStudent()
+      val college = createCollege()
+      val entry =
+        (
+          service
+            .addToList(
+              student,
+              college,
+              CollegeListEntryStatus.CONSIDERING,
+              null,
+              LivingArrangement.WITH_FAMILY,
+              emptyList(),
+            ).getOrThrow() as AddToListResult.Success
+        ).entry
+      assertEquals(LivingArrangement.WITH_FAMILY, entry.livingPlan)
+
+      // Keep: this call says nothing about the override, so the stored value survives a status change.
+      val kept =
+        service
+          .updateEntry(student, entry.id, entry.version, CollegeListEntryStatus.APPLYING, null, LivingPlanUpdate.Keep, emptyList())
+          .getOrThrow()
+      assertTrue(kept is UpdateEntryResult.Success)
+      assertEquals(LivingArrangement.WITH_FAMILY, kept.entry.livingPlan)
+
+      // Set: a stated plan replaces it.
+      val set =
+        service
+          .updateEntry(
+            student,
+            entry.id,
+            kept.entry.version,
+            CollegeListEntryStatus.APPLYING,
+            null,
+            LivingPlanUpdate.Set(LivingArrangement.ON_CAMPUS),
+            emptyList(),
+          ).getOrThrow()
+      assertTrue(set is UpdateEntryResult.Success)
+      assertEquals(LivingArrangement.ON_CAMPUS, set.entry.livingPlan)
+
+      // Clear: back to "no override, use the family's usual plan".
+      val cleared =
+        service
+          .updateEntry(student, entry.id, set.entry.version, CollegeListEntryStatus.APPLYING, null, LivingPlanUpdate.Clear, emptyList())
+          .getOrThrow()
+      assertTrue(cleared is UpdateEntryResult.Success)
+      assertNull(cleared.entry.livingPlan)
     }
 
   // --- removeFromList / getForStudent ---
