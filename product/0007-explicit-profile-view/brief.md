@@ -4,7 +4,9 @@
 
     Status:
       Phase:   EXECUTE — both gates approved; slices dispatched one per session;
-               D9's fix is RFC 164 (landing)
+               D9's fix shipped as RFC 164. Two of the three slices are done
+               (see the ledger); only your-details-screen remains, and it is
+               the slice where the value becomes visible.
       Gate 1:  APPROVED by Ian 2026-09-04 — all 12 defaults, with D5 and D9
                amended by Ian before approval (both amendments are IN the
                decision text below, not appended after it)
@@ -30,8 +32,58 @@
           student-profile gate. No table, no migration. Gate: 2686 JVM tests, 0
           failures; 39 review lenses, 19 findings, 18 applied. Substrate — no
           user-visible change until profile/02.
-        profile/02/your-details-screen — not started
-        profile/03/list-screen-parity — READY (was DEFERRED on RFC 164)
+        profile/02/your-details-screen — nothing landed; a live run stamped
+          to it (pipeline/rfc-171) was in flight on 2026-09-05
+        profile/03/list-screen-parity LANDED as RFC 168 (main@a3d851e7 +
+          9f7e7809, 2026-09-05) — the iOS client now STATES the living-plan
+          write contract instead of satisfying it by accident.
+          UpdateCollegeListEntryRequest carries a three-state
+          LivingPlanUpdate (keep / set / clear) with a hand-written
+          encode(to:): .keep emits neither wire key, so a Save cannot destroy
+          a plan the coach set; .set emits `livingPlan`; .clear emits
+          `livingPlanClear: true`. The server's 400 for both keys together is
+          unrepresentable in the type. `reasons` keeps clear-by-omission — the
+          shipped Clear button (RFC 164 D4) — asserted in all three states. A
+          new server test sends the .set and .clear bodies verbatim as the
+          Swift encoder emits them. NO UI CHANGE: D3 defers the per-college
+          living-plan picker, so this slice is not user-visible on its own;
+          the door is the existing college-list screen, and what changed is
+          that a Save from it is provably non-destructive and the app can now
+          express a clear when a control is added. No DDL, no migration, no
+          OpenAPI change, no server behaviour change. Gate: iOS bin/test-ios
+          594 tests 0 failures; JVM 2742 tests 0 failures; pre-commit
+          `bin/test check` passed. 39 review lenses, tiers 0-3.
+
+      Backlog from profile/03's audit (REPORTED, not fixed — the slice's own
+      scope rule: a gap outside income / residency / list becomes a Backlog
+      line or a new slice, never scope creep):
+        B1. `livingPlan` is not decoded on iOS, so the app cannot show a
+          per-college plan it can now clear
+          (ios-app/UnicoachiOS/CollegeListModels.swift:36-44).
+        B2. No per-college living-plan editing UI — deferred by brief 0007 D3
+          (product/0007-explicit-profile-view/spec.md:152-157).
+        B3. The add flow can send only `collegeId`, so a school already
+          applied to costs two round trips
+          (rest-server/.../models/CreateCollegeListEntryRequest.kt:5-11).
+        B4. College search has no `limit` and no paging — a silent 20-row
+          ceiling (rest-server/.../routes/CollegeRoutes.kt:80-87, :99).
+        B5. An unknown `status` fails the whole list decode, against the app's
+          raw-String-plus-`known…` convention, so a future fifth status would
+          black out the screen for every shipped build
+          (CollegeListModels.swift:10-24 vs Models.swift:250-265).
+        B6. `createdAt` / `updatedAt` are dropped by the client, so no surface
+          says when an entry last changed
+          (rest-server/.../models/CollegeListEntryResponse.kt:19-20).
+        B7. `GET /college-list/{id}` is unused, so a version conflict discards
+          the student's typed edits instead of rebasing them
+          (CollegeListRoutes.kt:195-210; CollegeEntryDetailView.swift:147-161).
+        B8. Chat cannot clear `reasons` while iOS can — a door asymmetry in
+          the opposite direction to the one this slice fixed
+          (CollegeListChatTool.kt:248-256).
+        B9. Reorder does not exist on any surface: no position column, no DTO
+          field, no route — list order is server-fixed by `created_at, id`
+          (db/schema/0024.create-college-list.sql:26-44,
+          CollegeListEntriesDao.kt:138, CollegeListChatTool.kt:524-530).
 
 ## The question
 
