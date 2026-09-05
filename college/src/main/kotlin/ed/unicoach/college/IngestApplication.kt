@@ -24,8 +24,10 @@ private const val USAGE =
     "[--money-vocabulary=money-vocabulary.json] [--money-vocabulary-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv>] " +
-    "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY] " +
-    "[--hd-source=ARG] [--ic-source=ARG] [--adm-source=ARG] [--completions-source=ARG]"
+    "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --ic-ay=ic_ay.csv " +
+    "--survey-year=YYYY] " +
+    "[--hd-source=ARG] [--ic-source=ARG] [--adm-source=ARG] [--completions-source=ARG] " +
+    "[--ic-ay-source=ARG]"
 
 /** The recognized `--<name>=<value>` provenance flags, keyed by positional index. */
 private val SOURCE_FLAGS = listOf("institution-source", "fields-source", "aliases-source")
@@ -95,11 +97,11 @@ internal data class CdsArgs(
 }
 
 /**
- * The optional IPEDS file flags (RFC 144, gate-2 D19). All four — plus
- * [SURVEY_YEAR_FLAG] — are required together or not at all: a partial group is a
- * usage error, never a silent partial load.
+ * The optional IPEDS file flags (RFC 144, gate-2 D19; extended by RFC 161 with
+ * `ic-ay`). All five — plus [SURVEY_YEAR_FLAG] — are required together or not
+ * at all: a partial group is a usage error, never a silent partial load.
  */
-private val IPEDS_FILE_FLAGS = listOf("hd", "ic", "adm", "completions")
+private val IPEDS_FILE_FLAGS = listOf("hd", "ic", "adm", "completions", "ic-ay")
 
 /** Each IPEDS file's optional provenance partner, exactly as the Scorecard trio has. */
 private val IPEDS_SOURCE_FLAGS = IPEDS_FILE_FLAGS.map { "$it-source" }
@@ -300,8 +302,8 @@ private sealed interface IpedsGroup {
 }
 
 /**
- * Reads the IPEDS group all-or-nothing. Presence is judged on the four file
- * flags AND `--survey-year` together, so omitting any one of the five is a
+ * Reads the IPEDS group all-or-nothing. Presence is judged on the five file
+ * flags AND `--survey-year` together, so omitting any one of the six is a
  * refusal that names exactly which are missing rather than a run that quietly
  * loads four files with a fabricated year.
  */
@@ -332,17 +334,22 @@ private fun parseIpedsGroup(flags: Map<String, String>): IpedsGroup {
         "got [${flags.getValue(SURVEY_YEAR_FLAG)}]. $USAGE",
     )
   }
+  // Keyed by the FLAG the operator typed, never by position: the group is
+  // assembled by name below, so reordering IPEDS_FILE_FLAGS -- which is also
+  // the argv grammar and the provenance order -- cannot silently load the ADM
+  // file as the IC one.
   val files =
-    IPEDS_FILE_FLAGS.map { flag ->
+    IPEDS_FILE_FLAGS.associateWith { flag ->
       val file = File(flags.getValue(flag))
       SourceFile(file = file, sourceArg = flags["$flag-source"] ?: file.path)
     }
   return IpedsGroup.Present(
     IpedsSources(
-      hd = files[0],
-      ic = files[1],
-      adm = files[2],
-      completions = files[3],
+      hd = files.getValue("hd"),
+      ic = files.getValue("ic"),
+      adm = files.getValue("adm"),
+      completions = files.getValue("completions"),
+      icAy = files.getValue("ic-ay"),
       surveyYear = surveyYear,
     ),
   )
@@ -468,10 +475,12 @@ fun main(args: Array<String>) {
     // breakdown, keyed by our status slugs. stdout keeps exactly the lines it
     // printed before this phase existed.
     logger.info(
-      "canonical money: {} price_figures {}; {} cohort_money_stats {}; {} college(s), {} malformed row(s), {} row(s) without " +
-        "a college, {} row(s) without a CONTROL (control-keyed cells skipped)",
+      "canonical money: [{}] price_figures [{}] by source [{}]; [{}] cohort_money_stats [{}]; " +
+        "[{}] college(s), [{}] malformed row(s), [{}] row(s) without " +
+        "a college, [{}] row(s) without a CONTROL (control-keyed cells skipped)",
       report.canonicalMoney.priceFigureRows,
       report.canonicalMoney.priceFigureStatusCounts.mapKeys { it.key.value },
+      report.canonicalMoney.priceFigureSourceCounts.mapKeys { it.key.value },
       report.canonicalMoney.cohortMoneyStatRows,
       report.canonicalMoney.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
       report.canonicalMoney.collegesMatched,
@@ -481,7 +490,7 @@ fun main(args: Array<String>) {
     )
     val transientSkips =
       report.colleges.transientSkips + report.programs.transientSkips +
-        (report.ipeds?.let { it.attributes.transientSkips + it.census.transientSkips } ?: 0)
+        (report.ipeds?.let { it.attributes.transientSkips + it.census.transientSkips + it.charges.transientSkips } ?: 0)
     if (transientSkips > 0) {
       logger.warn(
         "[{}] row(s) skipped on transient faults; re-running the ingest may recover them",

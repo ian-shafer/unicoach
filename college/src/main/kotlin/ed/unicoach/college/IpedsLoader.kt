@@ -9,7 +9,6 @@ import ed.unicoach.college.CsvIngestSupport.stringOrNull
 import ed.unicoach.college.CsvIngestSupport.upsertWithSavepoint
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegeIpedsDao
-import ed.unicoach.db.dao.UpsertOutcome
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewCollegeProgramsCensus
@@ -35,10 +34,12 @@ data class IpedsSources(
   val ic: SourceFile,
   val adm: SourceFile,
   val completions: SourceFile,
+  /** IC_AY, the published-charges survey (RFC 161): the group's fifth member. */
+  val icAy: SourceFile,
   val surveyYear: Int,
 ) {
-  /** The four files in provenance order, for digesting and header assertion. */
-  val files: List<SourceFile> get() = listOf(hd, ic, adm, completions)
+  /** The five files in provenance order, for digesting and header assertion. */
+  val files: List<SourceFile> get() = listOf(hd, ic, adm, completions, icAy)
 }
 
 /**
@@ -212,12 +213,7 @@ internal class IpedsLoader(
           if (result.isFailure) {
             recordUpsertFailure(count, result.exceptionOrNull(), "ipeds", "ipeds_unit_id", hd.ipedsUnitId, record.recordNumber)
           } else {
-            count.loaded++
-            when (result.getOrThrow()) {
-              UpsertOutcome.INSERTED -> count.inserted++
-              UpsertOutcome.CHANGED -> count.changed++
-              UpsertOutcome.UNCHANGED -> count.unchanged++
-            }
+            count.recordOutcome(result.getOrThrow())
           }
         }
       }
@@ -324,12 +320,7 @@ internal class IpedsLoader(
           if (result.isFailure) {
             recordUpsertFailure(count, result.exceptionOrNull(), "census", "cip_code", row.cipCode, record.recordNumber)
           } else {
-            count.loaded++
-            when (result.getOrThrow()) {
-              UpsertOutcome.INSERTED -> count.inserted++
-              UpsertOutcome.CHANGED -> count.changed++
-              UpsertOutcome.UNCHANGED -> count.unchanged++
-            }
+            count.recordOutcome(result.getOrThrow())
           }
         }
       }

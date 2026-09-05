@@ -62,7 +62,8 @@ data class NewPriceFigure(
   val academicYear: String,
   /** The USD amount and its status as ONE reading (D3): the invalid pairings do not compile. */
   val reading: FigureReading<Int>,
-  val source: String,
+  /** The publisher, as the owned enumeration (RFC 161 decision 6) -- never a free string. */
+  val source: MoneySource,
   val sourceVariable: String,
   val publisherFlag: String? = null,
 )
@@ -83,7 +84,8 @@ data class NewCohortMoneyStat(
   val vintage: String,
   /** The numeric value and its status as ONE reading (D3): the invalid pairings do not compile. */
   val reading: FigureReading<Double>,
-  val source: String,
+  /** The publisher, as the owned enumeration (RFC 161 decision 6) -- never a free string. */
+  val source: MoneySource,
   val sourceVariable: String,
   val publisherFlag: String? = null,
 )

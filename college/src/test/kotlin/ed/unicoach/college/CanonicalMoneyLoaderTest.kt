@@ -5,11 +5,14 @@ import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.FigureArrangement
+import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.ValueBearingStatus
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -264,8 +267,10 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
           residency = ResidencyBasis.IN_STATE,
           arrangement = FigureArrangement.ON_CAMPUS,
           academicYear = "2022-23",
-          cell = StatusfulCell.Reported(11000),
+          reading = FigureReading.Present(11000, ValueBearingStatus.REPORTED),
+          source = MoneySource.SCORECARD,
           sourceVariable = "TUITIONFEE_IN",
+          publisherFlag = null,
         )
       }
     assertContains(thrown.message!!, "tuition_and_fees")
@@ -281,8 +286,10 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
         residency = ResidencyBasis.NOT_APPLICABLE,
         arrangement = FigureArrangement.NOT_APPLICABLE,
         academicYear = "2022-23",
-        cell = StatusfulCell.Reported(9000),
+        reading = FigureReading.Present(9000, ValueBearingStatus.REPORTED),
+        source = MoneySource.SCORECARD,
         sourceVariable = "ROOMBOARD_ON",
+        publisherFlag = null,
       )
     }
   }
@@ -297,8 +304,10 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
           residency = ResidencyBasis.IN_STATE,
           arrangement = FigureArrangement.ON_CAMPUS,
           academicYear = "2021-22",
-          cell = StatusfulCell.Reported(32000),
+          reading = FigureReading.Present(32000, ValueBearingStatus.REPORTED),
+          source = MoneySource.SCORECARD,
           sourceVariable = "COSTT4_A",
+          publisherFlag = null,
         )
       }
     assertContains(thrown.message!!, "COSTT4_A")
@@ -318,6 +327,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
           incomeBand = IncomeBand.UNDER_30K,
           vintage = "undated",
           cell = StatusfulCell.Reported(0.4),
+          source = MoneySource.SCORECARD,
           sourceVariable = "PCTPELL",
         )
       }
@@ -353,18 +363,4 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
         writeText(edited.joinToString("\n") + "\n")
       }
   }
-
-  private fun <T> query(
-    sql: String,
-    map: (java.sql.ResultSet) -> T,
-  ): List<T> =
-    withSession { session ->
-      session.prepareStatement(sql).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          val rows = mutableListOf<T>()
-          while (rs.next()) rows += map(rs)
-          rows
-        }
-      }
-    }
 }

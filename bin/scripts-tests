@@ -2229,6 +2229,47 @@ test_codebooks_duplicate_code_refused() {
 assert_success "a duplicate published code is refused at generation, not at the primary key" \
   test_codebooks_duplicate_code_refused
 
+# The fixture that stands in for an artifact is DECLARED in ARTIFACTS and
+# matched by exact name (bin/fetch-ipeds' rule). Under the normalised
+# longest-substring rule it replaces, an unrelated .do dropped into the shared
+# fixture directory became a rival candidate and fataled the run as ambiguous --
+# from a change with nothing to do with codebooks.
+test_codebooks_ignores_an_undeclared_lookalike() {
+  local fixtures output
+  fixtures="$(mktemp -d)"
+  cp "$CODEBOOK_FIXTURES"/codebooks-*-fixture.do "$fixtures/"
+  cp "$fixtures/codebooks-ic2023-ay-fixture.do" "$fixtures/codebooks-ic2023-ay-notes-fixture.do"
+  output="$(bin/fetch-codebooks -F "$fixtures" -o "$fixtures" -j "$fixtures/codebooks.json" 2>&1)" || {
+    rm -rf "$fixtures"
+    return 1
+  }
+  [ -s "$fixtures/codebooks.json" ] || { rm -rf "$fixtures"; return 1; }
+  rm -rf "$fixtures"
+  case "$output" in
+    *"[FATAL]"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+assert_success "an undeclared look-alike .do in the fixture directory is ignored, not ambiguous" \
+  test_codebooks_ignores_an_undeclared_lookalike
+
+# ...and a fixture that is genuinely absent names BOTH shapes it would accept,
+# rather than a normalised stem the operator never typed.
+test_codebooks_missing_fixture_names_both_shapes() {
+  local fixtures output
+  fixtures="$(mktemp -d)"
+  cp "$CODEBOOK_FIXTURES"/codebooks-*-fixture.do "$fixtures/"
+  rm "$fixtures/codebooks-ic2023-ay-fixture.do"
+  output="$(bin/fetch-codebooks -F "$fixtures" -o "$fixtures" -j "$fixtures/codebooks.json" 2>&1)"
+  rm -rf "$fixtures"
+  case "$output" in
+    *"[FATAL]"*"no fixture for [IC2023_AY_Stata.zip]"*"codebooks-ic2023-ay-fixture.do"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+assert_success "a missing codebook fixture names the archive and the declared .do" \
+  test_codebooks_missing_fixture_names_both_shapes
+
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-codebooks rejects an unknown option (10)" \
   bin/fetch-codebooks -z
 assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-codebooks -F without a value exits 11" \
@@ -2278,14 +2319,22 @@ rm -rf "$CODEBOOK_OUT"
 
 # IPEDS group (RFC 144): all-or-nothing, refused BEFORE any download or JVM
 # start, and each file's original argument forwarded as its --*-source partner.
-# The group is -H/-I/-A/-C plus the -y year: short options, parsed by the one
-# getopts loop, because bin/ scripts take short options only. The long forms this
+# The group is -H/-I/-A/-C/-Y plus the -y year (RFC 161 added -Y, the IC_AY
+# published-charges CSV): short options, parsed by the one getopts loop, because
+# bin/ scripts take short options only. The long forms this
 # group used to accept are GONE (see the rejection assertions below); the --hd=
 # etc. flags that remain are the ingest JAR's own grammar, forwarded to it.
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only -H)" \
   bin/ingest-colleges -H HD2023.csv a.csv b.csv
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects an IPEDS group missing -y" \
-  bin/ingest-colleges -H HD.csv -I IC.csv -A adm.csv -C CA.csv a.csv b.csv
+  bin/ingest-colleges -H HD.csv -I IC.csv -A adm.csv -C CA.csv -Y ic_ay.csv a.csv b.csv
+# RFC 161: IC_AY joined the SAME group rather than sitting beside it. A run that
+# quietly skipped it would leave the canonical fill with no IPEDS source and
+# serve the Scorecard's collapsed in-state price again, with a green exit.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects an IPEDS group missing -Y" \
+  bin/ingest-colleges -H HD.csv -I IC.csv -A adm.csv -C CA.csv -y 2023 a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only -Y)" \
+  bin/ingest-colleges -Y ic_ay.csv a.csv b.csv
 # Every one of the five, individually, arms the all-or-nothing rule: a group that
 # fired only on -H would let a lone -y (or a lone -C) through as a silent
 # Scorecard-only run.
@@ -2325,20 +2374,27 @@ assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -v without a val
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an explicitly-empty -v value" \
   bin/ingest-colleges -v "" a.csv b.csv
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty IPEDS flag value" \
-  bin/ingest-colleges -H "" -I IC.csv -A adm.csv -C CA.csv -y 2023 a.csv b.csv
+  bin/ingest-colleges -H "" -I IC.csv -A adm.csv -C CA.csv -Y ic_ay.csv -y 2023 a.csv b.csv
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -Y value" \
+  bin/ingest-colleges -H HD.csv -I IC.csv -A adm.csv -C CA.csv -Y "" -y 2023 a.csv b.csv
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an all-empty IPEDS group, never a silent Scorecard-only run" \
-  bin/ingest-colleges -H "" -I "" -A "" -C "" -y "" a.csv b.csv
+  bin/ingest-colleges -H "" -I "" -A "" -C "" -Y "" -y "" a.csv b.csv
 # A repeated flag is the usage error the JVM names; last-wins here would forward
 # only the survivor and the JVM's refusal would be unreachable.
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects a repeated IPEDS flag" \
-  bin/ingest-colleges -H A.csv -H B.csv -I IC.csv -A adm.csv -C CA.csv -y 2023 a.csv b.csv
+  bin/ingest-colleges -H A.csv -H B.csv -I IC.csv -A adm.csv -C CA.csv -Y ic_ay.csv -y 2023 a.csv b.csv
+# -Y (the IC_AY charges CSV) and -y (the survey year) are the second deliberate
+# case pair in this grammar. getopts is case-sensitive, so a lone -Y must fire
+# the all-or-nothing rule naming -y as still required, never be read as the year.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges keeps -Y and -y distinct, never folding the case" \
+  bin/ingest-colleges -Y 2023 a.csv b.csv
 # -a (the CDS admission-factors CSV) and -A (the IPEDS ADM survey file) are a
 # deliberate case pair. Passing -a alone must fire the CDS rule, never the IPEDS
 # one, and vice versa: a parser that folded the case would report the wrong group.
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges -a alone is a CDS group error, not an IPEDS one" \
   bin/ingest-colleges -a factors.csv a.csv b.csv
 test_ingest_colleges_ipeds_source_flags() {
-  local root parent stub argv inst fields hd ic adm ca entry rc log
+  local root parent stub argv inst fields hd ic adm ca icay entry rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-ipedsflags"
   mkdir -p "$root"
@@ -2352,12 +2408,12 @@ test_ingest_colleges_ipeds_source_flags() {
   chmod +x "$stub"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   hd="$parent/HD2023.csv"; ic="$parent/IC2023.csv"
-  adm="$parent/adm2023.csv"; ca="$parent/C2023_a.csv"
-  : > "$inst"; : > "$fields"; : > "$hd"; : > "$ic"; : > "$adm"; : > "$ca"
+  adm="$parent/adm2023.csv"; ca="$parent/C2023_a.csv"; icay="$parent/ic2023_ay.csv"
+  : > "$inst"; : > "$fields"; : > "$hd"; : > "$ic"; : > "$adm"; : > "$ca"; : > "$icay"
   log="$parent/ingest.log"
   rc=0
   "$root/bin/ingest-colleges" \
-    -H "$hd" -I "$ic" -A "$adm" -C "$ca" -y 2023 \
+    -H "$hd" -I "$ic" -A "$adm" -C "$ca" -Y "$icay" -y 2023 \
     "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
@@ -2369,6 +2425,7 @@ test_ingest_colleges_ipeds_source_flags() {
     grep -qxF -- "--ic-source=$ic" "$argv" &&
     grep -qxF -- "--adm-source=$adm" "$argv" &&
     grep -qxF -- "--completions-source=$ca" "$argv" &&
+    grep -qxF -- "--ic-ay-source=$icay" "$argv" &&
     grep -qxF -- "--survey-year=2023" "$argv"
   rc=$?
   [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
@@ -2403,7 +2460,7 @@ test_ingest_colleges_no_ipeds_argv() {
     rm -rf "$parent"
     return "$rc"
   fi
-  ! grep -qE -- "^--(hd|ic|adm|completions|survey-year)" "$argv"
+  ! grep -qE -- "^--(hd|ic|adm|completions|ic-ay|survey-year)" "$argv"
   rc=$?
   [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
   rm -rf "$parent"
@@ -2428,15 +2485,15 @@ IPEDS_OUT="$(mktemp -d)"
 assert_success "fetch-ipeds runs offline from the recorded CSV fixtures" \
   bin/fetch-ipeds -F "$IPEDS_FIXTURES" -o "$IPEDS_OUT" > /dev/null 2>&1
 
-test_ipeds_writes_four_csvs() {
+test_ipeds_writes_five_csvs() {
   local name
-  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv; do
+  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv ic2023_ay.csv; do
     [ -s "$IPEDS_OUT/$name" ] || return 1
   done
   return 0
 }
-assert_success "the four members are written under the names the ingest is given" \
-  test_ipeds_writes_four_csvs
+assert_success "the five members are written under the names the ingest is given" \
+  test_ipeds_writes_five_csvs
 
 # Every embedded python assertion below runs through here, and the CHANNEL is
 # owned in this one place: a bare sys.exit("...") reaches stderr with none of the
@@ -2487,7 +2544,7 @@ assert_success "PROVENANCE records the offline route, the member taken and its r
   ipeds_provenance_assert "$IPEDS_OUT/PROVENANCE.json" \
     'provenance["source"] == "fixtures"
      and provenance["fixture_derived"] is True
-     and sorted(artifacts) == ["ADM2023.zip", "C2023_A.zip", "HD2023.zip", "IC2023.zip"]
+     and sorted(artifacts) == ["ADM2023.zip", "C2023_A.zip", "HD2023.zip", "IC2023.zip", "IC2023_AY.zip"]
      and all(a["rows"] == 3 for a in artifacts.values())
      and all(a["fetched_at"] == provenance["fetched_at"] for a in artifacts.values())'
 
@@ -2525,6 +2582,11 @@ archive("IC2023.zip", {"IC2023.csv": body(4), "IC2023_RV.csv": body(9)})
 # the BOM must never reach the first header name.
 archive("ADM2023.zip", {"adm2023.csv": body(4)})
 archive("C2023_A.zip", {"C2023_a.csv": body(4, True)})
+# RFC 161. IC2023_AY.zip ships NO revised member today and IC2023_AY_RV.zip is a
+# 404 -- so the _RV filter is unexercised by the real artifact, and an untested
+# filter is one refactor away from being a fallback. The synthesised archive
+# gives it one, deliberately larger, so taking it would show in the row count.
+archive("IC2023_AY.zip", {"ic2023_ay.csv": body(4), "ic2023_ay_RV.csv": body(9)})
 DAMAGE = {
     # Nothing to resolve at all.
     "no-csv": {"HD2023.txt": body(4), "readme.md": b"not a survey\n"},
@@ -2551,6 +2613,9 @@ assert_success "a member whose name is cased differently still resolves" \
 assert_success "the _RV revised member is never the one taken" \
   ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["IC2023.zip"]["member"] == "IC2023.csv" and artifacts["IC2023.zip"]["rows"] == 4'
+assert_success "the _RV refusal covers IC2023_AY too, not only the two archives that ship one today" \
+  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+    'artifacts["IC2023_AY.zip"]["member"] == "ic2023_ay.csv" and artifacts["IC2023_AY.zip"]["rows"] == 4'
 assert_success "a BOM-carrying member and a BOM-less member parse to the same row count" \
   ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["HD2023.zip"]["rows"] == artifacts["ADM2023.zip"]["rows"]
@@ -2938,7 +3003,7 @@ assert_success "a -F run with no -o is refused as a usage error, leaving db/seed
 
 # The committed manifest is both the provenance of the real download and the
 # shrink baseline every later fetch is measured against, so it must be a NETWORK
-# record naming the four archives and the non-_RV member of each. Three separate
+# record naming the five archives and the non-_RV member of each. Three separate
 # claims, so three named checks rather than one long script: which of them broke
 # is the whole diagnosis, and a single assertion reports only that "the manifest"
 # is wrong.
@@ -2984,7 +3049,7 @@ PY
 assert_success "the committed db/seed/ipeds manifest records a real network fetch, ISO-dated" \
   test_ipeds_committed_is_a_network_record
 
-# 2. The zips are not committed, so these four digests -- verified by the
+# 2. The zips are not committed, so these five digests -- verified by the
 # operator against the real download -- are the only thing standing between this
 # manifest and an invented one. Pinned here rather than derived from the file
 # they check.
@@ -2999,6 +3064,9 @@ VERIFIED = {
     "IC2023.zip": (381806, "1454ab8fc5df34aafb04566351c29ed313350f41bc2a241a33fb4f7b93a044a1"),
     "ADM2023.zip": (97321, "670ecc7c4313f044dcdf740a42ef10c6d2927eb9f890fb405e3569c8442aca27"),
     "C2023_A.zip": (9294160, "651d95b6405bb86c6c14884ed54225a27492199d21d8acd63cda2581aa60838a"),
+    # RFC 161. IC2023_AY_RV.zip is an HTTP 404 today: this archive is already
+    # the final release, which is why the _RV refusal must stay a fatal.
+    "IC2023_AY.zip": (309736, "42d3ee39a107d69b6da02df2ffa934ebe3bb76657568fb9efb7027b6ce0d69ee"),
 }
 if set(provenance["artifacts"]) != set(VERIFIED):
     sys.exit(f"artifacts are {sorted(provenance['artifacts'])}, expected {sorted(VERIFIED)}")
@@ -3010,7 +3078,7 @@ for name, (size, digest) in VERIFIED.items():
         sys.exit(f"{name}: sha256 {artifact['sha256']} is not the verified digest")
 PY
 }
-assert_success "the committed manifest pins the four operator-verified archive digests" \
+assert_success "the committed manifest pins the five operator-verified archive digests" \
   test_ipeds_committed_digests_are_the_verified_ones
 
 # 3. The member half of the record: the url names the archive, both digests are
@@ -3376,12 +3444,12 @@ test_ipeds_logs_to_stderr_and_stdout_stays_empty() {
   # result lines that used to live on stdout.
   local phrase
   for phrase in \
-    "Fetching [4] IPEDS survey archives" \
-    "[1/4] [HD2023.zip]" \
-    "[4/4] [C2023_A.zip] -> member" \
+    "Fetching [5] IPEDS survey archives" \
+    "[1/5] [HD2023.zip]" \
+    "[5/5] [IC2023_AY.zip] -> member" \
     "data rows" \
     "Checking every artifact produced data rows" \
-    "Writing [5] files" \
+    "Writing [6] files" \
     "IPEDS survey files written to" \
     "-y 2023"; do
     grep -qF -- "$phrase" "$stderr" \

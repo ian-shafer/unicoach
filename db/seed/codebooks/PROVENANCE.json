@@ -1,10 +1,11 @@
 {
-  "fetched_at": "2026-08-30T22:43:53+00:00",
+  "fetched_at": "2026-09-05T04:31:51+00:00",
   "source": "network",
+  "fixture_derived": false,
   "artifacts": {
     "HD2023_Stata.zip": {
       "url": "https://nces.ed.gov/ipeds/datacenter/data/HD2023_Stata.zip",
-      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "fetched_at": "2026-09-05T04:31:47+00:00",
       "bytes": 43089,
       "sha256": "5a1723d4d5e6ccf4ff5fb71a2720839a9b29886b7c90f8d83563aaa449de864f",
       "member": "HD2023.do",
@@ -13,7 +14,7 @@
     },
     "IC2023_Stata.zip": {
       "url": "https://nces.ed.gov/ipeds/datacenter/data/IC2023_Stata.zip",
-      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "fetched_at": "2026-09-05T04:31:47+00:00",
       "bytes": 10453,
       "sha256": "b2afad24aa3e4cafa11a68fa5ae83790af15bc87f6eb178a04afb901cc726079",
       "member": "IC2023.do",
@@ -22,7 +23,7 @@
     },
     "ADM2023_Stata.zip": {
       "url": "https://nces.ed.gov/ipeds/datacenter/data/ADM2023_Stata.zip",
-      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "fetched_at": "2026-09-05T04:31:47+00:00",
       "bytes": 2563,
       "sha256": "cd88958f33a59f30f2be4ecc8c3294c3e7f5411ee205852da0297bff29cf3a35",
       "member": "adm2023.do",
@@ -31,12 +32,21 @@
     },
     "C2023_A_Stata.zip": {
       "url": "https://nces.ed.gov/ipeds/datacenter/data/C2023_A_Stata.zip",
-      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "fetched_at": "2026-09-05T04:31:47+00:00",
       "bytes": 28827,
       "sha256": "14373bbf7f7fdacbc639449b02b374b379811fbfe1caff33f6ddc94d13df8d6a",
       "member": "C2023_a.do",
       "label_lines": 1730,
       "variable_labels": 64
+    },
+    "IC2023_AY_Stata.zip": {
+      "url": "https://nces.ed.gov/ipeds/datacenter/data/IC2023_AY_Stata.zip",
+      "fetched_at": "2026-09-05T04:31:47+00:00",
+      "bytes": 3831,
+      "sha256": "277c101cfa71945a84fa3469ded307021e4063d8c2a76fafa09559cc1fc32404",
+      "member": "IC2023_ay.do",
+      "label_lines": 0,
+      "variable_labels": 235
     }
   },
   "domains": {

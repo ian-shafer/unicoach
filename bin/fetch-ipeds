@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """fetch-ipeds: download the IPEDS survey data files bin/ingest-colleges reads.
 
-RFC 144. Downloads the four IPEDS survey data archives for SURVEY_YEAR,
-extracts the one data member from each, and writes the CSVs plus a manifest:
+RFC 144, extended by RFC 161. Downloads the five IPEDS survey data archives
+for SURVEY_YEAR, extracts the one data member from each, and writes the CSVs
+plus a manifest:
 
     db/seed/ipeds/HD2023.csv        institutional characteristics (directory)
     db/seed/ipeds/IC2023.csv        institutional characteristics (survey)
     db/seed/ipeds/adm2023.csv       admissions and test scores
     db/seed/ipeds/C2023_a.csv       completions by CIP code and award level
+    db/seed/ipeds/ic2023_ay.csv     published charges, academic-year reporters
     db/seed/ipeds/PROVENANCE.json   url, fetched_at, bytes, sha256 per archive,
                                     plus the member taken, its digest and its
                                     data-row count
 
 The CSVs are NOT committed: extracted they are ~66 MB against a 16 MB .git (~11
-MB as the four zips) -- the one place that figure is stated, in one unit system
+MB as the five zips) -- the one place that figure is stated, in one unit system
 -- so db/seed/ipeds/ is gitignored except for PROVENANCE.json and
 FETCH-NOTES.md. That manifest is the committed record of the real fetch AND the
 baseline the shrink guard below reads, which is why an offline (-F) replay is
@@ -40,7 +42,10 @@ ALL member interpretation lives here (the ingest is handed plain CSV paths):
     ships HD2023.csv and IC2023.csv but adm2023.csv and C2023_a.csv, and the
     casing is not a rule anyone published.
   * IC2023.zip and C2023_A.zip also ship a REVISED member (IC2023_RV.csv,
-    C2023_a_RV.csv). The NON-_RV member is taken. The _RV file is a later
+    C2023_a_RV.csv). The NON-_RV member is taken. IC2023_AY.zip ships none
+    today and IC2023_AY_RV.zip is a 404, which is exactly why the refusal stays
+    a FATAL rather than becoming a fallback: the day one appears, a human
+    decides, not this script. The _RV file is a later
     revision of the same survey -- for IC2023 a reordered 141-column superset --
     so which one you get would depend on when you fetched. The ingest is pinned
     to the survey as originally published, so that a re-fetch of a named survey
@@ -90,7 +95,7 @@ The run REFUSES to write an artifact that resolved to a member with ZERO data
 rows, REFUSES to write when a data-row count collapsed against the count
 PROVENANCE.json recorded, and REFUSES to write when the resolved member NAME is
 not the one PROVENANCE.json recorded. Nothing is written until all three pass,
-and the write itself is all-or-nothing across the four CSVs AND the manifest.
+and the write itself is all-or-nothing across the five CSVs AND the manifest.
 """
 
 import contextlib
@@ -178,6 +183,7 @@ ARTIFACTS = (
     Artifact("IC2023.zip", "IC2023.csv", "ipeds-ic2023-fixture.csv", "-I", 2023),
     Artifact("ADM2023.zip", "adm2023.csv", "ipeds-adm2023-fixture.csv", "-A", 2023),
     Artifact("C2023_A.zip", "C2023_a.csv", "ipeds-c2023-a-fixture.csv", "-C", 2023),
+    Artifact("IC2023_AY.zip", "ic2023_ay.csv", "ipeds-ic2023-ay-fixture.csv", "-Y", 2023),
 )
 
 # A revised release of a member, published alongside the original. LOWERCASE is
@@ -299,8 +305,8 @@ def require_survey_year():
 
     The archive names are literals (their casing is irregular and must stay
     visible) and the year is a constant, so nothing makes them agree by
-    construction. A year bump that renamed three of the four archives, or that
-    renamed all four and left SURVEY_YEAR behind, would otherwise stamp the wrong
+    construction. A year bump that renamed four of the five archives, or that
+    renamed all five and left SURVEY_YEAR behind, would otherwise stamp the wrong
     year on every college_ipeds row with no error anywhere.
 
     The comparison is against the DECLARED year field, by equality. A
@@ -718,7 +724,7 @@ class Source:
 
 
 def load_sources(fixtures, fetched_at):
-    """{archive -> Source} for the four artifacts, downloaded, or read from
+    """{archive -> Source} for the five artifacts, downloaded, or read from
     `fixtures` with no network at all. Nothing is written here: the CSVs land
     only once the counts they carry have been believed.
 
@@ -728,9 +734,10 @@ def load_sources(fixtures, fetched_at):
     constructor."""
     sources = {}
     for index, artifact in enumerate(ARTIFACTS, start=1):
-        # [n/4] on every line of one artifact's report, so a run that is being
-        # watched says how far through the four it is, and a captured log can be
-        # read back per artifact.
+        # An [index/total] prefix on every line of one artifact's report, so a
+        # run that is being watched says how far through ARTIFACTS it is, and a
+        # captured log can be read back per artifact. The total is LEN, never a
+        # literal: the count moved from four to five and the comment did not.
         step = f"[{index}/{len(ARTIFACTS)}]"
         if fixtures is not None:
             path = find_fixture(fixtures, artifact)
@@ -1405,7 +1412,7 @@ def main(argv):
     rows_armed, member_armed = armed_guards(outdir, previous, sources)
     require_stable_baseline(outdir, previous, sources)
 
-    # The four members AND the manifest, as one set: a directory holding new CSVs
+    # The five members AND the manifest, as one set: a directory holding new CSVs
     # under the old manifest is the state the guards above exist to prevent.
     provenance = build_manifest(sources, offline, fetched_at)
     files = [(outdir / source.output_csv, source.member_body) for source in sources.values()] + [
@@ -1414,7 +1421,7 @@ def main(argv):
             (json.dumps(provenance, indent=2) + "\n").encode("utf-8"),
         )
     ]
-    # The write is its own wait: the four real members are ~66 MB, staged and
+    # The write is its own wait: the five real members are ~70 MB, staged and
     # then renamed, so a run that said nothing here would look finished long
     # before it was.
     log_info(

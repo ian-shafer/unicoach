@@ -2,6 +2,7 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewArrangement
 import ed.unicoach.db.models.NewCohortMoneyStat
 import ed.unicoach.db.models.NewFigureStatus
@@ -186,7 +187,7 @@ object CanonicalMoneyDao {
       // exactly when the status bears one, by construction).
       stmt.setIntOrNull(6, (row.reading as? FigureReading.Present)?.value)
       stmt.setString(7, row.reading.status.value)
-      stmt.setString(8, row.source)
+      stmt.setString(8, row.source.value)
       stmt.setString(9, row.sourceVariable)
       stmt.setStringOrNull(10, row.publisherFlag)
     }
@@ -216,7 +217,7 @@ object CanonicalMoneyDao {
       stmt.setString(7, row.vintage)
       stmt.setDoubleOrNull(8, (row.reading as? FigureReading.Present)?.value)
       stmt.setString(9, row.reading.status.value)
-      stmt.setString(10, row.source)
+      stmt.setString(10, row.source.value)
       stmt.setString(11, row.sourceVariable)
       stmt.setStringOrNull(12, row.publisherFlag)
     }
@@ -231,22 +232,75 @@ object CanonicalMoneyDao {
   /** Per-status row counts over `cohort_money_stats`, typed as above. */
   fun cohortMoneyStatCountsByStatus(session: SqlSession): Result<Map<FigureStatus, Int>> = countsByStatus(session, "cohort_money_stats")
 
+  /**
+   * Per-SOURCE row counts over `price_figures` (RFC 161): the operator's one
+   * view of the upstream-wins split, and the number that moves when a source's
+   * coverage changes. Typed like the status counts -- a stored value no
+   * [MoneySource] reads is refused loudly, which the 0084 domain CHECK should
+   * already have prevented.
+   */
+  fun priceFigureCountsBySource(session: SqlSession): Result<Map<MoneySource, Int>> =
+    countsBy(
+      session,
+      "price_figures",
+      "source",
+      domain = "MoneySource",
+      accepted = MoneySource.entries.map { it.value },
+      decode = MoneySource::fromValue,
+    )
+
+  /**
+   * One `GROUP BY` over a coded column, decoded through the enum that owns it.
+   *
+   * The status breakdown and the source breakdown are the SAME read against a
+   * different column and a different `fromValue`, and they were written twice.
+   * A stored value the enum does not read is FATAL rather than a string key:
+   * these counts land in the provenance row, and a provenance row that reports
+   * a slug nothing can read is worse than a failed one.
+   *
+   * [table] and [column] are fixed DAO identifiers, never caller data -- the
+   * interpolation rule this file already follows.
+   *
+   * [domain] and [accepted] are what the FAILURE says. "holds a value nothing
+   * reads" names neither the enumeration that refused the value nor what it
+   * would have accepted, so the reader of that line has to find the decode
+   * function to learn either -- while the caller had both in hand. A stored
+   * slug outside the domain is a migration and an enum that disagree, and the
+   * message should be able to say which two.
+   */
+  private fun <T> countsBy(
+    session: SqlSession,
+    table: String,
+    column: String,
+    domain: String,
+    accepted: List<String>,
+    decode: (String) -> T?,
+  ): Result<Map<T, Int>> =
+    session
+      .queryList(
+        "SELECT $column, count(*) AS n FROM $table GROUP BY $column",
+        bind = {},
+        map = { rs ->
+          val value = rs.getString(column)
+          val decoded =
+            decode(value)
+              ?: error("[$table.$column] holds a slug no $domain reads: [$value]; the accepted values are $accepted")
+          decoded to rs.getInt("n")
+        },
+      ).map { it.toMap() }
+
   private fun countsByStatus(
     session: SqlSession,
     table: String,
   ): Result<Map<FigureStatus, Int>> =
-    session
-      .queryList(
-        "SELECT status, count(*) AS n FROM $table GROUP BY status",
-        bind = {},
-        map = { rs ->
-          val slug = rs.getString("status")
-          val status =
-            FigureStatus.fromValue(slug)
-              ?: error("[$table] holds a status slug no FigureStatus reads: [$slug]")
-          status to rs.getInt("n")
-        },
-      ).map { it.toMap() }
+    countsBy(
+      session,
+      table,
+      "status",
+      domain = "FigureStatus",
+      accepted = FigureStatus.entries.map { it.value },
+      decode = FigureStatus::fromValue,
+    )
 
   /**
    * One prepared statement, JDBC-batched: the Scorecard fill writes ~60-100k

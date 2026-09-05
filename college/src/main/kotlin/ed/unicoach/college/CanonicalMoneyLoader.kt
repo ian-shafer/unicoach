@@ -28,16 +28,21 @@ import ed.unicoach.college.ScorecardInstitutionColumns.TUITIONFEE_OUT
 import ed.unicoach.college.ScorecardInstitutionColumns.UNITID
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
+import ed.unicoach.db.dao.CollegeIpedsChargesDao
 import ed.unicoach.db.dao.CollegeIpedsDao
+import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
+import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeIpedsCharge
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCohortMoneyStat
 import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.PriceConcept
@@ -74,9 +79,74 @@ import java.util.UUID
  * Lives in the ingest module, not `service/.../costs` (P9): the fill maps and
  * copies, it never does money arithmetic.
  */
-class CanonicalMoneyLoader(
+class CanonicalMoneyLoader internal constructor(
   private val database: Database,
+  // The fill's SECOND input, declared rather than hidden in a DAO call: half
+  // the price table comes from `college_ipeds_charges`, and `fill(csv)` read as
+  // though the CSV were everything it consumed. It is a CONSTRUCTOR
+  // collaborator and `internal`, not a public parameter of [fill], because the
+  // thing it is handed is the fill's own live transaction: an internal seam a
+  // test substitutes is a testable input, a public one is this module's pooled
+  // connection escaping to any caller.
+  private val stagedCharges: StagedChargesReader,
 ) {
+  /** The production wiring: the fill reads its own transaction's staging snapshot. */
+  constructor(database: Database) : this(database, DEFAULT_STAGED_CHARGES)
+
+  /**
+   * Reads the staged IC_AY rows one [fill] maps.
+   *
+   * LIFETIME CONTRACT, and it is not decoration: [read] is called exactly ONCE,
+   * from inside the fill's own transaction, with a [SqlSession] valid only for
+   * the duration of that call. The fill owns the session; an implementation
+   * must not retain it, hand it on, or use it after returning, because the
+   * connection under it is committed and returned to the pool when the
+   * transaction ends, and every statement it prepares must be closed before it
+   * returns. An exception it throws rolls the whole rebuild back.
+   */
+  internal fun interface StagedChargesReader {
+    fun read(session: SqlSession): List<CollegeIpedsCharge>
+  }
+
+  /**
+   * A staged `college_ipeds_charges` row carrying an imputation flag no
+   * published code names (RFC 161).
+   *
+   * It is TYPED, and it carries the [charge] rather than a formatted sentence,
+   * because it is not a data-quality event: a row reaches staging through a
+   * parse that refuses unknown codes and a CHECK that admits only the 13
+   * published ones, so finding one here means the column was written by
+   * something other than this loader. The row is what a fixer queries on.
+   */
+  class CorruptStagedChargeException(
+    val charge: CollegeIpedsCharge,
+    val code: String,
+  ) : RuntimeException(
+      "staged IC_AY row [id=${charge.id.value}] [college_id=${charge.collegeId}] " +
+        "[charge_variable=${charge.chargeVariable}] [academic_year=${charge.academicYear}] carries the " +
+        "imputation flag [$code], which is not one of the published codes " +
+        "${IpedsChargesLoader.ImputationFlag.CODES}; college_ipeds_charges was written by something " +
+        "other than IpedsChargesLoader",
+    )
+
+  /**
+   * WHY a staged IC_AY row could not be mapped — the axis, not the value.
+   *
+   * The two are separate facts a fixer acts on differently: a variable this
+   * mapping does not name is a superseded or never-mapped stem, while an
+   * academic year it cannot decode is a survey-year window that moved. The
+   * offending VALUE is the nested key under each, so a consumer reads
+   * `{"charge_variable": {"CHG2AT": 1}}` rather than having to split a packed
+   * `"charge_variable=CHG2AT"` string on `=`.
+   */
+  enum class ChargeDrift(
+    /** The JSON/log key for this axis; rendered at the edge, never stored typed-as-text. */
+    val slug: String,
+  ) {
+    UNMAPPED_CHARGE_VARIABLE("charge_variable"),
+    UNDECODABLE_ACADEMIC_YEAR("academic_year"),
+  }
+
   /** What one [fill] did, for provenance (P11) and the stderr summary. */
   data class FillResult(
     val priceFigureRows: Int,
@@ -84,6 +154,12 @@ class CanonicalMoneyLoader(
     /** Per-status row counts, typed all the way to the JSONB/log edge (risk 6.6: serialized as OUR status slugs, never column names). */
     val priceFigureStatusCounts: Map<FigureStatus, Int>,
     val cohortMoneyStatStatusCounts: Map<FigureStatus, Int>,
+    /**
+     * Per-SOURCE row counts (RFC 161): the upstream-wins split, so an operator
+     * sees at a glance how much of the price table IPEDS won and how much the
+     * Scorecard filled behind it. Typed like the status counts.
+     */
+    val priceFigureSourceCounts: Map<MoneySource, Int>,
     /** Distinct colleges the fill wrote at least one row for. */
     val collegesMatched: Int,
     /** CSV rows too short to be well-formed, skipped and counted (a loss class like the two below). */
@@ -94,7 +170,27 @@ class CanonicalMoneyLoader(
     val rowsWithoutControl: Int,
     /** Mechanism A's tally over the status-preserving reads, by cell name. */
     val fieldsCoercedToNull: Map<String, Int>,
-  )
+    /**
+     * Staged IC_AY rows this fill could not map and PASSED OVER, by the drift
+     * that made them unmappable (RFC 161; brief 0006 D6).
+     *
+     * Stale staging is a real state, not a defect: the prune runs in the
+     * `ipeds-charges` phase, so a Scorecard-only run (no `--ic-ay`) never
+     * prunes, and this fill must survive whatever the last IC_AY run left. It
+     * is COUNTED rather than fatal so one superseded variable cannot take the
+     * whole money rebuild down -- and counted rather than ignored so the drift
+     * stays loud instead of becoming a silently missing price.
+     *
+     * NESTED and TYPED, like [priceFigureStatusCounts] and
+     * [priceFigureSourceCounts] beside it: the [ChargeDrift] axis, then the
+     * offending value under it. A flat `{"charge_variable=CHG2AT": 1}` is a key
+     * no consumer can read without splitting on `=`.
+     */
+    val ipedsChargesIgnored: Map<ChargeDrift, Map<String, Int>>,
+  ) {
+    /** Staged IC_AY rows passed over, however they drifted. */
+    val ipedsChargesIgnoredRows: Int get() = ipedsChargesIgnored.values.sumOf { it.values.sum() }
+  }
 
   /**
    * Rebuilds both fact tables from [institutionCsv] in ONE transaction it
@@ -105,41 +201,36 @@ class CanonicalMoneyLoader(
   suspend fun fill(institutionCsv: File): FillResult =
     database.withConnection { session ->
       val collegeIds = CollegeIpedsDao.collegeIdsByIpedsUnitId(session).getOrThrow()
+      val ipedsChargesIgnored = mutableMapOf<ChargeDrift, MutableMap<String, Int>>()
       val prices = LinkedHashMap<PriceKey, NewPriceFigure>()
       val stats = LinkedHashMap<StatKey, NewCohortMoneyStat>()
       val coercions = mutableMapOf<String, Int>()
-      var rowsMalformed = 0
-      var rowsWithoutCollege = 0
-      var rowsWithoutControl = 0
       val matched = mutableSetOf<UUID>()
+      var scorecard = ScorecardLosses()
+      // The `when` is EXHAUSTIVE over the enum, with no catch-all: a member
+      // added without a branch is a COMPILE error here, which is a better
+      // extension point than the runtime one an `else` could offer -- and the
+      // companion's own init check covers what an `else` never could, a member
+      // given a branch but never RANKED in ORDERED_SOURCES.
       for (source in ORDERED_SOURCES) {
         when (source) {
-          SOURCE_SCORECARD -> {
-            parseCsv(institutionCsv).use { records ->
-              for (record in records) {
-                if (!CsvIngestSupport.isWellFormed(record)) {
-                  // A short row is a LOSS this fill must count, like every
-                  // other skip class -- never a silent `continue`.
-                  rowsMalformed++
-                  continue
-                }
-                val collegeId = intOrNull(record, UNITID)?.let { collegeIds[it]?.value }
-                if (collegeId == null) {
-                  rowsWithoutCollege++
-                  continue
-                }
-                matched += collegeId
-                val controlMissing = mapScorecardRow(record, collegeId, coercions, prices, stats)
-                if (controlMissing) rowsWithoutControl++
-              }
+          // IPEDS runs FIRST, so its three-tier published charges take every
+          // key it carries and the Scorecard fills only what is left (P8).
+          MoneySource.IPEDS_IC_AY -> {
+            val mapping = mapIpedsCharges(stagedCharges.read(session))
+            // Upstream-wins (P8) is folded in HERE, at the level that decides
+            // precedence, instead of inside a callee handed three of this
+            // block's own collections to mutate.
+            for ((key, figure) in mapping.prices) prices.putIfAbsent(key, figure)
+            matched += mapping.matched
+            for ((drift, counts) in mapping.ignored) {
+              val axis = ipedsChargesIgnored.getOrPut(drift) { mutableMapOf() }
+              for ((value, n) in counts) axis.merge(value, n, Int::plus)
             }
           }
 
-          // A source in the ordered list with no mapping branch must fail the
-          // phase loudly, not contribute nothing: this is exactly the path
-          // shape/02/03 extend (P8).
-          else -> {
-            error("unmapped canonical-money source [$source]")
+          MoneySource.SCORECARD -> {
+            scorecard = mapScorecardCsv(institutionCsv, collegeIds, coercions, prices, stats, matched)
           }
         }
       }
@@ -154,21 +245,29 @@ class CanonicalMoneyLoader(
           cohortMoneyStatRows = statRows,
           priceFigureStatusCounts = CanonicalMoneyDao.priceFigureCountsByStatus(session).getOrThrow(),
           cohortMoneyStatStatusCounts = CanonicalMoneyDao.cohortMoneyStatCountsByStatus(session).getOrThrow(),
+          priceFigureSourceCounts = CanonicalMoneyDao.priceFigureCountsBySource(session).getOrThrow(),
           collegesMatched = matched.size,
-          rowsMalformed = rowsMalformed,
-          rowsWithoutCollege = rowsWithoutCollege,
-          rowsWithoutControl = rowsWithoutControl,
+          rowsMalformed = scorecard.rowsMalformed,
+          rowsWithoutCollege = scorecard.rowsWithoutCollege,
+          rowsWithoutControl = scorecard.rowsWithoutControl,
           fieldsCoercedToNull = coercions.toMap(),
+          ipedsChargesIgnored =
+            ipedsChargesIgnored.entries
+              .sortedBy { it.key.slug }
+              .associate { (drift, counts) -> drift to counts.toSortedMap().toMap() },
         )
       // The per-status breakdown is the operator-visible fact this phase
       // exists to keep (suppression must SURVIVE the fill), said where every
       // ingest diagnostic goes: the log, on stderr. Statuses flatten to their
       // slugs only here, at the edge.
       logger.info(
-        "Canonical money fill: [{}] price_figures [{}] + [{}] cohort_money_stats [{}] over [{}] college(s); " +
-          "[{}] malformed row(s); [{}] row(s) without a college; [{}] row(s) without a CONTROL (control-keyed cells skipped); coercions [{}]",
+        "Canonical money fill: [{}] price_figures [{}] by source [{}] + [{}] cohort_money_stats [{}] " +
+          "over [{}] college(s); " +
+          "[{}] malformed row(s); [{}] row(s) without a college; [{}] row(s) without a CONTROL (control-keyed cells skipped); " +
+          "coercions [{}]; [{}] staged IC_AY row(s) passed over as stale [{}]",
         result.priceFigureRows,
         result.priceFigureStatusCounts.mapKeys { it.key.value },
+        result.priceFigureSourceCounts.mapKeys { it.key.value },
         result.cohortMoneyStatRows,
         result.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
         result.collegesMatched,
@@ -176,13 +275,201 @@ class CanonicalMoneyLoader(
         result.rowsWithoutCollege,
         result.rowsWithoutControl,
         result.fieldsCoercedToNull,
+        result.ipedsChargesIgnoredRows,
+        // Slugs at the edge, like the status and source maps above it.
+        result.ipedsChargesIgnored.mapKeys { it.key.slug },
       )
       result
     }
 
   // ---------------------------------------------------------------------------
+  // The IPEDS IC_AY mapping (RFC 161)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Maps the staged IC_AY charge rows into the price accumulator.
+   *
+   * Reads STAGING, not the CSV: the canonical phase runs last, after
+   * `search-index`, so the file it would re-parse has already been loaded into
+   * `college_ipeds_charges` by the `ipeds-charges` phase (its write
+   * precondition). The staging TABLE is what this fill depends on, exactly as
+   * the money-vocabulary TABLES are (RFC 158 P2) -- so a run that supplies no
+   * IC_AY file still serves whatever the last one loaded, rather than silently
+   * dropping every IPEDS price for one Scorecard-only ingest.
+   *
+   * A staged variable or academic year this mapping does not name is COUNTED
+   * and PASSED OVER, never fatal. It is the direct consequence of the sentence
+   * above: the prune that retires superseded staging lives in the
+   * `ipeds-charges` phase, so a Scorecard-only run cannot have run it, and a
+   * fill that refused the leftovers would take the whole money rebuild down
+   * over rows nothing asked it to serve. The count reaches the ingest summary
+   * ([FillResult.ipedsChargesIgnored]), so drift is loud rather than invisible.
+   */
+  private fun mapIpedsCharges(charges: List<CollegeIpedsCharge>): MappedIpedsCharges {
+    val prices = LinkedHashMap<PriceKey, NewPriceFigure>()
+    val matched = mutableSetOf<UUID>()
+    val ignored = mutableMapOf<ChargeDrift, MutableMap<String, Int>>()
+    for (charge in charges) {
+      val cell = IpedsChargeVocabulary.CELLS[charge.chargeVariable]
+      if (cell == null) {
+        recordStaleCharge(charge, ChargeDrift.UNMAPPED_CHARGE_VARIABLE, charge.chargeVariable, ignored)
+        continue
+      }
+      val suffix = IpedsChargeVocabulary.SUFFIX_BY_ACADEMIC_YEAR[charge.academicYear]
+      if (suffix == null) {
+        recordStaleCharge(charge, ChargeDrift.UNDECODABLE_ACADEMIC_YEAR, charge.academicYear, ignored)
+        continue
+      }
+      // Each call site raises its own failure with the context it holds: here
+      // the staged ROW, which is what a fixer would query on. An unreadable
+      // code IS fatal -- it reached staging through a parse that refuses
+      // unknown codes, so finding one in the table means the column was written
+      // by something other than this loader.
+      val flag =
+        IpedsChargesLoader.ImputationFlag.fromCode(charge.imputationFlag)
+          ?: throw CorruptStagedChargeException(charge, charge.imputationFlag)
+      matched += charge.collegeId
+      // The REAL published column, year suffix restored: a reader who greps
+      // IPEDS for `CHG2AY` finds a stem, `CHG2AY3` finds the figure.
+      val sourceVariable = "${charge.chargeVariable}$suffix"
+      val figure =
+        priceFigure(
+          collegeId = charge.collegeId,
+          concept = cell.concept,
+          residency = cell.residency,
+          arrangement = cell.arrangement,
+          academicYear = charge.academicYear,
+          reading =
+            flag.mapReading(
+              charge.amountUsd,
+              IpedsChargesLoader.CellRef.Staged(
+                id = charge.id,
+                collegeId = charge.collegeId,
+                chargeVariable = charge.chargeVariable,
+                academicYear = charge.academicYear,
+                sourceVariable = sourceVariable,
+              ),
+            ),
+          source = MoneySource.IPEDS_IC_AY,
+          sourceVariable = sourceVariable,
+          // The raw X-code rides on the row (the source-defined-codes rule):
+          // our four-way status reading is a lossy summary of every published
+          // code, and the code itself is what a later question is asked against.
+          publisherFlag = charge.imputationFlag,
+        )
+      // `putIfAbsent`, not `put` — and it is DEFENCE, not an intra-source
+      // precedence rule. Two staged rows cannot legitimately collide on this
+      // key: staging is unique on
+      // `(college_id, charge_variable, academic_year)`, and CELLS maps every
+      // stem to a DISTINCT concept/residency/arrangement triple, so the stem
+      // is recoverable from the key and two rows would have to share it.
+      // First-write-wins is therefore never exercised here; it is what keeps a
+      // corrupt duplicate from silently overwriting a good figure rather than a
+      // decision about which IC_AY row outranks which. Cross-SOURCE precedence
+      // (IPEDS ahead of the Scorecard) is decided in [fill], not here.
+      prices.putIfAbsent(
+        PriceKey(charge.collegeId, cell.concept, cell.residency, cell.arrangement, charge.academicYear),
+        figure,
+      )
+    }
+    return MappedIpedsCharges(prices, matched, ignored)
+  }
+
+  /**
+   * What one IC_AY staging pass produced: the price rows it mapped, the
+   * colleges it touched, and the drift it passed over — a VALUE the caller
+   * folds in, not three of the caller's own collections mutated behind its
+   * back. Upstream-wins then happens where precedence is decided.
+   */
+  private data class MappedIpedsCharges(
+    val prices: Map<PriceKey, NewPriceFigure>,
+    val matched: Set<UUID>,
+    val ignored: Map<ChargeDrift, Map<String, Int>>,
+  )
+
+  /**
+   * Passes over one unmappable staged row: tallies it on its drift axis AND
+   * says which row it was.
+   *
+   * Both halves, in one place, because either alone is useless. The COUNT
+   * reaches the ingest summary and the provenance row, so the drift is loud;
+   * without the LOG, "1 staged IC_AY row passed over" names one row out of
+   * ~180,000 and no college, which is not something anyone can act on.
+   */
+  private fun recordStaleCharge(
+    charge: CollegeIpedsCharge,
+    drift: ChargeDrift,
+    value: String,
+    ignored: MutableMap<ChargeDrift, MutableMap<String, Int>>,
+  ) {
+    ignored.getOrPut(drift) { mutableMapOf() }.merge(value, 1, Int::plus)
+    logger.debug(
+      "canonical-money passed over stale staged IC_AY row [id={}] [college_id={}] " +
+        "[charge_variable={}] [academic_year={}]: [{}] [{}] is not one this fill maps",
+      charge.id.value,
+      charge.collegeId,
+      charge.chargeVariable,
+      charge.academicYear,
+      drift.slug,
+      value,
+    )
+  }
+
+  // ---------------------------------------------------------------------------
   // The Scorecard mapping (the RFC 158 mapping table, verbatim)
   // ---------------------------------------------------------------------------
+
+  /**
+   * Maps the whole Scorecard institution CSV into both accumulators, returning
+   * the three LOSSES the pass counted.
+   *
+   * Extracted so both branches of [ORDERED_SOURCES]' `when` are a single
+   * delegating call at the same altitude: the branch used to inline an
+   * 18-line CSV pass beside a one-line call, so "which sources fill this table,
+   * in what order" could not be read without also reading how one of them
+   * parses a file.
+   */
+  private fun mapScorecardCsv(
+    institutionCsv: File,
+    collegeIds: Map<Int, CollegeId>,
+    coercions: MutableMap<String, Int>,
+    prices: LinkedHashMap<PriceKey, NewPriceFigure>,
+    stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
+    matched: MutableSet<UUID>,
+  ): ScorecardLosses {
+    var rowsMalformed = 0
+    var rowsWithoutCollege = 0
+    var rowsWithoutControl = 0
+    parseCsv(institutionCsv).use { records ->
+      for (record in records) {
+        if (!CsvIngestSupport.isWellFormed(record)) {
+          // A short row is a LOSS this fill must count, like every other skip
+          // class -- never a silent `continue`.
+          rowsMalformed++
+          continue
+        }
+        val collegeId = intOrNull(record, UNITID)?.let { collegeIds[it]?.value }
+        if (collegeId == null) {
+          rowsWithoutCollege++
+          continue
+        }
+        matched += collegeId
+        val controlMissing = mapScorecardRow(record, collegeId, coercions, prices, stats)
+        if (controlMissing) rowsWithoutControl++
+      }
+    }
+    return ScorecardLosses(rowsMalformed, rowsWithoutCollege, rowsWithoutControl)
+  }
+
+  /**
+   * The Scorecard pass's three loss classes, as one value. Zero for all three
+   * is also the honest answer when the pass did not run at all.
+   */
+  private data class ScorecardLosses(
+    val rowsMalformed: Int = 0,
+    val rowsWithoutCollege: Int = 0,
+    val rowsWithoutControl: Int = 0,
+  )
 
   /**
    * Maps one Scorecard row into both accumulators, returning TRUE when the
@@ -226,8 +513,12 @@ class CanonicalMoneyLoader(
           residency = residency,
           arrangement = arrangement,
           academicYear = PUBLISHED_PRICE_ACADEMIC_YEAR,
-          cell = grossCell(record, column, coercions),
+          reading = grossCell(record, column, coercions).reading(),
+          source = MoneySource.SCORECARD,
           sourceVariable = column,
+          // The Scorecard publishes no per-cell imputation code; its one
+          // sentinel (`PrivacySuppressed`) is already carried by the status.
+          publisherFlag = null,
         )
       // Upstream-wins (P8): the first source to write a key keeps it.
       prices.putIfAbsent(PriceKey(collegeId, concept, residency, arrangement, figure.academicYear), figure)
@@ -279,6 +570,7 @@ class CanonicalMoneyLoader(
           incomeBand = incomeBand,
           vintage = vintage,
           cell = cell,
+          source = MoneySource.SCORECARD,
           sourceVariable = sourceVariable,
         )
       stats.putIfAbsent(
@@ -395,18 +687,54 @@ class CanonicalMoneyLoader(
   companion object {
     private val logger = LoggerFactory.getLogger(CanonicalMoneyLoader::class.java)
 
-    /** The one source name every row of the v1 fill records. */
-    const val SOURCE_SCORECARD = "scorecard"
+    /**
+     * How [fill] reads the staged IC_AY charges it maps: the whole table, in
+     * the fill's OWN transaction, so the rebuild sees one consistent staging
+     * snapshot.
+     *
+     * It is a parameter rather than a hidden DAO call because the fill's second
+     * input deserves to appear in its signature -- `fill(csv)` read as though
+     * the CSV were everything it consumed, while half the price table came from
+     * a table it never named. The semantics are unchanged: canonical money
+     * stays DERIVED from the database, so a run that supplies no `--ic-ay`
+     * still rebuilds from the last IC_AY load rather than dropping every IPEDS
+     * price.
+     */
+    internal val DEFAULT_STAGED_CHARGES: StagedChargesReader =
+      StagedChargesReader { session -> CollegeIpedsChargesDao.list(session).getOrThrow() }
 
     /** The Scorecard CONTROL value meaning "public"; 2 and 3 are the private families. */
     private const val CONTROL_PUBLIC = 1
 
     /**
      * Upstream-wins (P8): sources in priority order, first write wins per
-     * natural key. v1 is the Scorecard alone; shape/02/03 prepend IPEDS
-     * sources here and the rule is already load-bearing.
+     * natural key. IPEDS IC_AY is FIRST (RFC 161) because it carries the three
+     * residency tiers as separate first-class variables, while the Scorecard
+     * collapses in-district into "in" -- so for the 269 institutions where the
+     * two disagree, the Scorecard's `TUITIONFEE_IN` is the in-DISTRICT price
+     * wearing an in-state label. The Scorecard still fills every key IC_AY
+     * leaves empty: the ~2,300 IC_PY institutions, and every cohort statistic,
+     * which IC_AY does not carry at all. Nothing is averaged.
+     *
+     * This list, not the [MoneySource] declaration order, is precedence.
      */
-    internal val ORDERED_SOURCES = listOf(SOURCE_SCORECARD)
+    internal val ORDERED_SOURCES = listOf(MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD)
+
+    init {
+      // What a catch-all `else` in the dispatch could never catch: a member
+      // that HAS a mapping branch but was never ranked here would simply never
+      // be iterated, so its rows would silently stop being written and no
+      // branch would run to complain. Checked at class-init, so the phase
+      // cannot start with a half-declared precedence order.
+      val unranked = MoneySource.entries - ORDERED_SOURCES.toSet()
+      check(unranked.isEmpty()) {
+        "ORDERED_SOURCES must rank every MoneySource; ${unranked.map { it.value }} is/are unranked, so its " +
+          "rows would silently never be written (RFC 161)"
+      }
+      check(ORDERED_SOURCES.size == ORDERED_SOURCES.toSet().size) {
+        "ORDERED_SOURCES ranks a source twice: ${ORDERED_SOURCES.map { it.value }}"
+      }
+    }
 
     /**
      * The Scorecard published-price academic year ('YYYY-YY'), the stored
@@ -460,8 +788,16 @@ class CanonicalMoneyLoader(
       residency: ResidencyBasis,
       arrangement: FigureArrangement,
       academicYear: String,
-      cell: StatusfulCell<Int>,
+      reading: FigureReading<Int>,
+      source: MoneySource,
       sourceVariable: String,
+      /**
+       * The publisher's own code for this cell, or null for a source that has
+       * none. NOT defaulted: IC_AY carries an X-code on every figure, and a
+       * default is exactly how a mapping drops one silently -- every caller
+       * says which it is.
+       */
+      publisherFlag: String?,
     ): NewPriceFigure {
       check(sourceVariable !in BLEND_VARIABLES) {
         "blend variable [$sourceVariable] may not be routed at price_figures: a blend is a cohort " +
@@ -478,9 +814,10 @@ class CanonicalMoneyLoader(
         residencyBasis = residency,
         arrangement = arrangement,
         academicYear = academicYear,
-        reading = cell.reading(),
-        source = SOURCE_SCORECARD,
+        reading = reading,
+        source = source,
         sourceVariable = sourceVariable,
+        publisherFlag = publisherFlag,
       )
     }
 
@@ -494,6 +831,7 @@ class CanonicalMoneyLoader(
       incomeBand: IncomeBand?,
       vintage: String,
       cell: StatusfulCell<Double>,
+      source: MoneySource,
       sourceVariable: String,
     ): NewCohortMoneyStat {
       check(incomeBand == null || measure.bandable) {
@@ -509,7 +847,7 @@ class CanonicalMoneyLoader(
         incomeBand = incomeBand,
         vintage = vintage,
         reading = cell.reading(),
-        source = SOURCE_SCORECARD,
+        source = source,
         sourceVariable = sourceVariable,
       )
     }

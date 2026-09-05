@@ -75,16 +75,17 @@ Run inside the nix dev shell (the JVM lives there):
     -a db/seed/cds/admission-factors.csv \
     -d db/seed/cds/deadlines.csv \
     <institution.csv> <fields.csv>
-IPEDS (RFC 144, optional, ALL-OR-NOTHING). The five options -H/-I/-A/-C/-y load
-the IPEDS institutional-characteristics survey into `college_ipeds` and
-`college_programs_census` in the SAME run. Give none of them and the run is
-exactly as before; give any one and all five are required. -y is explicit
+IPEDS (RFC 144, extended by RFC 161; optional, ALL-OR-NOTHING). The six options
+-H/-I/-A/-C/-Y/-y load the IPEDS institutional-characteristics and
+published-charges surveys into `college_ipeds`, `college_programs_census` and
+`college_ipeds_charges` in the SAME run. Give none of them and the run is
+exactly as before; give any one and all six are required. -y is explicit
 (e.g. 2023) and is stamped on every IPEDS row: it is never guessed from a
 filename.
 
-  Getting the files: run bin/fetch-ipeds. It downloads the four archives,
+  Getting the files: run bin/fetch-ipeds. It downloads the five archives,
   extracts the right member from each into db/seed/ipeds/ and records a
-  PROVENANCE.json; pass those four CSV paths. Do not unzip them by hand — the
+  PROVENANCE.json; pass those five CSV paths. Do not unzip them by hand — the
   member names are inconsistently cased (HD2023.csv, IC2023.csv, but adm2023.csv
   and C2023_a.csv) and IC/C_A also ship revised `_RV` members, and the fetcher is
   where that resolution lives. Only the NON-_RV member is ever loaded:
@@ -99,7 +100,8 @@ Run inside the nix dev shell (the JVM lives there):
   nix develop -c bin/fetch-ipeds
   nix develop -c bin/ingest-colleges \
       -H db/seed/ipeds/HD2023.csv -I db/seed/ipeds/IC2023.csv \
-      -A db/seed/ipeds/adm2023.csv -C db/seed/ipeds/C2023_a.csv -y 2023 \
+      -A db/seed/ipeds/adm2023.csv -C db/seed/ipeds/C2023_a.csv \
+      -Y db/seed/ipeds/ic2023_ay.csv -y 2023 \
       inst.csv fields.csv aliases.json
 
 Options:
@@ -110,16 +112,19 @@ Options:
   -s FILE: authored subject taxonomy JSON (default: db/data/subjects.json)
   -v FILE: authored money vocabulary JSON (default: db/data/money-vocabulary.json)
 
-  The IPEDS survey group (RFC 144) — all five together, or none of them. Every
-  IPEDS flag is UPPER CASE except the year:
+  The IPEDS survey group (RFC 144, RFC 161) — all six together, or none of
+  them. Every IPEDS flag is UPPER CASE except the year:
   -H FILE: IPEDS HD survey file, the institutional directory (HD2023.csv)
   -I FILE: IPEDS IC survey file, institutional characteristics (IC2023.csv)
   -A FILE: IPEDS ADM survey file, admissions and test scores (adm2023.csv)
   -C FILE: IPEDS completions survey file, by CIP code (C2023_a.csv)
+  -Y FILE: IPEDS IC_AY survey file, published charges (ic2023_ay.csv)
   -y YYYY: IPEDS survey year, stamped on every IPEDS row (e.g. 2023)
 
-  Read the case pairs carefully: -a is the CDS admission-factors CSV and -A is
-  the IPEDS ADM survey file; they are different files for different tables.
+  Read the case pairs carefully. -a is the CDS admission-factors CSV and -A is
+  the IPEDS ADM survey file; -Y is the IC_AY published-charges CSV and -y is the
+  four-digit survey year. Each pair is two different things, and getopts is
+  case-sensitive, so a mistyped case is a different option, never a synonym.
 
   -h: Help
 EOF
@@ -137,6 +142,7 @@ IPEDS_HD=""
 IPEDS_IC=""
 IPEDS_ADM=""
 IPEDS_COMPLETIONS=""
+IPEDS_IC_AY=""
 IPEDS_SURVEY_YEAR=""
 # The generated published codebook (RFC 147). Defaults to the repo copy, exactly
 # as the aliases positional does; -k overrides it (and, like every other source
@@ -153,7 +159,7 @@ IPEDS_GIVEN=()
 
 # Presence is judged on the FLAG, not on its value, and each flag may appear
 # once — the two rules IngestApplication's own grammar states. Judging presence
-# on the value would make five EMPTY flags look like an omitted group and
+# on the value would make six EMPTY flags look like an omitted group and
 # silently downgrade the run to Scorecard-only with a green exit; keeping only
 # the last of a repeated flag would silently discard a file the JVM calls a
 # usage error. Both are refused here, before any download.
@@ -170,9 +176,10 @@ set_ipeds_flag() {
 
 # ONE getopts loop parses the whole grammar (bin/ conventions: short options
 # only, no hand-rolled argument loop). The IPEDS group is upper case throughout
-# — -H/-I/-A/-C plus the -y year — so -a (the CDS admission-factors CSV) and -A
-# (the IPEDS ADM survey file) stay distinct; the help text spells both out.
-while getopts ":m:a:d:k:s:v:H:I:A:C:y:h" opt; do
+# — -H/-I/-A/-C/-Y plus the -y year — so -a (the CDS admission-factors CSV) and
+# -A (the IPEDS ADM survey file) stay distinct, as do -Y (the IC_AY charges CSV)
+# and -y (the survey year); the help text spells all of them out.
+while getopts ":m:a:d:k:s:v:H:I:A:C:Y:y:h" opt; do
   case "$opt" in
   m) CDS_MERIT_AID="$OPTARG" ;;
   a) CDS_ADMISSION_FACTORS="$OPTARG" ;;
@@ -193,6 +200,7 @@ while getopts ":m:a:d:k:s:v:H:I:A:C:y:h" opt; do
   I) IPEDS_IC="$OPTARG";          set_ipeds_flag I "$IPEDS_IC" ;;
   A) IPEDS_ADM="$OPTARG";         set_ipeds_flag A "$IPEDS_ADM" ;;
   C) IPEDS_COMPLETIONS="$OPTARG"; set_ipeds_flag C "$IPEDS_COMPLETIONS" ;;
+  Y) IPEDS_IC_AY="$OPTARG";       set_ipeds_flag Y "$IPEDS_IC_AY" ;;
   y) IPEDS_SURVEY_YEAR="$OPTARG"; set_ipeds_flag y "$IPEDS_SURVEY_YEAR" ;;
   h) help ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
@@ -241,7 +249,7 @@ fi
 # so the failure costs no download and no JVM start. The JVM keeps its own copy
 # of this rule because it is reachable without this script.
 IPEDS_MISSING=()
-for flag in H I A C y; do
+for flag in H I A C Y y; do
   case " ${IPEDS_GIVEN[@]+${IPEDS_GIVEN[*]}} " in
   *" -$flag "*) ;;
   *) IPEDS_MISSING+=("-$flag") ;;
@@ -305,11 +313,13 @@ if [ "${#IPEDS_GIVEN[@]}" -gt 0 ]; then
   IC_CSV="$(resolve_file_arg "$IPEDS_IC" "$INGEST_SCRATCH")"
   ADM_CSV="$(resolve_file_arg "$IPEDS_ADM" "$INGEST_SCRATCH")"
   COMPLETIONS_CSV="$(resolve_file_arg "$IPEDS_COMPLETIONS" "$INGEST_SCRATCH")"
+  IC_AY_CSV="$(resolve_file_arg "$IPEDS_IC_AY" "$INGEST_SCRATCH")"
   IPEDS_ARGV=(
     --hd="$HD_CSV" --ic="$IC_CSV" --adm="$ADM_CSV" --completions="$COMPLETIONS_CSV"
+    --ic-ay="$IC_AY_CSV"
     --survey-year="$IPEDS_SURVEY_YEAR"
     --hd-source="$IPEDS_HD" --ic-source="$IPEDS_IC" --adm-source="$IPEDS_ADM"
-    --completions-source="$IPEDS_COMPLETIONS"
+    --completions-source="$IPEDS_COMPLETIONS" --ic-ay-source="$IPEDS_IC_AY"
   )
 fi
 

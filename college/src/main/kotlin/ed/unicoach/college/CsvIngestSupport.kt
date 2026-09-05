@@ -4,6 +4,7 @@ import ed.unicoach.common.util.DataSize
 import ed.unicoach.db.dao.ConstraintDiagnostics
 import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.UpsertOutcome
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 import ed.unicoach.error.errorCategory
@@ -176,6 +177,21 @@ internal class LoadCount {
 
   fun recordSkip(reason: SkipReason) {
     skipsByReason.merge(reason, 1, Int::plus)
+  }
+
+  /**
+   * Tallies one successful upsert: [loaded] plus the three-way split. Written
+   * ONCE, here on the accumulator, because every loader that upserts through
+   * [CsvIngestSupport.upsertWithSavepoint] had its own hand-copied `when` and a
+   * copy that forgot `loaded++` would report a phase that wrote nothing.
+   */
+  fun recordOutcome(outcome: UpsertOutcome) {
+    loaded++
+    when (outcome) {
+      UpsertOutcome.INSERTED -> inserted++
+      UpsertOutcome.CHANGED -> changed++
+      UpsertOutcome.UNCHANGED -> unchanged++
+    }
   }
 
   fun recordCoercions(coercions: Map<String, Int>) {

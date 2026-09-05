@@ -16,6 +16,7 @@ import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.UpsertOutcome
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
@@ -83,6 +84,11 @@ class CollegeScorecardLoader(
   // re-parses the institution CSV with the status-preserving readers, after
   // `search-index` and before `provenance`.
   private val canonicalMoneyLoader: CanonicalMoneyLoader = CanonicalMoneyLoader(database),
+  // The IC_AY staging half of the IPEDS group (RFC 161), injected like its six
+  // siblings above rather than constructed mid-`ingest`: a loader built inside
+  // the run is one no test can substitute, and this one is the write
+  // precondition of the canonical fill two phases later.
+  private val ipedsChargesLoader: IpedsChargesLoader = IpedsChargesLoader(database, ioDispatcher),
 ) {
   private val logger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
 
@@ -332,14 +338,18 @@ class CollegeScorecardLoader(
             val error = result.exceptionOrNull()
             recordUpsertFailure(count, error, "institution", "ipeds_unit_id", newCollege.ipedsUnitId, record.recordNumber)
           } else {
-            count.loaded++
+            // `colleges` is VERSIONED, so the three-way outcome is read off
+            // the version rather than reported by the DAO -- decided here, then
+            // tallied by the one shared accumulator every other loader uses.
             val preVersion = preVersions[newCollege.ipedsUnitId]
             val postVersion = result.getOrThrow().version
-            when {
-              preVersion == null -> count.inserted++
-              postVersion > preVersion -> count.changed++
-              else -> count.unchanged++
-            }
+            count.recordOutcome(
+              when {
+                preVersion == null -> UpsertOutcome.INSERTED
+                postVersion > preVersion -> UpsertOutcome.CHANGED
+                else -> UpsertOutcome.UNCHANGED
+              },
+            )
           }
         }
       }
@@ -410,6 +420,8 @@ class CollegeScorecardLoader(
     val surveyYear: Int,
     val attributes: IpedsLoadResult,
     val census: CensusLoadResult,
+    /** The RFC 161 `ipeds-charges` staging phase, part of the same all-or-nothing group. */
+    val charges: IpedsChargesLoadResult,
     val nonNullBefore: Map<String, Int>,
     val nonNullAfter: Map<String, Int>,
   )
@@ -528,6 +540,33 @@ class CollegeScorecardLoader(
               "${census.inserted} inserted, ${census.changed} changed, ${census.unchanged} unchanged, " +
               "${census.skipped} skipped (${census.unmatchedIpedsUnitIds} unmatched ipeds_unit_id)",
           )
+          val charges = report.charges
+          // Records and ROWS are different units and are both named: one IC_AY
+          // record stages exactly 48 charge rows, and IC_AY covers only the
+          // academic-year charge reporters (3,825 of ~6,100 institutions), so
+          // the unmatched count is COVERAGE and must not read as data loss.
+          appendLine(
+            "ipeds-charges: [${charges.seen}] records seen — [${charges.loaded}] rows " +
+              "([${charges.inserted}] inserted, [${charges.changed}] changed, " +
+              "[${charges.unchanged}] unchanged), [${charges.pruned}] rows pruned, " +
+              "[${charges.skipped}] records skipped " +
+              "([${charges.unmatchedIpedsUnitIds}] not in IC_AY's academic-year universe), " +
+              // Row failures are a DIFFERENT unit from record skips and are
+              // never folded into them: one institution whose 48 rows all fail
+              // is 48 row failures, not 48 skipped records.
+              "[${charges.rowFailures}] row upserts failed, " +
+              // Published codes at the edge; the tally itself is typed.
+              "flags [${charges.cellsByFlag.mapKeys { it.key.code }}]",
+          )
+        }
+        // Stale staging is reported only when there IS some: a fill with no
+        // drift must not print a reassuring "0" nobody reads (RFC 161).
+        if (canonicalMoney.ipedsChargesIgnoredRows > 0) {
+          appendLine(
+            "canonical-money: [${canonicalMoney.ipedsChargesIgnoredRows}] staged IC_AY row(s) passed " +
+              "over as stale [${canonicalMoney.ipedsChargesIgnored.mapKeys { it.key.slug }}] — " +
+              "re-run with --ic-ay to prune them",
+          )
         }
         // Printed only when a codebook source was supplied: a run without one
         // must not print a fabricated "0 domains" (the IPEDS omit-vs-zero rule).
@@ -568,10 +607,10 @@ class CollegeScorecardLoader(
    *
    * [ipeds] is the optional, all-or-nothing IPEDS group (gate-2 D19): given
    * `null` the run behaves exactly as RFC 139's did, and the provenance row
-   * OMITS the IPEDS keys entirely rather than writing them as zeros. Its four
+   * OMITS the IPEDS keys entirely rather than writing them as zeros. Its five
    * headers are asserted here, BEFORE the first Scorecard phase, so a bad IPEDS
    * header cannot corrupt a run that has already written Scorecard rows: all
-   * seven files are header-asserted up front.
+   * eight files are header-asserted up front.
    *
    * [cds] is the optional CDS seed group (RFC 148, D10), and it runs INSIDE the
    * run — before the provenance phase — rather than after it, which is the
@@ -597,7 +636,8 @@ class CollegeScorecardLoader(
     // The IPEDS half of the run is ONE nullable value: the source group and the
     // loader that reads it exist together or not at all, so no call site has to
     // reconcile two nullables that a single condition decided.
-    val ipedsRun = ipeds?.let { IpedsRun(it, IpedsLoader(database, ioDispatcher)) }
+    val ipedsRun =
+      ipeds?.let { IpedsRun(it, IpedsLoader(database, ioDispatcher), ipedsChargesLoader) }
     val aliasEntries = withContext(ioDispatcher) { parseAliases(aliasesFile.file) }
     // Parsed up front beside the aliases, for the same reason: the codebook is
     // generated repo data, so a malformed one is a review error that must abort
@@ -617,7 +657,7 @@ class CollegeScorecardLoader(
     // first phase commits -- authored repo data, the subjects contract.
     val parsedMoneyVocabulary = moneyVocabulary?.let { source -> moneyVocabularyLoader.parse(source) }
     ipedsRun?.assertHeaders()
-    // Beside the IPEDS assertion, not inside the cds phase: all TEN files are
+    // Beside the IPEDS assertion, not inside the cds phase: all ELEVEN files are
     // header-asserted before the first phase commits, so a renamed column in a
     // seed file can never be discovered after institutions, fields, aliases and
     // the two IPEDS phases have already written rows (RFC 148 D10).
@@ -688,6 +728,11 @@ class CollegeScorecardLoader(
           surveyYear = run.sources.surveyYear,
           attributes = phase("ipeds", committedPhases) { run.loadAttributes() },
           census = phase("programs-census", committedPhases) { run.loadProgramsCensus() },
+          // A row phase like its two siblings, and it must precede
+          // `canonical-money` below: an ingest-loaded staging table is that
+          // fill's WRITE PRECONDITION (RFC 161), exactly as the money
+          // vocabulary is.
+          charges = phase("ipeds-charges", committedPhases) { run.loadCharges() },
           nonNullBefore = ipedsNonNullBefore,
           nonNullAfter = ipedsNonNullCounts(),
         )
@@ -838,6 +883,27 @@ class CollegeScorecardLoader(
       putJsonObject("cohort_money_stats") {
         for ((slug, n) in canonicalMoney.cohortMoneyStatStatusCounts.mapKeys { it.key.value }.toSortedMap()) put(slug, n)
       }
+      // The upstream-wins split (RFC 161), under the same rules as the status
+      // blocks above: OUR source slugs as keys, and a source that won no rows
+      // is OMITTED rather than written as 0 -- "the Scorecard filled nothing"
+      // and "the Scorecard was not consulted" are different facts.
+      putJsonObject("price_figures_by_source") {
+        for ((slug, n) in canonicalMoney.priceFigureSourceCounts.mapKeys { it.key.value }.toSortedMap()) put(slug, n)
+      }
+      // Staged IC_AY rows the fill could not map and passed over (RFC 161).
+      // Same omit-vs-zero rule: no drift writes an empty object. NESTED, like
+      // the status and source blocks above: the drift AXIS is the outer key and
+      // the offending value the inner one, so a consumer reads
+      // `{"charge_variable": {"CHG2AT": 1}}` instead of splitting a packed key
+      // on `=`. The enums render to their slugs here, at the edge, and nowhere
+      // earlier.
+      putJsonObject("ipeds_charges_ignored") {
+        for ((drift, counts) in canonicalMoney.ipedsChargesIgnored) {
+          putJsonObject(drift.slug) {
+            for ((value, n) in counts) put(value, n)
+          }
+        }
+      }
     }
 
   /**
@@ -848,12 +914,21 @@ class CollegeScorecardLoader(
   private class IpedsRun(
     val sources: IpedsSources,
     private val loader: IpedsLoader,
+    private val chargesLoader: IpedsChargesLoader,
   ) {
-    suspend fun assertHeaders() = loader.assertHeaders(sources)
+    suspend fun assertHeaders() {
+      loader.assertHeaders(sources)
+      // The survey year travels with the file: IC_AY's `0`-`3` suffix is a
+      // POSITION in the file's own window, so a year the vocabulary does not
+      // decode must be refused here, before any phase commits (RFC 161).
+      chargesLoader.assertHeaders(sources.icAy, sources.surveyYear)
+    }
 
     suspend fun loadAttributes(): IpedsLoadResult = loader.loadAttributes(sources)
 
     suspend fun loadProgramsCensus(): CensusLoadResult = loader.loadProgramsCensus(sources)
+
+    suspend fun loadCharges(): IpedsChargesLoadResult = chargesLoader.load(sources.icAy, sources.surveyYear)
   }
 
   /** One curated alias entry from db/data/college-aliases.json. */
@@ -1072,18 +1147,7 @@ class CollegeScorecardLoader(
   ): JsonObject =
     buildJsonObject {
       putJsonObject("colleges") {
-        put("seen", colleges.seen)
-        put("inserted", colleges.inserted)
-        put("changed", colleges.changed)
-        put("unchanged", colleges.unchanged)
-        put("skipped", colleges.skipsByReason.values.sum())
-        // The RFC promises the skip TAXONOMY, not just its total: a run that
-        // skipped 200 rows for a missing UNITID and one for a bad CONTROL is a
-        // different event from the reverse, and the totals cannot tell them
-        // apart. Reasons with no occurrences are omitted, never written as 0.
-        putJsonObject("skips_by_reason") {
-          for ((kind, count) in skipsByKind(colleges.skipsByReason)) put(kind, count)
-        }
+        putPhaseCounts(colleges.seen, colleges.inserted, colleges.changed, colleges.unchanged, colleges.skipsByReason)
       }
       putJsonObject("programs") {
         put("seen", programs.seen)
@@ -1111,31 +1175,53 @@ class CollegeScorecardLoader(
         val census = report.census
         putJsonObject("ipeds") {
           put("survey_year", report.surveyYear)
-          put("seen", attributes.seen)
-          put("inserted", attributes.inserted)
-          put("changed", attributes.changed)
-          put("unchanged", attributes.unchanged)
-          put("skipped", attributes.skipped)
+          putPhaseCounts(
+            attributes.seen,
+            attributes.inserted,
+            attributes.changed,
+            attributes.unchanged,
+            attributes.skipsByReason,
+          )
           put("unmatched_ipeds_unit_ids", attributes.unmatchedIpedsUnitIds)
-          putJsonObject("skips_by_reason") {
-            for ((kind, count) in skipsByKind(attributes.skipsByReason)) put(kind, count)
+        }
+        putJsonObject("ipeds_charges") {
+          put("survey_year", report.surveyYear)
+          // `seen` counts IC_AY RECORDS; the four row counts count staged
+          // charge ROWS. One record makes 48 of them, so the two units
+          // are named apart rather than fused into one ambiguous number.
+          putPhaseCounts(
+            report.charges.seen,
+            report.charges.inserted,
+            report.charges.changed,
+            report.charges.unchanged,
+            report.charges.skipsByReason,
+          )
+          put("rows", report.charges.loaded)
+          // Rows this file no longer carries, deleted: a departed institution
+          // or a superseded survey-year window (RFC 161).
+          put("pruned", report.charges.pruned)
+          put("unmatched_ipeds_unit_ids", report.charges.unmatchedIpedsUnitIds)
+          // A per-ROW upsert failure is its own loss axis: `skipped` counts
+          // records, this counts charge rows, and one is 48 of the other.
+          put("row_failures", report.charges.rowFailures)
+          putJsonObject("row_failures_by_reason") {
+            for ((kind, count) in skipsByKind(report.charges.rowFailuresByReason)) put(kind, count)
+          }
+          // The raw published X-code distribution over every loaded cell. A
+          // code with no cells is OMITTED, never written as 0 -- the same
+          // omit-vs-zero rule the group itself follows.
+          putJsonObject("cells_by_flag") {
+            for ((flag, count) in report.charges.cellsByFlag) put(flag.code, count)
           }
         }
         putJsonObject("programs_census") {
           put("survey_year", report.surveyYear)
-          put("seen", census.seen)
+          putPhaseCounts(census.seen, census.inserted, census.changed, census.unchanged, census.skipsByReason)
           // Rows the documented bachelor's-first-major filter kept. seen minus
           // selected is a deliberate exclusion, not a loss, so it is reported
           // as its own number rather than as a skip.
           put("selected", census.selected)
-          put("inserted", census.inserted)
-          put("changed", census.changed)
-          put("unchanged", census.unchanged)
-          put("skipped", census.skipped)
           put("unmatched_ipeds_unit_ids", census.unmatchedIpedsUnitIds)
-          putJsonObject("skips_by_reason") {
-            for ((kind, count) in skipsByKind(census.skipsByReason)) put(kind, count)
-          }
         }
       }
       // The CDS seed (RFC 148), under the same omit-vs-zero rule: no `cds` key
@@ -1149,6 +1235,37 @@ class CollegeScorecardLoader(
         }
       }
     }
+
+  /**
+   * The five counts every row phase reports, plus the skip taxonomy under
+   * them: the block `colleges`, `ipeds`, `ipeds_charges` and `programs_census`
+   * each used to spell out by hand. Written once, on the JSON builder, exactly
+   * as [putCdsTable] is -- a phase that added a count to its own copy was the
+   * only thing keeping the four blocks from being read the same way.
+   *
+   * Reasons with no occurrences are OMITTED, never written as 0: a run that
+   * skipped 200 rows for a missing UNITID and one for a bad CONTROL is a
+   * different event from the reverse, and the totals cannot tell them apart.
+   * Keys a phase does not share -- `survey_year`, `selected`, `pruned`, the
+   * unmatched ids -- stay at the call site, because they are not counts every
+   * phase has.
+   */
+  private fun JsonObjectBuilder.putPhaseCounts(
+    seen: Int,
+    inserted: Int,
+    changed: Int,
+    unchanged: Int,
+    skips: Map<SkipReason, Int>,
+  ) {
+    put("seen", seen)
+    put("inserted", inserted)
+    put("changed", changed)
+    put("unchanged", unchanged)
+    put("skipped", skips.values.sum())
+    putJsonObject("skips_by_reason") {
+      for ((kind, count) in skipsByKind(skips)) put(kind, count)
+    }
+  }
 
   /**
    * One CDS table's counts. The unmatched UNITIDs are written as their
@@ -1478,8 +1595,15 @@ class CollegeScorecardLoader(
      * the derived `canonical-money` fill of `price_figures` /
      * `cohort_money_stats`, with their row counts and per-status summary on
      * the build row.
+     *
+     * 7 = RFC 161's IPEDS IC_AY charges: the `ipeds-charges` staging phase and
+     * a SECOND canonical money source ahead of the Scorecard in
+     * `CanonicalMoneyLoader.ORDERED_SOURCES`. The derivation changes -- the
+     * same college's `tuition_and_fees` / `in_state` figure can now come from
+     * a different publisher with a different number -- so a build row from
+     * this ingest is not comparable to one from the last.
      */
-    const val METHOD_VERSION = 6
+    const val METHOD_VERSION = 7
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")

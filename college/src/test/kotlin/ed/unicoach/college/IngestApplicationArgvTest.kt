@@ -92,6 +92,7 @@ class IngestApplicationArgvTest {
       "--ic=IC2023.csv",
       "--adm=adm2023.csv",
       "--completions=C2023_a.csv",
+      "--ic-ay=ic2023_ay.csv",
       "--survey-year=2023",
     )
 
@@ -101,16 +102,17 @@ class IngestApplicationArgvTest {
   }
 
   @Test
-  fun `the full IPEDS group parses into the four files and the explicit survey year`() {
+  fun `the full IPEDS group parses into the five files and the explicit survey year`() {
     val ipeds = assertNotNull(ok(*ipedsGroup).ipeds)
     assertEquals(
-      listOf("HD2023.csv", "IC2023.csv", "adm2023.csv", "C2023_a.csv"),
+      listOf("HD2023.csv", "IC2023.csv", "adm2023.csv", "C2023_a.csv", "ic2023_ay.csv"),
       ipeds.files.map { it.file.path },
     )
+    assertEquals("ic2023_ay.csv", ipeds.icAy.file.path, "IC_AY is the group's fifth member (RFC 161)")
     assertEquals(2023, ipeds.surveyYear)
     // With no --*-source partners, each positional path IS the original argument.
     assertEquals(
-      listOf("HD2023.csv", "IC2023.csv", "adm2023.csv", "C2023_a.csv"),
+      listOf("HD2023.csv", "IC2023.csv", "adm2023.csv", "C2023_a.csv", "ic2023_ay.csv"),
       ipeds.files.map { it.sourceArg },
     )
   }
@@ -119,10 +121,21 @@ class IngestApplicationArgvTest {
   fun `each IPEDS file carries its own original argument when a source flag is given`() {
     val ipeds =
       assertNotNull(
-        ok(*ipedsGroup, "--hd-source=s3://snap/HD2023.csv", "--completions-source=s3://snap/C2023_a.csv").ipeds,
+        ok(
+          *ipedsGroup,
+          "--hd-source=s3://snap/HD2023.csv",
+          "--completions-source=s3://snap/C2023_a.csv",
+          "--ic-ay-source=s3://snap/ic2023_ay.csv",
+        ).ipeds,
       )
     assertEquals(
-      listOf("s3://snap/HD2023.csv", "IC2023.csv", "adm2023.csv", "s3://snap/C2023_a.csv"),
+      listOf(
+        "s3://snap/HD2023.csv",
+        "IC2023.csv",
+        "adm2023.csv",
+        "s3://snap/C2023_a.csv",
+        "s3://snap/ic2023_ay.csv",
+      ),
       ipeds.files.map { it.sourceArg },
     )
   }
@@ -132,12 +145,47 @@ class IngestApplicationArgvTest {
     val message = usage(*positional, "--hd=HD2023.csv")
     assertTrue(message.contains("all-or-nothing"), message)
     assertTrue(message.contains("--ic"), message)
+    assertTrue(message.contains("--ic-ay"), message)
     assertTrue(message.contains("--survey-year"), message)
   }
 
   @Test
+  fun `omitting only IC_AY is refused, never loaded as four fifths of the group`() {
+    // The RFC 161 addition is inside the same all-or-nothing group, not beside
+    // it: a run that quietly skipped the charges file would leave the canonical
+    // fill with no IPEDS source and silently serve the Scorecard's collapsed
+    // in-state price again.
+    val message =
+      usage(
+        *positional,
+        "--hd=HD2023.csv",
+        "--ic=IC2023.csv",
+        "--adm=adm.csv",
+        "--completions=CA.csv",
+        "--survey-year=2023",
+      )
+    assertTrue(message.contains("all-or-nothing"), message)
+    assertTrue(message.contains("--ic-ay"), message)
+  }
+
+  @Test
+  fun `an IC_AY source flag without its file is refused, never silently ignored`() {
+    val message = usage(*positional, "--ic-ay-source=s3://snap/ic2023_ay.csv")
+    assertTrue(message.contains("--ic-ay-source"), message)
+    assertTrue(message.contains("was not supplied"), message)
+  }
+
+  @Test
   fun `omitting only the survey year is refused, never derived from a filename`() {
-    val message = usage(*positional, "--hd=HD2023.csv", "--ic=IC2023.csv", "--adm=adm.csv", "--completions=CA.csv")
+    val message =
+      usage(
+        *positional,
+        "--hd=HD2023.csv",
+        "--ic=IC2023.csv",
+        "--adm=adm.csv",
+        "--completions=CA.csv",
+        "--ic-ay=ic_ay.csv",
+      )
     assertTrue(message.contains("--survey-year"), message)
   }
 
@@ -177,7 +225,7 @@ class IngestApplicationArgvTest {
       )
     val named = namedSources(parsed)
     assertEquals(
-      listOf("institution", "fields", "aliases", "hd", "ic", "adm", "completions", "codebooks"),
+      listOf("institution", "fields", "aliases", "hd", "ic", "adm", "completions", "ic-ay", "codebooks"),
       named.map { it.first },
       "every file the run reads is named by the flag the operator typed",
     )
@@ -327,5 +375,12 @@ class IngestApplicationArgvTest {
   }
 
   private fun ipedsGroupWithYear(year: String): Array<String> =
-    arrayOf("--hd=HD.csv", "--ic=IC.csv", "--adm=adm.csv", "--completions=CA.csv", "--survey-year=$year")
+    arrayOf(
+      "--hd=HD.csv",
+      "--ic=IC.csv",
+      "--adm=adm.csv",
+      "--completions=CA.csv",
+      "--ic-ay=ic_ay.csv",
+      "--survey-year=$year",
+    )
 }

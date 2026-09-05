@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import java.io.File
+import java.sql.ResultSet
 
 /**
  * Shared DB-test scaffolding for the college ingest suites: opens one pooled
@@ -111,6 +112,29 @@ abstract class CollegeScorecardTestBase {
   protected fun seedCodebookReference() = withSession { session -> CodebookReferenceFixture.seed(session) }
 
   protected fun <T> withSession(block: (SqlSession) -> T): T = runBlocking { database.withConnection(block) }
+
+  /**
+   * Every row of an arbitrary read-only query, mapped. Three suites had
+   * pasted the same twelve lines; it belongs here beside [withSession], which
+   * is the only reason those copies were identical to begin with.
+   *
+   * [sql] is TEST-authored SQL, never data under test: the suites assert
+   * against the table the loader wrote, which is exactly what a mock of the
+   * DAO could not do.
+   */
+  protected fun <T> query(
+    sql: String,
+    map: (ResultSet) -> T,
+  ): List<T> =
+    withSession { session ->
+      session.prepareStatement(sql).use { stmt ->
+        stmt.executeQuery().use { rs ->
+          val rows = mutableListOf<T>()
+          while (rs.next()) rows += map(rs)
+          rows
+        }
+      }
+    }
 
   protected fun count(
     session: SqlSession,

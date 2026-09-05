@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """fetch-codebooks: build the published-codebook reference data from IPEDS.
 
-RFC 147. Downloads the four IPEDS 2023 Stata syntax archives, keeps them as
+RFC 147, extended by RFC 161. Downloads the five IPEDS 2023 Stata syntax
+archives, keeps them as
 committed artifacts under db/seed/codebooks/, parses their value-label and
 variable-label blocks, and writes the reviewable, diffable codebook:
 
@@ -66,14 +67,29 @@ BASE_URL = "https://nces.ed.gov/ipeds/datacenter/data"
 # (D42: the vintage is data, and C21BASIC also carries its own in its name).
 SURVEY_YEAR = 2023
 
-# The artifacts, keyed by the short name the domains below refer to. The member
-# INSIDE the zip is found case-insensitively, never by an assumed name: IPEDS
-# ships HD2023.do and IC2023.do but adm2023.do and C2023_a.do.
+# The artifacts: the short name the domains below refer to, the published
+# archive, and the recorded .do fixture that stands in for it offline. The
+# member INSIDE the zip is found case-insensitively, never by an assumed name:
+# IPEDS ships HD2023.do and IC2023.do but adm2023.do and C2023_a.do.
+#
+# The fixture name is DECLARED here, and matched exactly, for the reason
+# bin/fetch-ipeds gives for its own fixture_csv field: the fixture directory is
+# shared with every other test in the repo and this script does not own it, so a
+# normalised substring search makes the fetcher's behaviour depend on file names
+# nothing here decides. It did: "ic2023" is a strict prefix of "ic2023ay", so
+# the RFC 161 mirror shadowed the RFC 147 artifact by that rule alone.
 ARTIFACTS = (
-    ("hd", "HD2023_Stata.zip"),
-    ("ic", "IC2023_Stata.zip"),
-    ("adm", "ADM2023_Stata.zip"),
-    ("ca", "C2023_A_Stata.zip"),
+    ("hd", "HD2023_Stata.zip", "codebooks-hd2023-fixture.do"),
+    ("ic", "IC2023_Stata.zip", "codebooks-ic2023-fixture.do"),
+    ("adm", "ADM2023_Stata.zip", "codebooks-adm2023-fixture.do"),
+    ("ca", "C2023_A_Stata.zip", "codebooks-c2023-a-fixture.do"),
+    # RFC 161. IC2023_ay.do defines NO value labels at all -- the X
+    # imputation codes are a comment block, which is why IpedsChargesLoader
+    # carries its own enum (and owns how many there are). It is mirrored here anyway, as the reviewable
+    # EVIDENCE for that enum and for the CHG* variable meanings: the loader's
+    # claim that CHG7AY is "off campus (NOT with family)" is checkable against a
+    # committed artifact rather than against a memory of a web page.
+    ("icay", "IC2023_AY_Stata.zip", "codebooks-ic2023-ay-fixture.do"),
 )
 
 # The network bounds, named once each.
@@ -97,7 +113,8 @@ EXIT_OPTION_REQUIRES_VALUE = 11
 
 # One line, one label, each carrying its own label-set name: the Stata .do is
 # the only line-oriented syntax file IPEDS publishes, and this regex matched
-# 6,779 of 6,779 `label define` lines across the four 2023 files. The \w+ code
+# 6,779 of 6,779 `label define` lines across the four 2023 files that carry
+# any (IC2023_ay.do carries none). The \w+ code
 # branch is for the string-valued sets (label_stabbr AL "Alabama").
 VALUE_LABEL_RE = re.compile(
     r'^label define label_(\w+)\s+(-?\d+|\w+|"[^"]*")\s+"(.*)"(?:, ?add)?$'
@@ -189,29 +206,32 @@ def http_get(url):
     raise AssertionError("unreachable")
 
 
-def normalise(name):
-    """A filename reduced to its alphanumerics, so a fixture may be named by the
-    repo's own convention (codebooks-hd2023-fixture.do) and still be recognised
-    as the HD2023 syntax file."""
-    return re.sub(r"[^a-z0-9]", "", name.lower())
+def find_fixture(fixtures, filename, fixture_do):
+    """The one file in `fixtures` that stands in for `filename`: either the
+    published archive under its own name, or the recorded .do named in
+    ARTIFACTS.
 
-
-def find_fixture(fixtures, filename):
-    """The one file in `fixtures` that stands in for `filename`: either the zip
-    itself or a plain .do recorded from it. Ambiguity is fatal -- picking the
-    first of two candidates would make the harness depend on readdir order."""
-    stem = normalise(filename.replace("_Stata.zip", ""))
-    candidates = sorted(
-        path
-        for path in fixtures.iterdir()
-        if path.is_file()
-        and path.suffix.lower() in (".do", ".zip")
-        and stem in normalise(path.name)
-    )
+    Both are matched by EXACT name -- bin/fetch-ipeds' rule, for its reason. A
+    normalised longest-substring search is friendlier, but it decides ownership
+    from names this table does not declare: it made "ic2023" a strict prefix of
+    "ic2023ay", so IC2023_AY shadowed IC2023, and any new file in the shared
+    fixture directory could make this fetcher fatal from a change with nothing
+    to do with codebooks. Ambiguity is still fatal -- picking the first of two
+    candidates would make the harness depend on readdir order -- but it now
+    takes two files this table actually names."""
+    candidates = [
+        path for path in (fixtures / filename, fixtures / fixture_do) if path.is_file()
+    ]
     if not candidates:
-        fatal(f"no fixture for [{filename}] in [{fixtures}] (looked for [{stem}] in .do/.zip names)")
+        fatal(
+            f"no fixture for [{filename}] in [{fixtures}]: expected "
+            f"[{filename}] or [{fixture_do}]"
+        )
     if len(candidates) > 1:
-        fatal(f"[{len(candidates)}] fixtures match [{filename}] in [{fixtures}]: {candidates}")
+        fatal(
+            f"[{len(candidates)}] fixtures stand in for [{filename}] in [{fixtures}]: "
+            f"{[path.name for path in candidates]}"
+        )
     return candidates[0]
 
 
@@ -278,14 +298,14 @@ class Source:
 
 
 def load_sources(fixtures):
-    """{key -> Source} for the four artifacts, downloaded, or read from
+    """{key -> Source} for the five artifacts, downloaded, or read from
     `fixtures` with no network at all. Nothing is written here: the artifacts
     land only once the parse they feed has been believed."""
     sources = {}
     fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    for key, filename in ARTIFACTS:
+    for key, filename, fixture_do in ARTIFACTS:
         if fixtures is not None:
-            path = find_fixture(fixtures, filename)
+            path = find_fixture(fixtures, filename, fixture_do)
             body = path.read_bytes()
             url = None
             # The fixture's own name, so PROVENANCE names the file actually read
@@ -791,7 +811,7 @@ def previous_domain_counts(json_path, outdir):
 
 
 def require_plausible_codebooks(outdir, json_path, codebooks):
-    """Refuses to overwrite the committed codebook with a failed parse. The four
+    """Refuses to overwrite the committed codebook with a failed parse. The
     artifacts carry 6,779 label lines between them, so a domain that collapsed
     against the count the previous generation recorded is a changed upstream
     FORMAT arriving quietly -- a real vocabulary change moves a handful of

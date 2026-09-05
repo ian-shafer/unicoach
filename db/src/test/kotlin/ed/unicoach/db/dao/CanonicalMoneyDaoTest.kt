@@ -9,6 +9,7 @@ import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCohortMoneyStat
 import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.NewResidencyBasis
@@ -102,7 +103,7 @@ class CanonicalMoneyDaoTest {
     arrangement = arrangement,
     academicYear = academicYear,
     reading = reading,
-    source = "scorecard",
+    source = MoneySource.SCORECARD,
     sourceVariable = sourceVariable,
   )
 
@@ -121,7 +122,7 @@ class CanonicalMoneyDaoTest {
     incomeBand = incomeBand,
     vintage = vintage,
     reading = reading,
-    source = "scorecard",
+    source = MoneySource.SCORECARD,
     sourceVariable = "NPT4_PUB",
   )
 

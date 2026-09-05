@@ -15,7 +15,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The IPEDS half of one ingest run, end to end (RFC 144): the four extra header
+ * The IPEDS half of one ingest run, end to end (RFC 144, RFC 161): the five extra header
  * assertions up front, the HD-driven load with IC/ADM left-joined, the census's
  * bachelor's-first-major filter, the unmatched-`ipeds_unit_id` count, and the two new
  * provenance blocks — which are ABSENT, not zero, when the group was not passed.
@@ -37,8 +37,9 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     ic: File = fixture("ipeds-ic-fixture.csv"),
     adm: File = fixture("ipeds-adm-fixture.csv"),
     completions: File = fixture("ipeds-ca-fixture.csv"),
+    icAy: File = fixture("ipeds-ic-ay-fixture.csv"),
     surveyYear: Int = 2023,
-  ) = IpedsSources(source(hd), source(ic), source(adm), source(completions), surveyYear)
+  ) = IpedsSources(source(hd), source(ic), source(adm), source(completions), source(icAy), surveyYear)
 
   private fun seedColleges(ipedsUnitIds: List<Int>) =
     withSession { session ->
@@ -204,9 +205,19 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   fun `a changed source value is reported as changed, not silently rewritten`() {
     seedColleges(hdIpedsUnitIds)
     ingest()
-    // The same run against a survey year one later: every row's survey_year
-    // differs, so all 12 must report CHANGED.
-    val second = ingest(ipedsSources(surveyYear = 2024))
+    // Every stored row is put out of step with the source, then the SAME run
+    // repeats: all 12 must report CHANGED rather than being rewritten in
+    // silence.
+    //
+    // The staleness is applied to the TABLE rather than by re-running at a
+    // later --survey-year, which is what this test used to do: since RFC 161
+    // the survey year is checked against the pinned IC_AY window, so a 2024 run
+    // over the 2023 files is a half-done year bump the loader now refuses --
+    // exactly the mis-dated run that guard exists to stop.
+    withSession { session ->
+      session.prepareStatement("UPDATE college_ipeds SET survey_year = 2022").use { it.executeUpdate() }
+    }
+    val second = ingest()
     assertEquals(12, assertNotNull(second.ipeds).attributes.changed)
     assertEquals(0, assertNotNull(second.ipeds).attributes.inserted)
   }
@@ -398,6 +409,8 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
           ipedsSources(adm = headerOnly(IpedsLoader.REQUIRED_ADM_COLUMNS, "ADMCON7")),
         "CTOTALT" to
           ipedsSources(completions = headerOnly(IpedsLoader.REQUIRED_COMPLETIONS_COLUMNS, "CTOTALT")),
+        "CHG2AY3" to
+          ipedsSources(icAy = headerOnly(IpedsChargesLoader.REQUIRED_COLUMNS, "CHG2AY3")),
       )
     val buildRowsBefore = withSession { count(it, "college_index_build") }
     for ((column, sources) in cases) {
@@ -412,6 +425,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
       )
       assertEquals(0, withSession { count(it, "college_ipeds") })
       assertEquals(0, withSession { count(it, "college_programs_census") })
+      assertEquals(0, withSession { count(it, "college_ipeds_charges") })
       assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") })
       seedColleges(hdIpedsUnitIds)
     }
@@ -422,16 +436,17 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `the build row gains the IPEDS blocks, the four digests, and the current method_version`() {
+  fun `the build row gains the IPEDS blocks, the five digests, and the current method_version`() {
     seedColleges(hdIpedsUnitIds)
     val report = ingest()
-    assertEquals(7, report.sources.size, "three Scorecard sources plus the four IPEDS files")
+    assertEquals(8, report.sources.size, "three Scorecard sources plus the five IPEDS files")
 
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     // 5 since RFC 146 added the derived name-word rebuild, RFC 148 the CDS
     // seed load and RFC 150 the derived search index; 2 was RFC 144's own bump
-    // for this IPEDS source family.
-    assertEquals(6, row.methodVersion)
+    // for this IPEDS source family. 7 is RFC 161's: IPEDS IC_AY became a
+    // canonical money source ahead of the Scorecard.
+    assertEquals(7, row.methodVersion)
     assertTrue(row.sources.contains("ipeds-hd-joined-fixture.csv"), "sources names the HD file: ${row.sources}")
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")
     assertTrue(row.rowsIngested.contains("\"programs_census\""), row.rowsIngested)
@@ -453,7 +468,9 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     assertFalse(row.rowsIngested.contains("\"ipeds\""), "absent means absent: ${row.rowsIngested}")
     assertFalse(row.rowsIngested.contains("\"programs_census\""), row.rowsIngested)
+    assertFalse(row.rowsIngested.contains("\"ipeds_charges\""), row.rowsIngested)
     assertFalse(row.changeSummary.contains("college_ipeds"), row.changeSummary)
+    assertEquals(0, withSession { count(it, "college_ipeds_charges") })
     // The summary stays the RFC 139 one, with no fabricated IPEDS lines.
     assertFalse(report.humanSummary().contains("ipeds:"), report.humanSummary())
   }
