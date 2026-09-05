@@ -27,6 +27,31 @@ house tri-state shape; coach prompt v17 (rollback
 `COACHING_SYSTEM_PROMPT_VERSION=v16`). No `Needs:` edges, so no gate answers
 were required.
 
+shape/01/canonical-store LANDED as RFC 158 (main@d0c2fbf0 + 9b75a0b1,
+2026-09-04) — the canonical money store: `price_figures` (college × price
+concept × residency basis × arrangement × academic year) split from
+`cohort_money_stats` (measure × population basis × vintage), so a blend can
+never enter the price table — no blend concept exists for its FK to name. Five
+unicoach-authored vocabulary tables seeded from a committed, fatally-validated
+`db/data/money-vocabulary.json` (the `subjects.json` pattern), with the seed
+proven against the Kotlin enums both ways; D7's five income bands become rows
+carrying their dollar ranges as data. D3's six-value stored missingness is real:
+the Scorecard's `PrivacySuppressed` used to collapse into the same NULL as "not
+reported" at `CsvIngestSupport.toIntOrNull`, and now survives the fill as a
+`suppressed_by_publisher` row — a value exists exactly when the status bears
+one, by DB CHECK and by a sealed `FigureReading` that will not compile the
+invalid pairing. `aid_policy_facts` is modeled ahead and empty for shape/07. A
+`canonical-money` ingest phase rebuilds both fact tables wholesale in one
+transaction after `search-index`; `METHOD_VERSION` 5 → 6, three new provenance
+columns on `college_index_build`, row counts and the per-status breakdown on
+stderr. Substrate by design (the search/03a precedent) — NO consumer reads the
+tables yet; the door opens at shape/04. Migration 0083, renumbered from 0077
+twice as RFCs 159 and 160 landed while the run was open. Review caught two real
+bugs: a vocabulary slug retirement would have wedged every future ingest on an
+FK, and a missing `CONTROL` silently classified a college private (wrong NPT4
+column family, wrong residency scope). No `Needs:` edges, so no gate answers
+were required.
+
 ## The question
 
 Every money figure unicoach serves today is stored in the shape its publisher
