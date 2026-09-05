@@ -476,13 +476,7 @@ struct LabeledField<Value: Hashable>: View {
                 // 20pt leading inset and the 64pt control height (DESIGN.md §5),
                 // so a field and a button read as the same kind of object.
                 .padding(.horizontal, DSControl.textInset)
-                .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
-                .background(Color.dsSurface)
-                .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                        .stroke(error == nil ? Color.dsFieldBorder : Color.dsError, lineWidth: DSControl.borderWidth)
-                )
+                .dsControlBox(minHeight: height, borderColor: error == nil ? Color.dsFieldBorder : Color.dsError)
                 .modifier(OptionalIdentifier(identifier: accessibilityIdentifier))
                 .modifier(OptionalLabel(label: accessibilityLabelText))
 
@@ -498,6 +492,185 @@ struct LabeledField<Value: Hashable>: View {
             SecureField(label, text: text)
         } else {
             TextField(label, text: text)
+        }
+    }
+}
+
+// MARK: - DSControlBox
+
+/// The 64pt outlined control box (DESIGN.md §3/§5): a `dsSurface` fill,
+/// continuous `DSRadius.control` corners, and a hairline border, sized to a
+/// `@ScaledMetric` **minimum** height so Dynamic Type grows the box instead of
+/// clipping the label.
+///
+/// Four controls are this same box — `LabeledField`, `OptionCard`,
+/// `SegmentedSelector`, `DSPickerRow` — and each had written the four modifiers
+/// out for itself. That is how a radius or a border width changes on three
+/// controls out of four. `dsOutlinedCard()` is the same chrome without the
+/// height and without a border colour, so it stays what it is (the drawer-row
+/// and conversation-card shape) and this is the control-shaped sibling.
+///
+/// `borderColor` is a parameter because it is the one part that legitimately
+/// varies: a field's border turns `dsError`, a selected `OptionCard`'s darkens
+/// to `dsTextPrimary`. Padding stays at the call site — controls differ in
+/// their insets, never in their chrome.
+struct DSControlBoxModifier: ViewModifier {
+    let minHeight: CGFloat
+    let borderColor: Color
+    let alignment: Alignment
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, minHeight: minHeight, alignment: alignment)
+            .background(Color.dsSurface)
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                    .stroke(borderColor, lineWidth: DSControl.borderWidth)
+            )
+    }
+}
+
+extension View {
+    /// Applies the outlined control box — see ``DSControlBoxModifier``. The
+    /// height is passed in rather than read from `DSControl.height` here,
+    /// because each control owns its own `@ScaledMetric`, scaled against the
+    /// text style it actually contains.
+    func dsControlBox(
+        minHeight: CGFloat,
+        borderColor: Color = .dsFieldBorder,
+        alignment: Alignment = .leading
+    ) -> some View {
+        modifier(DSControlBoxModifier(minHeight: minHeight, borderColor: borderColor, alignment: alignment))
+    }
+}
+
+// MARK: - DSPickerRow
+
+/// A menu picker in a control-shaped row: leading `dsLabel` caption, trailing
+/// tinted menu, on the same 64pt / 16pt-radius outlined box as `LabeledField`
+/// and `OptionCard` (DESIGN.md §3/§5). It is the app's only
+/// `.pickerStyle(.menu)` site.
+///
+/// It exists because a stock wheel is chrome with no place in this motif, and
+/// because a long, mutually exclusive vocabulary — 13 years, 51 states, five
+/// income bands — cannot be spent as one `OptionCard` each: 13 cards is 976pt,
+/// taller than the device, to offer one answer (RFC 163). One row costs
+/// `DSControl.height` whatever the list holds.
+struct DSPickerRow<Content: View>: View {
+    private let label: String
+    private let accessibilityIdentifier: String?
+    private let accessibilityLabelText: String?
+    private let picker: Content
+
+    /// `.body`, because that is this row's **own** tallest text — the picker's
+    /// selected value, set in `dsBody`. Every 64pt control in this app scales
+    /// against the style of its own content rather than one shared style
+    /// (`LabeledField` `.body`, `OptionCard` `.title3` for its `dsOption`
+    /// label, `SegmentedSelector` `.subheadline` for its `dsLabel` titles,
+    /// `LoadingButton` `.headline` for `dsButton`), so that each box grows at
+    /// the rate the text inside it actually grows. A row pinned to a style it
+    /// does not contain would grow ahead of or behind its own label.
+    @ScaledMetric(relativeTo: .body) private var height: CGFloat = DSControl.height
+
+    init(
+        label: String,
+        accessibilityIdentifier: String? = nil,
+        accessibilityLabel: String? = nil,
+        @ViewBuilder picker: () -> Content
+    ) {
+        self.label = label
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.accessibilityLabelText = accessibilityLabel
+        self.picker = picker()
+    }
+
+    var body: some View {
+        HStack(spacing: DSSpacing.md) {
+            Text(label)
+                .font(.dsLabel)
+                .foregroundStyle(Color.dsTextSecondary)
+            Spacer(minLength: 0)
+            picker
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .font(.dsBody)
+                .tint(Color.dsTextPrimary)
+        }
+        .padding(.horizontal, DSControl.textInset)
+        .dsControlBox(minHeight: height)
+        .modifier(OptionalIdentifier(identifier: accessibilityIdentifier))
+        .modifier(OptionalLabel(label: accessibilityLabelText))
+    }
+}
+
+/// The two forms that cover every picker row this app has: a closed list with a
+/// required selection, and the same list with an optional one.
+///
+/// Tag construction lives here, once, because it is the part that fails
+/// **silently at runtime**: a `.tag` whose type does not match the selection
+/// binds nothing, the row simply never changes, and no view-model test can see
+/// it. Written once, the tags cannot be wrong.
+extension DSPickerRow where Content == AnyView {
+    /// A required selection over `options`.
+    init<Value: Hashable>(
+        label: String,
+        options: [Value],
+        selection: Binding<Value>,
+        title: @escaping (Value) -> String,
+        accessibilityIdentifier: String? = nil,
+        accessibilityLabel: String? = nil
+    ) {
+        // The failure this initializer exists to prevent has one remaining
+        // form: a selection that is not IN the list. SwiftUI binds nothing and
+        // shows a blank row — silently, at runtime, in Release. A debug assert
+        // is the cheapest place to say so, and costs nothing shipped.
+        assert(
+            options.contains(selection.wrappedValue),
+            "DSPickerRow [\(label)] has a selection that is not among its options; the row will render blank"
+        )
+        self.init(
+            label: label,
+            accessibilityIdentifier: accessibilityIdentifier,
+            accessibilityLabel: accessibilityLabel
+        ) {
+            AnyView(
+                Picker(label, selection: selection) {
+                    ForEach(options, id: \.self) { option in
+                        Text(title(option)).tag(option)
+                    }
+                }
+            )
+        }
+    }
+
+    /// An OPTIONAL selection over `options`, with a leading row for "no answer
+    /// yet". `unansweredTitle` is deliberately colourless: an unanswered
+    /// optional field is the absence of an answer, never a refusal to give one
+    /// (RFC 163) — "Prefer not to say" here would take a permanent decision the
+    /// student has not made.
+    init<Value: Hashable>(
+        label: String,
+        options: [Value],
+        selection: Binding<Value?>,
+        title: @escaping (Value) -> String,
+        unansweredTitle: String = "Select",
+        accessibilityIdentifier: String? = nil,
+        accessibilityLabel: String? = nil
+    ) {
+        self.init(
+            label: label,
+            accessibilityIdentifier: accessibilityIdentifier,
+            accessibilityLabel: accessibilityLabel
+        ) {
+            AnyView(
+                Picker(label, selection: selection) {
+                    Text(unansweredTitle).tag(Value?.none)
+                    ForEach(options, id: \.self) { option in
+                        Text(title(option)).tag(Value?.some(option))
+                    }
+                }
+            )
         }
     }
 }
@@ -540,13 +713,7 @@ struct OptionCard: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, DSControl.textInset)
-            .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
-            .background(Color.dsSurface)
-            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                    .stroke(borderColor, lineWidth: DSControl.borderWidth)
-            )
+            .dsControlBox(minHeight: height, borderColor: borderColor)
             .contentShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -616,13 +783,9 @@ struct SegmentedSelector<Tag: Hashable>: View {
             }
         }
         .padding(DSSpacing.xs)
-        .frame(maxWidth: .infinity, minHeight: height)
-        .background(Color.dsSurface)
-        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
-        )
+        // `.center`: the segments fill the box, so there is no leading content
+        // to align. The other three controls lay their content out leading.
+        .dsControlBox(minHeight: height, alignment: .center)
         .modifier(OptionalIdentifier(identifier: accessibilityIdentifier))
     }
 

@@ -27,6 +27,7 @@ struct UnicoachiOSApp: App {
                 case .onboarding(let user):
                     OnboardingView(
                         studentClient: viewModel.studentClient,
+                        moneyProfileClient: viewModel.moneyProfileClient,
                         userName: user.name,
                         onComplete: { viewModel.onOnboardingComplete(user) }
                     )

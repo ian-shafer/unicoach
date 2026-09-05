@@ -268,4 +268,45 @@ class APIClientTests: XCTestCase {
         let nsError = NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost, userInfo: nil)
         XCTAssertEqual(apiClient.transportError(nsError).code, "NETWORK_ERROR")
     }
+
+    // MARK: - Request-building failures (RFC 163)
+    //
+    // Every client protocol in this app documents "throws `ErrorResponse`".
+    // Two paths inside the transport used to break that promise by throwing a
+    // raw `URLError` or an `EncodingError` from outside the mapping, which
+    // reached a view model's generic `catch` and put a `localizedDescription`
+    // in front of a student. These are the two.
+
+    /// A body a `JSONEncoder` refuses (`.infinity` under the default
+    /// non-conforming-float strategy).
+    private struct UnencodablePayload: Encodable {
+        let value = Double.infinity
+    }
+
+    /// The unbuildable-URL guard, tested through the mapper it throws.
+    ///
+    /// Not through a bad path string: Foundation's URL parser accepts almost
+    /// anything a test could pass (`http://[::bad::]/things` builds a URL and
+    /// fails later, in the session, as a NETWORK_ERROR — which is the transport
+    /// mapping working, not this one). The guard is defensive, so what is worth
+    /// asserting is that when it fires it produces an `ErrorResponse` and not a
+    /// raw `URLError`.
+    func testAnUnbuildableRequestMapsToTheSharedFallback() {
+        let error = apiClient.requestError(URLError(.badURL), method: "GET", path: "/things")
+        XCTAssertEqual(error, .unexpected)
+    }
+
+    func testABodyTheEncoderRejectsThrowsAnErrorResponse() async throws {
+        MockURLProtocol.requestHandler = { _ in
+            XCTFail("the request must not be sent")
+            throw URLError(.badURL)
+        }
+
+        do {
+            _ = try await apiClient.post("/api/v1/things", body: UnencodablePayload())
+            XCTFail("Should have thrown")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error, .unexpected)
+        }
+    }
 }

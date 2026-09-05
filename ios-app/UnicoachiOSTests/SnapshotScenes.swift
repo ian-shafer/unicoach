@@ -17,6 +17,23 @@ import SwiftUI
 // bin/snapshot-ios (`-testLanguage en -testRegion US`, `TZ=UTC`).
 
 struct SnapshotScene {
+    /// The tallest canvas a scene may ask for, and a real system constraint
+    /// rather than a style rule: at `SnapshotOutput.captureScale` a taller
+    /// window is a bitmap large enough for jetsam to SIGKILL the test process
+    /// part way through the walk. That failure does not look like a failure —
+    /// xcodebuild prints "Restarting after unexpected exit", re-runs only the
+    /// remaining tests, and the corpus directory (which clears itself on every
+    /// launch) is left EMPTY. It cost one full round to diagnose; it is a
+    /// constant now so the next scene meets it as a number.
+    static let maxHeight: CGFloat = 1500
+
+    /// A canvas for content taller than the device. The harness window does not
+    /// scroll, so a scene whose content overflows is simply clipped — and a
+    /// clipped capture reviews nothing.
+    static func tallCanvas(height: CGFloat) -> CGSize {
+        CGSize(width: SnapshotOutput.deviceSize.width, height: height)
+    }
+
     let name: String
     var size: CGSize = SnapshotOutput.deviceSize
     var settle: TimeInterval = 0.4
@@ -25,6 +42,27 @@ struct SnapshotScene {
     /// happen BEFORE the render rather than being left to the view's own
     /// `.task`, whose completion the render does not wait for.
     let content: @MainActor () async -> AnyView
+
+    /// The ceiling is enforced HERE rather than in `tallCanvas`, because this
+    /// is the first place that knows the scene's name — and a message naming
+    /// only a height would send the next person hunting through the catalogue
+    /// for it. It also catches a scene that builds its `CGSize` by hand.
+    init(
+        name: String,
+        size: CGSize = SnapshotOutput.deviceSize,
+        settle: TimeInterval = 0.4,
+        content: @escaping @MainActor () async -> AnyView
+    ) {
+        precondition(
+            size.height <= Self.maxHeight,
+            "snapshot scene [\(name)] asks for [\(size.height)]pt, over the [\(Self.maxHeight)]pt ceiling: "
+                + "the run would be SIGKILLed by jetsam part way through and leave an EMPTY corpus"
+        )
+        self.name = name
+        self.size = size
+        self.settle = settle
+        self.content = content
+    }
 }
 
 // MARK: - Fixture clock
@@ -98,6 +136,33 @@ enum SnapshotSeed {
             status: .active,
             usage: CoachingUsage(usedPercent: 68, exhausted: false, resetsAt: SnapshotClock.pinned)
         )
+    }
+
+    /// The state the answered onboarding scene shows. `ResidencyState` cannot
+    /// be constructed outside its own file, so a scene names an offered one.
+    static let california = ResidencyStates.offered.first { $0.code == "CA" }!
+
+    /// An `OnboardingView` over a seeded view model (RFC 163). The clients
+    /// answer, but nothing here submits: the scene is the form at rest.
+    static func onboarding(
+        precision: OnboardingViewModel.Precision = .year,
+        residencyState: ResidencyState? = nil,
+        incomeBand: IncomeBand? = nil
+    ) -> some View {
+        let viewModel = OnboardingViewModel(
+            studentClient: MockStudentClient(),
+            moneyProfileClient: MockMoneyProfileClient(),
+            onComplete: {},
+            // Pinned, not `Calendar.current` — the year window is rendered, so a
+            // clock-derived one would move the capture every January.
+            year: 2028
+        )
+        viewModel.precision = precision
+        viewModel.month = 6
+        viewModel.day = 15
+        viewModel.residencyState = residencyState
+        viewModel.incomeBand = incomeBand
+        return OnboardingView(viewModel: viewModel, userName: "Kendall")
     }
 
     static func gate(_ rail: SubscriptionViewModel) -> PaywallGate {
@@ -422,7 +487,7 @@ enum SnapshotCatalogue {
             },
 
             // --- The authenticated Settings screen, whole.
-            SnapshotScene(name: "settings-populated", size: CGSize(width: 402, height: 1000)) {
+            SnapshotScene(name: "settings-populated", size: SnapshotScene.tallCanvas(height: 1000)) {
                 let rail = await SnapshotSeed.rail(
                     usage: CoachingUsage(usedPercent: 42, exhausted: false, resetsAt: nil)
                 )
@@ -503,7 +568,7 @@ enum SnapshotCatalogue {
             // what fits on an iPhone; the device-height scenes are.
             SnapshotScene(
                 name: "conversation-markdown-worstcase",
-                size: CGSize(width: 402, height: 1400),
+                size: SnapshotScene.tallCanvas(height: 1400),
                 settle: 0.8
             ) {
                 let rail = await SnapshotSeed.rail(
@@ -628,6 +693,39 @@ enum SnapshotCatalogue {
                 )
             },
 
+            // --- Onboarding (RFC 163). This screen is entirely visual and had
+            // no scene at all, which is how a form grew to 1.9 viewports without
+            // anyone seeing it. Three states: the default first paint, the
+            // tallest date shape, and both optional answers given.
+            // `onboarding-year` keeps the DEVICE canvas on purpose: this scene
+            // is the answer to "does the first paint fit without scrolling?",
+            // and a taller window would answer a question nobody asked. The
+            // other two are given a taller canvas because the window does not
+            // scroll for you, and a clipped form cannot be reviewed.
+            SnapshotScene(name: "onboarding-year") {
+                AnyView(SnapshotSeed.onboarding())
+            },
+            SnapshotScene(name: "onboarding-full-date", size: SnapshotScene.tallCanvas(height: 1200)) {
+                AnyView(SnapshotSeed.onboarding(precision: .full))
+            },
+            SnapshotScene(name: "onboarding-answered", size: SnapshotScene.tallCanvas(height: 1200)) {
+                AnyView(SnapshotSeed.onboarding(residencyState: SnapshotSeed.california, incomeBand: .k48To75k))
+            },
+            // The same screen at an accessibility text size. Every other scene
+            // renders at default type, so nothing in the corpus observed the
+            // claim `DSPickerRow` is built on — that its `@ScaledMetric` height
+            // makes the row GROW rather than clip its label. Dynamic Type is a
+            // SwiftUI environment value, so the harness needs nothing new: the
+            // scene sets it on the hosted view.
+            //
+            // At `SnapshotScene.maxHeight`, which is a ceiling rather than a
+            // fit to the content — see that constant for the crash it encodes.
+            // The form measures ~1420pt at `.accessibility1`, so it fits with
+            // nothing clipped.
+            SnapshotScene(name: "onboarding-accessibility-type", size: SnapshotScene.tallCanvas(height: SnapshotScene.maxHeight)) {
+                AnyView(SnapshotSeed.onboarding().dynamicTypeSize(.accessibility1))
+            },
+
             // --- The unauthenticated entry point: Apple/Google button parity is
             // a PNG question, not a test question.
             SnapshotScene(name: "login-idle") {
@@ -643,7 +741,7 @@ enum SnapshotCatalogue {
             },
 
             // --- Every design-system control in one tall scene.
-            SnapshotScene(name: "design-system-catalogue", size: CGSize(width: 402, height: 1500)) {
+            SnapshotScene(name: "design-system-catalogue", size: SnapshotScene.tallCanvas(height: 1500)) {
                 AnyView(designSystemCatalogue)
             },
         ]

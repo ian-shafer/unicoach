@@ -8,8 +8,28 @@ struct OnboardingView: View {
     /// a `PublicUser`, whose `name` is itself non-optional.
     private let userName: String
 
-    init(studentClient: StudentClientProtocol, userName: String, onComplete: @escaping () -> Void, year: Int = Calendar.current.component(.year, from: Date())) {
-        _viewModel = StateObject(wrappedValue: OnboardingViewModel(studentClient: studentClient, onComplete: onComplete, year: year))
+    init(
+        studentClient: StudentClientProtocol,
+        moneyProfileClient: MoneyProfileClientProtocol,
+        userName: String,
+        onComplete: @escaping () -> Void,
+        year: Int = Calendar.current.component(.year, from: Date())
+    ) {
+        _viewModel = StateObject(wrappedValue: OnboardingViewModel(
+            studentClient: studentClient,
+            moneyProfileClient: moneyProfileClient,
+            onComplete: onComplete,
+            year: year
+        ))
+        self.userName = userName
+    }
+
+    /// Snapshot seam: host a pre-seeded view model, the `AddCollegeView`
+    /// convention. Precision and the two optional answers are view-model state,
+    /// so a scene that shows the full-date shape, or both answers given, can
+    /// only be composed here.
+    init(viewModel: OnboardingViewModel, userName: String) {
+        _viewModel = StateObject(wrappedValue: viewModel)
         self.userName = userName
     }
 
@@ -18,29 +38,22 @@ struct OnboardingView: View {
             BrandTopBar()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: DSSpacing.lg) {
+                // `md`, not the `lg` screen margin: this form is deliberately
+                // short (RFC 163), and a 24pt gap between every one of its
+                // eight blocks spends ~40pt of viewport on air alone.
+                VStack(alignment: .leading, spacing: DSSpacing.md) {
                     Text("Welcome, \(userName)")
                         .dsOverlineStyle()
                         .foregroundStyle(Color.dsTextPrimary)
-
-                    Text("I need some more info to help dial in how I can help you.")
-                        .font(.dsBody)
-                        .foregroundStyle(Color.dsTextSecondary)
 
                     // Account → profile → coaching. Onboarding is the middle
                     // step: the account exists, the coaching starts once this
                     // form submits.
                     StepIndicator(count: 3, current: 1)
 
-                    Text("When do you graduate?")
-                        .font(.dsDisplay)
-                        .foregroundStyle(Color.dsTextPrimary)
+                    graduationSection
 
-                    precisionPicker
-
-                    yearOptions
-
-                    monthAndDay
+                    optionalSection
 
                     if let errorResponse = viewModel.errorResponse {
                         FormErrorBanner(errorResponse.message)
@@ -63,101 +76,200 @@ struct OnboardingView: View {
         .background(Color.dsBackground)
     }
 
+    // MARK: - The one required answer
+
+    private var graduationSection: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.md) {
+            Text("When do you graduate?")
+                .font(.dsDisplay)
+                .foregroundStyle(Color.dsTextPrimary)
+
+            precisionPicker
+
+            captioned("Sets your application deadlines and the award years I price against.") {
+                VStack(spacing: DSControl.stackGap) {
+                    yearRow
+                    monthAndDay
+                }
+            }
+        }
+    }
+
     private var precisionPicker: some View {
         SegmentedSelector(
             options: [
                 (tag: OnboardingViewModel.Precision.year, title: "Year"),
                 (tag: OnboardingViewModel.Precision.yearMonth, title: "Year & Month"),
-                (tag: OnboardingViewModel.Precision.full, title: "Full Date"),
+                (tag: OnboardingViewModel.Precision.full, title: "Full date"),
             ],
             selection: $viewModel.precision,
             accessibilityIdentifier: "precisionPicker"
         )
     }
 
-    /// The graduation year as option cards — the reference's signature control,
-    /// bound to exactly the range and setter the wheel picker used, so the
-    /// choice this screen offers is unchanged.
-    private var yearOptions: some View {
-        VStack(spacing: DSControl.stackGap) {
-            ForEach(Array(viewModel.yearRange), id: \.self) { year in
-                OptionCard(
-                    String(format: "%04d", year),
-                    isSelected: viewModel.year == year,
-                    accessibilityIdentifier: "yearOption"
-                ) {
-                    viewModel.setYear(year)
-                }
-            }
-        }
-        .accessibilityIdentifier("yearPicker")
+    /// The graduation year as ONE menu row. It used to be one `OptionCard` per
+    /// year — 13 cards, 976pt, taller than the screen, for a single answer
+    /// (RFC 163). `OptionCard` is still the signature control everywhere it is
+    /// apt; a 13-value closed vocabulary is not one of those places.
+    ///
+    /// The binding is `$viewModel.year` directly: the clamp that keeps Feb 30
+    /// from existing lives in the view model's `didSet`, so this view cannot
+    /// route around it and no setter needs to be remembered.
+    private var yearRow: some View {
+        DSPickerRow(
+            label: "Year",
+            options: Array(viewModel.yearRange),
+            selection: $viewModel.year,
+            title: { String(format: "%04d", $0) },
+            accessibilityIdentifier: "yearPicker",
+            accessibilityLabel: "Graduation year"
+        )
     }
 
-    /// Month and day, shown only at the precisions that use them. Menu pickers
-    /// in a control-shaped row rather than wheels: a wheel is stock chrome with
-    /// no place in this motif, and the row reads as the same object as a field
-    /// or an option card.
+    /// Month and day, shown only at the precisions that use them.
+    ///
+    /// A `switch` over the whole of `Precision`, not `!= .year` / `== .full`:
+    /// those comparisons compile against a fourth case and silently show it the
+    /// wrong rows, where this fails the build and asks what the new precision
+    /// means.
     @ViewBuilder
     private var monthAndDay: some View {
-        VStack(spacing: DSControl.stackGap) {
-            if viewModel.precision != .year {
-                pickerRow(label: "Month", accessibilityIdentifier: "monthPicker") {
-                    Picker("Month", selection: $viewModel.month) {
-                        ForEach(1 ... 12, id: \.self) { month in
-                            Text(monthName(month)).tag(month)
-                        }
-                    }
-                    .onChange(of: viewModel.month) { _, newValue in
-                        viewModel.setMonth(newValue)
-                    }
-                }
-            }
-
-            if viewModel.precision == .full {
-                pickerRow(label: "Day", accessibilityIdentifier: "dayPicker") {
-                    Picker("Day", selection: $viewModel.day) {
-                        ForEach(Array(viewModel.dayRange), id: \.self) { day in
-                            Text("\(day)").tag(day)
-                        }
-                    }
-                }
-            }
+        switch viewModel.precision {
+        case .year:
+            EmptyView()
+        case .yearMonth:
+            monthRow
+        case .full:
+            monthRow
+            dayRow
         }
     }
 
-    private func pickerRow<Content: View>(
-        label: String,
-        accessibilityIdentifier: String,
-        @ViewBuilder picker: () -> Content
-    ) -> some View {
-        HStack(spacing: DSSpacing.md) {
-            Text(label)
-                .font(.dsLabel)
-                .foregroundStyle(Color.dsTextSecondary)
-            Spacer(minLength: 0)
-            picker()
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .font(.dsBody)
-                .tint(Color.dsTextPrimary)
-        }
-        .padding(.horizontal, DSControl.textInset)
-        .frame(maxWidth: .infinity, minHeight: DSControl.height, alignment: .leading)
-        .background(Color.dsSurface)
-        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+    private var monthRow: some View {
+        DSPickerRow(
+            label: "Month",
+            options: Array(OnboardingViewModel.monthRange),
+            selection: $viewModel.month,
+            title: monthName,
+            accessibilityIdentifier: "monthPicker"
         )
-        .accessibilityIdentifier(accessibilityIdentifier)
     }
 
+    private var dayRow: some View {
+        DSPickerRow(
+            label: "Day",
+            options: Array(viewModel.dayRange),
+            selection: $viewModel.day,
+            title: { "\($0)" },
+            accessibilityIdentifier: "dayPicker"
+        )
+    }
+
+
+    // MARK: - The two optional answers
+
+    /// Optional means UNANSWERED, not declined: there is no "prefer not to say"
+    /// here, because a decline is permanent in this codebase and sign-up is the
+    /// wrong moment to take one (RFC 163). Leaving a row alone costs nothing and
+    /// the coach can ask again.
+    private var optionalSection: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.md) {
+            Text("Optional — you can add these any time")
+                .dsOverlineStyle()
+                .foregroundStyle(Color.dsTextPrimary)
+
+            Text("Answer now or later; just ask me in chat. I'll work without them.")
+                .font(.dsBody)
+                .foregroundStyle(Color.dsTextSecondary)
+
+            captioned("Public colleges publish two prices. Knowing your state lets me show the one you'd "
+                + "actually pay — a median $6,300 a year difference.") {
+                stateRow
+            }
+
+            captioned("Net price varies a lot by income. With a bracket I can show your family's figure "
+                + "instead of the all-family average — about $1,376 a year for a middle bracket.") {
+                incomeRow
+            }
+        }
+    }
+
+    private var stateRow: some View {
+        DSPickerRow(
+            label: "State of residence",
+            options: ResidencyStates.offered,
+            selection: $viewModel.residencyState,
+            title: \.name,
+            accessibilityIdentifier: "statePicker",
+            accessibilityLabel: "State of residence"
+        )
+    }
+
+    private var incomeRow: some View {
+        DSPickerRow(
+            label: "Household income",
+            options: IncomeBand.allCases,
+            selection: $viewModel.incomeBand,
+            // The server's own bracket copy, verbatim: the picker restates the
+            // coach's words rather than minting a second wording.
+            title: \.bracket,
+            accessibilityIdentifier: "incomePicker",
+            accessibilityLabel: "Household income bracket"
+        )
+    }
+
+
+    /// A control with the line that says what answering it buys — the screen's
+    /// one repeated shape (RFC 163: every input says what it unlocks, in the
+    /// same breath).
+    ///
+    /// The `sm` gap is the whole point and is why this is a function rather
+    /// than three hand-built stacks: a caption belongs to the control ABOVE it,
+    /// so it sits closer to that control than the `md` between one pair and the
+    /// next. Written out per site, one of the three eventually gets `md` and
+    /// the caption starts reading as an introduction to the row below.
+    @ViewBuilder
+    private func captioned(_ text: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: DSSpacing.sm) {
+            content()
+
+            Text(text)
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The month's name in the user's own calendar and locale — a reading, not
+    /// arithmetic, which is why this is `Calendar.current` where the view
+    /// model's date maths is explicitly Gregorian.
     private func monthName(_ month: Int) -> String {
         let symbols = Calendar.current.monthSymbols
-        guard month >= 1 && month <= symbols.count else {
+        guard OnboardingViewModel.monthRange.contains(month), month <= symbols.count else {
             return "\(month)"
         }
         return symbols[month - 1]
+    }
+}
+
+/// The dollar range each income band names, in the words the coach says it
+/// aloud — copied verbatim from the server's `IncomeBand.bracket`, which is the
+/// one home for this copy (RFC 142). One wording for one range: a paraphrase
+/// here would give the same fact two vocabularies, and the picker's whole
+/// premise is that it restates what the coach already says.
+///
+/// It lives at the UI boundary rather than on `IncomeBand` itself, which is
+/// a **wire** vocabulary in `Models.swift`. Display copy on a DTO is how a wire
+/// key ends up read aloud to a family.
+extension IncomeBand {
+    var bracket: String {
+        switch self {
+        case .under30k: return "$0 to $30,000"
+        case .k30To48k: return "$30,001 to $48,000"
+        case .k48To75k: return "$48,001 to $75,000"
+        case .k75To110k: return "$75,001 to $110,000"
+        case .over110k: return "$110,000 or more"
+        }
     }
 }
 
@@ -168,9 +280,16 @@ private final class OnboardingPreviewStudentClient: StudentClientProtocol, @unch
     func fetchProfile() async throws -> PublicStudent? { nil }
 }
 
+private final class OnboardingPreviewMoneyProfileClient: MoneyProfileClientProtocol, @unchecked Sendable {
+    func update(_ request: UpdateMoneyProfileRequest) async throws -> PublicMoneyProfile {
+        PublicMoneyProfile.answering(request, createdAt: Date(), updatedAt: Date())
+    }
+}
+
 @MainActor private var onboardingPreview: some View {
     OnboardingView(
         studentClient: OnboardingPreviewStudentClient(),
+        moneyProfileClient: OnboardingPreviewMoneyProfileClient(),
         userName: "Kendall",
         onComplete: {},
         year: 2028

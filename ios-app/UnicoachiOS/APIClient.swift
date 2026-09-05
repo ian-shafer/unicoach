@@ -89,7 +89,7 @@ final class APIClient: @unchecked Sendable {
     /// transport owner — free text cannot smuggle a second parameter or read
     /// as query structure.
     func get(_ path: String, query: [URLQueryItem]) async throws -> (data: Data, response: HTTPURLResponse) {
-        try await get(try Self.pathWithQuery(path, query))
+        try await get(resolvedPath(path, query, method: "GET"))
     }
 
     func delete(_ path: String) async throws -> (data: Data, response: HTTPURLResponse) {
@@ -98,7 +98,17 @@ final class APIClient: @unchecked Sendable {
 
     /// `DELETE` with query items — same encoding contract as `get(_:query:)`.
     func delete(_ path: String, query: [URLQueryItem]) async throws -> (data: Data, response: HTTPURLResponse) {
-        try await delete(try Self.pathWithQuery(path, query))
+        try await delete(resolvedPath(path, query, method: "DELETE"))
+    }
+
+    /// `path?…` with every component encoded, or an `ErrorResponse` — never the
+    /// bare `URLError` the encoder throws. See `requestError`.
+    private func resolvedPath(_ path: String, _ query: [URLQueryItem], method: String) throws -> String {
+        do {
+            return try Self.pathWithQuery(path, query)
+        } catch {
+            throw requestError(error, method: method, path: path)
+        }
     }
 
     /// Assembles `path?name=value&…` with every name and value encoded via
@@ -128,6 +138,13 @@ final class APIClient: @unchecked Sendable {
         try await perform(method: "PATCH", path: path, body: body)
     }
 
+    /// `PUT`, in `patch`'s shape. The money-profile surface (RFC 134) is an
+    /// idempotent create-or-update of a subset of fields, and states that as a
+    /// `PUT`; this is the transport binding for it.
+    func put<B: Encodable>(_ path: String, body: B) async throws -> (data: Data, response: HTTPURLResponse) {
+        try await perform(method: "PUT", path: path, body: body)
+    }
+
     func decode<T: Decodable>(data: Data, response: HTTPURLResponse, expectedStatus: Int) throws -> T {
         if response.statusCode == expectedStatus {
             do {
@@ -149,7 +166,7 @@ final class APIClient: @unchecked Sendable {
 
     private func perform<B: Encodable>(method: String, path: String, body: B?) async throws -> (data: Data, response: HTTPURLResponse) {
         guard let url = URL(string: path, relativeTo: baseURL) else {
-            throw URLError(.badURL)
+            throw requestError(URLError(.badURL), method: method, path: path)
         }
 
         var urlRequest = URLRequest(url: url)
@@ -159,7 +176,11 @@ final class APIClient: @unchecked Sendable {
         }
         if let body = body {
             urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            urlRequest.httpBody = try JSONEncoder().encode(body)
+            do {
+                urlRequest.httpBody = try JSONEncoder().encode(body)
+            } catch {
+                throw requestError(error, method: method, path: path)
+            }
         }
 
         let data: Data
@@ -188,7 +209,7 @@ final class APIClient: @unchecked Sendable {
     /// unparseable body) is thrown. SSE semantics remain the caller's job.
     func stream<B: Encodable>(_ path: String, body: B, accept: String, expectedStatus: Int) async throws -> URLSession.AsyncBytes {
         guard let url = URL(string: path, relativeTo: baseURL) else {
-            throw URLError(.badURL)
+            throw requestError(URLError(.badURL), method: "POST", path: path)
         }
 
         var urlRequest = URLRequest(url: url)
@@ -198,7 +219,11 @@ final class APIClient: @unchecked Sendable {
         }
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(accept, forHTTPHeaderField: "Accept")
-        urlRequest.httpBody = try JSONEncoder().encode(body)
+        do {
+            urlRequest.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw requestError(error, method: "POST", path: path)
+        }
 
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
@@ -223,6 +248,22 @@ final class APIClient: @unchecked Sendable {
             throw decodeError(data: data, status: httpResponse.statusCode)
         }
         return bytes
+    }
+
+    /// Maps a failure that happened while BUILDING the request — an unbuildable
+    /// URL, a body the encoder rejected, a query component that could not be
+    /// percent-encoded — into the shared error vocabulary.
+    ///
+    /// These are the paths that used to throw a raw `URLError` or `EncodingError`
+    /// straight out of the transport, which made every client protocol's "throws
+    /// `ErrorResponse`" a promise the layer did not keep, and put a
+    /// `localizedDescription` in front of a student. They are client-side bugs
+    /// rather than server answers, so they map to the app's declared fallback
+    /// (`ErrorResponse.unexpected`) and the real cause goes to the log, which is
+    /// where a bug of this kind is actually diagnosed.
+    func requestError(_ error: Error, method: String, path: String) -> ErrorResponse {
+        logger.error("Could not build the request for [\(method, privacy: .public)] [\(path, privacy: .public)]: [\(error, privacy: .public)]")
+        return ErrorResponse.unexpected
     }
 
     /// Maps a transport-layer failure into the shared error vocabulary:

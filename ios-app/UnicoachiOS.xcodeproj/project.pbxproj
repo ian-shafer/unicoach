@@ -63,6 +63,10 @@
 		AAAA01220000000000000B02 /* SnapshotScenes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA01220000000000000F02 /* SnapshotScenes.swift */; };
 		AB3700000000000000000B01 /* CollegeListModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F01 /* CollegeListModels.swift */; };
 		AB3700000000000000000B02 /* CollegeListClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F02 /* CollegeListClient.swift */; };
+		AB6300000000000000000B01 /* MoneyProfileClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6300000000000000000F01 /* MoneyProfileClient.swift */; };
+		AB6301000000000000000B01 /* ResidencyStates.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6301000000000000000F01 /* ResidencyStates.swift */; };
+		AB6300000000000000000B02 /* MockMoneyProfileClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6300000000000000000F02 /* MockMoneyProfileClient.swift */; };
+		AB6300000000000000000B03 /* MoneyProfileClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6300000000000000000F03 /* MoneyProfileClientTests.swift */; };
 		AB3700000000000000000B03 /* CollegeListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F03 /* CollegeListViewModel.swift */; };
 		AB3700000000000000000B04 /* AddCollegeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F04 /* AddCollegeViewModel.swift */; };
 		AB3700000000000000000B05 /* CollegeListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F05 /* CollegeListView.swift */; };
@@ -196,6 +200,10 @@
 		AAAA01220000000000000F02 /* SnapshotScenes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SnapshotScenes.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F01 /* CollegeListModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListModels.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F02 /* CollegeListClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListClient.swift; sourceTree = "<group>"; };
+		AB6300000000000000000F01 /* MoneyProfileClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoneyProfileClient.swift; sourceTree = "<group>"; };
+		AB6301000000000000000F01 /* ResidencyStates.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ResidencyStates.swift; sourceTree = "<group>"; };
+		AB6300000000000000000F02 /* MockMoneyProfileClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockMoneyProfileClient.swift; sourceTree = "<group>"; };
+		AB6300000000000000000F03 /* MoneyProfileClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoneyProfileClientTests.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F03 /* CollegeListViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListViewModel.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F04 /* AddCollegeViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AddCollegeViewModel.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F05 /* CollegeListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListView.swift; sourceTree = "<group>"; };
@@ -325,6 +333,8 @@
 				BBBB00010000000000000F0A /* BackendURL.swift */,
 				BBBB00010000000000000F20 /* ClientKey.swift */,
 				BBBB00010000000000000F02 /* StudentClient.swift */,
+				AB6300000000000000000F01 /* MoneyProfileClient.swift */,
+				AB6301000000000000000F01 /* ResidencyStates.swift */,
 				AB3700000000000000000F01 /* CollegeListModels.swift */,
 				AB3700000000000000000F02 /* CollegeListClient.swift */,
 				AB3700000000000000000F03 /* CollegeListViewModel.swift */,
@@ -400,6 +410,8 @@
 				BBBB00010000000000000F05 /* APIClientTests.swift */,
 				BBBB00010000000000000F0B /* BackendURLTests.swift */,
 				BBBB00010000000000000F06 /* StudentClientTests.swift */,
+				AB6300000000000000000F02 /* MockMoneyProfileClient.swift */,
+				AB6300000000000000000F03 /* MoneyProfileClientTests.swift */,
 				AB3700000000000000000F08 /* MockCollegeListClient.swift */,
 				AB3700000000000000000F09 /* CollegeListClientTests.swift */,
 				AB3700000000000000000F10 /* CollegeListViewModelTests.swift */,
@@ -600,6 +612,8 @@
 				BBBB00010000000000000B0A /* BackendURL.swift in Sources */,
 				BBBB00010000000000000B20 /* ClientKey.swift in Sources */,
 				BBBB00010000000000000B02 /* StudentClient.swift in Sources */,
+				AB6300000000000000000B01 /* MoneyProfileClient.swift in Sources */,
+				AB6301000000000000000B01 /* ResidencyStates.swift in Sources */,
 				AB3700000000000000000B01 /* CollegeListModels.swift in Sources */,
 				AB3700000000000000000B02 /* CollegeListClient.swift in Sources */,
 				AB3700000000000000000B03 /* CollegeListViewModel.swift in Sources */,
@@ -661,6 +675,8 @@
 				BBBB00010000000000000B05 /* APIClientTests.swift in Sources */,
 				BBBB00010000000000000B0B /* BackendURLTests.swift in Sources */,
 				BBBB00010000000000000B06 /* StudentClientTests.swift in Sources */,
+				AB6300000000000000000B02 /* MockMoneyProfileClient.swift in Sources */,
+				AB6300000000000000000B03 /* MoneyProfileClientTests.swift in Sources */,
 				AB3700000000000000000B08 /* MockCollegeListClient.swift in Sources */,
 				AB3700000000000000000B09 /* CollegeListClientTests.swift in Sources */,
 				AB3700000000000000000B10 /* CollegeListViewModelTests.swift in Sources */,

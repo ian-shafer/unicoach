@@ -6,6 +6,7 @@ class AppViewModel: ObservableObject {
     @Published var authState: UserAuthState = .loading
     let authClient: AuthClientProtocol & SsoAuthenticating
     let studentClient: StudentClientProtocol
+    let moneyProfileClient: MoneyProfileClientProtocol
     let conversationClient: ConversationClientProtocol
     let collegeListClient: CollegeListClientProtocol
     let googleSignInProvider: SsoSignInProviding
@@ -80,6 +81,7 @@ class AppViewModel: ObservableObject {
         cookieStorage: CookieStorageProtocol = HTTPCookieStorage.shared,
         authClient: (AuthClientProtocol & SsoAuthenticating)? = nil,
         studentClient: StudentClientProtocol? = nil,
+        moneyProfileClient: MoneyProfileClientProtocol? = nil,
         conversationClient: ConversationClientProtocol? = nil,
         collegeListClient: CollegeListClientProtocol? = nil,
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
@@ -90,6 +92,7 @@ class AppViewModel: ObservableObject {
     ) {
         self.authClient = authClient ?? AuthClient(apiClient: apiClient)
         self.studentClient = studentClient ?? StudentClient(apiClient: apiClient)
+        self.moneyProfileClient = moneyProfileClient ?? MoneyProfileClient(apiClient: apiClient)
         self.conversationClient = conversationClient ?? ConversationClient(apiClient: apiClient)
         self.collegeListClient = collegeListClient ?? CollegeListClient(apiClient: apiClient)
         self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)

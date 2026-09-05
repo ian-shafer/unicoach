@@ -1,4 +1,5 @@
 import Foundation
+@testable import UnicoachiOS
 
 /// Shared, range-spanning, *boundary-faithful* test fixtures.
 ///
@@ -85,12 +86,73 @@ enum RandomFixtures {
         return (Data(json.utf8), id, grad, created, updated)
     }
 
-    private static func daysInMonth(year: Int, month: Int) -> Int {
-        switch month {
-        case 1, 3, 5, 7, 8, 10, 12: return 31
-        case 4, 6, 9, 11: return 30
-        case 2: return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) ? 29 : 28
-        default: return 31
+    /// Raw JSON body for a `MoneyProfileResponse`, built from the REAL wire
+    /// shapes: ISO-8601 string timestamps, and per-field tri-state statuses with
+    /// the value present exactly when the status is `answered` (RFC 134). The
+    /// band, state and plan are drawn from the server's own vocabularies so the
+    /// whole domain is exercised over runs. Prints the seed and values so a
+    /// failing draw is replayable.
+    static func moneyProfileResponseJSON(
+        seed: UInt64
+    ) -> (data: Data, incomeBand: String?, residencyState: String?, livingPlan: String?, version: Int) {
+        var gen = SeededGenerator(seed: seed)
+        let band = IncomeBand.allCases.randomElement(using: &gen)!.rawValue
+        let state = ResidencyStates.offered.randomElement(using: &gen)!.code
+        let plan = LivingPlan.allCases.randomElement(using: &gen)!.rawValue
+        // Each field is answered or not, independently: an all-answered fixture
+        // would never exercise the null-value arm the wire actually carries.
+        let bandAnswered = Bool.random(using: &gen)
+        let stateAnswered = Bool.random(using: &gen)
+        let planAnswered = Bool.random(using: &gen)
+        let version = Int.random(in: 1...9, using: &gen)
+        let created = serverTimestamp(using: &gen)
+        let updated = serverTimestamp(using: &gen)
+
+        func field(_ answered: Bool, _ value: String) -> (status: String, json: String) {
+            answered
+                ? (AnswerStatus.answered.rawValue, "\"\(value)\"")
+                : (AnswerStatus.unanswered.rawValue, "null")
         }
+        let income = field(bandAnswered, band)
+        let residency = field(stateAnswered, state)
+        let living = field(planAnswered, plan)
+
+        let json = """
+        {"profile":{"incomeBandStatus":"\(income.status)","incomeBand":\(income.json),\
+        "residencyStatus":"\(residency.status)","residencyState":\(residency.json),\
+        "livingPlanStatus":"\(living.status)","livingPlan":\(living.json),\
+        "version":\(version),"createdAt":"\(created)","updatedAt":"\(updated)"}}
+        """
+        print("[RandomFixtures] moneyProfileResponseJSON seed=[\(seed)] income=[\(income.json)] "
+            + "residency=[\(residency.json)] living=[\(living.json)] version=[\(version)]")
+        return (
+            Data(json.utf8),
+            bandAnswered ? band : nil,
+            stateAnswered ? state : nil,
+            planAnswered ? plan : nil,
+            version
+        )
+    }
+
+    /// Gregorian explicitly, for the same reason `OnboardingViewModel` says:
+    /// the wire format is an ISO-8601 proleptic-Gregorian date, so the device's
+    /// own calendar must not decide how long February is.
+    private static let calendar = Calendar(identifier: .gregorian)
+
+    /// The length of a month, from `Calendar` rather than a hand-written table
+    /// and leap rule. `OnboardingViewModel` asks the same question the same way;
+    /// its own answer is private to a `@MainActor` view model and out of reach
+    /// from here, and two callers of `Calendar` is a cheaper duplication than
+    /// two leap rules that can disagree.
+    private static func daysInMonth(year: Int, month: Int) -> Int {
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = 1
+        guard let firstOfMonth = calendar.date(from: components),
+              let range = calendar.range(of: .day, in: .month, for: firstOfMonth) else {
+            return 31
+        }
+        return range.count
     }
 }
