@@ -33,6 +33,12 @@ data class SingleSchoolBasis(
   val residency: CollegeResidencyBasis,
   val blendedFigures: CollegeBlendedFigureBasis,
   val arrangements: List<LivingArrangement>,
+  /**
+   * Present exactly when this school is quoted an at-home total (RFC 166 §7) --
+   * the single-school twin of [ComparisonBasis.atHomeAssumption], so a parent
+   * reading a one-school report is told whose the `$0` is by the same mechanism.
+   */
+  val atHomeAssumption: AtHomeAssumptionBasis?,
   val academicYears: List<DatedFigures>,
   val aid: AidBasis,
 ) {
@@ -54,7 +60,10 @@ data class SingleSchoolBasis(
         // blended rows below it (RFC 157).
         add(blendedFigures.statement)
         add(arrangementStatement)
-        academicYears.forEach { add(yearStatement(it.vintage, it.academicYear)) }
+        // Immediately after the arrangement line, because it qualifies exactly
+        // one of the ways of living that line has just named.
+        atHomeAssumption?.let { add(it.statement) }
+        academicYears.forEach { add(yearStatement(it.group, it.academicYear)) }
         add(aid.statement)
       }
 
@@ -85,6 +94,7 @@ data class SingleSchoolBasis(
             ?.arrangements
             ?.map { it.arrangement }
             .orEmpty(),
+        atHomeAssumption = AtHomeAssumptionBasis.takeIf { cost.showsAtHomeArrangement },
         academicYears = DatedFigures.of(listOf(cost)),
         aid = AidBasis,
       )
@@ -92,20 +102,20 @@ data class SingleSchoolBasis(
     /**
      * The academic year of one family of figures, said for a single school.
      *
-     * Exhaustive on purpose: a vintage added to [ScorecardVintage] must fail to
+     * Exhaustive on purpose: a GROUP added to [FigureGroup] must fail to
      * compile here rather than ship a year with no sentence saying what it dates.
      */
     fun yearStatement(
-      vintage: ScorecardVintage,
+      group: FigureGroup,
       academicYear: String,
     ): String =
-      when (vintage) {
-        ScorecardVintage.PUBLISHED_PRICE -> {
+      when (group) {
+        FigureGroup.PUBLISHED_PRICE -> {
           "The published price figures shown for this school, which are tuition and fees and the parts of living " +
             "cost it publishes, come from the $academicYear academic year."
         }
 
-        ScorecardVintage.BLENDED_AVERAGE -> {
+        FigureGroup.BLENDED_AVERAGE -> {
           "The published price and the price after a financial aid offer shown for this school come from the " +
             "$academicYear academic year, and are averages blended across the ways of living."
         }

@@ -9,7 +9,9 @@ import ed.unicoach.coaching.costs.CollegeResidencyBasis
 import ed.unicoach.coaching.costs.ComparisonBasis
 import ed.unicoach.coaching.costs.ComponentRole
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.CostLine
 import ed.unicoach.coaching.costs.CostSources
+import ed.unicoach.coaching.costs.LineOrigin
 import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.MoneyProfileStatuses
 import ed.unicoach.coaching.costs.NetPrice
@@ -17,8 +19,11 @@ import ed.unicoach.coaching.costs.ResidencyBasis
 import ed.unicoach.coaching.costs.SingleSchoolBasis
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.WithheldReason
+import ed.unicoach.coaching.costs.applicableTuitionFor
+import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.LivingArrangement
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
@@ -78,8 +83,17 @@ private const val REPORT_HEADING = "Your student's college list"
 /** D-A said aloud: the parent must know the page moves under them, because it does. */
 private const val LIVE_LINE = "This report is live \u2014 it updates as your student updates their list."
 
-/** The one blank label for a figure this school does not publish. Never a zero. */
-private const val NOT_REPORTED = "Not reported by this school"
+/**
+ * The one blank label for a figure this school does not publish. Never a zero.
+ *
+ * `internal` for one reason, stated because visibility is otherwise noise here:
+ * it is a CLAIM ABOUT A NAMED SCHOOL, and RFC 166 gave three blanks it is false
+ * of (the publisher's suppression, a gap of ours, a figure held only in another
+ * year). The tests that pin where it may no longer appear assert on THIS string
+ * rather than on a copy of it, so a reworded label cannot leave them passing
+ * against words the page no longer prints.
+ */
+internal const val NOT_REPORTED = "Not reported by this school"
 
 /** The blank for a public school's tuition when the family's state is not on file. */
 private const val TUITION_WITHHELD = "Not shown \u2014 the state the family lives in is not on file"
@@ -114,8 +128,29 @@ private const val TOTALS_ABOVE = "the totals above"
 /** The blank in the cross-school table, where this school's own totals are below rather than above. */
 private const val TOTALS_IN_SCHOOL_TABLE_BELOW = "the totals in this school's own table below"
 
-/** The blank for a component that is not part of a way of living at all (no with-family housing figure exists). */
+/**
+ * The blank for a component that is not part of a way of living at all.
+ *
+ * No arrangement is short a role today: gate-2 D17 gave living at home the
+ * food-and-housing line it used to lack (RFC 166 §7), so all three ways of
+ * living carry all three roles. It stays because the mapping is data -- a fourth
+ * arrangement, or a role one of them does not price, must render as itself
+ * rather than as a school that failed to report something.
+ */
 private const val NOT_PART_OF_ARRANGEMENT = "Not a part of this way of living"
+
+/**
+ * The note beside the ONE amount on this page that is not a school's figure (RFC
+ * 166 §7, gate-2 D17): the `$0` food-and-housing line of living at home.
+ *
+ * Short, because the cell is a cell -- the whole sentence, and the reason the
+ * zero is honest, arrives above the table through the domain's own
+ * `AtHomeAssumptionBasis` statement, which this page renders verbatim with every
+ * other basis fact. This is the pointer that stops a parent reading the zero off
+ * the row as something the school published, and it says whose number it is in
+ * its own words: OURS, never theirs.
+ */
+private const val ASSUMED_BY_US = "our assumption, not a figure this school published"
 
 /** No partial sum is ever printed as a total; this says so where the total would have been. */
 private const val NO_TOTAL = "No total \u2014 a part of this price is missing"
@@ -464,11 +499,47 @@ private fun FlowContent.schoolSection(
     // where the family lives, which is the only thing the control decides here.
     p("report-school-where") { +"${cost.city}, ${cost.state}" }
     p("report-school-residency") { +residency.statement }
+    tuitionTierLine(cost)
     priceTable(cost)
     p("report-hint") { +SCHOOL_BLENDED_HINT }
     meritBlock(cost)
     debtBlock(cost)
   }
+}
+
+/**
+ * WHICH tuition prices this school publishes, in the domain's own sentence (RFC
+ * 166 §4) -- including `publisher_does_not_separate_in_district`, the one a
+ * family at a community college most needs, which reached the coach and never
+ * reached the parent reading this page alone.
+ *
+ * Printed only where this school publishes at least one tuition price. The
+ * decision is the DOMAIN's, read off [CollegeCost.residencyTiers] in an
+ * exhaustive `when` with no `else`: a SEVENTH basis must say here whether this
+ * page speaks it, rather than inheriting a silence or a sentence nobody chose.
+ * A school that publishes no tuition at all is `no_published_tuition`, and its
+ * one honest sentence is already on the page as the blank beside the tuition
+ * row -- printing it twice would say the same nothing in two voices.
+ *
+ * This used to be a count of [CollegeCost.publishedTuitionTiers] against the
+ * catch-all `single_published_price`, which was this page guarding around a
+ * basis that lied; the basis now names the empty case itself.
+ */
+private fun FlowContent.tuitionTierLine(cost: CollegeCost) {
+  val statement =
+    when (cost.residencyTiers) {
+      ResidencyTierBasis.THREE_TIERS_PUBLISHED,
+      ResidencyTierBasis.TWO_TIERS_PUBLISHED,
+      ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT,
+      ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER,
+      ResidencyTierBasis.SINGLE_PUBLISHED_PRICE,
+      -> cost.residencyTiers.statement
+
+      // No tier to name: the tuition row's own blank says why, in the school's
+      // own status words.
+      ResidencyTierBasis.NO_PUBLISHED_TUITION -> return
+    }
+  p("report-school-tuition-tiers") { +statement }
 }
 
 /**
@@ -489,7 +560,7 @@ private fun FlowContent.priceTable(cost: CollegeCost) {
     thead { priceTableHeaderRow(arrangements) }
     tbody {
       tuitionRow(cost, arrangements)
-      componentRows(arrangements)
+      componentRows(cost, arrangements)
       if (arrangements.isNotEmpty()) totalRow(arrangements)
       wholeSchoolRow(PUBLISHED_PRICE_COLUMN, publishedPriceCell(cost, TOTALS_ABOVE), columnCount)
       wholeSchoolRow(NET_PRICE_COLUMN, netPriceCell(cost, TOTALS_ABOVE), columnCount)
@@ -542,7 +613,57 @@ private fun TBODY.tuitionRow(
 private fun tuitionBlankFor(cost: CollegeCost): String {
   val control = cost.control
   val withheld = control is CollegeControl.Public && control.tuitionApplicable == TuitionApplicable.UNKNOWN
-  return if (withheld) TUITION_WITHHELD else NOT_REPORTED
+  if (withheld) return TUITION_WITHHELD
+  // WHICH tuition figure this cell would have carried is the domain's own
+  // decision ([applicableTuitionFor]), never a second control -> field map here.
+  val field = applicableTuitionFor(control) ?: return NOT_REPORTED
+  return blankFor(cost, field, NOT_REPORTED)
+}
+
+/**
+ * The reason a cell is empty, in the STORE's own words where it has any -- the
+ * one site on this page that decides what a blank says (RFC 166 §6).
+ *
+ * [NOT_REPORTED] is a statement ABOUT A NAMED SCHOOL, printed for a parent, and
+ * it is false of FOUR of the six statuses: the publisher's estimate, the
+ * publisher's suppression, a figure that does not apply at this school, and a
+ * figure we have not collected -- which includes RFC 166 §3's year gap, a figure
+ * this school DID publish, held only at another academic year. The page prints
+ * the domain's sentence for those instead of blaming the school, and authors no
+ * copy of its own: the words are [FigureStatusCopy]'s, carried here on
+ * [CollegeCost.statusNoteFor].
+ *
+ * EXHAUSTIVE over the status, not a test for the three bad cases: a seventh
+ * status must decide at compile time whether it may be spoken as this school's
+ * silence.
+ *
+ * [otherwise] is the caller's own blank for "the school simply does not report
+ * it" -- [NOT_REPORTED] in a cell, the debt paragraph's own sentence below --
+ * and it is also what a field with NO ROW AT ALL gets: we hold no status, so we
+ * have nothing else to say.
+ */
+private fun blankFor(
+  cost: CollegeCost,
+  field: CostField,
+  otherwise: String,
+): String {
+  val note = cost.statusNoteFor(field) ?: return otherwise
+  return when (note.status) {
+    // The one status [otherwise] is TRUE of: the school reported nothing here.
+    // The page keeps its own cell-sized words for it rather than lengthening
+    // every ordinary blank on the page into a sentence.
+    FigureStatus.NOT_REPORTED_BY_INSTITUTION -> otherwise
+
+    // [FigureStatus.REPORTED] carries no note at all, so it cannot arrive here;
+    // it is named rather than folded into an `else` so the `when` stays a
+    // decision about every status.
+    FigureStatus.REPORTED,
+    FigureStatus.IMPUTED_BY_PUBLISHER,
+    FigureStatus.SUPPRESSED_BY_PUBLISHER,
+    FigureStatus.NOT_APPLICABLE,
+    FigureStatus.NOT_COLLECTED_BY_US,
+    -> note.statement
+  }
 }
 
 /**
@@ -556,11 +677,14 @@ private fun tuitionBlankFor(cost: CollegeCost): String {
  * silently rendering no row here while still being counted in the total.
  *
  * A role is a row only when some way of living on this table is actually made of
- * it, so a school priced only for living at home has NO housing-and-food row at
- * all: the Scorecard publishes no with-family housing figure, and a blank row
- * would invite reading it as a school that failed to report one.
+ * it. No arrangement is short a role today -- D17 gave living at home its own
+ * `$0` food-and-housing line (RFC 166 §7) -- so the filter guards a fourth
+ * arrangement, not the with-family column.
  */
-private fun TBODY.componentRows(arrangements: List<ArrangementCost>) {
+private fun TBODY.componentRows(
+  cost: CollegeCost,
+  arrangements: List<ArrangementCost>,
+) {
   ComponentRole.entries
     .filter { role -> arrangements.any { role.fieldOf(it.arrangement) != null } }
     .forEach { role ->
@@ -568,13 +692,31 @@ private fun TBODY.componentRows(arrangements: List<ArrangementCost>) {
         rowHeader(role.label)
         arrangements.forEach { arrangement ->
           val field = role.fieldOf(arrangement.arrangement)
-          val amount = arrangement.componentLines.firstOrNull { it.field == field }?.amountUsd
-          val blank = if (field == null) NOT_PART_OF_ARRANGEMENT else NOT_REPORTED
-          valueCell(arrangement.arrangement.label, figureOf(amountUsd = amount, blank = blank))
+          val line = arrangement.componentLines.firstOrNull { it.field == field }
+          val blank = if (field == null) NOT_PART_OF_ARRANGEMENT else blankFor(cost, field, NOT_REPORTED)
+          valueCell(
+            arrangement.arrangement.label,
+            // A note belongs to a figure that EXISTS, which is exactly the
+            // assumed at-home zero: [figureOf] attaches it to the amount and
+            // drops it with the blank, so the sentence can never end up
+            // describing a cell with no number in it.
+            figureOf(amountUsd = line?.amountUsd, blank = blank, note = assumedNoteFor(line)),
+          )
         }
       }
     }
 }
+
+/**
+ * Whose number this line carries, said beside the number -- for the one line in
+ * this domain whose amount is not a publisher's (RFC 166 §7).
+ *
+ * Read off [CostLine.origin] rather than off the field: the domain decides which
+ * amounts are ours, and a renderer testing for a field name would be a second
+ * rule free to disagree with the type that refuses every other assumed line at
+ * construction.
+ */
+private fun assumedNoteFor(line: CostLine?): String? = if (line?.origin == LineOrigin.ASSUMED_BY_UNICOACH) ASSUMED_BY_US else null
 
 /** The per-arrangement total, or the blank that says a part is missing -- never a partial sum. */
 private fun TBODY.totalRow(arrangements: List<ArrangementCost>) {
@@ -712,7 +854,10 @@ private fun blendedBlankFor(
 ): String =
   when (val reason = cost.withheldReasonFor(field)) {
     WithheldReason.IN_STATE_ONLY_FIGURE -> withheldBlankFor(reason, totals)
-    null -> NOT_REPORTED
+
+    // Not withheld from this family: whether the blank is the school's silence
+    // or somebody else's is [blankFor]'s decision, from the store's status.
+    null -> blankFor(cost, field, NOT_REPORTED)
   }
 
 /** The row's own label, in the leading header cell. */
@@ -793,7 +938,16 @@ private fun FlowContent.debtBlock(cost: CollegeCost) {
   val debt = cost.medianDebtAtCompletionUsd
   section("report-debt") {
     if (debt == null) {
-      p { +"This school does not report the federal loan debt students carried when they finished." }
+      // The Scorecard suppresses this figure for privacy more often than it
+      // suppresses any other, so the school's-silence sentence was the WRONG
+      // one at exactly the schools that reach it most.
+      p {
+        +blankFor(
+          cost,
+          CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
+          "This school does not report the federal loan debt students carried when they finished.",
+        )
+      }
     } else {
       p {
         +(

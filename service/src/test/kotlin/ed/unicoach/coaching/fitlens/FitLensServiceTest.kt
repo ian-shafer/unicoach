@@ -9,9 +9,13 @@ import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.exhaustedBudgetService
 import ed.unicoach.coaching.budget.generousBudgetService
+import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
+import ed.unicoach.coaching.costs.canonical.CollegeFigures
+import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.ClaimsDao
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegeIpedsDao
@@ -19,26 +23,37 @@ import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.FitLensRunsDao
 import ed.unicoach.db.dao.FitSuggestionsDao
+import ed.unicoach.db.dao.MoneyVocabularyFixture
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.ClaimKind
 import ed.unicoach.db.models.ClaimOrigin
 import ed.unicoach.db.models.ClaimSubject
 import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
+import ed.unicoach.db.models.CohortAidScope
+import ed.unicoach.db.models.CohortPopulation
+import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.CollegeSearchOutcome
+import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.LlmRequestId
+import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewClaim
+import ed.unicoach.db.models.NewCohortMoneyStat
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.NewCollegeProgramsCensus
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.queue.JobResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
@@ -57,6 +72,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -64,6 +80,15 @@ class FitLensServiceTest {
   companion object {
     private lateinit var connection: Connection
     private lateinit var database: Database
+
+    /** `colleges.control` for a public institution — the IPEDS code, as the loader reads it. */
+    private const val CONTROL_PUBLIC = 1
+
+    /** `colleges.control` for a private not-for-profit institution. */
+    private const val CONTROL_PRIVATE_NONPROFIT = 2
+
+    /** The vintage every fixture net-price row carries, stated so a test can assert the digest speaks it. */
+    private const val NET_PRICE_VINTAGE = "2022-23"
 
     @JvmStatic
     @BeforeAll
@@ -104,6 +129,11 @@ class FitLensServiceTest {
     // Truncating `colleges` does not empty them, but another suite on this
     // shared database does, so each suite puts them back.
     CodebookReferenceFixture.seed(session)
+    // The five money-vocabulary tables every `cohort_money_stats` row
+    // foreign-keys into (RFC 158 P2). A WRITE PRECONDITION: without them the
+    // seeder below fails on a foreign key that has nothing to do with what these
+    // tests assert. Idempotent, so it is safe after every TRUNCATE.
+    MoneyVocabularyFixture.seed(session)
   }
 
   private val session =
@@ -147,6 +177,7 @@ class FitLensServiceTest {
     provider: ChatProvider,
     cfg: FitLensConfig = config,
     budget: BudgetService = generousBudget,
+    reader: CanonicalCostReader = DbCanonicalCostReader(database),
   ): FitLensService =
     FitLensService(
       database,
@@ -155,7 +186,34 @@ class FitLensServiceTest {
       cfg,
       budget,
       codebook,
+      reader,
     )
+
+  /**
+   * A canonical reader whose every door THROWS [failure] -- the substitution
+   * seam the injected [CanonicalCostReader] exists for.
+   *
+   * The alternative is what this test used to do: build a second whole service
+   * over a [Database] opened from config and then closed, which proves the read
+   * throws on a dead pool but cannot carry the rest of a passing run through it.
+   * A stub fails the ONE read and leaves everything else alive, which is the
+   * behaviour under test.
+   */
+  private class ThrowingCostReader(
+    private val failure: () -> Throwable,
+  ) : CanonicalCostReader {
+    override fun read(
+      session: SqlSession,
+      collegeIds: List<CollegeId>,
+    ): Map<CollegeId, CollegeFigures> = throw failure()
+
+    override fun readCohortStats(
+      session: SqlSession,
+      collegeIds: List<CollegeId>,
+    ): Map<CollegeId, CollegeFigures> = throw failure()
+
+    override suspend fun readCohortStats(collegeIds: List<CollegeId>): Map<CollegeId, CollegeFigures> = throw failure()
+  }
 
   // ---------------------------------------------------------------------------
   // Fakes
@@ -243,54 +301,112 @@ class FitLensServiceTest {
     repeat(n) { createClaim(studentId, "claim number $it") }
   }
 
-  private fun createCollege(name: String = "Test College"): CollegeId =
-    CollegesDao
-      .upsert(
+  /**
+   * One retrievable college, in BOTH stores: the `colleges` row the search index
+   * is rebuilt from, and the canonical `cohort_money_stats` row the digest's net
+   * price is now read from (RFC 166 §9).
+   *
+   * The two net prices are separate parameters on purpose. [indexNetPricePerYearUsd]
+   * is the FILTER and RANKING column and belongs to `shape/05`; [netPriceReading]
+   * is what a family is told. A test may set them apart to prove which surface
+   * reads which.
+   */
+  private fun createCollege(
+    name: String = "Test College",
+    control: Int = CONTROL_PUBLIC,
+    indexNetPricePerYearUsd: Int? = 20_000,
+    netPriceReading: FigureReading<Double> = FigureReading.Present(20_000.0, ValueBearingStatus.REPORTED),
+    netPriceVintage: String = NET_PRICE_VINTAGE,
+    // No canonical row at all -- the college the fill has never reached, and the
+    // shape a DEGRADED read leaves every college in (RFC 166 §9).
+    seedsNetPriceRow: Boolean = true,
+  ): CollegeId {
+    val collegeId =
+      CollegesDao
+        .upsert(
+          session,
+          NewCollege(
+            housingAndFoodOnCampusPerYearUsd = null,
+            housingAndFoodOffCampusPerYearUsd = null,
+            booksAndSuppliesPerYearUsd = null,
+            otherExpensesOnCampusPerYearUsd = null,
+            otherExpensesOffCampusPerYearUsd = null,
+            otherExpensesWithFamilyPerYearUsd = null,
+            ipedsUnitId = ipedsUnitIdCounter++,
+            opeid = null,
+            name = name,
+            city = "Townsville",
+            state = "CA",
+            region = 8,
+            locale = 13,
+            latitude = 34.0,
+            longitude = -118.0,
+            control = control,
+            undergradEnrollmentHeadcount = 5000,
+            admissionRateShare = 0.5,
+            satAverageEquivalentScore = 1200,
+            costOfAttendancePerYearUsd = 40000,
+            netPricePerYearUsd = indexNetPricePerYearUsd,
+            netPricePerYearIncomeQ1Usd = null,
+            netPricePerYearIncomeQ2Usd = null,
+            netPricePerYearIncomeQ3Usd = null,
+            netPricePerYearIncomeQ4Usd = null,
+            netPricePerYearIncomeQ5Usd = null,
+            tuitionAndFeesInStatePerYearUsd = 12000,
+            tuitionAndFeesOutOfStatePerYearUsd = 30000,
+            completionRate150pct4yrShare = 0.7,
+            medianEarnings10yAfterEntryUsd = 55000,
+            medianDebtAtCompletionUsd = null,
+            pellShare = 0.4,
+            website = null,
+          ),
+        ).getOrThrow()
+        .id
+    if (seedsNetPriceRow) seedNetPriceStat(collegeId, control, netPriceReading, netPriceVintage)
+    // Both search entry points read `college_search_index` (RFC 150 D53),
+    // which is derived state the ingest rebuilds in its own phase — so a
+    // test that seeds `colleges` directly must rebuild it or the college is
+    // invisible to retrieval.
+    CollegesDao.rebuildSearchIndex(session).getOrThrow()
+    return collegeId
+  }
+
+  /**
+   * The college's canonical `avg_net_price` row — the figure the digest now
+   * speaks.
+   *
+   * The residency scope is keyed off CONTROL exactly as `CanonicalMoneyLoader`
+   * keys it, never hand-asserted: the Scorecard builds this average for
+   * in-state-rate-paying undergraduates at a PUBLIC school and for everybody at
+   * a private one (RFC 157), which is the whole reason the digest's key is read
+   * off the row.
+   */
+  private fun seedNetPriceStat(
+    collegeId: CollegeId,
+    control: Int,
+    reading: FigureReading<Double>,
+    vintage: String,
+  ) {
+    CanonicalMoneyDao
+      .insertCohortMoneyStats(
         session,
-        NewCollege(
-          housingAndFoodOnCampusPerYearUsd = null,
-          housingAndFoodOffCampusPerYearUsd = null,
-          booksAndSuppliesPerYearUsd = null,
-          otherExpensesOnCampusPerYearUsd = null,
-          otherExpensesOffCampusPerYearUsd = null,
-          otherExpensesWithFamilyPerYearUsd = null,
-          ipedsUnitId = ipedsUnitIdCounter++,
-          opeid = null,
-          name = name,
-          city = "Townsville",
-          state = "CA",
-          region = 8,
-          locale = 13,
-          latitude = 34.0,
-          longitude = -118.0,
-          control = 1,
-          undergradEnrollmentHeadcount = 5000,
-          admissionRateShare = 0.5,
-          satAverageEquivalentScore = 1200,
-          costOfAttendancePerYearUsd = 40000,
-          netPricePerYearUsd = 20000,
-          netPricePerYearIncomeQ1Usd = null,
-          netPricePerYearIncomeQ2Usd = null,
-          netPricePerYearIncomeQ3Usd = null,
-          netPricePerYearIncomeQ4Usd = null,
-          netPricePerYearIncomeQ5Usd = null,
-          tuitionAndFeesInStatePerYearUsd = 12000,
-          tuitionAndFeesOutOfStatePerYearUsd = 30000,
-          completionRate150pct4yrShare = 0.7,
-          medianEarnings10yAfterEntryUsd = 55000,
-          medianDebtAtCompletionUsd = null,
-          pellShare = 0.4,
-          website = null,
+        listOf(
+          NewCohortMoneyStat(
+            collegeId = collegeId.value,
+            measure = MoneyMeasure.AVG_NET_PRICE,
+            population = CohortPopulation.TITLE_IV_AIDED_UNDERGRADUATES,
+            residencyScope =
+              if (control == CONTROL_PUBLIC) CohortResidencyScope.IN_STATE_RATE_PAYING else CohortResidencyScope.ALL,
+            aidScope = CohortAidScope.FEDERAL_AID_RECEIVING,
+            incomeBand = null,
+            vintage = vintage,
+            reading = reading,
+            source = MoneySource.SCORECARD,
+            sourceVariable = "NPT4",
+          ),
         ),
       ).getOrThrow()
-      .id
-      .also {
-        // Both search entry points read `college_search_index` (RFC 150 D53),
-        // which is derived state the ingest rebuilds in its own phase — so a
-        // test that seeds `colleges` directly must rebuild it or the college is
-        // invisible to retrieval.
-        CollegesDao.rebuildSearchIndex(session).getOrThrow()
-      }
+  }
 
   private fun createCollegeWithProgram(
     cipCode: String,
@@ -369,6 +485,44 @@ class FitLensServiceTest {
   }
 
   private fun reasonDoc(collegeId: CollegeId): String = """{"collegeId":"${collegeId.asString}","rationale":"you would love it here"}"""
+
+  /** A scripted two-call pass: [queryDoc] for call #1, then a choice of [collegeId] for call #2. */
+  private fun providerFor(
+    collegeId: CollegeId,
+    queryDoc: String = """{"states":["CA"]}""",
+  ): ScriptedProvider =
+    ScriptedProvider(
+      terminals = listOf(completed(queryDoc), completed(reasonDoc(collegeId), toolName = "record_fit_reason")),
+    )
+
+  /** Runs one full pass and returns the USER message call #2 was handed — the digest under test. */
+  private suspend fun reasonContextOf(
+    studentId: StudentId,
+    collegeId: CollegeId,
+  ): String {
+    val provider = providerFor(collegeId)
+    service(provider).discover(studentId)
+    return ed.unicoach.chat.ContentBlocks
+      .renderText(
+        provider.requests[1]
+          .messages
+          .single()
+          .content,
+      )
+  }
+
+  /**
+   * The ONE digest line describing [collegeId], taken out of the reason-call
+   * message.
+   *
+   * The paragraph above the college list explains the same key names in prose,
+   * so a negative `contains` over the whole message would fire on the
+   * explanation rather than on the claim the line makes about this college.
+   */
+  private fun collegeLine(
+    context: String,
+    collegeId: CollegeId,
+  ): String = context.lines().single { it.startsWith("- collegeId=[${collegeId.asString}]") }
 
   // ---------------------------------------------------------------------------
   // Tests
@@ -1026,16 +1180,249 @@ class FitLensServiceTest {
               .content,
           )
       assertTrue(
-        call2Text.contains("inStateNetPricePerYearUsd=[20000]"),
-        "the retrieved net price must reach the model labelled as the in-state figure, message=[$call2Text]",
+        call2Text.contains("netPricePerYearUsd=[20000] netPriceBasis=[in_state_rate_paying]"),
+        "the retrieved net price must reach the model with its in-state BASIS beside it, message=[$call2Text]",
       )
       assertTrue(
         call2Text.contains("is the school's own published in-state net price, not this family's"),
         "the label must say whose figure it is, message=[$call2Text]",
       )
       assertTrue(
-        !call2Text.contains("netPricePerYearUsd=[20000]"),
-        "no unlabelled net price may reach the model, message=[$call2Text]",
+        !call2Text.contains("inStateNetPricePerYearUsd"),
+        "the basis is a field, never a key spelling a reader must decode, message=[$call2Text]",
+      )
+    }
+
+  @Test
+  fun `call 2 speaks a suppressed net price as its status, never a number and never the bare local wording`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      // The canonical row exists and says the publisher withheld the figure --
+      // a fact a NULL column could not carry (RFC 166 §6).
+      val college =
+        createCollege(
+          name = "Suppressed Net Price U",
+          netPriceReading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+        )
+
+      val call2Text = reasonContextOf(student, college)
+
+      assertTrue(
+        call2Text.contains(
+          "netPriceStatus=[suppressed_by_publisher] " +
+            "netPriceNote=[This figure is withheld by the publisher for privacy.]",
+        ),
+        "a suppressed figure must ride as a status CODE with its sentence beside it, message=[$call2Text]",
+      )
+      assertTrue(
+        !call2Text.contains("netPricePerYearUsd="),
+        "and the dollar key must be OMITTED, never made to hold a sentence, message=[$call2Text]",
+      )
+      assertTrue(
+        call2Text.contains("netPriceBasis=[in_state_rate_paying]"),
+        "the row we DO hold still says which students it was built on, message=[$call2Text]",
+      )
+      assertTrue(
+        !call2Text.contains("not reported"),
+        "the suppressed figure must not collapse into the bare local wording, message=[$call2Text]",
+      )
+      assertTrue(
+        !call2Text.contains("=[20000]"),
+        "the index copy of the number must not be printed for a suppressed figure, message=[$call2Text]",
+      )
+    }
+
+  @Test
+  fun `call 2 does not label a private college's all-students net price as in-state`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      // A PRIVATE school: the Scorecard builds its net price for EVERY student,
+      // so the row's residency_scope is `all` and no in-state claim is true.
+      val college = createCollege(name = "Private Candidate College", control = CONTROL_PRIVATE_NONPROFIT)
+
+      val call2Text = reasonContextOf(student, college)
+
+      val line = collegeLine(call2Text, college)
+
+      assertTrue(
+        line.contains("netPricePerYearUsd=[20000] netPriceBasis=[all]"),
+        "an all-students figure must reach the model under the SAME key, with basis `all`, line=[$line]",
+      )
+      assertTrue(
+        !line.contains("in_state_rate_paying") && !call2Text.contains("inStateNetPricePerYearUsd"),
+        "a scope=all row must never be labelled in-state, message=[$call2Text]",
+      )
+    }
+
+  @Test
+  fun `call 2 states the net price's vintage`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "Dated Net Price U")
+
+      val call2Text = reasonContextOf(student, college)
+
+      assertTrue(
+        call2Text.contains("netPriceVintage=[$NET_PRICE_VINTAGE]"),
+        "the digest must state the year its figure describes, message=[$call2Text]",
+      )
+    }
+
+  @Test
+  fun `a canonical net-price read that THROWS still finishes the pass, and the digest carries no net-price key at all`() =
+    runBlocking {
+      // The digest number is ADVISORY. Aborting the pass on it threw away a
+      // completed retrieval and a paid LLM call, and left the student with NO
+      // suggestions rather than suggestions carrying one fact less.
+      //
+      // But the degrade may not SPEAK. "We have not collected this figure yet."
+      // is a claim about unicoach's data coverage, made to a model that
+      // narrates it to a student; a broken read knows nothing about this
+      // school's net price, so the run says nothing about it.
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "Broken Read U")
+      val provider = providerFor(college)
+
+      val result =
+        service(provider, reader = ThrowingCostReader { IllegalStateException("the canonical store is unreachable") })
+          .discover(student)
+
+      assertTrue(result is FitLensResult.Applied, "a failed net-price read must not fail the pass, got: $result")
+      assertEquals(1, suggestionRows(student), "the student still gets their suggestion")
+
+      val call2Text =
+        ed.unicoach.chat.ContentBlocks
+          .renderText(
+            provider.requests[1]
+              .messages
+              .single()
+              .content,
+          )
+      assertTrue(call2Text.contains(college.asString), "the college itself must still reach the model, message=[$call2Text]")
+      assertTrue(
+        !call2Text.contains("netPricePerYearUsd") && !call2Text.contains("netPriceStatus"),
+        "an unavailable read omits every net-price key entirely, message=[$call2Text]",
+      )
+      assertTrue(
+        !call2Text.contains("netPriceVintage") && !call2Text.contains("netPriceBasis"),
+        "and omits its year and its basis with them, message=[$call2Text]",
+      )
+      assertTrue(
+        !call2Text.contains("We have not collected this figure yet."),
+        "a broken read must never be spoken as a claim about our data coverage, message=[$call2Text]",
+      )
+      assertTrue(
+        !call2Text.contains("=[20000]"),
+        "and never falls back to the index copy of the number, message=[$call2Text]",
+      )
+    }
+
+  @Test
+  fun `a college we hold no canonical row for still says so, which is the sentence the broken read may not borrow`() =
+    runBlocking {
+      // The twin of the test above, and the reason the two states may not
+      // share one sentence: HERE the read worked and the answer is "we have no
+      // row for this school", which is true and belongs in the digest.
+      val student = createStudent()
+      createClaims(student, 3)
+      val uncollected = createCollege(name = "No Canonical Row U", seedsNetPriceRow = false)
+
+      val call2Text = reasonContextOf(student, uncollected)
+
+      val line = collegeLine(call2Text, uncollected)
+
+      assertTrue(
+        line.contains(
+          "netPriceStatus=[not_collected_by_us] netPriceNote=[We have not collected this figure yet.]",
+        ),
+        "a college with no row is one we have not collected, said as a code plus its sentence, line=[$line]",
+      )
+      assertTrue(
+        !line.contains("netPricePerYearUsd="),
+        "and no dollar key is printed for a figure we do not hold, line=[$line]",
+      )
+      assertTrue(
+        !line.contains("netPriceVintage") && !line.contains("netPriceBasis"),
+        "with no row there is no source to date and no population to name, line=[$line]",
+      )
+      assertTrue(
+        !line.contains("not dated by the source"),
+        "and the digest never dates a figure that does not exist, line=[$line]",
+      )
+      assertTrue(
+        !line.contains("=[20000]"),
+        "and never falls back to the index copy of the number, line=[$line]",
+      )
+    }
+
+  @Test
+  fun `a cancelled pass unwinds at the net-price read instead of degrading into a second billed call`() =
+    runBlocking {
+      // CancellationException IS an Exception, so a bare `catch (e: Exception)`
+      // absorbs the cancellation of a turn the caller already abandoned and
+      // walks on into LLM call #2 -- billed, for nobody. Every sibling in this
+      // package rethrows it first; this one now does too.
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "Cancelled Pass U")
+      val provider = providerFor(college)
+
+      assertFailsWith<CancellationException> {
+        service(provider, reader = ThrowingCostReader { CancellationException("the job was cancelled") })
+          .discover(student)
+      }
+
+      assertEquals(1, provider.requests.size, "the cancelled pass must never reach the second, BILLED call")
+      assertEquals(0, suggestionRows(student), "and writes nothing")
+    }
+
+  @Test
+  fun `the search filter still reads the index column, not the canonical figure`() =
+    runBlocking {
+      // The filter and ranking column `net_price_per_year_usd` is shape/05's and
+      // this slice moves only the DIGEST (RFC 166 §9). The two numbers are seeded
+      // APART so the assertion cannot pass by coincidence: the index says 20000,
+      // the canonical store says 9000.
+      val student = createStudent()
+      createClaims(student, 3)
+      val college =
+        createCollege(
+          name = "Split Net Price U",
+          indexNetPricePerYearUsd = 20_000,
+          netPriceReading = FigureReading.Present(9_000.0, ValueBearingStatus.REPORTED),
+        )
+
+      val filtered =
+        providerFor(college, queryDoc = """{"maxNetPricePerYearUsd":15000}""").also {
+          service(it).discover(student)
+        }
+      assertEquals(
+        1,
+        filtered.requests.size,
+        "a max of 15000 must exclude the college on its INDEX price of 20000, not admit it on the canonical 9000",
+      )
+
+      // A SECOND student: the first pass wrote an applied run row, and the
+      // freshness gate would skip a re-run of the same unchanged model.
+      val other = createStudent()
+      createClaims(other, 3)
+      val admitted = providerFor(college, queryDoc = """{"maxNetPricePerYearUsd":25000}""")
+      service(admitted).discover(other)
+      val call2Text =
+        ed.unicoach.chat.ContentBlocks
+          .renderText(
+            admitted.requests[1]
+              .messages
+              .single()
+              .content,
+          )
+      assertTrue(
+        call2Text.contains("netPricePerYearUsd=[9000] netPriceBasis=[in_state_rate_paying]"),
+        "the digest must speak the CANONICAL figure even though the filter used the index one, message=[$call2Text]",
       )
     }
 

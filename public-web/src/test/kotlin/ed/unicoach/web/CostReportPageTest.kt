@@ -1,12 +1,19 @@
 package ed.unicoach.web
 
+import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
 import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
+import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
+import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
+import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.web.render.NOT_REPORTED
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.server.testing.testApplication
@@ -208,8 +215,25 @@ class CostReportPageTest {
     assertTrue(body.contains("No total"), "an arrangement missing a part must show no total")
   }
 
+  /**
+   * REVERSAL of committed behaviour, gate-2 D17 (RFC 166 §7). Until this slice
+   * this test was `a school priced only for living at home shows no housing and
+   * food line` and asserted the opposite -- `assertFalse(body.contains("Housing
+   * and food"))` -- because a `$0` there was held to be a fabricated fact about
+   * a school that published nothing.
+   *
+   * D17 overturns that for living at home ALONE: no source publishes a
+   * with-family food-and-housing figure because there is nothing to publish --
+   * eating at home is not free, but it is not a new cost that ENROLLING creates.
+   * So the line exists, its amount is zero, and the zero is OURS. The page's job
+   * is to print it as ours, and this test is what stops it printing as the
+   * school's.
+   *
+   * Every other arrangement keeps both committed rules exactly, which the tail
+   * of this test pins: no partial total, and no silent zero.
+   */
   @Test
-  fun `a school priced only for living at home shows no housing and food line`() {
+  fun `living at home shows our own zero housing and food line, and never as the school's figure`() {
     val atHomeOnly =
       costFixture(
         name = "Hillside College",
@@ -222,7 +246,45 @@ class CostReportPageTest {
     val body = render(costProfile(listOf(atHomeOnly), answeredMoney()))
 
     assertTrue(body.contains("living at home"), "the way of living must be named")
-    assertFalse(body.contains("Housing and food"), "living at home has no housing-and-food figure to show")
+    assertTrue(body.contains("Housing and food"), "living at home now carries a food-and-housing line")
+    assertTrue(
+      body.contains("\$0<span class=\"report-note\">our assumption, not a figure this school published</span>"),
+      "the zero must print WITH the note that says whose number it is: [$body]",
+    )
+    // This school is one part short of an at-home TOTAL (it publishes no books
+    // allowance) -- and the sentence is said ANYWAY, because the `$0` is
+    // printed anyway. The gate follows the LINE, not the total: a zero on the
+    // page with nothing above it saying whose zero it is, is the exact defect
+    // D17 exists to prevent, and it is reachable at every part-published school.
+    assertTrue(
+      body.contains(AT_HOME_ASSUMPTION_STATEMENT),
+      "wherever the zero is shown, the sentence that says whose it is must be shown too: [$body]",
+    )
+    // And where a total IS settled, the whole sentence is said the same way: the
+    // domain's, not the page's, reaching the parent through the same basis list
+    // every other honesty statement does.
+    val withAtHomeTotal = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    assertTrue(withAtHomeTotal.contains("\$16,200"), "the at-home total is complete: tuition, our zero, books, other expenses")
+    assertTrue(
+      withAtHomeTotal.contains(AT_HOME_ASSUMPTION_STATEMENT),
+      "the assumption must be stated in full above the table, in the domain's own words",
+    )
+    // The one thing the note exists to prevent: the zero read as a school's
+    // silence, or as a figure the school reported.
+    assertFalse(
+      body.contains("\$0<span class=\"report-blank\""),
+      "our assumed amount is a figure that exists, never a labelled blank",
+    )
+
+    // And the limit of the reversal: a `$0` on its own is not a price list, so a
+    // school that publishes nothing at all for living at home gets no at-home
+    // arrangement -- our assumption alone can never conjure one.
+    val noAtHomeFigures = requireNotNull(privateSchool().breakdown) { "the fixture must publish one component" }
+    assertEquals(
+      emptyList(),
+      noAtHomeFigures.arrangements.map { it.arrangement.label }.filter { it == "living at home" },
+      "an arrangement whose only line is our assumption is not an arrangement this school prices",
+    )
   }
 
   @Test
@@ -543,6 +605,193 @@ class CostReportPageTest {
     assertTrue(
       body.contains("so it is not the sum of the parts above it. $clause"),
       "and so must the per-school hint",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Whose gap a blank is (RFC 166 §6): the page may not blame the school for it
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A school that publishes EVERY part of one way of living but one, so the page
+   * has exactly one blank cell on it and an assertion about the blank cannot
+   * pass on some other row's words.
+   */
+  private fun oneBlankSchool(
+    absenceStatuses: Map<CostField, AbsenceStatus> = emptyMap(),
+    heldOnlyInOtherYear: Map<CostField, Int> = emptyMap(),
+    booksAndSupplies: Int? = null,
+    medianDebt: Int? = 21000,
+  ): CollegeCost =
+    costFixture(
+      name = "Fulton College",
+      tuitionInState = 30000,
+      publishedPrice = 52000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+      housingAndFoodOnCampus = 10000,
+      booksAndSupplies = booksAndSupplies,
+      otherExpensesOnCampus = 2000,
+      medianDebt = medianDebt,
+      offersOnCampusHousing = true,
+      absenceStatuses = absenceStatuses,
+      heldOnlyInOtherYear = heldOnlyInOtherYear,
+    )
+
+  @Test
+  fun `a figure the publisher suppressed is spoken as the publisher's, never as this school's silence`() {
+    // The commonest absence in the Scorecard, and the sentence a parent is owed:
+    // saying "not reported by this school" about a figure the school DID file,
+    // and the publisher withheld for privacy, is a false statement about a named
+    // school printed for a family.
+    val body =
+      render(
+        costProfile(
+          listOf(
+            oneBlankSchool(absenceStatuses = mapOf(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER)),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    assertTrue(
+      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER))),
+      "the blank says whose gap it is, in the domain's own words: [$body]",
+    )
+    assertFalse(
+      body.contains(NOT_REPORTED),
+      "and the school is not blamed for it anywhere on the page",
+    )
+  }
+
+  @Test
+  fun `a gap of OURS is spoken as ours, never as this school's silence`() {
+    val body =
+      render(
+        costProfile(
+          listOf(oneBlankSchool(absenceStatuses = mapOf(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to AbsenceStatus.NOT_COLLECTED_BY_US))),
+          answeredMoney(),
+        ),
+      )
+
+    assertTrue(
+      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.NOT_COLLECTED_BY_US))),
+      "our own gap is ours to own: [$body]",
+    )
+    assertFalse(body.contains(NOT_REPORTED), "the school never carries our gap")
+  }
+
+  @Test
+  fun `a figure held only in another academic year names both years, and is never the school's silence`() {
+    // The case tier-0 fix 6 created, on the surface that is LIVE for every
+    // already-shared link: the school published this figure, we hold it only for
+    // another year, and no total may mix years. The chat tool obeyed that rule
+    // from the day it landed; this page printed "Not reported by this school".
+    val body =
+      render(
+        costProfile(
+          listOf(oneBlankSchool(heldOnlyInOtherYear = mapOf(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to 1200))),
+          answeredMoney(),
+        ),
+      )
+
+    assertTrue(
+      body.contains(FigureStatusCopy.yearGapStatementOf(FIXTURE_PRICE_ACADEMIC_YEAR, FIXTURE_YEAR_GAP_ACADEMIC_YEAR)),
+      "the blank names the year shown and the year held, in the domain's own sentence: [$body]",
+    )
+    assertFalse(body.contains(NOT_REPORTED), "a figure the school published is not its silence")
+    assertFalse(body.contains("\$1,200"), "and the other year's number is never quoted into this year's table")
+  }
+
+  @Test
+  fun `a school that really reported nothing still reads as the school's own silence`() {
+    // The other half of the rule: [NOT_REPORTED] is not retired,
+    // it is confined to the one status it is true of. A blank that stopped
+    // saying anything about the school would be the opposite defect.
+    val body = render(costProfile(listOf(oneBlankSchool()), answeredMoney()))
+
+    assertTrue(body.contains(NOT_REPORTED), "a genuinely unreported figure is still labelled as one")
+  }
+
+  @Test
+  fun `a median debt the publisher suppressed is not read as a school that does not report it`() {
+    // The debt paragraph is prose rather than a cell, and it made the same claim
+    // the cells did. `median_debt_at_completion` is a COHORT figure, so it is
+    // also the case a status read through the price-only door could not see.
+    val body =
+      render(
+        costProfile(
+          listOf(
+            oneBlankSchool(
+              booksAndSupplies = 1000,
+              medianDebt = null,
+              absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+            ),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    assertTrue(
+      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER))),
+      "the privacy suppression is stated: [$body]",
+    )
+    assertFalse(
+      body.contains("This school does not report the federal loan debt"),
+      "and the school is not said to have withheld what the publisher withheld",
+    )
+  }
+
+  @Test
+  fun `the tuition tiers this school publishes are stated, and only where it publishes one`() {
+    // RFC 166 §4's sentence reached the coach and never reached the parent, who
+    // reads this page alone. It is printed off [CollegeCost.publishedTuitionTiers]
+    // -- the ONE derivation of which tiers exist -- so a school that publishes no
+    // tuition at all is never told to publish "one tuition price".
+    val stateBody = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    assertTrue(
+      stateBody.contains(ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.statement),
+      "a school with an in-state and an out-of-state price says what it does not separate: [$stateBody]",
+    )
+
+    val noTuition = costFixture(name = "Silent Tuition College", housingAndFoodOnCampus = 8000)
+    val silentBody = render(costProfile(listOf(noTuition), answeredMoney()))
+    assertFalse(
+      silentBody.contains(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.statement),
+      "a school that publishes no tuition price must not be said to publish one: [$silentBody]",
+    )
+    // The page prints the DOMAIN's basis and no longer counts the tiers itself,
+    // so the school we hold no price for is `no_published_tuition` and gets no
+    // tier paragraph at all -- its tuition row's own blank already says why.
+    assertFalse(
+      silentBody.contains("report-school-tuition-tiers"),
+      "no tier line is printed where there is no tier to name: [$silentBody]",
+    )
+    assertFalse(
+      ResidencyTierBasis.entries.any { silentBody.contains(it.statement) },
+      "and no basis sentence at all reaches the page: [$silentBody]",
+    )
+  }
+
+  @Test
+  fun `a school with one tuition price is not told the price applies to every student`() {
+    // The narrowed [ResidencyTierBasis.SINGLE_PUBLISHED_PRICE]: at a public
+    // school whose out-of-state price we do not hold, the ONE tier is an
+    // in-state figure, and `tuition_applicable` beside it says so.
+    val oneTier =
+      costFixture(
+        name = "One Price College",
+        control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+        tuitionInState = 9000,
+      )
+    val body = render(costProfile(listOf(oneTier), answeredMoney()))
+
+    assertTrue(
+      body.contains(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.statement),
+      "the one price we hold is still stated: [$body]",
+    )
+    assertFalse(
+      body.contains("whoever the student is"),
+      "but never as a price that applies to every student: [$body]",
     )
   }
 }

@@ -2,6 +2,17 @@ package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.StudentCollegeSelection
 import ed.unicoach.coaching.admissions.MeritPractice
+import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
+import ed.unicoach.coaching.costs.canonical.CohortAddress
+import ed.unicoach.coaching.costs.canonical.CollegeFigures
+import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
+import ed.unicoach.coaching.costs.canonical.FigureAddress
+import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
+import ed.unicoach.coaching.costs.canonical.ServedFigures
+import ed.unicoach.coaching.costs.canonical.figureAddress
+import ed.unicoach.coaching.costs.canonical.publishedTuitionTiersOf
+import ed.unicoach.coaching.costs.canonical.residencyTiersOf
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CdsAdmissionsDao
@@ -16,6 +27,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.CollegeMeritAid
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.LivingArrangement
@@ -235,8 +247,40 @@ data class CollegeCost(
    * [stickerCostOfAttendancePerYearUsd]; read that one.
    */
   private val publishedStickerCostOfAttendancePerYearUsd: Int?,
-  val tuitionAndFeesInStatePerYearUsd: Int?,
-  val tuitionAndFeesOutOfStatePerYearUsd: Int?,
+  /**
+   * This school's canonical price rows AT the one year this answer serves them
+   * at (RFC 166 §3) -- the type that replaced `College` as the cost path's
+   * input, bound to its served year.
+   *
+   * PRIVATE: [CollegeFigures] holds every academic year the store carries, and
+   * this answer serves exactly one of them. A reader given the whole set could
+   * quote a figure from a year no other key beside it describes, which is
+   * precisely the mixed-vintage defect the domain refuses at construction.
+   * [publishedAmountOf] is the door.
+   *
+   * ONE field rather than the `(figures, academicYear)` pair it replaced: the
+   * year is not a second thing a caller may state, so no assembly can hand this
+   * type a year that is not this school's.
+   */
+  private val served: ServedFigures,
+  /** The vintage of the blended averages this school serves, or null when it carries none. */
+  val blendedAverageAcademicYear: String?,
+  /**
+   * Which tuition tiers this school publishes, and the sentence that goes with
+   * it (RFC 166 §4) -- including the case where the publisher does not separate
+   * an in-district price at all, which is stated rather than guessed at.
+   */
+  val residencyTiers: ResidencyTierBasis,
+  /**
+   * The reason beside the silence: one entry per field this answer carries no
+   * amount for AND holds a canonical status for (RFC 166 §6).
+   *
+   * `data_availability` says WHICH figures are blank and keeps its exact shape;
+   * this says WHY, in the store's own six statuses. A NULL column could not tell
+   * a family whether a number is missing because the publisher withheld it,
+   * because the school never reported it, or because we have not collected it.
+   */
+  val figureStatuses: List<FigureStatusNote>,
   /**
    * The net-price answer AS PUBLISHED, and private for the same reason: what
    * this family may be shown is [netPrice], which is a [NetPrice.Withheld] when
@@ -263,7 +307,7 @@ data class CollegeCost(
    * positive twin of [publishedNotReported], and the input the withholding rule
    * reads: only a figure the school published can be held back from anybody.
    *
-   * Derived in [CollegeCostService] from [CostField.reportedAmountOf], the one
+   * Derived in [CollegeCostService] from [CostField.figureAddress], the one
    * primitive that answers "does this college report this field", so no reader
    * repeats the per-field null checks: a [CostField] added to the vocabulary
    * gains its column there and is classified here without a second edit nobody
@@ -332,6 +376,100 @@ data class CollegeCost(
    */
   val withheld: List<WithheldFigure> get() = withheldFiguresFor(control, publishedReported)
 
+  /**
+   * One published-price figure this school carries at the served year, or null.
+   *
+   * THE door onto [served], and the reason that field is private: every read
+   * here is pinned to the ONE served year, so no caller can quote a 2020-21
+   * books allowance beside a 2023-24 tuition and call the pair a budget.
+   */
+  fun publishedAmountOf(field: CostField): Int? = served.amountOf(field)
+
+  /**
+   * The ONE academic year this school's published-price figures are served at
+   * (RFC 166 §3), read off the rows rather than off a Kotlin constant -- so a
+   * Scorecard-only school honestly says 2022-23 where an IC_AY school says
+   * 2023-24. Null when the school publishes no price at all
+   * ([ServedFigures.servesNoPublishedPrice]).
+   */
+  val publishedPriceAcademicYear: String? get() = served.academicYear
+
+  /**
+   * The academic year THIS school's figures of [group] describe, or null when it
+   * serves none of them (RFC 166 §3 rule 4).
+   *
+   * Per college, because the store carries five academic years across two
+   * sources: an IC_AY school says 2023-24 where a Scorecard-only school says
+   * 2022-23, and a single Kotlin constant could only ever have said one of them.
+   */
+  fun academicYearOf(group: FigureGroup): String? =
+    when (group) {
+      FigureGroup.PUBLISHED_PRICE -> publishedPriceAcademicYear
+      FigureGroup.BLENDED_AVERAGE -> blendedAverageAcademicYear
+    }
+
+  /**
+   * True when this answer SHOWS the at-home arrangement, and so carries the `$0`
+   * food-and-housing line that unicoach assumes (RFC 166 §7).
+   *
+   * The gate on the seventh basis fact, and it follows the LINE, not the total.
+   * The `$0` is printed, and named on the wire as `assumed_by_unicoach`, the
+   * moment the arrangement is rendered -- whether or not a total was settled for
+   * it. Gated on a total, an at-home arrangement missing one other component
+   * shipped the zero to a coach with nothing anywhere saying whose zero it was,
+   * which is the one thing D17 exists to prevent.
+   */
+  val showsAtHomeArrangement: Boolean
+    get() =
+      breakdown
+        ?.arrangements
+        .orEmpty()
+        .any { arrangement ->
+          arrangement.arrangement == LivingArrangement.WITH_FAMILY &&
+            arrangement.lines.any { it.origin == LineOrigin.ASSUMED_BY_UNICOACH }
+        }
+
+  /**
+   * The tuition tiers this school actually publishes, in declaration order (RFC
+   * 166 §4) -- the ONE derivation of "which tuition prices does this school
+   * have", read from the rows through [publishedTuitionTiersOf].
+   *
+   * A door onto the private [served], pinned to its one year exactly as
+   * [publishedAmountOf] is. Every surface that emits a tuition key,
+   * counts the tiers, or words an invitation about them reads THIS -- a second
+   * derivation is how the payload came to carry `residency_tiers` saying "not
+   * all three tiers" beside an offer promising three prices.
+   */
+  val publishedTuitionTiers: List<CostField> get() = publishedTuitionTiersOf(served)
+
+  /** The published in-state tuition and fees, as this school publishes it. */
+  val tuitionAndFeesInStatePerYearUsd: Int? get() = publishedAmountOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD)
+
+  /** The published out-of-state tuition and fees, as this school publishes it. */
+  val tuitionAndFeesOutOfStatePerYearUsd: Int?
+    get() = publishedAmountOf(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD)
+
+  /**
+   * Every field this answer DATES: the published figures it reports, plus the
+   * one line whose amount is OURS wherever it is shown (RFC 166 §7).
+   *
+   * NOT simply [reported]. The at-home food-and-housing line belongs to neither
+   * published list -- the school neither reported it nor failed to -- but it IS
+   * printed, and it IS dated: it takes the academic year of the budget it sits
+   * in. A figure the payload renders with no academic year beside it is exactly
+   * the defect the vintage labels exist against, and nothing else would have
+   * caught it.
+   */
+  val datedFields: Set<CostField>
+    get() =
+      reported +
+        breakdown
+          ?.arrangements
+          .orEmpty()
+          .flatMap { it.lines }
+          .filter { it.origin == LineOrigin.ASSUMED_BY_UNICOACH }
+          .map { it.field }
+
   /** The withheld figures as a field set -- the shape every reader of [withheld] actually asks for. */
   val withheldFields: Set<CostField> get() = withheld.mapTo(mutableSetOf()) { it.field }
 
@@ -347,6 +485,20 @@ data class CollegeCost(
    * blank belongs to which reason.
    */
   fun withheldReasonFor(field: CostField): WithheldReason? = withheld.firstOrNull { it.field == field }?.reason
+
+  /**
+   * WHY [field] carries no number in the STORE's own words, or null when this
+   * answer holds no status for it (RFC 166 §6).
+   *
+   * The twin of [withheldReasonFor], and beside it for the same reason: the
+   * lookup lives here rather than in each renderer, so no surface scans
+   * [figureStatuses] with its own predicate. Every reason a blank has is now
+   * reachable from ONE type by a surface that has a [CostField] -- which is what
+   * the parent-facing report lacked while it printed "Not reported by this
+   * school" over the publisher's suppression, over a gap of OURS, and over a
+   * figure the school published in another academic year.
+   */
+  fun statusNoteFor(field: CostField): FigureStatusNote? = figureStatuses.firstOrNull { it.field == field }
 
   /**
    * Every field this answer carries NO number for, in enum declaration order:
@@ -455,14 +607,19 @@ private data class ShownFigures(
         copy(netPrice = netPriceWithheldFor(figure.reason))
       }
 
-      // No residency axis, so nothing here is ever withheld for one --
+      // No IN_STATE_ONLY axis, so nothing here is ever withheld for one --
       // [WithheldFigure.of] cannot even build the pair.
       CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
       CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
+      CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD,
+      CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD,
+      CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD,
+      CostField.FEES_ONLY_OUT_OF_STATE_PER_YEAR_USD,
       CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
       CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD,
       CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
       CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD,
+      CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD,
       CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
       CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
       CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD,
@@ -499,6 +656,56 @@ private data class ShownFigures(
         )
       }
     }
+}
+
+/**
+ * WHY one field carries no amount, in the store's own words (RFC 166 §6).
+ *
+ * The code and the sentence travel together, from one home -- the `income_band`
+ * + `income_band_label` convention RFC 151 D-D established and every coded fact
+ * on this surface has followed since. A renderer never re-words a status, and a
+ * status added to the vocabulary cannot ship without words, because
+ * [FigureStatusCopy] refuses to compile without them.
+ */
+data class FigureStatusNote(
+  val field: CostField,
+  val status: FigureStatus,
+  /** The sentence a coach says this status in; never null here, because a plainly reported figure has no note. */
+  val statement: String,
+  /**
+   * The academic year this school's price is quoted at, and the year we hold
+   * THIS figure for -- both non-null for a YEAR GAP and both null for every
+   * other note (RFC 166 §3).
+   *
+   * They are fields because they are DATA, not decoration on a sentence. The
+   * note used to carry the two years only inside
+   * [FigureStatusCopy.yearGapStatementOf]'s prose, so a renderer or a coach
+   * could learn which year we hold the figure for by substring-matching our own
+   * English and no other way -- while the code beside the sentence said
+   * `not_collected_by_us`, which reads as "we hold nothing". Carried here, the
+   * payload can say "we hold Berkeley's books allowance for 2021-22" from data,
+   * and a renderer can give the case its own treatment instead of printing a
+   * thirty-word sentence into a table cell.
+   */
+  val servedAcademicYear: String? = null,
+  val heldAcademicYear: String? = null,
+) {
+  init {
+    require((servedAcademicYear == null) == (heldAcademicYear == null)) {
+      "a year gap names BOTH years or neither: field=[${field.wireName}] " +
+        "served_academic_year=[$servedAcademicYear] held_academic_year=[$heldAcademicYear]"
+    }
+  }
+
+  /**
+   * True when this note is a YEAR GAP: this school published the figure, at a
+   * year that is not the one its price is quoted at.
+   *
+   * A named question rather than a [status] comparison, because [status] cannot
+   * answer it -- a year gap and a cell we have genuinely never collected both
+   * carry [FigureStatus.NOT_COLLECTED_BY_US].
+   */
+  val isYearGap: Boolean get() = heldAcademicYear != null
 }
 
 /** The money-profile field statuses echoed with every result, so the coach knows the history. */
@@ -722,6 +929,13 @@ enum class PrecisionOffer(
  */
 class CollegeCostService(
   private val database: Database,
+  /**
+   * The canonical money store's read side, injected (RFC 166): every cost
+   * figure this service answers with comes from here, so a caller -- above all
+   * a test -- must be able to substitute the store rather than only Postgres.
+   * Defaulted, so no root has to name it.
+   */
+  private val canonicalCostReader: CanonicalCostReader = DbCanonicalCostReader(database),
 ) {
   suspend fun getForStudent(
     studentId: StudentId,
@@ -796,9 +1010,29 @@ class CollegeCostService(
         .housingFlagsByIpedsUnitId(session, selection.colleges.map { it.ipedsUnitId })
         .getOrThrow()
 
+    // The canonical money store, on the SAME connection and batched over the ids
+    // already selected (RFC 166 §2): TWO statements for the whole answer,
+    // whatever the size of the list, so a fifty-school list still costs two
+    // reads here and not a hundred. This is the read that replaced
+    // `SELECT * FROM colleges` as the source of every cost figure.
+    val figuresById = canonicalCostReader.read(session, selection.selected)
+
     val costs =
       selection.map { college, entry ->
-        costOf(college, entry, moneyProfile, meritById[college.id], offersHousingByUnitId[college.ipedsUnitId])
+        costOf(
+          college,
+          entry,
+          moneyProfile,
+          meritById[college.id],
+          offersHousingByUnitId[college.ipedsUnitId],
+          // `getValue`, never a fabricated empty `CollegeFigures`: the reader's
+          // contract is that every selected id gets an entry, empty or not
+          // (`CanonicalCostReader.read`). Synthesising "no money data" at a
+          // lookup miss would render EVERY figure for that college as "we have
+          // not collected this yet" and say it to a family with no log line;
+          // a contract that ever slips must fail loudly instead.
+          figuresById.getValue(college.id),
+        )
       }
 
     return CollegeCostProfile(
@@ -931,11 +1165,23 @@ class CollegeCostService(
     moneyProfile: MoneyProfileStatuses,
     merit: CollegeMeritAid?,
     offersOnCampusHousing: Boolean?,
+    figures: CollegeFigures,
   ): CollegeCost {
-    val published = netPriceOf(college, moneyProfile)
+    // The family's own answer, resolved ONCE: it selects the net-price row, the
+    // vintage label that dates it, and the status spoken beside it, and those
+    // three must describe the same row.
+    val band = answeredBandOf(moneyProfile)
+    val published = netPriceOf(figures, band)
     val control = controlOf(college, moneyProfile)
-    warnOnHousingContradiction(college, offersOnCampusHousing)
-    val breakdown = CostBreakdown.of(college, tuitionLineOf(college, control), offersOnCampusHousing)
+    // ONE year for this school's whole published price, chosen before a single
+    // line is read (RFC 166 §3), and BOUND to the figures here: every read below
+    // this line goes through [ServedFigures], so the composer cannot assemble a
+    // total out of two reporting years and cannot be handed a year that is not
+    // this school's. [MixedVintageArrangementException] is unreachable from the
+    // read path by construction rather than by luck.
+    val served = CostBreakdown.servedFiguresOf(figures, applicableTuitionFor(control))
+    warnOnHousingContradiction(college, served, offersOnCampusHousing)
+    val breakdown = CostBreakdown.of(served, tuitionLineOf(served, control), offersOnCampusHousing)
     return CollegeCost(
       collegeId = college.id,
       name = college.name,
@@ -948,22 +1194,26 @@ class CollegeCostService(
       // from the same `control` this call hands it, so this assembly reads
       // exactly as it did before that rule existed and no rule is smeared across
       // three argument positions.
-      publishedStickerCostOfAttendancePerYearUsd = college.costOfAttendancePerYearUsd,
-      tuitionAndFeesInStatePerYearUsd = college.tuitionAndFeesInStatePerYearUsd,
-      tuitionAndFeesOutOfStatePerYearUsd = college.tuitionAndFeesOutOfStatePerYearUsd,
+      publishedStickerCostOfAttendancePerYearUsd =
+        served.cohortOf(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, band = null)?.amountUsd,
+      served = served,
+      blendedAverageAcademicYear = served.blendedAverageVintage(band),
+      residencyTiers = residencyTiersOf(served),
+      figureStatuses = figureStatusesOf(served, published, band),
       publishedNetPrice = published,
-      medianDebtAtCompletionUsd = college.medianDebtAtCompletionUsd,
-      medianEarnings10yAfterEntryUsd = college.medianEarnings10yAfterEntryUsd,
-      reportsBandPricing = reportsBandPricing(college),
-      reportsPublishedTuition = reportsPublishedTuition(college),
+      medianDebtAtCompletionUsd = served.cohortOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, band = null)?.amountUsd,
+      medianEarnings10yAfterEntryUsd =
+        served.cohortOf(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, band = null)?.amountUsd,
+      reportsBandPricing = reportsBandPricing(served),
+      reportsPublishedTuition = reportsPublishedTuition(served),
       // Both lists are statements about what this SCHOOL reports, and that does
       // not change with who is reading. [CollegeCost] subtracts the withheld
       // fields from both -- a withheld field belongs to neither, exactly as the
       // on-campus components suppressed at a no-dorms school belong to neither
       // (RFC 149 D-B) -- and reads the published set to decide what can be
       // withheld at all.
-      publishedNotReported = notReportedOf(college, published, offersOnCampusHousing),
-      publishedReported = reportedOf(college, published),
+      publishedNotReported = notReportedOf(served, published, offersOnCampusHousing, band),
+      publishedReported = reportedOf(served, published),
       breakdown = breakdown,
       offersOnCampusHousing = offersOnCampusHousing,
       // A row with no merit measure under it is a citation with no facts, which
@@ -975,7 +1225,13 @@ class CollegeCostService(
       // entry and the profile) is a different question from whether THIS
       // school prices it (the breakdown and the housing flag).
       chosen =
-        pricedLivingPlanOf(plannedLivingPlanOf(entry, moneyProfile), breakdown, offersOnCampusHousing, control),
+        pricedLivingPlanOf(
+          plannedLivingPlanOf(entry, moneyProfile),
+          breakdown,
+          offersOnCampusHousing,
+          control,
+          served,
+        ),
     )
   }
 
@@ -1043,6 +1299,7 @@ class CollegeCostService(
     breakdown: CostBreakdown?,
     offersOnCampusHousing: Boolean?,
     control: CollegeControl,
+    served: ServedFigures,
   ): ChosenLivingPlan {
     val (plan, source) = planned ?: return ChosenLivingPlan.NotChosen
     val arrangement =
@@ -1051,7 +1308,7 @@ class CollegeCostService(
     return if (arrangement.totalPerYearUsd != null) {
       ChosenLivingPlan.Priced(arrangement, source)
     } else {
-      ChosenLivingPlan.NoTotalHere(arrangement, source, noTotalReasonOf(arrangement, control))
+      ChosenLivingPlan.NoTotalHere(arrangement, source, noTotalReasonOf(arrangement, control, served))
     }
   }
 
@@ -1060,10 +1317,11 @@ class CollegeCostService(
    * the school's [control] and the family's own residency answer are both in
    * hand, and never by the renderer.
    *
-   * Three causes, and only one of them is the school's:
+   * Four causes, and only one of them is the school's:
    *
-   * - the tuition line is present, so what is missing is a component the school
-   *   did not publish: [NoTotalReason.PART_NOT_PUBLISHED];
+   * - a part of the price is missing: whose gap it is is decided by
+   *   [missingPartReasonOf] -- [NoTotalReason.PART_NOT_COLLECTED_BY_US] when any
+   *   missing part is ours, otherwise [NoTotalReason.PART_NOT_PUBLISHED];
    * - no published tuition figure applies because OUR residency question is
    *   still open at a public school: [NoTotalReason.AWAITING_RESIDENCY_ANSWER],
    *   a gap of ours that one question closes;
@@ -1071,20 +1329,52 @@ class CollegeCostService(
    *   (RFC 143): [NoTotalReason.TUITION_APPLICABILITY_UNKNOWN], also ours, and
    *   no question the family can answer closes it.
    *
-   * A missing line for an applicable tuition figure IS the school's silence, so
-   * it falls to [NoTotalReason.PART_NOT_PUBLISHED] with the components: the
-   * applicable figure was known and the school did not publish it.
+   * A missing line for an applicable tuition figure is a missing PART, so it is
+   * routed through [missingPartReasonOf] like any other: the school's phrase only
+   * when none of the blanks is ours.
    */
   private fun noTotalReasonOf(
     arrangement: ArrangementCost,
     control: CollegeControl,
+    served: ServedFigures,
   ): NoTotalReason =
     when {
-      arrangement.tuitionLine != null -> NoTotalReason.PART_NOT_PUBLISHED
-      applicableTuitionFor(control) != null -> NoTotalReason.PART_NOT_PUBLISHED
+      arrangement.tuitionLine != null -> missingPartReasonOf(arrangement, served)
+      applicableTuitionFor(control) != null -> missingPartReasonOf(arrangement, served)
       control is CollegeControl.Public -> NoTotalReason.AWAITING_RESIDENCY_ANSWER
       else -> NoTotalReason.TUITION_APPLICABILITY_UNKNOWN
     }
+
+  /**
+   * WHOSE gap the missing part is (RFC 166 §6 rule 1): the school's, or ours.
+   *
+   * The parts of this arrangement with no line are looked at one by one, and
+   * the answer is [NoTotalReason.PART_NOT_COLLECTED_BY_US] as soon as one of
+   * them is OURS -- a `not_collected_by_us` row, or a figure the school
+   * published only in another academic year. Otherwise the part really is
+   * absent from what was published and the school's phrase is the true one.
+   *
+   * OURS WINS OVER THE SCHOOL'S when both kinds of part are missing: telling a
+   * family "the school does not publish it" while we are also holding a gap of
+   * our own would put our name on none of it.
+   */
+  private fun missingPartReasonOf(
+    arrangement: ArrangementCost,
+    served: ServedFigures,
+  ): NoTotalReason {
+    val present = arrangement.lines.map { it.field }.toSet()
+    val ours =
+      arrangement.arrangement.components
+        .filterNot { it in present }
+        .any { field ->
+          served.yearGapOf(field) != null ||
+            // band = null: every component of an arrangement is a published
+            // price, and no price address is band-selected.
+            statusOf(field, served, band = null)?.let(FigureStatusCopy::noTotalReasonOf) ==
+            NoTotalReason.PART_NOT_COLLECTED_BY_US
+        }
+    return if (ours) NoTotalReason.PART_NOT_COLLECTED_BY_US else NoTotalReason.PART_NOT_PUBLISHED
+  }
 
   /**
    * Says the IPEDS/Scorecard disagreement out loud (RFC 149 D-B): the published
@@ -1097,36 +1387,49 @@ class CollegeCostService(
    */
   private fun warnOnHousingContradiction(
     college: College,
+    served: ServedFigures,
     offersOnCampusHousing: Boolean?,
   ) {
-    if (!CostBreakdown.publishedOnCampusContradictsFlag(college, offersOnCampusHousing)) return
+    if (!CostBreakdown.publishedOnCampusContradictsFlag(served, offersOnCampusHousing)) return
     logger.warn(
       "college=[{}] ipeds_unit_id=[{}] IPEDS offers_housing=false but the Scorecard publishes on-campus " +
         "figures [{}]; rendering the published on-campus arrangement and reporting the flag beside it",
       college.id.value,
       college.ipedsUnitId,
-      publishedOnCampusFieldNames(college),
+      publishedOnCampusFieldNames(served),
     )
   }
 
   /** The on-campus components this college publishes in spite of the flag -- the warning's evidence. */
-  private fun publishedOnCampusFieldNames(college: College): List<String> =
+  private fun publishedOnCampusFieldNames(served: ServedFigures): List<String> =
     LivingArrangement.ON_CAMPUS.exclusiveComponents
-      .filter { it.amountOn(college) != null }
+      .filter { served.amountOf(it) != null }
       .map { it.wireName }
 
   /** The basis selection (RFC 135): an answered band picks its bracket column; anything else is the overall average. */
   private fun netPriceOf(
-    college: College,
-    moneyProfile: MoneyProfileStatuses,
+    figures: CollegeFigures,
+    band: IncomeBand?,
   ): NetPrice.Reported {
-    val band = moneyProfile.incomeBand.takeIf { moneyProfile.incomeBandStatus == AnswerStatus.ANSWERED }
+    // The band selects the ROW now, where it used to select a column (RFC 166
+    // §8): the NPT4 band series files one `cohort_money_stats` row per band under
+    // one measure. `value` is NUMERIC and may be negative by design -- aid
+    // exceeding cost, which the lowest bands do most often -- so it is rounded to
+    // whole dollars and never clamped.
     return if (band != null) {
-      NetPrice.BandSpecific(band, band.netPriceFor(college))
+      NetPrice.BandSpecific(band, figures.cohortOf(CostField.NET_PRICE, band)?.amountUsd)
     } else {
-      NetPrice.OverallAverage(college.netPricePerYearUsd)
+      NetPrice.OverallAverage(figures.cohortOf(CostField.NET_PRICE, band = null)?.amountUsd)
     }
   }
+
+  /**
+   * The income band the family ANSWERED, or null -- the one home for that
+   * question, so the row served, the year printed beside it and the status
+   * spoken about it are all selected by the same fact.
+   */
+  private fun answeredBandOf(moneyProfile: MoneyProfileStatuses): IncomeBand? =
+    moneyProfile.incomeBand.takeIf { moneyProfile.incomeBandStatus == AnswerStatus.ANSWERED }
 
   /**
    * The cost domain's reading of a control: [InstitutionControl] (the one home
@@ -1172,7 +1475,8 @@ class CollegeCostService(
   }
 
   /** True when the college reports any bracket column, via the band -> column home ([IncomeBand.netPriceFor]). */
-  private fun reportsBandPricing(college: College): Boolean = IncomeBand.entries.any { it.netPriceFor(college) != null }
+  private fun reportsBandPricing(served: ServedFigures): Boolean =
+    IncomeBand.entries.any { served.cohortOf(CostField.NET_PRICE, it)?.amountUsd != null }
 
   /**
    * True when the college publishes at least one tuition figure — the residency
@@ -1185,51 +1489,14 @@ class CollegeCostService(
    * words rather than promising a number. Tightening this to `&&` would drop
    * the offer for the majority of families it can still answer.
    */
-  private fun reportsPublishedTuition(college: College): Boolean =
-    college.tuitionAndFeesInStatePerYearUsd != null || college.tuitionAndFeesOutOfStatePerYearUsd != null
-
-  /**
-   * The unreported cost fields, in the shared field vocabulary ([CostField]).
-   *
-   * [offersOnCampusHousing] is read for one reason only (RFC 149 D-B): at a
-   * school with no residence halls AND nothing on-campus published, the two
-   * on-campus components are not silence, they are inapplicable -- the school
-   * answered by having no dorms. Listing them would tell the coach "this school
-   * does not report its on-campus housing cost" when the truth is "there is no
-   * on-campus". That answer rides `offers_on_campus_housing` instead.
-   *
-   * When the school publishes an on-campus figure in spite of the flag, the
-   * arrangement is rendered and nothing here is suppressed: a part missing from
-   * a rendered arrangement is ordinary silence, and calling a published figure
-   * unreported would be false about it either way.
-   */
-  private fun notReportedOf(
-    college: College,
-    netPrice: NetPrice,
-    offersOnCampusHousing: Boolean?,
-  ): List<CostField> {
-    val computed = computedAmountsOf(netPrice)
-
-    // The two on-campus components are inapplicable -- not silent -- only at a
-    // school the no-dorms flag actually suppresses: one with no residence halls
-    // AND nothing on-campus published (RFC 149 D-B). When the school publishes
-    // an on-campus figure anyway the arrangement IS rendered, so a part still
-    // missing from it is ordinary silence and must be named. The rule is read
-    // from [CostBreakdown], the one home for it, so the payload can never render
-    // an arrangement it also calls inapplicable. Books and supplies is shared by
-    // every arrangement and is never in this set.
-    val inapplicable =
-      if (CostBreakdown.isOnCampusSuppressed(college, offersOnCampusHousing)) {
-        LivingArrangement.ON_CAMPUS.exclusiveComponents
-      } else {
-        emptySet()
-      }
-
-    // Enum declaration order, and every member considered: adding a CostField is
-    // one edit (its column in `reportedAmountOf`), not one edit plus a null check here
-    // that nothing would have failed for forgetting.
-    return CostField.entries.filter { field -> field !in inapplicable && isNotReported(field, college, computed) }
-  }
+  private fun reportsPublishedTuition(served: ServedFigures): Boolean =
+    // Read off the ONE derivation of which tiers this school publishes
+    // ([publishedTuitionTiersOf]), and then "not the district tier": a family's
+    // answered STATE cannot select an in-district price, so a school publishing
+    // only that tier has no upgrade to promise (RFC 166 §4). Expressed as the
+    // rule rather than as a hand-listed pair, so a fourth tier is admitted or
+    // excluded by what it IS.
+    publishedTuitionTiersOf(served).any { it.residency != ResidencyAxis.IN_DISTRICT }
 
   /**
    * The recency the attribution quotes. `colleges.updated_at` is the row's
@@ -1285,11 +1552,16 @@ class CollegeCostService(
  * price applies, and inventing one is the failure this whole file is against.
  */
 fun tuitionLineOf(
-  college: College,
+  served: ServedFigures,
   control: CollegeControl,
 ): CostLine? {
   val field = applicableTuitionFor(control) ?: return null
-  return field.amountOn(college)?.let { CostLine(field, it) }
+  // A school that publishes no price at all has no served year
+  // ([ServedFigures.servesNoPublishedPrice]) and so no line -- stated as an
+  // early return so the line this function builds carries a non-null year by
+  // construction (RFC 166 §3).
+  val year = served.academicYear ?: return null
+  return served.amountOf(field)?.let { CostLine(field, it, year, origin = LineOrigin.PUBLISHED) }
 }
 
 /**
@@ -1403,28 +1675,202 @@ fun applicableTuitionFor(control: CollegeControl): CostField? =
 
 /**
  * Every field this college carries a figure for, read through the ONE
- * primitive that owns the question ([CostField.reportedAmountOf]).
+ * primitive that owns the question ([CostField.figureAddress]).
  *
  * The SAME per-field decision [notReportedOf] makes, read the other way round
  * -- never a second ladder of null checks, and deliberately not
  * `entries - notReported`: the on-campus components suppressed at a no-dorms
  * school are absent from [CollegeCost.notReported] because they are
  * inapplicable, and they carry no figure either, so they belong in neither
- * list. [CostField.reportedAmountOf] underneath is exhaustive, so a field
+ * list. [CostField.figureAddress] underneath is exhaustive, so a field
  * added tomorrow must gain a column there and cannot silently drop out of the
  * figures this call is said to report.
  */
 fun reportedOf(
-  college: College,
+  served: ServedFigures,
   netPrice: NetPrice,
-): Set<CostField> = CostField.entries.filterNot { isNotReported(it, college, computedAmountsOf(netPrice)) }.toSet()
+): Set<CostField> =
+  CostField.entries
+    .filter { isPublisherAnswerable(it, served) }
+    .filterNot { isNotReported(it, served, computedAmountsOf(netPrice)) }
+    .toSet()
 
 /**
- * The fields that are NOT a `colleges` column, and the computed figure that
- * answers for each.
+ * The unreported cost fields, in the shared field vocabulary ([CostField]).
  *
- * [isNotReported] refuses rather than guesses: a new column-less [CostField]
- * that nobody added here fails loudly on the first read -- naming the field
+ * [offersOnCampusHousing] is read for one reason only (RFC 149 D-B): at a
+ * school with no residence halls AND nothing on-campus published, the two
+ * on-campus components are not silence, they are inapplicable -- the school
+ * answered by having no dorms. Listing them would tell the coach "this school
+ * does not report its on-campus housing cost" when the truth is "there is no
+ * on-campus". That answer rides `offers_on_campus_housing` instead.
+ *
+ * When the school publishes an on-campus figure in spite of the flag, the
+ * arrangement is rendered and nothing here is suppressed: a part missing from
+ * a rendered arrangement is ordinary silence, and calling a published figure
+ * unreported would be false about it either way.
+ *
+ * Top-level and public beside [reportedOf], its positive twin, for exactly the
+ * same caller: `public-web`'s `FakeCostReportSource` built this list as
+ * `entries - reported`, the complement [reportedOf] says in words is WRONG --
+ * an inapplicable on-campus component, an assumed line and a price cell with no
+ * row belong to NEITHER list. A fixture that re-decides what the read makes of
+ * a school's figures is evidence about itself, not about the read.
+ */
+fun notReportedOf(
+  served: ServedFigures,
+  netPrice: NetPrice,
+  offersOnCampusHousing: Boolean?,
+  band: IncomeBand?,
+): List<CostField> {
+  val computed = computedAmountsOf(netPrice)
+
+  // The two on-campus components are inapplicable -- not silent -- only at a
+  // school the no-dorms flag actually suppresses: one with no residence halls
+  // AND nothing on-campus published (RFC 149 D-B). When the school publishes
+  // an on-campus figure anyway the arrangement IS rendered, so a part still
+  // missing from it is ordinary silence and must be named. The rule is read
+  // from [CostBreakdown], the one home for it, so the payload can never render
+  // an arrangement it also calls inapplicable. Books and supplies is shared by
+  // every arrangement and is never in this set.
+  val inapplicable =
+    if (CostBreakdown.isOnCampusSuppressed(served, offersOnCampusHousing)) {
+      LivingArrangement.ON_CAMPUS.exclusiveComponents
+    } else {
+      emptySet()
+    }
+
+  // Enum declaration order, and every member considered: adding a CostField is
+  // one edit (its address in `figureAddress`), not one edit plus a null check here
+  // that nothing would have failed for forgetting.
+  // A silence that is not the SCHOOL's is not `data_availability`'s to claim
+  // (RFC 166 §6 rule 1). `data_availability` means "this college does not
+  // report this cost field", so a figure the publisher suppressed, or one we
+  // have simply not collected, is excluded from it and speaks through
+  // [CollegeCost.figureStatuses] instead -- the reason beside the blank, in the
+  // right owner's words. Folding either into this list is the misattribution
+  // RFC 149 D-B forbids.
+  return CostField.entries.filter { field ->
+    field !in inapplicable &&
+      isPublisherAnswerable(field, served) &&
+      isNotReported(field, served, computed) &&
+      isSchoolsOwnSilence(field, served, band)
+  }
+}
+
+/**
+ * Every field this answer carries no amount for AND holds a canonical status
+ * for, with the status spoken (RFC 166 §6).
+ *
+ * A field with NO ROW AT ALL gets no entry: we hold no reason for it, and
+ * inventing `not_collected_by_us` on its behalf would state a fact about our
+ * own pipeline that no row supports. `data_availability` still names the
+ * silence; this list names the ones we can explain.
+ *
+ * An IMPUTED figure is not here, and that is the point of it being a separate
+ * list rather than a subset of the blanks: `imputed_by_publisher` is
+ * value-bearing, so the figure is SHOWN -- with the publisher's-estimate
+ * sentence beside it, never hidden.
+ *
+ * Top-level and public beside [reportedOf] and [notReportedOf], and for the same
+ * reason: `public-web`'s `FakeCostReportSource` carried its own copy of this
+ * walk, without the year-gap arm, without the shown/imputed rule and without the
+ * band -- so the page's no-regression evidence was green against rules the real
+ * read no longer applies.
+ */
+fun figureStatusesOf(
+  served: ServedFigures,
+  netPrice: NetPrice,
+  band: IncomeBand?,
+): List<FigureStatusNote> {
+  val computed = computedAmountsOf(netPrice)
+  return CostField.entries.mapNotNull { field ->
+    // A figure this school published in ANOTHER academic year is not shown
+    // here -- no total may mix years -- and it is not the school's silence
+    // either. It is stated as ours, naming both years (RFC 166 §3). Checked
+    // FIRST, because such a field has no row at the served year and would
+    // otherwise fall out of every list this function walks.
+    yearGapOf(field, served)?.let { return@mapNotNull it }
+    val status = statusOf(field, served, band) ?: return@mapNotNull null
+    val shown = !isNotReported(field, served, computed)
+    // A shown figure needs a note only when its status qualifies the number
+    // itself -- an imputed figure is the publisher's estimate, and a family
+    // reading it as the school's own would be reading it wrong.
+    if (shown && status != FigureStatus.IMPUTED_BY_PUBLISHER) return@mapNotNull null
+    FigureStatusCopy.statementOf(status)?.let { FigureStatusNote(field, status, it) }
+  }
+}
+
+/**
+ * The note a YEAR GAP produces, or null when this field has no year gap (RFC
+ * 166 §3).
+ *
+ * A year gap is a figure this college DOES publish, at an academic year that
+ * is not the one its price is quoted at. Nothing about it is the school's
+ * silence, and nothing about it may be dropped: the field appears in neither
+ * published list, so without this note it would leave the payload with no key
+ * and no reason -- the one shape this surface may never emit.
+ */
+private fun yearGapOf(
+  field: CostField,
+  served: ServedFigures,
+): FigureStatusNote? {
+  val servedYear = served.academicYear ?: return null
+  val held = served.yearGapOf(field) ?: return null
+  return FigureStatusNote(
+    field = field,
+    status = FigureStatusCopy.YEAR_GAP_STATUS,
+    statement = FigureStatusCopy.yearGapStatementOf(servedYear, held.academicYear),
+    // The two years travel as DATA as well as inside the sentence: they are the
+    // fact that distinguishes this case from a cell we have never collected,
+    // and a consumer that can only reach them by parsing our English cannot
+    // render the case at all (RFC 166 §3).
+    servedAcademicYear = servedYear,
+    heldAcademicYear = held.academicYear,
+  )
+}
+
+/**
+ * The canonical status behind one field for this college, or null when no row
+ * answers for it -- the assumed at-home line, or a cell the fill has never
+ * written.
+ *
+ * A COHORT field answers here too, through [CollegeFigures.statusOf]'s sealed
+ * dispatch. Read through the price-only door it returned null for all four of
+ * them, so a net price the Scorecard suppressed for privacy -- the commonest
+ * absence in that series -- was published as the school's own silence with its
+ * sentence dropped. [band] selects the row for the band-selected address, so
+ * the status spoken is the status of the row this family was served.
+ */
+private fun statusOf(
+  field: CostField,
+  served: ServedFigures,
+  band: IncomeBand?,
+): FigureStatus? = served.statusOf(field, band)
+
+/**
+ * Whether this field's blank is the SCHOOL's own silence, and so nameable in
+ * `data_availability`.
+ *
+ * A field with no row at all keeps today's meaning -- the answer is a silence
+ * we cannot attribute, and the list has always carried it -- so only a row
+ * whose status says the gap is the publisher's or ours is excluded.
+ */
+private fun isSchoolsOwnSilence(
+  field: CostField,
+  served: ServedFigures,
+  band: IncomeBand?,
+): Boolean {
+  val status = statusOf(field, served, band) ?: return true
+  return FigureStatusCopy.isSchoolsOwnSilence(status)
+}
+
+/**
+ * The band-selected cohort fields, whose amount is computed here rather than
+ * read from a row, and the computed figure that answers for each.
+ *
+ * [cohortIsNotReported] refuses rather than guesses: a band-selected field
+ * missing from this map fails loudly on the first read -- naming the field
  * and the row -- instead of reporting a computed figure as a silence the
  * college never kept. One table, read by both the silence list and its
  * positive twin, so the two can never disagree about one figure.
@@ -1432,34 +1878,124 @@ fun reportedOf(
 private fun computedAmountsOf(netPrice: NetPrice): Map<CostField, Int?> = mapOf(CostField.NET_PRICE to netPrice.amount)
 
 /**
+ * Whether this field belongs in either published list at all -- the third
+ * category [CollegeCost] already knows how to hold (RFC 149 D-B's inapplicable
+ * on-campus components are the precedent).
+ *
+ * FALSE in exactly two cases, and both would otherwise be a claim we cannot
+ * make:
+ *
+ * - the at-home food-and-housing line, whose amount is OURS. It is not a figure
+ *   the school published and not a figure the school withheld, so naming it in
+ *   either list would attribute our assumption to somebody else.
+ * - a price cell with NO CANONICAL ROW AT ALL. `data_availability` means "this
+ *   college does not report this cost field", and a cell the fill has never
+ *   written for this college does not license that sentence -- most of the
+ *   corpus has no `fees_only` or `in_district` row, and listing every one of
+ *   them as the school's silence would blame ~6,000 price lists for our own
+ *   source coverage.
+ *
+ * NO ROW AT ALL is the test, not "no row at the served year". A cell with a
+ * VALUE-FREE row in another year IS answered for -- [CollegeFigures.statusOf]
+ * falls through to that row's own status ([CollegeFigures.yearGapOf] declines
+ * it, because we hold no figure for that year either) -- so we do hold a
+ * publisher's word about the cell and it belongs in the lists this predicate
+ * gates. Reading only the served year here dropped that recovered status:
+ * [isSchoolsOwnSilence] never got to route it, and a `not_reported_by_institution`
+ * one year over left the field in neither published list at all.
+ *
+ * A COHORT field with no row keeps today's meaning and stays in the list: those
+ * four cells are written for every college the Scorecard fill touches, so an
+ * absent one really is a college the source is silent about.
+ */
+private fun isPublisherAnswerable(
+  field: CostField,
+  served: ServedFigures,
+): Boolean =
+  when (val address = field.figureAddress) {
+    // band = null: every price address is a published price, and no price
+    // address is band-selected, so the band cannot change a price's status.
+    is FigureAddress.Price -> served.priceAt(address.address) != null || served.statusOf(field, band = null) != null
+
+    is FigureAddress.Cohort -> true
+
+    FigureAddress.AssumedByUnicoach -> false
+  }
+
+/**
  * Whether this college is silent about ONE field -- a question about a field,
  * split out from the list-shaped decisions above it.
  *
- * A field with a column answers from it. A field with no column has nothing
- * to be silent with, so [computed] is the only thing that can answer for it;
- * a MISSING key there is a programming error, not a silence, and is named as
- * one. `containsKey` rather than `?:`, because a present null is the
- * legitimate "the computed figure is not reported" case -- and the message
- * carries the field, the row and what the map did hold, because the stdlib
- * "Key X is missing in the map" says nothing about which cost read produced
- * it.
+ * A ROUTER over [CostField.figureAddress], and no more than that: a price field
+ * answers from its row at the served year, a cohort field through
+ * [cohortIsNotReported], and our own assumed line is never a silence. The rule
+ * for each address lives one level down, where a reader looking for it can see
+ * the whole of it.
  */
 private fun isNotReported(
   field: CostField,
-  college: College,
+  served: ServedFigures,
   computed: Map<CostField, Int?>,
 ): Boolean =
-  when (val reported = field.reportedAmountOf(college)) {
-    is ReportedAmount.Column -> {
-      reported.amountUsd == null
+  when (val address = field.figureAddress) {
+    // A published price: the row at the served year answers, and a reading that
+    // bears no value IS the blank -- whoever's blank it is.
+    is FigureAddress.Price -> {
+      served.priceAt(address.address)?.amountUsd == null
     }
 
-    ReportedAmount.NoColumn -> {
-      require(computed.containsKey(field)) {
-        "cost field [${field.wireName}] is not a `colleges` column and no computed figure answers for it: " +
-          "college_id=[${college.id.value}] ipeds_unit_id=[${college.ipedsUnitId}] " +
-          "computed_fields=[${computed.keys.joinToString(", ") { it.wireName }}]"
-      }
-      computed[field] == null
+    // A cohort statistic has no price row to be silent with, so the rule for one
+    // lives one level down.
+    is FigureAddress.Cohort -> {
+      cohortIsNotReported(field, address.address, served, computed)
+    }
+
+    // Ours, and always present: the at-home food-and-housing zero is never a
+    // silence, because there is no publisher whose silence it could be.
+    FigureAddress.AssumedByUnicoach -> {
+      false
     }
   }
+
+/**
+ * A cohort figure's blank: the BAND-SELECTED ones answer from [computed], and
+ * the rest from their own row.
+ *
+ * The two paths read two different things, and neither may read the other's:
+ * the band-less row served where the band's row was meant is the exact defect
+ * this file's band discipline exists against. Written as one `if` with a single
+ * read on each side rather than a read taken before the branch and discarded on
+ * one of them -- a discarded read is a live wrong value kept dead only by the
+ * branch above it.
+ */
+private fun cohortIsNotReported(
+  field: CostField,
+  address: CohortAddress,
+  served: ServedFigures,
+  computed: Map<CostField, Int?>,
+): Boolean {
+  if (!address.bandSelected) return served.cohortOf(address, band = null)?.amountUsd == null
+  requireComputedAnswer(field, served, computed)
+  return computed[field] == null
+}
+
+/**
+ * Refuses a band-selected cohort field that no computed figure answers for: a
+ * MISSING key is a programming error, not a silence, and is named as one.
+ *
+ * `containsKey` rather than `?:`, because a present null is the legitimate "the
+ * computed figure is not reported" case -- and the message carries the field,
+ * the college and what the map did hold, because the stdlib "Key X is missing in
+ * the map" says nothing about which cost read produced it.
+ */
+private fun requireComputedAnswer(
+  field: CostField,
+  served: ServedFigures,
+  computed: Map<CostField, Int?>,
+) {
+  require(computed.containsKey(field)) {
+    "cost field [${field.wireName}] is band-selected and no computed figure answers for it: " +
+      "college_id=[${served.collegeId.value}] " +
+      "computed_fields=[${computed.keys.joinToString(", ") { it.wireName }}]"
+  }
+}

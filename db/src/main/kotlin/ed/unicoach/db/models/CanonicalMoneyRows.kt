@@ -10,6 +10,24 @@ import java.util.UUID
  * write-shaped, no surrogate ids.
  */
 
+/**
+ * The literal `cohort_money_stats.vintage` and `cohort_population_counts.vintage`
+ * carry where the source dates nothing (RFC 158 P5).
+ *
+ * ONE home, in the module the writer (`:college`), the reader (`:service`) and
+ * every fixture all depend on, because it is one side of a contract with the
+ * SCHEMA: `db/schema/0083.create-canonical-money-tables.sql` admits
+ * `'YYYY-YY'` or exactly this string, and
+ * `CanonicalMoneyDaoTest` pins the two together against a live database.
+ *
+ * It is load-bearing for what a family is told about a year. The reader turns
+ * this literal into "no year at all"; a copy of it that drifted from the
+ * writer's would hand the sentinel back AS an academic year, and median debt
+ * would acquire a spoken year no publisher gave it. Three constants that agree
+ * by coincidence compile perfectly, which is why there is now one.
+ */
+const val VINTAGE_UNDATED: String = "undated"
+
 /** One `residency_bases` row (RFC 158, D4). */
 data class NewResidencyBasis(
   val slug: String,
@@ -80,7 +98,7 @@ data class NewCohortMoneyStat(
   val residencyScope: CohortResidencyScope,
   val aidScope: CohortAidScope,
   val incomeBand: IncomeBand?,
-  /** 'YYYY-YY' where the source dates the cohort, the literal 'undated' where it does not (P5). */
+  /** 'YYYY-YY' where the source dates the cohort, [VINTAGE_UNDATED] where it does not (P5). */
   val vintage: String,
   /** The numeric value and its status as ONE reading (D3): the invalid pairings do not compile. */
   val reading: FigureReading<Double>,
@@ -102,7 +120,7 @@ data class NewCohortPopulationCount(
   val population: CohortPopulation,
   val residencyBasis: ResidencyBasis,
   val arrangement: FigureArrangement,
-  /** 'YYYY-YY' where the source dates the cohort, the literal 'undated' where it does not (P5). */
+  /** 'YYYY-YY' where the source dates the cohort, [VINTAGE_UNDATED] where it does not (P5). */
   val vintage: String,
   /** The headcount and its status as ONE reading (D3): the invalid pairings do not compile. */
   val reading: FigureReading<Int>,

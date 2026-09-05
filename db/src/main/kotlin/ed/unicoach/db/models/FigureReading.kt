@@ -1,5 +1,8 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.models.ValidationError
+import ed.unicoach.db.dao.CorruptPersistedValueException
+
 /**
  * A figure's value and why (RFC 158, D3): a value exists exactly when the
  * status bears one -- by construction, not by convention. The fact-row inputs
@@ -11,6 +14,70 @@ package ed.unicoach.db.models
  */
 sealed interface FigureReading<out T> {
   val status: FigureStatus
+
+  companion object {
+    /**
+     * The reverse of the write (RFC 166, D1): rebuilds one reading from the
+     * two stored columns a fact row carries. Exhaustive over [FigureStatus]
+     * with no `else`, so a seventh status fails to COMPILE here rather than
+     * silently landing in a catch-all arm.
+     *
+     * The DB CHECKs already forbid both invalid pairings
+     * (`price_figures_value_iff_status_check`, `0083:206-208`); the Kotlin
+     * refusal exists so a hand-written fixture -- or any writer that bypassed
+     * the sealed type -- cannot produce a reading the type system says is
+     * impossible. [column] and [naturalKey] are the caller's context, in the
+     * shared message shape: the column that is corrupt, and the row it is in
+     * (the `requireStoredValueWhenAnswered` precedent).
+     */
+    fun <T : Any> of(
+      value: T?,
+      status: FigureStatus,
+      column: String,
+      naturalKey: String,
+    ): FigureReading<T> =
+      when (status) {
+        FigureStatus.REPORTED -> present(value, ValueBearingStatus.REPORTED, column, naturalKey)
+        FigureStatus.IMPUTED_BY_PUBLISHER -> present(value, ValueBearingStatus.IMPUTED_BY_PUBLISHER, column, naturalKey)
+        FigureStatus.NOT_REPORTED_BY_INSTITUTION -> absent(value, AbsenceStatus.NOT_REPORTED_BY_INSTITUTION, column, naturalKey)
+        FigureStatus.NOT_APPLICABLE -> absent(value, AbsenceStatus.NOT_APPLICABLE, column, naturalKey)
+        FigureStatus.SUPPRESSED_BY_PUBLISHER -> absent(value, AbsenceStatus.SUPPRESSED_BY_PUBLISHER, column, naturalKey)
+        FigureStatus.NOT_COLLECTED_BY_US -> absent(value, AbsenceStatus.NOT_COLLECTED_BY_US, column, naturalKey)
+      }
+
+    /** A value-bearing status with no stored value is row corruption, never a silent absence. */
+    private fun <T : Any> present(
+      value: T?,
+      bearing: ValueBearingStatus,
+      column: String,
+      naturalKey: String,
+    ): FigureReading<T> =
+      Present(
+        value ?: throw CorruptPersistedValueException(
+          "null",
+          ValidationError.InvalidFormat(expected = "a value present when status is [${bearing.status.value}]"),
+          location = "$column (row [$naturalKey])",
+        ),
+        bearing,
+      )
+
+    /** A stored value under a value-free status is the same corruption from the other side. */
+    private fun <T : Any> absent(
+      value: T?,
+      absence: AbsenceStatus,
+      column: String,
+      naturalKey: String,
+    ): FigureReading<T> {
+      if (value != null) {
+        throw CorruptPersistedValueException(
+          value.toString(),
+          ValidationError.InvalidFormat(expected = "no value when status is [${absence.status.value}]"),
+          location = "$column (row [$naturalKey])",
+        )
+      }
+      return Absent(absence)
+    }
+  }
 
   /** A value the source actually carries, with its value-bearing reason. */
   data class Present<T>(

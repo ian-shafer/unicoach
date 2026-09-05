@@ -5,8 +5,8 @@ package ed.unicoach.coaching.costs
  *
  * The third axis a blended figure is isolated on, and the only one that was
  * unmodelled. [CostField] already carried the arrangement axis (a blended
- * average across the ways of living) and the [ScorecardVintage] axis (an older
- * reporting year). `COSTT4_A` and the `NPT4` family are isolated on a THIRD:
+ * average across the ways of living) and the reporting-year axis ([FigureGroup],
+ * then a `ScorecardVintage` constant). `COSTT4_A` and the `NPT4` family are isolated on a THIRD:
  * at a public institution the Scorecard builds both of them for students paying
  * the in-state (strictly in-state or in-district) tuition rate, and publishes no
  * out-of-state counterpart of either.
@@ -17,10 +17,11 @@ package ed.unicoach.coaching.costs
  * totals, with nothing separating them. A WA family at UC San Diego read $38,701
  * where their own published price is near $77,102.
  *
- * It lives on [CostField] rather than in a renderer for the same reason the
- * vintage does: a figure added to the vocabulary must SAY which residency it is
- * on before it can compile, instead of borrowing the residency of whatever was
- * printed above it.
+ * It lives on [CostField] rather than in a renderer because the residency axis
+ * is a property of the FIELD's own vocabulary, unlike the figure group, which is
+ * derived from the field's canonical address: a figure added to the vocabulary
+ * must SAY which residency it is on before it can compile, instead of borrowing
+ * the residency of whatever was printed above it.
  *
  * NULL on [CostField] means the figure has no residency axis at all -- the six
  * published components, median debt, median earnings. A null is "residency does
@@ -42,6 +43,24 @@ enum class ResidencyAxis {
 
   /** One half of the published tuition PAIR: the figure for a family living in this school's state. */
   IN_STATE,
+
+  /**
+   * The THIRD published tier (RFC 166 §4): the figure for a student living in
+   * the school's own district, which `price_figures` has carried as
+   * `in_district` since RFC 158 and which no consumer surface has ever shown.
+   *
+   * Deliberately NOT [IN_STATE_ONLY], and the distinction is load-bearing:
+   * [CostField.IN_STATE_ONLY_FIELDS] is DERIVED from this axis, so an
+   * in-district figure filed under the wrong member would be silently withheld
+   * from every family whose state does not match -- the exact opposite of what
+   * adding the tier is for.
+   *
+   * It is also never the tuition line inside a total. A family's answered STATE
+   * cannot select a DISTRICT price -- a state answer does not answer a district
+   * -- and no new question is asked to close that gap (value before ask). The
+   * figure is shown as a labelled tier and nothing more.
+   */
+  IN_DISTRICT,
 
   /** The other half of the pair: the figure for a family living anywhere else. */
   OUT_OF_STATE,

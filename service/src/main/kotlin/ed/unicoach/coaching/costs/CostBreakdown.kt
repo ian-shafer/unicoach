@@ -1,6 +1,11 @@
 package ed.unicoach.coaching.costs
 
-import ed.unicoach.db.models.College
+import ed.unicoach.coaching.costs.canonical.CollegeFigures
+import ed.unicoach.coaching.costs.canonical.FigureAddress
+import ed.unicoach.coaching.costs.canonical.ServedFigures
+import ed.unicoach.coaching.costs.canonical.figureAddress
+import ed.unicoach.coaching.costs.canonical.figureGroup
+import ed.unicoach.coaching.costs.canonical.servedAt
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.LivingArrangement
 
@@ -16,10 +21,18 @@ import ed.unicoach.db.models.LivingArrangement
  * price an arrangement is the cost domain's business and no part of what the
  * column stores. One vocabulary, one enum; two homes for two different facts.
  *
- * [LivingArrangement.WITH_FAMILY] carries NO housing-and-food component, and
- * that is data, not an omission: the Scorecard publishes no `ROOMBOARD_FAM`. A
- * `$0` housing line there would be a fabricated fact, so the arrangement simply
- * has one fewer part.
+ * [LivingArrangement.WITH_FAMILY] carries a housing-and-food component whose
+ * amount is OURS (RFC 166 §7, gate-2 D17), and that is the one reversal in this
+ * map's history. No source publishes a with-family food-and-housing figure --
+ * IPEDS assumes zero and publishes no variable at all -- and this used to be
+ * read as missing data, so the arrangement carried one fewer part and never
+ * totalled. It is not missing data: eating at home is not free, but it is not a
+ * new cost that ENROLLING creates, so the at-home total counts it as zero.
+ *
+ * The zero is carried as [LineOrigin.ASSUMED_BY_UNICOACH], stated in words on
+ * both surfaces, and named on the wire as ours. No `price_figures` row is
+ * invented for it. Every OTHER arrangement keeps both committed rules exactly:
+ * no partial total, and no silent zero.
  *
  * Lazy on purpose, and not decoration: [CostField.COMPONENTS] is derived from
  * THIS map, so building it during [CostField]'s class initialisation could
@@ -44,6 +57,7 @@ private val ARRANGEMENT_COMPONENTS: Map<LivingArrangement, List<CostField>> by l
       ),
     LivingArrangement.WITH_FAMILY to
       listOf(
+        CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD,
         CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
         CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
       ),
@@ -79,19 +93,154 @@ val LivingArrangement.exclusiveComponents: Set<CostField>
         .flatMap { it.components }
         .toSet()
 
-/** This arrangement's components as the college reports them; an unreported one is absent. */
-fun LivingArrangement.reportedComponentsOf(college: College): List<CostLine> =
-  components.mapNotNull { field -> field.amountOn(college)?.let { CostLine(field, it) } }
+/**
+ * This arrangement's components as they stand at ONE academic year; a component
+ * bearing no value in that year is absent.
+ *
+ * ONE year for the whole list, never each component's own latest: an arrangement
+ * is one school's one budget for one year, and a total assembled from three
+ * different years would be a number no school ever published. Which year is
+ * chosen is [CostBreakdown]'s decision, made once per college.
+ */
+fun LivingArrangement.reportedComponentsOf(served: ServedFigures): List<CostLine> {
+  // A school that publishes NO PRICE ROW AT ALL has no served year
+  // ([ServedFigures.servesNoPublishedPrice]), and an arrangement built out of
+  // our own assumption alone would be a price nobody quoted. So it gets no
+  // lines, stated once here rather than by each branch below, and every line
+  // this function can build is dated -- which is why [CostLine] can require a
+  // year rather than carry a null no caller may fill.
+  val servedYear = served.academicYear ?: return emptyList()
+  return components.mapNotNull { field ->
+    if (field.isAssumedByUnicoach) {
+      // Ours, so it is available in every year the school publishes anything at all.
+      assumedLineOf(field, servedYear)
+    } else {
+      served.amountOf(field)?.let {
+        CostLine(field, it, servedYear, origin = LineOrigin.PUBLISHED)
+      }
+    }
+  }
+}
 
-/** One reported figure inside an arrangement: the shared [CostField] vocabulary, and the dollars. */
+/**
+ * True for a field whose amount is unicoach's assumption rather than any
+ * publisher's figure (RFC 166 §7) -- DERIVED from the field's canonical
+ * address, never a field name written out a second time.
+ *
+ * The address table already answers this question
+ * ([FigureAddress.AssumedByUnicoach] is "no row anywhere, and never one"), and
+ * this predicate is what four load-bearing sites consult: whether a component
+ * line is built from the store or from us, both of [CostLine]'s `require`s, and
+ * the year choice. Written as `== HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD` it
+ * answered `false` for a SECOND unpublished field the compiler had just forced
+ * an address for -- so that field's line would have been looked for in
+ * `price_figures`, its `$0` unguarded, and our number rendered with no note
+ * saying it is ours.
+ */
+val CostField.isAssumedByUnicoach: Boolean
+  get() = figureAddress == FigureAddress.AssumedByUnicoach
+
+/** The one assumed line this domain may build, at [year] so it dates with the budget it belongs to. */
+private fun assumedLineOf(
+  field: CostField,
+  year: String,
+): CostLine =
+  CostLine(
+    field = field,
+    amountUsd = ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD,
+    academicYear = year,
+    origin = LineOrigin.ASSUMED_BY_UNICOACH,
+  )
+
+/**
+ * The amount unicoach assumes for the one field no publisher fills (RFC 166 §7,
+ * gate-2 D17): living at home creates no new food-and-housing cost, so the
+ * at-home total counts it as zero.
+ *
+ * A named constant rather than a bare `0` at three sites, because it is the one
+ * number in this domain that is ours and it should be greppable as such.
+ *
+ * Beside [LineOrigin] and [assumedLineOf], not in the store projection: a
+ * reader auditing "which numbers are ours" reads the domain, and the canonical
+ * package is a store of what publishers said -- which is exactly what this
+ * number is not.
+ */
+const val ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD: Int = 0
+
+/**
+ * WHOSE number a cost line carries (RFC 166 §7, gate-2 D17).
+ *
+ * The type exists so the `$0` at-home food-and-housing line can never be read as
+ * something a school published. Every other line in this domain is a figure a
+ * publisher printed; exactly one is an assumption of ours, and it says so at the
+ * type rather than in a comment beside the renderer.
+ */
+enum class LineOrigin(
+  val value: String,
+) {
+  /** A figure the school published, read from a `price_figures` row. */
+  PUBLISHED("published"),
+
+  /** OURS: an amount we assume, named as ours everywhere it appears. */
+  ASSUMED_BY_UNICOACH("assumed_by_unicoach"),
+}
+
+/**
+ * One figure inside an arrangement: the shared [CostField] vocabulary, the
+ * dollars, the academic year the figure describes, and whose number it is.
+ *
+ * [academicYear] is DATA on the line rather than a constant on the field's
+ * group, because `price_figures` holds four academic years and the year served
+ * differs per college (RFC 166 §3). It is NON-NULL: every figure this domain
+ * prints carries the year it describes, and no site in the tree can produce an
+ * undated line -- a price is read AT a year, and the assumed at-home line is
+ * dated with the budget it belongs to. An undated line used to be refused at
+ * runtime by [ArrangementCost] and folded into a 503; it is now unrepresentable.
+ */
 data class CostLine(
   val field: CostField,
   val amountUsd: Int,
-)
+  val academicYear: String,
+  /**
+   * WHOSE number this is. NO DEFAULT, deliberately: "the school published it"
+   * is the most consequential claim on the line and the most damaging one to
+   * make by omission -- a line silently labelled published is rendered with no
+   * "our assumption" note, inside a total a parent reads as the school's price.
+   * Every construction site says whose money it is.
+   */
+  val origin: LineOrigin,
+) {
+  /** The family of figures this line belongs to, read off the field -- never stated a second time. */
+  val group: FigureGroup? get() = this.field.figureGroup
+
+  init {
+    // The `$0` is admitted for EXACTLY one field at EXACTLY one amount, and
+    // refused everywhere else at construction (the [ArrangementCost] precedent).
+    // Gate-2 D17 reversed the no-silent-zero rule for the at-home housing line
+    // and for nothing else; without this check the reversal would be a
+    // convention rather than a property, and a $0 could appear under any
+    // arrangement the next caller felt like.
+    require(
+      origin == LineOrigin.PUBLISHED ||
+        (field.isAssumedByUnicoach && amountUsd == ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD),
+    ) {
+      "unicoach assumes exactly one amount, the with-family food-and-housing zero: " +
+        "field=[${field.wireName}] amount_usd=[$amountUsd] origin=[${origin.value}]"
+    }
+
+    // The converse: the assumed field has no publisher behind it, so a line for
+    // it can never claim to be published.
+    require(!field.isAssumedByUnicoach || origin == LineOrigin.ASSUMED_BY_UNICOACH) {
+      "no source publishes a with-family food-and-housing figure, so a line for it is never published: " +
+        "field=[${field.wireName}] amount_usd=[$amountUsd] origin=[${origin.value}]"
+    }
+  }
+}
 
 /**
- * An arrangement's lines did not share exactly ONE dated Scorecard vintage, so
- * no budget could be built from them (RFC 149 D-F rule 3).
+ * An arrangement's lines did not share exactly ONE (figure group, academic
+ * year) dating, so no budget could be built from them (RFC 149 D-F rule 3;
+ * RFC 166 §3 made the year per college).
  *
  * Typed, and carrying the offending [lines] rather than a set of vintages,
  * because the diagnostic question is WHICH figure came from another reporting
@@ -100,16 +249,27 @@ data class CostLine(
  * operator ever sees.
  */
 class MixedVintageArrangementException(
+  /** WHOSE arrangement failed -- the read is batched over a whole list, so the message must name the school. */
+  val collegeId: CollegeId,
   val arrangement: LivingArrangement,
   val lines: List<CostLine>,
 ) : IllegalArgumentException(
-    "an arrangement may not sum figures of differing or unknown Scorecard vintages: " +
+    "an arrangement may not sum figures of differing or unknown datings: " +
+      "college_id=[${collegeId.value}] " +
       "arrangement=[${arrangement.value}] " +
-      "vintages_by_field=[${lines.joinToString(", ") { "${it.field.wireName}=${it.field.vintage}" }}] " +
+      "dating_by_field=[${lines.joinToString(", ") { "${it.field.wireName}=${it.group}@${it.academicYear}" }}] " +
       "amounts_usd=[${lines.joinToString(", ") { "${it.field.wireName}=${it.amountUsd}" }}]",
   ) {
-  /** The vintages that disagreed, derived from [lines] so the two can never be stated apart. */
-  val vintages: Set<ScorecardVintage?> get() = lines.map { it.field.vintage }.toSet()
+  /**
+   * The datings that disagreed -- the (group, academic year) PAIRS, derived from
+   * [lines] so the two can never be stated apart.
+   *
+   * A pair, not a group: two published-price figures from different academic
+   * years are the mismatch this store made newly possible, and a set of groups
+   * alone could not see it. The year is non-null, because no caller can build
+   * an undated line at all.
+   */
+  val vintages: Set<Pair<FigureGroup?, String>> get() = lines.map { it.group to it.academicYear }.toSet()
 }
 
 /**
@@ -131,6 +291,14 @@ class MixedVintageArrangementException(
  * printed beside it.
  */
 class ArrangementCost(
+  /**
+   * The college this arrangement prices. Carried for the same reason
+   * [CostBreakdown] carries it: this type's own invariant failures fold into
+   * `Result.failure` on a read BATCHED over a student's whole list, so a
+   * message with no identifier leaves the operator to reproduce the list to
+   * find the school.
+   */
+  val collegeId: CollegeId,
   val arrangement: LivingArrangement,
   /** The published tuition figure this student's residency selects, or null when none applies. */
   val tuitionLine: CostLine?,
@@ -177,17 +345,18 @@ class ArrangementCost(
     // arrangements. Stated before the vintage check so the emptiness is named
     // as itself rather than reported as "no vintage".
     require(lines.isNotEmpty()) {
-      "an arrangement with no line is an absent arrangement, never an empty one: arrangement=[${arrangement.value}]"
+      "an arrangement with no line is an absent arrangement, never an empty one: " +
+        "college_id=[${collegeId.value}] arrangement=[${arrangement.value}]"
     }
 
     // The tuition SLOT holds a published tuition figure or nothing. The type is
-    // CostLine, which admits all twelve fields; a component in this slot would
+    // CostLine, which admits every CostField; a component in this slot would
     // enter the total a second time under tuition's name and would pass every
     // other check here, because it shares the components' vintage.
     require(tuitionLine == null || tuitionLine.field in CostField.TUITION_FIELDS) {
       "the tuition line must be a published tuition figure (one of " +
         "[${CostField.TUITION_FIELDS.joinToString(", ") { it.wireName }}]), got [${tuitionLine?.field?.wireName}] " +
-        "for arrangement=[${arrangement.value}]"
+        "for college_id=[${collegeId.value}] arrangement=[${arrangement.value}]"
     }
 
     // RFC 149 D-F rule 3, enforced by construction rather than remembered: an
@@ -203,11 +372,28 @@ class ArrangementCost(
     // share one with a dated line; summing it into a published-price total
     // would assert the very year D-E declined to give it.
     //
+    // The check is over the (GROUP, ACADEMIC YEAR) pair, not the group alone
+    // (RFC 166 §3). `price_figures` holds four academic years, so two figures can
+    // now share the published-price group and still come from different years --
+    // a mismatch the old closed enum made unrepresentable and this store makes
+    // ordinary. The composer picks one year before it reads a line, so this
+    // throw is unreachable from the read path BY CONSTRUCTION rather than by
+    // luck; that matters, because a vintage mismatch folds into `Result.failure`
+    // and surfaces as a 503 on the report.
+    //
     // Checked BEFORE the component identity below on purpose: a stray figure is
     // most often a figure from another year, and that is the more useful thing
     // to be told about it.
-    val vintages = lines.map { it.field.vintage }.toSet()
-    if (vintages.size != 1 || null in vintages) throw MixedVintageArrangementException(arrangement, lines)
+    //
+    // The YEAR half needs no null arm: [CostLine.academicYear] is non-null, so
+    // an undated line is unrepresentable rather than merely refused here. The
+    // GROUP half keeps its arm -- median debt and median earnings are real
+    // fields with a null group, and summing one into a published-price total
+    // would assert the very year RFC 149 D-E declined to give it.
+    val dating = lines.map { it.group to it.academicYear }.toSet()
+    if (dating.size != 1 || dating.single().first == null) {
+      throw MixedVintageArrangementException(collegeId, arrangement, lines)
+    }
 
     // The components are this arrangement's OWN, each exactly once and in
     // render order -- IDENTITY, never a count. A count alone accepts three
@@ -218,14 +404,14 @@ class ArrangementCost(
     val fields = this.componentLines.map { it.field }
     require(fields == arrangement.components.filter { it in fields } && fields.size == fields.toSet().size) {
       "an arrangement carries only its own components, once each and in render order: " +
-        "arrangement=[${arrangement.value}] " +
+        "college_id=[${collegeId.value}] arrangement=[${arrangement.value}] " +
         "expected_any_of=[${arrangement.components.joinToString(", ") { it.wireName }}] " +
         "got=[${fields.joinToString(", ") { it.wireName }}]"
     }
   }
 
   override fun toString(): String =
-    "ArrangementCost(arrangement=[${arrangement.value}], tuitionLine=[$tuitionLine], " +
+    "ArrangementCost(collegeId=[${collegeId.value}], arrangement=[${arrangement.value}], tuitionLine=[$tuitionLine], " +
       "componentLines=[$componentLines], totalPerYearUsd=[$totalPerYearUsd])"
 }
 
@@ -275,16 +461,54 @@ class CostBreakdown private constructor(
      * evidence.
      */
     fun of(
-      college: College,
+      served: ServedFigures,
       tuitionLine: CostLine?,
       offersOnCampusHousing: Boolean?,
     ): CostBreakdown? {
       val arrangements =
         LivingArrangement.entries
-          .filterNot { it == LivingArrangement.ON_CAMPUS && isOnCampusSuppressed(college, offersOnCampusHousing) }
-          .mapNotNull { arrangement -> arrangementOf(college, arrangement, tuitionLine) }
-      return if (arrangements.isEmpty()) null else CostBreakdown(college.id, arrangements)
+          .filterNot {
+            it == LivingArrangement.ON_CAMPUS && isOnCampusSuppressed(served, offersOnCampusHousing)
+          }.mapNotNull { arrangement -> arrangementOf(served, arrangement, tuitionLine) }
+      return if (arrangements.isEmpty()) null else CostBreakdown(served.collegeId, arrangements)
     }
+
+    /**
+     * This college's figures bound to the ONE academic year its published price
+     * is served at (RFC 166 §3 rule 2) -- the [ServedFigures] every read
+     * downstream goes through, built HERE and nowhere else, because this is
+     * where the year is decided.
+     *
+     * The served year is null -- [ServedFigures.servesNoPublishedPrice] -- only
+     * for a college that publishes nothing at all.
+     *
+     * The latest year in which the applicable tuition figure AND every component
+     * of SOME way of living bears a value; failing that, the latest year bearing
+     * any published-price value at all. So a college whose newest year is
+     * half-published is quoted a COMPLETE older budget rather than an incomplete
+     * new one, and a college with no complete year anywhere shows its parts --
+     * all from one year, each labelled -- and no total.
+     *
+     * One year for the college rather than one per arrangement, because the year
+     * is STATED (rule 4) under a single wire key: two arrangements resolving to
+     * two years would leave `published_price_academic_year` with no truthful
+     * value to carry.
+     *
+     * The assumed at-home line is excluded from the candidate sets: its amount is
+     * ours and does not depend on what the school published, so it must neither
+     * make a year look complete nor veto one.
+     */
+    fun servedFiguresOf(
+      figures: CollegeFigures,
+      tuitionField: CostField?,
+    ): ServedFigures =
+      figures.servedAt(
+        figures.publishedPriceYearOf(
+          LivingArrangement.entries.map { arrangement ->
+            (listOfNotNull(tuitionField) + arrangement.components.filterNot { it.isAssumedByUnicoach }).toSet()
+          },
+        ),
+      )
 
     /**
      * Whether the IPEDS no-dorms flag suppresses the on-campus arrangement (RFC
@@ -307,11 +531,11 @@ class CostBreakdown private constructor(
      * arrangement it also calls inapplicable.
      */
     fun isOnCampusSuppressed(
-      college: College,
+      served: ServedFigures,
       offersOnCampusHousing: Boolean?,
     ): Boolean =
       offersOnCampusHousing == false &&
-        LivingArrangement.ON_CAMPUS.exclusiveComponents.none { it.amountOn(college) != null }
+        LivingArrangement.ON_CAMPUS.exclusiveComponents.none { served.amountOf(it) != null }
 
     /**
      * True when IPEDS says this school has no residence halls and the Scorecard
@@ -320,90 +544,31 @@ class CostBreakdown private constructor(
      * logs so it stays visible rather than merely handled.
      */
     fun publishedOnCampusContradictsFlag(
-      college: College,
+      served: ServedFigures,
       offersOnCampusHousing: Boolean?,
-    ): Boolean = offersOnCampusHousing == false && !isOnCampusSuppressed(college, offersOnCampusHousing)
+    ): Boolean = offersOnCampusHousing == false && !isOnCampusSuppressed(served, offersOnCampusHousing)
 
     private fun arrangementOf(
-      college: College,
+      served: ServedFigures,
       arrangement: LivingArrangement,
       tuitionLine: CostLine?,
     ): ArrangementCost? {
-      val reported = arrangement.reportedComponentsOf(college)
-      if (reported.isEmpty()) return null
+      val reported = arrangement.reportedComponentsOf(served)
+      // An arrangement whose ONLY line is our own assumption is not an
+      // arrangement this school prices: the school has said nothing about living
+      // at home, and a `$0` on its own is not a price list.
+      if (reported.isEmpty() || reported.all { it.origin == LineOrigin.ASSUMED_BY_UNICOACH }) return null
       // The total is [ArrangementCost]'s own: it is computed from these lines,
       // so no assembly site can state one that disagrees with them.
-      return ArrangementCost(arrangement = arrangement, tuitionLine = tuitionLine, componentLines = reported)
+      return ArrangementCost(
+        collegeId = served.collegeId,
+        arrangement = arrangement,
+        tuitionLine = tuitionLine,
+        componentLines = reported,
+      )
     }
   }
 }
-
-/**
- * What one [CostField] reads off a `colleges` row -- the two answers a null
- * would otherwise collapse into one.
- *
- * "This college does not report it" and "this field is not a column at all" are
- * different facts with different consequences: the first belongs in
- * `data_availability`, the second is a question the row cannot answer. A bare
- * `Int?` said both at once, which is how [CostField.NET_PRICE] could read as a
- * silence the college never kept.
- */
-internal sealed interface ReportedAmount {
-  /** A dollar column. [amountUsd] null IS the college's silence, and means "not reported". */
-  data class Column(
-    val amountUsd: Int?,
-  ) : ReportedAmount
-
-  /**
-   * NO COLUMN AT ALL: this field keys a computed object rather than a column, so
-   * a `colleges` row has no answer to give and its silence is not evidence of
-   * anything. [CostField.NET_PRICE] is the one member today -- the basis selects
-   * the column, and the selection is
-   * [ed.unicoach.db.models.IncomeBand.netPriceFor]'s job. Whoever asks must
-   * supply the computed figure themselves.
-   */
-  data object NoColumn : ReportedAmount
-}
-
-/**
- * What this field reads off a `colleges` row: THE one answer to "does this
- * college report it", and the primitive every other site derives from
- * ([CostField.amountOn], `CollegeCostService.notReportedOf`,
- * `CollegeCostChatTool`'s emitted set).
- *
- * Exhaustive with no `else` on purpose: a [CostField] added to the vocabulary
- * must fail to compile here -- the one site that owes it a column, or an
- * explicit [ReportedAmount.NoColumn] -- rather than silently reading as "not
- * reported".
- */
-internal fun CostField.reportedAmountOf(college: College): ReportedAmount =
-  when (this) {
-    CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD -> ReportedAmount.Column(college.costOfAttendancePerYearUsd)
-    CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD -> ReportedAmount.Column(college.tuitionAndFeesInStatePerYearUsd)
-    CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD -> ReportedAmount.Column(college.tuitionAndFeesOutOfStatePerYearUsd)
-    CostField.NET_PRICE -> ReportedAmount.NoColumn
-    CostField.MEDIAN_DEBT_AT_COMPLETION_USD -> ReportedAmount.Column(college.medianDebtAtCompletionUsd)
-    CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD -> ReportedAmount.Column(college.medianEarnings10yAfterEntryUsd)
-    CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD -> ReportedAmount.Column(college.housingAndFoodOnCampusPerYearUsd)
-    CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD -> ReportedAmount.Column(college.housingAndFoodOffCampusPerYearUsd)
-    CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD -> ReportedAmount.Column(college.booksAndSuppliesPerYearUsd)
-    CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD -> ReportedAmount.Column(college.otherExpensesOnCampusPerYearUsd)
-    CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD -> ReportedAmount.Column(college.otherExpensesOffCampusPerYearUsd)
-    CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD -> ReportedAmount.Column(college.otherExpensesWithFamilyPerYearUsd)
-  }
-
-/**
- * The dollars behind this field on a `colleges` row, DERIVED from
- * [reportedAmountOf] rather than deciding anything itself -- so a breakdown line
- * and a `data_availability` entry can never disagree about what a college
- * reports.
- *
- * A field with no column ([CostField.NET_PRICE]) answers null here because there
- * is nothing to read, NOT because the college is silent; it is therefore never a
- * breakdown line. Sites that must distinguish the two read [reportedAmountOf]
- * instead.
- */
-internal fun CostField.amountOn(college: College): Int? = (reportedAmountOf(college) as? ReportedAmount.Column)?.amountUsd
 
 /**
  * How a resolved living plan reached this school (RFC 152 D2a) -- so the
@@ -458,7 +623,7 @@ enum class LivingPlanPricing(
  * deliberately NOT the vocabulary).
  *
  * [ArrangementGap] states what the SCHOOL published, and this vocabulary must
- * never make that claim: two of the three causes here are gaps of OURS, and
+ * never make that claim: three of the four causes here are gaps of OURS, and
  * folding them into the school's price list is the misattribution RFC 149 D-B
  * forbids. So they are separate vocabularies on purpose.
  *
@@ -469,6 +634,15 @@ enum class LivingPlanPricing(
 enum class NoTotalReason(
   val value: String,
   val phrase: String,
+  /**
+   * True when the blank this reason explains is the TUITION line -- the two
+   * gaps of ours that a residency answer or a control we can place would close.
+   *
+   * Read by [ChosenLivingPlan.NoTotalHere], which refuses a tuition reason
+   * beside a tuition line that is present. Declared on the member rather than
+   * listed at that call site, so a reason added later cannot be forgotten there.
+   */
+  val aboutTuition: Boolean,
 ) {
   /**
    * OURS: the family has not told us which state the student is a resident of,
@@ -479,6 +653,7 @@ enum class NoTotalReason(
   AWAITING_RESIDENCY_ANSWER(
     "awaiting_residency_answer",
     "no total yet, because we have not been told which state the student is a resident of",
+    aboutTuition = true,
   ),
 
   /**
@@ -489,6 +664,7 @@ enum class NoTotalReason(
   TUITION_APPLICABILITY_UNKNOWN(
     "tuition_applicability_unknown",
     "no total, because we cannot tell which of this school's published prices applies",
+    aboutTuition = true,
   ),
 
   /**
@@ -499,6 +675,25 @@ enum class NoTotalReason(
   PART_NOT_PUBLISHED(
     "part_not_published",
     "no total, because a part of what that way of living costs is not published",
+    aboutTuition = false,
+  ),
+
+  /**
+   * OURS: a part of what that way of living costs is one WE do not hold for the
+   * year this school's price is quoted at -- a `not_collected_by_us` row, or a
+   * figure the school published only in another academic year (RFC 166 §3, §6).
+   *
+   * Separate from [PART_NOT_PUBLISHED] because that sentence is a claim about
+   * the SCHOOL's price list, and this blank is not the school's. Routing a gap
+   * of ours through it would tell a family the school does not publish a figure
+   * the school may well publish -- the misattribution RFC 149 D-B forbids, and
+   * the reason [ed.unicoach.coaching.costs.canonical.FigureStatusCopy.noTotalReasonOf]
+   * exists at all.
+   */
+  PART_NOT_COLLECTED_BY_US(
+    "part_not_collected_by_us",
+    "no total, because we have not collected a part of what that way of living costs",
+    aboutTuition = false,
   ),
 }
 
@@ -615,8 +810,8 @@ sealed interface ChosenLivingPlan {
     val cost: ArrangementCost,
     val source: LivingPlanSource,
     /**
-     * WHY there is no total, as a code (RFC 152): two of the three causes are
-     * gaps of OURS and one is the school's, and they are three different
+     * WHY there is no total, as a code (RFC 152): three of the four causes are
+     * gaps of OURS and one is the school's, and they are four different
      * sentences. Decided by [CollegeCostService], which holds the school's
      * control and the family's residency answer; the [init] below refuses a
      * reason that contradicts the lines beside it.
@@ -632,7 +827,7 @@ sealed interface ChosenLivingPlan {
       // A tuition reason claims the tuition line is the blank; with a tuition
       // line present it would state a cause that is not there, and the coach
       // would ask a family for an answer that changes nothing.
-      require(cost.tuitionLine == null || reason == NoTotalReason.PART_NOT_PUBLISHED) {
+      require(cost.tuitionLine == null || !reason.aboutTuition) {
         "a tuition reason needs a missing tuition line: " +
           "arrangement=[${cost.arrangement.value}] reason=[${reason.value}] cost=[$cost]"
       }

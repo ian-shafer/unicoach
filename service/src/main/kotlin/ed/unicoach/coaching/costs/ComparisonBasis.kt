@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.util.phraseOf
 import ed.unicoach.db.dao.CorruptPersistedValueException
@@ -8,10 +9,11 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.LivingArrangement
 
 /**
- * The SIX facts that make a multi-school cost table honest (RFC 151, RFC 157
- * D-C): whose price these figures are, the residency held constant, which
- * residency the blended figures are on, the living arrangement held constant,
- * the academic year the figures come from, and what "aid" means inside them.
+ * The SEVEN facts that make a multi-school cost table honest (RFC 151, RFC 157
+ * D-C, RFC 166 §7): whose price these figures are, the residency held constant,
+ * which residency the blended figures are on, the living arrangement held
+ * constant, the at-home zero that is OURS, the academic year each school's
+ * figures come from, and what "aid" means inside them.
  *
  * The sixth is here because the second did not cover what its own docstring
  * claimed. [ResidencyBasis] is scoped to TUITION by construction -- its
@@ -45,13 +47,20 @@ data class ComparisonBasis(
   val residency: ResidencyBasis,
   val blendedFigures: BlendedFigureBasis,
   val livingArrangement: ArrangementBasis,
+  /**
+   * Present exactly when some school in this call SHOWS the at-home arrangement
+   * (RFC 166 §7) -- total or no total, because the `$0` line is printed either
+   * way -- and absent otherwise: a family never shown an at-home price is never
+   * told about an assumption that did not touch their numbers.
+   */
+  val atHomeAssumption: AtHomeAssumptionBasis?,
   val academicYears: List<DatedFigures>,
   val aid: AidBasis,
 ) {
   /**
    * EVERY per-call statement this basis makes, in the order they must be said.
    *
-   * The list exists so a renderer cannot hand-pick a subset. A sixth honesty
+   * The list exists so a renderer cannot hand-pick a subset. An eighth honesty
    * statement added to this object arrives at every surface that renders the
    * basis — the coach in chat AND the parent-facing report page — rather than
    * reaching only the reader whose file happened to be edited. Withholding one
@@ -72,6 +81,9 @@ data class ComparisonBasis(
         // reads the next two rows as out-of-state too (RFC 157).
         add(blendedFigures.statement)
         add(livingArrangement.statement)
+        // Immediately after the arrangement line, because it qualifies exactly
+        // one of the ways of living that line has just named.
+        atHomeAssumption?.let { add(it.statement) }
         academicYears.forEach { add(it.statement) }
         add(aid.statement)
       }
@@ -100,11 +112,49 @@ data class ComparisonBasis(
         // vocabulary map, so they cannot disagree about one school.
         blendedFigures = BlendedFigureBasis.of(residency),
         livingArrangement = ArrangementBasis.of(colleges, moneyProfile),
+        atHomeAssumption = AtHomeAssumptionBasis.takeIf { colleges.any { college -> college.showsAtHomeArrangement } },
         academicYears = DatedFigures.of(colleges),
         aid = AidBasis,
       )
     }
   }
+}
+
+/**
+ * The one amount in this domain that is unicoach's own, and the sentence that
+ * says so (RFC 166 §7, gate-2 D17).
+ *
+ * ONE home for the words, because they reach a family through three surfaces --
+ * the coach's basis statements, the parent-facing report page, and the
+ * `assumed_by_unicoach` key on the wire -- and three copies of a sentence about
+ * whose number a `$0` is would be three chances to lose the "ours".
+ *
+ * Beside [AtHomeAssumptionBasis], the fact that speaks it, and not in the store
+ * projection: this file is already the one home for basis copy, and the
+ * canonical package holds what publishers said -- never our own assumption.
+ */
+const val AT_HOME_ASSUMPTION_STATEMENT: String =
+  "Living at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost " +
+    "that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure " +
+    "any school published."
+
+/**
+ * The SEVENTH basis fact (RFC 166 §7, gate-2 D17): the at-home arrangement's
+ * food-and-housing line is a `$0` we assume, and it is named as ours.
+ *
+ * A typed fact rather than a bare sentence appended to a list, for the reason
+ * every other fact on these two objects is one: a renderer reads the CODE and
+ * cannot re-word the statement, and the fact's presence is itself the assertion
+ * -- it exists exactly when a with-family arrangement is SHOWN, whether or not
+ * a total was settled for it, so the `$0` line and the sentence saying whose
+ * zero it is can never be separated. A family who is never quoted an at-home
+ * price is never told about an assumption that did not affect them.
+ */
+data object AtHomeAssumptionBasis {
+  /** A compile-time constant so a test and the tool description can name the wire code without a fixture. */
+  const val CODE: String = "at_home_food_and_housing_assumed_zero"
+
+  val statement: String get() = AT_HOME_ASSUMPTION_STATEMENT
 }
 
 /**
@@ -1068,59 +1118,139 @@ data class ArrangementBasis(
 }
 
 /**
- * One academic year in the call, and the figures it dates (RFC 151): the same
- * `{academic_year, figures}` shape the per-college vintage labels already carry,
- * plus the sentence that says the year aloud.
+ * One school an academic year is true of: the [collegeId] a reader matches on,
+ * and the [name] the sentence says.
+ *
+ * A pair rather than a bare name, following [CollegeResidencyBasis] and
+ * [CollegeLivingPlan]: the name is display copy and collides across the corpus,
+ * so it can identify nothing.
+ */
+data class DatedCollege(
+  val collegeId: CollegeId,
+  val name: String,
+)
+
+/**
+ * One academic year in the call, THE SCHOOLS IT IS TRUE OF, and the figures it
+ * dates (RFC 151, RFC 166 §3): the same `{academic_year, figures}` shape the
+ * per-college vintage labels already carry, plus the sentence that says the year
+ * aloud.
+ *
+ * The subject is named because RFC 166 made the year a fact about ONE COLLEGE.
+ * Before it, the year was a constant on [FigureGroup] and so a fact about the
+ * whole call, and one subject-less sentence was true of every school. It is not
+ * any more: a Scorecard-only school serves 2022-23 beside an IC_AY school's
+ * 2023-24, and two sentences claiming the SAME figures at two different years,
+ * naming no school, are each false about one of them -- rendered verbatim to a
+ * parent, who has no way to attach either year to a column of dollars.
  *
  * Only the vintages actually PRESENT in the call are listed, and each lists only
- * the figures some college in the call really carries -- read off the same
+ * the figures THE SCHOOLS IT NAMES really carry -- read off the same
  * [CostField] classifier [CollegeCostChatTool] derives its per-college labels
- * from, so the comparison can never date a figure the payload does not render.
+ * from, so the comparison can never date a figure the payload does not render,
+ * and never dates a figure for a school that does not report it.
  */
 data class DatedFigures(
-  val vintage: ScorecardVintage,
+  val group: FigureGroup,
+  /** The academic year READ OFF THE ROWS this call served (RFC 166 §3), never a constant on the group. */
+  val academicYear: String,
+  /**
+   * The schools this year is true of, in the order the call names them -- never
+   * empty, because a year with no school under it has no subject.
+   *
+   * BY ID as well as by name, like [CollegeResidencyBasis], [CollegeLivingPlan]
+   * and [IncompleteArrangement] beside it. The name is what the sentence says;
+   * the id is what the reader MATCHES on. Every other cross-reference in this
+   * payload is by `college_id`, and college names collide in the real corpus
+   * ("Columbia College", "Saint Mary's College"), so a name-only subject would
+   * let the wrong academic year be attached to a column of dollars -- the very
+   * harm the per-school year exists to prevent.
+   */
+  val colleges: List<DatedCollege>,
   val figures: List<CostField>,
 ) {
-  val basis: String get() = vintage.wireName
+  init {
+    // Names the bucket that went subject-less, not just the rule it broke: this
+    // type is built by the per-year fan-out in [of], so an operator who sees
+    // this needs to know WHICH (group, year) group produced no school. Every
+    // part of the answer is a constructor argument already in scope.
+    require(colleges.isNotEmpty()) {
+      "an academic year is a fact about schools: name them, or state no year: " +
+        "basis=[${group.wireName}] academic_year=[$academicYear] " +
+        "figures=[${figures.joinToString(", ") { it.wireName }}]"
+    }
+  }
 
-  val academicYear: String get() = vintage.label
+  val basis: String get() = group.wireName
 
   /**
-   * Exhaustive on purpose: a vintage added to the enum must fail to compile
+   * Exhaustive on purpose: a GROUP added to the enum must fail to compile
    * here -- the one site that owes it copy -- rather than ship a year with no
    * sentence saying what kind of figure it dates.
    */
   val statement: String
     get() =
-      when (vintage) {
-        ScorecardVintage.PUBLISHED_PRICE -> {
-          "The published price figures here, which are tuition and fees and the parts of living cost a school " +
-            "publishes, all come from the $academicYear academic year, for every school in this comparison."
+      when (group) {
+        FigureGroup.PUBLISHED_PRICE -> {
+          "The published price figures for ${phraseOf(colleges.map { it.name })}, which are tuition and fees and " +
+            "the parts of living cost a school publishes, come from the $academicYear academic year."
         }
 
-        ScorecardVintage.BLENDED_AVERAGE -> {
-          "The blended averages here, which are the published cost of attendance and the net price, all come " +
-            "from the $academicYear academic year, for every school in this comparison."
+        FigureGroup.BLENDED_AVERAGE -> {
+          "The blended averages for ${phraseOf(colleges.map { it.name })}, which are the published cost of " +
+            "attendance and the net price, come from the $academicYear academic year."
         }
       }
 
   companion object {
     fun of(colleges: List<CollegeCost>): List<DatedFigures> {
-      // [CollegeCost.reported] and nothing else: it is the service's one
-      // answer to "does this college report this field", and exactly the set
-      // [CollegeCostChatTool] renders -- so a CostField added tomorrow cannot
-      // silently drop out of the dated figures here, which a null ladder of our
-      // own would have let it do.
+      // [CollegeCost.datedFields] and nothing else: it is exactly the set
+      // [CollegeCostChatTool] renders -- the published figures this college
+      // reports PLUS the one line whose amount is ours (RFC 166 §7), which is
+      // printed and therefore owes a year like any other. A CostField added
+      // tomorrow cannot silently drop out of the dated figures here, which a
+      // null ladder of our own would have let it do.
       //
-      // A figure with no vintage (median debt, median earnings) is admitted and
-      // dropped by the `it.vintage == vintage` test below: which year dates
+      // A figure with no group (median debt, median earnings) is admitted and
+      // dropped by the `it.figureGroup == group` test below: which year dates
       // what is [CostField]'s own fact.
-      val reported = colleges.flatMap { it.reported }.toSet()
+      //
+      // A school whose year for a group is null is dropped from that group
+      // entirely -- and null means BOTH "serves none of these figures" and
+      // "serves them at no single year" (a blend whose rows disagree carries no
+      // vintage). Both are the same fact here: there is no one year to say
+      // aloud, so this school is named under no sentence of that group rather
+      // than under a guessed one. The remaining schools keep their own years,
+      // and the group disappears from the basis only when no school dates it.
+      //
+      // Grouped by (group, YEAR) rather than by group alone (RFC 166 §3): the
+      // year is a property of the rows a school served, so a Scorecard-only
+      // school and an IC_AY school in one comparison honestly carry two
+      // published-price years, and the sentence beside each names its own. The
+      // old copy said "for every school in this comparison" from a Kotlin
+      // constant, which the store can now contradict.
+      //
+      // The FIGURES are then read from the schools AT THAT YEAR and from no
+      // others. Filtered over the whole call instead, both entries listed the
+      // same fields, so each year claimed the other's schools' figures too --
+      // two contradictory sentences about one set of numbers, with no school
+      // named in either.
+      //
       // Declaration order on both axes, so the list is a fact about the call
-      // rather than about set iteration.
-      return ScorecardVintage.entries.mapNotNull { vintage ->
-        val dated = CostField.entries.filter { it.vintage == vintage && it in reported }
-        if (dated.isEmpty()) null else DatedFigures(vintage, dated)
+      // rather than about set or map iteration.
+      return FigureGroup.entries.flatMap { group ->
+        colleges
+          .filter { it.academicYearOf(group) != null }
+          .groupBy { requireNotNull(it.academicYearOf(group)) }
+          .toSortedMap()
+          .mapNotNull { (year, served) ->
+            val reported = served.flatMap { it.datedFields }.toSet()
+            val dated = CostField.entries.filter { it.figureGroup == group && it in reported }
+            // A school can serve a year of this group and still date none of
+            // its figures to this family -- every one of them withheld. A year
+            // with no figure under it dates nothing and is not stated.
+            if (dated.isEmpty()) null else DatedFigures(group, year, served.map { DatedCollege(it.collegeId, it.name) }, dated)
+          }
       }
     }
   }

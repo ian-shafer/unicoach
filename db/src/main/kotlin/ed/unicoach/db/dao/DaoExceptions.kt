@@ -117,7 +117,13 @@ class UnstorableTextException(
 class CorruptPersistedValueException(
   val value: String,
   val error: ValidationError,
-  location: String? = null,
+  /**
+   * WHERE the corrupt value sits — the column and the row's natural key — kept
+   * as a property, not only rendered into the message, so a caller that carries
+   * the failure out as data (`CanonicalMoneyReadDao.readRows`) can name the cell
+   * without parsing this message back out of prose.
+   */
+  val location: String? = null,
 ) : DaoException("Persisted value [$value] failed reconstruction: $error" + (location?.let { " at $it" } ?: "")),
   PermanentError
 

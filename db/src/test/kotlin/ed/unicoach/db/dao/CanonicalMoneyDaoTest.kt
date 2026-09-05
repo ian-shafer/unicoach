@@ -15,6 +15,7 @@ import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.NewResidencyBasis
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.VINTAGE_UNDATED
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -297,7 +298,7 @@ class CanonicalMoneyDaoTest {
           cohortStat(
             id,
             measure = MoneyMeasure.PELL_SHARE,
-            vintage = "undated",
+            vintage = VINTAGE_UNDATED,
             reading = FigureReading.Present(0.4, ValueBearingStatus.REPORTED),
           ),
         ),
@@ -305,6 +306,49 @@ class CanonicalMoneyDaoTest {
     val thrown =
       assertFailsWith<ConstraintViolationException> {
         CanonicalMoneyDao.insertCohortMoneyStats(session, listOf(cohortStat(id, vintage = "unknown"))).getOrThrow()
+      }
+    assertEquals("cohort_money_stats_vintage_format_check", thrown.constraint)
+  }
+
+  @Test
+  fun `the undated sentinel this build reads is the one the schema accepts and stores`() {
+    // The Kotlin constant and `0083`'s CHECK are two sides of ONE contract, and
+    // the reader turns exactly this literal into "no year at all". A constant
+    // that drifted from the column would not fail to compile: the reader would
+    // simply stop recognising the sentinel and hand it back AS an academic
+    // year, so median debt would acquire a year no publisher gave it. Asserted
+    // against a live database rather than against a second copy of the string.
+    val id = college()
+    CanonicalMoneyDao
+      .insertCohortMoneyStats(
+        session,
+        listOf(
+          cohortStat(
+            id,
+            measure = MoneyMeasure.MEDIAN_DEBT_AT_COMPLETION,
+            vintage = VINTAGE_UNDATED,
+            reading = FigureReading.Present(23000.0, ValueBearingStatus.REPORTED),
+          ),
+        ),
+      ).getOrThrow()
+
+    val stored =
+      connection.createStatement().use { stmt ->
+        stmt
+          .executeQuery(
+            "SELECT vintage FROM cohort_money_stats WHERE college_id = '$id' AND measure = 'median_debt_at_completion'",
+          ).use { rows ->
+            assertTrue(rows.next(), "the row the fill writes is there to be read")
+            rows.getString("vintage")
+          }
+      }
+    assertEquals(VINTAGE_UNDATED, stored, "the store returns the sentinel byte-for-byte, which is what the reader tests")
+
+    // And it is the ONLY sentinel the column admits: a second one ('pooled',
+    // 'multi-year') is refused by the schema rather than read back as a year.
+    val thrown =
+      assertFailsWith<ConstraintViolationException> {
+        CanonicalMoneyDao.insertCohortMoneyStats(session, listOf(cohortStat(id, vintage = "pooled"))).getOrThrow()
       }
     assertEquals("cohort_money_stats_vintage_format_check", thrown.constraint)
   }

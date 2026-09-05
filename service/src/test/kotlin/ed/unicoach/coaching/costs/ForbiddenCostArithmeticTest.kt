@@ -37,13 +37,35 @@ class ForbiddenCostArithmeticTest {
    */
   private val aidSourceDirectory = File("src/main/kotlin/ed/unicoach/coaching/aid")
 
+  /**
+   * The canonical projection (RFC 166), named for its own read-guard below.
+   *
+   * It is a SUB-package of [sourceDirectory], so the recursive sweep already
+   * reaches it -- naming it a second time in [scannedDirectories] would scan
+   * every one of its files twice. What it is named for is the assertion: a
+   * sub-package added under a directory a non-recursive scan walked was
+   * INVISIBLE to this test, and every money identifier in it unpoliced from its
+   * first commit.
+   */
+  private val canonicalSourceDirectory = File("src/main/kotlin/ed/unicoach/coaching/costs/canonical")
+
   private val scannedDirectories = listOf(sourceDirectory, aidSourceDirectory)
 
+  /**
+   * Every Kotlin source under the scanned directories, RECURSIVELY.
+   *
+   * `walkTopDown`, and not `listFiles`, for one reason with teeth: the cost
+   * package gained a sub-package in RFC 166, and a non-recursive scan would have
+   * kept passing while the new money code went unread. That failure is silent by
+   * construction -- the sweep would still assert an empty offender list -- so the
+   * recursion is guarded by its own test below rather than trusted.
+   */
   private val sources: List<File>
     get() =
-      scannedDirectories.flatMap { directory ->
-        directory.listFiles { f: File -> f.name.endsWith(".kt") }?.sortedBy { it.name } ?: emptyList()
-      }
+      scannedDirectories
+        .flatMap { directory -> directory.walkTopDown().filter { it.isFile && it.name.endsWith(".kt") } }
+        .distinctBy { it.absolutePath }
+        .sortedBy { it.absolutePath }
 
   /**
    * A line that subtracts one MONEY-bearing expression from another, ignoring
@@ -112,6 +134,33 @@ class ForbiddenCostArithmeticTest {
   }
 
   /**
+   * The anti-vacuity guard for the RECURSION itself (RFC 166).
+   *
+   * The sweep above scans a list of directories. Before RFC 166 it read each one
+   * non-recursively, so the money code in a SUB-package was never read and the
+   * sweep still passed -- the worst shape a guard can fail in, because its
+   * green is indistinguishable from a real green. The canonical projection is
+   * that sub-package, and this test asserts by NAME that a file inside it
+   * reaches the scan.
+   *
+   * It names the files rather than counting them: a count would go green again
+   * the moment any file anywhere was added.
+   */
+  @Test
+  fun `the scan reaches into the cost package's sub-packages`() {
+    assertTrue(
+      canonicalSourceDirectory.isDirectory,
+      "expected the canonical projection at [${canonicalSourceDirectory.absolutePath}]",
+    )
+    val names = sources.map { it.name }.toSet()
+    assertTrue(
+      names.containsAll(setOf("CollegeFigures.kt", "CanonicalCostReader.kt", "FigureStatusCopy.kt", "ResidencyTiers.kt")),
+      "a sub-package of the cost package must be scanned, not silently skipped by a non-recursive walk; " +
+        "found [$names]",
+    )
+  }
+
+  /**
    * THE scan: every line of [file] that subtracts one money-bearing expression
    * from another. Both the sweep and its positive control run this one function,
    * so the control cannot pass on a copy of a pipeline the sweep no longer uses.
@@ -165,19 +214,21 @@ class ForbiddenCostArithmeticTest {
       val tight = cost.netPrice.amount-college.booksAndSuppliesPerYearUsd
       val templated = "the gap is ${'$'}{cost.netPrice.amount - college.booksAndSuppliesPerYearUsd} per year"
       val loanGap = pell.maxAwardUsd - loans.aggregateTotalUsd
+      val assumedGap = figures.publishedAmountOf(field) - ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD
       """.trimIndent() + "\n",
     )
 
     val hits = offendingLines(control).map { it.first }
     assertEquals(
-      listOf(1, 4, 7, 8, 9),
+      listOf(1, 4, 7, 8, 9, 10),
       hits,
       "the scan must see the plain subtraction on line 1, the wrapped one on line 4, the unspaced one on " +
         "line 7, the one written inside a string template on line 8 and the aid-vocabulary one on line 9 " +
         "(RFC 159: the coaching/aid sweep is vacuous unless the aid money words are in the vocabulary), " +
         "must NOT fire on the comment on line 2 that states the rule in words, and must NOT fire on the " +
         "hyphenated English of line 6, which names two money words inside a string literal and subtracts " +
-        "nothing",
+        "nothing, and must see the canonical-projection one on line 10 (RFC 166: the costs/canonical sweep is " +
+        "vacuous unless the projection's own money words are in the vocabulary)",
     )
   }
 
@@ -206,6 +257,13 @@ class ForbiddenCostArithmeticTest {
           "subsidizedMaxUsd",
           "aggregateTotalUsd",
           "aggregateSubsidizedMaxUsd",
+          // The canonical projection's own money vocabulary (RFC 166): without
+          // these the costs/canonical sweep would read the directory and match
+          // nothing in it -- the same vacuum RFC 159 left in coaching/aid.
+          "publishedAmountOf",
+          "ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD",
+          "netPricePerYearUsd",
+          "totalPerYearUsd",
         )
 
     /**

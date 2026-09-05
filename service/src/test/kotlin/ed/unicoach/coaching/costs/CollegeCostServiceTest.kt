@@ -10,13 +10,27 @@ import ed.unicoach.coaching.costs.CostsTestDb.declineBand
 import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.CostsTestDb.seedCollege
+import ed.unicoach.coaching.costs.canonical.FigureAddress
+import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
+import ed.unicoach.coaching.costs.canonical.figureAddress
+import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.db.dao.CorruptPersistedValueException
+import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.CohortAidScope
+import ed.unicoach.db.models.CohortPopulation
+import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.FigureArrangement
+import ed.unicoach.db.models.FigureReading
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.ValueBearingStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -40,10 +54,343 @@ class CollegeCostServiceTest {
 
   private val service = CollegeCostService(CostsTestDb.database)
 
+  /** One academic year NEWER than the fixture's own, for the year-selection cases (RFC 166 §3). */
+  private val newerAcademicYear = "2024-25"
+
+  /** One academic year OLDER than the fixture's own -- a figure this school published, but not in the served year. */
+  private val olderAcademicYear = "2021-22"
+
+  /**
+   * The college the directly-constructed [ArrangementCost] fixtures below price.
+   *
+   * Fixed rather than random, so the refusal cases can assert that the id
+   * reaches the message an operator reads.
+   */
+  private val arrangementCollegeId = CollegeId(UUID.fromString("00000000-0000-4000-8000-0000000000cc"))
+
   private fun profileOf(
     student: StudentId,
     ids: List<CollegeId>? = null,
   ): CollegeCostProfile = runBlocking { service.getForStudent(student, ids).getOrThrow() }
+
+// ---------------------------------------------------------------------------
+  // The canonical store: the year served, the statuses spoken, the third tier
+  // (RFC 166).
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the academic year is read off the rows and stated back, per college`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Dated U"))
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(CostsTestDb.PRICE_ACADEMIC_YEAR, cost.publishedPriceAcademicYear)
+    assertEquals(CostsTestDb.BLENDED_ACADEMIC_YEAR, cost.blendedAverageAcademicYear)
+    assertEquals(CostsTestDb.PRICE_ACADEMIC_YEAR, cost.academicYearOf(FigureGroup.PUBLISHED_PRICE))
+    assertEquals(CostsTestDb.BLENDED_ACADEMIC_YEAR, cost.academicYearOf(FigureGroup.BLENDED_AVERAGE))
+  }
+
+  @Test
+  fun `a total is built from the latest COMPLETE year, not the latest year`() {
+    // RFC 166 §3 rule 2. The newer year publishes a tuition figure and a housing
+    // figure and nothing else; the older one is whole. A family quoted the newer
+    // year would read an incomplete budget, and a total assembled across the two
+    // would be a number no school ever published.
+    val student = createStudent()
+    val collegeId = seedCollege("Two Years U")
+    // The fixture's own year is 2023-24 and is complete; add a NEWER, partial one.
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      PriceConcept.TUITION_AND_FEES,
+      ed.unicoach.db.models.ResidencyBasis.IN_STATE,
+      FigureArrangement.NOT_APPLICABLE,
+      academicYear = newerAcademicYear,
+      reading = FigureReading.Present(13000, ValueBearingStatus.REPORTED),
+    )
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      PriceConcept.HOUSING_AND_FOOD,
+      ed.unicoach.db.models.ResidencyBasis.NOT_APPLICABLE,
+      FigureArrangement.ON_CAMPUS,
+      academicYear = newerAcademicYear,
+      reading = FigureReading.Present(9500, ValueBearingStatus.REPORTED),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(
+      CostsTestDb.PRICE_ACADEMIC_YEAR,
+      cost.publishedPriceAcademicYear,
+      "the complete older year is served, and the year is stated",
+    )
+    assertEquals(CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, cost.tuitionAndFeesInStatePerYearUsd)
+    val onCampus = assertNotNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS))
+    assertNotNull(onCampus.totalPerYearUsd)
+    assertEquals(
+      setOf(CostsTestDb.PRICE_ACADEMIC_YEAR),
+      onCampus.lines.map { it.academicYear }.toSet(),
+      "every line of a served arrangement shares ONE academic year: [${onCampus.lines}]",
+    )
+  }
+
+  @Test
+  fun `with no complete year there is no total, the parts share one year, and the reason is given`() {
+    val student = createStudent()
+    val collegeId =
+      seedCollege(
+        "No Complete Year U",
+        otherExpensesOnCampusPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+        otherExpensesWithFamilyPerYearUsd = null,
+      )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    val onCampus = assertNotNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS))
+    assertNull(onCampus.totalPerYearUsd, "a partial sum is not a total")
+    assertEquals(
+      setOf(CostsTestDb.PRICE_ACADEMIC_YEAR),
+      onCampus.lines.map { it.academicYear }.toSet(),
+      "the parts are shown at one year, each labelled with it",
+    )
+    assertTrue(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD in cost.notReported)
+  }
+
+  @Test
+  fun `the six statuses are spoken, and a gap of ours is never called the school's silence`() {
+    // RFC 166 §6. One college, one figure per absent status: the payload says
+    // WHICH figure is blank (`data_availability`) and, beside it, WHY -- in the
+    // store's own words and attributed to the right owner.
+    val student = createStudent()
+    val collegeId = seedCollege("Statuses U", booksAndSuppliesPerYearUsd = null)
+    // The school's own silence is already there (books and supplies). Add a
+    // figure the PUBLISHER suppressed and one WE have not collected.
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      PriceConcept.FEES_ONLY,
+      ed.unicoach.db.models.ResidencyBasis.IN_STATE,
+      FigureArrangement.NOT_APPLICABLE,
+      reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+    )
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      PriceConcept.FEES_ONLY,
+      ed.unicoach.db.models.ResidencyBasis.OUT_OF_STATE,
+      FigureArrangement.NOT_APPLICABLE,
+      reading = FigureReading.Absent(AbsenceStatus.NOT_COLLECTED_BY_US),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    val byField = cost.figureStatuses.associateBy { it.field }
+
+    val books = assertNotNull(byField[CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD])
+    assertEquals(FigureStatus.NOT_REPORTED_BY_INSTITUTION, books.status)
+    assertEquals("This school did not report this figure.", books.statement)
+    assertTrue(
+      CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD in cost.notReported,
+      "the SCHOOL's own silence is `data_availability`'s to name",
+    )
+
+    val suppressed = assertNotNull(byField[CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD])
+    assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, suppressed.status)
+    assertEquals("This figure is withheld by the publisher for privacy.", suppressed.statement)
+    assertFalse(
+      CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD in cost.notReported,
+      "the PUBLISHER's suppression is not the school's silence, so `data_availability` may not claim it",
+    )
+
+    val ours = assertNotNull(byField[CostField.FEES_ONLY_OUT_OF_STATE_PER_YEAR_USD])
+    assertEquals(FigureStatus.NOT_COLLECTED_BY_US, ours.status)
+    assertEquals("We have not collected this figure yet.", ours.statement)
+    assertFalse(
+      CostField.FEES_ONLY_OUT_OF_STATE_PER_YEAR_USD in cost.notReported,
+      "a gap of OURS may never be folded into a claim about the school's price list (RFC 149 D-B)",
+    )
+  }
+
+  @Test
+  fun `a net price the publisher suppressed speaks its own reason, and is never the school's silence`() {
+    // RFC 166 §6 rule 1, on the COHORT side. `NPT4` is the Scorecard's most
+    // suppressed series -- small cohorts -- and its status was read through a
+    // price-only door that answers null for every cohort field, so the payload
+    // told a family "this college does not report net price" about a figure the
+    // publisher withheld for privacy, and dropped the sentence that says so.
+    val student = createStudent()
+    val collegeId =
+      seedCollege(
+        "Suppressed Net Price U",
+        netPricePerYearUsd = null,
+        netPriceReading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+      )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertNull(cost.netPrice.amount, "a suppressed row bears no value")
+    val note =
+      assertNotNull(
+        cost.figureStatuses.singleOrNull { it.field == CostField.NET_PRICE },
+        "the store holds the reason, and the payload must carry it: [${cost.figureStatuses}]",
+      )
+    assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, note.status)
+    assertEquals("This figure is withheld by the publisher for privacy.", note.statement)
+    assertFalse(
+      CostField.NET_PRICE in cost.notReported,
+      "the publisher's suppression may not be published as the school's silence: [${cost.notReported}]",
+    )
+  }
+
+  @Test
+  fun `the blended-average year dates the row the family was served, never a newer row of another cohort`() {
+    // RFC 162 files a SECOND `avg_net_price` series -- IPEDS SFA's grant-aided
+    // figure for the full-time first-time aid cohort -- at a NEWER aid year. The
+    // label is derived from the addresses this surface serves, so the year
+    // printed beside the net price belongs to the number beside it.
+    val student = createStudent()
+    val collegeId = seedCollege("Two Net Price Series U")
+    CostsTestDb.seedCohortStat(
+      collegeId,
+      MoneyMeasure.AVG_NET_PRICE,
+      CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
+      CohortResidencyScope.IN_STATE_RATE_PAYING,
+      CohortAidScope.GRANT_AIDED,
+      vintage = "2099-00",
+      reading = FigureReading.Present(12345.0, ValueBearingStatus.REPORTED),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(20000, cost.netPrice.amount)
+    assertEquals(
+      CostsTestDb.BLENDED_ACADEMIC_YEAR,
+      cost.blendedAverageAcademicYear,
+      "the year is the SERVED row's, not the newest row sharing its measure",
+    )
+  }
+
+  @Test
+  fun `an imputed figure is shown, labelled, and never hidden`() {
+    val student = createStudent()
+    val collegeId = seedCollege("Imputed U")
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      PriceConcept.FEES_ONLY,
+      ed.unicoach.db.models.ResidencyBasis.IN_STATE,
+      FigureArrangement.NOT_APPLICABLE,
+      reading = FigureReading.Present(0, ValueBearingStatus.IMPUTED_BY_PUBLISHER),
+      publisherFlag = "Z",
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(0, cost.publishedAmountOf(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD), "an implied zero is a real zero")
+    assertFalse(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD in cost.notReported)
+    val note = assertNotNull(cost.figureStatuses.singleOrNull { it.field == CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD })
+    assertEquals(
+      "This is the publisher's own estimate for this school, not a figure the school reported.",
+      note.statement,
+      "an imputed figure is still a figure -- shown, with the sentence that says whose estimate it is",
+    )
+  }
+
+  @Test
+  fun `a community college names three tiers, and the in-district figure never enters a total`() {
+    // RFC 161's Austin CC shape. The tier is value-bearing for a minority, so a
+    // fixture written against a private or a public four-year would not exercise
+    // this feature at all.
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "District CC",
+        state = "TX",
+        control = 1,
+        seedsInDistrictRow = true,
+        tuitionAndFeesInDistrictPerYearUsd = 2550,
+        tuitionAndFeesInStatePerYearUsd = 8580,
+        tuitionAndFeesOutOfStatePerYearUsd = 10590,
+      ),
+    )
+    answerResidency(student, "TX")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(ResidencyTierBasis.THREE_TIERS_PUBLISHED, cost.residencyTiers)
+    assertEquals(2550, cost.publishedAmountOf(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD))
+
+    // The applicable tuition for a Texas family is the IN-STATE one: a family's
+    // answered STATE cannot select a DISTRICT price, and no new question is asked
+    // to close that gap.
+    val breakdown = assertNotNull(cost.breakdown)
+    assertTrue(
+      breakdown.arrangements.all { it.tuitionLine?.field == CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD },
+      "the applicable tuition stays the state-selected one: [${breakdown.arrangements}]",
+    )
+    assertTrue(
+      breakdown.arrangements.none { arrangement ->
+        arrangement.lines.any { it.field == CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD }
+      },
+      "the in-district figure is a labelled tier and never a line in a total",
+    )
+  }
+
+  @Test
+  fun `a college with no in-district row says so, and its in-state figure keeps its own label`() {
+    // RFC 161's open item: for the IC_PY remainder "re-labelling it in-district on
+    // a guess would trade one wrong label for another". AN IN-STATE FIGURE IS
+    // NEVER PRESENTED AS AN IN-DISTRICT PRICE.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("No District U"))
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT, cost.residencyTiers)
+    assertNull(cost.publishedAmountOf(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD))
+    assertEquals(
+      CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+      cost.tuitionAndFeesInStatePerYearUsd,
+      "the figure keeps the label the publisher gave it",
+    )
+  }
+
+  @Test
+  fun `fees are reported beside the combined figure and are never summed into a total`() {
+    // `fees_only` is a part OF `tuition_and_fees`, not a part BESIDE it, so adding
+    // it to an arrangement would double-count fees inside every total.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Fees U", feesOnlyInStatePerYearUsd = 1500))
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(1500, cost.publishedAmountOf(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD))
+    val onCampus = assertNotNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS))
+    assertTrue(
+      onCampus.lines.none { it.field == CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD },
+      "the split is reported, never added: [${onCampus.lines}]",
+    )
+    assertEquals(
+      CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD +
+        CostsTestDb.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD +
+        CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD +
+        CostsTestDb.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
+      onCampus.totalPerYearUsd,
+    )
+    // A fees tier with NO ROW AT ALL is in neither published list: `data_availability`
+    // means "this college does not report this cost field", and a cell the fill has
+    // never written for this college does not license that sentence. Most of the
+    // corpus has no `in_district` row of any kind.
+    assertTrue(
+      CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD !in cost.notReported &&
+        CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD !in cost.reported,
+      "a cell we hold nothing for is not the school's silence, and not its figure either",
+    )
+  }
 
   // ---------------------------------------------------------------------------
   // Net-price basis
@@ -615,26 +962,118 @@ class CollegeCostServiceTest {
     // everyday spending.
     val withFamily = assertNotNull(arrangementOf(cost, LivingArrangement.WITH_FAMILY))
     assertEquals(
-      tuition + CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD + CostsTestDb.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
+      tuition + CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD + CostsTestDb.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD +
+        ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD,
       withFamily.totalPerYearUsd,
     )
     assertTrue(withFamily.totalPerYearUsd!! < onCampus.totalPerYearUsd!!)
   }
 
+  /**
+   * THE REVERSAL (RFC 166 §7, gate-2 D17). This test was
+   * `with_family carries no housing and food line at all, never a zero`, and the
+   * behaviour it pinned is the one D17 overturns -- for `with_family` only.
+   *
+   * The old rule read the absence as missing data: no source publishes a
+   * with-family food-and-housing figure, so a `$0` there would be a fabricated
+   * fact and the arrangement carried one fewer part and never totalled. It is
+   * not missing data. Eating at home is not free, but it is not a new cost that
+   * ENROLLING creates, so the at-home total counts it as zero -- and the zero is
+   * OURS, said in words, never attributed to the school.
+   *
+   * Every OTHER arrangement keeps both committed rules exactly, which the
+   * sibling tests above and [a zero is unrepresentable under any other
+   * arrangement or field] below still assert.
+   */
   @Test
-  fun `with_family carries no housing and food line at all, never a zero`() {
+  fun `with_family carries a labelled zero housing and food line, and the zero is ours`() {
     val student = createStudent()
     addToCollegeList(student, seedCollege("Home U"))
     answerResidency(student, "CA")
 
     val withFamily = assertNotNull(arrangementOf(profileOf(student).colleges.single(), LivingArrangement.WITH_FAMILY))
-    val fields = withFamily.lines.map { it.field }
-    assertTrue(
-      CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD !in fields &&
-        CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD !in fields,
-      "the Scorecard publishes no ROOMBOARD_FAM, so this arrangement has one fewer part: [$fields]",
+    val housing =
+      assertNotNull(
+        withFamily.lines.singleOrNull { it.field == CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD },
+        "the at-home arrangement carries a food-and-housing line: [${withFamily.lines}]",
+      )
+    assertEquals(ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD, housing.amountUsd)
+    assertEquals(
+      LineOrigin.ASSUMED_BY_UNICOACH,
+      housing.origin,
+      "the zero is ours, and the type says so rather than a comment beside a renderer",
     )
-    assertTrue(withFamily.lines.none { it.amountUsd == 0 }, "absence is never rendered as a zero")
+    // No canonical row is invented for it: the store holds what publishers said,
+    // and no publisher said this.
+    assertNull(
+      CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.figureAddress as? FigureAddress.Price,
+      "the assumed field has no address in a store of what publishers published",
+    )
+    // Every other line is still a published figure, so the reversal is exactly
+    // one field wide.
+    assertTrue(
+      withFamily.lines
+        .filter { it.field != CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD }
+        .all { it.origin == LineOrigin.PUBLISHED && it.amountUsd != 0 },
+      "the reversal is one field wide: [${withFamily.lines}]",
+    )
+    assertNotNull(withFamily.totalPerYearUsd, "the at-home total is complete, and is shown")
+  }
+
+  @Test
+  fun `a zero we assume is unrepresentable under any other arrangement or field`() {
+    // The rule is a PROPERTY, not a convention: `CostLine`'s own init admits
+    // ASSUMED_BY_UNICOACH for exactly one field at exactly one amount and refuses
+    // every other assumed line at construction (the ArrangementCost precedent).
+    // Without this, the D17 reversal would be a habit, and a `$0` could appear
+    // under any arrangement the next caller felt like.
+    assertFailsWith<IllegalArgumentException>("no other field may carry an amount of ours") {
+      CostLine(
+        CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
+        0,
+        CostsTestDb.PRICE_ACADEMIC_YEAR,
+        LineOrigin.ASSUMED_BY_UNICOACH,
+      )
+    }
+    assertFailsWith<IllegalArgumentException>("the one assumed amount is zero, and only zero") {
+      CostLine(
+        CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD,
+        1200,
+        CostsTestDb.PRICE_ACADEMIC_YEAR,
+        LineOrigin.ASSUMED_BY_UNICOACH,
+      )
+    }
+    assertFailsWith<IllegalArgumentException>("no publisher publishes it, so no line for it is published") {
+      CostLine(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD, 0, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED)
+    }
+  }
+
+  @Test
+  fun `the at-home assumption is stated in words, and only where an at-home total is shown`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Assumed One U", state = "CA", control = 1))
+    addToCollegeList(student, seedCollege("Assumed Two U", state = "CA", control = 1))
+    answerResidency(student, "CA")
+
+    val basis = assertNotNull(profileOf(student).comparisonBasis)
+    assertNotNull(basis.atHomeAssumption, "an at-home total is quoted, so the assumption behind it is said")
+    assertTrue(
+      basis.statements.any { it == AT_HOME_ASSUMPTION_STATEMENT },
+      "the statement rides in the ONE ordered list a renderer may not sub-select from: [${basis.statements}]",
+    )
+
+    // A family never quoted an at-home total is never told about an assumption
+    // that moved nothing they were shown.
+    val silent = createStudent()
+    val noAtHome =
+      (1..2).map { n ->
+        seedCollege("Silent $n U", otherExpensesWithFamilyPerYearUsd = null, booksAndSuppliesPerYearUsd = null)
+      }
+    noAtHome.forEach { addToCollegeList(silent, it) }
+    answerResidency(silent, "CA")
+    val silentBasis = assertNotNull(profileOf(silent).comparisonBasis)
+    assertNull(silentBasis.atHomeAssumption)
+    assertTrue(silentBasis.statements.none { it == AT_HOME_ASSUMPTION_STATEMENT })
   }
 
   @Test
@@ -660,6 +1099,298 @@ class CollegeCostServiceTest {
       "one arrangement's gap never costs another its total",
     )
     assertTrue(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD in cost.notReported)
+  }
+
+  @Test
+  fun `the overall net price is the row at its own address, not a newer row that only shares its measure`() {
+    // RFC 162 landed a SECOND `avg_net_price` series in this store: IPEDS SFA's
+    // GRANT-AIDED net price for the full-time first-time aid cohort, written at
+    // a newer vintage than the Scorecard's Title IV-aided figure. A selector
+    // keyed on the measure and resolved by latest vintage serves the SFA row as
+    // "the average net price" -- a different cohort, a materially different
+    // number, and no label anywhere saying which.
+    val student = createStudent()
+    val collegeId = seedCollege("Two Cohorts U", netPricePerYearUsd = 20000)
+    CostsTestDb.seedCohortStat(
+      collegeId,
+      MoneyMeasure.AVG_NET_PRICE,
+      CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
+      CohortResidencyScope.IN_STATE_RATE_PAYING,
+      CohortAidScope.GRANT_AIDED,
+      vintage = newerAcademicYear,
+      reading = FigureReading.Present(12345.0, ValueBearingStatus.REPORTED),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    val netPrice = assertIs<NetPrice.OverallAverage>(cost.netPrice)
+    assertEquals(
+      20000,
+      netPrice.amount,
+      "the Scorecard-basis figure is the one served; the SFA grant-aided row is a different cohort's number",
+    )
+  }
+
+  @Test
+  fun `an arrangement may not sum two academic years, even inside one figure group`() {
+    // `price_figures` holds four academic years, so two lines can share the
+    // published-price group and still come from different years -- a mismatch
+    // the closed vintage enum made unrepresentable and this store makes
+    // ordinary. Constructed directly, because the composer picks one year before
+    // it reads a line and the read path can no longer reach this throw.
+    val error =
+      assertFailsWith<MixedVintageArrangementException> {
+        ArrangementCost(
+          collegeId = arrangementCollegeId,
+          arrangement = LivingArrangement.ON_CAMPUS,
+          tuitionLine =
+            CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+          componentLines =
+            listOf(
+              CostLine(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, 9500, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+              // One year older, and the same figure group: a books allowance
+              // from another reporting year is not part of this budget.
+              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500, "2022-23", LineOrigin.PUBLISHED),
+              CostLine(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD, 3000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+            ),
+        )
+      }
+    assertEquals(
+      setOf(
+        FigureGroup.PUBLISHED_PRICE to CostsTestDb.PRICE_ACADEMIC_YEAR,
+        FigureGroup.PUBLISHED_PRICE to "2022-23",
+      ),
+      error.vintages,
+      "one group, two years -- which a set of groups alone could not have seen",
+    )
+    assertTrue(
+      error.message!!.contains(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD.wireName) &&
+        error.message!!.contains("2022-23"),
+      "the offending line and its year are in the message: [${error.message}]",
+    )
+  }
+
+  @Test
+  fun `a part WE have not collected leaves a total that is ours to explain, never the school's`() {
+    // RFC 166 §6 rule 1, on the served path. `not_collected_by_us` is a gap of
+    // OURS: the school may publish the figure perfectly well, so "this school
+    // does not publish a part" is a claim about its price list we cannot make.
+    val student = createStudent()
+    val collegeId =
+      seedCollege(
+        "Uncollected Part U",
+        omittedPriceFields = setOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD),
+      )
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      PriceConcept.OTHER_EXPENSES,
+      ed.unicoach.db.models.ResidencyBasis.NOT_APPLICABLE,
+      FigureArrangement.OFF_CAMPUS,
+      reading = FigureReading.Absent(AbsenceStatus.NOT_COLLECTED_BY_US),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.OFF_CAMPUS)
+
+    val cost = profileOf(student).colleges.single()
+    val noTotal = assertIs<ChosenLivingPlan.NoTotalHere>(cost.chosen)
+    assertEquals(
+      NoTotalReason.PART_NOT_COLLECTED_BY_US,
+      noTotal.reason,
+      "the routing is real: a gap of ours reaches its own reason, not the school's",
+    )
+    assertFalse(
+      noTotal.reason.phrase.contains("published"),
+      "and the words never say the part is unpublished: [${noTotal.reason.phrase}]",
+    )
+    assertFalse(
+      CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD in cost.notReported,
+      "a gap of OURS is never `data_availability`'s to claim",
+    )
+    val note =
+      assertNotNull(cost.figureStatuses.singleOrNull { it.field == CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD })
+    assertEquals(FigureStatus.NOT_COLLECTED_BY_US, note.status)
+    assertEquals("We have not collected this figure yet.", note.statement)
+  }
+
+  @Test
+  fun `a figure held only in another academic year is stated as ours, never dropped and never the school's silence`() {
+    // The served year is chosen once per college, so a figure whose only row is
+    // in another year is not shown. It was previously dropped with NO key and NO
+    // status -- in neither published list, in `figure_statuses` nowhere -- which
+    // is the one thing this surface may never do (RFC 166 §3).
+    val student = createStudent()
+    val collegeId =
+      seedCollege(
+        "Year Gap U",
+        omittedPriceFields = setOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD),
+      )
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      PriceConcept.OTHER_EXPENSES,
+      ed.unicoach.db.models.ResidencyBasis.NOT_APPLICABLE,
+      FigureArrangement.OFF_CAMPUS,
+      academicYear = olderAcademicYear,
+      reading = FigureReading.Present(2400, ValueBearingStatus.REPORTED),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.OFF_CAMPUS)
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(
+      CostsTestDb.PRICE_ACADEMIC_YEAR,
+      cost.publishedPriceAcademicYear,
+      "the college's own year is unchanged by a figure it holds only in an older one",
+    )
+
+    // 1. The arrangement is incomplete, and no total is composed across years.
+    val offCampus = assertNotNull(arrangementOf(cost, LivingArrangement.OFF_CAMPUS))
+    assertNull(offCampus.totalPerYearUsd, "a part from another year is not a part of this budget")
+    assertEquals(
+      setOf(CostsTestDb.PRICE_ACADEMIC_YEAR),
+      offCampus.lines.map { it.academicYear }.toSet(),
+      "every line of a served arrangement still shares one year",
+    )
+    assertTrue(offCampus.lines.none { it.field == CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD })
+
+    // 2. The gap is OURS, and it names the year.
+    val note =
+      assertNotNull(
+        cost.figureStatuses.singleOrNull { it.field == CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD },
+        "nothing is dropped silently: the figure has a key and a reason [${cost.figureStatuses}]",
+      )
+    assertEquals(FigureStatus.NOT_COLLECTED_BY_US, note.status)
+    // Both years travel as DATA, not only inside the sentence: `status` alone
+    // cannot tell a year gap from a cell we have never collected, so a renderer
+    // or a coach that had to substring-match our English could not render the
+    // case at all.
+    assertTrue(note.isYearGap, "a figure held at another year is a year gap, and says so as data")
+    assertEquals(CostsTestDb.PRICE_ACADEMIC_YEAR, note.servedAcademicYear)
+    assertEquals(olderAcademicYear, note.heldAcademicYear)
+    assertTrue(
+      note.statement.contains(CostsTestDb.PRICE_ACADEMIC_YEAR) && note.statement.contains(olderAcademicYear),
+      "both years are named: [${note.statement}]",
+    )
+    assertFalse(
+      CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD in cost.notReported,
+      "the school DID publish it, so its silence is never claimed",
+    )
+
+    // 3. And the missing total is explained as ours.
+    val noTotal = assertIs<ChosenLivingPlan.NoTotalHere>(cost.chosen)
+    assertEquals(NoTotalReason.PART_NOT_COLLECTED_BY_US, noTotal.reason)
+  }
+
+  @Test
+  fun `a value-free row in another year speaks its own status, never a year-gap note about a figure we do not hold`() {
+    // RFC 166 §3 and §6 together. A row at ANOTHER year that bears NO value is
+    // not a figure we hold: calling it a year gap said "the most recent year we
+    // hold this figure for is 2021-22" about a cell that holds nothing, and --
+    // worse -- it preempted the row's own status, so a publisher's suppression
+    // one year over was never spoken at all.
+    val student = createStudent()
+    val collegeId =
+      seedCollege(
+        "Suppressed Elsewhere U",
+        omittedPriceFields = setOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD),
+      )
+    // The publisher's suppression, held only for an older year.
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD,
+      academicYear = olderAcademicYear,
+      reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+    )
+    // And the SCHOOL's own silence, likewise held only for an older year.
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD,
+      academicYear = olderAcademicYear,
+      reading = FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.OFF_CAMPUS)
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(
+      CostsTestDb.PRICE_ACADEMIC_YEAR,
+      cost.publishedPriceAcademicYear,
+      "the college is still served at its own year",
+    )
+    val byField = cost.figureStatuses.associateBy { it.field }
+
+    // 1. The publisher's sentence is spoken, and it is NOT a year-gap note.
+    val suppressed = assertNotNull(byField[CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD])
+    assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, suppressed.status)
+    assertEquals("This figure is withheld by the publisher for privacy.", suppressed.statement)
+    assertFalse(suppressed.isYearGap, "we hold no figure for that year either, so there is no gap of ours to name")
+    assertNull(suppressed.heldAcademicYear)
+    assertFalse(
+      olderAcademicYear in suppressed.statement,
+      "a year we hold nothing for may never be named as a year we hold the figure for: [${suppressed.statement}]",
+    )
+    assertFalse(
+      CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD in cost.notReported,
+      "the PUBLISHER's suppression is not the school's silence: [${cost.notReported}]",
+    )
+
+    // 2. The school's own silence is spoken AND named in `data_availability`:
+    //    a status we recovered from another year's row is not recovered at all
+    //    if the lists that route it never see the field.
+    val schools = assertNotNull(byField[CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD])
+    assertEquals(FigureStatus.NOT_REPORTED_BY_INSTITUTION, schools.status)
+    assertEquals("This school did not report this figure.", schools.statement)
+    assertTrue(
+      CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD in cost.notReported,
+      "the school's own silence is `data_availability`'s to name, whichever year we hold the row at: [${cost.notReported}]",
+    )
+    assertFalse(
+      CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD in cost.reported,
+      "and a cell with no value is never reported",
+    )
+
+    // 3. The missing off-campus part is not OURS: the publisher withheld it.
+    val noTotal = assertIs<ChosenLivingPlan.NoTotalHere>(cost.chosen)
+    assertEquals(NoTotalReason.PART_NOT_PUBLISHED, noTotal.reason)
+  }
+
+  @Test
+  fun `the at-home assumption is stated wherever the zero is shown, total or no total`() {
+    // The `$0` and the sentence saying whose zero it is are one fact, and the
+    // gate follows the LINE rather than the total: an at-home arrangement
+    // missing one other part still PRINTS the zero, and shipping it with nothing
+    // anywhere naming it as ours is exactly what D17 exists to prevent.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Half Priced Home U", booksAndSuppliesPerYearUsd = null))
+    answerResidency(student, "CA")
+
+    val profile = profileOf(student)
+    val cost = profile.colleges.single()
+    val withFamily = assertNotNull(arrangementOf(cost, LivingArrangement.WITH_FAMILY))
+    assertNull(withFamily.totalPerYearUsd, "one part is missing, so there is no total")
+    assertTrue(
+      withFamily.lines.any {
+        it.field == CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD &&
+          it.origin == LineOrigin.ASSUMED_BY_UNICOACH
+      },
+      "and the zero is printed anyway: [${withFamily.lines}]",
+    )
+    assertTrue(cost.showsAtHomeArrangement)
+
+    val residency =
+      ResidencyBasis
+        .of(profile.colleges, profile.moneyProfile)
+        .byCollege
+        .single()
+    val basis = SingleSchoolBasis.of(cost, residency)
+    assertNotNull(basis.atHomeAssumption, "the zero is shown, so the assumption behind it is said")
+    assertTrue(
+      AT_HOME_ASSUMPTION_STATEMENT in basis.statements,
+      "in the ONE ordered list a renderer may not sub-select from: [${basis.statements}]",
+    )
   }
 
   @Test
@@ -702,10 +1433,21 @@ class CollegeCostServiceTest {
 
     val cost = profileOf(student).colleges.single()
     assertNull(cost.breakdown)
+    // The PUBLISHED components, which is every component but the at-home
+    // food-and-housing line (RFC 166 §7): that amount is ours, so the school has
+    // neither reported nor failed to report it and it belongs in neither list --
+    // the same third category the on-campus components fall into at a no-dorms
+    // school (RFC 149 D-B).
+    val published = CostField.COMPONENTS.filterNot { it == CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD }
     assertEquals(
-      CostField.COMPONENTS,
+      published,
       cost.notReported.filter { it in CostField.COMPONENTS },
       "every component it does not report is named, so the coach says so instead of estimating",
+    )
+    assertTrue(
+      CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD !in cost.notReported &&
+        CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD !in cost.reported,
+      "our own assumption is never attributed to the school, in either direction",
     )
   }
 
@@ -759,19 +1501,29 @@ class CollegeCostServiceTest {
     val error =
       assertFailsWith<IllegalArgumentException> {
         ArrangementCost(
+          collegeId = arrangementCollegeId,
           arrangement = LivingArrangement.ON_CAMPUS,
-          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
-          componentLines = listOf(CostLine(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, 40000)),
+          tuitionLine =
+            CostLine(
+              CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+              12000,
+              CostsTestDb.PRICE_ACADEMIC_YEAR,
+              LineOrigin.PUBLISHED,
+            ),
+          componentLines =
+            listOf(
+              CostLine(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, 40000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+            ),
         )
       }
-    assertTrue(error.message!!.contains("differing or unknown Scorecard vintages"), "got [${error.message}]")
+    assertTrue(error.message!!.contains("differing or unknown datings"), "got [${error.message}]")
 
     // ...and the two blended figures really are a different vintage from the
     // components, which is what makes the guard bite.
-    assertEquals(ScorecardVintage.BLENDED_AVERAGE, CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.vintage)
-    assertEquals(ScorecardVintage.BLENDED_AVERAGE, CostField.NET_PRICE.vintage)
+    assertEquals(FigureGroup.BLENDED_AVERAGE, CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.figureGroup)
+    assertEquals(FigureGroup.BLENDED_AVERAGE, CostField.NET_PRICE.figureGroup)
     assertTrue(
-      CostField.COMPONENTS.all { it.vintage == ScorecardVintage.PUBLISHED_PRICE },
+      CostField.COMPONENTS.all { it.figureGroup == FigureGroup.PUBLISHED_PRICE },
       "the six components share one vintage, which is why they may be summed",
     )
   }
@@ -782,22 +1534,23 @@ class CollegeCostServiceTest {
     // this RFC dates neither. The require is what makes that safe rather than
     // merely quiet -- a null vintage is not a wildcard that matches everything,
     // it is a year nobody established, so it may not be summed with a dated one.
-    assertNull(CostField.MEDIAN_DEBT_AT_COMPLETION_USD.vintage)
-    assertNull(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.vintage)
+    assertNull(CostField.MEDIAN_DEBT_AT_COMPLETION_USD.figureGroup)
+    assertNull(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.figureGroup)
 
     val error =
       assertFailsWith<IllegalArgumentException> {
         ArrangementCost(
+          collegeId = arrangementCollegeId,
           arrangement = LivingArrangement.WITH_FAMILY,
           tuitionLine = null,
           componentLines =
             listOf(
-              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
-              CostLine(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, 23000),
+              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+              CostLine(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, 23000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
             ),
         )
       }
-    assertTrue(error.message!!.contains("differing or unknown Scorecard vintages"), "got [${error.message}]")
+    assertTrue(error.message!!.contains("differing or unknown datings"), "got [${error.message}]")
   }
 
   @Test
@@ -809,12 +1562,19 @@ class CollegeCostServiceTest {
     val error =
       assertFailsWith<IllegalArgumentException> {
         ArrangementCost(
+          collegeId = arrangementCollegeId,
           arrangement = LivingArrangement.WITH_FAMILY,
-          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+          tuitionLine =
+            CostLine(
+              CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+              12000,
+              CostsTestDb.PRICE_ACADEMIC_YEAR,
+              LineOrigin.PUBLISHED,
+            ),
           componentLines =
             listOf(
-              CostLine(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, 15000),
-              CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000),
+              CostLine(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, 15000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+              CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
             ),
         )
       }
@@ -829,9 +1589,19 @@ class CollegeCostServiceTest {
     val error =
       assertFailsWith<IllegalArgumentException> {
         ArrangementCost(
+          collegeId = arrangementCollegeId,
           arrangement = LivingArrangement.ON_CAMPUS,
-          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
-          componentLines = List(3) { CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500) },
+          tuitionLine =
+            CostLine(
+              CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+              12000,
+              CostsTestDb.PRICE_ACADEMIC_YEAR,
+              LineOrigin.PUBLISHED,
+            ),
+          componentLines =
+            List(3) {
+              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED)
+            },
         )
       }
     assertTrue(error.message!!.contains("once each"), "got [${error.message}]")
@@ -845,12 +1615,13 @@ class CollegeCostServiceTest {
     val error =
       assertFailsWith<IllegalArgumentException> {
         ArrangementCost(
+          collegeId = arrangementCollegeId,
           arrangement = LivingArrangement.WITH_FAMILY,
-          tuitionLine = CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
+          tuitionLine = CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
           componentLines =
             listOf(
-              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
-              CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000),
+              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+              CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
             ),
         )
       }
@@ -859,9 +1630,15 @@ class CollegeCostServiceTest {
       setOf(
         CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
         CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
+        // The third tier is admitted by the SLOT (RFC 166 §4) so the rule stays
+        // "a published tuition figure" rather than "the two tiers we had in
+        // 2026". It is never SELECTED into the slot: `applicableTuitionFor`
+        // cannot return it, because a family's answered state does not answer a
+        // district -- which the sibling test above asserts on a real breakdown.
+        CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD,
       ),
       CostField.TUITION_FIELDS,
-      "the allowlist is the two published tuition figures, and nothing else",
+      "the allowlist is the published tuition figures, and nothing else",
     )
   }
 
@@ -872,9 +1649,20 @@ class CollegeCostServiceTest {
     // partial reporting rather than like the empty value it is.
     val error =
       assertFailsWith<IllegalArgumentException> {
-        ArrangementCost(arrangement = LivingArrangement.WITH_FAMILY, tuitionLine = null, componentLines = emptyList())
+        ArrangementCost(
+          collegeId = arrangementCollegeId,
+          arrangement = LivingArrangement.WITH_FAMILY,
+          tuitionLine = null,
+          componentLines = emptyList(),
+        )
       }
     assertTrue(error.message!!.contains("absent arrangement, never an empty one"), "got [${error.message}]")
+    // The read is batched over a student's whole list, so a refusal that names
+    // no school leaves the operator to reproduce the list to find it.
+    assertTrue(
+      error.message!!.contains("college_id=[${arrangementCollegeId.value}]"),
+      "the refusal names WHOSE arrangement failed: got [${error.message}]",
+    )
   }
 
   @Test
@@ -883,12 +1671,27 @@ class CollegeCostServiceTest {
     // admits a total.
     val arrangement =
       ArrangementCost(
+        collegeId = arrangementCollegeId,
         arrangement = LivingArrangement.WITH_FAMILY,
-        tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+        tuitionLine =
+          CostLine(
+            CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+            12000,
+            CostsTestDb.PRICE_ACADEMIC_YEAR,
+            LineOrigin.PUBLISHED,
+          ),
         componentLines =
           listOf(
-            CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
-            CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000),
+            // The at-home arrangement's THIRD part (RFC 166 §7): a `$0` that is
+            // ours, and without which this arrangement is not complete.
+            CostLine(
+              CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD,
+              ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD,
+              CostsTestDb.PRICE_ACADEMIC_YEAR,
+              LineOrigin.ASSUMED_BY_UNICOACH,
+            ),
+            CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+            CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
           ),
       )
     assertEquals(LivingArrangement.WITH_FAMILY.components, arrangement.componentLines.map { it.field })
@@ -897,9 +1700,19 @@ class CollegeCostServiceTest {
     // A partial one is still legal and still carries NO total.
     val partial =
       ArrangementCost(
+        collegeId = arrangementCollegeId,
         arrangement = LivingArrangement.WITH_FAMILY,
-        tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
-        componentLines = listOf(CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500)),
+        tuitionLine =
+          CostLine(
+            CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+            12000,
+            CostsTestDb.PRICE_ACADEMIC_YEAR,
+            LineOrigin.PUBLISHED,
+          ),
+        componentLines =
+          listOf(
+            CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+          ),
       )
     assertNull(partial.totalPerYearUsd, "a partial sum is not a total")
   }
@@ -912,21 +1725,39 @@ class CollegeCostServiceTest {
     val error =
       assertFailsWith<MixedVintageArrangementException> {
         ArrangementCost(
+          collegeId = arrangementCollegeId,
           arrangement = LivingArrangement.ON_CAMPUS,
-          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
-          componentLines = listOf(CostLine(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, 40000)),
+          tuitionLine =
+            CostLine(
+              CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+              12000,
+              CostsTestDb.PRICE_ACADEMIC_YEAR,
+              LineOrigin.PUBLISHED,
+            ),
+          componentLines =
+            listOf(
+              CostLine(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, 40000, CostsTestDb.PRICE_ACADEMIC_YEAR, LineOrigin.PUBLISHED),
+            ),
         )
       }
     assertEquals(LivingArrangement.ON_CAMPUS, error.arrangement)
     assertEquals(
-      setOf(ScorecardVintage.PUBLISHED_PRICE, ScorecardVintage.BLENDED_AVERAGE),
+      setOf(
+        FigureGroup.PUBLISHED_PRICE to CostsTestDb.PRICE_ACADEMIC_YEAR,
+        FigureGroup.BLENDED_AVERAGE to CostsTestDb.PRICE_ACADEMIC_YEAR,
+      ),
       error.vintages,
-      "the offending lines are carried, and the vintages derived from them",
+      "the offending lines are carried, and the (group, academic year) pairs derived from them",
     )
     assertTrue(
       error.message!!.contains(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName) &&
         error.message!!.contains("40000"),
       "the field and its amount are in the message: [${error.message}]",
+    )
+    assertEquals(arrangementCollegeId, error.collegeId)
+    assertTrue(
+      error.message!!.contains("college_id=[${arrangementCollegeId.value}]"),
+      "and the school it happened to, because the read is batched over a whole list: [${error.message}]",
     )
   }
 
@@ -956,7 +1787,7 @@ class CollegeCostServiceTest {
     )
     assertTrue(
       breakdown.arrangements.all { arrangement ->
-        arrangement.lines.all { it.field.vintage == ScorecardVintage.PUBLISHED_PRICE }
+        arrangement.lines.all { it.field.figureGroup == FigureGroup.PUBLISHED_PRICE }
       },
       "an arrangement is one published price list for one year: [${breakdown.arrangements}]",
     )
@@ -1371,15 +2202,18 @@ class CollegeCostServiceTest {
     answerResidency(student, "CA")
 
     val years = assertNotNull(profileOf(student).comparisonBasis).academicYears
-    assertEquals(ScorecardVintage.entries, years.map { it.vintage }, "both vintages are carried by these fixtures")
-    val published = years.single { it.vintage == ScorecardVintage.PUBLISHED_PRICE }
-    assertEquals(ScorecardVintage.PUBLISHED_PRICE.label, published.academicYear)
+    assertEquals(FigureGroup.entries, years.map { it.group }, "both figure groups are carried by these fixtures")
+    val published = years.single { it.group == FigureGroup.PUBLISHED_PRICE }
+    // The year is READ OFF THE ROWS this call served (RFC 166 §3 rule 4), not
+    // off a Kotlin constant on the group: the fixture's own academic year is the
+    // one the basis states back.
+    assertEquals(CostsTestDb.PRICE_ACADEMIC_YEAR, published.academicYear)
     assertTrue(
       CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD in published.figures,
       "the year names the figures it dates: [${published.figures}]",
     )
     assertTrue(
-      published.figures.all { it.vintage == ScorecardVintage.PUBLISHED_PRICE },
+      published.figures.all { it.figureGroup == FigureGroup.PUBLISHED_PRICE },
       "a year may never date a figure from the other one: [${published.figures}]",
     )
     assertTrue(published.statement.contains(published.academicYear), "the year is spoken, never left as a bare code")

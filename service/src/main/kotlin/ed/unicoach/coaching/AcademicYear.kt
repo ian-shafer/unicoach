@@ -20,7 +20,7 @@ import java.time.Month
  *
  * Domain-agnostic on purpose. A Common Data Set cycle
  * ([ed.unicoach.coaching.admissions.CdsCitation]) and a College Scorecard
- * vintage ([ed.unicoach.coaching.costs.ScorecardVintage]) are different facts
+ * vintage ([ed.unicoach.coaching.costs.FigureGroup]) are different facts
  * from different sources that happen to share one way of being SAID, so neither
  * domain owns the other's wording -- and a change to one source's citation
  * cannot silently reword the other's years.

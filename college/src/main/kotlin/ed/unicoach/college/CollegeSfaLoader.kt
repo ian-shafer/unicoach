@@ -189,12 +189,33 @@ internal object SfaVariables {
   val AID_MIX_STEMS: List<String> = listOf("fgrnt", "sgrnt", "igrnt", "loan")
 
   /**
+   * The three Pell variables at the all-undergraduate level: the RECIPIENT
+   * HEADCOUNT, the SHARE receiving, and the AVERAGE AWARD per recipient.
+   *
+   * Named here, in the staging vocabulary, rather than spelled at each use:
+   * the canonical fill looks these cells back up BY NAME
+   * (`CanonicalMoneyLoader.mapSfaMoneyStats`/`mapSfaPopulationCounts`), and the
+   * only thing that used to join the two copies was spelling. A rename on one
+   * side alone lands in `fill.cellsNotStaged` and the Pell figures silently
+   * stop being written -- a coverage loss, not an error. One constant, so a
+   * rename reaches both sides or neither, the rule `ARRANGEMENT_CODES` already
+   * states.
+   */
+  const val PELL_RECIPIENT_COUNT = "upgrntn"
+
+  /** The share of all undergraduates receiving a Pell grant, published as an integer percent. */
+  const val PELL_SHARE = "upgrntp"
+
+  /** The average Pell award per RECIPIENT, published in whole dollars. */
+  const val PELL_AVERAGE_AWARD = "upgrnta"
+
+  /**
    * The single-year variables: the file's own aid year is the only year they
    * describe. Pell at the all-undergraduate level, the FTFT aid mix, and the
    * fall cohort's residency split.
    */
   val SINGLE_YEAR: List<String> =
-    listOf("upgrntn", "upgrntp", "upgrnta") +
+    listOf(PELL_RECIPIENT_COUNT, PELL_SHARE, PELL_AVERAGE_AWARD) +
       AID_MIX_STEMS.flatMap { stem -> listOf("${stem}_p", "${stem}_a") } +
       listOf("scfa1n") + RESIDENCY_SPLIT.map { (variable, _) -> variable }
 

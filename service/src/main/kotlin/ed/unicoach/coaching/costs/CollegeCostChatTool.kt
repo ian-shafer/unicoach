@@ -4,7 +4,10 @@ import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
+import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
+import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.coaching.putCollegeIdsSchema
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
@@ -368,14 +371,37 @@ class CollegeCostChatTool(
     }
 
   /**
-   * One academic year in the call and the figures it dates -- the same
-   * `{academic_year, figures}` shape the per-college vintage labels carry, so
-   * the model reads one convention rather than two.
+   * One academic year in the call, the schools it is true of, and the figures it
+   * dates -- the same `{academic_year, figures}` shape the per-college vintage
+   * labels carry, so the model reads one convention rather than two.
+   *
+   * [DATED_COLLEGES_KEY] is the subject, and it is not decoration: since RFC 166
+   * the year is a fact about ONE SCHOOL, so a comparison of a Scorecard-only
+   * school and an IC_AY school carries TWO of these objects. Without the schools
+   * named, the model is handed the same figure names under two different years
+   * and no way to tell which is which -- while this tool's own description tells
+   * it to quote a number with the year of the key that lists it.
+   *
+   * Each subject is emitted as `{college_id, name}`, the shape every other
+   * school reference in this payload uses, rather than a bare name: names
+   * collide in the corpus, and the model is asked here to MATCH the subject
+   * against the colleges it was given. Matching on display copy is how the
+   * wrong year gets attached to a column of dollars.
    */
   private fun datedFiguresObject(dated: DatedFigures): JsonObject =
     buildJsonObject {
       put(BASIS_KEY, dated.basis)
       put(ACADEMIC_YEAR_KEY, dated.academicYear)
+      putJsonArray(DATED_COLLEGES_KEY) {
+        dated.colleges.forEach {
+          add(
+            buildJsonObject {
+              put("college_id", it.collegeId.value.toString())
+              put("name", it.name)
+            },
+          )
+        }
+      }
       putJsonArray(DATED_FIGURES_KEY) { dated.figures.forEach { add(JsonPrimitive(it.wireName)) } }
       put(STATEMENT_KEY, dated.statement)
     }
@@ -384,22 +410,14 @@ class CollegeCostChatTool(
     profile: CollegeCostProfile,
     cost: CollegeCost,
   ): JsonObject {
-    // The vintage labels are derived from what this object ACTUALLY carries,
-    // recorded as each figure is put. One decision per key, made once: a second
-    // list restating the same emit conditions is how a figure comes to be
-    // labelled with a year no key beside it describes, or to lose its label
-    // entirely -- and nothing would fail for it.
+    // The vintage labels are derived from what this object ACTUALLY carries.
+    // Every step below that emits a money figure RETURNS the fields it emitted
+    // and the record is built HERE from those results, so the emit and the
+    // record are one expression: a second list restating the same emit
+    // conditions is how a figure comes to be labelled with a year no key beside
+    // it describes, or to lose its label entirely -- and nothing would fail for
+    // it.
     val emitted = mutableSetOf<CostField>()
-
-    fun JsonObjectBuilder.putFigure(
-      field: CostField,
-      amountUsd: Int?,
-    ) {
-      amountUsd?.let {
-        put(field.wireName, it)
-        emitted += field
-      }
-    }
 
     return buildJsonObject {
       put("college_id", cost.collegeId.value.toString())
@@ -408,28 +426,21 @@ class CollegeCostChatTool(
       put("state", cost.state)
       put("control", cost.control.label)
       put("list_status", cost.listStatus.value)
-      putFigure(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, cost.stickerCostOfAttendancePerYearUsd)
-      putFigure(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, cost.tuitionAndFeesInStatePerYearUsd)
-      putFigure(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, cost.tuitionAndFeesOutOfStatePerYearUsd)
+      emitted += putFigure(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, cost.stickerCostOfAttendancePerYearUsd)
+      emitted += putTuitionTiers(cost)
+      emitted += putFeesOnly(cost)
+      putResidencyTiers(cost)
       // Present only on the public case; the model makes the distinction
       // uncarryable by a private college, so it cannot be misread onto one.
       (cost.control as? CollegeControl.Public)?.let { put("tuition_applicable", it.tuitionApplicable.value) }
-      // The one figure that is not a bare scalar: it keys an object, so it is
-      // recorded beside its own emit rather than through putFigure.
-      put(CostField.NET_PRICE.wireName, netPriceObject(cost.netPrice))
-      if (cost.netPrice.amount != null) emitted += CostField.NET_PRICE
-      // Emitted only when there is something to offer: an absent key, never an
-      // empty array, so its mere presence stays meaningful to the model.
-      val offers = profile.precisionOffersFor(cost)
-      if (offers.isNotEmpty()) {
-        putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it)) } }
-      }
-      putFigure(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, cost.medianDebtAtCompletionUsd)
-      putFigure(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, cost.medianEarnings10yAfterEntryUsd)
+      emitted += putNetPrice(cost.netPrice)
+      putPrecisionOffers(profile, cost)
+      emitted += putFigure(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, cost.medianDebtAtCompletionUsd)
+      emitted += putFigure(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, cost.medianEarnings10yAfterEntryUsd)
       // The published price split by living arrangement (RFC 149). Absent, not
       // empty, when this school reports no component at all. Its lines are
       // recorded here, at the one place they are rendered.
-      cost.breakdown?.let { putBreakdown(it, emitted) }
+      cost.breakdown?.let { emitted += putBreakdown(it) }
       // AFTER the breakdown and BEFORE putVintageLabels, and that ordering is
       // load-bearing (RFC 152). It re-keys a figure the breakdown already
       // emitted -- the resolved arrangement's total -- so it must sit above the
@@ -440,22 +451,106 @@ class CollegeCostChatTool(
       putChosenLivingArrangement(cost.chosen)
       putOffersOnCampusHousing(cost)
       // LAST of the figure-bearing keys, and it must stay there: it reads the
-      // [emitted] set the puts above filled in, so a figure emitted BELOW this
-      // line would ride with no academic year beside it and nothing -- no type,
-      // no test -- would fail for it. The keys after it emit no CostField, which
-      // is the only reason they may sit where they do.
-      putVintageLabels(emitted)
+      // [emitted] set the steps above returned into, so a figure emitted BELOW
+      // this line would ride with no academic year beside it and nothing -- no
+      // type, no test -- would fail for it. The keys after it emit no CostField,
+      // which is the only reason they may sit where they do.
+      putVintageLabels(cost, emitted)
       // Purely additive (RFC 148 D7): present only when the school reports it,
       // and carrying its OWN citation, because merit aid is not a Scorecard
       // fact and must never fold into the payload's Scorecard `source` string.
       cost.meritAid?.let { put(MeritAidWire.KEY, MeritAidWire.objectOf(it)) }
       putFieldsWithNoAmount(cost)
       putWithheldFigures(cost)
+      putFigureStatuses(cost)
       // The blended-figure basis for THIS school, stated per college as well as
       // in COMPARISON_BASIS_KEY: that fact needs two colleges, and a one-college
       // result is exactly where the basis would otherwise go unsaid (RFC 157
       // D-B).
       putBlendedFiguresApply(cost.blendedFiguresApply)
+    }
+  }
+
+  /**
+   * One scalar money figure, RETURNING the field it emitted so the caller's
+   * record of what this payload carries IS this function's result rather than a
+   * side-effect on a set it was handed. An absent amount writes no key and
+   * returns nothing: a key with no number is what `data_availability` and
+   * `figure_statuses` are for.
+   */
+  private fun JsonObjectBuilder.putFigure(
+    field: CostField,
+    amountUsd: Int?,
+  ): Set<CostField> {
+    if (amountUsd == null) return emptySet()
+    put(field.wireName, amountUsd)
+    return setOf(field)
+  }
+
+  /**
+   * The tuition tiers, in declaration order, from the ONE derivation of which of
+   * them this school publishes ([CollegeCost.publishedTuitionTiers], RFC 166 §4)
+   * -- including the third tier, which no consumer surface showed before this
+   * RFC. Iterated rather than hand-listed so the payload cannot disagree with
+   * `residency_tiers` beside it, and so a fourth tier is emitted without a
+   * second list saying it should be. A school with no value-bearing figure at a
+   * tier emits no key for it at all, which is how the in-district tier stays
+   * silent at the ~2,300 institutions whose publisher never separated one.
+   */
+  private fun JsonObjectBuilder.putTuitionTiers(cost: CollegeCost): Set<CostField> =
+    cost.publishedTuitionTiers.flatMapTo(mutableSetOf()) { putFigure(it, cost.publishedAmountOf(it)) }
+
+  /**
+   * The fees split (RFC 166 §5): the fees PART of the combined tuition figure,
+   * never a cost beside it. It is deliberately not a component of any
+   * arrangement -- adding it to one would count fees twice inside every total --
+   * and the description says so in words.
+   *
+   * ITERATED over [CostField.FEES_ONLY_FIELDS], for the reason the tuition tiers above are
+   * iterated: three hand-written call sites are three places a fourth fees tier
+   * would not reach.
+   */
+  private fun JsonObjectBuilder.putFeesOnly(cost: CollegeCost): Set<CostField> =
+    CostField.FEES_ONLY_FIELDS.flatMapTo(mutableSetOf()) { putFigure(it, cost.publishedAmountOf(it)) }
+
+  /**
+   * WHICH tuition tiers this school publishes, as a code and the domain's own
+   * sentence ([ResidencyTierBasis], RFC 166 §4), on every college.
+   *
+   * Emits no [CostField]: it names the tuition keys beside it and adds no figure
+   * of its own, so it takes no part in the vintage labels.
+   */
+  private fun JsonObjectBuilder.putResidencyTiers(cost: CollegeCost) {
+    putJsonObject(RESIDENCY_TIERS_KEY) {
+      put(BASIS_KEY, cost.residencyTiers.value)
+      put(STATEMENT_KEY, cost.residencyTiers.statement)
+    }
+  }
+
+  /**
+   * The one figure that is not a bare scalar: it keys an OBJECT (the amount, its
+   * basis, and the reason when we hold it back), so it cannot go through
+   * [putFigure]. Its emit and its record sit in one function all the same --
+   * they used to be two statements in the orchestrator, the only place the
+   * record was maintained by hand.
+   */
+  private fun JsonObjectBuilder.putNetPrice(netPrice: NetPrice): Set<CostField> {
+    put(CostField.NET_PRICE.wireName, netPriceObject(netPrice))
+    return if (netPrice.amount == null) emptySet() else setOf(CostField.NET_PRICE)
+  }
+
+  /**
+   * The upgrade invitations for this college: emitted only when there is
+   * something to offer -- an absent key, never an empty array, so its mere
+   * presence stays meaningful to the model.
+   */
+  private fun JsonObjectBuilder.putPrecisionOffers(
+    profile: CollegeCostProfile,
+    cost: CollegeCost,
+  ) {
+    val offers = profile.precisionOffersFor(cost)
+    if (offers.isNotEmpty()) {
+      putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it, cost)) } }
     }
   }
 
@@ -497,6 +592,46 @@ class CollegeCostChatTool(
   }
 
   /**
+   * WHY a figure carries no number, in the store's own six statuses (RFC 166
+   * §6) -- the reason BESIDE [DATA_AVAILABILITY_KEY], never inside it.
+   *
+   * `data_availability` keeps its exact shape (a bare list of wire names,
+   * absent when empty): it answers WHICH figures are blank, and every reader of
+   * it -- the prompt, the report page, this tool's own description -- reads that
+   * one shape. This key answers WHY, in the `withheld_figures` shape the payload
+   * already uses, so the coach meets one convention rather than two.
+   *
+   * A figure the publisher ESTIMATED is here as well as shown: it is a number,
+   * and a family reading the publisher's estimate as the school's own figure
+   * would be reading it wrong.
+   *
+   * Absent, never empty -- this payload's convention everywhere.
+   */
+  private fun JsonObjectBuilder.putFigureStatuses(cost: CollegeCost) {
+    if (cost.figureStatuses.isEmpty()) return
+    putJsonArray(FIGURE_STATUSES_KEY) { cost.figureStatuses.forEach { add(figureStatusObject(it)) } }
+  }
+
+  /**
+   * One field's status: the field, the code, and the DOMAIN's own sentence for
+   * it ([FigureStatusCopy]), never re-worded here -- the `income_band` +
+   * `income_band_label` convention (RFC 151 D-D) applied to the six statuses.
+   */
+  private fun figureStatusObject(note: FigureStatusNote): JsonObject =
+    buildJsonObject {
+      put("field", note.field.wireName)
+      put("status", note.status.value)
+      put(STATEMENT_KEY, note.statement)
+      // A YEAR GAP: this school DID publish the figure, at a year that is not
+      // the one its price is quoted at. Absent on every other note, so its
+      // PRESENCE is the fact -- `status` cannot carry it, because a year gap and
+      // a cell we have never collected are both `not_collected_by_us`. Read off
+      // [FigureStatusNote.heldAcademicYear] rather than off the sentence, which
+      // is the whole point of the field: the year travels as data.
+      note.heldAcademicYear?.let { put(HELD_ACADEMIC_YEAR_KEY, it) }
+    }
+
+  /**
    * One withheld figure: which field, the reason code, and the sentence that
    * both names the reason and points at the figures that ARE this family's (RFC
    * 157 D-A).
@@ -515,15 +650,18 @@ class CollegeCostChatTool(
     }
 
   /**
-   * The per-arrangement split, RECORDING the fields it renders in [emitted] so
-   * the vintage labels below follow exactly what this object carries.
+   * The per-arrangement split, RETURNING the fields it rendered so the vintage
+   * labels below follow exactly what this object carries.
+   *
+   * It returns them rather than writing into a set the caller passes in: the
+   * emit set decides which figures get an `academic_year` stamped on them, and a
+   * `Unit`-returning function that reaches into the caller's own collection is
+   * how a figure comes to be rendered without being recorded -- said to a family
+   * with no year beside it, with no type and no test failing for it.
    */
-  private fun JsonObjectBuilder.putBreakdown(
-    breakdown: CostBreakdown,
-    emitted: MutableSet<CostField>,
-  ) {
+  private fun JsonObjectBuilder.putBreakdown(breakdown: CostBreakdown): Set<CostField> {
     put(BREAKDOWN_KEY, breakdownObject(breakdown))
-    breakdown.arrangements.forEach { arrangement -> arrangement.lines.forEach { emitted += it.field } }
+    return breakdown.arrangements.flatMap { it.lines }.mapTo(mutableSetOf()) { it.field }
   }
 
   /**
@@ -635,6 +773,16 @@ class CollegeCostChatTool(
           "way of living costs, so there is no total for it. Quote the parts of it that are here, say which " +
           "part is missing, and never add up what is there and call it the total."
       }
+
+      // OURS. The school is not named, because it may publish the part
+      // perfectly well and we are the ones who do not hold it for the year the
+      // rest of this school's price is quoted at (RFC 166 §3, §6).
+      NoTotalReason.PART_NOT_COLLECTED_BY_US -> {
+        "The student plans on ${chosen.plan.label}, but we have not collected every part of what that way of " +
+          "living costs at this school, so there is no total for it. The gap is ours, not this school's - " +
+          "never say the school does not publish it. Quote the parts of it that are here and never add up " +
+          "what is there and call it the total."
+      }
     }
 
   /**
@@ -683,7 +831,7 @@ class CollegeCostChatTool(
    * The year NAMES ITS FIGURES rather than sitting beside the college as a bare
    * label. Membership -- "the components are the published price, the sticker
    * and the net price are the blend" -- otherwise lived only in
-   * `CostField.vintage` and in prose, so a reader that did not carry the
+   * `CostField.figureGroup` and in prose, so a reader that did not carry the
    * convention could attach either year to any figure, and the prompt's
    * instruction to quote the year beside a figure had no year beside any
    * figure.
@@ -698,12 +846,23 @@ class CollegeCostChatTool(
    * call is a figure said with no academic year, and neither the types nor a
    * test would notice.
    */
-  private fun JsonObjectBuilder.putVintageLabels(emitted: Set<CostField>) {
-    ScorecardVintage.entries.forEach { vintage ->
-      val dated = emitted.filter { it.vintage == vintage }
-      if (dated.isNotEmpty()) {
-        putJsonObject(vintage.wireName) {
-          put(ACADEMIC_YEAR_KEY, vintage.label)
+  private fun JsonObjectBuilder.putVintageLabels(
+    cost: CollegeCost,
+    emitted: Set<CostField>,
+  ) {
+    FigureGroup.entries.forEach { group ->
+      val dated = emitted.filter { it.figureGroup == group }
+      // The year is THIS school's, read off the rows it served (RFC 166 §3
+      // rule 4) rather than off a Kotlin constant: a Scorecard-only school says
+      // 2022-23 where an IC_AY school says 2023-24, and one constant could only
+      // ever have said one of them. A group can carry figures and NO year: two
+      // blended rows at different vintages resolve to null rather than to the
+      // newer one (RFC 166 §8), and then the figures ride with no label instead
+      // of a wrong one.
+      val academicYear = cost.academicYearOf(group)
+      if (dated.isNotEmpty() && academicYear != null) {
+        putJsonObject(group.wireName) {
+          put(ACADEMIC_YEAR_KEY, academicYear)
           // Enum declaration order, not the order they happened to be emitted
           // in: the list is a fact about the payload, so it must not depend on
           // set iteration.
@@ -735,27 +894,97 @@ class CollegeCostChatTool(
           // not a total, and neither is a sum that guessed at the student's
           // residency.
           arrangement.totalPerYearUsd?.let { put(TOTAL_KEY, it) }
+          putAssumedByUnicoach(arrangement)
         }
       }
     }
 
+  /**
+   * WHICH lines in this arrangement carry an amount of OURS rather than the
+   * school's (RFC 166 §7, gate-2 D17).
+   *
+   * Read off [CostLine.origin], never a hand-written list: the type is what
+   * decides whose a number is, and a second list here would be a chance for the
+   * wire to attribute to a school a figure the domain says is ours. Today that
+   * is exactly the at-home `$0` food-and-housing line, so the key appears on
+   * `with_family` and nowhere else -- absent, never empty, like every other list
+   * in this payload.
+   *
+   * It is the wire half of the sentence the basis facts carry
+   * ([AT_HOME_ASSUMPTION_STATEMENT]): a model reading this payload can never
+   * report the zero as something the school published or failed to publish.
+   */
+  private fun JsonObjectBuilder.putAssumedByUnicoach(arrangement: ArrangementCost) {
+    val assumed = arrangement.lines.filter { it.origin == LineOrigin.ASSUMED_BY_UNICOACH }
+    if (assumed.isEmpty()) return
+    putJsonArray(ASSUMED_BY_UNICOACH_KEY) { assumed.forEach { add(JsonPrimitive(it.field.wireName)) } }
+  }
+
   /** One invitation: the money-profile field it would fill, and the sentence the coach may say for it. */
-  private fun precisionOfferObject(offer: PrecisionOffer): JsonObject =
+  private fun precisionOfferObject(
+    offer: PrecisionOffer,
+    cost: CollegeCost,
+  ): JsonObject =
     buildJsonObject {
       put("field", offer.field)
-      put("offer", offerCopy(offer))
+      put("offer", offerCopy(offer, cost))
     }
 
   /**
    * The sentence the coach may say for one offer. Exhaustive on purpose: a new
    * [PrecisionOffer] member must fail to compile here — the one site that owes
    * it copy — rather than ship an invitation with no words in it.
+   *
+   * The residency invitation has TWO wordings and the SCHOOL decides which (RFC
+   * 166 §4). The two-price copy is wrong at a community college, where there are
+   * three; the three-tier copy is wrong everywhere else, where it would name a
+   * district price the school does not publish. So the renderer READS the
+   * domain's decision ([ResidencyTierBasis], the same code and sentence this
+   * payload carries under `residency_tiers`) rather than re-deriving the tier
+   * shape from one amount: the second derivation promised three prices at a
+   * school whose own statement in the same object said it does not publish all
+   * three, and named an out-of-state price that does not exist.
+   *
+   * Exhaustive on the basis with no `else`, exactly as it is on [PrecisionOffer]:
+   * a SEVENTH basis must decide its own invitation before it compiles.
    */
-  private fun offerCopy(offer: PrecisionOffer): String =
+  private fun offerCopy(
+    offer: PrecisionOffer,
+    cost: CollegeCost,
+  ): String =
     when (offer) {
-      PrecisionOffer.RESIDENCY -> RESIDENCY_OFFER
-      PrecisionOffer.INCOME_BAND -> INCOME_BAND_OFFER
-      PrecisionOffer.LIVING_PLAN -> LIVING_PLAN_OFFER
+      PrecisionOffer.RESIDENCY -> {
+        when (cost.residencyTiers) {
+          ResidencyTierBasis.THREE_TIERS_PUBLISHED -> RESIDENCY_OFFER_THREE_TIERS
+
+          // Every other basis publishes at most two tuition prices, so the
+          // three-tier words would name a tier this payload carries no key for.
+          ResidencyTierBasis.TWO_TIERS_PUBLISHED,
+          ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT,
+          ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER,
+          ResidencyTierBasis.SINGLE_PUBLISHED_PRICE,
+          -> RESIDENCY_OFFER
+
+          // Its own arm, and not folded in above: the reason the others share
+          // is "at most two prices", and this school publishes NONE, so the
+          // general copy is chosen here for a different reason. The offer
+          // cannot reach it today -- [PrecisionOffer.RESIDENCY] is admitted
+          // only where [CollegeCost.reportsPublishedTuition], which reads the
+          // same tier list this basis is derived from and is false exactly when
+          // it is empty -- and if that gate ever widens, the general invitation
+          // promises which price applies rather than naming a tier we hold no
+          // key for.
+          ResidencyTierBasis.NO_PUBLISHED_TUITION -> RESIDENCY_OFFER
+        }
+      }
+
+      PrecisionOffer.INCOME_BAND -> {
+        INCOME_BAND_OFFER
+      }
+
+      PrecisionOffer.LIVING_PLAN -> {
+        LIVING_PLAN_OFFER
+      }
     }
 
   /**
@@ -860,7 +1089,7 @@ class CollegeCostChatTool(
      * "(data ingested 2026)", which was `colleges.updated_at` -- WHEN WE LOADED
      * THE FILE, not the year of the figures -- and the coach read it aloud as a
      * vintage. The real vintage now rides per college, beside the figures it
-     * governs, as a [ScorecardVintage] academic-year label.
+     * governs, as a per-college academic-year label grouped by [FigureGroup].
      */
     const val SOURCE_ATTRIBUTION = CostSources.SCORECARD_ATTRIBUTION
 
@@ -913,8 +1142,33 @@ class CollegeCostChatTool(
     /** The academic year one vintage names -- a label ("2022-23"), never a bare year. */
     const val ACADEMIC_YEAR_KEY = "academic_year"
 
+    /**
+     * The year we hold ONE figure for, when it is not the year this school's
+     * price is quoted at -- inside a [FIGURE_STATUSES_KEY] entry (RFC 166 §3).
+     *
+     * Its own key because [FigureStatus] cannot carry the fact: a year gap and a
+     * cell we have genuinely never collected are BOTH `not_collected_by_us`. The
+     * two years were readable only by substring-matching our own English
+     * sentence, so a reader that wanted the held year had to parse prose about
+     * somebody's money.
+     *
+     * There is no `served_academic_year` beside it. The served year is already
+     * on the college object, under the vintage label that dates the very figures
+     * this entry is about ([ACADEMIC_YEAR_KEY]), and a second copy is a second
+     * place for it to be wrong.
+     */
+    const val HELD_ACADEMIC_YEAR_KEY = "held_academic_year"
+
     /** The wire names one vintage dates, so no reader infers membership from a naming convention. */
     const val DATED_FIGURES_KEY = "figures"
+
+    /**
+     * The schools one academic year inside `comparison_basis` is true of -- the
+     * subject the year has carried since it became a per-school fact (RFC 166
+     * §3). Each element is a `{college_id, name}` object, so the subject is
+     * matched by id and only read aloud by name.
+     */
+    const val DATED_COLLEGES_KEY = "colleges"
 
     /**
      * One arrangement's total. Unsuffixed by measure but not by unit: it is a
@@ -983,6 +1237,37 @@ class CollegeCostChatTool(
     const val WITHHELD_REASON_KEY = "reason"
 
     /**
+     * WHY a figure carries no number, in the store's six statuses (RFC 166 §6)
+     * -- the reason BESIDE [DATA_AVAILABILITY_KEY] rather than inside it, so
+     * that key keeps the exact shape every reader of it already has.
+     */
+    const val FIGURE_STATUSES_KEY = "figure_statuses"
+
+    /**
+     * WHICH tuition tiers this school publishes ([ResidencyTierBasis]) -- the
+     * code and the sentence, on every college.
+     *
+     * Its own key rather than a widening of `tuition_applicable`: that one says
+     * which published price applies to THIS student, and this one says how many
+     * prices there are to apply. A school whose publisher never separated a
+     * district price says exactly that here, which is the only way an in-state
+     * figure can be shown without ever being re-labelled an in-district one.
+     *
+     * A school we hold NO tuition price for says THAT, in
+     * [ResidencyTierBasis.NO_PUBLISHED_TUITION]'s own words. The key is still
+     * present, because "we hold no price" is an answer; what it may never carry
+     * is `single_published_price`, which announced a price list this payload has
+     * no tuition key for.
+     */
+    const val RESIDENCY_TIERS_KEY = "residency_tiers"
+
+    /**
+     * The lines inside one arrangement whose amount is OURS (RFC 166 §7) --
+     * absent, never empty, so it appears on `with_family` and nowhere else.
+     */
+    const val ASSUMED_BY_UNICOACH_KEY = "assumed_by_unicoach"
+
+    /**
      * WHICH published tuition figure the comparison holds constant at ONE school
      * (RFC 151), inside `comparison_basis.residency.by_college`.
      *
@@ -1035,6 +1320,29 @@ class CollegeCostChatTool(
         "out-of-state one - and say plainly when this school does not report the one that applies."
 
     /**
+     * The residency invitation at a school that publishes THREE tuition prices
+     * (RFC 166 §4) -- used exactly when this college carries a value-bearing
+     * in-district figure, which is the same condition the in-district key is
+     * emitted on.
+     *
+     * [RESIDENCY_OFFER] names two prices, which is simply wrong at a community
+     * college. This one names three and is careful about what the answer buys:
+     * the state answer selects between the two STATE-level prices only, because
+     * a state does not answer a district. NO district question is asked -- there
+     * is no money-profile field for one and this RFC adds none -- so the
+     * district price stays a labelled tier the coach may quote, never a price
+     * this student is sorted into.
+     */
+    const val RESIDENCY_OFFER_THREE_TIERS =
+      "This is a public school, and it publishes three tuition and fees prices: one for students living in " +
+        "its district, one for other students living in its state, and one for students from outside the " +
+        "state. If the student shares the state they live in (record it with " +
+        "${MoneyProfileChatTool.TOOL_NAME}), you can say which of the two state-level prices applies to them " +
+        "- the in-state one or the out-of-state one - and say plainly when this school does not report the " +
+        "one that applies. A district is never asked about: a state answer does not answer a district, so " +
+        "quote the in-district price as the labelled tier it is and never as this student's price."
+
+    /**
      * The in-answer invitation (RFC 135): present on a college result exactly
      * when the income band is unanswered and that college reports band
      * pricing, so the coach can offer the upgrade right in the conversation —
@@ -1073,7 +1381,23 @@ class CollegeCostChatTool(
         "say so plainly, never estimate. That happens for one of two reasons, and they are not the same fact - " +
         "either the college does not report the field, or it is a figure that does not describe this family and " +
         "was withheld, which a $WITHHELD_FIGURES_KEY entry names and explains. Never say a school reported " +
-        "nothing when the entry is ours. Every college carries $APPLIES_BASIS_KEY, which says which of three " +
+        "nothing when the entry is ours. " +
+        "$FIGURE_STATUSES_KEY says WHY a field has no number, one entry per field, each carrying a status and " +
+        "the $STATEMENT_KEY to say it in - say that sentence rather than writing your own. " +
+        "\"${FigureStatus.NOT_REPORTED_BY_INSTITUTION.value}\" and \"${FigureStatus.NOT_APPLICABLE.value}\" are " +
+        "the school's own answer - it reported nothing, or the figure does not apply there and the source says " +
+        "so. \"${FigureStatus.SUPPRESSED_BY_PUBLISHER.value}\" is the publisher withholding a figure the school " +
+        "did report, for privacy, and \"${FigureStatus.NOT_COLLECTED_BY_US.value}\" is OURS - we have not " +
+        "collected it yet - so for neither of those may you say the school failed to report it. " +
+        "A \"${FigureStatus.NOT_COLLECTED_BY_US.value}\" entry that ALSO carries $HELD_ACADEMIC_YEAR_KEY is " +
+        "the narrower case: this school DID publish that figure, for THAT academic year, and we hold it - it " +
+        "is simply not the year this school's prices are quoted at here. Say which year we hold it for, read " +
+        "from $HELD_ACADEMIC_YEAR_KEY rather than from the sentence, and never carry that figure into a total " +
+        "beside figures from another year. " +
+        "\"${FigureStatus.IMPUTED_BY_PUBLISHER.value}\" is not a blank at all: the figure IS shown, and it is " +
+        "the publisher's own estimate rather than a number the school reported, so quote it with that said - " +
+        "including when it is a zero. \"${FigureStatus.REPORTED.value}\" carries no entry here; a plainly " +
+        "reported figure is shown plainly. Every college carries $APPLIES_BASIS_KEY, which says which of three " +
         "states it is in: ${BlendedFigureApplicability.APPLIES.value} means the published price and the price " +
         "after a financial aid offer are this family's there, ${BlendedFigureApplicability.WITHHELD.value} " +
         "means they are withheld, and ${BlendedFigureApplicability.BASIS_STATED.value} means we cannot say " +
@@ -1105,6 +1429,31 @@ class CollegeCostChatTool(
         "at that school - never a share of the students with no financial need, which no school reports - and " +
         "${MeritAidWire.AVERAGE_KEY} is what last year's recipients averaged, not an offer to this student, so " +
         "never subtract it from any price here. Its absence means only that this school does not report it. " +
+        "Published tuition and fees ride one key per residency tier: " +
+        "${CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName}, " +
+        "${CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD.wireName}, and - only at the schools that " +
+        "publish one - ${CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD.wireName}, the price for students " +
+        "living in the school's own district. $RESIDENCY_TIERS_KEY says which tiers this school publishes, as a " +
+        "$BASIS_KEY code with the $STATEMENT_KEY to say it in: " +
+        "\"${ResidencyTierBasis.THREE_TIERS_PUBLISHED.value}\" names all three, " +
+        "\"${ResidencyTierBasis.TWO_TIERS_PUBLISHED.value}\" is the ordinary state pair with no district tier " +
+        "to mention, \"${ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.value}\" means our source " +
+        "never separated a district price from the state price - so the in-state figure is shown exactly as it " +
+        "was published, and you must never call it an in-district price or claim a lower district price exists " +
+        "- \"${ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER.value}\" means a district price and one " +
+        "other tier, and not the full three - and " +
+        "\"${ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.value}\" means one tuition price is all we hold - " +
+        "never that one price applies to everybody, because that one figure can itself be a residency-specific " +
+        "price, and the tuition key beside it says which - and " +
+        "\"${ResidencyTierBasis.NO_PUBLISHED_TUITION.value}\" means we hold NO tuition price for this school " +
+        "at all: there is no tuition key to read and you must never name a tuition figure for it. A " +
+        "district is never asked about: the family's state answer cannot select a district price, so the " +
+        "in-district figure is a labelled tier you may quote and never the tuition line inside a total. " +
+        "${CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD.wireName}, " +
+        "${CostField.FEES_ONLY_OUT_OF_STATE_PER_YEAR_USD.wireName} and " +
+        "${CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD.wireName} are the fees PART of the matching " +
+        "combined figure, not a cost beside it: never add one to a tuition and fees figure or to any " +
+        "total, and never subtract one from the other. " +
         "A college result may also carry $BREAKDOWN_KEY, the published price split into the parts a family can " +
         "actually influence, keyed by where the student would live: " +
         "${LivingArrangement.ON_CAMPUS.value}, ${LivingArrangement.OFF_CAMPUS.value}, " +
@@ -1112,9 +1461,14 @@ class CollegeCostChatTool(
         "arrangement carries the tuition and fees line that applies to this student and the school's published " +
         "allowances for that way of living, and $TOTAL_KEY only when every part of it is reported - when there is " +
         "no $TOTAL_KEY, say the parts and say a part is missing, never add up what is there and call it the total. " +
-        "${LivingArrangement.WITH_FAMILY.value} carries no housing and food line because no school publishes " +
-        "one for a student living at home; " +
-        "that is missing data about the arrangement, never a housing cost of zero. " +
+        "${LivingArrangement.WITH_FAMILY.value} carries a " +
+        "${CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName} line of 0, and that zero is OURS: " +
+        "$AT_HOME_ASSUMPTION_STATEMENT " +
+        "Say that assumption in the same breath as the at-home total. No school and no publisher collects a " +
+        "with-family food-and-housing figure at all, so never say this school reported a zero and never say it " +
+        "failed to report the figure. The arrangement names the line under $ASSUMED_BY_UNICOACH_KEY, which " +
+        "lists every key in that arrangement whose amount is ours rather than the school's - it is why the " +
+        "at-home total is complete. " +
         "${CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName} is a separate figure - an average blended " +
         "across all three arrangements, from an earlier year, and at a public school built for students paying " +
         "in-state tuition, so never compare it with an arrangement total and " +
@@ -1149,17 +1503,21 @@ class CollegeCostChatTool(
         "different arrangement in its place, never carry a neighbour's figure across; " +
         "\"${LivingPlanPricing.NO_TOTAL_HERE.value}\" means this school shows that way of living but no total is " +
         "settled for it, and its $NO_TOTAL_REASON_KEY says whose gap that is - " +
-        "\"${NoTotalReason.AWAITING_RESIDENCY_ANSWER.value}\" and " +
-        "\"${NoTotalReason.TUITION_APPLICABILITY_UNKNOWN.value}\" are OUR gaps, so never say this school " +
-        "published no price, while \"${NoTotalReason.PART_NOT_PUBLISHED.value}\" is a part this school does not " +
+        "\"${NoTotalReason.AWAITING_RESIDENCY_ANSWER.value}\", " +
+        "\"${NoTotalReason.TUITION_APPLICABILITY_UNKNOWN.value}\" and " +
+        "\"${NoTotalReason.PART_NOT_COLLECTED_BY_US.value}\" are OUR gaps, so never say this school " +
+        "published no price - the last of those means WE have not collected a part, or hold it only for another " +
+        "academic year, and the school may publish it perfectly well - while " +
+        "\"${NoTotalReason.PART_NOT_PUBLISHED.value}\" is a part this school does not " +
         "publish - in every one of those cases quote the parts of it in $BREAKDOWN_KEY, say which part is " +
         "missing, and never add up what is there and call it the total. Its $STATEMENT_KEY says the same case in " +
         "words, every time. The other ways " +
         "of living stay in $BREAKDOWN_KEY and stay true - answer a \"what if we lived at home instead\" from them. " +
         "When the key is absent the family has said nothing about where they will live: show every way of living " +
         "the school publishes, each named, exactly as before. " +
-        "${ScorecardVintage.PUBLISHED_PRICE.wireName} and ${ScorecardVintage.BLENDED_AVERAGE.wireName} each carry an " +
-        "$ACADEMIC_YEAR_KEY (e.g. \"${ScorecardVintage.PUBLISHED_PRICE.label}\") and the $DATED_FIGURES_KEY it dates: " +
+        "${FigureGroup.PUBLISHED_PRICE.wireName} and ${FigureGroup.BLENDED_AVERAGE.wireName} each carry an " +
+        "$ACADEMIC_YEAR_KEY and the $DATED_FIGURES_KEY it dates - and the year is that SCHOOL's, so two schools " +
+        "in one answer may carry two different years: " +
         "quote a number with the year of the key that lists it, never with the other one, and never add figures from " +
         "the two different years together. A figure named by neither key has no academic year - " +
         "${CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName} and " +
@@ -1169,7 +1527,10 @@ class CollegeCostChatTool(
         "side-by-side holds constant: who the figures describe, the residency (stated per school under " +
         "by_college), which residency the blended figures are on ($BLENDED_FIGURE_BASIS_KEY, also stated per " +
         "school, with $APPLIES_KEY saying whether those two figures are this family's there), the way of living " +
-        "every school here is priced for, the academic years, and what aid means " +
+        "every school here is priced for, the academic years - each one naming under $DATED_COLLEGES_KEY the " +
+        "schools it is true of, by college_id and name, because two schools in one comparison may be served at " +
+        "two different years, so match on college_id and never read a year onto a school it does not name - " +
+        "and what aid means " +
         "in a net price. Each one carries a $BASIS_KEY code and the $STATEMENT_KEY you may say: say those " +
         "sentences as ordinary copy above the table, never as a footnote under it, and never build a column " +
         "from two different bases - one residency and one way of living per column, or say it as two tables. " +

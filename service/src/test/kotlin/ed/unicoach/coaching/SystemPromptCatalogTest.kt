@@ -4,8 +4,10 @@ import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
 import ed.unicoach.coaching.aid.FederalAidPolicyChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
+import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.costs.PrecisionOffer
+import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.fitlens.FitLensConfig
 import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
@@ -18,6 +20,7 @@ import ed.unicoach.college.SimilarCollegesTool
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SystemPromptsDao
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import org.junit.jupiter.api.AfterAll
@@ -28,6 +31,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -130,6 +134,45 @@ class SystemPromptCatalogTest {
      * under test is SEEDED COPY versus SHIPPING TOOL.
      */
     private val STOP_OFFERS_TOOL_NAME = StopCostReportOffersChatTool.TOOL_NAME
+
+    /**
+     * The three spans v19 ADDS to the v18 body (RFC 166), each located at
+     * runtime by its opening words and by the words that follow it, so the seed
+     * migration stays the single home of the approved copy.
+     *
+     * v19 is the first coach body that is not "v(N-1) plus one appended
+     * paragraph": two interior blocks are EDITED, so [appendedParagraph]'s
+     * prefix guard cannot express it. The contract is stated instead as "v18
+     * with exactly these three insertions and nothing else changed", which is
+     * strictly stronger — it proves every ban v18 carried survives byte-for-byte.
+     */
+    private const val IN_DISTRICT_OPENER = "Some public schools publish a third, lower price"
+
+    /** The v18 sentence the in-district span is inserted in front of — the span's right edge. */
+    private const val IN_DISTRICT_SUCCESSOR = "Only ask when the result offers it"
+
+    /** The first words of the at-home assumption v19 inserts (gate-2 D17). */
+    private const val AT_HOME_OPENER = "The at-home total counts no housing and food"
+
+    /** The v18 sentence that assumption is inserted in front of — the span's right edge. */
+    private const val AT_HOME_SUCCESSOR = "When an arrangement carries no total"
+
+    /** The first words of the one paragraph v19 APPENDS: the six figure statuses (RFC 166 D-D). */
+    private const val FIGURE_STATUS_OPENER = " When a figure has no amount"
+
+    /**
+     * The at-home assumption, read from the SHIPPING Kotlin constant rather
+     * than retyped (RFC 166 D17), on this file's [ADMISSIONS_TOOL_NAME]
+     * precedent: the pairing under test is SEEDED COPY versus SHIPPING CODE.
+     *
+     * The same sentence is what `AT_HOME_ASSUMPTION_STATEMENT` puts on
+     * `ComparisonBasis`, so the family hears ONE wording whether the zero
+     * reaches them through the coach or through the parent-facing report. A
+     * literal here would keep passing after either side was reworded, leaving
+     * the two surfaces quietly saying different things about whose zero it is —
+     * which is the drift this pins, and it can only be pinned from one side.
+     */
+    private val AT_HOME_ASSUMPTION = AT_HOME_ASSUMPTION_STATEMENT
 
     /** The first words of the codebook sentence v3 deletes (RFC 147). */
     private const val CODEBOOK_SENTENCE_OPENER = "The coded fields use these codebooks:"
@@ -1317,6 +1360,197 @@ class SystemPromptCatalogTest {
 
   /** The v18 share-nudge paragraph: everything v18 appends to the v17 body. The guards are [appendedParagraph]'s. */
   private fun shareNudgeParagraph(): String = appendedParagraph(base = "v17", revised = "v18")
+
+  /**
+   * The 0086 seed's structural contract (RFC 166), and it is a DIFFERENT shape
+   * from every coach test above it. 0047 (v2->v3) through 0082 (v17->v18) were
+   * all "the whole prior body as a byte-identical prefix plus one appended
+   * paragraph", which [appendedParagraph] checks. v19 is the first that is not:
+   * it EDITS two interior blocks — the residency offer gains the in-district
+   * tier, the living-arrangement block gains the at-home assumption — and
+   * appends a third for the six figure statuses.
+   *
+   * So the contract is stated as an EQUALITY: v19 with those three spans taken
+   * back out must be v18, byte for byte. That is strictly stronger than a list
+   * of `contains` assertions, because it is what says the edits added copy and
+   * weakened nothing — every ban v18 carried (the net-price arithmetic, the
+   * cross-vintage sum, the no-partial-total rule, the source-jargon sentence)
+   * survives by construction or this fails. The spans themselves are located
+   * from the served body at runtime, so the migration stays the one home of the
+   * copy; each is asserted to be absent from v18 first, or "removing" it would
+   * be a silent no-op and the equality would hold vacuously.
+   */
+  @Test
+  fun `coach v19 is v18 with the residency and at-home blocks edited and one status paragraph appended`() {
+    val v18 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v18").getOrThrow().body
+    val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow().body
+
+    // The convention, broken deliberately: a clean v18 prefix would mean the
+    // two interior edits never landed and v19 was an append after all.
+    assertFalse(v19.startsWith(v18), "v19 EDITS v18's interior, so v18 must not survive as a byte-identical prefix")
+    assertFalse(v18.contains(IN_DISTRICT_OPENER), "the in-district span must be new, or its removal below is a no-op")
+    assertFalse(v18.contains(AT_HOME_OPENER), "the at-home assumption must be new, or its removal below is a no-op")
+    assertFalse(v18.contains(FIGURE_STATUS_OPENER), "the figure-status paragraph must be new, or the append is vacuous")
+
+    val inDistrict = insertedSpan(v19, IN_DISTRICT_OPENER, IN_DISTRICT_SUCCESSOR)
+    val atHome = insertedSpan(v19, AT_HOME_OPENER, AT_HOME_SUCCESSOR)
+    val appendedAt = v19.indexOf(FIGURE_STATUS_OPENER)
+    assertTrue(appendedAt > 0, "v19 must carry the figure-status paragraph: [$FIGURE_STATUS_OPENER]")
+    val statuses = v19.substring(appendedAt)
+
+    assertEquals(
+      v18,
+      v19.removeRange(appendedAt, v19.length).replace(inDistrict, "").replace(atHome, ""),
+      "v19 must be v18 with exactly these three spans added and nothing else changed",
+    )
+
+    // 1. The third tier, and the district that is never asked about (D4).
+    assertTrue(
+      inDistrict.contains("never as the tuition and fees line inside a total"),
+      "the in-district figure is a labelled tier, never the tuition line inside a total",
+    )
+    assertTrue(
+      inDistrict.contains("never present an in-state figure as an in-district one"),
+      "RFC 161's open item: a figure keeps the label its publisher gave it",
+    )
+    assertTrue(
+      inDistrict.contains("Never ask which district a family lives in"),
+      "no new question: residency_state cannot select in-district, and a state answer does not answer a district",
+    )
+    assertTrue(
+      inDistrict.contains("does not separate an in-district price, say so in words"),
+      "where the tier is not published, the coach says what we do not know rather than guessing",
+    )
+
+    // 2. The at-home zero, in words, and ours (gate-2 D17).
+    assertTrue(atHome.contains(AT_HOME_ASSUMPTION), "the assumption must be said in the exact words the report says: [$atHome]")
+    assertTrue(
+      atHome.contains("zero is ours rather than the school's") && atHome.contains("never say the school reported it"),
+      "the zero is a unicoach assumption and is never attributed to the school",
+    )
+    // v14's "Living at home is never something you assume quietly" governs the
+    // PLAN; this governs the FIGURE. Both stand, so the older rule is asserted
+    // present rather than replaced.
+    assertTrue(
+      v19.contains(livingPlanParagraph()),
+      "v14's living-plan paragraph, and its never-assume-quietly rule, must survive byte-for-byte",
+    )
+
+    // 3. The six statuses, each with the sentence to say, and which one is OURS.
+    assertTrue(
+      statuses.startsWith(FIGURE_STATUS_OPENER),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    // The key is READ from the tool, never typed: the paragraph tells the coach
+    // to read an array off the payload, and a literal here would keep passing
+    // after a rename, leaving the prompt naming a key the tool does not emit.
+    assertTrue(
+      statuses.contains(CollegeCostChatTool.FIGURE_STATUSES_KEY),
+      "the paragraph must name the shipping key [${CollegeCostChatTool.FIGURE_STATUSES_KEY}]: [$statuses]",
+    )
+    // EXHAUSTIVE over the vocabulary, and read from the SHIPPING sentence: the
+    // paragraph tells the coach to say the entry's own sentence, and the entry
+    // carries whatever [FigureStatusCopy.statementOf] returns. Pinned with
+    // literals, a reword there shipped sentence A in the payload while the
+    // prompt enumerated sentence B, with nothing failing -- the seed, this test
+    // and the prompt all still agreed with each other and only the shipping
+    // surface had moved. Exhaustive, so a SEVENTH status also fails here rather
+    // than reaching the coach unspoken.
+    FigureStatus.entries.forEach { status ->
+      // REPORTED carries no sentence at all -- a plainly reported figure is
+      // given plainly -- and the paragraph says exactly that, below.
+      val spoken = FigureStatusCopy.statementOf(status) ?: return@forEach
+      assertTrue(
+        statuses.contains(spoken),
+        "v19 must recite the SHIPPING sentence for [${status.value}]: [$spoken] in [$statuses]",
+      )
+    }
+    assertTrue(
+      statuses.contains("A figure that is simply reported needs none of these sentences"),
+      "reported is the sixth status: the number is given plainly, with no sentence beside it",
+    )
+    // The OURS/THEIRS split is keyed on the SENTENCE, so the sentence and the
+    // attribution are asserted TOGETHER: the shipping words for
+    // `not_collected_by_us`, immediately followed by the claim that they are
+    // ours. Reworded in [FigureStatusCopy] and only half-updated here, the
+    // paragraph would recite our gap among the school's own silences -- the
+    // misattribution RFC 149 D-B exists against.
+    val ours = assertNotNull(FigureStatusCopy.statementOf(FigureStatus.NOT_COLLECTED_BY_US))
+    assertTrue(
+      statuses.contains("$ours That last sentence is ours and not the school's"),
+      "the sentence that is OURS must be attributed as ours where it is said: [$statuses]",
+    )
+    assertTrue(
+      statuses.contains("it is our gap, so never tell a family the school failed to report"),
+      "D-B reused: a status that is OURS is never spoken as the school's failure",
+    )
+
+    // The standing guards, swept over the three spans v19 actually adds, so a
+    // relaxation is reported as v19's own rather than as the catalog's.
+    val added = inDistrict + atHome + statuses
+    assertFalse(added.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(added.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(added.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(added),
+      "every mention of subtracting in the new copy must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(added), "the new copy must transcribe no source codebook")
+    // v6's ban on source-internal names still governs, so the new copy names a
+    // PAYLOAD key and no source column: no CHG code, no canonical table name.
+    assertTrue(v19.contains(sourceJargonSentence()), "v6's source-jargon sentence must survive the edits byte-for-byte")
+    assertFalse(added.contains("price_figures"), "a canonical table name is never said to a family")
+    assertFalse(added.contains("CHG"), "an IPEDS charge code is never said to a family")
+  }
+
+  /**
+   * One span [v19] inserts into the v18 body, located by its opening words and
+   * bounded by the v18 words it was inserted in front of.
+   *
+   * Both boundaries are asserted before the substring is taken: `indexOf`
+   * returns -1 rather than failing, and a span whose right edge was not found
+   * would otherwise run to the end of the body and swallow the rest of the
+   * prompt into the "added" copy — which would make the equality above pass
+   * while v19 had in fact deleted everything after it.
+   */
+  private fun insertedSpan(
+    body: String,
+    opener: String,
+    successor: String,
+  ): String {
+    val start = body.indexOf(opener)
+    assertTrue(start >= 0, "the served body must contain [$opener]")
+    val end = body.indexOf(successor, start)
+    assertTrue(end > start, "the served body must contain [$successor] after it, or the span is unbounded")
+    return body.substring(start, end)
+  }
+
+  /**
+   * The rollback RFC 166 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v18`), which is only real if the v18 row is
+   * still in the insert-only catalog and still carries the copy it was approved
+   * with. Asserted here rather than assumed, on the same precedent as every
+   * rollback test above: a rollback nobody checks is discovered to be broken at
+   * the worst moment.
+   */
+  @Test
+  fun `coach v18 stays selectable as v19's rollback target`() {
+    val v18 =
+      SystemPromptsDao
+        .findByNameAndVersion(session, "coach", "v18")
+        .getOrElse { fail("the v18 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v18 is not a rollback") }
+    val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow().body
+
+    assertTrue(v18.body.isNotEmpty(), "the v18 body must be the copy it was seeded with, not an empty row")
+    assertTrue(v18.body != v19, "v18 and v19 must be different bodies, or the pin bought nothing")
+    assertTrue(v18.body.contains(sourceJargonSentence()), "v18 must still carry v6's source-jargon sentence byte-for-byte")
+    assertTrue(v18.body.contains(STOP_OFFERS_TOOL_NAME), "v18 must still carry RFC 160's opt-out copy")
+    assertFalse(v18.body.contains(IN_DISTRICT_OPENER), "the rollback target must not already carry v19's in-district tier")
+    assertFalse(v18.body.contains(AT_HOME_OPENER), "nor v19's at-home assumption")
+    assertFalse(v18.body.contains(FIGURE_STATUS_OPENER), "nor v19's figure-status paragraph")
+  }
 
   /** The v16 residency-basis paragraph: everything v16 appends to the v15 body. The guards are [appendedParagraph]'s. */
   private fun residencyBasisParagraph(): String = appendedParagraph(base = "v15", revised = "v16")

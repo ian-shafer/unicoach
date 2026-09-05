@@ -9,6 +9,11 @@ import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
+import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
+import ed.unicoach.coaching.costs.canonical.DatedStat
+import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
+import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.college.Codebook
@@ -31,6 +36,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewFitLensRun
@@ -39,6 +45,7 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.latestUpdatedAt
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -81,6 +88,14 @@ class FitLensService(
   private val config: FitLensConfig,
   private val budgetService: BudgetService,
   codebook: Codebook,
+  /**
+   * The canonical money store's read side (RFC 166 §9), injected exactly as
+   * every other collaborator here is. Defaulted, so no root has to name it --
+   * and substitutable, which is the only way to prove what this pass does when
+   * that read FAILS without breaking the rest of the pass for unrelated
+   * reasons.
+   */
+  private val canonicalCostReader: CanonicalCostReader = DbCanonicalCostReader(database),
 ) {
   private val vocabulary = CollegeQueryVocabulary(codebook)
 
@@ -121,6 +136,16 @@ class FitLensService(
      * program list is a list, and an empty one already reads as no programs.
      */
     private const val NOT_REPORTED = "not reported"
+
+    /**
+     * How a figure the source dates no year is written (RFC 166 §9).
+     *
+     * `cohort_money_stats.vintage` stores the literal `'undated'` where the
+     * publisher dates nothing, and [DatedStat] hands that back as a null year.
+     * The digest states the year of every figure it prints, so the ABSENCE of a
+     * year is stated too -- an unstated year reads as this year's number.
+     */
+    private const val NOT_DATED = "not dated by the source"
 
     const val RECORD_COLLEGE_QUERY_TOOL_NAME = "record_college_query"
     const val RECORD_FIT_REASON_TOOL_NAME = "record_fit_reason"
@@ -312,9 +337,15 @@ class FitLensService(
       }
     if (matches.isEmpty()) return onZeroMatches(studentId, ready, queryLlmRequestId)
 
+    // The digest's one money figure, read from the CANONICAL store rather than
+    // off the search index row (RFC 166 §9). ONE batched statement for the whole
+    // match set, on its own short-lived connection: retrieval has already
+    // returned, and no LLM call is in flight.
+    val netPrices = netPricesForDigest(studentId, matches.map { it.id })
+
     // LLM call #2 — reason over the real matches.
     val reasonCall =
-      when (val outcome = runChat(studentId, "reason", buildReasonRequest(ready, matches))) {
+      when (val outcome = runChat(studentId, "reason", buildReasonRequest(ready, matches, netPrices))) {
         is ChatOutcome.Bail -> return outcome.result
         is ChatOutcome.Completed -> outcome
       }
@@ -671,14 +702,147 @@ class FitLensService(
       }
     }
 
+  /**
+   * The digest's net prices, or the fact that this run could not read them:
+   * this read DEGRADES, it never aborts the pass.
+   *
+   * The figure is ADVISORY -- one line of a digest the model reasons over. A
+   * failure here used to return `TransientFailure`, throwing away a completed
+   * search and a paid LLM call for a read that only ever decorated them, and
+   * leaving the student with no suggestions at all rather than suggestions with
+   * one fact missing.
+   *
+   * What it may NOT do is launder the failure into a data claim. Returning an
+   * empty map made every matched college print "We have not collected this
+   * figure yet." -- a statement about unicoach's COVERAGE, made to a model that
+   * narrates it to a student. [DigestNetPrices.Unavailable] is the other state,
+   * and the digest omits the key entirely for it (see [netPriceSegment]), so
+   * the not-collected sentence keeps meaning only what it says.
+   *
+   * [CancellationException] is rethrown FIRST, as every sibling in this package
+   * does: it is an [Exception], so catching it here would log an abandoned turn
+   * as a database fault and then walk on into a BILLED second LLM call.
+   */
+  private suspend fun netPricesForDigest(
+    studentId: StudentId,
+    collegeIds: List<CollegeId>,
+  ): DigestNetPrices =
+    try {
+      DigestNetPrices.Read(readNetPrices(collegeIds))
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      logger.warn(
+        "fit-lens canonical net-price read failed for student=[{}]; the digest omits the net-price " +
+          "key and the run continues",
+        studentId.asString,
+        e,
+      )
+      DigestNetPrices.Unavailable
+    }
+
+  /**
+   * The average net price each matched college carries in the canonical store
+   * (RFC 166 §9), keyed by college; a college with no `avg_net_price` row at all
+   * is simply absent from the map.
+   *
+   * Read through [CanonicalCostReader] -- THE door onto the store -- so the
+   * latest-vintage choice, the whole-dollar rounding, the reading/status
+   * pairing and the FULL canonical address are the same ones the cost answer
+   * uses, rather than a second assembly of them here. That matters because the
+   * store holds more than one `avg_net_price` series per college: two doors
+   * would let this digest and the cost page quote two different populations'
+   * figures.
+   *
+   * The band-less row is the one asked for: this pass knows nothing about the
+   * family's income band, and the overall figure is the school's own.
+   */
+  private suspend fun readNetPrices(collegeIds: List<CollegeId>): Map<CollegeId, DatedStat> =
+    canonicalCostReader
+      .readCohortStats(collegeIds)
+      .mapNotNull { (collegeId, figures) ->
+        figures.cohortOf(CostField.NET_PRICE, band = null)?.let { collegeId to it }
+      }.toMap()
+
+  /**
+   * The net-price part of one college's digest line, or NOTHING at all when
+   * this run could not read the store.
+   *
+   * Omission is the point. The keys below are answered from the canonical
+   * store, and every sentence they can carry -- including "We have not
+   * collected this figure yet." -- is a claim about our DATA. A run that could
+   * not read the store knows nothing about this college's net price, so it says
+   * nothing about it, and the model is left with the fields it can trust.
+   */
+  private fun netPriceSegment(
+    netPrices: DigestNetPrices,
+    collegeId: CollegeId,
+  ): String =
+    when (netPrices) {
+      is DigestNetPrices.Read -> "${netPriceDigest(netPrices.byCollege[collegeId])} "
+      DigestNetPrices.Unavailable -> ""
+    }
+
+  /**
+   * One college's net price as the digest states it: at most one dollar amount,
+   * under ONE stable key, with the population it was built on, its status and
+   * its vintage as their OWN fields beside it (RFC 166 §9).
+   *
+   * Three rules, each of which the earlier shape broke:
+   *
+   * 1. The basis is a FIELD, never a spelling. `inStateNetPricePerYearUsd` vs
+   *    `netPricePerYearUsd` made every reader -- the model, this file's own
+   *    prose, each test -- carry the prefix convention in its head; drop or
+   *    paraphrase it in one place and a `residency_scope = in_state_rate_paying`
+   *    figure is spoken as everybody's price, the RFC 157 defect exactly. The
+   *    cost tool already emits a basis CODE beside its figure; so does this.
+   * 2. `netPricePerYearUsd` holds DOLLARS or nothing. A status sentence served
+   *    under a key that names a per-year USD amount invites a model to quote the
+   *    sentence as if it were the figure. Where there is no amount the key is
+   *    OMITTED and [FigureStatus] rides as its own token, with the family-facing
+   *    statement beside it -- the shape of the tool's `figure_statuses`.
+   * 3. Nothing is dated that does not exist. With no row there is no source, so
+   *    no vintage clause and no basis is stated at all: the only true thing is
+   *    that we have not collected it ([FigureStatus.NOT_COLLECTED_BY_US]), which
+   *    is OUR silence and never the school's.
+   */
+  private fun netPriceDigest(stat: DatedStat?): String {
+    if (stat == null) return statusFields(FigureStatus.NOT_COLLECTED_BY_US)
+
+    val amount = stat.amountUsd
+    val figure =
+      if (amount != null) {
+        "netPricePerYearUsd=[$amount] "
+      } else {
+        // No dollars, so no dollar key: the status IS the answer.
+        statusFields(stat.status) + " "
+      }
+    return figure +
+      "netPriceBasis=[${stat.residencyScope.value}] " +
+      "netPriceVintage=[${stat.vintage ?: NOT_DATED}]"
+  }
+
+  /**
+   * A missing figure's status as the digest states it: the stable CODE, plus the
+   * sentence a coach may say where there is one.
+   *
+   * [FigureStatusCopy.statementOf] answers null only for
+   * [FigureStatus.REPORTED], which is value-bearing and so never reaches here;
+   * [NOT_REPORTED] keeps the field non-empty if a future status is added
+   * value-less and wordless.
+   */
+  private fun statusFields(status: FigureStatus): String =
+    "netPriceStatus=[${status.value}] netPriceNote=[${FigureStatusCopy.statementOf(status) ?: NOT_REPORTED}]"
+
   private fun buildReasonRequest(
     ready: ReadPhase.Ready,
     matches: List<CollegeMatch>,
+    netPrices: DigestNetPrices,
   ): ChatRequest =
     ChatRequest(
       model = config.model,
       system = ready.reasonPrompt.body,
-      messages = listOf(ChatMessage.text(ChatRole.USER, buildReasonContext(ready, matches))),
+      messages = listOf(ChatMessage.text(ChatRole.USER, buildReasonContext(ready, matches, netPrices))),
       maxTokens = config.reasonMaxTokens,
       tools = listOf(RECORD_FIT_REASON_TOOL),
       toolChoice = forcedToolChoice(RECORD_FIT_REASON_TOOL_NAME),
@@ -687,6 +851,7 @@ class FitLensService(
   private fun buildReasonContext(
     ready: ReadPhase.Ready,
     matches: List<CollegeMatch>,
+    netPrices: DigestNetPrices,
   ): String =
     buildString {
       appendLine("# Active claims")
@@ -695,24 +860,34 @@ class FitLensService(
       }
       appendLine()
       appendLine("# Retrieved colleges (choose at most one, by collegeId)")
-      // RFC 157 D-A: the College Scorecard builds this net price for students
-      // paying the IN-STATE rate and publishes no out-of-state counterpart, so
-      // the key SAYS in-state here. This read goes round CollegeCostService, and
-      // so round its withholding, and the search index does not carry the
-      // family's residency -- withholding it belongs with the index (D-G). What
-      // this line can do today, it does: no model is handed a bare number whose
-      // residency basis is unstated.
-      appendLine(
-        "(inStateNetPricePerYearUsd is the school's own published in-state net price, not this family's; " +
-          "at a public school outside the family's state it is somebody else's figure.)",
-      )
+      // RFC 166 §9: the net price comes from the CANONICAL store, and the row
+      // says on which population it was built -- so `netPriceBasis` is READ off
+      // `residency_scope` rather than asserted. RFC 157 D-A still holds where the
+      // basis IS in-state: this read goes round CollegeCostService and so round
+      // its withholding, and the read phase never learns the family's residency,
+      // so withholding stays with the index (D-G). What this line can do today it
+      // does: no model is handed a bare number whose basis or year is unstated.
+      // ... and it is written only where there ARE net-price keys to describe.
+      // A run whose canonical read was unavailable carries none, so a paragraph
+      // explaining them would describe a line the model cannot see.
+      if (netPrices is DigestNetPrices.Read) {
+        appendLine(
+          "(netPricePerYearUsd is the school's own average net price per year, and netPriceBasis says " +
+            "which students it was built on. in_state_rate_paying is the school's own published in-state " +
+            "net price, not this family's; at a public school outside the family's state it is somebody " +
+            "else's figure. all is built for every student at the school and claims no residency. " +
+            "netPriceVintage is the year the figure describes. Where we hold no amount there is no " +
+            "netPricePerYearUsd key at all: netPriceStatus carries the reason code and netPriceNote says " +
+            "it in words.)",
+        )
+      }
       for (match in matches) {
         appendLine(
           "- collegeId=[${match.id.asString}] name=[${match.name}] city=[${match.city}] " +
             "state=[${match.state}] control=[${match.control}] " +
             "undergradEnrollmentHeadcount=[${match.undergradEnrollmentHeadcount ?: NOT_REPORTED}] " +
             "admissionRateShare=[${match.admissionRateShare ?: NOT_REPORTED}] " +
-            "inStateNetPricePerYearUsd=[${match.netPricePerYearUsd ?: NOT_REPORTED}] " +
+            netPriceSegment(netPrices, match.id) +
             "completionRate150pct4yrShare=[${match.completionRate150pct4yrShare ?: NOT_REPORTED}] " +
             "medianEarnings10yAfterEntryUsd=[${match.medianEarnings10yAfterEntryUsd ?: NOT_REPORTED}] " +
             "programs=[${match.programTitles.orEmpty().joinToString("; ")}]",
@@ -843,6 +1018,23 @@ class FitLensService(
     data class Failure(
       val detail: FailureReason,
     ) : QueryParse
+  }
+
+  /**
+   * What this run knows about the matched colleges' net prices: the figures it
+   * read (a college with no row is simply absent from [Read.byCollege]), or the
+   * fact that the read was UNAVAILABLE to this run.
+   *
+   * Two states, because they are two different things to say. "This college has
+   * no figure" is a claim about our data; "the read failed" is a claim about
+   * this run. Collapsing them printed the first sentence for the second fact.
+   */
+  private sealed interface DigestNetPrices {
+    data class Read(
+      val byCollege: Map<CollegeId, DatedStat>,
+    ) : DigestNetPrices
+
+    data object Unavailable : DigestNetPrices
   }
 
   private sealed interface ReasonParse {

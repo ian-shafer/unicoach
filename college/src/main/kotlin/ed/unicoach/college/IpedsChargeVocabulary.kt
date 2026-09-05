@@ -25,7 +25,7 @@ import ed.unicoach.db.models.ResidencyBasis
  * alternative is stamping every staged row and every derived price one year
  * stale and exiting green.
  */
-internal object IpedsChargeVocabulary {
+object IpedsChargeVocabulary {
   /**
    * The IPEDS survey year this vocabulary is pinned to — the `IC2023_AY.csv`
    * whose suffix window is decoded below. Bumping the pinned file edits THIS
@@ -85,6 +85,23 @@ internal object IpedsChargeVocabulary {
 
   /** The stems the loader stages, DERIVED from [CELLS] — never a second list to keep in step. */
   val STEMS: List<String> = CELLS.keys.toList()
+
+  /**
+   * The canonical price CELLS this fill writes, DERIVED from [CELLS] — the
+   * write side of the address grid, exported for the one consumer that must
+   * agree with it.
+   *
+   * `:service` reads the same grid from the other end
+   * (`CostField.figureAddress`), and the two lists cannot be derived from each
+   * other: this one is keyed by a publisher's variable stem, that one by this
+   * repo's wire field. So the agreement is ENFORCED instead — the object is
+   * public and this set exists for `CanonicalAddressContractTest`, which fails
+   * the moment either side is edited alone. A read address no fill writes is a
+   * figure we hold and tell a family we do not; a fill that moves serves a
+   * different cell's number under the same label. Both shipped once already
+   * (RFC 166 tier-0 blocker 1) with every test green.
+   */
+  val PRICE_CELLS: Set<PriceCoordinate> = CELLS.values.toSet()
 
   /**
    * IC_AY's year suffix decoder for [SURVEY_YEAR]: suffix `3` is the survey
