@@ -79,6 +79,41 @@ design — no consumer reads the rows; the door is shape/04. No `Needs:` gate
 answers were required (BLOCKS shape/01 was already LANDED; CONFLICTS shape/03
 had no live run).
 
+shape/03/ipeds-sfa LANDED as RFC 162 (main@31df6154 + 72f0523a, 2026-09-05) —
+IPEDS SFA (aid year 2022-23) becomes the third canonical source and the first
+one about AID rather than price: net price with an honest population label,
+income-band net price, Pell share/average, grant mix by source, loan share and
+average, and — in a new `cohort_population_counts` table — the residency and
+living-arrangement headcounts that make a basis concrete (College of DuPage:
+1,488 of 2,099 students pay the in-district rate, so "71% of them" is now a
+queryable fact rather than a blend). Three spec corrections, each measured
+against the real published files rather than the source report, and each a
+defect for /chart to carry: **SFA names the same concept differently for publics
+and privates** (`NPIST`/`NPGRN`, `NPIS41-45`/`NPT41-45`), so the spec's
+public-only variable list would have silently dropped ~65% of colleges; **`Z` is
+an implied zero — a real published 0, not an imputation** (17,357 cells in one
+file), so the spec's flag map would have labelled that many honest zeros
+publisher guesses, and this also CORRECTS landed RFC 161, which mapped `Z` to
+`imputed_by_publisher` — one flag vocabulary now serves both surveys and the
+code wins per `rfc/README.md`; and **`not_reported_by_institution` is unfillable
+from SFA** (NCES imputes rather than blanking), so nothing synthesises it. Aid
+scope now follows the DENOMINATOR of the measure — a share is over the cohort,
+an average is over recipients — which is what the old test missed by asserting
+measure and value without the scope. Review over 39 lenses found three defects
+no test could catch: the canonical fill read SFA from ambient database state, so
+an ingest without the SFA group would have emitted rows from a previous run's
+staging; the public/private split was spelled three ways and dropped an
+unmatched institution silently; and an unparseable published value became the
+same NULL as an empty cell, so OUR parse loss would have been reported as the
+publisher's disagreement. All three fixed, each with a test that fails on the
+old code. Migration 0085; `MoneySource.IPEDS_SFA` leads upstream-wins but never
+overwrites `NPT4_PUB`, which describes a different population. Substrate by
+design — no consumer reads the rows; the door is shape/04. No `Needs:` gate
+answers were required (BLOCKS shape/01 was already LANDED; CONFLICTS shape/02
+WAS live and did land first, so this run rebased onto it and collapsed three
+duplicated abstractions — `MoneySource`, the imputation-flag vocabulary, and the
+ingest option-group parser — to one each).
+
 ## The question
 
 Every money figure unicoach serves today is stored in the shape its publisher

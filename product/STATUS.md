@@ -7,28 +7,43 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-05 — **RFC 165, `profile/01/served-vocabulary`**
-(`main@f837dc81` + `dfc3b539`): the server now publishes the closed vocabularies
-a form needs, at **one** endpoint. `GET /api/v1/vocabularies` returns a
-**registry**: a map of vocabulary name to entries, where every entry is `value`
-plus `label` and may add extra keys but never fewer. Ian widened this at the
-/ship gate from a money-profile-only route — "this is a pattern we will need
-across many forms and UI elements" — so the shape, not the two lists, is the
-deliverable. Registered today: `income_bands` (slug + the spoken dollar range,
-from `IncomeBand.entries`) and `residency_states` (59 codes + names +
-jurisdiction kind). The residency set served is **literally the set
-`MoneyProfileService` validates against**, labelled from `us_states`, so a code
-the client can offer can never be a code the server rejects. It serves only
-vocabularies that have a consumer; the admission rule (closed, small,
-user-independent, display-facing with a real label) is written into the RFC, and
-a conformance test iterates the registry so the shape holds as it grows. No
-table, no migration. **Still substrate: nothing user-visible until
-`profile/02`.** Next free RFC **168**; next free migration **0085** (`rfc-166`
-and `167` are live).
+Updated: 2026-09-05 — **RFC 162, `shape/03/ipeds-sfa`** (`main@31df6154` +
+`72f0523a`): IPEDS SFA is the third canonical source and the first about **aid**
+rather than price — net price with an honest population label, income-band net
+price, Pell share and average, grant mix by source, loan share and average, plus
+a new `cohort_population_counts` table holding the residency and
+living-arrangement headcounts that make a basis concrete. Aid scope now follows
+the **denominator**: a share is over the cohort, an average is over recipients.
+Three spec corrections, all measured against the real published files: SFA names
+the same concept differently for publics and privates (the spec's public-only
+list would have dropped ~65% of colleges); `Z` is a real published **zero**, not
+an imputation — which **corrects landed RFC 161**, since one flag vocabulary now
+serves both surveys; and `not_reported_by_institution` is unfillable from SFA.
+**Still substrate: no consumer reads these rows — the door is `shape/04`.** Next
+free RFC **168**; next free migration **0086** (`rfc-166` and `167` are live).
 
 ## TL;DR — next steps, most important first
 
-1. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
+1. **UNICOACH NOW KNOWS WHO AN AID NUMBER IS ABOUT (RFC 162,
+   `shape/03/ipeds-sfa`, 2026-09-05).** IPEDS SFA fills the canonical store with
+   aid: net price by income band, Pell share and **average award** (a figure the
+   Scorecard does not publish), grant mix by source, and loan share and average.
+   Each row carries its population as structure, and the scope follows the
+   denominator — a share is over the cohort, an average is over the students who
+   actually got that aid — so "average grant" can no longer quietly mean two
+   different things. A new `cohort_population_counts` table stores the residency
+   and living-arrangement headcounts behind those bases: at College of DuPage,
+   1,488 of 2,099 students pay the in-district rate. **Nothing user-visible
+   yet** — no consumer reads these rows; the door is `shape/04`. Three spec
+   facts were corrected against the real files and are defects for /chart to
+   carry: SFA names the same concept differently for publics and privates (the
+   spec's variable list would have silently dropped **~65% of colleges**), `Z`
+   is an implied **zero** rather than an imputation (**this corrects landed RFC
+   161** — one flag vocabulary now serves both IPEDS surveys, and 17,357 honest
+   zeros in one file were at stake), and `not_reported_by_institution` cannot be
+   filled from SFA at all because NCES imputes instead of blanking.
+
+2. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
    `profile/01/served-vocabulary`, 2026-09-05).** `GET /api/v1/vocabularies` is
    a registry, not a money-profile route: one map of vocabulary name to entries,
    every entry `value` + `label`, extras allowed and nothing fewer. That shape
@@ -45,7 +60,7 @@ and `167` are live).
    Swift copies of both lists, and `profile/02` must render from this endpoint
    and retire them, or brief 0007 D6 is broken by the slice meant to satisfy it.
 
-2. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
+3. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
    2026-09-05).** IPEDS's published-charges file fills the canonical store ahead
    of the College Scorecard, and it fixes a wrong number we have been serving:
    the Scorecard collapses in-district into "in", so a community college's
@@ -67,7 +82,7 @@ and `167` are live).
    program-year reporters live in a different file, so the Scorecard stays the
    only source for the rest.
 
-3. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
+4. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
    2026-09-04).** Brief 0006's substrate: a price carries its residency, its
    living arrangement and its academic year; a statistic carries the population
    it describes; and an absence carries a reason instead of being an
@@ -78,7 +93,7 @@ and `167` are live).
    it something visible to show. `shape/03/ipeds-sfa` remains ready and
    unblocked.
 
-4. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
+5. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
    a moment it chooses (RFC 160, `first-value/06/invite-your-parent`,
    2026-09-03).** Brief 0001's wedge is closed end to end. Until now the report
    existed but the coach could only produce a link when the student thought to
@@ -95,7 +110,7 @@ and `167` are live).
    repeat, reissued, revoked, opted out), which is both the first read on
    share-rate and the substrate Beat 2's parent-account claim path needs.
 
-5. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
+6. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
    questions with cited federal facts (RFC 159, `shape/06/pell-and-loans`,
    2026-09-03).** A family can ask "can we get a Pell grant?" in session one —
    no college list, no profile — and get an honest answer naming the **2026-27**
@@ -109,7 +124,7 @@ and `167` are live).
    question is invited in flow and is fully declinable; both loan tables are
    served either way.
 
-6. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian, 2026-09-02,
+7. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian, 2026-09-02,
    defaults, no amendments); WAVE 1 NOW HALF DONE.** The standing mistake is
    named: every money figure is stored in its publisher's shape, and RFCs
    149/151/152/157 are a growing read-time compensation stack. Approved bet: a
@@ -127,7 +142,7 @@ and `167` are live).
    question IS `shape/05/search-on-your-price`, decided at D14. Spec:
    `product/0006-money-in-unicoach-shape/spec.md`.
 
-7. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
+8. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
    IT BY USING THE PRODUCT. Fixed by RFC 157** (`main@29242880` + `7c7c56af`,
    2026-09-02). The Scorecard's published cost of attendance (`COSTT4_A`) and
    its net price (`NPT4` family) are figures for students paying the
@@ -150,7 +165,7 @@ and `167` are live).
    index still ranks every family on the in-state net price (a /chart slice, not
    a fix to fold into the next run), and `first-value/06`'s spec drift.**
 
-8. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
+9. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
    LANDED as RFC 155 (`main@47cf9d62` + `6777c7c7`, 2026-09-01), so brief 0001's
    Beat 1 is ONE SLICE from complete.** A parent no longer needs an account, a
    login, or the app. The student asks the coach to share, `share_cost_report`
@@ -173,27 +188,27 @@ and `167` are live).
    production; unset, the feature stays dark, declines honestly, and warns once
    at boot.
 
-9. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
-   LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
-   every slice in the brief.** The coach now leads with the one way of living
-   the family said they plan, instead of offering three and letting them pick —
-   a $7,368/yr swing at the worked example, larger than that school's in-state
-   tuition. **The slice spec was wrong and Ian caught it at the gate:** it
-   modelled the plan as ONE global field, but living at home is possible at the
-   in-state school and impossible at the far one. Preference is global;
-   feasibility is a fact about the student–college pair, and our data can never
-   decide it, because the Scorecard prices a commuter category at essentially
-   every school. So there are two places (brief 0003 **D20**):
-   `money_profiles.living_plan` is the default,
-   `college_list_entries.living_plan` is a nullable per-college override, and
-   resolution has exactly one home — **override → default → show all three**.
-   **When it cannot show a total it now says which kind of silence it is** — our
-   unanswered residency, a published price we cannot select, or a part the
-   school does not publish. Coach prompt **v14** (migration 0072, rollback
-   `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable —
-   the brief is done.**
+10. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
+    LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
+    every slice in the brief.** The coach now leads with the one way of living
+    the family said they plan, instead of offering three and letting them pick —
+    a $7,368/yr swing at the worked example, larger than that school's in-state
+    tuition. **The slice spec was wrong and Ian caught it at the gate:** it
+    modelled the plan as ONE global field, but living at home is possible at the
+    in-state school and impossible at the far one. Preference is global;
+    feasibility is a fact about the student–college pair, and our data can never
+    decide it, because the Scorecard prices a commuter category at essentially
+    every school. So there are two places (brief 0003 **D20**):
+    `money_profiles.living_plan` is the default,
+    `college_list_entries.living_plan` is a nullable per-college override, and
+    resolution has exactly one home — **override → default → show all three**.
+    **When it cannot show a total it now says which kind of silence it is** —
+    our unanswered residency, a published price we cannot select, or a part the
+    school does not publish. Coach prompt **v14** (migration 0072, rollback
+    `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable
+    — the brief is done.**
 
-10. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
+11. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
     (RFCs 139, 144, 147, 150, 154 and 153, `search/04/similar-colleges`,
     2026-09-01); only `search/06/unattended-refresh` is left, and it is DEFERRED
     by intent.** A **`similar_colleges`** chat tool decides "similar" per call
@@ -209,7 +224,7 @@ and `167` are live).
     debt it leaves is in the Backlog: the `NewCollege` test fixture is a 5th
     copy and the shared helper is in the wrong source set, parked twice over.
 
-11. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
+12. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
     The admissions layer is user-visible: the coach can answer, with citations,
     what a school weighs in admissions, when its rounds close, and how it
     actually behaves on merit aid — and merit rides along inside cost answers.
@@ -585,6 +600,58 @@ disagrees with the pinned window is refused **before any phase commits**.
 **Rollback knob.** Run the ingest without the IC_AY file group and the canonical
 store falls back to Scorecard-only prices at the next full rebuild.
 
+### What aid actually looks like at a school (brief 0006 `shape/03`, RFC 162)
+
+**Door: none yet — this is substrate.** No screen, tool or coach answer reads
+these rows. The door opens at `shape/04/cost-answers-from-canonical`. What
+changed is that unicoach now stores AID as well as price, and stores who each
+aid number is about.
+
+unicoach pins IPEDS SFA (student financial aid, aid year 2022-23) as the third
+canonical source and fills `cohort_money_stats` from it: net price, net price by
+the five income bands, Pell share and average award, grant mix by source
+(federal, state and local, institutional), and loan share and average. A new
+table, `cohort_population_counts`, stores the headcounts that make those numbers
+mean something — how many students pay each residency rate, and how many live on
+campus, with family, or off campus.
+
+**Why it matters.** A single "average aid" number hides who it describes. Every
+row now carries its population as structure, not prose, and the rule is that the
+scope follows the DENOMINATOR: a _share_ is a share of the whole cohort, an
+_average_ is an average over the students who actually received that aid. The
+net price a public school reports is about students who received grant aid; the
+income-band figures are about Title IV-aided students; they are different
+cohorts, so they are stored as different rows rather than one being allowed to
+overwrite the other. Population counts make the residency tiers concrete: at
+College of DuPage, 1,488 of 2,099 students pay the in-district rate, so a
+statement about "the in-district price" can be weighted rather than assumed.
+Pell **average award** is a figure the Scorecard does not publish at all.
+
+**What it does not have.** SFA describes a first-time full-time cohort for most
+of its aid mix, so it is not a statement about every student at the school. It
+trails the sticker-price file by about a year. And it cannot say "the school did
+not report this": NCES imputes rather than blanking, so that status has no
+producer here — an imputed value is marked as the publisher's estimate instead,
+and is never presented as reported.
+
+**A published zero is a zero.** IPEDS marks implied zeros with a flag that RFC
+161 read as an imputation. Measured over the real files, those cells always
+carry exactly 0 and are written by NCES itself, so both surveys now read them as
+**reported**. That corrects landed behaviour: 17,357 honest zeros in one file
+would otherwise have been labelled publisher guesses.
+
+**How it degrades.** Every way a cell can fail to become a row is counted and
+named in the ingest summary — a value that will not parse, a value present under
+a not-applicable flag, a variable the fill expected but the loader never staged,
+and an institution matching neither the public nor the private variable family.
+An unrecognised imputation letter fails the run before any of it is served. The
+fill reads only the staging its own run loaded, so an ingest without the SFA
+group cannot resurrect a previous run's rows.
+
+**Rollback knob.** Run the ingest without the SFA file group (`-S`/`-f`) and the
+canonical store simply carries no `ipeds_sfa` rows at the next full rebuild;
+IC_AY and Scorecard figures are untouched.
+
 ### The served vocabularies (brief 0007 `profile/01`, RFC 165)
 
 **Door: none for a user yet — this is a server surface a client walks through.**
@@ -949,14 +1016,14 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                                 | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Where                                        |
-| --- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| P1  | Money in unicoach shape (brief 0006) | **Gates 1+2 APPROVED (2026-09-02, defaults, no amendments); WAVE 1 COMPLETE, WAVE 2 STARTED.** Canonical money layer: PriceFigure vs CohortMoneyStat, stored missingness status, authored vocabularies, IPEDS IC_AY + SFA un-deferred, policy-parameter store, staged cutover. Nine slices specced, **three landed**. **`shape/06/pell-and-loans` LANDED as RFC 159 (2026-09-03)**; **`shape/01/canonical-store` LANDED as RFC 158 (2026-09-04)**; **`shape/02/ipeds-ic-ay` LANDED as RFC 161 (2026-09-05)** — IPEDS charges fill the store ahead of the Scorecard, making the in-district tier real (269 institutions were served their in-district price under an in-state label) and splitting fees from tuition. Still no consumer: the door is **`shape/04/cost-answers-from-canonical`**, whose PREFER on shape/02 is now satisfied, so it is the slice to run next. **`shape/03/ipeds-sfa` is READY** and must renumber its migration to 0085 (RFC 161 took 0084). **Spec defect found and closed in the same day**: `CHG7/8AY` is off campus NOT with family, so no source publishes with-family food and housing; **D17 (Ian, 2026-09-05) treats living at home as $0 and states the assumption in words**, and shape/04's criteria are rewritten to match. Brief 0005 PAUSED into this brief (D11); D14 decided its search-ranking question.                                                                                              | `product/0006-money-in-unicoach-shape`       |
-| P1  | College search index (brief 0004)    | **CORE COMPLETE** — gates 1+2 approved (2026-08-27); every specced slice has landed: `search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147), `search/03b/the-index` (RFC 150), `search/05/consumer-sweep` (RFC 154) and `search/04/similar-colleges` (RFC 153, 2026-09-01). S3b was the aha — the derived index serves both search paths. S5 turned out to be an audit (RFC 150 had already repointed every consumer, so there was nothing to delete) and closed the real gap instead with the `find_college` chat tool. S4 closes the brief: `similar_colleges` answers "schools like X" with one query-time weighted distance over the index, no similarity table, on coach prompt **v13** — and it is the first and only reader of the percentile columns S3b computed. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067). **Nothing here is startable.** `search/06/unattended-refresh` stays DEFERRED — automate the quarterly ingest only if running it by hand proves annoying. The debt S4 declined moved to the Backlog: the 5th `NewCollege` fixture copy, and genericising `CollegeSearchOutcome`.                                                                                                                                                                   | `product/0004-college-search-index`          |
-| P1  | Clear money language (brief 0003)    | **COMPLETE — every slice landed.** `money/01` + `01.1` + RFC 143 + `01.2` + `02` + `03` + **`04/where-youll-live`** (RFCs 141–143, 145, 149, 151, 152; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, states the assumption lines above any side-by-side, and now leads with the one way of living the family said they plan — a global default with a per-college override, because living at home is possible at the in-state school and not at the far one (D20). When it cannot show a total it says which kind of silence it is: our unanswered residency, a price we cannot select, or a part the school does not publish. Prompt v14; v13 is the rollback. Nothing left in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `product/0003-clear-money-language`          |
-| P1  | Beat 1: brief 0001 — COMPLETE        | **BEAT 1 IS DONE. All six slices landed.** `first-value/06/invite-your-parent` **LANDED as RFC 160** (`main@9104eeb7` + `c23953e0`, 2026-09-03): the synthesis pass writes a `share_report` commitment for an eligible student (>= 2 active list entries, no live share, no opt-out, no open nudge, cap not hit) and the existing next-session opener raises it — deterministic code, not an LLM lens, inserted in the read-phase transaction so it fires even when the LLM phases no-op on freshness. **Ian amended the drafted policy at the gate**: re-nudges are allowed (14-day cooldown AND a list change since the last nudge) and "never ask me again" is permanent via the new `stop_cost_report_offers` tool, which also drops any nudge already written. New append-only `share_events` (minted/repeat/reissued/revoked/opted_out) approved at the DDL gate (D10). Migrations 0080-0082, coach prompt v18 (rollback `COACHING_SYSTEM_PROMPT_VERSION=v17`), gate 2515 tests 0 failures. The spec's "share CTA on the report surface" was resolved as written: S5 provided the CTA and token, S6 added the trigger and the tracking; no parent-page CTA was built (RFC 155 D-G forbids upgrade cues to a logged-out parent). **Next for this brief is Beat 2** — parent partner accounts, claim-the-report onboarding — which brief 0001 D9 says is specced only after Beat 1 ships. It now has. `share_events` is the substrate it reads. | `product/0001-v1-differentiator/spec.md`     |
-| P1  | Explicit profile view (brief 0007)   | **Gates 1+2 APPROVED (2026-09-04/05, defaults; D5 and D9 amended by Ian); WAVE 1 HALF DONE.** `profile/01/served-vocabulary` **LANDED as RFC 165** (`main@f837dc81` + `dfc3b539`, 2026-09-05) — `GET /api/v1/vocabularies`, a registry endpoint Ian widened from a money-profile-only route at the /ship gate; income bands and the 59 residency codes are served with spoken labels, the residency set being literally the set the write path validates. D9's REST fix landed separately as RFC 164. **`profile/02/your-details-screen` is now unblocked and is where the value appears** — the iOS screen where a family fixes their own income band and state without talking to the coach. It must render from RFC 165 and retire RFC 163's Swift copies of both lists, or D6 is broken. `profile/03/list-screen-parity` is DEFERRED-no-longer: RFC 164 is on `main`, so its DEFERRED line should come off.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `product/0007-explicit-profile-view/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)          | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `bin/state-apply`                            |
+| Pri | Work                                 | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Where                                        |
+| --- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| P1  | Money in unicoach shape (brief 0006) | **Gates 1+2 APPROVED (2026-09-02, defaults, no amendments); WAVE 1 COMPLETE, WAVE 2 STARTED.** Canonical money layer: PriceFigure vs CohortMoneyStat, stored missingness status, authored vocabularies, IPEDS IC_AY + SFA un-deferred, policy-parameter store, staged cutover. Nine slices specced, **four landed**. **`shape/06/pell-and-loans` LANDED as RFC 159 (2026-09-03)**; **`shape/01/canonical-store` LANDED as RFC 158 (2026-09-04)**; **`shape/02/ipeds-ic-ay` LANDED as RFC 161 (2026-09-05)** — IPEDS charges fill the store ahead of the Scorecard, making the in-district tier real (269 institutions were served their in-district price under an in-state label) and splitting fees from tuition; **`shape/03/ipeds-sfa` LANDED as RFC 162 (2026-09-05, migration 0085)** — IPEDS SFA fills the store with AID (net price by income band, Pell share and average, grant mix by source, loan share and average) plus `cohort_population_counts`, the residency and living-arrangement headcounts behind every basis; aid scope now follows the denominator. Still no consumer: the door is **`shape/04/cost-answers-from-canonical`**, whose PREFER on shape/02 is now satisfied, so it is the slice to run next; `shape/05/search-on-your-price` and `shape/07/need-and-forms` are also READY. **Spec defects found and closed the same day**: `CHG7/8AY` is off campus NOT with family, so no source publishes with-family food and housing — **D17 (Ian, 2026-09-05) treats living at home as $0 and states the assumption in words**, and shape/04's criteria are rewritten to match; and shape/03's spec text carries a public-only SFA variable list (~65% of colleges would be dropped) plus a `Z`-flag mapping that is wrong for both IPEDS surveys — **RFC 162 corrects landed RFC 161 on `Z`**, and both are open items for /chart. Brief 0005 PAUSED into this brief (D11); D14 decided its search-ranking question. | `product/0006-money-in-unicoach-shape`       |
+| P1  | College search index (brief 0004)    | **CORE COMPLETE** — gates 1+2 approved (2026-08-27); every specced slice has landed: `search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147), `search/03b/the-index` (RFC 150), `search/05/consumer-sweep` (RFC 154) and `search/04/similar-colleges` (RFC 153, 2026-09-01). S3b was the aha — the derived index serves both search paths. S5 turned out to be an audit (RFC 150 had already repointed every consumer, so there was nothing to delete) and closed the real gap instead with the `find_college` chat tool. S4 closes the brief: `similar_colleges` answers "schools like X" with one query-time weighted distance over the index, no similarity table, on coach prompt **v13** — and it is the first and only reader of the percentile columns S3b computed. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067). **Nothing here is startable.** `search/06/unattended-refresh` stays DEFERRED — automate the quarterly ingest only if running it by hand proves annoying. The debt S4 declined moved to the Backlog: the 5th `NewCollege` fixture copy, and genericising `CollegeSearchOutcome`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `product/0004-college-search-index`          |
+| P1  | Clear money language (brief 0003)    | **COMPLETE — every slice landed.** `money/01` + `01.1` + RFC 143 + `01.2` + `02` + `03` + **`04/where-youll-live`** (RFCs 141–143, 145, 149, 151, 152; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, states the assumption lines above any side-by-side, and now leads with the one way of living the family said they plan — a global default with a per-college override, because living at home is possible at the in-state school and not at the far one (D20). When it cannot show a total it says which kind of silence it is: our unanswered residency, a price we cannot select, or a part the school does not publish. Prompt v14; v13 is the rollback. Nothing left in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `product/0003-clear-money-language`          |
+| P1  | Beat 1: brief 0001 — COMPLETE        | **BEAT 1 IS DONE. All six slices landed.** `first-value/06/invite-your-parent` **LANDED as RFC 160** (`main@9104eeb7` + `c23953e0`, 2026-09-03): the synthesis pass writes a `share_report` commitment for an eligible student (>= 2 active list entries, no live share, no opt-out, no open nudge, cap not hit) and the existing next-session opener raises it — deterministic code, not an LLM lens, inserted in the read-phase transaction so it fires even when the LLM phases no-op on freshness. **Ian amended the drafted policy at the gate**: re-nudges are allowed (14-day cooldown AND a list change since the last nudge) and "never ask me again" is permanent via the new `stop_cost_report_offers` tool, which also drops any nudge already written. New append-only `share_events` (minted/repeat/reissued/revoked/opted_out) approved at the DDL gate (D10). Migrations 0080-0082, coach prompt v18 (rollback `COACHING_SYSTEM_PROMPT_VERSION=v17`), gate 2515 tests 0 failures. The spec's "share CTA on the report surface" was resolved as written: S5 provided the CTA and token, S6 added the trigger and the tracking; no parent-page CTA was built (RFC 155 D-G forbids upgrade cues to a logged-out parent). **Next for this brief is Beat 2** — parent partner accounts, claim-the-report onboarding — which brief 0001 D9 says is specced only after Beat 1 ships. It now has. `share_events` is the substrate it reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `product/0001-v1-differentiator/spec.md`     |
+| P1  | Explicit profile view (brief 0007)   | **Gates 1+2 APPROVED (2026-09-04/05, defaults; D5 and D9 amended by Ian); WAVE 1 HALF DONE.** `profile/01/served-vocabulary` **LANDED as RFC 165** (`main@f837dc81` + `dfc3b539`, 2026-09-05) — `GET /api/v1/vocabularies`, a registry endpoint Ian widened from a money-profile-only route at the /ship gate; income bands and the 59 residency codes are served with spoken labels, the residency set being literally the set the write path validates. D9's REST fix landed separately as RFC 164. **`profile/02/your-details-screen` is now unblocked and is where the value appears** — the iOS screen where a family fixes their own income band and state without talking to the coach. It must render from RFC 165 and retire RFC 163's Swift copies of both lists, or D6 is broken. `profile/03/list-screen-parity` is DEFERRED-no-longer: RFC 164 is on `main`, so its DEFERRED line should come off.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `product/0007-explicit-profile-view/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)          | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `bin/state-apply`                            |
 
 ## Sequencing — ask the board, do not read a list
 
@@ -1002,6 +1069,22 @@ Valuable, unscheduled, unprioritised — the parking lot. Append freely (one
 bullet, enough context to pick it up cold); /chart promotes an item into the
 work table by giving it a priority, or into a brief when it deserves gates.
 Nothing here is committed work.
+
+**Three small follow-ups from RFC 162 (`shape/03/ipeds-sfa`, 2026-09-05):**
+
+- **RFC 161's prose still says `Z` is an imputation.** The code now reads it as
+  a reported zero for both IPEDS surveys, and RFC 162 records the correction —
+  per `rfc/README.md` the code wins, so this is documentation drift, not a bug.
+  A future 0006 slice touching flags should not re-derive the old mapping.
+- **`cohort_money_stats_college_idx` (RFC 158) has no reader**, exactly like the
+  index RFC 162 dropped on its twin table: the DAO does delete-all, batch insert
+  and a full aggregate, and the natural key already leads with `college_id`.
+  Worth dropping when a migration next touches that table.
+- **`db/seed/ipeds/PROVENANCE.json` is a composite of two real fetches** 19
+  minutes apart (`FETCH-NOTES.md` says so). One operator re-fetch (~13 MB) would
+  make it a single run. Also, the SFA `prefer_revised` policy is proven only on
+  a synthesised archive, because the real SFA2223 zip ships no `_rv` member yet
+  — the first year it does is the first live exercise.
 
 **Two open follow-ups from RFC 157 (2026-09-02), at the top because they are the
 newest and the first is a product decision, not a bug:**
