@@ -4,6 +4,11 @@
 # The ONLY path by which a ship run reaches the base branch. It refuses a tip
 # whose tree was never recorded by bin/pre-commit (ship-verified assert), which
 # is what makes the throwaway --no-verify checkpoints safe.
+#
+# It is also the backstop for the land lock (RFC 167): it refuses a lock held by
+# another run, takes a free one itself, and releases one this run holds. Phase 6
+# brackets itself with ship-lock to SAVE a gate run; ship-land does it again so
+# that not doing it can never LOSE one.
 set -euo pipefail
 
 log-info() { echo "$@" >&2; }
@@ -18,6 +23,11 @@ ship-land -s <run-scratch> [-d doc-glob]...
 Asserts HEAD is hook-verified (modulo doc-only commits), fast-forwards the base
 branch onto the run branch from the original checkout, removes the worktree, and
 deletes the merged branch. Refuses on uncommitted changes or a non-fast-forward.
+
+Refuses a land lock (see ship-lock) held by another run, acquires a free one for
+the fast-forward, and releases a lock it holds — including on any failure AFTER
+it has taken or confirmed it. A fatal before that point (a dirty worktree) leaves
+a lock phase 6 took still held, which is phase 6's to release.
 EOF
   exit "${1:-0}"
 }
@@ -44,12 +54,55 @@ cd "$CODEBASE_ROOT"
 git diff --quiet && git diff --cached --quiet ||
   fatal "worktree [$CODEBASE_ROOT] has uncommitted changes"
 
-# 2. The gate. Nothing lands that the hook never saw.
+# 2. The land lock (RFC 167). BEFORE the assert, so a run that has no business
+# landing is stopped before any git write. (Not "before the expensive part" —
+# the expensive part is the hook, and phase 6 already paid it.)
+#
+# A foreign holder is a REFUSAL, not a queue: another run is inside its gate on
+# a base it is about to move, so this run's hook result is already invalid and
+# waiting 30m for the lock would only delay that news. A free lock is taken
+# here, with a short 60s timeout — the gate is already spent by this point, so a
+# long wait buys nothing — which is what makes correctness independent of phase
+# 6 remembering to bracket itself. A lock this run ALREADY holds is the normal
+# case: phase 6 acquired it before ship-rebase.
+#
+# ship-lock is invoked from SCRIPT_DIR — the ORIGINAL checkout, which outlives
+# the `git worktree remove` below — never from CODEBASE_ROOT.
+LOCK_HELD=0
+release_lock() {
+  # Only ever a lock whose op is this RUN_ID: ship-lock release refuses a
+  # foreign holder, and this must not become the thing that breaks one.
+  [ "$LOCK_HELD" -eq 1 ] || return 0
+  LOCK_HELD=0
+  "$SCRIPT_DIR/ship-lock" -s "$RUN_SCRATCH" release || true
+}
+
+LOCK_STATUS="$("$SCRIPT_DIR/ship-lock" -s "$RUN_SCRATCH" status)" ||
+  fatal "could not read the land lock — ship-lock status failed"
+LOCK_HOLDER="$(printf '%s\n' "$LOCK_STATUS" | sed -n 's/^lock held by \[\([^]]*\)\].*/\1/p')"
+if [ -n "$LOCK_HOLDER" ] && [ "$LOCK_HOLDER" != "$RUN_ID" ]; then
+  fatal "the land lock is held by [$LOCK_HOLDER] — that run is landing on a base this one was not tested against; wait for it, then rebase and re-run the gate"
+fi
+# Unconditionally, even when this run already holds it: ship-lock's self-held
+# branch is idempotent and REFRESHES the hold to a full 15m. Phase 6 is
+# acquire -> rebase -> squash -> format -> hook -> commit -> here, driven by an
+# agent, so the elapsed time includes turnaround and not only the measured 440s
+# gate — arriving with seconds left on the hold is reachable, and a hold that
+# lapses during the assert and the fast-forward lets another run in. Acquiring
+# here also removes the status-then-acquire window above.
+"$SCRIPT_DIR/ship-lock" -s "$RUN_SCRATCH" -t 60s acquire
+LOCK_HELD=1
+# EXIT, so every fatal after this point drops the lock rather than parking it
+# for 15m. The happy path releases explicitly at the fast-forward and clears
+# LOCK_HELD, so this is a no-op there.
+trap release_lock EXIT
+
+# 3. The gate. Nothing lands that the hook never saw.
 "$SCRIPT_DIR/ship-verified" assert "${DOC_ARGS[@]+"${DOC_ARGS[@]}"}"
 
 TIP="$(git rev-parse HEAD)"
 
-# 3. Fast-forward the base branch from the original checkout.
+# 4. Fast-forward the base branch from the original checkout.
 cd "$ORIGINAL_CHECKOUT"
 git merge-base --is-ancestor "$BASE_BRANCH" "$BRANCH" ||
   fatal "[$BASE_BRANCH] advanced past this run's base — rebase [$BRANCH] and retry"
@@ -63,13 +116,19 @@ git merge --ff-only "$BRANCH"
 landed="$(git rev-parse "$BASE_BRANCH")"
 [ "$landed" = "$TIP" ] || fatal "post-land verify failed: [$BASE_BRANCH] is $landed, expected $TIP"
 
-# 4. Archive the run scratch out of the worktree before it is removed.
+# The critical section ends at the fast-forward: everything below is this run's
+# own teardown and moves nothing another run reads. Released HERE, not in the
+# trap, because the run scratch ship-lock reads lives INSIDE the worktree that
+# step 6 removes.
+release_lock
+
+# 5. Archive the run scratch out of the worktree before it is removed.
 archive="$ORIGINAL_CHECKOUT/.scratch/ship-archive/$RUN_ID"
 mkdir -p "$(dirname "$archive")"
 rm -rf "$archive"
 cp -R "$RUN_SCRATCH" "$archive"
 
-# 5. Tear down.
+# 6. Tear down.
 #
 # The worktree's own simulator device first, while the worktree still exists to
 # name it. Per-checkout devices (RFC 126) are machine-global CoreSimulator

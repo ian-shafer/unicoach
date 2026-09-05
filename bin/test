@@ -26,10 +26,10 @@ gate. (Kotlin lint/format is not here — it lives in bin/format, the repo's sin
 ktlint avenue; the hook runs `bin/format -c` alongside this.)
 
 `check` additionally builds the rest-server/queue-worker installDist artifacts
-and runs bin/shell-tests (q-scripts-tests, db-scripts-tests, scripts-tests) —
-~118s cold — before the database reset. Those harnesses stop THIS checkout's
-rest-server and queue-worker daemons. Bare `bin/test` runs none of them and says
-so.
+and runs bin/shell-tests (ship-scripts-tests, q-scripts-tests, db-scripts-tests,
+scripts-tests) — ~118s cold — before the database reset. Those harnesses stop
+THIS checkout's rest-server and queue-worker daemons. Bare `bin/test` runs none
+of them and says so.
 
 Modules:
   common web-common db net auth queue queue-worker cron rest-server service email chat appstore admin-web public-web college
@@ -135,7 +135,7 @@ if [ "$TASK" = "check" ]; then
   "$PROJECT_ROOT/gradlew" :rest-server:installDist :queue-worker:installDist
   "$PROJECT_ROOT/bin/shell-tests"
 else
-  log-info "Skipping shell script-test harnesses (bin/shell-tests: q-scripts-tests, db-scripts-tests, scripts-tests) — they run under \`bin/test check\`, which is what the pre-commit hook runs."
+  log-info "Skipping shell script-test harnesses (bin/shell-tests: ship-scripts-tests, q-scripts-tests, db-scripts-tests, scripts-tests) — they run under \`bin/test check\`, which is what the pre-commit hook runs."
 fi
 
 "$PROJECT_ROOT/bin/db-reset"

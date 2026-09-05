@@ -52,6 +52,7 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-verify-scope -s <rs> -f <sha> [-d deny]... [allow]...
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
     scripts/ship-verified record|check|assert       # the CI stand-in
+    scripts/ship-lock    -s <rs> acquire|release|status  # the land gate
     scripts/ship-land    -s <rs>                    # assert, ff-merge, teardown
 
 Run every script with `-h` for its contract. **Read the run state from disk
@@ -116,6 +117,13 @@ fix; the same conflict caught at land costs the whole hook run again.
 
 `ship-status` shows the drift (`BASE main@455f74d — 2 behind, REBASE NEEDED`),
 so a resumed session sees it before it does anything else.
+
+Since RFC 167 a land may also **wait**. Phase 6 is bracketed by one repo-wide
+lock (`scripts/ship-lock`), so while another run is inside its gate this run's
+`acquire` blocks rather than racing it — that wait replaces a duplicate hook
+run, it does not add work. `ship-status` prints the current holder and its
+remaining time, and `ship-land` refuses outright when the holder is another run:
+its hook result was validated against a base that run is about to move.
 
 A genuine conflict is a **design signal**, not a tooling failure: two runs
 disagree about the same code. Read it, decide which shape is right, and say so
@@ -210,15 +218,40 @@ screenshots as artifacts (see
 `ship-checkpoint -s <rs> before-land`. Write the report (phase 7) **first**:
 `ship-land` deletes the worktree.
 
+    scripts/ship-lock   -s <rs> acquire   # ← enter the critical section
     scripts/ship-rebase -s <rs>          # no-op if nothing moved since verify
     scripts/ship-squash -s <rs>
     nix develop -c bin/format
     nix develop -c git commit            # code — through the FULL hook. The gate.
     nix develop -c git commit --no-verify  # RFC markdown only, lane A
-    scripts/ship-land -s <rs>
+    scripts/ship-land -s <rs>            # ff-merge, then releases  ← exit
+
+The lock is repo-wide and serialises the whole sequence, not the `git commit`
+alone: the hook's result is only valid for the base it started on, so the rebase
+has to be inside the lock too. `ship-lock acquire` waits up to 30m and holds for
+at most 15m; `ship-land` releases it at the fast-forward. Phase 5's
+`nix develop -c bin/test` stays **outside** it — the hook re-runs the tests, and
+holding the lock through review would serialise the part of a run that has no
+reason to be serial.
 
 If the hook fails on tests, **stop and report**. That is the one place after
-approval where this skill wakes Ian.
+approval where this skill wakes Ian — and it happens inside the critical
+section, so: **any exit from phase 6 that is not a land releases the lock
+first.** Run `scripts/ship-lock -s <rs> release`, then report. A run that stops
+to ask a human while holding the lock blocks every other run for up to 15
+minutes, which is the cost the lock exists to remove. The fix loop then
+re-enters this block **at the top** — `ship-lock acquire`, then `ship-rebase` —
+never at the `git commit`: `main` may have moved while the lock was down, and
+gating against a stale base is the wasted hook run the lock exists to remove.
+
+A rebase conflict here is inside the lock too. Resolve it now, or release the
+lock before you stop to ask.
+
+**If `acquire` itself times out**, nothing has been spent yet. Run
+`scripts/ship-lock status` — it needs no `-s` and works from anywhere — to see
+the holder. A live run: wait and retry. A lock left behind by a killed session
+expires on its own within 15m, or `scripts/ship-lock -s <rs> release -f` breaks
+it now, naming what it displaced.
 
 ### 7. report
 

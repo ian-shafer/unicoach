@@ -110,13 +110,14 @@ but the test DB.
 `bin/test check` — the form the pre-commit hook runs, i.e. the gate on what
 reaches `main` — additionally builds the `rest-server`/`queue-worker`
 `installDist` artifacts and runs `bin/shell-tests`, the aggregator over
-`bin/q-scripts-tests`, `bin/db-scripts-tests`, and `bin/scripts-tests` (RFC
-115). That is ~254 shell assertions and roughly two extra minutes cold, most of
-it `scripts-tests`. Bare `bin/test` runs none of them and prints one line saying
-so, so the tight loop stays as fast as it was; the cost is that a `bin/` or
-`infra/` edit can look green locally and fail at the hook. Run
-`nix develop -c
-bin/shell-tests` directly while iterating on those.
+`bin/ship-scripts-tests`, `bin/q-scripts-tests`, `bin/db-scripts-tests`, and
+`bin/scripts-tests` (RFC 115). That is ~280 shell assertions and roughly two
+extra minutes cold, most of it `scripts-tests`. Bare `bin/test` runs none of
+them and prints one line saying so, so the tight loop stays as fast as it was;
+the cost is that a `bin/` or `infra/` edit can look green locally and fail at
+the hook. Run `nix develop -c
+bin/shell-tests` directly while iterating on
+those.
 
 Be aware that `scripts-tests` **stops this checkout's `rest-server` and
 `queue-worker` daemons** on exit. Daemon identity is per-checkout (`var/run/`

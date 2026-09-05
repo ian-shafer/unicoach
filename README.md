@@ -170,6 +170,7 @@ bin/test rest-server --tests "ed.unicoach.rest.AuthRoutingTest" # filter within 
 bin/scripts-tests          # daemon lifecycle tests (daemon-up/down/bounce/check, file-lock, SIGKILL escalation)
 bin/db-scripts-tests       # database migration and schema scripts
 bin/db-users-tests         # database role and privilege assertions
+bin/ship-scripts-tests     # the /ship land lock
 bin/q-scripts-tests        # queue operation scripts
 ```
 

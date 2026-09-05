@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+# ship-lock — the repo-wide land gate (RFC 167).
+#
+# WHY THIS EXISTS. Parallel /ship runs are the normal case, and two of them can
+# both fork at main@X, both pass `bin/test`, and then both spend the full
+# `bin/pre-commit` gate — the second only to be refused by ship-land's
+# fast-forward check and made to run the whole gate again. The collision is not
+# two `git commit` calls at one instant; it is `main` MOVING while a run is
+# inside its gate. So the critical section is the whole of phase 6 — rebase,
+# squash, format, commit (the hook), fast-forward — and this script brackets it.
+#
+# ONE LOCK PER REPO, DERIVED FROM GIT. Every run works in its own worktree and
+# `var/run/` is per-checkout, so `$PROJECT_ROOT/var/run/ship-land.lock` would be
+# a DIFFERENT lock per run and would gate nothing. `--git-common-dir` resolves
+# to the main checkout's `.git` from any worktree, so its parent is the main
+# checkout and every run computes the same path without being told it.
+#
+# THE OPERATION NAME IS THE RUN_ID, AND THAT IS LOAD-BEARING. `bin/file-lock`
+# exit 3 means "already held by an operation matching -o", which bin/daemon-up
+# treats as success — correct there, because a concurrent daemon-up is doing
+# your work for you. A concurrent LAND is not. With a fixed `-o ship-land` the
+# second lander would get 3 and sail straight through the lock into exactly the
+# collision this script exists to prevent. With `-o "$RUN_ID"` no two runs ever
+# match, a second lander gets 1 and waits, and 0 is the ONLY success here.
+set -euo pipefail
+
+log-info() { echo "$@" >&2; }
+log-warning() { echo "[WARNING] $*" >&2; }
+fatal() {
+  local status_code=1
+  local OPTIND OPTARG opt
+  while getopts ":s:" opt; do
+    case "$opt" in
+      s) status_code="$OPTARG" ;;
+      *) echo "[FATAL] bad option to fatal: -$OPTARG" >&2; exit 1 ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  echo "[FATAL] $*" >&2
+  exit "$status_code"
+}
+
+# The reserved usage-error exit codes, copied from bin/functions WITH THE SAME
+# VALUES rather than sourced. The ship-* scripts deliberately source nothing
+# from bin/: bin/common layers the dotenvs and derives a per-checkout port block
+# for a checkout these scripts merely point AT (they run from the original
+# checkout and operate on another worktree), and sourcing it would make every
+# ship script fail on an env problem it has no stake in. The values must not
+# drift — a caller that invoked ship-lock wrongly is reported exactly as any
+# bin/ script would report it.
+EXIT_UNKNOWN_OPTION=10
+EXIT_OPTION_REQUIRES_VALUE=11
+EXIT_UNEXPECTED_ARG=20
+EXIT_MISSING_REQUIRED_ARG=21
+EXIT_INVALID_ARG_VALUE=22
+
+# How long the lock is HELD once taken, and how long `acquire` WAITS for it.
+# From a measurement: `nix develop -c bin/test check` in a fresh worktree took
+# 440s (7m20s) on 2026-09-06. The hold is double that, so a live gate is never
+# broken under it; the wait is two full gates, so a run can queue behind two
+# others instead of timing out into the collision it was avoiding. file-lock's
+# expiry is time-based, not liveness-based — an early expiry is a DEGRADATION,
+# not a corruption, because ship-land refuses a foreign holder and the loser
+# simply re-runs its gate. Revisit both numbers if the gate crosses ~7m.
+MAX_HOLD="15m"
+DEFAULT_TIMEOUT="30m"
+# wait-for's default period is 1s, which over a 30m wait is 1800 attempts and
+# 1800 progress dots. 15s is the right granularity for a wait measured in
+# minutes. bin/file-lock's own -t path is left alone: it is tuned for
+# daemon-up's 16-second case.
+POLL_PERIOD="15s"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# .prime/agent/skills/ship/scripts -> the checkout that owns this skill. Its
+# bin/ is what supplies file-lock and wait-for. This checkout, NOT the run's
+# worktree: ship-land removes that worktree as its last act, and a trap firing
+# afterwards must still be able to run these.
+OWN_CHECKOUT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
+FILE_LOCK="$OWN_CHECKOUT/bin/file-lock"
+WAIT_FOR="$OWN_CHECKOUT/bin/wait-for"
+
+help() {
+  cat << 'EOF'
+ship-lock [-s <run-scratch>] [-t <timeout>] [-f] acquire|release|status
+ship-lock acquire|release|status [-s <run-scratch>] [-t <timeout>] [-f]
+
+The repo-wide /ship land gate. One lock for every worktree of this repo, at
+<main-checkout>/var/run/ship-land.lock, held under this run's RUN_ID.
+
+  acquire   Wait for the lock, then hold it for at most 15m. Silent on stdout.
+            Idempotent: a lock this run already holds is refreshed, not refused.
+  release   Drop a lock this run holds. Silent on stdout.
+  status    Print the holder and its remaining time to stdout. Exits 0 whether
+            or not the lock is held; a usage error still uses the band below.
+
+  -s   run-scratch directory; its state file supplies RUN_ID and the repo.
+       Required by acquire and release. Optional for status.
+  -t   how long acquire waits (default 30m). Ignored by release and status.
+  -f   release: break a lock held by ANOTHER run, warning about it. For a
+       human unwedging the repo, never for a script.
+  -h   this help
+
+Exit codes:
+  0    acquired / released / status printed
+  1    not acquired (timed out, or held by another run), or a refused release
+  10, 11, 20, 21, 22   usage errors (bin/functions' reserved band)
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH="" TIMEOUT="$DEFAULT_TIMEOUT" FORCE=0
+
+# getopts is the arbiter of the grammar, and it is run TWICE: once before the
+# subcommand and once after it. getopts stops at the first non-option, so a
+# single pass would make `ship-lock acquire -s <rs>` — the order RFC 167 and a
+# human both write — a surplus-positional error. Two passes accept either order
+# while the option set, the value checks and the reserved exit codes stay in one
+# place. OPTIND must be reset between them; it is a global.
+parse_options() {
+  local opt
+  while getopts ":s:t:fh" opt; do
+    case "$opt" in
+      s) RUN_SCRATCH="$OPTARG" ;;
+      t) TIMEOUT="$OPTARG" ;;
+      f) FORCE=1 ;;
+      h) help 0 ;;
+      \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+      :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+}
+
+OPTIND=1
+parse_options "$@"
+shift $((OPTIND - 1))
+
+[ "$#" -ge 1 ] || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a subcommand is required: acquire|release|status"
+COMMAND="$1"
+shift
+
+OPTIND=1
+parse_options "$@"
+shift $((OPTIND - 1))
+[ "$#" -eq 0 ] || fatal -s "$EXIT_UNEXPECTED_ARG" "ship-lock takes one subcommand: surplus arguments [$*]"
+case "$COMMAND" in
+  acquire | release | status) ;;
+  *) fatal -s "$EXIT_INVALID_ARG_VALUE" "unknown subcommand [$COMMAND]: expected acquire|release|status" ;;
+esac
+
+# The run, when one was named. status without -s answers for this checkout's
+# repo, which is what a human and ship-status ask for.
+RUN_ID=""
+ANCHOR="$SCRIPT_DIR"
+if [ -n "$RUN_SCRATCH" ]; then
+  [ -f "$RUN_SCRATCH/state" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "no state file at [$RUN_SCRATCH/state]"
+  # Sourced AFTER the options are parsed, as ship-land and ship-status do — so
+  # a state key named TIMEOUT, FORCE, MAX_HOLD or POLL_PERIOD would silently
+  # outrank this script's own. Demonstrated, not theoretical: `MAX_HOLD=1s` in a
+  # state file yields a one-second hold, and `FORCE=1` would turn every release
+  # into a force-release with no -f on the command line. None of today's keys
+  # collides, and the state file is exactly the input a resumed or hand-edited
+  # run touches, so the four names this script owns are restored after the
+  # source rather than left to luck.
+  _timeout="$TIMEOUT" _force="$FORCE" _max_hold="$MAX_HOLD" _poll="$POLL_PERIOD"
+  # shellcheck disable=SC1090
+  . "$RUN_SCRATCH/state"
+  TIMEOUT="$_timeout" FORCE="$_force" MAX_HOLD="$_max_hold" POLL_PERIOD="$_poll"
+  [ -n "${RUN_ID:-}" ] || fatal "state at [$RUN_SCRATCH/state] has no RUN_ID"
+  # The run's own worktree first, its original checkout second: both are
+  # worktrees of the same repo and git answers identically for either, but the
+  # worktree is gone once ship-land has removed it.
+  if [ -n "${CODEBASE_ROOT:-}" ] && [ -d "$CODEBASE_ROOT" ]; then
+    ANCHOR="$CODEBASE_ROOT"
+  elif [ -n "${ORIGINAL_CHECKOUT:-}" ] && [ -d "$ORIGINAL_CHECKOUT" ]; then
+    ANCHOR="$ORIGINAL_CHECKOUT"
+  fi
+elif [ "$COMMAND" != "status" ]; then
+  # NOT "-s <run-scratch> is required…": fatal parses its own options, so a
+  # message beginning with -s is eaten as one.
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a run-scratch (-s) is required by [$COMMAND]"
+fi
+
+# `git -C <dir>` is NOT authoritative while GIT_DIR is set: the environment wins,
+# and -C is silently ignored. Git hooks export GIT_DIR (and GIT_INDEX_FILE), so
+# any ship-lock reached from inside bin/pre-commit — which is exactly where
+# bin/ship-scripts-tests runs — resolves to the HOOK's repository rather than
+# the one it was pointed at. The harness caught this the hard way: it escaped
+# its throwaway `git init` fixture and took the real
+# /Users/ian/Work/unicoach/var/run/ship-land.lock. Strip the three variables so
+# the argument is the answer.
+common_dir="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+  git -C "$ANCHOR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+  fatal "not inside a git repository [$ANCHOR]"
+LOCK_DIR="$(dirname "$common_dir")/var/run/ship-land.lock"
+
+# The durations are written in the bin/ duration grammar ("15m") because that is
+# what file-lock and wait-for take; the refresh and the poll clamp below need
+# them in seconds. Same grammar as bin/functions' parse-duration-to-seconds,
+# kept local for the reason the exit codes are (see above).
+# Same grammar as bin/functions' parse-duration-to-seconds. Split in two because
+# `fatal` inside `$(duration_seconds …)` would kill only the command
+# substitution: the exit status the caller sees would be the subshell's, and the
+# reserved usage code would be lost on the way out. So the check runs in THIS
+# shell, and the conversion is what gets substituted.
+validate_duration() {
+  [[ "$1" =~ ^[0-9]+[smhd]?$ ]] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "invalid duration [$1]: expected a number optionally followed by s, m, h or d"
+}
+
+duration_seconds() {
+  local input="$1" seconds
+  seconds="${input%%[a-zA-Z]*}"
+  case "$input" in
+    *m*) echo $((seconds * 60)) ;;
+    *h*) echo $((seconds * 3600)) ;;
+    *d*) echo $((seconds * 86400)) ;;
+    *) echo "$seconds" ;;
+  esac
+}
+
+# The current holder, or the empty string when the lock is free or expired. An
+# expired lock is reported as free because that is what file-lock will do with
+# it: break it and take it.
+holder_of() {
+  [ -d "$LOCK_DIR" ] || return 0
+  local op expires now
+  op="$(cat "$LOCK_DIR/op" 2>/dev/null || true)"
+  expires="$(cat "$LOCK_DIR/expires-at" 2>/dev/null || echo 0)"
+  now="$(date +%s)"
+  case "$expires" in
+    '' | *[!0-9]*) expires=0 ;;
+  esac
+  [ "$now" -lt "$expires" ] || return 0
+  printf '%s' "$op"
+}
+
+remaining_of() {
+  local expires now
+  expires="$(cat "$LOCK_DIR/expires-at" 2>/dev/null || echo 0)"
+  case "$expires" in
+    '' | *[!0-9]*) expires=0 ;;
+  esac
+  now="$(date +%s)"
+  echo $((expires - now))
+}
+
+case "$COMMAND" in
+  acquire)
+    # A lock THIS RUN already holds is a success, and it is refreshed rather
+    # than re-taken. A compacted session is told to re-read PHASE from disk and
+    # re-enter it, so a resumed run lands squarely back on this line — failing
+    # there would break the skill's own recovery path, and it would fail while
+    # holding the lock it was refusing to confirm.
+    #
+    # This is NOT the exit-3 trap, and the difference is the op name. `-o` is
+    # the RUN_ID, so "matching op" means "me", and one run has one orchestrator.
+    # It is a fixed `-o ship-land` that makes 3 mean "somebody else", and that
+    # is the reading this script never performs.
+    #
+    # The refresh is the load-bearing half: a resumed run may find 40s left on a
+    # 15m hold, and a silent success there would hand it a lock about to be
+    # broken under its own gate.
+    if [ "$(holder_of)" = "$RUN_ID" ]; then
+      echo "$(($(date +%s) + $(duration_seconds "$MAX_HOLD")))" > "$LOCK_DIR/expires-at"
+      log-info "Land lock already held by [$RUN_ID]; refreshed to $MAX_HOLD"
+      exit 0
+    fi
+    # Clamp the poll period to the wait. wait-for sleeps a FULL period before
+    # its second attempt, so `-t 1s` against a 15s period costs 15s of wall
+    # clock to report a 1-second timeout — a surprise for a caller, and 15s of
+    # pure sleep in the pre-commit gate, where the harness asks for exactly
+    # that. A wait shorter than one poll is simply a single attempt.
+    validate_duration "$TIMEOUT"
+    period="$POLL_PERIOD"
+    [ "$(duration_seconds "$TIMEOUT")" -ge "$(duration_seconds "$POLL_PERIOD")" ] ||
+      period="$TIMEOUT"
+    status=0
+    "$WAIT_FOR" -p "$period" "$TIMEOUT" \
+      "$FILE_LOCK" -o "$RUN_ID" "$LOCK_DIR" "$MAX_HOLD" || status=$?
+    if [ "$status" -eq 3 ]; then
+      # Unreachable in practice — the self-held case above answers first — but
+      # never mapped to success: 3 is "the holder matches -o", and this script
+      # decides what that means rather than inheriting daemon-up's reading.
+      fatal "internal error: file-lock reports [$RUN_ID] already holds [$LOCK_DIR]"
+    fi
+    if [ "$status" -ne 0 ]; then
+      fatal "could not acquire [$LOCK_DIR] within [$TIMEOUT] (held by [$(holder_of)])"
+    fi
+    # file-lock's stale break — `mv` the expired lock aside, then `mkdir` — is
+    # NOT atomic, so two runs whose expiry reads both predate the other's break
+    # can BOTH exit 0. Measured: 8 racers on an expired lock produced two
+    # winners in 4 of 10 trials, while the same race on a FREE lock produced
+    # exactly one winner every time. daemon-up never noticed because a matching
+    # op is success there; this script's whole purpose is that it is not.
+    #
+    # RFC 167 also makes the expired state ROUTINE rather than exceptional: a
+    # queue of waiters polls every 15s, so several converge on the instant a
+    # 15m hold lapses. Confirming the holder after the fact costs one read and
+    # can only fail SAFE — a spurious refusal sends the run back round, where a
+    # missed one silently puts two runs inside the gate.
+    if [ "$(cat "$LOCK_DIR/op" 2>/dev/null || true)" != "$RUN_ID" ]; then
+      fatal "lost a race breaking the expired lock at [$LOCK_DIR] — retry"
+    fi
+    log-info "Acquired the land lock for [$RUN_ID] (held at most $MAX_HOLD)"
+    ;;
+
+  release)
+    current="$(holder_of)"
+    if [ -z "$current" ]; then
+      # Free, or expired. An expired directory is still ON DISK, and the next
+      # acquire has file-lock rename it to <lock>.stale.$$, which nothing ever
+      # reaps — var/run collects those. Releasing is exactly the moment we know
+      # nobody is inside it, so take it away rather than leave the litter.
+      rm -rf "$LOCK_DIR"
+      log-info "Land lock is not held; nothing to release"
+      exit 0
+    fi
+    if [ "$current" != "$RUN_ID" ]; then
+      if [ "$FORCE" -ne 1 ]; then
+        fatal "land lock is held by [$current], not [$RUN_ID] — refusing to release it (use -f to break it by hand)"
+      fi
+      log-warning "breaking the land lock held by [$current] on behalf of [$RUN_ID]"
+    fi
+    # Re-read the holder immediately before removing it. Between the read above
+    # and this line our own hold can lapse and another run can legitimately
+    # break-and-take, and `rm -rf` would then delete a LIVE foreign lock. One
+    # syscall narrows that window to about nothing; mkdir locks without a
+    # fencing token cannot close it, so "never releases another run's lock" is
+    # best-effort — and its worst case is still a duplicate gate, not a bad
+    # land. -f is the deliberate exception and skips this.
+    if [ "$FORCE" -ne 1 ] && [ "$(cat "$LOCK_DIR/op" 2>/dev/null || true)" != "$RUN_ID" ]; then
+      log-warning "the land lock changed hands while releasing it; leaving it alone"
+      exit 0
+    fi
+    rm -rf "$LOCK_DIR"
+    # Every break leaves file-lock's <lock>.stale.<pid> behind and nothing ever
+    # reaps it — var/run in this repo already carries one from daemon-up.
+    rm -rf "$LOCK_DIR".stale.*
+    log-info "Released the land lock for [$RUN_ID]"
+    ;;
+
+  status)
+    # STDOUT, and a STABLE first line: ship-land parses the holder out of it,
+    # and ship-status prints it verbatim. Held or free, this exits 0 — it
+    # reports, it does not judge. A usage error or a non-repo anchor still
+    # fails, and ship-land relies on that to tell "free" from "unreadable".
+    current="$(holder_of)"
+    if [ -z "$current" ]; then
+      echo "lock free [$LOCK_DIR]"
+    else
+      echo "lock held by [$current] for [$(remaining_of)]s more [$LOCK_DIR]"
+    fi
+    ;;
+esac

@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# ship-scripts-tests — shell assertions over the /ship land lock (RFC 167).
+#
+# The subject is .prime/agent/skills/ship/scripts/ship-lock, the repo-wide gate
+# that serialises phase 6 of a /ship run. Its one job that a human cannot eyeball
+# is the exit-code-3 trap: bin/file-lock answers 3 when the lock is already held
+# by an operation MATCHING -o, bin/daemon-up treats that as success, and a land
+# that did the same would sail straight through the lock into the collision the
+# lock exists to prevent. Assertion 2 is that case and it is the reason this file
+# exists.
+#
+# NO WORKTREE, NO GRADLE, NO POSTGRES. Every assertion runs against a throwaway
+# `git init` repo plus a fabricated run-scratch state file. That is not merely
+# cheap: ship-lock derives its lock path from `git rev-parse --git-common-dir` of
+# the repo named by the run state, so pointing the state at a temp repo is what
+# keeps this harness off the REAL var/run/ship-land.lock — a test that acquired
+# that one would silently gate every live /ship run on this machine for 15
+# minutes. There is deliberately no test-only override flag: git is the override.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+ship-scripts-tests [options]
+
+Runs the shell assertions over .prime/agent/skills/ship/scripts/ship-lock (and
+ship-land's refusal of a foreign lock holder). Needs no database, no daemon and
+no worktree: each assertion runs against a throwaway git repo under a temp dir.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: ship-scripts-tests accepts no positional arguments."
+fi
+
+SHIP_SCRIPTS="$PROJECT_ROOT/.prime/agent/skills/ship/scripts"
+SHIP_LOCK="$SHIP_SCRIPTS/ship-lock"
+SHIP_LAND="$SHIP_SCRIPTS/ship-land"
+
+[ -x "$SHIP_LOCK" ] || fail_test "ship-lock is missing or not executable [$SHIP_LOCK]"
+
+# The hook that runs this harness exports GIT_DIR and GIT_INDEX_FILE, and both
+# outrank `git -C`. Unset here for this file's own `git init`; ship-lock strips
+# them for itself, and the assertion at the end of the acquire section proves it.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+REPO="$FIXTURE_DIR/repo"
+git init -q "$REPO"
+LOCK_DIR="$REPO/var/run/ship-land.lock"
+
+# Two runs of the same repo, exactly as two live /ship worktrees would be. Only
+# RUN_ID differs, which is the whole point: the operation name IS the run id, so
+# no two runs ever match and a second lander waits instead of being told it
+# already holds the lock.
+make_run() {
+  # Two statements, not one `local a=… b=…`: bash creates every name in a
+  # single `local` before assigning any of them, so `b="$a"` reads an UNSET a
+  # and aborts under `set -u`.
+  local run_id="$1"
+  local rs="$FIXTURE_DIR/$run_id"
+  mkdir -p "$rs"
+  {
+    echo "RUN_ID=$run_id"
+    echo "LANE=quick"
+    echo "BRANCH=ship/$run_id"
+    echo "CODEBASE_ROOT=$REPO"
+    echo "ORIGINAL_CHECKOUT=$REPO"
+    echo "BASE_BRANCH=main"
+    echo "RUN_SCRATCH=$rs"
+    echo "PHASE=landing"
+  } > "$rs/state"
+  echo "$rs"
+}
+
+RS_A="$(make_run run-a)"
+RS_B="$(make_run run-b)"
+
+holder() { cat "$LOCK_DIR/op" 2>/dev/null || echo "(none)"; }
+clear_lock() { rm -rf "$LOCK_DIR" "$LOCK_DIR".stale.* 2>/dev/null || true; }
+
+echo "==== ship-lock: acquire ===="
+
+# 1. A free lock is taken, and the holder recorded is this run's RUN_ID.
+clear_lock
+assert_success "acquire on a free lock exits 0" \
+  "$SHIP_LOCK" -s "$RS_A" acquire
+[ -d "$LOCK_DIR" ] || fail_test "acquire did not create the lock directory"
+[ "$(holder)" = "run-a" ] || fail_test "acquire wrote op=[$(holder)], expected [run-a]"
+pass_test "acquire records op = RUN_ID"
+
+# 2. THE ONE THAT MATTERS. A second, DIFFERENT run must be blocked. If ship-lock
+# ever passed a fixed -o, file-lock would answer 3 ("held by a matching
+# operation"), and a caller copying daemon-up's reading of 3 would call that
+# success — two runs inside the gate at once.
+assert_failure "a second, different RUN_ID is BLOCKED (file-lock 3 is never success)" \
+  "$SHIP_LOCK" -s "$RS_B" -t 1s acquire
+[ "$(holder)" = "run-a" ] || fail_test "the blocked run overwrote op with [$(holder)]"
+pass_test "the blocked run left the holder untouched"
+
+# 2c. `git -C` loses to GIT_DIR, and a git hook exports GIT_DIR. Without the
+# strip in ship-lock, this harness — which the pre-commit hook runs — walks out
+# of its fixture and takes the REAL var/run/ship-land.lock, blocking every live
+# /ship run on the machine for 15 minutes. That is not hypothetical: it is how
+# this assertion came to exist. The lock stays held by run-a for 2b below;
+# `status` is read-only, which is what makes that safe.
+GIT_DIR="$PROJECT_ROOT/.git" "$SHIP_LOCK" -s "$RS_A" status | grep -q "held by \[run-a\].*$LOCK_DIR" ||
+  fail_test "GIT_DIR overrode the run's own repo: ship-lock resolved a lock outside the fixture"
+pass_test "GIT_DIR from a hook cannot move the lock off the run's own repo"
+
+# 2b. The SAME run re-acquiring is a success, and the hold is refreshed. A
+# compacted session is told to re-read PHASE and re-enter it, so a resumed run
+# runs `acquire` a second time; refusing there would break the skill's own
+# recovery path, and a silent success without the refresh would hand it a lock
+# about to expire under its own gate.
+echo "$(( $(date +%s) + 30 ))" > "$LOCK_DIR/expires-at"
+assert_success "the SAME run re-acquiring is a no-op success" \
+  "$SHIP_LOCK" -s "$RS_A" acquire
+[ "$(cat "$LOCK_DIR/expires-at")" -gt "$(( $(date +%s) + 600 ))" ] ||
+  fail_test "re-acquire did not refresh the hold (expires-at=$(cat "$LOCK_DIR/expires-at"), now=$(date +%s))"
+pass_test "re-acquire refreshes the hold to the full 15m"
+
+echo ""
+echo "==== ship-lock: release ===="
+
+# 3. The holder drops it, and the queue moves.
+assert_success "release by the holder exits 0" \
+  "$SHIP_LOCK" -s "$RS_A" release
+[ ! -d "$LOCK_DIR" ] || fail_test "release left the lock directory behind"
+pass_test "release removes the lock"
+assert_success "the other run can then acquire" \
+  "$SHIP_LOCK" -s "$RS_B" acquire
+
+# 4. A foreign holder is not a script's to break; -f is for a human, and it says
+# whose lock it took.
+assert_failure "release by a NON-holder fails" \
+  "$SHIP_LOCK" -s "$RS_A" release
+[ "$(holder)" = "run-b" ] || fail_test "a refused release damaged the lock (op=[$(holder)])"
+pass_test "a refused release leaves the lock intact"
+force_err="$("$SHIP_LOCK" -s "$RS_A" -f release 2>&1 >/dev/null)" ||
+  fail_test "release -f by a non-holder should succeed"
+echo "$force_err" | grep -q "WARNING" ||
+  fail_test "release -f did not warn; said [$force_err]"
+echo "$force_err" | grep -q "run-b" ||
+  fail_test "release -f did not name the displaced holder; said [$force_err]"
+pass_test "release -f breaks a foreign lock and warns, naming the holder"
+
+# 5. An expiry is what stops a killed session wedging every other run. The lock
+# is time-based, so a lock whose expires-at is in the past is taken from it.
+clear_lock
+mkdir -p "$LOCK_DIR"
+echo "run-b" > "$LOCK_DIR/op"
+echo "$(( $(date +%s) - 10 ))" > "$LOCK_DIR/expires-at"
+assert_success "an EXPIRED lock is broken and re-acquired" \
+  "$SHIP_LOCK" -s "$RS_A" acquire
+[ "$(holder)" = "run-a" ] || fail_test "expired lock not taken over (op=[$(holder)])"
+pass_test "the expired holder was replaced by the acquiring run"
+
+# 5b. The expiry break is where mutual exclusion is hardest to keep: file-lock
+# does `mv` the stale lock aside, then `mkdir`, and the pair is not atomic, so
+# two runs whose expiry reads both predate the other's break can BOTH exit 0.
+# Single-threaded assertion 5 cannot see that, and neither can racers that merely
+# start at about the same time — they must be released together. So the racers
+# spin on a start file and are freed at once, and the trial is repeated: the
+# defect this guards is probabilistic — with the confirmation removed, 12 racers
+# reproduced it in 3 of 8 trials and 8 racers in roughly 1 in 4; with it in
+# place, never once — so a single trial would be a test that passes for the
+# wrong reason, and no number of trials makes it a proof. It is a net, not a
+# gate: sized here at 2 trials because the honest alternative is 14 seconds in
+# every pre-commit run, and this defect is one a reviewer found by reading.
+RACERS=8
+TRIALS=2
+for r in $(seq 1 "$RACERS"); do make_run "race-$r" > /dev/null; done
+for t in $(seq 1 "$TRIALS"); do
+  clear_lock
+  mkdir -p "$LOCK_DIR"
+  echo "run-z" > "$LOCK_DIR/op"
+  echo "$(( $(date +%s) - 10 ))" > "$LOCK_DIR/expires-at"
+  wins="$FIXTURE_DIR/wins-$t"
+  mkdir -p "$wins"
+  # A fifo, not a spin on a flag file: 12 busy-waiting subshells cost more CPU
+  # than the whole rest of this harness, and every racer blocking in `read`
+  # until one write releases them all is a tighter start anyway.
+  gate="$FIXTURE_DIR/gate-$t"
+  mkfifo "$gate"
+  for r in $(seq 1 "$RACERS"); do
+    (
+      read -r _ < "$gate"
+      "$SHIP_LOCK" -s "$FIXTURE_DIR/race-$r" -t 1s acquire > /dev/null 2>&1 &&
+        echo won > "$wins/$r"
+    ) &
+  done
+  sleep 0.2
+  for r in $(seq 1 "$RACERS"); do echo go; done > "$gate"
+  wait
+  winners="$(find "$wins" -type f | wc -l | tr -d ' ')"
+  [ "$winners" -eq 1 ] ||
+    fail_test "trial $t: $RACERS runs raced an EXPIRED lock and $winners won; exactly 1 may"
+done
+pass_test "exactly one run wins the race to break an expired lock, over $TRIALS trials"
+clear_lock
+"$SHIP_LOCK" -s "$RS_A" acquire
+
+echo ""
+echo "==== ship-lock: status ===="
+
+# 6. status reports; it never judges. Exit 0 either way — ship-status calls it on
+# every listed run, and a free lock is not an error.
+status_held="$("$SHIP_LOCK" -s "$RS_A" status)" || fail_test "status on a HELD lock should exit 0"
+echo "$status_held" | grep -q "held by \[run-a\]" ||
+  fail_test "status on a held lock did not name the holder; said [$status_held]"
+pass_test "status on a held lock names the holder and exits 0"
+"$SHIP_LOCK" -s "$RS_A" release
+status_free="$("$SHIP_LOCK" -s "$RS_A" status)" || fail_test "status on a FREE lock should exit 0"
+echo "$status_free" | grep -q "free" ||
+  fail_test "status on a free lock did not say so; said [$status_free]"
+pass_test "status on a free lock says so and exits 0"
+
+echo ""
+echo "==== ship-lock: usage grammar ===="
+
+# 7. The reserved bin/functions exit codes. ship-lock copies the values rather
+# than sourcing bin/common, so these assertions are what stops the copy drifting:
+# a caller that invoked it wrongly must be distinguishable from a run that
+# faulted, and identically so across bin/.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$SHIP_LOCK" -Z -s "$RS_A" status
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-s without a value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$SHIP_LOCK" -s
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an unknown subcommand exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_LOCK" -s "$RS_A" grab
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "acquire without -s exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_LOCK" acquire
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "no subcommand at all exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_LOCK" -s "$RS_A"
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a surplus positional exits EXIT_UNEXPECTED_ARG" \
+  "$SHIP_LOCK" -s "$RS_A" status extra
+# -t is a value, and getopts only guarantees it was PRESENT. CLAUDE.md's bin/ rule
+# is that value-shape checks belong after the grammar: without one this reaches
+# wait-for, which fails with its own copy of the same code and names itself, not
+# ship-lock, in the message.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-t with a non-duration exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_LOCK" -s "$RS_A" -t bogus acquire
+# Both orders parse. getopts stops at the first non-option, so without the second
+# pass this — the order RFC 167 itself writes — would be a surplus positional.
+assert_success "options may FOLLOW the subcommand (ship-lock status -s <rs>)" \
+  "$SHIP_LOCK" status -s "$RS_A"
+
+echo ""
+echo "==== ship-lock: the stdout/stderr invariant ===="
+
+# 8. bin/ rule: stdout carries ONLY what the caller asked for. `-h` asked for the
+# help; acquire and release asked for a lock, so their progress and their result
+# are diagnostics and belong on stderr. This is exactly what regresses when
+# someone "helpfully" turns a log-info into an echo.
+help_out="$("$SHIP_LOCK" -h 2>/dev/null)" || fail_test "-h should exit 0"
+[ -n "$help_out" ] || fail_test "-h printed nothing to stdout"
+pass_test "-h exits 0 and prints the help to stdout"
+clear_lock
+acquire_out="$("$SHIP_LOCK" -s "$RS_A" acquire 2>/dev/null)"
+[ -z "$acquire_out" ] || fail_test "acquire wrote to stdout: [$acquire_out]"
+release_out="$("$SHIP_LOCK" -s "$RS_A" release 2>/dev/null)"
+[ -z "$release_out" ] || fail_test "release wrote to stdout: [$release_out]"
+pass_test "acquire and release write NOTHING to stdout on success"
+
+echo ""
+echo "==== ship-lock: status with no -s ===="
+
+# The ONLY path that resolves the anchor to the script's own checkout and so
+# names the REAL lock. Read-only, and it is what a human or a killed run's
+# survivor actually types — there is no state file left to pass -s.
+clear_lock
+status_bare="$("$SHIP_LOCK" status)" || fail_test "bare status should exit 0"
+echo "$status_bare" | grep -qE "lock (free|held by)" ||
+  fail_test "bare status printed no verdict; said [$status_bare]"
+pass_test "status needs no -s and answers for this checkout"
+
+echo ""
+echo "==== ship-land: the foreign-holder backstop ===="
+
+# ship-land is the backstop: correctness must not depend on phase 6 remembering
+# to take the lock. Only the refusal is reachable without a real worktree, and it
+# is the half that matters — it fires BEFORE the ship-verified assert and before
+# any git write, so a run whose hook ran against a base another run is about to
+# move is stopped rather than fast-forwarded. The fast-forward path itself stays
+# uncovered here, as it is today: it needs a real worktree, and a /ship run
+# exercises it every time it lands.
+clear_lock
+"$SHIP_LOCK" -s "$RS_B" acquire
+land_err="$("$SHIP_LAND" -s "$RS_A" 2>&1 >/dev/null)" && land_status=0 || land_status=$?
+[ "$land_status" -ne 0 ] || fail_test "ship-land landed while another run held the lock"
+echo "$land_err" | grep -q "run-b" ||
+  fail_test "ship-land did not name the foreign holder; said [$land_err]"
+pass_test "ship-land refuses a lock held by another run, naming the holder"
+clear_lock
+
+end_tests

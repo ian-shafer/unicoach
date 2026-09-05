@@ -22,8 +22,9 @@ help() {
 ship-status [-p]
 
 Lists every live ship run found in this repo's worktrees: run id, lane, phase,
-branch, paths, HEAD, working-tree cleanliness, last ledger row, and the age of
-the state file. Takes no run-scratch — a compacted session has none.
+branch, paths, HEAD, working-tree cleanliness, the repo-wide land lock, last
+ledger row, and the age of the state file. Takes no run-scratch — a compacted
+session has none.
 
   -p   porcelain: print bare RUN_SCRATCH paths, one per line, nothing else.
 
@@ -145,6 +146,12 @@ while read -r wt; do
       echo "  HEAD           $head_sha ($dirty)"
       echo "  BASE           $base_line"
       [ -n "$op" ] && echo "  IN PROGRESS    $op"
+      # The land lock (RFC 167) is repo-wide, so it is the same line under every
+      # run — and that is the point: a session resumed into a run that cannot
+      # land, or one waiting on a lock a killed session left behind, sees the
+      # holder here without knowing to look for it. `ship-lock release -f`
+      # breaks a stuck one.
+      echo "  land lock      $("$SCRIPT_DIR/ship-lock" -s "$rs" status 2>/dev/null || echo '?')"
       echo "  last ledger    $last_row"
       echo "  state touched  $(age_of "$state")"
       [ -n "${RECOVERED_FROM:-}" ] && echo "  RECOVERED_FROM ${RECOVERED_FROM}"

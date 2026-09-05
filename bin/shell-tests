@@ -32,6 +32,7 @@ shell-tests [options]
 Runs the shell script-test harnesses sequentially, cheapest first, aborting on
 the first failure:
 
+  ship-scripts-tests  ~6s  the /ship land lock, no cluster at all
   q-scripts-tests    ~12s  queue ops tools, shared cluster
   db-scripts-tests   ~15s  db/cluster lifecycle, its OWN private cluster
   scripts-tests      ~63s  daemon/ops/deploy scripts, shared cluster + built
@@ -61,6 +62,9 @@ if [ "$#" -ne 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "Error: shell-tests accepts no positional arguments."
 fi
 
+# Cheapest first, and this one is nearly free: it needs no database, no daemon
+# and no worktree, only a throwaway `git init` repo under a temp dir.
+"$PROJECT_ROOT/bin/ship-scripts-tests"
 "$PROJECT_ROOT/bin/q-scripts-tests"
 # db-scripts-tests builds its own private env file and sets ENV_FILE, which
 # bin/common rejects as mutually exclusive with an inherited ENV_FILES. Clear the
