@@ -1,32 +1,21 @@
 ---
 name: agent-learning
-description:
-  Updates or creates agent skills based on conversation learnings. Use when a
-  user asks to remember a lesson, codify rules, or document architectural
-  decisions.
+description: >-
+  Moved. Codifying a lesson into a durable rule is now /principle. Use that
+  instead; this entry exists only so older prompts and existing citations do not
+  dead-end.
 ---
 
-# Skill: Agent Learning
+# agent-learning — moved to `/principle`
 
-**DESCRIPTION** Triggers when the user requests to "remember what you've
-learned" or "codify this conversation". Extracts architectural decisions and
-updates skill files to ensure permanent retention.
+This skill was replaced by **`/principle`**
+(`.prime/agent/skills/principle/SKILL.md`).
 
-**EXECUTION FLOW**
+The instruction it carried still holds and is stated there: a lesson must be
+**general enough to apply to future work**, not over-fit to the conversation
+that produced it, and it lands as its own isolated commit. What it lacked was
+everything that makes a rule actually take effect — an overlap check against the
+principles already in the corpus, a stated scope, a `review-fix/tiers.md` row,
+and the `bin/compile-skills.py` recompile.
 
-1. **ANALYZE:**
-   - Scan the current conversation for friction points and architectural
-     alignments.
-   - Distill findings into actionable rules. These rules should not be overly
-     specific to the current conversation, but should be general enough to be
-     applicable to future conversations.
-
-2. **PLAN:**
-   - Output an `implementation_plan` artifact detailing the extracted rules.
-   - Propose exactly which existing `SKILL.md` files to update, or if new skill
-     files are required.
-   - STOP and wait for user approval.
-
-3. **EXECUTE:**
-   - Upon approval, update or create the targeted `SKILL.md` files.
-   - Commits the skill updates in an isolated commit.
+Run `/principle` with the evidence: what happened, and the subject verbatim.

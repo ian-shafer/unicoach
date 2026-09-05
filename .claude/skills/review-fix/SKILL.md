@@ -98,7 +98,7 @@ all 39 reviewers, so a second copy is a value with two owners that will drift.
 What this skill adds on top of that contract:
 
 - **`file:line` is mandatory.** A finding whose subject cannot be located is not
-  triageable, and at `/skill-update` time a rule that is simply wrong cannot be
+  triageable, and at `/principle` time a rule that is simply wrong cannot be
   told apart from a rule misapplied to one case — those want opposite edits.
 - **Incompleteness is a result, not a repair job.** A finding with fewer than
   two options, unranked options, a missing subject, or an out-of-range
@@ -152,7 +152,7 @@ stepping in informed rather than blind.
 
 **Stepping in.** The operator may interrupt at any moment. The interrupted
 finding gets full manual treatment — accept with a chosen option, reject with
-the classification conversation, `/skill-update` prompt and all — and then
+the classification conversation, `/principle` prompt and all — and then
 "continue auto" resumes the policy from the next finding. The reverse works too:
 a manual run may switch to auto mid-run and finish the remainder under the
 policy.
@@ -161,7 +161,7 @@ policy.
 `decided_by: operator | auto`. An auto decision is not evidence about the
 reviewer the way an operator decision is, and the two must never blur: the final
 report separates them, and a retro-triage of the auto-applied findings — walking
-the ledger after the fact and feeding rejections to `/skill-update` — is how an
+the ledger after the fact and feeding rejections to `/principle` — is how an
 auto run still evaluates the reviewers when nobody was watching.
 
 **The final report** closes every auto run: per tier, findings found / applied /
@@ -280,7 +280,7 @@ whether this is even the right implementation to be reviewing.
 
    This file is the **evidence**, not an optimisation. It is what lets a silent
    lens be told apart from a lens that never looked, and it is the subject you
-   hand to `/skill-update` later. Every leaf in the tier reads it.
+   hand to `/principle` later. Every leaf in the tier reads it.
 
 2. **Resolve the skill set.** Discover live skills by glob — `impl-review-*`,
    `design-review-*`, `code-review-*`, excluding `*-chain` — and check each
@@ -560,7 +560,7 @@ The operator declines the finding. Nothing is built.
 
 **A rejection is not automatically a skill defect.** A rule can be correct, fire
 correctly, and still be declined — the change is out of scope for now, or it
-loses to a deliberate trade-off. Emitting a `/skill-update` prompt for every
+loses to a deliberate trade-off. Emitting a `/principle` prompt for every
 rejection wastes interactive sessions on skills that are working, and worse, it
 teaches the skill to stop reporting things the operator merely deferred.
 
@@ -587,7 +587,7 @@ orchestrator**, whose only job is to decide whether the reviewer should change.
    criteria, `misapplied` changes scoping and exceptions, `finding-unusable`
    changes the output contract, `ranking-wrong` changes the preference criteria
    that decide which option gets recommended. Naming the class is most of the
-   work of the `/skill-update` session, so do not skip it and let that session
+   work of the `/principle` session, so do not skip it and let that session
    re-derive it.
 
 3. **Record the outcome in the ledger either way**, with the class and the
@@ -599,11 +599,11 @@ orchestrator**, whose only job is to decide whether the reviewer should change.
    they overlap.
 
 4. **Only when the class calls for an update**, print this block for the
-   operator to paste into a **new conversation**. Do not run `/skill-update`
-   inline — it is a full interactive editing session and would swamp the queue:
+   operator to paste into a **new conversation**. Do not run `/principle` inline
+   — it is a full interactive editing session and would swamp the queue:
 
    ```
-   Invoke /skill-update on skill <reviewer skill>.
+   Invoke /principle on principle <reviewer skill>.
 
    Rejection class: <rule-wrong | misapplied | finding-unusable>
 
@@ -620,7 +620,7 @@ orchestrator**, whose only job is to decide whether the reviewer should change.
 Then **continue triaging** — do not wait for them to finish the skill edit.
 
 **When the class is genuinely unclear, record and move on.** A ledger line is
-cheap and keeps the evidence; an unnecessary `/skill-update` session costs the
+cheap and keeps the evidence; an unnecessary `/principle` session costs the
 operator real time and risks editing a skill that was right. But never talk the
 operator out of an update they want — the orchestrator proposes a class, the
 operator decides it, and this step exists to inform that decision, not to make
@@ -770,5 +770,5 @@ worktree looks orphaned but appears in no manifest, report it and stop.
 - Stop an auto run to ask for a decision the policy already covers.
 - Resolve a conflict or a red gate silently, or with a repair of its own design.
 - Let the integration tip reach `main` without the full gate having run on it.
-- Edit a reviewer skill itself — that is `/skill-update`, with the operator
+- Edit a reviewer skill itself — that is `/principle`, with the operator
   present.

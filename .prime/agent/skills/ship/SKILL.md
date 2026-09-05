@@ -231,6 +231,21 @@ applied/discarded, the test counts actually executed, and **open items** — eve
 finding the review declined to decide. Point at
 `.scratch/ship-archive/<run-id>/`.
 
+Then a **Learning candidates** section: every place review had to argue from
+taste because **no principle in the corpus covered the case**. Not the findings
+a lens produced — those are already the corpus working. These are the judgement
+calls made unaided, the ones that would be re-litigated identically on the next
+run.
+
+State each in one line: what the call was, and what a rule would have had to say
+to settle it. Write `None` when there were none; an empty section is a real
+result, and a run that always finds candidates is nominating noise.
+
+This is a **queue for Ian to read, not an action**. This skill never edits
+`.claude/skills/**` — a run must not write the rules it is judged by, and only
+Ian can tell a one-off taste call from a principle. Codification is
+[`/principle`](../principle/SKILL.md), a separate human-gated session.
+
 Finish with `ship-state -s <rs> set PHASE complete`.
 
 ## What this shares with Claude Code, and how
@@ -244,4 +259,6 @@ Two things, both declarative and read-only. See
   workflow loses and bumps. No shared code, full mutual exclusion.
 - **The review-rule corpus** — `.claude/skills/{code,design,impl}-review-*/` and
   `review-fix/tiers.md`, read-only. Their _chains_ are Claude Code orchestration
-  and are NOT used; this skill dispatches the same rules itself.
+  and are NOT used; this skill dispatches the same rules itself. The corpus has
+  exactly one writer, [`/principle`](../principle/SKILL.md), and this skill is
+  not it — phase 7 nominates candidates and stops there.

@@ -8,7 +8,7 @@ description: >-
   the operator's edits to the target on the spot. Manual is the original
   operator-driven loop: every finding shown, the operator picks what to apply,
   one at a time, each reversible, with operator-elected further passes; no
-  walkthrough. Closes by feeding rejected findings into a skill-update pass so
+  walkthrough. Closes by feeding rejected findings into a `/principle` pass so
   a reviewer that produced a bad finding gets fixed. Use when a user asks to
   review-and-fix an RFC or document, or invokes /rfc-review-fix.
 ---
@@ -273,12 +273,12 @@ spends it.
    evidence either way; a retro-rejection is as strong as a manual one.
 2. **Operator selects** a finding whose reviewer should change, or none to
    finish.
-3. The orchestrator **cannot run this itself** — `/skill-update` is interactive
-   and needs a clean context. Print the exact prompt for the operator to paste
-   into a **new conversation**:
+3. The orchestrator **cannot run this itself** — `/principle` is interactive and
+   needs a clean context. Print the exact prompt for the operator to paste into
+   a **new conversation**:
 
    ```
-   Invoke /skill-update on skill <reviewer skill>.
+   Invoke /principle on principle <reviewer skill>.
 
    Verbatim finding:
    <the finding, in full — description, options, recommendation>
@@ -291,7 +291,7 @@ spends it.
    that is simply wrong cannot be told apart from a rule misapplied to this one
    case — and those want opposite edits.
 
-4. `/skill-update` discusses the change with the operator and edits the skill.
+4. `/principle` discusses the change with the operator and edits the skill.
 5. The operator returns here and asks for the remaining findings.
 6. Return to step 2.
 
@@ -305,5 +305,5 @@ spends it.
 - Commit anything the operator has not accepted.
 - Let the branch reach `main` without the full gate having run on its tip.
 - Touch the operator's pre-existing uncommitted work.
-- Edit a reviewer skill itself — that is `/skill-update`, with the operator
+- Edit a reviewer skill itself — that is `/principle`, with the operator
   present.
