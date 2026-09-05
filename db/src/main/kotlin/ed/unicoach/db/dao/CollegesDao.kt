@@ -2596,9 +2596,10 @@ object CollegesDao :
       INSERT INTO college_index_build (
         started_at, finished_at, sources, rows_ingested, name_words_rows,
         search_index_rows, price_figure_rows, cohort_money_stat_rows,
-        canonical_money_summary, change_summary, method_version
+        cohort_population_count_rows, canonical_money_summary, change_summary,
+        method_version
       )
-      VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
+      VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
       RETURNING id
       """.trimIndent()
     return session.mutateReturning(
@@ -2612,9 +2613,10 @@ object CollegesDao :
         stmt.setIntOrNull(6, input.searchIndexRows)
         stmt.setIntOrNull(7, input.priceFigureRows)
         stmt.setIntOrNull(8, input.cohortMoneyStatRows)
-        stmt.setJsonbOrNull(9, input.canonicalMoneySummary)
-        stmt.setJsonbOrNull(10, input.changeSummary)
-        stmt.setInt(11, input.methodVersion)
+        stmt.setIntOrNull(9, input.cohortPopulationCountRows)
+        stmt.setJsonbOrNull(10, input.canonicalMoneySummary)
+        stmt.setJsonbOrNull(11, input.changeSummary)
+        stmt.setInt(12, input.methodVersion)
       },
       map = { rs -> UUID.fromString(rs.getString("id")) },
       mapError = ::mapCollegeWriteError,

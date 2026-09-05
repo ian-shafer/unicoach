@@ -4,6 +4,7 @@ import ed.unicoach.db.dao.CollegeIpedsChargesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.IpedsImputationFlag
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import kotlin.test.assertContains
@@ -170,8 +171,8 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     // bytes, so these numbers are stable.
     assertEquals(
       mapOf(
-        IpedsChargesLoader.ImputationFlag.NOT_APPLICABLE to 19,
-        IpedsChargesLoader.ImputationFlag.REPORTED to 125,
+        IpedsImputationFlag.NOT_APPLICABLE to 19,
+        IpedsImputationFlag.REPORTED to 125,
       ),
       result.cellsByFlag,
     )
@@ -189,7 +190,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     assertEquals(15265, amount(110680, "CHG2AY"))
     assertEquals(
       FigureStatus.IMPUTED_BY_PUBLISHER,
-      IpedsChargesLoader.ImputationFlag.fromCode("L")!!.status,
+      IpedsImputationFlag.fromCode("L")!!.status,
     )
   }
 
@@ -218,7 +219,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     assertEquals(10590, amount(222992, "CHG3AY"))
     assertEquals(
       FigureStatus.REPORTED,
-      IpedsChargesLoader.ImputationFlag.fromCode("C")!!.status,
+      IpedsImputationFlag.fromCode("C")!!.status,
     )
   }
 
@@ -228,14 +229,14 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     // `label define`, so this enum is their one declaration. Thirteen are
     // readable; `Y` is published but never occurs on a loaded variable.
     val codes =
-      IpedsChargesLoader.ImputationFlag.entries
+      IpedsImputationFlag.entries
         .map { it.code }
         .toSet()
     assertEquals(
       setOf("A", "B", "C", "D", "G", "H", "J", "K", "L", "N", "P", "R", "Z"),
       codes,
     )
-    assertTrue(IpedsChargesLoader.ImputationFlag.PROFESSIONAL_PRACTICE !in codes)
+    assertTrue(IpedsImputationFlag.PROFESSIONAL_PRACTICE !in codes)
   }
 
   @Test
@@ -244,7 +245,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     // the parse and the canonical fill call. This drives it in both directions
     // for every published code, so an inverted branch cannot pass by being
     // exercised only on the codes the fixture happens to carry.
-    for (entry in IpedsChargesLoader.ImputationFlag.entries) {
+    for (entry in IpedsImputationFlag.entries) {
       val cell = IpedsChargesLoader.CellRef.Published("CHG2AY3", ipedsUnitId = 222992, line = 2)
       if (entry.status.valueBearing) {
         assertEquals(1234, (entry.mapReading(1234, cell) as FigureReading.Present).value, entry.code)
@@ -265,7 +266,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     val published = IpedsChargesLoader.CellRef.Published("CHG2AY3", ipedsUnitId = 222992, line = 7)
     val fromFile =
       assertFailsWith<IllegalArgumentException> {
-        IpedsChargesLoader.ImputationFlag.REPORTED.mapReading(null, published)
+        IpedsImputationFlag.REPORTED.mapReading(null, published)
       }
     assertContains(fromFile.message!!, "CHG2AY3")
     assertContains(fromFile.message!!, "ipeds_unit_id=222992")
@@ -285,7 +286,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
       )
     val fromStaging =
       assertFailsWith<IllegalArgumentException> {
-        IpedsChargesLoader.ImputationFlag.NOT_APPLICABLE.mapReading(9999, staged)
+        IpedsImputationFlag.NOT_APPLICABLE.mapReading(9999, staged)
       }
     assertContains(fromStaging.message!!, "id=${chargeId.value}")
     assertContains(fromStaging.message!!, "college_id=$collegeId")
@@ -311,7 +312,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     // the guard has never once executed, so an inverted branch there would
     // pass the whole suite.
     // IllegalArgumentException, not IllegalStateException: the rule has one
-    // implementation now (`ImputationFlag.reading`, a `require`), shared with
+    // implementation now (`IpedsImputationFlag.mapReading`, a `require`), shared with
     // the canonical fill instead of re-written at the parse.
     val error = assertFailsWith<IllegalArgumentException> { load("ipeds-ic2023-ay-status-without-value-fixture.csv") }
     assertContains(error.message!!, "CHG2AY3")
@@ -326,7 +327,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     val error =
       assertFailsWith<IllegalStateException> { load("ipeds-ic2023-ay-professional-practice-flag-fixture.csv") }
     assertContains(error.message!!, "XCHG2AY3")
-    assertContains(error.message!!, "[${IpedsChargesLoader.ImputationFlag.PROFESSIONAL_PRACTICE}]")
+    assertContains(error.message!!, "[${IpedsImputationFlag.PROFESSIONAL_PRACTICE}]")
     assertContains(error.message!!, "never occurs on a loaded variable")
   }
 

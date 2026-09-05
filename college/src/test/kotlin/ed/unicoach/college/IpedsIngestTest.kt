@@ -444,9 +444,9 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     // 5 since RFC 146 added the derived name-word rebuild, RFC 148 the CDS
     // seed load and RFC 150 the derived search index; 2 was RFC 144's own bump
-    // for this IPEDS source family. 7 is RFC 161's: IPEDS IC_AY became a
-    // canonical money source ahead of the Scorecard.
-    assertEquals(7, row.methodVersion)
+    // for this IPEDS source family. 7 is RFC 161's and RFC 162's: IPEDS IC_AY
+    // and IPEDS SFA became canonical money sources ahead of the Scorecard.
+    assertEquals(7, row.methodVersion, "RFC 161 and RFC 162 took the method version to 7: two new sources changed the derivation")
     assertTrue(row.sources.contains("ipeds-hd-joined-fixture.csv"), "sources names the HD file: ${row.sources}")
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")
     assertTrue(row.rowsIngested.contains("\"programs_census\""), row.rowsIngested)

@@ -1099,6 +1099,7 @@ class CollegeSearchToolTest {
               searchIndexRows = 0,
               priceFigureRows = null,
               cohortMoneyStatRows = null,
+              cohortPopulationCountRows = null,
               canonicalMoneySummary = null,
               changeSummary = JsonObject(emptyMap()),
               methodVersion = 1,

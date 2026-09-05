@@ -2468,6 +2468,147 @@ test_ingest_colleges_no_ipeds_argv() {
 }
 assert_success "a Scorecard-only ingest-colleges run passes no IPEDS argv at all" test_ingest_colleges_no_ipeds_argv
 
+# SFA group (RFC 162): its OWN all-or-nothing group, -S (the sfa CSV) plus -f
+# (the aid-year START year). Separate from the six above because SFA is a
+# separate survey on a separate year -- SFA2223 is aid year 2022-23 and ships in
+# collection year 2023, so -f 2022 and -y 2023 are both right and different. The
+# aid year is -f rather than -Y because RFC 161 already gave -Y to the IC_AY
+# published-charges CSV. The assertions mirror the IPEDS ones one for one,
+# because the same silent failure is available here: a lone flag that fell
+# through would downgrade the run to a no-SFA run with a green exit.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial SFA group (only -S)" \
+  bin/ingest-colleges -S sfa2223.csv a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial SFA group (only -f)" \
+  bin/ingest-colleges -f 2022 a.csv b.csv
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -S without a value exits 11" \
+  bin/ingest-colleges -S
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -f without a value exits 11" \
+  bin/ingest-colleges -f
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty SFA flag value" \
+  bin/ingest-colleges -S "" -f 2022 a.csv b.csv
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an all-empty SFA group, never a silent no-SFA run" \
+  bin/ingest-colleges -S "" -f "" a.csv b.csv
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects a repeated SFA flag" \
+  bin/ingest-colleges -S A.csv -S B.csv -f 2022 a.csv b.csv
+# The three year-ish flags belong to two DIFFERENT all-or-nothing groups: -y
+# (IPEDS collection year) and -Y (the IC_AY charges CSV) name the IPEDS group,
+# -f (SFA aid year) names the SFA one. Each alone must name ITS OWN group in the
+# refusal; a parser that confused them would report the wrong one and send the
+# operator looking for a file it never passed.
+test_ingest_colleges_year_flag_groups() {
+  local out rc=0
+  out="$(bin/ingest-colleges -f 2022 a.csv b.csv 2>&1)" || rc=$?
+  case "$out" in
+  *"the [SFA] options are all-or-nothing"*) ;;
+  *) log-error "-f alone did not name the SFA group: [$out]"; return 1 ;;
+  esac
+  rc=0
+  out="$(bin/ingest-colleges -Y ic2023_ay.csv a.csv b.csv 2>&1)" || rc=$?
+  case "$out" in
+  *"the [IPEDS] options are all-or-nothing"*) ;;
+  *) log-error "-Y alone did not name the IPEDS group: [$out]"; return 1 ;;
+  esac
+  rc=0
+  out="$(bin/ingest-colleges -y 2023 a.csv b.csv 2>&1)" || rc=$?
+  case "$out" in
+  *"the [IPEDS] options are all-or-nothing"*) return 0 ;;
+  *) log-error "-y alone did not name the IPEDS group: [$out]"; return 1 ;;
+  esac
+}
+assert_success "ingest-colleges -y, -Y and -f alone name their own group, never each other's" \
+  test_ingest_colleges_year_flag_groups
+# The help text documents the group. A grammar the help does not mention is a
+# grammar nobody can invoke, and -h is the one place stdout is allowed to speak.
+test_ingest_colleges_help_documents_sfa() {
+  local out
+  out="$(bin/ingest-colleges -h 2>/dev/null)"
+  case "$out" in
+  *"-S FILE"*) ;;
+  *) log-error "help text does not document -S"; return 1 ;;
+  esac
+  case "$out" in
+  *"-f YYYY"*) return 0 ;;
+  *) log-error "help text does not document -f"; return 1 ;;
+  esac
+}
+assert_success "ingest-colleges -h documents the -S/-f SFA group" \
+  test_ingest_colleges_help_documents_sfa
+# The resolved file AND the caller's original argument are both forwarded, the
+# same contract the IPEDS five have: the provenance row records what the caller
+# named, not the scratch path an s3:// download landed in.
+test_ingest_colleges_sfa_source_flags() {
+  local root parent stub argv inst fields sfa entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-sfaflags"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  sfa="$parent/sfa2223.csv"
+  : > "$inst"; : > "$fields"; : > "$sfa"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" -S "$sfa" -f 2022 "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  # The --sfa= path is the RESOLVED one (an s3:// arg is downloaded, and even a
+  # local path comes back through realpath), so only its PRESENCE is asserted
+  # here; the exact string that must survive untouched is the --sfa-source=
+  # partner, which is what the provenance row records.
+  grep -q -- "^--sfa=" "$argv" &&
+    grep -qxF -- "--sfa-source=$sfa" "$argv" &&
+    grep -qxF -- "--sfa-aid-year=2022" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges forwards the SFA file, its original arg and the aid year to the launcher" \
+  test_ingest_colleges_sfa_source_flags
+# A run without the group must not grow SFA argv at all -- absent, not
+# present-and-empty, so every pre-RFC-162 invocation is byte-identical.
+test_ingest_colleges_no_sfa_argv() {
+  local root parent stub argv inst fields entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-nosfa"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  ! grep -qE -- "^--sfa" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "a run without -S/-f passes no SFA argv at all" test_ingest_colleges_no_sfa_argv
+
 # ── RFC 144: the IPEDS survey data files (bin/fetch-ipeds) ───────────────────
 echo ""
 echo "==== Testing RFC 144 IPEDS data fetch ===="
@@ -2485,15 +2626,18 @@ IPEDS_OUT="$(mktemp -d)"
 assert_success "fetch-ipeds runs offline from the recorded CSV fixtures" \
   bin/fetch-ipeds -F "$IPEDS_FIXTURES" -o "$IPEDS_OUT" > /dev/null 2>&1
 
-test_ipeds_writes_five_csvs() {
+test_ipeds_writes_every_member() {
   local name
-  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv ic2023_ay.csv; do
+  # Seven artifacts since RFC 162: the five IPEDS institutional/charges members
+  # plus the SFA data member and its imputation-code dictionary, which is an
+  # XLSX and so is named as one.
+  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv ic2023_ay.csv sfa2223.csv sfa2223.xlsx; do
     [ -s "$IPEDS_OUT/$name" ] || return 1
   done
   return 0
 }
-assert_success "the five members are written under the names the ingest is given" \
-  test_ipeds_writes_five_csvs
+assert_success "every member is written under the name the ingest is given" \
+  test_ipeds_writes_every_member
 
 # Every embedded python assertion below runs through here, and the CHANNEL is
 # owned in this one place: a bare sys.exit("...") reaches stderr with none of the
@@ -2544,8 +2688,13 @@ assert_success "PROVENANCE records the offline route, the member taken and its r
   ipeds_provenance_assert "$IPEDS_OUT/PROVENANCE.json" \
     'provenance["source"] == "fixtures"
      and provenance["fixture_derived"] is True
-     and sorted(artifacts) == ["ADM2023.zip", "C2023_A.zip", "HD2023.zip", "IC2023.zip", "IC2023_AY.zip"]
-     and all(a["rows"] == 3 for a in artifacts.values())
+     and sorted(artifacts) == ["ADM2023.zip", "C2023_A.zip", "HD2023.zip",
+                               "IC2023.zip", "IC2023_AY.zip", "SFA2223.zip",
+                               "SFA2223_Dict.zip"]
+     and all(artifacts[a]["rows"] == 3
+             for a in ["ADM2023.zip", "C2023_A.zip", "HD2023.zip", "IC2023.zip", "IC2023_AY.zip"])
+     and artifacts["SFA2223.zip"]["rows"] == 7
+     and artifacts["SFA2223_Dict.zip"]["rows"] is None
      and all(a["fetched_at"] == provenance["fetched_at"] for a in artifacts.values())'
 
 # The three RFC 144 traps are properties of the ZIP MEMBERSHIP, so they need real
@@ -2587,6 +2736,15 @@ archive("C2023_A.zip", {"C2023_a.csv": body(4, True)})
 # filter is one refactor away from being a fallback. The synthesised archive
 # gives it one, deliberately larger, so taking it would show in the row count.
 archive("IC2023_AY.zip", {"ic2023_ay.csv": body(4), "ic2023_ay_RV.csv": body(9)})
+# Trap 4 (RFC 162 D2): SFA is the ONE artifact that declares prefer_revised, so
+# the same _RV shape that must be IGNORED for IC2023 must be TAKEN here. The
+# revision is again deliberately larger, so which member was read is visible in
+# the row count rather than merely plausible.
+archive("SFA2223.zip", {"sfa2223.csv": body(4), "sfa2223_rv.csv": body(9)})
+# The imputation-code dictionary is an .xlsx: not text, never decoded, written
+# and digested byte for byte, and it has no row count. A zip signature inside
+# the bytes would make it look like a nested archive, so the payload is plain.
+archive("SFA2223_Dict.zip", {"sfa2223.xlsx": b"\x50\x4b\x03\x04-not-really" + bytes(range(64))})
 DAMAGE = {
     # Nothing to resolve at all.
     "no-csv": {"HD2023.txt": body(4), "readme.md": b"not a survey\n"},
@@ -2616,6 +2774,20 @@ assert_success "the _RV revised member is never the one taken" \
 assert_success "the _RV refusal covers IC2023_AY too, not only the two archives that ship one today" \
   ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["IC2023_AY.zip"]["member"] == "ic2023_ay.csv" and artifacts["IC2023_AY.zip"]["rows"] == 4'
+# RFC 162 D2: the SAME archive shape, the OPPOSITE choice, because SFA declares
+# prefer_revised. Asserted against IC2023 above rather than alone -- the claim is
+# that the rule is per-artifact and DECLARED, not that _RV is globally preferred.
+assert_success "the SFA artifact takes the _RV member the ingest is pinned away from elsewhere" \
+  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+    'artifacts["SFA2223.zip"]["member"] == "sfa2223_rv.csv"
+     and artifacts["SFA2223.zip"]["rows"] == 9
+     and artifacts["IC2023.zip"]["member"] != "IC2023_RV.csv"'
+# A member that is not text has no row count, and None is a different fact from
+# zero: a 0 here would arm the shrink guard against a file that never had rows.
+assert_success "the dictionary member is byte-passed and carries no row count" \
+  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+    'artifacts["SFA2223_Dict.zip"]["member"] == "sfa2223.xlsx"
+     and artifacts["SFA2223_Dict.zip"]["rows"] is None'
 assert_success "a BOM-carrying member and a BOM-less member parse to the same row count" \
   ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["HD2023.zip"]["rows"] == artifacts["ADM2023.zip"]["rows"]
@@ -2663,9 +2835,9 @@ ipeds_zip_variant_refused() {
 }
 
 assert_success "an archive with no .csv member at all is refused by name, writing nothing" \
-  ipeds_zip_variant_refused no-csv "holds no .csv member"
+  ipeds_zip_variant_refused no-csv "holds no [.csv] member"
 assert_success "two candidate non-_RV members are refused, never guessed between" \
-  ipeds_zip_variant_refused ambiguous "non-_RV .csv"
+  ipeds_zip_variant_refused ambiguous "non-_RV members are"
 # The renamed case: no member carries the published name and exactly one non-_RV
 # member is left. Taking it would write an UNPUBLISHED member under the expected
 # filename and exit 0 -- so the one case a human must review would be the only
@@ -2683,7 +2855,14 @@ assert_success "a sole non-_RV member under an unpublished name is refused, neve
 ipeds_empty_member_refused() {
   local emptiness="$1" recorded="$2" fixtures out output status listing
   fixtures="$(mktemp -d)"; out="$(mktemp -d)"
-  cp "$recorded"/ipeds-*2023*-fixture.csv "$fixtures/"
+  # Every fixture bin/fetch-ipeds declares, named rather than globbed: the SFA
+  # pair is keyed by AID year (2223), so a "*2023*" glob silently skipped it and
+  # the run died on a missing fixture instead of on the guard under test.
+  cp "$recorded"/ipeds-hd2023-fixture.csv "$recorded"/ipeds-ic2023-fixture.csv \
+    "$recorded"/ipeds-adm2023-fixture.csv "$recorded"/ipeds-c2023-a-fixture.csv \
+    "$recorded"/ipeds-ic2023-ay-fixture.csv \
+    "$recorded"/ipeds-sfa2223-fixture.csv "$recorded"/ipeds-sfa2223-dict-fixture.xlsx \
+    "$fixtures/"
   case "$emptiness" in
     header-only) head -1 "$recorded/ipeds-hd2023-fixture.csv" > "$fixtures/ipeds-hd2023-fixture.csv" ;;
     zero-byte) : > "$fixtures/ipeds-hd2023-fixture.csv" ;;
@@ -2723,7 +2902,9 @@ assert_success "a zero-byte member is refused by the SAME guard, and nothing is 
 IPEDS_SHRINK_BASELINE="$(python3 - "$PROJECT_ROOT/bin/fetch-ipeds" "$IPEDS_OUT/PROVENANCE.json" << 'PY'
 import json, re, sys
 floor = float(re.search(r"^SEED_SHRINK_FLOOR = (\S+)$", open(sys.argv[1]).read(), re.M).group(1))
-rows = max(a["rows"] for a in json.load(open(sys.argv[2]))["artifacts"].values())
+# The dictionary artifact is not text and has NO row count (None); it is not a
+# candidate for a row-count baseline and must not be compared as a number.
+rows = max(a["rows"] for a in json.load(open(sys.argv[2]))["artifacts"].values() if a["rows"] is not None)
 # Strictly above rows/floor, so `rows < floor * baseline` holds for every artifact.
 print(int(rows / floor) + 1)
 PY
@@ -2737,13 +2918,16 @@ test_ipeds_shrink_refused() {
   # write makes a leaked write byte-identical to the untouched file, so the
   # "nothing was written" claim could not fail. Its digest is the evidence.
   local name
-  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv; do
+  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv sfa2223.csv; do
     printf 'SENTINEL,%s\n' "$name" > "$out/$name"
   done
   before="$(cat "$out"/*.csv | shasum -a 256)"
   provenance_rewrite "$out/PROVENANCE.json" "
 for artifact in provenance['artifacts'].values():
-    artifact['rows'] = $collapsed
+    # Only an artifact that HAS a row count can have a collapsed one; giving the
+    # dictionary a number would arm a guard against a file with no rows.
+    if artifact['rows'] is not None:
+        artifact['rows'] = $collapsed
 "
   output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
   status=$?
@@ -2802,7 +2986,10 @@ test_ipeds_shrink_refused_with_fresh_outdir() {
   cp "$baseline/PROVENANCE.json" "$out/"
   provenance_rewrite "$out/PROVENANCE.json" "
 for artifact in provenance['artifacts'].values():
-    artifact['rows'] = $collapsed
+    # Only an artifact that HAS a row count can have a collapsed one; giving the
+    # dictionary a number would arm a guard against a file with no rows.
+    if artifact['rows'] is not None:
+        artifact['rows'] = $collapsed
 "
   output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
   status=$?
@@ -2910,7 +3097,7 @@ test_ipeds_fresh_outdir_writes_and_warns() {
   out="$(mktemp -d)/fresh"
   output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
   status=$?
-  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv PROVENANCE.json; do
+  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv sfa2223.csv sfa2223.xlsx PROVENANCE.json; do
     [ -s "$out/$name" ] || { rm -rf "$out"; log-error "no [$name]"; return 1; }
   done
   rm -rf "$out"
@@ -3049,7 +3236,7 @@ PY
 assert_success "the committed db/seed/ipeds manifest records a real network fetch, ISO-dated" \
   test_ipeds_committed_is_a_network_record
 
-# 2. The zips are not committed, so these five digests -- verified by the
+# 2. The zips are not committed, so these seven digests -- verified by the
 # operator against the real download -- are the only thing standing between this
 # manifest and an invented one. Pinned here rather than derived from the file
 # they check.
@@ -3067,6 +3254,8 @@ VERIFIED = {
     # RFC 161. IC2023_AY_RV.zip is an HTTP 404 today: this archive is already
     # the final release, which is why the _RV refusal must stay a fatal.
     "IC2023_AY.zip": (309736, "42d3ee39a107d69b6da02df2ffa934ebe3bb76657568fb9efb7027b6ce0d69ee"),
+    "SFA2223.zip": (1913114, "144f97dc24492febc772e2aed6c7eb543037ed56274a49cbae0e743cf717e2df"),
+    "SFA2223_Dict.zip": (79497, "466b5e12ac11361c69783de01ecc741890a86096ae2e55203f4a0e729dc93c83"),
 }
 if set(provenance["artifacts"]) != set(VERIFIED):
     sys.exit(f"artifacts are {sorted(provenance['artifacts'])}, expected {sorted(VERIFIED)}")
@@ -3078,7 +3267,7 @@ for name, (size, digest) in VERIFIED.items():
         sys.exit(f"{name}: sha256 {artifact['sha256']} is not the verified digest")
 PY
 }
-assert_success "the committed manifest pins the five operator-verified archive digests" \
+assert_success "the committed manifest pins the seven operator-verified archive digests" \
   test_ipeds_committed_digests_are_the_verified_ones
 
 # 3. The member half of the record: the url names the archive, both digests are
@@ -3100,7 +3289,9 @@ for name, artifact in provenance["artifacts"].items():
         sys.exit(f"{name}: the committed member is the _RV revision")
     # The real surveys carry thousands of institutions; a manifest recording a
     # handful is a fixture replay that got committed by accident.
-    if artifact["rows"] < 1000:
+    # The dictionary is an .xlsx and has no rows at all; None is that fact, and
+    # comparing it against 1000 would be comparing a fact that does not exist.
+    if artifact["rows"] is not None and artifact["rows"] < 1000:
         sys.exit(f"{name}: {artifact['rows']} rows is not a real IPEDS survey")
 PY
 }
@@ -3307,7 +3498,8 @@ test_ipeds_string_rows_warns_with_the_value() {
   cp "$baseline/PROVENANCE.json" "$out/"
   provenance_rewrite "$out/PROVENANCE.json" '
 for artifact in provenance["artifacts"].values():
-    artifact["rows"] = str(artifact["rows"])
+    if artifact["rows"] is not None:
+        artifact["rows"] = str(artifact["rows"])
 '
   output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
   status=$?
@@ -3344,6 +3536,40 @@ test_ipeds_outdir_is_a_file_refused() {
 }
 assert_success "an -o naming an existing file is a usage error, not a traceback" \
   test_ipeds_outdir_is_a_file_refused
+
+# The year an artifact is FOR is declared as its survey's constant, and the
+# archive NAMES are literals, so nothing makes the two agree: a bump that edits
+# one and not the other is exactly the half-done change require_survey_year
+# exists to catch. Driven against an EDITED COPY of the script -- the one input
+# that cannot be supplied at the command line -- and checked at startup, so the
+# copy is invoked with an -F that does not exist: were the year check ever to
+# stop firing, the run would die on the missing fixture directory rather than
+# quietly reach the network.
+test_ipeds_stale_year_refused() {
+  local constant="$1" bumped="$2" root script output status
+  root="$(mktemp -d)"
+  mkdir -p "$root/bin"
+  script="$root/bin/fetch-ipeds"
+  sed "s/^$constant = .*/$constant = $bumped/" "$PROJECT_ROOT/bin/fetch-ipeds" > "$script"
+  chmod +x "$script"
+  grep -qxF "$constant = $bumped" "$script" \
+    || { log-error "the [$constant] bump did not apply to the copy"; rm -rf "$root"; return 1; }
+  output="$("$script" -F "/no/such/$$-ipeds-fixtures" -o "$root/out" 2>&1)"
+  status=$?
+  rm -rf "$root"
+  case "$output" in
+    *Traceback*) log-error "raw traceback [$output]"; return 1 ;;
+  esac
+  [ "$status" -ne 0 ] || { log-error "a stale [$constant] was accepted, output [$output]"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"expects year [$bumped]"*"does not spell"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "a bumped SURVEY_YEAR the archive names do not spell is fatal at startup" \
+  test_ipeds_stale_year_refused SURVEY_YEAR 2024
+assert_success "the SFA aid year is checked separately, against its own archive names" \
+  test_ipeds_stale_year_refused SFA_AID_YEAR 2023
 
 # The DOWNLOAD percentage is the half of the progress an offline replay can never
 # exercise -- a fixture is read in one go -- so it is driven directly here,
@@ -3444,14 +3670,16 @@ test_ipeds_logs_to_stderr_and_stdout_stays_empty() {
   # result lines that used to live on stdout.
   local phrase
   for phrase in \
-    "Fetching [5] IPEDS survey archives" \
-    "[1/5] [HD2023.zip]" \
-    "[5/5] [IC2023_AY.zip] -> member" \
+    "Fetching [7] IPEDS survey archives" \
+    "[1/7] [HD2023.zip]" \
+    "[5/7] [IC2023_AY.zip] -> member" \
+    "[7/7] [SFA2223_Dict.zip] -> member" \
     "data rows" \
     "Checking every artifact produced data rows" \
-    "Writing [6] files" \
+    "Writing [8] files" \
     "IPEDS survey files written to" \
-    "-y 2023"; do
+    "-y 2023" \
+    "-f 2022"; do
     grep -qF -- "$phrase" "$stderr" \
       || { log-error "stderr does not report [$phrase]"; ipeds_stderr_cleanup; return 1; }
   done

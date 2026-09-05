@@ -1,5 +1,5 @@
 {
-  "fetched_at": "2026-09-05T04:31:58+00:00",
+  "fetched_at": "2026-09-05T04:50:26+00:00",
   "source": "network",
   "fixture_derived": false,
   "artifacts": {
@@ -52,6 +52,26 @@
       "member_bytes": 3426048,
       "member_sha256": "a534c8d8376274b86cf1fce17f3bf5f6adb9c5b3d60b93358e634185dc165686",
       "rows": 3825
+    },
+    "SFA2223.zip": {
+      "url": "https://nces.ed.gov/ipeds/datacenter/data/SFA2223.zip",
+      "fetched_at": "2026-09-05T04:50:26+00:00",
+      "bytes": 1913114,
+      "sha256": "144f97dc24492febc772e2aed6c7eb543037ed56274a49cbae0e743cf717e2df",
+      "member": "sfa2223.csv",
+      "member_bytes": 13027443,
+      "member_sha256": "71d764c406ad60ffe37ddd822132920a4423b1c86a8ccfdf34c50c6f1a20706e",
+      "rows": 5653
+    },
+    "SFA2223_Dict.zip": {
+      "url": "https://nces.ed.gov/ipeds/datacenter/data/SFA2223_Dict.zip",
+      "fetched_at": "2026-09-05T04:50:26+00:00",
+      "bytes": 79497,
+      "sha256": "466b5e12ac11361c69783de01ecc741890a86096ae2e55203f4a0e729dc93c83",
+      "member": "sfa2223.xlsx",
+      "member_bytes": 83615,
+      "member_sha256": "a5c5d5ed1837c8d6ec9c3ea0b638bcbdc02afae43ba0ff3f7e497fa1bf0b965c",
+      "rows": null
     }
   }
 }

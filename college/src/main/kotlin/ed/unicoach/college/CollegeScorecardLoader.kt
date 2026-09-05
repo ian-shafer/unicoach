@@ -18,6 +18,7 @@ import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UpsertOutcome
 import ed.unicoach.db.models.College
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
@@ -66,6 +67,10 @@ class CollegeScorecardLoader(
   // is then observable from a test that hands in a loader, instead of only from
   // three real CSVs and a hidden table.
   private val cdsSeedLoader: CdsSeedLoader = CdsSeedLoader(database),
+  // The IPEDS SFA staging half (RFC 162), injected like every other phase
+  // loader rather than constructed mid-`ingest`: whether the phase RUNS is
+  // decided by the nullable `sfa` group, never by whether a loader exists.
+  private val sfaLoader: CollegeSfaLoader = CollegeSfaLoader(database, ioDispatcher),
   // The published-codebook half (RFC 147), injected for the same reason as the
   // CDS loader above: the phase ordering is then observable from a test that
   // hands in a loader.
@@ -448,6 +453,11 @@ class CollegeScorecardLoader(
     val buildId: java.util.UUID,
     val ipeds: IpedsReport? = null,
     /**
+     * The SFA staging load's outcome (RFC 162), `null` when that group was not
+     * supplied -- the same omit-vs-zero distinction [ipeds] draws.
+     */
+    val sfa: SfaLoadResult? = null,
+    /**
      * The CDS seed load's outcome (RFC 148), `null` when the group was not
      * supplied — the same omit-vs-zero distinction [ipeds] draws. The caller
      * renders it; this run only records it.
@@ -568,6 +578,27 @@ class CollegeScorecardLoader(
               "re-run with --ic-ay to prune them",
           )
         }
+        // The SFA line, under the same rule: printed only when that group was
+        // supplied (RFC 162).
+        sfa?.let { result ->
+          appendLine(
+            "sfa:      [${result.seen}] records seen — [${result.institutionsLoaded}] institutions, " +
+              "[${result.cellsWritten}] staged cells, [${result.skipped}] records skipped " +
+              "([${result.unmatchedIpedsUnitIds}] not in the colleges universe)",
+          )
+          // The two published-number losses, printed only when there ARE some
+          // (the omit-vs-zero rule the lines above follow). A number that left
+          // the system must not be visible only in the log of the loader that
+          // dropped it: this is the summary an operator actually reads.
+          if (result.valuesDroppedUnderNotApplicable.isNotEmpty() || result.valuesUnreadable.isNotEmpty()) {
+            appendLine(
+              "          published values dropped: " +
+                "[${result.valuesDroppedUnderNotApplicable.values.sum()}] under a not-applicable flag " +
+                "[${result.valuesDroppedUnderNotApplicable}], " +
+                "[${result.valuesUnreadable.values.sum()}] unreadable [${result.valuesUnreadable}]",
+            )
+          }
+        }
         // Printed only when a codebook source was supplied: a run without one
         // must not print a fabricated "0 domains" (the IPEDS omit-vs-zero rule).
         codebooks?.let {
@@ -627,6 +658,7 @@ class CollegeScorecardLoader(
     fields: SourceFile,
     aliasesFile: SourceFile,
     ipeds: IpedsSources? = null,
+    sfa: SfaSources? = null,
     cds: CdsSources? = null,
     codebooks: SourceFile? = null,
     subjects: SourceFile? = null,
@@ -657,7 +689,12 @@ class CollegeScorecardLoader(
     // first phase commits -- authored repo data, the subjects contract.
     val parsedMoneyVocabulary = moneyVocabulary?.let { source -> moneyVocabularyLoader.parse(source) }
     ipedsRun?.assertHeaders()
-    // Beside the IPEDS assertion, not inside the cds phase: all ELEVEN files are
+    // Beside the IPEDS assertion, before the first phase commits: every SFA
+    // column the staging loader reads -- each variable AND its computed X twin
+    // -- must exist, so a publisher rename is a startup fatal rather than a
+    // table-wide column of blanks.
+    sfa?.let { sources -> sfaLoader.assertHeaders(sources) }
+    // Beside the IPEDS assertion, not inside the cds phase: all TWELVE files are
     // header-asserted before the first phase commits, so a renamed column in a
     // seed file can never be discovered after institutions, fields, aliases and
     // the two IPEDS phases have already written rows (RFC 148 D10).
@@ -666,6 +703,7 @@ class CollegeScorecardLoader(
       withContext(ioDispatcher) {
         listOf(digest(institution), digest(fields), digest(aliasesFile)) +
           (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList()) +
+          (sfa?.let { listOf(digest(it.survey)) } ?: emptyList()) +
           (cds?.files?.map { digest(it) } ?: emptyList()) +
           (codebooks?.let { listOf(digest(it)) } ?: emptyList()) +
           (subjects?.let { listOf(digest(it)) } ?: emptyList()) +
@@ -737,6 +775,34 @@ class CollegeScorecardLoader(
           nonNullAfter = ipedsNonNullCounts(),
         )
       }
+    // The SFA staging phase (RFC 162) is a ROW phase, beside the two IPEDS
+    // ones and before every derived phase: the `canonical-money` fill below
+    // READS the rows it stages, so it must have committed by then. Given no
+    // SFA group the phase does not run at all AND the fill is handed no group,
+    // so it reads nothing -- the omit-vs-zero rule the other groups follow.
+    // (`college_sfa` is only ever emptied by this phase, so "the fill finds an
+    // empty staging table" would be false: an earlier run's file would still
+    // be standing there. What stops it being read is the argument, not the
+    // table.)
+    val sfaResult =
+      sfa?.let { sources ->
+        phase("sfa", committedPhases) {
+          when (val outcome = sfaLoader.load(sources)) {
+            is SfaLoadOutcome.Staged -> {
+              outcome.result
+            }
+
+            // A vocabulary change in the source: the phase decides this input
+            // state is fatal, on a typed value the loader returned -- and it
+            // stays typed. An `error(...)` here would flatten three named
+            // fields into one sentence a caller can only regex, one line after
+            // the loader took care to return them structured.
+            is SfaLoadOutcome.UnknownImputationFlags -> {
+              throw UnknownImputationFlagException(outcome.flags)
+            }
+          }
+        }
+      }
     // The CDS seed is a row phase like the others, and it runs BEFORE
     // `name-words` and `provenance` so its counts are provenance rather than a
     // number written after the row that should have carried it (RFC 148 D10).
@@ -768,7 +834,7 @@ class CollegeScorecardLoader(
     // provenance (P11). It runs whether or not this run supplied the
     // vocabulary file: the vocabulary TABLES are the precondition (P2), and
     // an empty one fails the fill loudly at the foreign keys.
-    val canonicalMoney = phase("canonical-money", committedPhases) { canonicalMoneyLoader.fill(institution.file) }
+    val canonicalMoney = phase("canonical-money", committedPhases) { canonicalMoneyLoader.fill(institution.file, sfa) }
     // D46's report, and the reason it is here rather than inside the codebooks
     // phase: it counts the codes stored in `colleges`/`college_ipeds`/
     // `college_programs_census`, so it must read the snapshot THIS run just
@@ -801,7 +867,8 @@ class CollegeScorecardLoader(
           startedAt = startedAt,
           finishedAt = finishedAt,
           sources = sources,
-          rowsIngested = rowsIngestedJson(scorecard.colleges, scorecard.programs, aliasResult, ipedsReport, cdsResult),
+          rowsIngested =
+            rowsIngestedJson(scorecard.colleges, scorecard.programs, aliasResult, ipedsReport, sfaResult, cdsResult),
           changeSummary =
             changeSummaryJson(nonNullBefore, nonNullAfter, scorecard.colleges.changed + aliasResult.applied, ipedsReport),
           nameWordsRows = nameWords,
@@ -823,6 +890,7 @@ class CollegeScorecardLoader(
       nonNullAfter = nonNullAfter,
       buildId = buildId,
       ipeds = ipedsReport,
+      sfa = sfaResult,
       cds = cdsResult,
       codebooks = codebookResult,
       subjects = subjectResult,
@@ -862,6 +930,7 @@ class CollegeScorecardLoader(
             searchIndexRows = searchIndexRows,
             priceFigureRows = canonicalMoney.priceFigureRows,
             cohortMoneyStatRows = canonicalMoney.cohortMoneyStatRows,
+            cohortPopulationCountRows = canonicalMoney.cohortPopulationCountRows,
             canonicalMoneySummary = canonicalMoneySummaryJson(canonicalMoney),
             changeSummary = changeSummary,
             methodVersion = METHOD_VERSION,
@@ -883,12 +952,26 @@ class CollegeScorecardLoader(
       putJsonObject("cohort_money_stats") {
         for ((slug, n) in canonicalMoney.cohortMoneyStatStatusCounts.mapKeys { it.key.value }.toSortedMap()) put(slug, n)
       }
+      putJsonObject("cohort_population_counts") {
+        for ((slug, n) in canonicalMoney.cohortPopulationCountStatusCounts.mapKeys { it.key.value }.toSortedMap()) put(slug, n)
+      }
       // The upstream-wins split (RFC 161), under the same rules as the status
       // blocks above: OUR source slugs as keys, and a source that won no rows
       // is OMITTED rather than written as 0 -- "the Scorecard filled nothing"
       // and "the Scorecard was not consulted" are different facts.
       putJsonObject("price_figures_by_source") {
         for ((slug, n) in canonicalMoney.priceFigureSourceCounts.mapKeys { it.key.value }.toSortedMap()) put(slug, n)
+      }
+      // The SFA source's own contribution to the fill (RFC 162), beside the
+      // per-table breakdown rather than inside it: "how many staged cells this
+      // fill read, over how many colleges" is a fact about the SOURCE, and a
+      // zero here on a run whose staging table is empty is the honest answer,
+      // not an omission.
+      putJsonObject("sources") {
+        putJsonObject(MoneySource.IPEDS_SFA.value) {
+          put("cells_read", canonicalMoney.sfaCellsRead)
+          put("colleges", canonicalMoney.sfaCollegesMatched)
+        }
       }
       // Staged IC_AY rows the fill could not map and passed over (RFC 161).
       // Same omit-vs-zero rule: no drift writes an empty object. NESTED, like
@@ -1143,6 +1226,7 @@ class CollegeScorecardLoader(
     programs: ProgramLoadResult,
     aliases: AliasResult,
     ipeds: IpedsReport?,
+    sfa: SfaLoadResult?,
     cds: CdsSeedLoader.LoadResult?,
   ): JsonObject =
     buildJsonObject {
@@ -1222,6 +1306,29 @@ class CollegeScorecardLoader(
           // as its own number rather than as a skip.
           put("selected", census.selected)
           put("unmatched_ipeds_unit_ids", census.unmatchedIpedsUnitIds)
+        }
+      }
+      // The SFA staging load (RFC 162), under the same omit-vs-zero rule.
+      sfa?.let { result ->
+        putJsonObject("sfa") {
+          put("seen", result.seen)
+          put("institutions", result.institutionsLoaded)
+          put("cells", result.cellsWritten)
+          put("skipped", result.skipped)
+          put("unmatched_ipeds_unit_ids", result.unmatchedIpedsUnitIds)
+          putJsonObject("skips_by_reason") {
+            for ((kind, count) in skipsByKind(result.skipsByReason)) put(kind, count)
+          }
+          // The two published-number loss classes, by variable. Provenance is
+          // where a loss that is not a skipped ROW has to be recoverable from:
+          // a run whose log has rotated away is otherwise a run in which a
+          // number silently left the system.
+          putJsonObject("values_dropped_under_not_applicable") {
+            for ((variable, n) in result.valuesDroppedUnderNotApplicable.toSortedMap()) put(variable, n)
+          }
+          putJsonObject("values_unreadable") {
+            for ((variable, n) in result.valuesUnreadable.toSortedMap()) put(variable, n)
+          }
         }
       }
       // The CDS seed (RFC 148), under the same omit-vs-zero rule: no `cds` key
@@ -1596,12 +1703,14 @@ class CollegeScorecardLoader(
      * `cohort_money_stats`, with their row counts and per-status summary on
      * the build row.
      *
-     * 7 = RFC 161's IPEDS IC_AY charges: the `ipeds-charges` staging phase and
-     * a SECOND canonical money source ahead of the Scorecard in
-     * `CanonicalMoneyLoader.ORDERED_SOURCES`. The derivation changes -- the
-     * same college's `tuition_and_fees` / `in_state` figure can now come from
-     * a different publisher with a different number -- so a build row from
-     * this ingest is not comparable to one from the last.
+     * 7 = RFC 161's IPEDS IC_AY charges and RFC 162's IPEDS SFA: the
+     * `ipeds-charges` and `sfa` staging phases, and TWO more canonical money
+     * sources ahead of the Scorecard in `CanonicalMoneyLoader.ORDERED_SOURCES`,
+     * plus the new `cohort_population_counts` table. The derivation changes --
+     * the same college's `tuition_and_fees` / `in_state` figure can now come
+     * from a different publisher with a different number, and a net price can
+     * now be the publisher's own rather than the Scorecard's copy of it -- so a
+     * build row from this ingest is not comparable to one from the last.
      */
     const val METHOD_VERSION = 7
 

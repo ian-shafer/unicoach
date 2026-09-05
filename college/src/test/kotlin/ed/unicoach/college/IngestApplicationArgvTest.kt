@@ -374,6 +374,70 @@ class IngestApplicationArgvTest {
     assertEquals(listOf("institution", "fields", "aliases", "codebooks", "money-vocabulary"), named.map { it.first })
   }
 
+  // ---------------------------------------------------------------------------
+  // The optional SFA group (RFC 162): the IPEDS group's shape, its own year
+  // ---------------------------------------------------------------------------
+
+  private val sfaGroup = arrayOf("--sfa=sfa2223.csv", "--sfa-aid-year=2022")
+
+  @Test
+  fun `a run with no SFA flags parses exactly as before, with no SFA group`() {
+    assertNull(ok().sfa, "absent must stay absent, never an empty-but-present group")
+  }
+
+  @Test
+  fun `the full SFA group parses into the file and the explicit aid year`() {
+    val sfa = assertNotNull(ok(*sfaGroup).sfa)
+    assertEquals("sfa2223.csv", sfa.survey.file.path)
+    // The START year of the FILE's own aid year, taken as given: SFA2223 is
+    // 2022-23, and nothing derives that from the filename.
+    assertEquals(2022, sfa.aidYearStart)
+    assertEquals("sfa2223.csv", sfa.survey.sourceArg)
+    val remote = assertNotNull(ok(*sfaGroup, "--sfa-source=s3://snap/sfa2223.csv").sfa)
+    assertEquals("sfa2223.csv", remote.survey.file.path)
+    assertEquals("s3://snap/sfa2223.csv", remote.survey.sourceArg)
+  }
+
+  @Test
+  fun `a partial SFA group is refused, naming what is missing`() {
+    val missingYear = usage(*positional, "--sfa=sfa2223.csv")
+    assertTrue(missingYear.contains("all-or-nothing"), missingYear)
+    assertTrue(missingYear.contains("--sfa-aid-year"), missingYear)
+    // And the other way round: the year without the file is just as partial.
+    val missingFile = usage(*positional, "--sfa-aid-year=2022")
+    assertTrue(missingFile.contains("all-or-nothing"), missingFile)
+    assertTrue(missingFile.contains("--sfa"), missingFile)
+  }
+
+  @Test
+  fun `an SFA source flag without its file is refused, never silently ignored`() {
+    val message = usage(*positional, codebooksFlag, "--sfa-source=s3://snap/sfa2223.csv")
+    assertTrue(message.contains("--sfa-source"), message)
+    assertTrue(message.contains("was not supplied"), message)
+  }
+
+  @Test
+  fun `a non-numeric or implausible SFA aid year is refused`() {
+    // The year is stamped on every staged cell and every cell's own aid year
+    // is computed from it, so a garbage value must never reach the loader.
+    assertTrue(usage(*positional, "--sfa=sfa2223.csv", "--sfa-aid-year=twenty-22").contains("--sfa-aid-year"))
+    assertTrue(usage(*positional, "--sfa=sfa2223.csv", "--sfa-aid-year=22").contains("--sfa-aid-year"))
+  }
+
+  @Test
+  fun `a repeated or blank SFA flag is refused like any other`() {
+    assertTrue(usage(*positional, *sfaGroup, "--sfa=other.csv").contains("more than once"))
+    assertTrue(usage(*positional, *sfaGroup, "--sfa-aid-year=2021").contains("more than once"))
+    assertTrue(usage(*positional, "--sfa=").contains("non-empty"))
+    assertTrue(usage(*positional, "--sfa-aid-year=").contains("non-empty"))
+  }
+
+  @Test
+  fun `the SFA file joins the existence probe under its own role`() {
+    val named = namedSources(ok(*sfaGroup))
+    assertEquals(listOf("institution", "fields", "aliases", "sfa", "codebooks"), named.map { it.first })
+  }
+
   private fun ipedsGroupWithYear(year: String): Array<String> =
     arrayOf(
       "--hd=HD.csv",

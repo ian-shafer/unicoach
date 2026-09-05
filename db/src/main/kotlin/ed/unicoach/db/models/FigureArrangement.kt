@@ -13,7 +13,7 @@ package ed.unicoach.db.models
  */
 enum class FigureArrangement(
   val value: String,
-  /** TRUE for a way a student actually lives; FALSE only for [NOT_APPLICABLE]. */
+  /** TRUE for a way a student actually lives; FALSE for [NOT_APPLICABLE] and [UNKNOWN]. */
   val isLivingArrangement: Boolean,
 ) {
   ON_CAMPUS("on_campus", true),
@@ -22,6 +22,14 @@ enum class FigureArrangement(
 
   /** The concept does not vary by where the student lives -- explicit, never a NULL default. */
   NOT_APPLICABLE("not_applicable", false),
+
+  /**
+   * The source counted students whose living arrangement it did not determine
+   * (IPEDS GIS4UN/GRN4UN) -- a published category with a real headcount, not
+   * a way of living and not an absence. No price may key on it: a price with
+   * an unknown arrangement is a price about nobody.
+   */
+  UNKNOWN("unknown", false),
   ;
 
   companion object {

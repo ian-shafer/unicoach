@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 """fetch-ipeds: download the IPEDS survey data files bin/ingest-colleges reads.
 
-RFC 144, extended by RFC 161. Downloads the five IPEDS survey data archives
-for SURVEY_YEAR, extracts the one data member from each, and writes the CSVs
-plus a manifest:
+RFC 144, extended by RFC 161 and, for the Student Financial Aid survey, RFC
+162. Downloads the IPEDS survey data archives declared in ARTIFACTS, extracts
+the one data member from each, and writes the members plus a manifest:
 
     db/seed/ipeds/HD2023.csv        institutional characteristics (directory)
     db/seed/ipeds/IC2023.csv        institutional characteristics (survey)
     db/seed/ipeds/adm2023.csv       admissions and test scores
     db/seed/ipeds/C2023_a.csv       completions by CIP code and award level
     db/seed/ipeds/ic2023_ay.csv     published charges, academic-year reporters
+    db/seed/ipeds/sfa2223.csv       student financial aid, aid year 2022-23
+    db/seed/ipeds/sfa2223.xlsx      the SFA data dictionary: the published X
+                                    imputation-code list the ingest's flag
+                                    mapping is transcribed from, pinned by
+                                    digest so the citation is checkable
     db/seed/ipeds/PROVENANCE.json   url, fetched_at, bytes, sha256 per archive,
                                     plus the member taken, its digest and its
                                     data-row count
 
-The CSVs are NOT committed: extracted they are ~66 MB against a 16 MB .git (~11
-MB as the five zips) -- the one place that figure is stated, in one unit system
+Two YEARS, because the publisher keys the surveys differently: HD/IC/ADM/C_A
+are the 2023 COLLECTION year, while SFA2223 is AID year 2022-23 and is
+published a collection later. Each artifact declares its expected year as the
+constant of its survey, and require_survey_year checks the archive NAME spells
+that year, so a half-done bump of either is fatal at startup.
+
+The members are NOT committed: extracted they are ~86 MB against a 16 MB .git
+(~13 MB as the seven archives) -- the one place that figure is stated, in one
+unit system
 -- so db/seed/ipeds/ is gitignored except for PROVENANCE.json and
 FETCH-NOTES.md. That manifest is the committed record of the real fetch AND the
 baseline the shrink guard below reads, which is why an offline (-F) replay is
@@ -42,15 +54,23 @@ ALL member interpretation lives here (the ingest is handed plain CSV paths):
     ships HD2023.csv and IC2023.csv but adm2023.csv and C2023_a.csv, and the
     casing is not a rule anyone published.
   * IC2023.zip and C2023_A.zip also ship a REVISED member (IC2023_RV.csv,
-    C2023_a_RV.csv). The NON-_RV member is taken. IC2023_AY.zip ships none
-    today and IC2023_AY_RV.zip is a 404, which is exactly why the refusal stays
-    a FATAL rather than becoming a fallback: the day one appears, a human
-    decides, not this script. The _RV file is a later
-    revision of the same survey -- for IC2023 a reordered 141-column superset --
-    so which one you get would depend on when you fetched. The ingest is pinned
-    to the survey as originally published, so that a re-fetch of a named survey
-    year reproduces the same rows and a revision arrives as a reviewed change of
-    this script, not as a silent change of the data.
+    C2023_a_RV.csv). For them the NON-_RV member is taken. The _RV file is a
+    later revision of the same survey -- for IC2023 a reordered 141-column
+    superset -- so which one you get would depend on when you fetched. The
+    ingest is pinned to the survey as originally published, so that a re-fetch
+    of a named survey year reproduces the same rows and a revision arrives as a
+    reviewed change of this script, not as a silent change of the data.
+    IC2023_AY.zip ships no revised member today and IC2023_AY_RV.zip is a 404,
+    which is exactly why an archive holding only an _RV member stays a FATAL
+    rather than becoming a fallback: the day one appears, a human decides, not
+    this script.
+  * SFA is the one artifact that declares prefer_revised (RFC 162 D2), and the
+    difference is money, not layout: sfa2122_rv.csv restates 3,612 cells of
+    sfa2122.csv, including 32 institutions' overall net price. Taking the
+    original there would mean knowingly ingesting a number the publisher has
+    withdrawn. The choice is still DECLARED per artifact, and PROVENANCE.json
+    records WHICH member was actually read, so a revision landing is a visible
+    member change (the member-drift guard) rather than a silent one.
   * An archive that holds no member under the published name is FATAL. A sole
     surviving member under an unpublished name is exactly the case a human must
     look at, so it is never substituted in silently.
@@ -95,7 +115,8 @@ The run REFUSES to write an artifact that resolved to a member with ZERO data
 rows, REFUSES to write when a data-row count collapsed against the count
 PROVENANCE.json recorded, and REFUSES to write when the resolved member NAME is
 not the one PROVENANCE.json recorded. Nothing is written until all three pass,
-and the write itself is all-or-nothing across the five CSVs AND the manifest.
+and the write itself is all-or-nothing across every extracted member AND the
+manifest.
 """
 
 import contextlib
@@ -136,9 +157,10 @@ ROUTE_FIXTURES = "fixtures"
 # neither, which joins the protected side.
 ROUTE_UNKNOWN = "unknown"
 
-# The IPEDS survey year these archives publish. bin/ingest-colleges stamps it on
-# every college_ipeds row via --survey-year, so the command printed at the end of
-# a run carries THIS value rather than whatever the operator last pasted.
+# The IPEDS COLLECTION year the HD/IC/ADM/C_A archives publish.
+# bin/ingest-colleges stamps it on every college_ipeds row via --survey-year, so
+# the command printed at the end of a run carries THIS value rather than
+# whatever the operator last pasted.
 #
 # The archive and member names in ARTIFACTS below are deliberately kept as
 # LITERALS instead of being built from it: their casing is irregular (HD2023.csv
@@ -147,43 +169,80 @@ ROUTE_UNKNOWN = "unknown"
 # checks the two agree, which makes a half-done year bump fatal at startup.
 SURVEY_YEAR = 2023
 
+# The START year of the SFA AID year (SFA2223 -> 2022-23 -> 2022). A second
+# constant rather than a second meaning for the first: SFA covers the aid year
+# BEFORE the collection year it ships in, so one number cannot label both
+# surveys without lying about one of them. bin/ingest-colleges stamps this on
+# every college_sfa row via -f (RFC 162).
+SFA_AID_YEAR = 2022
+
 
 class Artifact(NamedTuple):
     """One published survey artifact, by NAME rather than by tuple position.
 
-    archive, member_csv and fixture_csv are three look-alike strings that differ
-    by a few characters ("HD2023.zip" / "HD2023.csv"), and a positional unpacking
-    that swapped two of them would still run -- it would just download the right
-    file and look for the wrong member. bin/fetch-cds-seed already states this
-    house rule; this is the same rule applied here.
+    archive, member_name and fixture_name are three look-alike strings that
+    differ by a few characters ("HD2023.zip" / "HD2023.csv"), and a positional
+    unpacking that swapped two of them would still run -- it would just download
+    the right file and look for the wrong member. bin/fetch-cds-seed already
+    states this house rule; this is the same rule applied here.
 
-    year is carried per row rather than inferred from the archive name, so
-    require_survey_year compares a DECLARED field by equality instead of asking
-    whether "2023" appears somewhere inside "HD2024_from2023.zip"."""
+    expected_year is the year the artifact's data is FOR, named per row as the
+    module constant of its survey (SURVEY_YEAR for the collection artifacts,
+    SFA_AID_YEAR for the two SFA ones). It is a declaration, never inferred from
+    the archive name; require_survey_year checks the name spells it.
+
+    ingest_option is None for an artifact bin/ingest-colleges does not read --
+    the SFA dictionary is pinned for its digest and its citation, not fed to a
+    loader -- so the printed command names only what the ingest takes.
+
+    is_text is False for a member that is not text at all (the dictionary's
+    .xlsx). Such a member is written and digested byte for byte, and the
+    row-count guards simply do not apply to it: `rows` is None, which is a
+    different fact from zero and is not allowed to become one.
+
+    prefer_revised inverts the _RV rule for ONE artifact family (RFC 162 D2)."""
 
     archive: str
-    member_csv: str
-    fixture_csv: str
-    ingest_option: str
-    year: int
+    member_name: str
+    fixture_name: str
+    ingest_option: str | None
+    expected_year: int
+    is_text: bool = True
+    prefer_revised: bool = False
 
 
 # The artifacts. These are the plain DATA zips. Do NOT confuse them with the
 # *_Stata.zip syntax archives bin/fetch-codebooks handles -- two different
 # downloads with two different manifests, deliberately not sharing code. The
-# member_csv is the name the extracted CSV is WRITTEN under, so the printed
+# member_name is the name the extracted member is WRITTEN under, so the printed
 # ingest command is copy-pasteable; the member actually resolved inside the
-# archive is recorded in PROVENANCE.json. The fixture_csv is the recorded
+# archive is recorded in PROVENANCE.json. The fixture_name is the recorded
 # stand-in an offline (-F) run accepts under that exact name, beside the
 # archive's own name. ingest_option is the bin/ingest-colleges SHORT flag the
 # written file is passed as (that script takes short options only, like every
 # other script in bin/), so the printed command has ONE declaration of it.
 ARTIFACTS = (
-    Artifact("HD2023.zip", "HD2023.csv", "ipeds-hd2023-fixture.csv", "-H", 2023),
-    Artifact("IC2023.zip", "IC2023.csv", "ipeds-ic2023-fixture.csv", "-I", 2023),
-    Artifact("ADM2023.zip", "adm2023.csv", "ipeds-adm2023-fixture.csv", "-A", 2023),
-    Artifact("C2023_A.zip", "C2023_a.csv", "ipeds-c2023-a-fixture.csv", "-C", 2023),
-    Artifact("IC2023_AY.zip", "ic2023_ay.csv", "ipeds-ic2023-ay-fixture.csv", "-Y", 2023),
+    Artifact("HD2023.zip", "HD2023.csv", "ipeds-hd2023-fixture.csv", "-H", SURVEY_YEAR),
+    Artifact("IC2023.zip", "IC2023.csv", "ipeds-ic2023-fixture.csv", "-I", SURVEY_YEAR),
+    Artifact("ADM2023.zip", "adm2023.csv", "ipeds-adm2023-fixture.csv", "-A", SURVEY_YEAR),
+    Artifact("C2023_A.zip", "C2023_a.csv", "ipeds-c2023-a-fixture.csv", "-C", SURVEY_YEAR),
+    Artifact("IC2023_AY.zip", "ic2023_ay.csv", "ipeds-ic2023-ay-fixture.csv", "-Y", SURVEY_YEAR),
+    Artifact(
+        "SFA2223.zip",
+        "sfa2223.csv",
+        "ipeds-sfa2223-fixture.csv",
+        "-S",
+        SFA_AID_YEAR,
+        prefer_revised=True,
+    ),
+    Artifact(
+        "SFA2223_Dict.zip",
+        "sfa2223.xlsx",
+        "ipeds-sfa2223-dict-fixture.xlsx",
+        None,
+        SFA_AID_YEAR,
+        is_text=False,
+    ),
 )
 
 # A revised release of a member, published alongside the original. LOWERCASE is
@@ -300,31 +359,48 @@ def format_bytes(count):
     raise AssertionError("unreachable")
 
 
+def year_tokens(year):
+    """The two ways a published IPEDS archive name spells one year: the plain
+    four digits ("2023" in HD2023.zip) and the ACADEMIC SPAN the aid-year files
+    use ("2223" in SFA2223.zip, i.e. 2022-23). Named here so require_survey_year
+    below states the rule once rather than special-casing SFA."""
+    return (str(year), f"{year % 100:02d}{(year + 1) % 100:02d}")
+
+
 def require_survey_year():
-    """Every artifact in ARTIFACTS declares SURVEY_YEAR.
+    """Every artifact declares the year its data is FOR, as a module constant.
 
-    The archive names are literals (their casing is irregular and must stay
-    visible) and the year is a constant, so nothing makes them agree by
-    construction. A year bump that renamed four of the five archives, or that
-    renamed all five and left SURVEY_YEAR behind, would otherwise stamp the wrong
-    year on every college_ipeds row with no error anywhere.
+    A collection artifact names SURVEY_YEAR and an SFA one names SFA_AID_YEAR
+    (RFC 162 §5): SFA covers the aid year BEFORE the collection it ships in, so
+    one number cannot label both without lying about one of them, and naming the
+    constant in the row means a bump is edited in exactly one place per survey.
 
-    The comparison is against the DECLARED year field, by equality. A
-    substring test on the archive name -- "2023" in "HD2024_from2023.zip" --
-    passes for exactly the half-done bump this exists to catch, and also passes
-    for IC2023_Stata.zip, the codebook archive this script must never touch.
-    Checked at startup, before a byte is fetched."""
+    What nothing makes agree by construction is the ARCHIVE NAMES. They are
+    literals -- their casing is irregular (HD2023.csv but adm2023.csv) and must
+    stay visible -- so this checks that each archive name SPELLS its artifact's
+    expected year, in one of the two forms the publisher uses (year_tokens). A
+    half-done bump, renaming the archives but not the constant or the constant
+    but not the archives, is then fatal at startup, before a byte is fetched,
+    instead of stamping the wrong year on every ingested row.
+
+    The name is checked, never READ: the expected year stays a declaration. A
+    substring test on the archive name alone was rejected as the ONLY check
+    because it says nothing about the constant the ingest is actually told --
+    "2023" appears in HD2024_from2023.zip and in IC2023_Stata.zip, the codebook
+    archive this script must never touch."""
     stale = sorted(
-        f"[{artifact.archive}] declares [{artifact.year}]"
+        f"[{artifact.archive}] expects year [{artifact.expected_year}], which its name "
+        f"does not spell as {bracketed(year_tokens(artifact.expected_year))}"
         for artifact in ARTIFACTS
-        if artifact.year != SURVEY_YEAR
+        if not any(token in artifact.archive for token in year_tokens(artifact.expected_year))
     )
     if stale:
         fatal(
-            f"SURVEY_YEAR is [{SURVEY_YEAR}] but {', '.join(stale)}; a survey-year "
-            f"bump must move ARTIFACTS and SURVEY_YEAR together, or the ingest is told "
-            f"the wrong year for the data it is given"
+            f"{', '.join(stale)}; a year bump must move ARTIFACTS and that survey's "
+            f"constant together, or the ingest is told the wrong year for the data it "
+            f"is given"
         )
+
 
 
 # ---------------------------------------------------------------------------
@@ -509,13 +585,13 @@ def find_fixture(fixtures, artifact):
     table actually names."""
     candidates = [
         path
-        for path in (fixtures / artifact.archive, fixtures / artifact.fixture_csv)
+        for path in (fixtures / artifact.archive, fixtures / artifact.fixture_name)
         if path.is_file()
     ]
     if not candidates:
         fatal(
             f"no fixture for [{artifact.archive}] in [{fixtures}]: expected "
-            f"[{artifact.archive}] or [{artifact.fixture_csv}]"
+            f"[{artifact.archive}] or [{artifact.fixture_name}]"
         )
     if len(candidates) > 1:
         fatal(
@@ -536,31 +612,68 @@ def is_revised_release(member):
     return PurePosixPath(member).stem.lower().endswith(REVISED_SUFFIX)
 
 
-def resolve_member(archive, origin, expected_member):
-    """The name of the one DATA member of an opened ARCHIVE. (A raw CSV payload
-    has no member to resolve -- the body IS the CSV -- so this is reached only
+def revised_name(member):
+    """The name the REVISED release of `member` is published under: the stem
+    plus REVISED_SUFFIX, same extension. Derived rather than declared, because
+    the convention is the publisher's (sfa2122.csv -> sfa2122_rv.csv) and a
+    second literal per artifact could only disagree with it."""
+    path = PurePosixPath(member)
+    return f"{path.stem}{REVISED_SUFFIX}{path.suffix}"
+
+
+def resolve_member(archive, origin, expected_member, prefer_revised=False):
+    """The name of the one DATA member of an opened ARCHIVE. (A raw payload has
+    no member to resolve -- the body IS the member -- so this is reached only
     for a zip.)
 
-    Everything about this is deliberate. The _RV members are dropped first,
-    because IC2023.zip and C2023_A.zip carry a revised release beside the
-    original and the ingest is pinned to the original. The published name is
-    then matched CASE-INSENSITIVELY, because IPEDS ships HD2023.csv and
-    IC2023.csv but adm2023.csv and C2023_a.csv and the casing is nobody's
-    published rule -- matching the name is the whole point, so an archive that
-    happens to carry a second, unrelated .csv still resolves.
+    Everything about this is deliberate. Candidates are the members sharing the
+    published member's EXTENSION, so the dictionary archive's .xlsx and a
+    survey's .csv are each resolved among their own kind.
+
+    The _RV members are dropped first, because IC2023.zip and C2023_A.zip carry
+    a revised release beside the original and the ingest is pinned to the
+    original -- UNLESS the artifact declares prefer_revised (RFC 162 D2), in
+    which case the revision of the published name is what it wants and taking
+    the original would mean ingesting a number the publisher has withdrawn.
+    Either way the choice is DECLARED, and PROVENANCE.json records which member
+    was read, so the member-drift guard sees a revision landing.
+
+    The published name is then matched CASE-INSENSITIVELY, because IPEDS ships
+    HD2023.csv and IC2023.csv but adm2023.csv and C2023_a.csv and the casing is
+    nobody's published rule -- matching the name is the whole point, so an
+    archive that happens to carry a second, unrelated member still resolves.
 
     A guess is never made, and that is exhaustive: no member under the published
     name is as fatal as two of them. A sole surviving member under an UNPUBLISHED
     name is the case a human most needs to see, so it is refused rather than
     written under the expected file name with a warning nobody reads -- after
     this, `member` in PROVENANCE.json always names a published file."""
-    members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+    suffix = PurePosixPath(expected_member).suffix.lower()
+    members = [name for name in archive.namelist() if name.lower().endswith(suffix)]
     if not members:
-        fatal(f"[{origin}] holds no .csv member (members: {bracketed(archive.namelist())})")
+        fatal(
+            f"[{origin}] holds no [{suffix}] member (members: {bracketed(archive.namelist())})"
+        )
+    if prefer_revised:
+        revised = revised_name(expected_member)
+        wanted = [
+            name for name in members if posixpath.basename(name).lower() == revised.lower()
+        ]
+        if len(wanted) == 1:
+            log_info(
+                f"[{origin}] publishes the revised member [{wanted[0]}]; taking it over "
+                f"[{expected_member}], which it supersedes"
+            )
+            return wanted[0]
+        if len(wanted) > 1:
+            fatal(
+                f"[{origin}] holds [{len(wanted)}] members named [{revised}] "
+                f"{bracketed(wanted)}, expected exactly one (all members: {bracketed(members)})"
+            )
     kept = [name for name in members if not is_revised_release(name)]
     if not kept:
         fatal(
-            f"[{origin}] holds only revised (_RV) .csv members {bracketed(members)}; "
+            f"[{origin}] holds only revised (_RV) members {bracketed(members)}; "
             f"the original release of [{expected_member}] is what the ingest is pinned to"
         )
     named = [name for name in kept if posixpath.basename(name).lower() == expected_member.lower()]
@@ -572,19 +685,25 @@ def resolve_member(archive, origin, expected_member):
             f"{bracketed(named)}, expected exactly one (all members: {bracketed(members)})"
         )
     fatal(
-        f"[{origin}] holds no member named [{expected_member}]; its [{len(kept)}] non-_RV .csv "
+        f"[{origin}] holds no member named [{expected_member}]; its [{len(kept)}] non-_RV "
         f"members are {bracketed(kept)}, and which of them is the survey -- or whether the "
         f"publisher renamed it -- is a review, never a guess "
         f"(all members: {bracketed(members)})"
     )
 
 
-def read_member(body, origin, expected_member, url):
-    """(text, member) for a payload: the one resolved .csv member of a zip, or --
-    on the FIXTURE route only -- the body itself when the payload is already a
-    plain CSV. A raw payload has no member to resolve, so member-name matching
-    applies to zip members only, and the member recorded is the file that was
-    read.
+def read_member(body, origin, expected_member, url, is_text=True, prefer_revised=False):
+    """(member_body, member) for a payload: the one resolved member of a zip, or
+    -- on the FIXTURE route only -- the body itself when the payload is already
+    a plain member. A raw payload has no member to resolve, so member-name
+    matching applies to zip members only, and the member recorded is the file
+    that was read.
+
+    member_body is BYTES, always: a text member (is_text) is decoded and
+    re-encoded UTF-8 first, so the digest describes the file the ingest reads
+    and no BOM survives into a header name; a member that is not text (the SFA
+    dictionary's .xlsx) is passed through byte for byte, because decoding it
+    would be a lie and re-encoding it would corrupt it.
 
     Zip-ness is decided by reading the archive's structure (zipfile.is_zipfile),
     never by the extension -- which is what makes a fixture directory able to
@@ -612,10 +731,10 @@ def read_member(body, origin, expected_member, url):
                 f"published IPEDS artifact is a zip, so this is an error page or a redirect "
                 f"served as a success, not the survey. Body begins [{preview}]"
             )
-        return decode(body, origin), origin
+        return (decode(body, origin).encode("utf-8") if is_text else body), origin
     try:
         with zipfile.ZipFile(io.BytesIO(body)) as archive:
-            member = resolve_member(archive, origin, expected_member)
+            member = resolve_member(archive, origin, expected_member, prefer_revised)
             member_body = archive.read(member)
     except (zipfile.BadZipFile, EOFError, RuntimeError) as error:
         fatal(
@@ -624,7 +743,7 @@ def read_member(body, origin, expected_member, url):
             f"download is the usual cause -- re-run the fetch; an encrypted or otherwise "
             f"unreadable archive is a publisher change and needs a look."
         )
-    return decode(member_body, member), member
+    return (decode(member_body, member).encode("utf-8") if is_text else member_body), member
 
 
 def decode(body, filename):
@@ -656,7 +775,7 @@ def decode(body, filename):
         )
 
 
-def count_data_rows(text, origin, member):
+def count_data_rows(member_body, origin, member):
     """The data rows, header EXCLUDED, counted with csv.reader: a line count
     would miscount the quoted institution names that carry embedded newlines.
 
@@ -673,7 +792,7 @@ def count_data_rows(text, origin, member):
     # inside quoted institution names and csv.reader sees extra rows. An
     # INFLATED count is the dangerous direction -- it can never trip the shrink
     # floor, so a miscount would pass every guard here.
-    reader = csv.reader(io.StringIO(text, newline=""))
+    reader = csv.reader(io.StringIO(member_body.decode("utf-8"), newline=""))
     try:
         if next(reader, None) is None:
             return 0
@@ -688,22 +807,27 @@ def count_data_rows(text, origin, member):
 
 class Source:
     """One survey artifact: the archive it came from, the member taken out of it,
-    and the CSV bytes about to be written. A value: everything it reports is
-    passed in or computed from the bytes, and nothing here can exit."""
+    and the bytes about to be written. A value: everything it reports is
+    passed in or computed from the bytes, and nothing here can exit.
+
+    `rows` is None -- never 0 -- for a member that is not a CSV at all: "this
+    has no data-row count" and "this extraction produced nothing" are different
+    facts, and the guards below refuse the second."""
 
     def __init__(self, artifact, url, body, member, member_body, rows, fetched_at):
         self.artifact = artifact
         self.archive = artifact.archive
-        self.output_csv = artifact.member_csv
+        self.output_name = artifact.member_name
         self.url = url
         self.bytes = len(body)
         self.sha256 = hashlib.sha256(body).hexdigest()
         self.member = member
-        # The CSV exactly as it will be written: decoded, BOM stripped, re-encoded
-        # UTF-8. The digest describes the file the ingest reads, not the member as
-        # it sat compressed in the archive. The decoded TEXT is deliberately not
-        # retained -- C2023_a alone is ~62 MB of it, and nothing reads it after
-        # the row count.
+        # The member exactly as it will be written: for a text member decoded,
+        # BOM stripped and re-encoded UTF-8; for a binary one (the .xlsx
+        # dictionary) the archive's own bytes. The digest describes the file
+        # that lands, not the member as it sat compressed in the archive. The
+        # decoded TEXT is deliberately not retained -- C2023_a alone is ~62 MB
+        # of it, and nothing reads it after the row count.
         self.member_body = member_body
         self.member_bytes = len(member_body)
         self.member_sha256 = hashlib.sha256(member_body).hexdigest()
@@ -724,7 +848,7 @@ class Source:
 
 
 def load_sources(fixtures, fetched_at):
-    """{archive -> Source} for the five artifacts, downloaded, or read from
+    """{archive -> Source} for every artifact, downloaded, or read from
     `fixtures` with no network at all. Nothing is written here: the CSVs land
     only once the counts they carry have been believed.
 
@@ -754,15 +878,22 @@ def load_sources(fixtures, fetched_at):
             log_info(f"{step} [{artifact.archive}] downloading [{url}]")
             body = http_get(url, artifact.archive)
             origin = artifact.archive
-        text, member = read_member(body, origin, artifact.member_csv, url)
-        rows = count_data_rows(text, origin, member)
-        member_body = text.encode("utf-8")
+        member_body, member = read_member(
+            body,
+            origin,
+            artifact.member_name,
+            url,
+            is_text=artifact.is_text,
+            prefer_revised=artifact.prefer_revised,
+        )
+        rows = count_data_rows(member_body, origin, member) if artifact.is_text else None
         # The three facts the guards below are about to decide on -- the member
         # that was resolved, how big it is, and how many data rows it holds --
         # reported as they are learned rather than only when one of them fails.
         log_info(
             f"{step} [{artifact.archive}] -> member [{member}] "
-            f"[{format_bytes(len(member_body))}] [{rows}] data rows"
+            f"[{format_bytes(len(member_body))}] "
+            + (f"[{rows}] data rows" if rows is not None else "(not a CSV; no row count)")
         )
         sources[artifact.archive] = Source(
             artifact,
@@ -929,6 +1060,16 @@ def is_usable_member_name(member):
 # ---------------------------------------------------------------------------
 
 
+def counted_sources(sources):
+    """The artifacts a row count is a fact ABOUT: the CSV members.
+
+    A member that is not a CSV (the SFA dictionary's .xlsx) has no data-row
+    count, and both row guards must skip it rather than read its None as a
+    collapse or as a missing baseline -- which would disarm the shrink guard
+    for the WHOLE run, permanently, on every artifact."""
+    return [source for source in sources.values() if source.artifact.is_text]
+
+
 def require_data_rows(outdir, sources):
     """Refuses an extraction that produced no data.
 
@@ -939,7 +1080,11 @@ def require_data_rows(outdir, sources):
     are NOT the same operator action -- one is a missing or truncated file to
     re-fetch, the other is a real file whose data rows are gone -- so each is
     named for what it is."""
-    log_info(f"Checking every artifact produced data rows ([{len(sources)}] artifacts)")
+    counted = counted_sources(sources)
+    log_info(
+        f"Checking every artifact produced data rows ([{len(counted)}] of [{len(sources)}] "
+        f"artifacts carry a row count)"
+    )
     empty = sorted(
         f"[{source.archive}] -> [{source.member}] "
         + (
@@ -947,7 +1092,7 @@ def require_data_rows(outdir, sources):
             if source.member_bytes == 0
             else f"holds a header and no data rows ([{source.member_bytes}] bytes)"
         )
-        for source in sources.values()
+        for source in counted
         if source.rows == 0
     )
     if empty:
@@ -988,7 +1133,7 @@ def armed_guards(outdir, previous, sources):
     return (
         _warn_unarmed(
             manifest_path,
-            sources,
+            counted_sources(sources),
             get_baseline_rows(previous),
             is_usable_row_count,
             "row count",
@@ -996,7 +1141,7 @@ def armed_guards(outdir, previous, sources):
         ),
         _warn_unarmed(
             manifest_path,
-            sources,
+            list(sources.values()),
             get_baseline_members(previous),
             is_usable_member_name,
             "member name",
@@ -1007,8 +1152,10 @@ def armed_guards(outdir, previous, sources):
 
 
 def _warn_unarmed(manifest_path, sources, recorded, usable, baseline_label, consequence):
-    """Whether one baseline covers every artifact, reporting per artifact it does
-    not and naming the value that made it unusable.
+    """Whether one baseline covers every artifact IN `sources` (a list, because
+    the two guards cover different sets -- only CSV members have a row count),
+    reporting per artifact it does not and naming the value that made it
+    unusable.
 
     The value is printed beside its TYPE rather than as a repr: a row count
     recorded as the string "3" and one recorded as 3 must stay distinguishable,
@@ -1020,7 +1167,7 @@ def _warn_unarmed(manifest_path, sources, recorded, usable, baseline_label, cons
         if source.archive not in recorded
         else f"[{source.archive}] (records {baseline_label} [{recorded[source.archive]}], "
         f"a [{type(recorded[source.archive]).__name__}])"
-        for source in sources.values()
+        for source in sources
         if not usable(recorded.get(source.archive))
     )
     if not unarmed:
@@ -1065,7 +1212,7 @@ def list_row_shrink(manifest_path, previous, sources):
     recorded = get_baseline_rows(previous)
     shrunk = [
         f"[{source.archive}]: [{source.rows}] now, [{recorded[source.archive]}] recorded"
-        for source in sources.values()
+        for source in counted_sources(sources)
         if is_usable_row_count(recorded.get(source.archive))
         and source.rows < SEED_SHRINK_FLOOR * recorded[source.archive]
     ]
@@ -1233,7 +1380,10 @@ def print_summary(outdir, sources, offline, rows_armed, member_armed):
     over two independent checks either overstates a run whose member baseline was
     missing, or understates one whose only gap was a renamed archive -- and this
     line is the whole record an operator has of which protection was in force."""
-    counts = " ".join(f"{source.output_csv}={source.rows}" for source in sources.values())
+    counts = " ".join(
+        f"[{source.output_name}]=[{source.rows if source.rows is not None else 'no row count'}]"
+        for source in sources.values()
+    )
     route = ROUTE_FIXTURES if offline else ROUTE_NETWORK
     guards = (
         f"shrink: {'armed' if rows_armed else 'NOT armed'}, "
@@ -1248,10 +1398,11 @@ def print_ingest_command(outdir, sources):
     """The bin/ingest-colleges command to paste next, built from SURVEY_YEAR and
     the files this run actually wrote.
 
-    -y (the survey year) is stamped on every college_ipeds row and is never
-    guessed from a filename, so an operator pasting a remembered year after an
-    archive bump would mislabel the whole load with no error. Printing it from
-    the constant the archives were just checked against removes the retyping.
+    -y (the collection year, stamped on every college_ipeds row) and -f (the SFA
+    aid year, stamped on every college_sfa row) are never guessed from a
+    filename, so an operator pasting a remembered year after an archive bump
+    would mislabel the whole load with no error. Printing both from the
+    constants the archives were just checked against removes the retyping.
 
     The flag NAMES come from ARTIFACTS, not from a second list typed out here: a
     re-typed key set is a declaration that can disagree with the first one, and
@@ -1262,9 +1413,14 @@ def print_ingest_command(outdir, sources):
     log_info("Feed them to the ingest with:")
     log_info("  nix develop -c bin/ingest-colleges \\")
     for artifact in ARTIFACTS:
-        path = shlex.quote(str(outdir / sources[artifact.archive].output_csv))
+        # An artifact with no ingest_option is pinned for its digest, not fed to
+        # a loader (the SFA dictionary): naming it here would print a command
+        # that fails.
+        if artifact.ingest_option is None:
+            continue
+        path = shlex.quote(str(outdir / sources[artifact.archive].output_name))
         log_info(f"      {artifact.ingest_option} {path} \\")
-    log_info(f"      -y {SURVEY_YEAR} \\")
+    log_info(f"      -y {SURVEY_YEAR} -f {SFA_AID_YEAR} \\")
     log_info("      <institution.csv> <fields.csv>")
 
 
@@ -1397,7 +1553,7 @@ def main(argv):
     # The start line: the ROUTE (the download host, or the fixture directory a
     # replay reads) and the directory this will write. Both are decisions the
     # arguments just made, and both are what an operator checks before letting a
-    # ~66 MB extraction run.
+    # ~86 MB extraction run.
     route = f"fixtures [{fixtures}]" if offline else f"network [{BASE_URL}]"
     log_info(
         f"Fetching [{len(ARTIFACTS)}] IPEDS survey archives from {route} into [{outdir}]"
@@ -1412,16 +1568,16 @@ def main(argv):
     rows_armed, member_armed = armed_guards(outdir, previous, sources)
     require_stable_baseline(outdir, previous, sources)
 
-    # The five members AND the manifest, as one set: a directory holding new CSVs
+    # Every member AND the manifest, as one set: a directory holding new members
     # under the old manifest is the state the guards above exist to prevent.
     provenance = build_manifest(sources, offline, fetched_at)
-    files = [(outdir / source.output_csv, source.member_body) for source in sources.values()] + [
+    files = [(outdir / source.output_name, source.member_body) for source in sources.values()] + [
         (
             outdir / MANIFEST_NAME,
             (json.dumps(provenance, indent=2) + "\n").encode("utf-8"),
         )
     ]
-    # The write is its own wait: the five real members are ~70 MB, staged and
+    # The write is its own wait: the real members are ~86 MB, staged and
     # then renamed, so a run that said nothing here would look finished long
     # before it was.
     log_info(

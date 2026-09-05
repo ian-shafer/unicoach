@@ -37,6 +37,29 @@ enum class IncomeBand(
   ;
 
   /**
+   * The PUBLISHED band digit, 1..5 -- the `N` in the Scorecard's `NPT4N` and
+   * in IPEDS SFA's `NPIS4N`/`NPT4N` series, which are the same five
+   * published cut-points under two publishers' names.
+   *
+   * One home for both halves of the SFA path: the staging loader builds the
+   * variable NAMES it reads from it, and the canonical fill looks the staged
+   * cells back up by it. Two copies of 1..5 could disagree by a stem, and the
+   * fill would then read a column the loader never staged.
+   *
+   * An exhaustive `when` by NAME, never `entries` position: a reorder of this
+   * enum must not be able to file a net price under the wrong bracket.
+   */
+  val bandDigit: Int
+    get() =
+      when (this) {
+        UNDER_30K -> 1
+        K30_TO_48K -> 2
+        K48_TO_75K -> 3
+        K75_TO_110K -> 4
+        OVER_110K -> 5
+      }
+
+  /**
    * The average annual net price, in whole US dollars (USD), a family in this
    * band pays at [college]: the matching `net_price_per_year_income_qN_usd` column (RFC 133). Null
    * when the college did not report that bracket.

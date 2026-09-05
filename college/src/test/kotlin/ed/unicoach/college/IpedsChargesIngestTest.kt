@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.IpedsImputationFlag
 import ed.unicoach.db.models.MoneySource
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
@@ -96,8 +97,8 @@ class IpedsChargesIngestTest : CollegeScorecardTestBase() {
     // Only R and A occur in the real fixture rows, so no other code appears.
     assertEquals(
       setOf(
-        IpedsChargesLoader.ImputationFlag.REPORTED,
-        IpedsChargesLoader.ImputationFlag.NOT_APPLICABLE,
+        IpedsImputationFlag.REPORTED,
+        IpedsImputationFlag.NOT_APPLICABLE,
       ),
       charges.cellsByFlag.keys,
     )

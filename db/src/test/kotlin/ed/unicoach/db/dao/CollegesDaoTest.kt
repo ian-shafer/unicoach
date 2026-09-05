@@ -1885,6 +1885,7 @@ class CollegesDaoTest {
           searchIndexRows = 0,
           priceFigureRows = null,
           cohortMoneyStatRows = null,
+          cohortPopulationCountRows = null,
           canonicalMoneySummary = null,
           changeSummary = JsonObject(emptyMap()),
           methodVersion = 1,
@@ -2075,6 +2076,7 @@ class CollegesDaoTest {
             searchIndexRows = null,
             priceFigureRows = null,
             cohortMoneyStatRows = null,
+            cohortPopulationCountRows = null,
             canonicalMoneySummary = null,
             changeSummary =
               Json
@@ -2119,6 +2121,7 @@ class CollegesDaoTest {
           searchIndexRows = null,
           priceFigureRows = null,
           cohortMoneyStatRows = null,
+          cohortPopulationCountRows = null,
           canonicalMoneySummary = null,
           changeSummary = JsonObject(emptyMap()),
           methodVersion = 1,

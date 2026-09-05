@@ -23,6 +23,9 @@ package ed.unicoach.db.models
 enum class MoneySource(
   val value: String,
 ) {
+  /** IPEDS SFA, the Student Financial Aid survey: net prices, aid mixes and the cohort headcounts under them (RFC 162). */
+  IPEDS_SFA("ipeds_sfa"),
+
   /** IPEDS IC_AY, the published-charges survey: three residency tiers, fees split from tuition. */
   IPEDS_IC_AY("ipeds_ic_ay"),
 

@@ -27,7 +27,8 @@ private const val USAGE =
     "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --ic-ay=ic_ay.csv " +
     "--survey-year=YYYY] " +
     "[--hd-source=ARG] [--ic-source=ARG] [--adm-source=ARG] [--completions-source=ARG] " +
-    "[--ic-ay-source=ARG]"
+    "[--ic-ay-source=ARG] " +
+    "[--sfa=sfa.csv --sfa-aid-year=YYYY] [--sfa-source=ARG]"
 
 /** The recognized `--<name>=<value>` provenance flags, keyed by positional index. */
 private val SOURCE_FLAGS = listOf("institution-source", "fields-source", "aliases-source")
@@ -120,10 +121,33 @@ private const val SURVEY_YEAR_FLAG = "survey-year"
  */
 private val SURVEY_YEAR_RANGE = IpedsLoader.YEAR_RANGE
 
+/**
+ * The optional IPEDS SFA group (RFC 162): the survey file and the START year
+ * of the aid year it publishes, required together or not at all. Its OWN
+ * group rather than two more members of the IPEDS one, because it is a
+ * different survey on a different YEAR FAMILY -- `SFA2223` is aid year
+ * 2022-23, published in the 2023-24 collection -- and folding it in would
+ * break every existing five-flag invocation.
+ */
+private const val SFA_FILE_FLAG = "sfa"
+
+/** The SFA file's provenance partner, exactly as every other source has. */
+private const val SFA_SOURCE_FLAG = "$SFA_FILE_FLAG-source"
+
+/**
+ * The START year of the file's own aid year (SFA2223 -> 2022). EXPLICIT, never
+ * derived from a filename, for [SURVEY_YEAR_FLAG]'s reason -- and a different
+ * number from it: reusing `--survey-year` would stamp the collection year on
+ * rows whose figures are the aid year before it.
+ */
+private const val SFA_AID_YEAR_FLAG = "$SFA_FILE_FLAG-aid-year"
+
+private val SFA_FLAGS = listOf(SFA_FILE_FLAG, SFA_AID_YEAR_FLAG)
+
 private val KNOWN_FLAGS =
   SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG +
     CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + SUBJECTS_FLAG + "$SUBJECTS_FLAG-source" +
-    MONEY_VOCABULARY_FLAG + "$MONEY_VOCABULARY_FLAG-source"
+    MONEY_VOCABULARY_FLAG + "$MONEY_VOCABULARY_FLAG-source" + SFA_FLAGS + SFA_SOURCE_FLAG
 
 /**
  * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140
@@ -142,6 +166,8 @@ internal sealed interface ArgvResult {
     val sources: List<SourceFile>,
     val cds: CdsArgs? = null,
     val ipeds: IpedsSources? = null,
+    /** The optional IPEDS SFA group (RFC 162), null when none of its flags were given. */
+    val sfa: SfaSources? = null,
     /** The generated codebook (RFC 147). Required since 0067, so never null. */
     val codebooks: SourceFile,
     /** The authored subject taxonomy (RFC 150), null when `--subjects` was omitted. */
@@ -223,9 +249,15 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
   }
   val ipeds =
     when (val group = parseIpedsGroup(flags)) {
-      is IpedsGroup.Invalid -> return ArgvResult.Usage(group.message)
-      is IpedsGroup.Absent -> null
-      is IpedsGroup.Present -> group.sources
+      is FlagGroup.Invalid -> return ArgvResult.Usage(group.message)
+      is FlagGroup.Absent -> null
+      is FlagGroup.Present -> group.sources
+    }
+  val sfa =
+    when (val group = parseSfaGroup(flags)) {
+      is FlagGroup.Invalid -> return ArgvResult.Usage(group.message)
+      is FlagGroup.Absent -> null
+      is FlagGroup.Present -> group.sources
     }
   // The codebook is REQUIRED since migration 0067 (see [CODEBOOKS_FLAG]): a run
   // without one cannot write a college row, so it is refused here rather than
@@ -271,6 +303,7 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
         )
       },
     ipeds = ipeds,
+    sfa = sfa,
     codebooks =
       File(codebooksPath).let { file ->
         SourceFile(file = file, sourceArg = flags[codebooksSourceFlag] ?: file.path)
@@ -288,72 +321,107 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
   )
 }
 
-/** The three outcomes of reading the optional IPEDS flag group out of [parseArgv]'s flag map. */
-private sealed interface IpedsGroup {
-  data object Absent : IpedsGroup
+/**
+ * The three outcomes of reading ONE optional, all-or-nothing flag group out of
+ * [parseArgv]'s flag map. Generic in the sources it yields, so every survey
+ * group reads through one type rather than growing a sealed hierarchy of its
+ * own.
+ */
+private sealed interface FlagGroup<out T> {
+  data object Absent : FlagGroup<Nothing>
 
-  data class Present(
-    val sources: IpedsSources,
-  ) : IpedsGroup
+  data class Present<T>(
+    val sources: T,
+  ) : FlagGroup<T>
 
   data class Invalid(
     val message: String,
-  ) : IpedsGroup
+  ) : FlagGroup<Nothing>
 }
 
 /**
- * Reads the IPEDS group all-or-nothing. Presence is judged on the five file
- * flags AND `--survey-year` together, so omitting any one of the six is a
- * refusal that names exactly which are missing rather than a run that quietly
- * loads four files with a fabricated year.
+ * Reads one optional survey group all-or-nothing: presence is judged on
+ * [fileFlags] AND [yearFlag] together, so omitting any one of them is a refusal
+ * that names exactly which are missing rather than a run that quietly loads a
+ * subset with a fabricated year; a dangling `--*-source` names a provenance
+ * source for a file that was never supplied; and the year must be plausible,
+ * because it is stamped on every row the group writes.
+ *
+ * ONE reader for every group: the rule is the argv grammar's, not any one
+ * survey's, so a second survey cannot arrive with its own refusal wording.
+ * [label] names the group in each refusal, and [build] is the only
+ * survey-specific part -- it turns the group's files and year into its sources.
  */
-private fun parseIpedsGroup(flags: Map<String, String>): IpedsGroup {
-  val groupFlags = IPEDS_FILE_FLAGS + SURVEY_YEAR_FLAG
+private fun <T> parseFlagGroup(
+  flags: Map<String, String>,
+  label: String,
+  fileFlags: List<String>,
+  yearFlag: String,
+  build: (files: Map<String, SourceFile>, year: Int) -> T,
+): FlagGroup<T> {
+  val groupFlags = fileFlags + yearFlag
   val given = groupFlags.filter { it in flags }
-  val danglingSources = IPEDS_SOURCE_FLAGS.filter { it in flags }
   if (given.isEmpty()) {
+    val danglingSources = fileFlags.map { "$it-source" }.filter { it in flags }
     if (danglingSources.isNotEmpty()) {
-      return IpedsGroup.Invalid(
-        "Option(s) ${danglingSources.map { "--$it" }} name a provenance source for an IPEDS file " +
+      return FlagGroup.Invalid(
+        "Option(s) ${danglingSources.map { "--$it" }} name a provenance source for an [$label] file " +
           "that was not supplied. $USAGE",
       )
     }
-    return IpedsGroup.Absent
+    return FlagGroup.Absent
   }
   val missing = groupFlags.filterNot { it in flags }
   if (missing.isNotEmpty()) {
-    return IpedsGroup.Invalid(
-      "The IPEDS options are all-or-nothing: given ${given.map { "--$it" }}, " +
+    return FlagGroup.Invalid(
+      "The [$label] options are all-or-nothing: given ${given.map { "--$it" }}, " +
         "option(s) ${missing.map { "--$it" }} are also required. $USAGE",
     )
   }
-  val surveyYear = flags.getValue(SURVEY_YEAR_FLAG).toIntOrNull()
-  if (surveyYear == null || surveyYear !in SURVEY_YEAR_RANGE) {
-    return IpedsGroup.Invalid(
-      "Option [--$SURVEY_YEAR_FLAG] must be a year in [$SURVEY_YEAR_RANGE], " +
-        "got [${flags.getValue(SURVEY_YEAR_FLAG)}]. $USAGE",
+  val year = flags.getValue(yearFlag).toIntOrNull()
+  if (year == null || year !in SURVEY_YEAR_RANGE) {
+    return FlagGroup.Invalid(
+      "Option [--$yearFlag] must be a year in [$SURVEY_YEAR_RANGE], " +
+        "got [${flags.getValue(yearFlag)}]. $USAGE",
     )
   }
-  // Keyed by the FLAG the operator typed, never by position: the group is
-  // assembled by name below, so reordering IPEDS_FILE_FLAGS -- which is also
-  // the argv grammar and the provenance order -- cannot silently load the ADM
-  // file as the IC one.
+  // Keyed by the FLAG the operator typed, never by position: each group is
+  // assembled by name in its own [build], so reordering [fileFlags] -- which is
+  // also the argv grammar and the provenance order -- cannot silently load the
+  // ADM file as the IC one.
   val files =
-    IPEDS_FILE_FLAGS.associateWith { flag ->
+    fileFlags.associateWith { flag ->
       val file = File(flags.getValue(flag))
       SourceFile(file = file, sourceArg = flags["$flag-source"] ?: file.path)
     }
-  return IpedsGroup.Present(
+  return FlagGroup.Present(build(files, year))
+}
+
+/**
+ * The IPEDS institutional-characteristics group (RFC 144): the four files and
+ * the collection year they were published in.
+ */
+private fun parseIpedsGroup(flags: Map<String, String>): FlagGroup<IpedsSources> =
+  parseFlagGroup(flags, "IPEDS", IPEDS_FILE_FLAGS, SURVEY_YEAR_FLAG) { files, year ->
     IpedsSources(
       hd = files.getValue("hd"),
       ic = files.getValue("ic"),
       adm = files.getValue("adm"),
       completions = files.getValue("completions"),
       icAy = files.getValue("ic-ay"),
-      surveyYear = surveyYear,
-    ),
-  )
-}
+      surveyYear = year,
+    )
+  }
+
+/**
+ * The IPEDS SFA group (RFC 162): one file and the START year of its own aid
+ * year -- a different number from the IPEDS collection year, which is why it is
+ * its own group and not four more members of that one.
+ */
+private fun parseSfaGroup(flags: Map<String, String>): FlagGroup<SfaSources> =
+  parseFlagGroup(flags, "SFA", listOf(SFA_FILE_FLAG), SFA_AID_YEAR_FLAG) { files, year ->
+    SfaSources(survey = files.getValue(SFA_FILE_FLAG), aidYearStart = year)
+  }
 
 /**
  * Every file the run will read, each paired with the ROLE it fills — the flag
@@ -364,6 +432,7 @@ private fun parseIpedsGroup(flags: Map<String, String>): IpedsGroup {
 internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>> {
   val scorecard = SOURCE_FLAGS.map { it.removeSuffix("-source") }.zip(parsed.sources)
   val ipeds = parsed.ipeds?.let { IPEDS_FILE_FLAGS.zip(it.files) } ?: emptyList()
+  val sfa = parsed.sfa?.let { listOf(SFA_FILE_FLAG to it.survey) } ?: emptyList()
   // One spelling of the CDS file list ([CdsArgs.sources]), so the files this
   // checks for existence are exactly the ones the run digests.
   // Pairing by NAME, on [CdsSources] itself: the previous positional
@@ -374,7 +443,7 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   val codebooks = listOf(CODEBOOKS_FLAG to parsed.codebooks)
   val subjects = parsed.subjects?.let { listOf(SUBJECTS_FLAG to it) } ?: emptyList()
   val moneyVocabulary = parsed.moneyVocabulary?.let { listOf(MONEY_VOCABULARY_FLAG to it) } ?: emptyList()
-  return scorecard + ipeds + cds + codebooks + subjects + moneyVocabulary
+  return scorecard + ipeds + sfa + cds + codebooks + subjects + moneyVocabulary
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
@@ -463,6 +532,7 @@ fun main(args: Array<String>) {
           fields = fields,
           aliasesFile = aliases,
           ipeds = parsed.ipeds,
+          sfa = parsed.sfa,
           cds = parsed.cds?.sources,
           codebooks = parsed.codebooks,
           subjects = parsed.subjects,
@@ -476,6 +546,7 @@ fun main(args: Array<String>) {
     // printed before this phase existed.
     logger.info(
       "canonical money: [{}] price_figures [{}] by source [{}]; [{}] cohort_money_stats [{}]; " +
+        "[{}] cohort_population_counts [{}]; IPEDS SFA: [{}] staged cell(s) over [{}] college(s); " +
         "[{}] college(s), [{}] malformed row(s), [{}] row(s) without " +
         "a college, [{}] row(s) without a CONTROL (control-keyed cells skipped)",
       report.canonicalMoney.priceFigureRows,
@@ -483,6 +554,10 @@ fun main(args: Array<String>) {
       report.canonicalMoney.priceFigureSourceCounts.mapKeys { it.key.value },
       report.canonicalMoney.cohortMoneyStatRows,
       report.canonicalMoney.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
+      report.canonicalMoney.cohortPopulationCountRows,
+      report.canonicalMoney.cohortPopulationCountStatusCounts.mapKeys { it.key.value },
+      report.canonicalMoney.sfaCellsRead,
+      report.canonicalMoney.sfaCollegesMatched,
       report.canonicalMoney.collegesMatched,
       report.canonicalMoney.rowsMalformed,
       report.canonicalMoney.rowsWithoutCollege,

@@ -37,7 +37,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
   private fun fill(): CanonicalMoneyLoader.FillResult =
     runBlocking {
       scorecardLoader.load(institutionCsv, fieldsCsv)
-      loader.fill(institutionCsv)
+      loader.fill(institutionCsv, sfa = null)
     }
 
   // ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
   @Test
   fun `a second fill of the same snapshot reproduces the same counts (P12)`() {
     val first = fill()
-    val second = runBlocking { loader.fill(institutionCsv) }
+    val second = runBlocking { loader.fill(institutionCsv, sfa = null) }
     assertEquals(first.priceFigureRows, second.priceFigureRows)
     assertEquals(first.cohortMoneyStatRows, second.cohortMoneyStatRows)
     assertEquals(first.priceFigureStatusCounts, second.priceFigureStatusCounts)
@@ -236,7 +236,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
     // control-independent price cells and the three pooled figures still
     // write.
     runBlocking { scorecardLoader.load(institutionCsv, fieldsCsv) }
-    val result = runBlocking { loader.fill(withBlankControl(110100)) }
+    val result = runBlocking { loader.fill(withBlankControl(110100), sfa = null) }
 
     assertEquals(1, result.rowsWithoutControl)
     assertEquals(40, result.priceFigureRows, "the price cells are not control-keyed and still write")
@@ -326,7 +326,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
           aidScope = CohortAidScope.ALL,
           incomeBand = IncomeBand.UNDER_30K,
           vintage = "undated",
-          cell = StatusfulCell.Reported(0.4),
+          reading = FigureReading.Present(0.4, ValueBearingStatus.REPORTED),
           source = MoneySource.SCORECARD,
           sourceVariable = "PCTPELL",
         )

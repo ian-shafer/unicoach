@@ -417,10 +417,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertNotNull(row)
     // Deliberately 7, not 1: RFC 144 added a second source family, RFC 146 the
     // derived name-word rebuild, RFC 148 the CDS seed load, RFC 150 the
-    // derived search index, RFC 158 the canonical money fill, and RFC 161 a
-    // second canonical money source ahead of the Scorecard — each is exactly
+    // derived search index, RFC 158 the canonical money fill, and RFC 161/162
+    // two more canonical money sources ahead of the Scorecard — each is exactly
     // the derivation change method_version exists to record.
-    assertEquals(7, row.methodVersion)
+    assertEquals(7, row.methodVersion, "RFC 161 and RFC 162 took the method version to 7: two new sources changed the derivation")
     assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")
@@ -705,6 +705,163 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
           }
           rows.sortedWith(compareBy({ it.first }, { it.second }))
         }
+      }
+    }
+
+  // ---------------------------------------------------------------------------
+  // The optional SFA group inside a real ingest (RFC 162)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The SFA half of one run, through `ingest()` rather than through the two
+   * loaders directly: the `sfa` ROW phase, its `rows_ingested` block, the
+   * canonical fill's own SFA source counts, and the population-count
+   * provenance column. `CollegeSfaLoaderTest` and `CanonicalMoneySfaTest`
+   * assert what the pieces compute; these assert that the run WIRES them.
+   */
+  private val sfaInstitutionCsv = fixture("scorecard-institutions-sfa-fixture.csv")
+  private val sfaCsv = fixture("ipeds-sfa2223-fixture.csv")
+
+  /** The START year of the fixture file's own aid year: SFA2223 is aid year 2022-23. */
+  private val sfaAidYearStart = 2022
+
+  private fun ingestWithSfa(): CollegeScorecardLoader.IngestReport =
+    runBlocking {
+      loader.ingest(
+        source(sfaInstitutionCsv),
+        source(fieldsCsv),
+        source(aliasesJson),
+        sfa = SfaSources(source(sfaCsv), sfaAidYearStart),
+      )
+    }
+
+  @Test
+  fun `the SFA group runs its own ROW phase and lands in every provenance surface`() {
+    val report = ingestWithSfa()
+
+    // The phase ran and reported: six institutions, one cell per read variable.
+    val sfa = assertNotNull(report.sfa, "the SFA half is one value, present exactly when the group was passed")
+    assertEquals(7, sfa.institutionsLoaded)
+    assertEquals(7 * SfaVariables.ALL.size, sfa.cellsWritten)
+    assertEquals(sfa.cellsWritten, withSession { count(it, "college_sfa") })
+    assertEquals(4, report.sources.size, "three Scorecard sources plus the SFA file")
+
+    // rows_ingested carries the phase's own block, by its own key.
+    val row = assertNotNull(withSession { buildRow(it, report.buildId) })
+    assertTrue(row.rowsIngested.contains("\"sfa\""), "rows_ingested carries the sfa block: ${row.rowsIngested}")
+    assertTrue(row.rowsIngested.contains("\"cells\": ${sfa.cellsWritten}"), row.rowsIngested)
+    assertTrue(row.rowsIngested.contains("\"institutions\": 7"), row.rowsIngested)
+
+    // The fill READ what the phase staged, and says so under the source's name.
+    val summary = assertNotNull(withSession { canonicalMoneySummary(it, report.buildId) })
+    assertTrue(summary.contains("\"ipeds_sfa\""), "canonical_money_summary names the source: $summary")
+    assertTrue(summary.contains("\"cells_read\": ${sfa.cellsWritten}"), summary)
+    assertTrue(summary.contains("\"colleges\": 7"), summary)
+
+    // And the headcount table's own provenance column, which only SFA fills.
+    val counted = withSession { count(it, "cohort_population_counts") }
+    assertTrue(counted > 0, "the SFA fill writes population counts")
+    assertEquals(counted, withSession { buildCount(it, "cohort_population_count_rows", report.buildId) })
+  }
+
+  @Test
+  fun `a run without the SFA group omits its keys entirely, never writing them as zeros`() {
+    val report = ingest()
+    assertNull(report.sfa, "absent must stay absent, never an empty-but-present group")
+    val row = assertNotNull(withSession { buildRow(it, report.buildId) })
+    assertFalse(row.rowsIngested.contains("\"sfa\""), "absent means absent: ${row.rowsIngested}")
+    assertEquals(0, withSession { count(it, "college_sfa") })
+    // The canonical summary still names the source with a HONEST zero: the
+    // fill ran, read nothing, and that is a different fact from an omission.
+    val summary = assertNotNull(withSession { canonicalMoneySummary(it, report.buildId) })
+    assertTrue(summary.contains("\"cells_read\": 0"), summary)
+  }
+
+  /** The same institution snapshot, ingested with NO SFA group at all. */
+  private fun ingestWithoutSfa(): CollegeScorecardLoader.IngestReport =
+    runBlocking {
+      loader.ingest(source(sfaInstitutionCsv), source(fieldsCsv), source(aliasesJson))
+    }
+
+  @Test
+  fun `a run without the SFA group emits no ipeds_sfa rows, even with an earlier run's cells still staged`() {
+    // `college_sfa` is emptied ONLY by the `sfa` phase, so after a run WITH
+    // the group the staging table is still full. A later run that names no SFA
+    // file must not publish that file's numbers as its own: the fill reads the
+    // group it was HANDED, never the table it finds.
+    ingestWithSfa()
+    val stillStaged = withSession { count(it, "college_sfa") }
+    assertTrue(stillStaged > 0, "the earlier run's cells are still staged")
+
+    val report = ingestWithoutSfa()
+    assertNull(report.sfa, "no group, no phase")
+    assertEquals(stillStaged, withSession { count(it, "college_sfa") }, "and no phase means nothing cleared it either")
+    assertEquals(0, sfaSourcedStatRows(), "not one cohort_money_stats row is attributed to ipeds_sfa")
+    assertEquals(0, withSession { count(it, "cohort_population_counts") }, "and the headcount table is empty")
+    val summary = assertNotNull(withSession { canonicalMoneySummary(it, report.buildId) })
+    assertTrue(summary.contains("\"cells_read\": 0"), summary)
+  }
+
+  /** `cohort_money_stats` rows the fill attributed to the SFA source. */
+  private fun sfaSourcedStatRows(): Int =
+    withSession { session ->
+      session.prepareStatement("SELECT count(*) FROM cohort_money_stats WHERE source = 'ipeds_sfa'").use { stmt ->
+        stmt.executeQuery().use { rs ->
+          assertTrue(rs.next())
+          rs.getInt(1)
+        }
+      }
+    }
+
+  @Test
+  fun `a second ingest with the SFA group is a wholesale rebuild, not a doubling`() {
+    val first = ingestWithSfa()
+    val stagedAfterFirst = withSession { count(it, "college_sfa") }
+    val countsAfterFirst = withSession { count(it, "cohort_population_counts") }
+
+    val second = ingestWithSfa()
+    assertEquals(assertNotNull(first.sfa).cellsWritten, assertNotNull(second.sfa).cellsWritten)
+    assertEquals(stagedAfterFirst, withSession { count(it, "college_sfa") }, "staging is replaced, never appended")
+    assertEquals(countsAfterFirst, withSession { count(it, "cohort_population_counts") })
+    assertEquals(
+      first.canonicalMoney.cohortMoneyStatRows,
+      second.canonicalMoney.cohortMoneyStatRows,
+      "the same snapshot fills the same rows (P12)",
+    )
+  }
+
+  @Test
+  fun `the sfa phase is transactional and registers as a committed phase`() {
+    // The provenance table is hidden, so the LAST phase fails and the report
+    // has to list everything that committed before it -- which is the only
+    // place `sfa`'s phase membership and its ORDER (a row phase, before the
+    // derived ones) are observable from outside.
+    withSession { it.prepareStatement("ALTER TABLE college_index_build RENAME TO college_index_build_hidden").use(::execute) }
+    try {
+      val thrown = assertThrows<PartialIngestException> { ingestWithSfa() }
+      assertEquals(
+        listOf("institutions", "fields", "aliases", "sfa", "name-words", "search-index", "canonical-money"),
+        thrown.committedPhases,
+      )
+      assertEquals("provenance", thrown.failedPhase)
+      // Committed means committed: the staged cells of the named phase are all
+      // there, in full, despite the run failing later.
+      assertEquals(7 * SfaVariables.ALL.size, withSession { count(it, "college_sfa") })
+    } finally {
+      withSession { it.prepareStatement("ALTER TABLE college_index_build_hidden RENAME TO college_index_build").use(::execute) }
+    }
+  }
+
+  /** `college_index_build.canonical_money_summary` for one build, as text (RFC 158/162). */
+  private fun canonicalMoneySummary(
+    session: SqlSession,
+    id: UUID,
+  ): String? =
+    session.prepareStatement("SELECT canonical_money_summary::text FROM college_index_build WHERE id = ?").use { stmt ->
+      stmt.setObject(1, id)
+      stmt.executeQuery().use { rs ->
+        assertTrue(rs.next(), "no college_index_build row for build [$id]")
+        rs.getString(1)
       }
     }
 

@@ -313,9 +313,9 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     // 5: RFC 146 took 3 for the derived name-word rebuild, RFC 148's CDS bump
     // was therefore 4, RFC 150's derived search index is the next number in
-    // the sequence, RFC 158's canonical money fill is 6 and RFC 161's second
-    // canonical money source is 7.
-    assertEquals(7, row.methodVersion)
+    // the sequence, RFC 158's canonical money fill is 6, and 7 is RFC 161's
+    // second canonical money source together with RFC 162's third.
+    assertEquals(7, row.methodVersion, "RFC 161 and RFC 162 took the method version to 7: two new sources changed the derivation")
     for (file in listOf(meritCsv, factorsCsv, deadlinesCsv)) {
       assertTrue(row.sources.contains(file.name), "sources names ${file.name}: ${row.sources}")
     }

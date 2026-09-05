@@ -5,6 +5,7 @@ import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewArrangement
 import ed.unicoach.db.models.NewCohortMoneyStat
+import ed.unicoach.db.models.NewCohortPopulationCount
 import ed.unicoach.db.models.NewFigureStatus
 import ed.unicoach.db.models.NewIncomeBand
 import ed.unicoach.db.models.NewPriceConcept
@@ -157,6 +158,9 @@ object CanonicalMoneyDao {
   /** Deletes every `cohort_money_stats` row, returning how many went. */
   fun deleteAllCohortMoneyStats(session: SqlSession): Result<Int> = session.execute("DELETE FROM cohort_money_stats")
 
+  /** Deletes every `cohort_population_counts` row, returning how many went (RFC 162). */
+  fun deleteAllCohortPopulationCounts(session: SqlSession): Result<Int> = session.execute("DELETE FROM cohort_population_counts")
+
   /**
    * Batch-inserts [rows] into `price_figures`, returning how many landed. A
    * plain INSERT, no ON CONFLICT: the caller just deleted the table (P12), so
@@ -222,6 +226,34 @@ object CanonicalMoneyDao {
       stmt.setStringOrNull(12, row.publisherFlag)
     }
 
+  /** Batch-inserts [rows] into `cohort_population_counts` (RFC 162); see [insertPriceFigures]. */
+  fun insertCohortPopulationCounts(
+    session: SqlSession,
+    rows: List<NewCohortPopulationCount>,
+  ): Result<Int> =
+    batchInsert(
+      session,
+      """
+      INSERT INTO cohort_population_counts (
+        college_id, population, residency_basis, arrangement, vintage,
+        headcount, status, source, source_variable, publisher_flag
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """.trimIndent(),
+      rows,
+    ) { stmt, row ->
+      stmt.setObject(1, row.collegeId)
+      stmt.setString(2, row.population.value)
+      stmt.setString(3, row.residencyBasis.value)
+      stmt.setString(4, row.arrangement.value)
+      stmt.setString(5, row.vintage)
+      stmt.setIntOrNull(6, (row.reading as? FigureReading.Present)?.value)
+      stmt.setString(7, row.reading.status.value)
+      stmt.setString(8, row.source.value)
+      stmt.setString(9, row.sourceVariable)
+      stmt.setStringOrNull(10, row.publisherFlag)
+    }
+
   // ---------------------------------------------------------------------------
   // Provenance reads (P11).
   // ---------------------------------------------------------------------------
@@ -231,6 +263,10 @@ object CanonicalMoneyDao {
 
   /** Per-status row counts over `cohort_money_stats`, typed as above. */
   fun cohortMoneyStatCountsByStatus(session: SqlSession): Result<Map<FigureStatus, Int>> = countsByStatus(session, "cohort_money_stats")
+
+  /** Per-status row counts over `cohort_population_counts`, typed as above (RFC 162). */
+  fun cohortPopulationCountCountsByStatus(session: SqlSession): Result<Map<FigureStatus, Int>> =
+    countsByStatus(session, "cohort_population_counts")
 
   /**
    * Per-SOURCE row counts over `price_figures` (RFC 161): the operator's one
@@ -303,64 +339,15 @@ object CanonicalMoneyDao {
     )
 
   /**
-   * One prepared statement, JDBC-batched: the Scorecard fill writes ~60-100k
-   * fact rows per run, and one round trip per row is the difference between a
-   * phase and a coffee break. Executed in [BATCH_SIZE] chunks so the driver
-   * never buffers the whole fill.
+   * One prepared statement, JDBC-batched: see [ed.unicoach.db.dao.batchInsert],
+   * the shared writer this and the SFA staging rebuild both use.
    */
   private fun <T> batchInsert(
     session: SqlSession,
     sql: String,
     rows: List<T>,
     bind: (PreparedStatement, T) -> Unit,
-  ): Result<Int> =
-    try {
-      var written = 0
-      session.prepareStatement(sql).use { stmt ->
-        rows.chunked(BATCH_SIZE).forEach { chunk ->
-          for (row in chunk) {
-            bind(stmt, row)
-            stmt.addBatch()
-          }
-          written += stmt.executeBatch().sum()
-        }
-      }
-      Result.success(written)
-    } catch (e: java.sql.BatchUpdateException) {
-      // Keep the wrapper's batch context beside the server diagnostics: how
-      // far the failing chunk got says which row family broke a 60-100k-row
-      // fill. The mapped root cause stays the failure type (callers switch on
-      // it); the wrapper rides along as a suppressed exception, lossless.
-      val mapped = mapWriteError(rootSqlException(e))
-      mapped.addSuppressed(
-        IllegalStateException(
-          "batch context: [${e.updateCounts?.count {
-            it >= 0
-          } ?: 0}] of [${e.updateCounts?.size ?: 0}] statement(s) in the failing chunk had executed",
-        ),
-      )
-      Result.failure(mapped)
-    } catch (e: SQLException) {
-      Result.failure(mapWriteError(rootSqlException(e)))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-
-  /**
-   * A JDBC batch failure arrives as a `BatchUpdateException` whose chained
-   * `nextException` is the driver exception carrying the server diagnostics
-   * (constraint name, DETAIL). Mapping the wrapper directly would report
-   * [constraint=null] about a violation the server named.
-   */
-  private fun rootSqlException(e: SQLException): SQLException {
-    var current: SQLException = e
-    while (true) {
-      val next = current.nextException ?: break
-      if (next === current) break
-      current = next
-    }
-    return current
-  }
+  ): Result<Int> = batchInsert(session, sql, rows, ::mapWriteError, bind)
 
   /**
    * The write-path SQLSTATE mapping. A `23503` here can only be a fact row
@@ -378,6 +365,4 @@ object CanonicalMoneyDao {
   /** The closed identifier allowlist for the two vocabulary reads/deletes above. */
   val VOCABULARY_TABLES: Set<String> =
     setOf("residency_bases", "arrangements", "figure_statuses", "price_concepts", "income_bands")
-
-  private const val BATCH_SIZE = 500
 }

@@ -7,6 +7,7 @@ ingest-colleges [-m <merit-aid.csv> -a <admission-factors.csv> -d <deadlines.csv
                 [-k <codebooks.json>] [-s <subjects.json>]
                 [-v <money-vocabulary.json>]
                 [-H <HD.csv> -I <IC.csv> -A <adm.csv> -C <C_A.csv> -y <YYYY>]
+                [-S <sfa.csv> -f <YYYY>]
                 <institution.csv> <fields.csv> [aliases.json]
 
 Loads a version-pinned College Scorecard CSV pair into the `colleges` and
@@ -83,9 +84,9 @@ exactly as before; give any one and all six are required. -y is explicit
 (e.g. 2023) and is stamped on every IPEDS row: it is never guessed from a
 filename.
 
-  Getting the files: run bin/fetch-ipeds. It downloads the five archives,
+  Getting the files: run bin/fetch-ipeds. It downloads the archives,
   extracts the right member from each into db/seed/ipeds/ and records a
-  PROVENANCE.json; pass those five CSV paths. Do not unzip them by hand — the
+  PROVENANCE.json; pass the CSV paths it prints. Do not unzip them by hand — the
   member names are inconsistently cased (HD2023.csv, IC2023.csv, but adm2023.csv
   and C2023_a.csv) and IC/C_A also ship revised `_RV` members, and the fetcher is
   where that resolution lives. Only the NON-_RV member is ever loaded:
@@ -102,7 +103,17 @@ Run inside the nix dev shell (the JVM lives there):
       -H db/seed/ipeds/HD2023.csv -I db/seed/ipeds/IC2023.csv \
       -A db/seed/ipeds/adm2023.csv -C db/seed/ipeds/C2023_a.csv \
       -Y db/seed/ipeds/ic2023_ay.csv -y 2023 \
+      -S db/seed/ipeds/sfa2223.csv -f 2022 \
       inst.csv fields.csv aliases.json
+
+IPEDS SFA (RFC 162, optional, ALL-OR-NOTHING, its own group). The two options
+-S/-f load the IPEDS Student Financial Aid survey into `college_sfa` in the
+SAME run, and the later `canonical-money` phase fills net price, Pell, the aid
+mix and the population counts from it. -f is the START year of the file's AID
+year (SFA2223 is aid year 2022-23, so -f 2022) and is a DIFFERENT number from
+-y, the IPEDS collection year: SFA covers the year before the collection it
+ships in, and one number cannot label both without lying about one. Both come
+from bin/fetch-ipeds, which prints the whole command.
 
 Options:
   -m FILE: CDS merit-aid seed CSV (Common Data Set)
@@ -121,10 +132,18 @@ Options:
   -Y FILE: IPEDS IC_AY survey file, published charges (ic2023_ay.csv)
   -y YYYY: IPEDS survey year, stamped on every IPEDS row (e.g. 2023)
 
+  The IPEDS SFA group (RFC 162) — both together, or neither. A separate group
+  from the six above because it is a separate survey on a separate year:
+  -S FILE: IPEDS SFA survey file, student financial aid (sfa2223.csv)
+  -f YYYY: SFA aid-year START year, stamped on every college_sfa row (e.g. 2022)
+
   Read the case pairs carefully. -a is the CDS admission-factors CSV and -A is
   the IPEDS ADM survey file; -Y is the IC_AY published-charges CSV and -y is the
-  four-digit survey year. Each pair is two different things, and getopts is
-  case-sensitive, so a mistyped case is a different option, never a synonym.
+  four-digit IPEDS collection year. Each pair is two different things, and
+  getopts is case-sensitive, so a mistyped case is a different option, never a
+  synonym. The SFA aid year is -f rather than a second case of -S or -Y for the
+  same reason: -Y already names the IC_AY file (RFC 161), and -y already names
+  the collection year, which is a DIFFERENT number from the aid year.
 
   -h: Help
 EOF
@@ -144,6 +163,11 @@ IPEDS_ADM=""
 IPEDS_COMPLETIONS=""
 IPEDS_IC_AY=""
 IPEDS_SURVEY_YEAR=""
+# The IPEDS SFA survey file and its aid year (RFC 162). Its OWN group, not part
+# of the five above: a different survey on a different year, and joining them
+# would break every existing five-flag invocation.
+SFA_CSV=""
+SFA_AID_YEAR=""
 # The generated published codebook (RFC 147). Defaults to the repo copy, exactly
 # as the aliases positional does; -k overrides it (and, like every other source
 # arg, may be an s3:// URL). An explicitly-empty value is a wrong value, refused
@@ -155,7 +179,12 @@ CODEBOOKS_ARG=""
 SUBJECTS_ARG=""
 # The authored money vocabulary (RFC 158). Same shape as -s above, same reasons.
 MONEY_VOCABULARY_ARG=""
-IPEDS_GIVEN=()
+# Every group flag seen, as "<group> -<flag>" entries in ONE array. The group
+# travels in the VALUE, not in the name of a per-group array, so the three rules
+# below have exactly one implementation each however many groups this script
+# grows -- and a fix to one group cannot leave another accepting what it should
+# refuse.
+GROUP_GIVEN=()
 
 # Presence is judged on the FLAG, not on its value, and each flag may appear
 # once — the two rules IngestApplication's own grammar states. Judging presence
@@ -163,23 +192,57 @@ IPEDS_GIVEN=()
 # silently downgrade the run to Scorecard-only with a green exit; keeping only
 # the last of a repeated flag would silently discard a file the JVM calls a
 # usage error. Both are refused here, before any download.
-set_ipeds_flag() {
-  local flag="$1" value="$2" seen
-  for seen in ${IPEDS_GIVEN[@]+"${IPEDS_GIVEN[@]}"}; do
-    [ "$seen" = "-$flag" ] &&
+set_group_flag() {
+  local group="$1" flag="$2" value="$3" seen
+  for seen in ${GROUP_GIVEN[@]+"${GROUP_GIVEN[@]}"}; do
+    [ "$seen" = "$group -$flag" ] &&
       fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-$flag] was given more than once"
   done
   [ -n "$value" ] ||
     fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-$flag] must have a non-empty value"
-  IPEDS_GIVEN+=("-$flag")
+  GROUP_GIVEN+=("$group -$flag")
+}
+
+# The flags of group $1 that were given, space separated, in the order they were
+# given. Empty means the group is absent -- which is what the argv builders below
+# test, so "was this group passed at all" is asked in one way.
+list_group_flags() {
+  local group="$1" seen out=""
+  for seen in ${GROUP_GIVEN[@]+"${GROUP_GIVEN[@]}"}; do
+    case "$seen" in
+    "$group "*) out="$out ${seen#"$group "}" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+
+# A group is ALL-OR-NOTHING: given its name in $1 and every flag it requires in
+# $2.., either all were given or none was. A partial group is a usage error,
+# never a silent partial load. Refused here as well as in the JVM so the failure
+# costs no download and no JVM start; the JVM keeps its own copy of this rule
+# because it is reachable without this script.
+require_group_complete() {
+  local group="$1" given missing="" flag
+  shift
+  given="$(list_group_flags "$group")"
+  [ -n "$given" ] || return 0
+  for flag in "$@"; do
+    case " $given " in
+    *" -$flag "*) ;;
+    *) missing="$missing -$flag" ;;
+    esac
+  done
+  [ -n "$missing" ] || return 0
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges: the [$group] options are all-or-nothing; given [$given], also required: [${missing# }]"
 }
 
 # ONE getopts loop parses the whole grammar (bin/ conventions: short options
 # only, no hand-rolled argument loop). The IPEDS group is upper case throughout
 # — -H/-I/-A/-C/-Y plus the -y year — so -a (the CDS admission-factors CSV) and
 # -A (the IPEDS ADM survey file) stay distinct, as do -Y (the IC_AY charges CSV)
-# and -y (the survey year); the help text spells all of them out.
-while getopts ":m:a:d:k:s:v:H:I:A:C:Y:y:h" opt; do
+# and -y (the survey year); the SFA group adds -S (its CSV) and -f (its aid
+# year). The help text spells all of them out.
+while getopts ":m:a:d:k:s:v:H:I:A:C:Y:y:S:f:h" opt; do
   case "$opt" in
   m) CDS_MERIT_AID="$OPTARG" ;;
   a) CDS_ADMISSION_FACTORS="$OPTARG" ;;
@@ -196,12 +259,14 @@ while getopts ":m:a:d:k:s:v:H:I:A:C:Y:y:h" opt; do
      [ -n "$MONEY_VOCABULARY_ARG" ] ||
        fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-v] must have a non-empty value"
      ;;
-  H) IPEDS_HD="$OPTARG";          set_ipeds_flag H "$IPEDS_HD" ;;
-  I) IPEDS_IC="$OPTARG";          set_ipeds_flag I "$IPEDS_IC" ;;
-  A) IPEDS_ADM="$OPTARG";         set_ipeds_flag A "$IPEDS_ADM" ;;
-  C) IPEDS_COMPLETIONS="$OPTARG"; set_ipeds_flag C "$IPEDS_COMPLETIONS" ;;
-  Y) IPEDS_IC_AY="$OPTARG";       set_ipeds_flag Y "$IPEDS_IC_AY" ;;
-  y) IPEDS_SURVEY_YEAR="$OPTARG"; set_ipeds_flag y "$IPEDS_SURVEY_YEAR" ;;
+  H) IPEDS_HD="$OPTARG";          set_group_flag IPEDS H "$IPEDS_HD" ;;
+  I) IPEDS_IC="$OPTARG";          set_group_flag IPEDS I "$IPEDS_IC" ;;
+  A) IPEDS_ADM="$OPTARG";         set_group_flag IPEDS A "$IPEDS_ADM" ;;
+  C) IPEDS_COMPLETIONS="$OPTARG"; set_group_flag IPEDS C "$IPEDS_COMPLETIONS" ;;
+  Y) IPEDS_IC_AY="$OPTARG";       set_group_flag IPEDS Y "$IPEDS_IC_AY" ;;
+  y) IPEDS_SURVEY_YEAR="$OPTARG"; set_group_flag IPEDS y "$IPEDS_SURVEY_YEAR" ;;
+  S) SFA_CSV="$OPTARG";           set_group_flag SFA S "$SFA_CSV" ;;
+  f) SFA_AID_YEAR="$OPTARG";      set_group_flag SFA f "$SFA_AID_YEAR" ;;
   h) help ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
   :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
@@ -244,20 +309,13 @@ if [ "$CDS_OPTION_COUNT" -ne 0 ] && [ "$CDS_OPTION_COUNT" -ne 3 ]; then
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" "the CDS options are all-or-nothing: pass -m, -a and -d together, or none"
 fi
 
-# The IPEDS group is ALL-OR-NOTHING (RFC 144, gate-2 D19): a partial group is a
-# usage error, never a silent partial load. Refused here as well as in the JVM
-# so the failure costs no download and no JVM start. The JVM keeps its own copy
-# of this rule because it is reachable without this script.
-IPEDS_MISSING=()
-for flag in H I A C Y y; do
-  case " ${IPEDS_GIVEN[@]+${IPEDS_GIVEN[*]}} " in
-  *" -$flag "*) ;;
-  *) IPEDS_MISSING+=("-$flag") ;;
-  esac
-done
-if [ "${#IPEDS_GIVEN[@]}" -gt 0 ] && [ "${#IPEDS_MISSING[@]}" -gt 0 ]; then
-  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges: the IPEDS options are all-or-nothing; given [${IPEDS_GIVEN[*]}], also required: [${IPEDS_MISSING[*]}]"
-fi
+# The IPEDS group (RFC 144, gate-2 D19, extended by RFC 161) and the SFA group
+# (RFC 162) are each all-or-nothing. SFA is its own group -- a different survey
+# on a different year -- so a Scorecard+IPEDS run that predates RFC 162 keeps
+# working unchanged: a file with no aid year would have to guess the year from a
+# filename, and a year with no file loads nothing.
+require_group_complete IPEDS H I A C Y y
+require_group_complete SFA S f
 
 # Own the scratch dir resolve_file_arg downloads s3:// args into: the file
 # must outlive that (subshell) call, so this script holds the EXIT trap.
@@ -308,7 +366,7 @@ fi
 # forwarded as its --*-source partner so the provenance row records what the
 # caller actually named (RFC 144).
 IPEDS_ARGV=()
-if [ "${#IPEDS_GIVEN[@]}" -gt 0 ]; then
+if [ -n "$(list_group_flags IPEDS)" ]; then
   HD_CSV="$(resolve_file_arg "$IPEDS_HD" "$INGEST_SCRATCH")"
   IC_CSV="$(resolve_file_arg "$IPEDS_IC" "$INGEST_SCRATCH")"
   ADM_CSV="$(resolve_file_arg "$IPEDS_ADM" "$INGEST_SCRATCH")"
@@ -320,6 +378,17 @@ if [ "${#IPEDS_GIVEN[@]}" -gt 0 ]; then
     --survey-year="$IPEDS_SURVEY_YEAR"
     --hd-source="$IPEDS_HD" --ic-source="$IPEDS_IC" --adm-source="$IPEDS_ADM"
     --completions-source="$IPEDS_COMPLETIONS" --ic-ay-source="$IPEDS_IC_AY"
+  )
+fi
+
+# The SFA file gets the same treatment as the IPEDS five: resolved, and its
+# ORIGINAL argument forwarded as --sfa-source so the provenance row records what
+# the caller named (RFC 162).
+SFA_ARGV=()
+if [ -n "$(list_group_flags SFA)" ]; then
+  SFA_RESOLVED="$(resolve_file_arg "$SFA_CSV" "$INGEST_SCRATCH")"
+  SFA_ARGV=(
+    --sfa="$SFA_RESOLVED" --sfa-aid-year="$SFA_AID_YEAR" --sfa-source="$SFA_CSV"
   )
 fi
 
@@ -348,4 +417,5 @@ LAUNCHER="$PROJECT_ROOT/$COLLEGE_DIST/bin/college"
   --subjects="$SUBJECTS_JSON" --subjects-source="$SUBJECTS_ARG" \
   --money-vocabulary="$MONEY_VOCABULARY_JSON" --money-vocabulary-source="$MONEY_VOCABULARY_ARG" \
   ${CDS_ARGS[@]+"${CDS_ARGS[@]}"} \
-  ${IPEDS_ARGV[@]+"${IPEDS_ARGV[@]}"}
+  ${IPEDS_ARGV[@]+"${IPEDS_ARGV[@]}"} \
+  ${SFA_ARGV[@]+"${SFA_ARGV[@]}"}

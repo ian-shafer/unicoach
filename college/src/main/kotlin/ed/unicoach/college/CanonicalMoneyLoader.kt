@@ -30,6 +30,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.CollegeIpedsChargesDao
 import ed.unicoach.db.dao.CollegeIpedsDao
+import ed.unicoach.db.dao.CollegeSfaDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CohortAidScope
@@ -37,17 +38,22 @@ import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeIpedsCharge
+import ed.unicoach.db.models.CollegeSfaCell
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.IpedsImputationFlag
+import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCohortMoneyStat
+import ed.unicoach.db.models.NewCohortPopulationCount
 import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ValueBearingStatus
+import ed.unicoach.db.models.reading
 import org.apache.commons.csv.CSVRecord
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -125,7 +131,7 @@ class CanonicalMoneyLoader internal constructor(
       "staged IC_AY row [id=${charge.id.value}] [college_id=${charge.collegeId}] " +
         "[charge_variable=${charge.chargeVariable}] [academic_year=${charge.academicYear}] carries the " +
         "imputation flag [$code], which is not one of the published codes " +
-        "${IpedsChargesLoader.ImputationFlag.CODES}; college_ipeds_charges was written by something " +
+        "${IpedsImputationFlag.CODES}; college_ipeds_charges was written by something " +
         "other than IpedsChargesLoader",
     )
 
@@ -151,20 +157,42 @@ class CanonicalMoneyLoader internal constructor(
   data class FillResult(
     val priceFigureRows: Int,
     val cohortMoneyStatRows: Int,
+    /** Rows the `cohort_population_counts` rebuild wrote (RFC 162). */
+    val cohortPopulationCountRows: Int,
     /** Per-status row counts, typed all the way to the JSONB/log edge (risk 6.6: serialized as OUR status slugs, never column names). */
     val priceFigureStatusCounts: Map<FigureStatus, Int>,
     val cohortMoneyStatStatusCounts: Map<FigureStatus, Int>,
+    val cohortPopulationCountStatusCounts: Map<FigureStatus, Int>,
     /**
      * Per-SOURCE row counts (RFC 161): the upstream-wins split, so an operator
      * sees at a glance how much of the price table IPEDS won and how much the
      * Scorecard filled behind it. Typed like the status counts.
      */
     val priceFigureSourceCounts: Map<MoneySource, Int>,
+    /** Staged SFA cells this fill read; 0 when no `sfa` phase has ever run (RFC 162). */
+    val sfaCellsRead: Int,
+    /** Distinct colleges the SFA source wrote at least one row for. */
+    val sfaCollegesMatched: Int,
+    /** Staged institutions whose college disappeared between the `sfa` phase and this fill. */
+    val sfaInstitutionsWithoutCollege: Int,
+    /** Staged institutions publishing NEITHER net-price family: their family-gated cells wrote no row. */
+    val sfaInstitutionsWithoutFamily: Int,
+    /** Staged cells whose flag bears a value but which carried none, by variable. */
+    val sfaCellsWithoutValue: Map<String, Int>,
+    /**
+     * Variables this fill looked up that the staging phase did not stage, by
+     * name (RFC 162). Zero by construction: the loader stages every
+     * [SfaVariables.ALL] cell of every loaded institution, so a non-zero here
+     * is this file and [SfaVariables] disagreeing about a name -- a whole
+     * measure writing no row for any college in the country, which without
+     * this count is a silently shorter table.
+     */
+    val sfaCellsNotStaged: Map<String, Int>,
     /** Distinct colleges the fill wrote at least one row for. */
     val collegesMatched: Int,
     /** CSV rows too short to be well-formed, skipped and counted (a loss class like the two below). */
     val rowsMalformed: Int,
-    /** CSV rows with no matching college (the same rows `institutions` skipped). */
+    /** Scorecard CSV rows with no matching college (the same rows `institutions` skipped). */
     val rowsWithoutCollege: Int,
     /** Matched rows whose CONTROL was missing or unparseable: their control-keyed cohort cells were skipped, never guessed private. */
     val rowsWithoutControl: Int,
@@ -193,18 +221,30 @@ class CanonicalMoneyLoader internal constructor(
   }
 
   /**
-   * Rebuilds both fact tables from [institutionCsv] in ONE transaction it
-   * owns: resolve the college ids, map every row through [ORDERED_SOURCES]
-   * first-write-wins, then DELETE + batch insert. A failure anywhere rolls
-   * the whole rebuild back and leaves the previous fill standing.
+   * Rebuilds the three fact tables from [institutionCsv] and [sfa] in ONE
+   * transaction it owns: resolve the college ids, map every row through
+   * [ORDERED_SOURCES] first-write-wins, then DELETE + batch insert. A failure
+   * anywhere rolls the whole rebuild back and leaves the previous fill
+   * standing.
+   *
+   * [sfa] is THIS run's SFA group, null when the run did not supply one: every
+   * input the fill reads is then passed to it. `college_sfa` is emptied only
+   * by the `sfa` phase, so reading the table unconditionally would let a run
+   * that named no SFA file emit `ipeds_sfa` rows out of an earlier run's
+   * staged file.
    */
-  suspend fun fill(institutionCsv: File): FillResult =
+  suspend fun fill(
+    institutionCsv: File,
+    sfa: SfaSources?,
+  ): FillResult =
     database.withConnection { session ->
       val collegeIds = CollegeIpedsDao.collegeIdsByIpedsUnitId(session).getOrThrow()
       val ipedsChargesIgnored = mutableMapOf<ChargeDrift, MutableMap<String, Int>>()
       val prices = LinkedHashMap<PriceKey, NewPriceFigure>()
       val stats = LinkedHashMap<StatKey, NewCohortMoneyStat>()
+      val counts = LinkedHashMap<CountKey, NewCohortPopulationCount>()
       val coercions = mutableMapOf<String, Int>()
+      var sfaFill = SfaFill()
       val matched = mutableSetOf<UUID>()
       var scorecard = ScorecardLosses()
       // The `when` is EXHAUSTIVE over the enum, with no catch-all: a member
@@ -232,20 +272,43 @@ class CanonicalMoneyLoader internal constructor(
           MoneySource.SCORECARD -> {
             scorecard = mapScorecardCsv(institutionCsv, collegeIds, coercions, prices, stats, matched)
           }
+
+          // The IPEDS SFA fill (RFC 162), FIRST in the ordered list: where SFA
+          // and the Scorecard describe the SAME fact (the NPT4 band series is
+          // literally the Scorecard's copy of NPIS4x/NPT4x), the upstream
+          // publisher's own number wins the natural key and the Scorecard's
+          // copy is never written -- never averaged with it. Where they
+          // describe DIFFERENT populations (NPT4_PUB is Title IV-aided,
+          // NPIST is grant-aided) the keys differ and both rows land, which
+          // is the whole point of storing the basis.
+          MoneySource.IPEDS_SFA -> {
+            sfaFill = fillFromSfa(session, sfa, collegeIds, stats, counts)
+            matched += sfaFill.colleges
+          }
         }
       }
 
       CanonicalMoneyDao.deleteAllPriceFigures(session).getOrThrow()
       CanonicalMoneyDao.deleteAllCohortMoneyStats(session).getOrThrow()
+      CanonicalMoneyDao.deleteAllCohortPopulationCounts(session).getOrThrow()
       val priceRows = CanonicalMoneyDao.insertPriceFigures(session, prices.values.toList()).getOrThrow()
       val statRows = CanonicalMoneyDao.insertCohortMoneyStats(session, stats.values.toList()).getOrThrow()
+      val countRows = CanonicalMoneyDao.insertCohortPopulationCounts(session, counts.values.toList()).getOrThrow()
       val result =
         FillResult(
           priceFigureRows = priceRows,
           cohortMoneyStatRows = statRows,
+          cohortPopulationCountRows = countRows,
           priceFigureStatusCounts = CanonicalMoneyDao.priceFigureCountsByStatus(session).getOrThrow(),
           cohortMoneyStatStatusCounts = CanonicalMoneyDao.cohortMoneyStatCountsByStatus(session).getOrThrow(),
+          cohortPopulationCountStatusCounts = CanonicalMoneyDao.cohortPopulationCountCountsByStatus(session).getOrThrow(),
           priceFigureSourceCounts = CanonicalMoneyDao.priceFigureCountsBySource(session).getOrThrow(),
+          sfaCellsRead = sfaFill.cellsRead,
+          sfaCollegesMatched = sfaFill.colleges.size,
+          sfaInstitutionsWithoutCollege = sfaFill.institutionsWithoutCollege,
+          sfaInstitutionsWithoutFamily = sfaFill.institutionsWithoutFamily,
+          sfaCellsWithoutValue = sfaFill.cellsWithoutValue.toMap(),
+          sfaCellsNotStaged = sfaFill.cellsNotStaged.toMap(),
           collegesMatched = matched.size,
           rowsMalformed = scorecard.rowsMalformed,
           rowsWithoutCollege = scorecard.rowsWithoutCollege,
@@ -262,15 +325,27 @@ class CanonicalMoneyLoader internal constructor(
       // slugs only here, at the edge.
       logger.info(
         "Canonical money fill: [{}] price_figures [{}] by source [{}] + [{}] cohort_money_stats [{}] " +
-          "over [{}] college(s); " +
-          "[{}] malformed row(s); [{}] row(s) without a college; [{}] row(s) without a CONTROL (control-keyed cells skipped); " +
+          "+ [{}] cohort_population_counts [{}] over [{}] college(s); " +
+          "SFA: [{}] staged cell(s) over [{}] college(s), [{}] cell(s) whose flag bears a value but " +
+          "which carried none, [{}] variable(s) this fill read that nothing staged, " +
+          "[{}] institution(s) without a college, [{}] publishing neither net-price family; " +
+          "[{}] malformed row(s); [{}] Scorecard row(s) without a college; " +
+          "[{}] row(s) without a CONTROL (control-keyed cells skipped); " +
           "coercions [{}]; [{}] staged IC_AY row(s) passed over as stale [{}]",
         result.priceFigureRows,
         result.priceFigureStatusCounts.mapKeys { it.key.value },
         result.priceFigureSourceCounts.mapKeys { it.key.value },
         result.cohortMoneyStatRows,
         result.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
+        result.cohortPopulationCountRows,
+        result.cohortPopulationCountStatusCounts.mapKeys { it.key.value },
         result.collegesMatched,
+        result.sfaCellsRead,
+        result.sfaCollegesMatched,
+        result.sfaCellsWithoutValue,
+        result.sfaCellsNotStaged,
+        result.sfaInstitutionsWithoutCollege,
+        result.sfaInstitutionsWithoutFamily,
         result.rowsMalformed,
         result.rowsWithoutCollege,
         result.rowsWithoutControl,
@@ -281,6 +356,313 @@ class CanonicalMoneyLoader internal constructor(
       )
       result
     }
+
+  // ---------------------------------------------------------------------------
+  // The IPEDS SFA mapping (RFC 162's measure table)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The whole `ipeds_sfa` arm of [fill]: THIS run's staged cells, grouped per
+   * institution, mapped into the two cohort accumulators, with every loss it
+   * can suffer counted in the [SfaFill] it returns.
+   *
+   * A function rather than twenty-five lines inside the source `when`: [fill]
+   * decides SOURCE PRECEDENCE, and reading one source's grouping, college
+   * resolution and loss counters there put a second level of abstraction into
+   * the loop -- visible as the pile of `sfa*` accumulators the enclosing
+   * function used to carry.
+   */
+  private fun fillFromSfa(
+    session: SqlSession,
+    sfa: SfaSources?,
+    collegeIds: Map<Int, CollegeId>,
+    stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
+    counts: LinkedHashMap<CountKey, NewCohortPopulationCount>,
+  ): SfaFill {
+    // THIS run's staged cells, or none: the SFA branch reads the aid year the
+    // run's own argv declared (RFC 162), never whatever an earlier run left
+    // standing in the staging table.
+    val cells = sfa?.let { CollegeSfaDao.allCells(session, it.aidYearStart).getOrThrow() } ?: emptyList()
+    val fill = SfaFill(cellsRead = cells.size)
+    for ((unitId, institutionCells) in cells.groupBy { it.ipedsUnitId }) {
+      val collegeId = collegeIds[unitId]?.value
+      if (collegeId == null) {
+        // The staging phase already dropped unmatched institutions, so this
+        // can only be a college deleted between the two phases -- counted like
+        // every other loss, never silently skipped.
+        fill.institutionsWithoutCollege++
+        continue
+      }
+      fill.colleges += collegeId
+      val byVariable = institutionCells.associateBy { it.variable }
+      val family = byVariable.sfaFamily(unitId)
+      // Neither family: a named, counted skip. The institution's net price and
+      // arrangement counts contribute no row, and an operator can see that it
+      // happened instead of reading a silently shorter table.
+      if (family == null) fill.institutionsWithoutFamily++
+      mapSfaInstitution(collegeId, byVariable, family, fill, stats, counts)
+    }
+    return fill
+  }
+
+  /**
+   * Maps one institution's staged SFA cells into the cohort accumulators: the
+   * variable [family] is resolved ONCE by the caller, then each TABLE is
+   * filled by the function that owns it -- money rows and headcounts have
+   * different keys, different units and different reasons to change, exactly
+   * as the Scorecard half of this file splits prices from stats.
+   */
+  private fun mapSfaInstitution(
+    collegeId: UUID,
+    cells: Map<String, CollegeSfaCell>,
+    family: SfaFamily?,
+    fill: SfaFill,
+    stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
+    counts: LinkedHashMap<CountKey, NewCohortPopulationCount>,
+  ) {
+    mapSfaMoneyStats(collegeId, cells, family, fill, stats)
+    mapSfaPopulationCounts(collegeId, cells, family, fill, counts)
+  }
+
+  /**
+   * The `cohort_money_stats` half of one institution's SFA cells.
+   *
+   * The FAMILY gate is why [family] exists and the reason it exists is
+   * measured: SFA splits publics and privates into two variable families for
+   * the same concept (`NPIST`/`NPGRN`, `NPIS4x`/`NPT4x`, `GIS4*`/`GRN4*`) and
+   * they are MUTUALLY EXCLUSIVE -- zero institutions carry both, and the
+   * unused family is flagged `A` cell by cell. Emitting the unused family
+   * would give every college a shadow set of `not_applicable` rows for a
+   * concept it already answers under its own name, so a null family (the
+   * institution publishes neither, which the caller counts) contributes no
+   * family-gated row at all. Inside the family it DOES use, an `A` is a real
+   * answer and keeps its row (College of DuPage has no residence halls:
+   * `xgis4on2 = A` beside a reported `gis4wf2`).
+   *
+   * The measures with one shape at every institution -- Pell, the aid mix --
+   * are not gated: they are the same variables everywhere.
+   */
+  private fun mapSfaMoneyStats(
+    collegeId: UUID,
+    cells: Map<String, CollegeSfaCell>,
+    family: SfaFamily?,
+    fill: SfaFill,
+    stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
+  ) {
+    // Keyed by VARIABLE NAME, not by an already-resolved cell: a name the
+    // staging phase never staged is this file disagreeing with
+    // [SfaVariables], and the closure is the one place that can tell the two
+    // apart from "this institution published nothing".
+    fun stat(
+      variable: String,
+      measure: MoneyMeasure,
+      population: CohortPopulation,
+      residencyScope: CohortResidencyScope,
+      aidScope: CohortAidScope,
+      incomeBand: IncomeBand? = null,
+    ) {
+      val cell = cells[variable]
+      if (cell == null) {
+        fill.cellsNotStaged.merge(variable, 1, Int::plus)
+        return
+      }
+      // A cell whose flag bears a value but which carried none yields no row
+      // at all: there is nothing honest to write. The MAPPER stays pure and
+      // this accumulator's own closure folds the tally (the `MapResult`
+      // convention).
+      val reading = cell.reading(publishedScale(measure))
+      if (reading == null) {
+        fill.cellsWithoutValue.merge(cell.variable, 1, Int::plus)
+        return
+      }
+      val row =
+        cohortStat(
+          collegeId = collegeId,
+          measure = measure,
+          population = population,
+          residencyScope = residencyScope,
+          aidScope = aidScope,
+          incomeBand = incomeBand,
+          vintage = cell.aidYear,
+          reading = reading,
+          source = MoneySource.IPEDS_SFA,
+          sourceVariable = cell.variable,
+          publisherFlag = cell.flag.code,
+        )
+      // Upstream-wins (P8): SFA is first in ORDERED_SOURCES, so its row keeps
+      // the key and the Scorecard's copy of the same fact never lands.
+      stats.putIfAbsent(StatKey(collegeId, measure, population, residencyScope, aidScope, incomeBand, cell.aidYear), row)
+    }
+
+    if (family != null) {
+      for (suffix in SfaVariables.YEAR_SUFFIXES) {
+        // Net price, the OVERALL figure: a GRANT-AIDED population, which is not
+        // the Title IV-aided one the band series below describes. The Scorecard's
+        // NPT4_PUB has no SFA twin (it is the band-count-weighted mean of the
+        // five bands), so these two never share a key and never overwrite each
+        // other -- two rows, two aid scopes, which is the fact.
+        stat(
+          family.netPrice(suffix),
+          MoneyMeasure.AVG_NET_PRICE,
+          CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
+          family.residencyScope,
+          CohortAidScope.GRANT_AIDED,
+        )
+        // The income bands: the TITLE IV-aided population, keyed exactly as the
+        // Scorecard's NPT4x rows are, because they are the same measured fact
+        // (198 of 200 publics matched to the dollar). That shared key is what
+        // makes upstream-wins bite: the publisher's own number displaces the
+        // Scorecard's copy of it.
+        for (band in IncomeBand.entries) {
+          stat(
+            family.bandNetPrice(band, suffix),
+            MoneyMeasure.AVG_NET_PRICE,
+            CohortPopulation.TITLE_IV_AIDED_UNDERGRADUATES,
+            family.residencyScope,
+            CohortAidScope.FEDERAL_AID_RECEIVING,
+            incomeBand = band,
+          )
+        }
+      }
+    }
+
+    // Pell, at the all-undergraduate level. The share is the source's own
+    // published INTEGER PERCENT (UPGRNTP = 18), converted to the 0-1 share
+    // every MeasureUnit.SHARE row carries by [publishedScale] -- from the
+    // MEASURE's unit, so no call site can forget it. The Pell RECIPIENT COUNT
+    // is not here: a headcount is not money, so it is a
+    // `cohort_population_counts` row (RFC 162).
+    stat(
+      "upgrntp",
+      MoneyMeasure.PELL_SHARE,
+      CohortPopulation.UNDERGRADUATES,
+      CohortResidencyScope.ALL,
+      CohortAidScope.ALL,
+    )
+    stat(
+      "upgrnta",
+      MoneyMeasure.PELL_AVERAGE_AWARD,
+      CohortPopulation.UNDERGRADUATES,
+      CohortResidencyScope.ALL,
+      CohortAidScope.PELL_RECEIVING,
+    )
+    // The aid mix, all of it about the full-time first-time financial-aid
+    // cohort. The aid scope follows the DENOMINATOR: a `_P` share is a share of
+    // that whole cohort, so `all`; an `_A` average is an average over the
+    // RECIPIENTS of that aid, so it carries its own receiving scope -- the same
+    // rule `pell_receiving` states for the average Pell award above.
+    for (mix in AID_MIX) {
+      stat(
+        "${mix.stem}_p",
+        mix.shareMeasure,
+        CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
+        CohortResidencyScope.ALL,
+        CohortAidScope.ALL,
+      )
+      stat(
+        "${mix.stem}_a",
+        mix.averageMeasure,
+        CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
+        CohortResidencyScope.ALL,
+        mix.averageScope,
+      )
+    }
+  }
+
+  /**
+   * The `cohort_population_counts` half of one institution's SFA cells: the
+   * living-arrangement weights (family-gated, [mapSfaMoneyStats]'s reason),
+   * the Pell recipient headcount and the fall cohort's residency split.
+   */
+  private fun mapSfaPopulationCounts(
+    collegeId: UUID,
+    cells: Map<String, CollegeSfaCell>,
+    family: SfaFamily?,
+    fill: SfaFill,
+    counts: LinkedHashMap<CountKey, NewCohortPopulationCount>,
+  ) {
+    fun count(
+      variable: String,
+      population: CohortPopulation,
+      residency: ResidencyBasis,
+      arrangement: FigureArrangement,
+    ) {
+      val cell = cells[variable]
+      if (cell == null) {
+        fill.cellsNotStaged.merge(variable, 1, Int::plus)
+        return
+      }
+      val reading = cell.reading()
+      if (reading == null) {
+        fill.cellsWithoutValue.merge(cell.variable, 1, Int::plus)
+        return
+      }
+      val row =
+        NewCohortPopulationCount(
+          collegeId = collegeId,
+          population = population,
+          residencyBasis = residency,
+          arrangement = arrangement,
+          vintage = cell.aidYear,
+          reading = reading.toHeadcount(),
+          source = MoneySource.IPEDS_SFA,
+          sourceVariable = cell.variable,
+          publisherFlag = cell.flag.code,
+        )
+      counts.putIfAbsent(CountKey(collegeId, population, residency, arrangement, cell.aidYear), row)
+    }
+
+    if (family != null) {
+      // The living-arrangement headcounts: the enrolment weights the published
+      // net price averages away, and the reason GIS4ON/WF/OF/UN exist at all.
+      for (suffix in SfaVariables.YEAR_SUFFIXES) {
+        count(
+          family.arrangementTotal(suffix),
+          CohortPopulation.TITLE_IV_AIDED_UNDERGRADUATES,
+          family.arrangementResidency,
+          FigureArrangement.NOT_APPLICABLE,
+        )
+        for ((code, arrangement) in SfaVariables.ARRANGEMENT_CODES) {
+          count(
+            family.arrangement(code, suffix),
+            CohortPopulation.TITLE_IV_AIDED_UNDERGRADUATES,
+            family.arrangementResidency,
+            arrangement,
+          )
+        }
+      }
+    }
+
+    // The Pell recipient headcount (UPGRNTN): a number of PEOPLE, so it lands
+    // here with the population it counts rather than in the money table under
+    // an invented "count" unit. Not family-gated: every institution reports it.
+    count(
+      "upgrntn",
+      CohortPopulation.PELL_RECEIVING_UNDERGRADUATES,
+      ResidencyBasis.NOT_APPLICABLE,
+      FigureArrangement.NOT_APPLICABLE,
+    )
+    // The fall cohort's residency split: the four parts sum exactly to the
+    // total (checked over all 1,580 institutions that report them), which is
+    // what makes "the in-district price applies to 71% of this class" a
+    // queryable fact rather than a claim. Not family-gated: a private reports
+    // the TOTAL and flags the split not-applicable, and that `A` is the
+    // honest answer to "how many pay the in-district rate".
+    count(
+      "scfa1n",
+      CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
+      ResidencyBasis.NOT_APPLICABLE,
+      FigureArrangement.NOT_APPLICABLE,
+    )
+    for ((variable, residency) in SfaVariables.RESIDENCY_SPLIT) {
+      count(
+        variable,
+        CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
+        residency,
+        FigureArrangement.NOT_APPLICABLE,
+      )
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // The IPEDS IC_AY mapping (RFC 161)
@@ -326,7 +708,7 @@ class CanonicalMoneyLoader internal constructor(
       // unknown codes, so finding one in the table means the column was written
       // by something other than this loader.
       val flag =
-        IpedsChargesLoader.ImputationFlag.fromCode(charge.imputationFlag)
+        IpedsImputationFlag.fromCode(charge.imputationFlag)
           ?: throw CorruptStagedChargeException(charge, charge.imputationFlag)
       matched += charge.collegeId
       // The REAL published column, year suffix restored: a reader who greps
@@ -569,7 +951,7 @@ class CanonicalMoneyLoader internal constructor(
           aidScope = aidScope,
           incomeBand = incomeBand,
           vintage = vintage,
-          cell = cell,
+          reading = cell.reading(),
           source = MoneySource.SCORECARD,
           sourceVariable = sourceVariable,
         )
@@ -619,7 +1001,7 @@ class CanonicalMoneyLoader internal constructor(
         )
       }
       netPrice(NET_PRICE_BASE, null)
-      for (band in IncomeBand.entries) netPrice("$NET_PRICE_BASE${band.npt4Digit}", band)
+      for (band in IncomeBand.entries) netPrice("$NET_PRICE_BASE${band.bandDigit}", band)
     }
 
     // The three undated figures (P5): the source pools or does not date them,
@@ -673,6 +1055,15 @@ class CanonicalMoneyLoader internal constructor(
     val academicYear: String,
   )
 
+  /** The natural key of a `cohort_population_counts` row (RFC 162). */
+  private data class CountKey(
+    val collegeId: UUID,
+    val population: CohortPopulation,
+    val residency: ResidencyBasis,
+    val arrangement: FigureArrangement,
+    val vintage: String,
+  )
+
   /** The natural key of a `cohort_money_stats` row, NULL band included (P4). */
   private data class StatKey(
     val collegeId: UUID,
@@ -708,17 +1099,23 @@ class CanonicalMoneyLoader internal constructor(
 
     /**
      * Upstream-wins (P8): sources in priority order, first write wins per
-     * natural key. IPEDS IC_AY is FIRST (RFC 161) because it carries the three
-     * residency tiers as separate first-class variables, while the Scorecard
-     * collapses in-district into "in" -- so for the 269 institutions where the
-     * two disagree, the Scorecard's `TUITIONFEE_IN` is the in-DISTRICT price
-     * wearing an in-state label. The Scorecard still fills every key IC_AY
-     * leaves empty: the ~2,300 IC_PY institutions, and every cohort statistic,
-     * which IC_AY does not carry at all. Nothing is averaged.
+     * natural key. IPEDS SFA is FIRST (RFC 162 D5): the Scorecard's NPT4 band
+     * series is a copy of SFA's own NPIS4x/NPT4x, so the publisher's number
+     * displaces the copy rather than being averaged with it. Only where the
+     * keys are identical -- a fact the two sources describe about the SAME
+     * population -- does anything get displaced.
+     *
+     * IPEDS IC_AY is next (RFC 161) because it carries the three residency
+     * tiers as separate first-class variables, while the Scorecard collapses
+     * in-district into "in" -- so for the 269 institutions where the two
+     * disagree, the Scorecard's `TUITIONFEE_IN` is the in-DISTRICT price
+     * wearing an in-state label. The Scorecard still fills every key the two
+     * IPEDS surveys leave empty: the ~2,300 IC_PY institutions, and the cohort
+     * statistics neither carries. Nothing is averaged.
      *
      * This list, not the [MoneySource] declaration order, is precedence.
      */
-    internal val ORDERED_SOURCES = listOf(MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD)
+    internal val ORDERED_SOURCES = listOf(MoneySource.IPEDS_SFA, MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD)
 
     init {
       // What a catch-all `else` in the dispatch could never catch: a member
@@ -751,20 +1148,128 @@ class CanonicalMoneyLoader internal constructor(
     internal const val VINTAGE_UNDATED = "undated"
 
     /**
-     * The Scorecard NPT4 band digit per income band -- the correspondence
-     * each [IncomeBand] member's own doc names ("Scorecard NPT41"). An
-     * exhaustive `when` by NAME, never `entries` position: a reorder of the
-     * enum must not be able to file a net price under the wrong bracket.
+     * The factor that converts one measure's PUBLISHED unit to the stored one,
+     * derived from the measure itself.
+     *
+     * IPEDS SFA publishes every share as an integer percent (`UPGRNTP = 18`)
+     * and every award as whole dollars, and `MeasureUnit` is exactly that
+     * distinction -- so the conversion is read off the measure rather than
+     * passed at each call site. It used to be a `scale` parameter applied at
+     * two of the eight call sites; a `_P` variable added without it would have
+     * stored 18.0 in a 0-1 share row, and nothing would have refused it. The
+     * `when` is exhaustive, so a third unit is a compile error here, and
+     * `cohort_money_stats_share_range_check` refuses the value the day this
+     * reasoning is wrong anyway.
      */
-    private val IncomeBand.npt4Digit: Int
-      get() =
-        when (this) {
-          IncomeBand.UNDER_30K -> 1
-          IncomeBand.K30_TO_48K -> 2
-          IncomeBand.K48_TO_75K -> 3
-          IncomeBand.K75_TO_110K -> 4
-          IncomeBand.OVER_110K -> 5
+    private fun publishedScale(measure: MoneyMeasure): Double =
+      when (measure.unit) {
+        MeasureUnit.USD_PER_YEAR -> 1.0
+        MeasureUnit.SHARE -> PERCENT_TO_SHARE
+      }
+
+    /** Percent (the SFA `_P` variables' published unit) to the 0-1 share every MeasureUnit.SHARE row carries. */
+    private const val PERCENT_TO_SHARE = 0.01
+
+    /**
+     * The family this institution publishes, or NULL when it publishes
+     * neither -- which the caller counts as a named skip rather than dropping
+     * silently.
+     *
+     * Net price alone decides it: the families are mutually exclusive across
+     * every measure, and one probe that every institution answers beats four
+     * that could disagree. BOTH is measured at zero institutions over four aid
+     * years, so it is a mis-read of the source (or a vocabulary change), never
+     * a shape to emit two shadow row sets for -- a `check`, like every other
+     * publisher-vocabulary fatal in this fill.
+     */
+    private fun Map<String, CollegeSfaCell>.sfaFamily(ipedsUnitId: Int): SfaFamily? {
+      val used =
+        SfaFamily.entries.filter { family ->
+          SfaVariables.YEAR_SUFFIXES.any { suffix ->
+            val cell = this["${family.netPriceStem}$suffix"]
+            cell != null && cell.flag.status != FigureStatus.NOT_APPLICABLE
+          }
         }
+      check(used.size <= 1) {
+        "SFA institution [ipeds_unit_id=$ipedsUnitId] publishes BOTH net-price families " +
+          "${used.map { it.name }}; they name the same concepts and are mutually exclusive, so which " +
+          "one states its price is a review (RFC 162)"
+      }
+      return used.singleOrNull()
+    }
+
+    /**
+     * The aid mix: the SFA stem, the measure its `_P` share lands as, the
+     * measure its `_A` per-recipient average lands as, and the aid scope that
+     * average is an average OVER. Declared once, so the two halves of one
+     * source can never be filed under different bases.
+     *
+     * The share half needs no column here because it is the same for all four:
+     * a `_P` is a share of the whole cohort, i.e. [CohortAidScope.ALL]. The
+     * average half differs per row, which is exactly why the scope is carried
+     * beside the measure rather than passed at the call site.
+     */
+    private data class AidMix(
+      val stem: String,
+      val shareMeasure: MoneyMeasure,
+      val averageMeasure: MoneyMeasure,
+      val averageScope: CohortAidScope,
+    )
+
+    private val AID_MIX =
+      listOf(
+        AidMix(
+          "fgrnt",
+          MoneyMeasure.FEDERAL_GRANT_SHARE,
+          MoneyMeasure.FEDERAL_GRANT_AVERAGE_AWARD,
+          CohortAidScope.FEDERAL_GRANT_RECEIVING,
+        ),
+        AidMix(
+          "sgrnt",
+          MoneyMeasure.STATE_LOCAL_GRANT_SHARE,
+          MoneyMeasure.STATE_LOCAL_GRANT_AVERAGE_AWARD,
+          CohortAidScope.STATE_LOCAL_GRANT_RECEIVING,
+        ),
+        AidMix(
+          "igrnt",
+          MoneyMeasure.INSTITUTIONAL_GRANT_SHARE,
+          MoneyMeasure.INSTITUTIONAL_GRANT_AVERAGE_AWARD,
+          CohortAidScope.INSTITUTIONAL_GRANT_RECEIVING,
+        ),
+        // LOAN_P/LOAN_A count ANY loan -- federal, institutional or private --
+        // so the average's scope is `loan_receiving`, never the Scorecard's
+        // federal-only `federal_loan_borrowing`.
+        AidMix(
+          "loan",
+          MoneyMeasure.STUDENT_LOAN_SHARE,
+          MoneyMeasure.STUDENT_LOAN_AVERAGE_AMOUNT,
+          CohortAidScope.LOAN_RECEIVING,
+        ),
+      )
+
+    init {
+      // The stems are the STAGING vocabulary's (SfaVariables.AID_MIX_STEMS);
+      // what each pair MEANS is this table's. Pinned at class-init rather than
+      // trusted: a stem here that nothing staged would map a whole measure to
+      // no rows at all, and a stem staged but missing here would stage cells
+      // nothing reads.
+      check(AID_MIX.map { it.stem }.toSet() == SfaVariables.AID_MIX_STEMS.toSet()) {
+        "the aid-mix measure table ${AID_MIX.map { it.stem }} and the staged aid-mix variables " +
+          "${SfaVariables.AID_MIX_STEMS} name different stems"
+      }
+    }
+
+    /**
+     * A reading of a HEADCOUNT: the same status, the value narrowed to the
+     * integer a number of people is. `cohort_population_counts.headcount` is
+     * INTEGER, and rounding here rather than at the JDBC edge keeps the
+     * narrowing visible.
+     */
+    private fun FigureReading<Double>.toHeadcount(): FigureReading<Int> =
+      when (this) {
+        is FigureReading.Present -> FigureReading.Present(Math.round(value).toInt(), bearing)
+        is FigureReading.Absent -> this
+      }
 
     /**
      * The blend variables (P6's loader half): the FK onto `price_concepts`
@@ -830,9 +1335,11 @@ class CanonicalMoneyLoader internal constructor(
       aidScope: CohortAidScope,
       incomeBand: IncomeBand?,
       vintage: String,
-      cell: StatusfulCell<Double>,
+      reading: FigureReading<Double>,
+      /** The [ORDERED_SOURCES] publisher this row is attributed to: REQUIRED, because upstream-wins reads it. */
       source: MoneySource,
       sourceVariable: String,
+      publisherFlag: String? = null,
     ): NewCohortMoneyStat {
       check(incomeBand == null || measure.bandable) {
         "measure [${measure.value}] does not band by household income; a row banded [${incomeBand?.value}] " +
@@ -846,9 +1353,10 @@ class CanonicalMoneyLoader internal constructor(
         aidScope = aidScope,
         incomeBand = incomeBand,
         vintage = vintage,
-        reading = cell.reading(),
+        reading = reading,
         source = source,
         sourceVariable = sourceVariable,
+        publisherFlag = publisherFlag,
       )
     }
 
@@ -868,4 +1376,33 @@ class CanonicalMoneyLoader internal constructor(
         StatusfulCell.NotReported -> StatusfulCell.NotReported
       }
   }
+}
+
+/**
+ * Every number the `ipeds_sfa` arm of [CanonicalMoneyLoader.fill] produced,
+ * folded as it goes: what it read, which colleges it wrote for, and each loss
+ * class it can suffer.
+ *
+ * One holder rather than six accumulators declared in `fill()` and handed down
+ * three call levels -- the shape that made the enclosing function carry a
+ * dozen locals belonging to one source.
+ */
+private class SfaFill(
+  /** Staged cells this fill read; 0 when the run supplied no SFA group. */
+  val cellsRead: Int = 0,
+) {
+  /** Colleges the SFA source wrote at least one row for. */
+  val colleges = mutableSetOf<UUID>()
+
+  /** Staged institutions whose college disappeared between the `sfa` phase and this fill. */
+  var institutionsWithoutCollege = 0
+
+  /** Staged institutions publishing NEITHER net-price family. */
+  var institutionsWithoutFamily = 0
+
+  /** Cells whose flag bears a value but which carried none, by variable. */
+  val cellsWithoutValue = mutableMapOf<String, Int>()
+
+  /** Variables this fill asked for that the staging phase never staged, by name. */
+  val cellsNotStaged = mutableMapOf<String, Int>()
 }

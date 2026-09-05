@@ -19,6 +19,14 @@ enum class ResidencyBasis(
 
   /** The figure does not vary by residency -- explicit inapplicability, never a NULL default. */
   NOT_APPLICABLE("not_applicable"),
+
+  /**
+   * The source counted students whose tuition rate it could not determine
+   * (IPEDS SCFA14N) -- a PUBLISHED category with a real headcount, not our
+   * ignorance. Distinct from [NOT_APPLICABLE], which says the figure has no
+   * residency axis at all.
+   */
+  UNKNOWN("unknown"),
   ;
 
   companion object {

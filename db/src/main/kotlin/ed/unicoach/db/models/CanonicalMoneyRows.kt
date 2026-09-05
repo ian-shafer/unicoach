@@ -89,3 +89,25 @@ data class NewCohortMoneyStat(
   val sourceVariable: String,
   val publisherFlag: String? = null,
 )
+
+/**
+ * One `cohort_population_counts` row (RFC 162): how many students of a cohort
+ * sit on one residency basis and one living arrangement. A headcount, not
+ * money -- so it carries no [MoneyMeasure] and no unit, and its two axes are
+ * the authored [ResidencyBasis] / [FigureArrangement] vocabularies rather
+ * than `cohort_money_stats`' two-value residency scope.
+ */
+data class NewCohortPopulationCount(
+  val collegeId: UUID,
+  val population: CohortPopulation,
+  val residencyBasis: ResidencyBasis,
+  val arrangement: FigureArrangement,
+  /** 'YYYY-YY' where the source dates the cohort, the literal 'undated' where it does not (P5). */
+  val vintage: String,
+  /** The headcount and its status as ONE reading (D3): the invalid pairings do not compile. */
+  val reading: FigureReading<Int>,
+  /** The publisher, as the owned enumeration (RFC 161 decision 6) -- never a free string. */
+  val source: MoneySource,
+  val sourceVariable: String,
+  val publisherFlag: String? = null,
+)

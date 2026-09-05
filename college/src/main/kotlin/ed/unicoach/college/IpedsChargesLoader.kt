@@ -13,6 +13,8 @@ import ed.unicoach.db.models.ChargeKey
 import ed.unicoach.db.models.CollegeIpedsChargeId
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.FlagMeaning
+import ed.unicoach.db.models.IpedsImputationFlag
 import ed.unicoach.db.models.NewCollegeIpedsCharge
 import ed.unicoach.db.models.ValueBearingStatus
 import kotlinx.coroutines.CoroutineDispatcher
@@ -54,7 +56,7 @@ data class IpedsChargesLoadResult(
   val pruned: Int,
   val skipsByReason: Map<SkipReason, Int>,
   val rowFailuresByReason: Map<SkipReason, Int>,
-  val cellsByFlag: Map<IpedsChargesLoader.ImputationFlag, Int>,
+  val cellsByFlag: Map<IpedsImputationFlag, Int>,
 ) {
   /** Charge rows that reached the table, however they landed. */
   val loaded: Int get() = inserted + changed + unchanged
@@ -221,7 +223,7 @@ class IpedsChargesLoader(
   private class Tally {
     val count = LoadCount()
     val rowFailuresByReason = mutableMapOf<SkipReason, Int>()
-    val cellsByFlag = mutableMapOf<ImputationFlag, Int>()
+    val cellsByFlag = mutableMapOf<IpedsImputationFlag, Int>()
     val stagedKeys = mutableSetOf<ChargeKey>()
   }
 
@@ -357,7 +359,7 @@ class IpedsChargesLoader(
     record: CSVRecord,
     collegeId: UUID,
     ipedsUnitId: Int,
-  ): List<Pair<NewCollegeIpedsCharge, ImputationFlag>> =
+  ): List<Pair<NewCollegeIpedsCharge, IpedsImputationFlag>> =
     buildList {
       for (stem in IpedsChargeVocabulary.STEMS) {
         for ((suffix, academicYear) in IpedsChargeVocabulary.ACADEMIC_YEAR_BY_SUFFIX) {
@@ -412,7 +414,7 @@ class IpedsChargesLoader(
 
   /**
    * One `(value, flag)` pair read as a unit, with the value-IFF-flag rule
-   * applied ONCE, by [ImputationFlag.mapReading]. Both directions are FATAL: an
+   * applied ONCE, by [IpedsImputationFlag.mapReading]. Both directions are FATAL: an
    * unreadable flag, or a value that contradicts its own flag, is a changed
    * upstream format, and silently dropping either would put a number in front
    * of a family with no evidence behind it.
@@ -428,12 +430,12 @@ class IpedsChargesLoader(
     val cellRef = CellRef.Published(valueColumn, ipedsUnitId, record.recordNumber)
     val rawFlag = stringOrNull(record, flagColumn)
     val flag =
-      ImputationFlag.fromCode(rawFlag)
+      IpedsImputationFlag.fromCode(rawFlag)
         ?: error(
           "IC_AY [$flagColumn] for [ipeds_unit_id=$ipedsUnitId] [line=${record.recordNumber}] is " +
             "[${rawFlag ?: "<blank>"}], which is not one " +
-            "of the published imputation codes ${ImputationFlag.CODES} " +
-            "(and [${ImputationFlag.PROFESSIONAL_PRACTICE}] never occurs on a loaded variable)",
+            "of the published imputation codes ${IpedsImputationFlag.CODES} " +
+            "(and [${IpedsImputationFlag.PROFESSIONAL_PRACTICE}] never occurs on a loaded variable)",
         )
     // IC_AY publishes exactly two cell shapes: unsigned whole dollars, or the
     // literal missing-value token. A BLANK is neither, and a blank read as
@@ -470,7 +472,7 @@ class IpedsChargesLoader(
 
   private data class Cell(
     val amountUsd: Int?,
-    val flag: ImputationFlag,
+    val flag: IpedsImputationFlag,
   )
 
   /**
@@ -516,127 +518,6 @@ class IpedsChargesLoader(
     }
   }
 
-  /**
-   * Which half of [FigureReading] an imputation code lands in, declared per
-   * code rather than derived from a [FigureStatus]. Carrying the typed
-   * `ValueBearingStatus`/`AbsenceStatus` here is what lets
-   * [ImputationFlag.mapReading] build a reading whose invalid pairings do not
-   * compile, instead of re-deriving them from a slug at every call.
-   */
-  internal sealed interface FlagReading {
-    data class Bearing(
-      val bearing: ValueBearingStatus,
-    ) : FlagReading
-
-    data class Absence(
-      val absence: AbsenceStatus,
-    ) : FlagReading
-  }
-
-  /**
-   * The published X imputation codes and what unicoach reads each as — the ONE
-   * declaration of that vocabulary, count included.
-   *
-   * The Stata codebook (`db/seed/codebooks/IC2023_AY_Stata.zip`) ships them as
-   * a COMMENT BLOCK with no `label define`, so `bin/fetch-codebooks` cannot
-   * generate them and this enum is their one declaration. An unknown code is
-   * FATAL: a future year's imputed value must not arrive dressed as reported.
-   *
-   * Measured over the whole 2023 file, only `R`, `A`, `C` and `Z` occur on the
-   * loaded variables — no charge figure unicoach serves is imputed today. The
-   * imputed branch exists so that the day one is, it says so.
-   *
-   * `Z` (*implied zero*) is the one code whose decided reading and whose
-   * source meaning pull apart: it is a real zero, not an estimate. It lands as
-   * [FigureStatus.IMPUTED_BY_PUBLISHER] carrying its `0` — honest (the value
-   * survives, the status is not `reported`) but understating it. That is brief
-   * 0006's decision, applied unchanged.
-   *
-   * `Y` ([PROFESSIONAL_PRACTICE], a professional-practice program) never occurs
-   * on a loaded variable and is fatal rather than guessed at.
-   */
-  enum class ImputationFlag(
-    val code: String,
-    private val readsAs: FlagReading,
-  ) {
-    REPORTED("R", FlagReading.Bearing(ValueBearingStatus.REPORTED)),
-    ANALYST_CORRECTED("C", FlagReading.Bearing(ValueBearingStatus.REPORTED)),
-    GENERATED("G", FlagReading.Bearing(ValueBearingStatus.IMPUTED_BY_PUBLISHER)),
-    LOGICAL("J", FlagReading.Bearing(ValueBearingStatus.IMPUTED_BY_PUBLISHER)),
-    RATIO_ADJUSTED("K", FlagReading.Bearing(ValueBearingStatus.IMPUTED_BY_PUBLISHER)),
-    GROUP_MEDIAN("L", FlagReading.Bearing(ValueBearingStatus.IMPUTED_BY_PUBLISHER)),
-    NEAREST_NEIGHBOUR("N", FlagReading.Bearing(ValueBearingStatus.IMPUTED_BY_PUBLISHER)),
-    CARRIED_FORWARD("P", FlagReading.Bearing(ValueBearingStatus.IMPUTED_BY_PUBLISHER)),
-    IMPLIED_ZERO("Z", FlagReading.Bearing(ValueBearingStatus.IMPUTED_BY_PUBLISHER)),
-    LEFT_BLANK("B", FlagReading.Absence(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION)),
-    DO_NOT_KNOW("D", FlagReading.Absence(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION)),
-    NOT_USABLE("H", FlagReading.Absence(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION)),
-    NOT_APPLICABLE("A", FlagReading.Absence(AbsenceStatus.NOT_APPLICABLE)),
-    ;
-
-    /** This code as one of the six unicoach `figure_statuses` slugs. */
-    val status: FigureStatus
-      get() =
-        when (readsAs) {
-          is FlagReading.Bearing -> readsAs.bearing.status
-          is FlagReading.Absence -> readsAs.absence.status
-        }
-
-    /**
-     * This code plus an amount as ONE [FigureReading]: a value exists exactly
-     * when the code bears one, by construction. The ONE implementation of that
-     * rule — the parse calls it on the way in and the canonical fill on the way
-     * out, so neither can drift from the other or from the DB CHECK.
-     *
-     * [cell] is the offending row's IDENTITY, not a sentence: it is rendered
-     * only inside the failure lambdas, so the ~180,000 calls a run makes on the
-     * happy path build no message at all, and the message a failure does build
-     * names a row a fixer can query.
-     */
-    internal fun mapReading(
-      amountUsd: Int?,
-      cell: CellRef,
-    ): FigureReading<Int> =
-      when (readsAs) {
-        is FlagReading.Bearing -> {
-          FigureReading.Present(
-            requireNotNull(amountUsd) {
-              "IC_AY [$cell] carries no amount under the value-bearing flag [$code]; " +
-                "a flag that bears a value must have one"
-            },
-            readsAs.bearing,
-          )
-        }
-
-        is FlagReading.Absence -> {
-          require(amountUsd == null) {
-            "IC_AY [$cell] carries [$amountUsd] under the valueless flag [$code]; " +
-              "a value exists exactly when its flag bears one"
-          }
-          FigureReading.Absent(readsAs.absence)
-        }
-      }
-
-    companion object {
-      /** `Y`: published, but never on a variable this loader reads. */
-      const val PROFESSIONAL_PRACTICE = "Y"
-
-      private val BY_CODE = entries.associateBy { it.code }
-
-      /** The readable codes, sorted — for a fatal that has to say what it would have accepted. */
-      val CODES: List<String> = BY_CODE.keys.sorted()
-
-      /**
-       * The [ed.unicoach.db.models.MoneySource.fromValue] shape: an unreadable
-       * code is `null`, and each call site raises the fatal with the context it
-       * actually holds. A shared throw could only name what every caller has,
-       * which is why the canonical fill used to invent an `ipeds_unit_id = 0`
-       * to satisfy one.
-       */
-      fun fromCode(code: String?): ImputationFlag? = BY_CODE[code]
-    }
-  }
-
   companion object {
     private const val COL_UNITID = "UNITID"
 
@@ -670,3 +551,43 @@ class IpedsChargesLoader(
       }
   }
 }
+
+/**
+ * This code plus an amount as ONE [FigureReading]: a value exists exactly
+ * when the code bears one, by construction. The ONE implementation of that
+ * rule — the parse calls it on the way in and the canonical fill on the way
+ * out, so neither can drift from the other or from the DB CHECK.
+ *
+ * An EXTENSION on [IpedsImputationFlag], not a member of it: the enum is the
+ * shared vocabulary (RFC 162 owns it, and IC_AY and SFA read the same
+ * thirteen codes), while REFUSING a broken pairing is this loader's policy --
+ * SFA tallies the same shape instead of fataling on it.
+ *
+ * [cell] is the offending row's IDENTITY, not a sentence: it is rendered
+ * only inside the failure lambdas, so the ~180,000 calls a run makes on the
+ * happy path build no message at all, and the message a failure does build
+ * names a row a fixer can query.
+ */
+internal fun IpedsImputationFlag.mapReading(
+  amountUsd: Int?,
+  cell: IpedsChargesLoader.CellRef,
+): FigureReading<Int> =
+  when (val reads = meaning) {
+    is FlagMeaning.Bears -> {
+      FigureReading.Present(
+        requireNotNull(amountUsd) {
+          "IC_AY [$cell] carries no amount under the value-bearing flag [$code]; " +
+            "a flag that bears a value must have one"
+        },
+        reads.bearing,
+      )
+    }
+
+    is FlagMeaning.Absent -> {
+      require(amountUsd == null) {
+        "IC_AY [$cell] carries [$amountUsd] under the valueless flag [$code]; " +
+          "a value exists exactly when its flag bears one"
+      }
+      FigureReading.Absent(reads.absence)
+    }
+  }

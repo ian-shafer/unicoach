@@ -1,0 +1,18 @@
+This file stands in for SFA2223_Dict.zip -> sfa2223.xlsx on bin/fetch-ipeds'
+offline (-F) route, the way the *-fixture.csv files stand in for the survey
+CSVs. It is deliberately NOT a real .xlsx: the fetcher decides zip-ness by
+reading the payload, so a real workbook here would be opened as an archive and
+its own XML parts searched for a member. Nothing reads these bytes -- the
+dictionary is pinned for its digest and for the citation behind
+IpedsImputationFlag, and the ingest never opens it.
+
+The real dictionary's "imputation values" sheet is the published list of the
+thirteen X codes:
+
+  A Not applicable                         B Institution left item blank
+  C Analyst corrected reported value       D Do not know
+  G Data generated from other data values  H Value not derived - data not usable
+  J Logical imputation                     K Ratio adjustment
+  L Imputed using the Group Median         N Imputed using Nearest Neighbor
+  P Imputed using Carry Forward            R Reported
+  Z Implied zero;

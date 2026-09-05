@@ -149,7 +149,15 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
 
   @Test
   fun `IPEDS is ahead of the Scorecard, and the list is precedence rather than enum order`() {
-    assertEquals(listOf(MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD), CanonicalMoneyLoader.ORDERED_SOURCES)
+    // Both IPEDS surveys outrank the Scorecard (RFC 161 for the three residency
+    // tiers, RFC 162 for the net-price series the Scorecard only copies). SFA
+    // and IC_AY never share a natural key -- SFA writes cohort statistics and
+    // headcounts, IC_AY writes prices -- so their order relative to EACH OTHER
+    // decides nothing today; it is pinned so it cannot become accidental.
+    assertEquals(
+      listOf(MoneySource.IPEDS_SFA, MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD),
+      CanonicalMoneyLoader.ORDERED_SOURCES,
+    )
   }
 
   @Test
@@ -273,11 +281,14 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     assertEquals("imputed_by_publisher", imputed.status)
     assertEquals("L", imputed.publisherFlag)
 
-    // An implied zero is a REAL zero: the value survives, understated as
-    // imputed, and is not collapsed into an absence.
+    // An implied zero is a REAL zero, and RFC 162 reads it as one: NCES writes
+    // the 0 itself, so the row is `reported` carrying its 0, never an
+    // imputation and never an absence. The two IPEDS surveys now read the same
+    // thirteen codes through the same IpedsImputationFlag, so IC_AY and SFA
+    // cannot disagree about what a Z means.
     val impliedZero = assertNotNull(figure(110680, "books_and_supplies", "not_applicable"))
     assertEquals(0, impliedZero.amountUsd)
-    assertEquals("imputed_by_publisher", impliedZero.status)
+    assertEquals("reported", impliedZero.status)
     assertEquals("Z", impliedZero.publisherFlag)
   }
 
@@ -299,12 +310,18 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `MoneySource and BOTH schema domain CHECKs name the same two sources`() {
-    // Both tables carry a source column and both got a domain CHECK in 0084.
-    // Asserting only the price_figures twin would let the cohort one drift --
-    // exactly the failure the CHECK exists to prevent, in the table nothing
-    // else in this suite writes an IPEDS row to.
-    for (constraint in listOf("price_figures_source_domain_check", "cohort_money_stats_source_domain_check")) {
+  fun `MoneySource and EVERY schema domain CHECK name the same sources`() {
+    // Three tables carry a source column now: the two 0084 pinned and the
+    // cohort_population_counts 0085 added. Asserting only one twin would let
+    // the others drift -- exactly the failure the CHECK exists to prevent.
+    for (
+    constraint in
+    listOf(
+      "price_figures_source_domain_check",
+      "cohort_money_stats_source_domain_check",
+      "cohort_population_counts_source_domain_check",
+    )
+    ) {
       val stored =
         query(
           "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = '$constraint'",
@@ -313,9 +330,9 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
         assertTrue(stored.contains("'${member.value}'"), "[$constraint] must name ${member.value}: $stored")
       }
       assertEquals(
-        2,
+        3,
         MoneySource.entries.size,
-        "a third source needs a migration, not just an enum member: [$constraint] $stored",
+        "a fourth source needs a migration, not just an enum member: [$constraint] $stored",
       )
     }
   }
@@ -401,7 +418,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       "a source ranked twice would silently give itself two chances to win a key",
     )
     // Precedence is this list, not the enum's declaration order.
-    assertEquals(MoneySource.IPEDS_IC_AY, CanonicalMoneyLoader.ORDERED_SOURCES.first())
+    assertEquals(MoneySource.IPEDS_SFA, CanonicalMoneyLoader.ORDERED_SOURCES.first())
   }
 
   @Test

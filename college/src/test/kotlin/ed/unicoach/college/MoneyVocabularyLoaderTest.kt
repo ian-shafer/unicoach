@@ -8,6 +8,7 @@ import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.IpedsImputationFlag
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.PriceConcept
@@ -277,7 +278,13 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
         .filter { it.valueBearing }
         .map { it.value }
         .toSet()
-    for (constraint in listOf("price_figures_value_iff_status_check", "cohort_money_stats_value_iff_status_check")) {
+    for (constraint in listOf(
+      "price_figures_value_iff_status_check",
+      "cohort_money_stats_value_iff_status_check",
+      // The sibling headcount table restates the same two statuses (RFC 162),
+      // so it is pinned by the same test rather than by its migration's word.
+      "cohort_population_counts_value_iff_status_check",
+    )) {
       val definition = constraintDefinition(constraint)
       val listed =
         FigureStatus.entries
@@ -313,7 +320,7 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `the measure and scope enums agree with cohort_money_stats' CHECK lists`() {
+  fun `the measure and scope enums agree with the cohort fact tables' CHECK lists`() {
     // "Agree" is bidirectional (the income-band pin's reason): a stale extra
     // slug in a CHECK -- a value stored rows may carry but no enum can read
     // -- must fail, not pass by containment.
@@ -326,6 +333,26 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
     assertEquals(CohortPopulation.entries.map { it.value }.toSet(), listed("cohort_money_stats_population_check"))
     assertEquals(CohortResidencyScope.entries.map { it.value }.toSet(), listed("cohort_money_stats_residency_scope_check"))
     assertEquals(CohortAidScope.entries.map { it.value }.toSet(), listed("cohort_money_stats_aid_scope_check"))
+    // cohort_population_counts speaks the SAME population vocabulary (RFC
+    // 162), which its migration asserts and nothing checked: a new
+    // CohortPopulation member would pass the money table's pin above and then
+    // fail this table's CHECK at insert time, in production.
+    assertEquals(CohortPopulation.entries.map { it.value }.toSet(), listed("cohort_population_counts_population_check"))
+  }
+
+  @Test
+  fun `the staged publisher_flag CHECK names exactly the published IPEDS codes IpedsImputationFlag reads`() {
+    // The third copy of the thirteen letters (the dictionary, the enum, this
+    // CHECK), pinned both ways like every sibling CHECK/enum pair: a letter in
+    // the column's domain that no enum member reads would be a staged row the
+    // fill fatals on, and an enum member the CHECK omits would be a row the
+    // loader builds and the INSERT refuses.
+    val listed =
+      Regex("'([A-Z])'")
+        .findAll(constraintDefinition("college_sfa_publisher_flag_domain_check"))
+        .map { it.groupValues[1] }
+        .toSet()
+    assertEquals(IpedsImputationFlag.entries.map { it.code }.toSet(), listed)
   }
 
   private fun constraintDefinition(constraint: String): String =

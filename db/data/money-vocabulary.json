@@ -15,6 +15,10 @@
     {
       "slug": "not_applicable",
       "description": "This figure does not vary by residency; the axis is explicitly inapplicable, never a NULL default."
+    },
+    {
+      "slug": "unknown",
+      "description": "The source counted students whose tuition rate it could not determine (IPEDS SCFA14N): a published category with a real headcount, never our ignorance."
     }
   ],
   "arrangements": [
@@ -36,6 +40,11 @@
     {
       "slug": "not_applicable",
       "description": "This concept does not vary by where the student lives; the axis is explicitly inapplicable, never a NULL default.",
+      "is_living_arrangement": false
+    },
+    {
+      "slug": "unknown",
+      "description": "The source counted students whose living arrangement it did not determine (IPEDS GIS4UN/GRN4UN): a published category with a real headcount, not a way of living.",
       "is_living_arrangement": false
     }
   ],

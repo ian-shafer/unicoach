@@ -33,6 +33,8 @@ data class NewCollegeIndexBuild(
   val priceFigureRows: Int?,
   /** The `cohort_money_stats` rebuild count (RFC 158, P11); NULL for every earlier-era row. */
   val cohortMoneyStatRows: Int?,
+  /** The `cohort_population_counts` rebuild count (RFC 162); NULL for every earlier-era row. */
+  val cohortPopulationCountRows: Int?,
   /**
    * The per-status row counts per canonical table (RFC 158, P11), keyed by OUR
    * vocabulary slugs -- the operator-visible fact that suppression survived

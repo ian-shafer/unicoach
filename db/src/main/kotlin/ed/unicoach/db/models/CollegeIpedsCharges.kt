@@ -22,7 +22,7 @@ import java.util.UUID
  * [chargeVariable] is the IPEDS stem with the `0`-`3` year suffix removed, so
  * `CHG2AY3` arrives as `CHG2AY` + `2023-24`. [amountUsd] is `null` exactly when
  * [imputationFlag] bears no value -- WHICH published codes those are belongs to
- * the loader's `ImputationFlag`, their one declaration, and is not restated
+ * [IpedsImputationFlag], their one declaration, and is not restated
  * here. The loader enforces the pairing at parse, the
  * `college_ipeds_charges_value_iff_flag_check` CHECK enforces it in the
  * database, and the canonical fill re-reads the flag.

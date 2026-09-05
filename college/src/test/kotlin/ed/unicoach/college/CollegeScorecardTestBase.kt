@@ -90,7 +90,13 @@ abstract class CollegeScorecardTestBase {
             // `price_figures`/`cohort_money_stats` cascade from `colleges`,
             // but the five vocabulary tables cascade from nothing, and a
             // leftover vocabulary would hide a suite that forgot its seed.
+            // `college_sfa` (RFC 162) is named for the same reason `subjects`
+            // is: nothing cascades to it, and a leftover staged cell would
+            // give the next test's canonical fill rows for a college it never
+            // seeded. `cohort_population_counts` cascades from `colleges`
+            // like its money sibling, and is named beside it for symmetry.
             "TRUNCATE TABLE colleges, college_programs, college_ipeds, college_programs_census, " +
+              "college_sfa, cohort_population_counts, " +
               "subjects, ipeds_regions, us_states, nces_locales, carnegie_2021_basic_classes, " +
               "carnegie_2021_size_settings, religious_affiliations, athletic_associations, " +
               "football_conferences, admission_test_policies, cip_codes, codebook_sources, " +
