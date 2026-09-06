@@ -397,6 +397,60 @@ exchange entitlement; state-grant eligibility; any single "generosity score"; a
 residency-blended price (blends exist only as cohort statistics with a named
 basis).
 
+shape/07a/need-and-forms LANDED as RFC 170 (main@f69119b0 + 43f97191,
+2026-09-05) — the CDS answers what a school ASKS you to file and how it TREATS
+need. A family can ask "does Amherst meet full financial need?" or "do we have
+to do the CSS Profile?" and get that school's own Common Data Set back, cited,
+with the year on it; the door is the existing `college_cost_profile` tool, no
+profile required. The slice SPLIT at design: H4/H5 borrowing became its own
+slice, `shape/07b` (a per-loan-type statistic needing a loan dimension
+`cohort_money_stats` does not have, whose published percent cells are
+corpus-typed text with mixed 0..1 and 0..100 values) — /chart must spec it.
+**The modeled-ahead table was dropped, not filled**: `aid_policy_facts` (RFC 158
+D9) was one key/value bag guessed before anyone had seen the data, and the data
+is two shapes — a REQUIREMENT (`aid_forms` vocabulary + `aid_form_requirements`,
+college × form × applicant group × year) and COHORT STATISTICS (the average
+need-based grant and average share of need met in `cohort_money_stats`, the two
+headcounts in `cohort_population_counts`, the fully-met share derived at read
+time). Nothing in the schema names a CDS cell; the source is
+`source = 'common_data_set'` with the field id in `source_variable`.
+**Denominators are data.** The CDS reports its H2 cells against three different
+cohorts — line d awarded any aid, line e awarded a need-based grant, line c
+determined to have need, which no one publishes a matching numerator for — and
+the first implementation used one slug for all three, which would have made
+every sentence name a cohort the school never reported (the RFC 148/162 defect,
+third occurrence). Each measure is now pinned by test to the line it is reported
+over, and the copy says the cohort out loud because "need fully met" sounds like
+line c and is not. **Duplication came out where it was found**:
+`source_documents` holds one row per filing, so the three older CDS tables stop
+keeping their own copies of `source_url`/`archive_url` (~1,777 rows over ~417
+documents that could already disagree); `academic_year` and `money_source`
+became DOMAINs, five `'YYYY-YY'` TEXT columns became SMALLINT start years, the
+`'undated'` sentinel became NULL, and the label is rendered at read time.
+Coverage is the honest CDS universe: 338 colleges of 417 seeded, need figures
+312-321, FAFSA 272, CSS Profile 73, noncustodial 46. Forms are `required` or
+`unknown`, never "not required" — the corpus carries no false checkbox — which
+narrows the spec's "yes/no with citation" first-session test on purpose, and OUR
+collection gap is said as ours (`not_collected_by_us`) rather than as the
+school's silence. Coach prompt **v20** (rollback
+`COACHING_SYSTEM_PROMPT_VERSION=v19`), migrations 0087/0088. Review over 39
+lenses in four sequential tiers produced 117 findings in six fix batches;
+**three were user-facing honesty defects** — a school whose filing we hold being
+told "we hold no Common Data Set filing", our own gap rendered as the school's
+silence, and an ingest without the optional CDS phase erasing every CDS fact and
+exiting green — and **one was created by an earlier tier's own fix** (a nullable
+document key plus an INNER join reopened the first bug; closed with a per-source
+CHECK in the schema). Three slices landed under this one: RFC 162 before
+implementation, RFC 166 mid-review (its `"undated"` sentinel deleted in favour
+of D14's type, taking with it a comparator guard that existed because
+`"undated" > "2023-24"` sorts by character code) and RFC 172 at the gate (its
+`getopt` conversion and stderr discipline superseded ours wholesale; in return
+this slice fixed its brand-new one-command reload, which built the ingest
+command with `-m -a -d` and would have been refused with exit 21 once the CDS
+group became four). No `Needs:` gate answers were required: its BLOCKS edge to
+the canonical store was already LANDED, and its two CONFLICTS edges cost a
+rebase, as predicted.
+
 ## Gate 1 outcome (2026-09-02)
 
 Ian, verbatim: **"I approve the gate"** — D1-D11 approved as defaulted, no

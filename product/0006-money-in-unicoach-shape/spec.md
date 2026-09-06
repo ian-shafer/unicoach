@@ -245,6 +245,19 @@ with the residency question offered, not forced.
 become canonical rows. PREFER shape/02/ipeds-ic-ay — residency-correct published
 price per school is far more complete (fees split, four vintages) with IC_AY;
 Scorecard-only rows would ship the feature with thinner coverage.\
+**Build on what RFC 166 landed** _(added 2026-09-05; the code wins over this
+spec text, which was written before `shape/04` ran)_: the **FitLens digest half
+of this slice is already done** — `FitLensService` reads the canonical store
+through the injected `CanonicalCostReader` and emits basis, vintage and status —
+so keep it rather than rebuilding it. The search-index net-price column and its
+whole path were deliberately left alone and are still this slice's. Four
+constraints the landed code imposes: read only through `CanonicalCostReader`,
+keyed on the FULL address, copying the `CanonicalAddressContractTest` pattern
+(this is what gives D14c's "one ruler" teeth); normalise `VINTAGE_UNDATED` out
+before any latest-vintage pick, because it sorts lexicographically ABOVE every
+real `YYYY-YY`; never collapse a SUPPRESSED figure into "we do not have it"; and
+decode per row, so one bad row cannot fail a search page.
+
 **What:** Brief 0005's question, re-cut on the canonical layer (D11): the search
 index's price axes are rebuilt from `price_figures` / `cohort_money_stats`, and
 ranking stops pretending the in-state figure is everyone's. Gate-2 decision D14
@@ -265,6 +278,17 @@ Bowdoin but cheaper" — plus every fit-lens sweep.
 - A known non-matching residency ranks/filters on that family's
   residency-correct published price (D14a); aid's absence from that ruler is
   said in the tool result, not silent.
+- **A district price is disclosed, never ranked on (D18).** The ruler is the
+  in-state / out-of-state pair; an in-district row is never admitted to it,
+  because a state answer cannot select one. Where a school publishes a lower
+  district price, the result names it and says who it is for.
+- **A tuition figure whose tier the publisher does not separate is ranked and
+  labelled (D19)**, never silently treated as in-state and never dropped into
+  `excluded_unknown`. Reuse `ResidencyTiers.residencyTiersOf` and the landed
+  `ResidencyTierBasis` statements — do not write a second wording of a closed
+  vocabulary (that second derivation site is what produced two of RFC 166's
+  blockers), and note that the vocabulary has **six** codes, not the four this
+  spec was written against.
 - Unknown residency ranks on the net-price stat as today but the basis is in the
   metric NAME on the wire, and the search-side residency offer (D14d) invites
   the state question — never gates.
@@ -342,6 +366,29 @@ CDS citations (the `college_merit_aid` source_url/archive_url pattern).
 
 **First-session test:** "does Amherst meet full financial need?" → cited CDS
 answer with year; "does it require the CSS Profile?" → yes/no with citation.
+
+**SPLIT IN DESIGN (at RFC 170's design gate, 2026-09-05).** This instruction is
+delivered as two slices, so both carry permanent IDs:
+
+- **`shape/07a/need-and-forms`** — H2 (how a school treats need) and H8 (the
+  forms it requires), the door, and the canonical shapes they land in. **LANDED
+  as RFC 170.** Needs: BLOCKS `shape/01/canonical-store` — the facts land in the
+  canonical tables that slice created.
+- **`shape/07b/borrowing`** — CDS H4/H5 borrowing, including private loans. It
+  is a per-loan-type COHORT STATISTIC, not a policy: it needs a loan-type
+  dimension `cohort_money_stats` does not have, and the corpus's published
+  percent cells are typed `text` with mixed 0..1 and 0..100 values, so the
+  honest route derives them from the counts against the H.401 graduating cohort.
+  **NOT YET SPECCED — /chart owes this slice its text**; the paragraph above is
+  the design note, not a spec. Needs: BLOCKS `shape/01/canonical-store` — the
+  borrowing statistics land in `cohort_money_stats`, which that slice created.
+
+**First-session test (07a only):** "does Amherst meet full financial need?" →
+cited CDS answer with year, naming the cohort it is reported over; "does it
+require the CSS Profile?" → the forms this school's CDS lists, with citation. A
+bare "no" is NOT available: the corpus carries required checkboxes and no
+unrequired ones (RFC 170 D5), so an unlisted form reads "not listed in this
+school's CDS".
 
 ---
 
@@ -425,5 +472,40 @@ conversation wants it. Remove this Status line when scheduled.
   complete, and the surface states the assumption in words rather than printing
   a silent zero line. **DEFAULT: yes.**
 
+- **D18. A district price is disclosed, never ranked on.** _(Added 2026-09-05,
+  after `shape/04/cost-answers-from-canonical` landed as RFC 166 and made the
+  in-district tier real on a consumer surface. D14a predates that tier and is
+  under-specified for it.)_ unicoach asks for a **state**. It never asks which
+  district a family lives in, and there is no vocabulary for districts, so a
+  state answer cannot select an in-district price. **Ian's call:** search ranks
+  and filters on the **in-state** price for a school that publishes both, and
+  where a lower district price exists the result **says so** — "this school also
+  publishes a district price of $X for students living in its district". One
+  ruler per query (D14c) is preserved, residency is never invented, and the
+  cheaper possibility is disclosed rather than hidden. Ranking on in-district
+  where the family's state merely matches is refused: it asserts a fact about
+  the family, and the error is large — Austin Community College's district price
+  is $2,550 against an in-state price of $8,580. Applies to the 269 institutions
+  that publish a distinct in-district figure. **DEFAULT: yes.**
+
+- **D19. A tuition figure whose tier the publisher does not separate is ranked,
+  and the ambiguity is named.** _(Added 2026-09-05, same occasion. RFC 161
+  deferred "what a family is told" about these figures to `shape/04`, which
+  answered it for the coach; this decides it for search.)_ About **2,300**
+  institutions report on a program-year calendar, are absent from IPEDS IC_AY,
+  and carry only the Scorecard figure, which folds in-district into "in". Their
+  tier is genuinely unknown. **Ian's call:** rank them on the published figure
+  and label it — the source does not separate a district price from a state
+  price for this school — exactly as `ResidencyTierBasis` already says it in the
+  coach. They are **not** dropped into `excluded_unknown`: that set is
+  disproportionately community colleges, which are the schools a price search
+  exists to surface, and hiding them to keep the ruler tidy defeats the feature.
+  Silently treating them as in-state (today's behaviour) is refused — it is
+  measurably wrong for at least the 269 cases we can check. **DEFAULT: yes.**
+
 Approve the gate and wave 1 (shape/01, shape/06) is startable; amendments are
 carried into the slice texts before anything runs.
+
+**Gate-2 amendments after approval:** D17 (2026-09-05, carried into `shape/04`
+before it ran), D18 and D19 (2026-09-05, approved by Ian after `shape/04`
+landed; carried into `shape/05` below).
