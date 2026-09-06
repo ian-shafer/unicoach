@@ -101,6 +101,19 @@ enum class ValueBearingStatus(
 ) {
   REPORTED(FigureStatus.REPORTED),
   IMPUTED_BY_PUBLISHER(FigureStatus.IMPUTED_BY_PUBLISHER),
+  ;
+
+  companion object {
+    /**
+     * The value-bearing half of [status], or null when [status] is not one --
+     * the partition's own inverse, on the partition.
+     *
+     * TOTAL, and null rather than a throw: a caller reading a seed cell knows
+     * the file and line and can name the defect; this type knows neither, so
+     * raising here would replace a located error with an anonymous one.
+     */
+    fun ofOrNull(status: FigureStatus): ValueBearingStatus? = entries.firstOrNull { it.status == status }
+  }
 }
 
 /** The value-free members of [FigureStatus], as a type; a test pins the partition to the enum. */
@@ -111,4 +124,10 @@ enum class AbsenceStatus(
   NOT_APPLICABLE(FigureStatus.NOT_APPLICABLE),
   SUPPRESSED_BY_PUBLISHER(FigureStatus.SUPPRESSED_BY_PUBLISHER),
   NOT_COLLECTED_BY_US(FigureStatus.NOT_COLLECTED_BY_US),
+  ;
+
+  companion object {
+    /** The value-free half of [status], or null when [status] bears one; see [ValueBearingStatus.ofOrNull]. */
+    fun ofOrNull(status: FigureStatus): AbsenceStatus? = entries.firstOrNull { it.status == status }
+  }
 }

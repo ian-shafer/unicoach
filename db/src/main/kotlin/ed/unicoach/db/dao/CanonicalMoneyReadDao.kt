@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationError
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.CanonicalMoneyRead
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortMoneyStat
@@ -171,11 +172,11 @@ object CanonicalMoneyReadDao {
     val concept = rs.getString("price_concept")
     val residency = rs.getString("residency_basis")
     val arrangement = rs.getString("arrangement")
-    val academicYear = rs.getString("academic_year")
+    val academicYear = AcademicYear(rs.getInt("academic_year"))
     // The natural key of the row, so a corrupt cell can be found straight from the log.
     val key =
       "college_id=[${collegeId.value}] price_concept=[$concept] residency_basis=[$residency] " +
-        "arrangement=[$arrangement] academic_year=[$academicYear]"
+        "arrangement=[$arrangement] academic_year=[${academicYear.label}]"
     return PriceFigure(
       collegeId = collegeId,
       priceConcept = decode(concept, PriceConcept::fromValue, "PriceConcept", "price_figures.[price_concept]", key),
@@ -202,11 +203,11 @@ object CanonicalMoneyReadDao {
     val residencyScope = rs.getString("residency_scope")
     val aidScope = rs.getString("aid_scope")
     val incomeBand = rs.getString("income_band")
-    val vintage = rs.getString("vintage")
+    val vintage = rs.getIntOrNull("vintage")?.let(::AcademicYear)
     val key =
       "college_id=[${collegeId.value}] measure=[$measure] population=[$population] " +
         "residency_scope=[$residencyScope] aid_scope=[$aidScope] income_band=[${incomeBand ?: "overall"}] " +
-        "vintage=[$vintage]"
+        "vintage=[${vintage?.label ?: "undated"}]"
     val decodedMeasure = decode(measure, MoneyMeasure::fromValue, "MoneyMeasure", "cohort_money_stats.[measure]", key)
     return CohortMoneyStat(
       collegeId = collegeId,

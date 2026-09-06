@@ -3,13 +3,16 @@
 
 RFC 140. Pulls the open collegedata.fyi Common Data Set corpus over its public
 PostgREST API, selects per school and per fact group the newest document that
-actually reports that group, normalises the three fact groups the coach cites
-(H2A merit aid, the C7 admissions factor grid, application deadlines), and
+actually reports that group, normalises the four fact groups the coach cites
+(H2A merit aid, the C7 admissions factor grid, application deadlines, and the
+H2/H8 need-and-forms facts), and
 writes the reviewable, diffable seed:
 
     db/seed/cds/merit-aid.csv
     db/seed/cds/admission-factors.csv
     db/seed/cds/deadlines.csv
+    db/seed/cds/aid_policy.csv    (RFC 170: the H2 need figures and the H8
+                                   forms, each row carrying its own status)
     db/seed/cds/PROVENANCE.json   (fetched_at, corpus row counts, sha256 per csv)
 
 ALL interpretation lives here (the Kotlin loader is a dumb typed CSV reader
@@ -54,6 +57,7 @@ Etiquette per the corpus's docs/api-usage-attribution.md: every request sends
 
 import csv
 import enum
+import getopt
 import hashlib
 import io
 import json
@@ -79,6 +83,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    EXIT_INVALID_ARG_VALUE,
     fatal as shared_fatal,
     log_info,
     HTTP_ERROR_BODY_PREVIEW_BYTES,
@@ -137,6 +142,18 @@ CALENDAR_VALIDATION_YEAR = 2024
 # free-text mapping below.
 FIELD_IDS = (
     ["H.201", "H.2A01", "H.2A02"]
+    # The H2 first-time full-time freshmen block (RFC 170): line d (awarded any
+    # aid, the denominator lines h/i/k are reported against), line h (need fully
+    # met), line i (average percentage of need met) and line k (average
+    # need-based grant). The corpus repeats the same thirteen lines THREE times
+    # -- freshmen, full-time undergraduates, less-than-full-time -- and labels
+    # none of them; block 1 is the one H.201 above already reads, so the whole
+    # seed stays on one cohort.
+    + ["H.204", "H.208", "H.209", "H.211"]
+    # The H8 forms block: required of DOMESTIC first-year aid applicants. The
+    # H7 block (nonresident applicants) is the other applicant group the
+    # schema admits and is not read yet.
+    + [f"H.80{i}" for i in range(1, 8)]
     + [f"C.7{i:02d}" for i in range(1, 19)]
     + ["C.1401", "C.1402", "C.1403", "C.1404", "C.1405"]
     + ["C.1601", "C.1604", "C.1605", "C.1606"]
@@ -186,6 +203,113 @@ DEADLINES_HEADER = [
     "unit_id", "source_year", "round", "offered", "closing_month", "closing_day",
     "notification_month", "notification_day", "source_url", "archive_url",
 ]
+# One row per (college, cycle, fact). Unlike the three tables above, this one
+# carries a per-cell STATUS: the CDS need figures are the first place a cell the
+# corpus HAS but could not extract must survive as a fact about OUR gap
+# (RFC 170, D7) rather than as a drop counter. `value` is empty exactly when the
+# status bears no value.
+AID_POLICY_HEADER = [
+    "unit_id", "source_year", "fact", "value", "status", "source_variable",
+    "source_url", "archive_url",
+]
+
+# The figure_statuses slugs this seed writes; the vocabulary is unicoach's
+# (db/data/money-vocabulary.json), and these three are the only readings the
+# corpus can justify.
+STATUS_REPORTED = "reported"
+# The corpus HAS the cell and failed to extract it: our gap, not the school's
+# silence (RFC 170, D7). A cell no source carries gets no row at all.
+STATUS_NOT_COLLECTED = "not_collected_by_us"
+# The corpus itself says the question does not apply here.
+STATUS_NOT_APPLICABLE = "not_applicable"
+
+# The CDS `value_status` values this seed can read, mapped to the unicoach
+# reading of them. Anything else is an unmapped corpus status: counted, never
+# guessed at.
+AID_POLICY_STATUS_BY_CORPUS_STATUS = {
+    "reported": STATUS_REPORTED,
+    "parse_error": STATUS_NOT_COLLECTED,
+    "not_applicable": STATUS_NOT_APPLICABLE,
+}
+
+# The three cell readers the figure table below holds. Defined here, above the
+# table that names them, because the table is built at import time -- a reader
+# named before it exists is a NameError at startup, which is a worse way to
+# learn the ordering than a comment.
+def read_int_cell(row):
+    """A headcount cell as the seed spells it, or None: whole, non-negative."""
+    number = get_int(row)
+    return None if number is None else str(number)
+
+
+def read_percent_cell(row):
+    """A percent cell as the PUBLISHED percentage, or None; see get_percent for
+    why the number comes from value_num and never from value_text."""
+    number = get_percent(row)
+    return None if number is None else format_decimal(number)
+
+
+def read_money_cell(row):
+    """A dollar cell, cents included, or None. Not get_int: the corpus publishes
+    averages like 18006.5357, and get_int rejects every one of them."""
+    number = get_decimal(row)
+    return None if number is None else format_decimal(number)
+
+
+# The H2 freshmen figures, each with the READER its cell is read by -- the
+# reader itself, not a word naming one: a shape word needs a dispatch, the
+# dispatch needs a fallback, and a misspelled word then reads a percentage as
+# money with nothing to say so. "percent" is
+# the trap the whole reader exists for: `value_num` on a percent cell is the
+# 0..1 FRACTION (0.943) while `value_text` is sometimes "94.3" and sometimes
+# "0.5691", so the number is taken from value_num and multiplied, and the text
+# is never trusted. The seed carries the PUBLISHED percent; the canonical store
+# holds the 0-1 share, and that conversion belongs to the loader that knows the
+# measure's unit.
+AID_POLICY_FIGURES = [
+    ("aid_awarded_freshmen_count", "H.204", read_int_cell),
+    ("need_fully_met_count", "H.208", read_int_cell),
+    ("avg_need_met_percent", "H.209", read_percent_cell),
+    ("avg_need_based_grant_usd", "H.211", read_money_cell),
+]
+
+# The H8 forms, named as a family names them rather than as the CDS numbers
+# them. The slugs are the aid_forms vocabulary's (db/data/money-vocabulary.json).
+AID_POLICY_FORMS = [
+    ("fafsa_required", "H.801"),
+    ("institutional_form_required", "H.802"),
+    ("css_profile_required", "H.803"),
+    ("state_aid_form_required", "H.804"),
+    ("noncustodial_css_profile_required", "H.805"),
+    ("business_farm_supplement_required", "H.806"),
+    ("other_institutional_form_required", "H.807"),
+]
+
+# The floor under each fact's coverage, as distinct colleges, set well below
+# what the live corpus reports. EVERY fact the seed writes has one: the shrink
+# guard below compares whole FILES against the committed PROVENANCE.json, so a
+# single fact disappearing -- a renamed field id, an extractor that stops
+# ticking one checkbox -- leaves the file's row count almost unchanged and
+# passes. A fact with no floor is a fact that failure still hides behind, and
+# the minority forms are exactly the ones with no other guard.
+#
+# The floors differ because the facts do: the need figures are reported by
+# hundreds of schools and the business/farm supplement by a dozen. The measured
+# numbers are deliberately NOT restated here -- they move with every fetch, and
+# PROVENANCE.json records what a run actually saw.
+AID_POLICY_COVERAGE_FLOOR = {
+    "aid_awarded_freshmen_count": 250,
+    "need_fully_met_count": 250,
+    "avg_need_met_percent": 240,
+    "avg_need_based_grant_usd": 250,
+    "fafsa_required": 200,
+    "institutional_form_required": 12,
+    "css_profile_required": 55,
+    "state_aid_form_required": 30,
+    "noncustodial_css_profile_required": 30,
+    "business_farm_supplement_required": 8,
+    "other_institutional_form_required": 25,
+}
 
 MONTH_NAMES = {
     name: i
@@ -220,7 +344,17 @@ DEADLINE_SCHEMA_STYLES = {
 # An unmapped template must be visible whether or not an older document
 # happened to cover for it.
 STICKY_DROPS = frozenset(
-    {"deadline_schema_unmapped", "deadline_schema_inconsistent", "merit_h2a_contradictory"}
+    {
+        "deadline_schema_unmapped",
+        "deadline_schema_inconsistent",
+        "merit_h2a_contradictory",
+        "aid_policy_h2_contradictory",
+        # The CORPUS's own status vocabulary drifting -- the same kind of fact
+        # deadline_schema_unmapped is sticky for. Without this, a document that
+        # yields no aid-policy rows takes the count and the sample with it, and
+        # the one signal that the upstream vocabulary moved is lost.
+        "aid_policy_status_unmapped",
+    }
 )
 
 
@@ -484,19 +618,32 @@ def doc_subject(unit_id, doc):
 
 
 def group_fields(fields, drops):
-    """cds_fields rows by document_id -> field_id -> row, 'reported' rows only
-    (not_applicable / parse_error are unreported by definition, and are counted
-    PER STATUS: parse_error is extraction failure, which an operator judging
-    corpus health needs a number for). The first row wins on the rare
-    duplicate, matching the stable fetch order; the loser is counted, because a
-    corpus disagreeing with itself must not look clean."""
+    """(reported, unreported): cds_fields rows by document_id -> field_id ->
+    row for the 'reported' ones, and document_id -> field_id -> corpus status
+    for every other one.
+
+    A non-reported cell stays UNREADABLE -- it is never merged into the first
+    map, because a parse_error row can still carry junk text that `get_int`
+    would happily read as a number. It is counted PER STATUS as before
+    (parse_error is extraction failure, which an operator judging corpus health
+    needs a number for), and the aid-policy group additionally turns it into a
+    row that states OUR gap (RFC 170, D7); the three older groups ignore it, as
+    they always have.
+
+    The first row wins on the rare duplicate, matching the stable fetch order;
+    the loser is counted, because a corpus disagreeing with itself must not look
+    clean."""
     by_doc = {}
+    unreported_by_doc = {}
     for row in fields:
         status = row.get("value_status")
         if status != "reported":
             drops.record(
                 f"field_status_{status or 'unknown'}",
                 f"document_id=[{row.get('document_id')}] field_id=[{row.get('field_id')}]",
+            )
+            unreported_by_doc.setdefault(row.get("document_id"), {}).setdefault(
+                row.get("field_id"), status
             )
             continue
         doc_fields = by_doc.setdefault(row["document_id"], {})
@@ -507,12 +654,27 @@ def group_fields(fields, drops):
             )
             continue
         doc_fields[row["field_id"]] = row
-    return by_doc
+    return by_doc, unreported_by_doc
 
 
 # ---------------------------------------------------------------------------
 # Cell normalisation
 # ---------------------------------------------------------------------------
+
+
+def cell_evidence(row):
+    """Everything a drop needs to name WHICH part of a cell failed.
+
+    A junk drop used to record `value_text` alone, while the rules that refuse a
+    cell test `value_num` (the percent range) and `value_bool` -- so the ledger
+    named a column that had not failed, and a `value_bool` cell with no text
+    recorded `value=[None]`, losing the cause entirely."""
+    if row is None:
+        return "kind=[None] num=[None] bool=[None] text=[None]"
+    return (
+        f"kind=[{row.get('value_kind')}] num=[{row.get('value_num')}] "
+        f"bool=[{row.get('value_bool')}] text=[{get_cell_text(row)}]"
+    )
 
 
 def get_cell_text(row):
@@ -549,6 +711,81 @@ def get_int(row):
     if value != int(value) or value < 0:
         return None
     return int(value)
+
+
+def get_decimal(row, minimum=0.0, maximum=None):
+    """A decimal from a numeric cds_fields cell: `value_num` when the corpus
+    typed one, else `value_text` with currency and grouping stripped. Outside
+    [minimum, maximum] -> None, as is anything that is not a number at all.
+
+    Beside `get_int` rather than inside it, deliberately. `get_int` refuses
+    every fractional value, which is right for a HEADCOUNT (there is no such
+    thing as 4.5 students) and wrong for the money and percentage cells this
+    slice reads: measured against the live corpus it rejects 80% of the
+    "percentage of need met" cells and every dollar average published with
+    cents. Widening it would have quietly changed what the three existing fact
+    groups accept."""
+    if row is None:
+        return None
+    value = row.get("value_num")
+    if value is None:
+        text = get_cell_text(row)
+        if text is None:
+            return None
+        raw = re.sub(r"[$,\s]", "", text)
+        if not re.fullmatch(r"\d+(\.\d+)?", raw):
+            return None
+        value = float(raw)
+    # `bool` is a subclass of `int` in Python: a JSON `true` left in value_num
+    # would otherwise seed the number 1 -- a fabricated "$1 average award".
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if value < minimum or (maximum is not None and value > maximum):
+        return None
+    return value
+
+
+# The percent scale and its two ceilings, named once and derived from each
+# other: a fraction may not exceed 1 and a percent may not exceed 100, and the
+# two bounds drifting apart is exactly how a 0.943 becomes a 94.3% ceiling
+# violation nobody notices.
+PERCENT_PER_UNIT = 100.0
+MAX_FRACTION = 1.0
+MAX_PERCENT = MAX_FRACTION * PERCENT_PER_UNIT
+
+# How many decimal places a seed value keeps. The corpus publishes averages like
+# 18006.5357 and percentages like 94.3; four places keeps both without inventing
+# precision the source did not state.
+SEED_DECIMAL_PLACES = 4
+
+
+def get_percent(row):
+    """A 0..100 percentage from a percent cell.
+
+    The corpus types these cells `percent` and stores the 0..1 FRACTION in
+    `value_num` (0.943), while `value_text` is the percent for most rows
+    ("94.3") and the same fraction for others ("0.5691"). So the number comes
+    from `value_num` x 100 and the text is ignored -- reading the text would
+    publish 0.5691% of need met for 44 schools. A cell the corpus did NOT type
+    as a percent is read as a plain number, because then there is no scale to
+    undo."""
+    if row is None:
+        return None
+    if row.get("value_kind") == "percent" and row.get("value_num") is not None:
+        fraction = get_decimal(row, maximum=MAX_FRACTION)
+        return None if fraction is None else fraction * PERCENT_PER_UNIT
+    return get_decimal(row, maximum=MAX_PERCENT)
+
+
+def format_decimal(value):
+    """A decimal as the seed spells it: no exponent, no trailing zeros, and no
+    locale. `%` formatting and `str()` are both locale-independent in Python,
+    but the trailing-zero strip is written out rather than left to a format
+    string so "62393.00" and "62393" cannot land as two different seed rows for
+    the same reported figure."""
+    text = f"{value:.{SEED_DECIMAL_PLACES}f}".rstrip("0").rstrip(".")
+    return text if text else "0"
 
 
 def get_bool(row):
@@ -709,7 +946,7 @@ def date_cell(row, component, drops):
 # ---------------------------------------------------------------------------
 
 
-def map_merit_rows(unit_id, doc, doc_fields, drops):
+def map_merit_rows(unit_id, doc, doc_fields, unreported, drops):
     """The H2A merit-aid row for one document, as a 0-or-1 element list."""
     total = get_int_field(doc_fields, "H.201", drops, "merit_int_junk")
     count = get_int_field(doc_fields, "H.2A01", drops, "merit_int_junk")
@@ -737,7 +974,7 @@ def map_merit_rows(unit_id, doc, doc_fields, drops):
     ]
 
 
-def map_factors_rows(unit_id, doc, doc_fields, drops):
+def map_factors_rows(unit_id, doc, doc_fields, unreported, drops):
     """The C7 factor-grid row for one document, as a 0-or-1 element list."""
     row = {
         "unit_id": unit_id,
@@ -927,7 +1164,7 @@ def render_deadline_row(unit_id, doc, round_name, offered, closing, notification
     }
 
 
-def map_deadline_rows(unit_id, doc, doc_fields, drops):
+def map_deadline_rows(unit_id, doc, doc_fields, unreported, drops):
     """The per-round rows for one document: schema -> extraction -> per-round
     policy -> rendering."""
     style = get_schema_style(doc_fields, drops)
@@ -940,13 +1177,152 @@ def map_deadline_rows(unit_id, doc, doc_fields, drops):
     ]
 
 
-# The three fact groups, in output order: (name, seed filename, CSV header, row
-# builder). One table drives selection, the CSV writes and PROVENANCE.
+
+def aid_policy_status(field, unreported_status, drops, fact):
+    """The unicoach reading of one cell's corpus status, or None when the cell
+    is not there at all. A cell no source carries gets NO row (RFC 158 P7); an
+    unmapped corpus status is counted rather than guessed at."""
+    if field is not None:
+        return STATUS_REPORTED
+    if unreported_status is None:
+        return None
+    mapped = AID_POLICY_STATUS_BY_CORPUS_STATUS.get(unreported_status)
+    if mapped is None:
+        drops.record("aid_policy_status_unmapped", f"fact=[{fact}] value_status=[{unreported_status}]")
+    return mapped
+
+
+def aid_policy_row(unit_id, doc, fact, field_id, value, status):
+    return {
+        "unit_id": unit_id,
+        "source_year": doc_source_year(doc),
+        "fact": fact,
+        "value": value,
+        "status": status,
+        "source_variable": field_id,
+        "source_url": doc["source_url"],
+        "archive_url": doc_archive_url(doc),
+    }
+
+
+def map_aid_policy_figure(unit_id, doc, doc_fields, unreported, drops, fact, field_id, read_cell):
+    """One H2 need figure as a 0-or-1 element list: the value when the cell was
+    reported AND parses, a valueless row when the corpus has the cell but could
+    not extract it (D7), and nothing at all when the school published nothing.
+
+    A REPORTED cell that does not parse ('All', 'Response Text', 'Nearest $1' --
+    real values in this corpus) is dropped and counted, exactly as the three
+    older groups drop junk: the school did publish something, and inventing a
+    reading of it is the guess this whole tool refuses to make."""
+    field = doc_fields.get(field_id)
+    status = aid_policy_status(field, unreported.get(field_id), drops, fact)
+    if status is None:
+        return []
+    if status != STATUS_REPORTED:
+        return [aid_policy_row(unit_id, doc, fact, field_id, None, status)]
+    value = read_cell(field)
+    if value is None:
+        drops.record(
+            "aid_policy_value_junk",
+            f"fact=[{fact}] field_id=[{field_id}] {cell_evidence(field)}",
+        )
+        # OUR gap, not the school's silence (RFC 170, D7): the corpus HAS the
+        # cell and we could not read it, which is the same statement its own
+        # parse_error makes. Emitting nothing would have made the row absent,
+        # and absence downstream reads as "the school did not report it".
+        return [aid_policy_row(unit_id, doc, fact, field_id, None, STATUS_NOT_COLLECTED)]
+    return [aid_policy_row(unit_id, doc, fact, field_id, value, STATUS_REPORTED)]
+
+
+def map_aid_policy_form(unit_id, doc, doc_fields, unreported, drops, fact, field_id):
+    """One H8 form checkbox as a 0-or-1 element list.
+
+    REQUIRED or UNKNOWN, never "not required" (RFC 170, D5). Across the whole
+    corpus these seven checkboxes carry 765 ticks and not one `false`: an
+    unticked box simply produces no row, so a missing H.803 means "the CSS
+    Profile was not extracted as ticked", which is not the same claim as "the
+    CSS Profile is not required". A `false` that some future corpus does
+    publish is counted here rather than seeded, because the read layer says
+    "not listed in this school's CDS" for everything absent and a stored FALSE
+    would quietly turn that into a promise."""
+    field = doc_fields.get(field_id)
+    status = aid_policy_status(field, unreported.get(field_id), drops, fact)
+    if status is None:
+        return []
+    if status != STATUS_REPORTED:
+        return [aid_policy_row(unit_id, doc, fact, field_id, None, status)]
+    flag = get_bool(field)
+    if flag is None:
+        drops.record(
+            "aid_policy_flag_junk",
+            f"fact=[{fact}] field_id=[{field_id}] {cell_evidence(field)}",
+        )
+        return [aid_policy_row(unit_id, doc, fact, field_id, None, STATUS_NOT_COLLECTED)]
+    if flag is False:
+        drops.record("aid_policy_form_not_required_ignored", f"fact=[{fact}] field_id=[{field_id}]")
+        return []
+    return [aid_policy_row(unit_id, doc, fact, field_id, "true", STATUS_REPORTED)]
+
+
+def h2_is_contradictory(rows, drops):
+    """True when this document's H2 block contradicts itself.
+
+    A fully-met headcount (line h) cannot exceed the line-d denominator it is
+    reported against; a document that says otherwise has mis-extracted at least
+    one of the two, so the WHOLE block goes and an older document may cover for
+    it -- the same all-or-nothing rule map_merit_rows applies to H2A. A
+    judgement, separate from the collection above it: what the document says,
+    then whether we believe it."""
+    counts = {row["fact"]: row["value"] for row in rows if row["status"] == STATUS_REPORTED}
+    fully_met = counts.get("need_fully_met_count")
+    awarded = counts.get("aid_awarded_freshmen_count")
+    if fully_met is None or awarded is None or int(fully_met) <= int(awarded):
+        return False
+    drops.record(
+        "aid_policy_h2_contradictory",
+        f"need_fully_met=[{fully_met}] aid_awarded=[{awarded}]",
+    )
+    return True
+
+
+def map_aid_policy_rows(unit_id, doc, doc_fields, unreported, drops):
+    """Every H2 need figure and H8 form this document carries, one row each --
+    unless the H2 block contradicts itself, in which case the document reports
+    nothing for this group."""
+    rows = []
+    for fact, field_id, read_cell in AID_POLICY_FIGURES:
+        rows.extend(
+            map_aid_policy_figure(unit_id, doc, doc_fields, unreported, drops, fact, field_id, read_cell)
+        )
+    for fact, field_id in AID_POLICY_FORMS:
+        rows.extend(map_aid_policy_form(unit_id, doc, doc_fields, unreported, drops, fact, field_id))
+    return [] if h2_is_contradictory(rows, drops) else rows
+
+
+# The four fact groups, in output order: (name, seed filename, CSV header, row
+# builder). One table drives selection, the CSV writes and PROVENANCE. Every
+# builder takes the same (unit_id, doc, doc_fields, unreported, drops): the
+# `unreported` map is the corpus's own non-reported statuses, which only the
+# aid-policy group reads (RFC 170, D7).
 FACT_GROUPS = [
     ("merit_aid", "merit-aid.csv", MERIT_HEADER, map_merit_rows),
     ("admission_factors", "admission-factors.csv", FACTORS_HEADER, map_factors_rows),
     ("deadlines", "deadlines.csv", DEADLINES_HEADER, map_deadline_rows),
+    ("aid_policy", "aid_policy.csv", AID_POLICY_HEADER, map_aid_policy_rows),
 ]
+
+
+def has_reported_value(rows):
+    """True when `rows` carry at least one VALUE.
+
+    A row whose status bears no value -- our own extraction gap, or the corpus's
+    own not_applicable -- records why we have nothing; it is not the group being
+    reported. Treating it as reporting stopped the per-group fallback dead: a
+    newest filing whose H2 cells all failed extraction kept the group, and an
+    older filing with real numbers was never tried. The same tool already falls
+    back when a reported cell is junk, so this is one behaviour for one kind of
+    failure rather than two."""
+    return any(row.get("status", STATUS_REPORTED) == STATUS_REPORTED for row in rows)
 
 
 def find_newest_reporting(group, build, unit_id, candidates, drops):
@@ -956,44 +1332,64 @@ def find_newest_reporting(group, build, unit_id, candidates, drops):
     skipped over says nothing about the row that was kept -- except for the
     STICKY_DROPS, which describe the document itself. Each passed-over document
     is recorded under the group with the reasons it yielded nothing, so "why did
-    we fall back?" is answerable from PROVENANCE.json alone."""
-    for skipped, (doc, doc_fields) in enumerate(candidates):
+    we fall back?" is answerable from PROVENANCE.json alone.
+
+    "Reports" means a VALUE (see has_reported_value); a document that only states
+    why it has none is passed over, and its rows are kept only when no older
+    filing does better -- with its own ledger folded in at that point, because
+    it is then the winning document."""
+    valueless = None
+    for skipped, (doc, doc_fields, unreported) in enumerate(candidates):
         attempt = Drops(doc_subject(unit_id, doc))
-        rows = build(unit_id, doc, doc_fields, attempt)
-        if rows:
+        rows = build(unit_id, doc, doc_fields, unreported, attempt)
+        if rows and has_reported_value(rows):
             drops.merge(attempt)
             if skipped:
                 drops.record_group(group, "fell_back_to_older_doc", doc_subject(unit_id, doc))
                 drops.record_group(group, "documents_skipped", count=skipped)
             return rows
+        if rows and valueless is None:
+            # Keep the NEWEST valueless answer, ledger and all: if no older
+            # filing reports a value, "we could not read this school's newest
+            # filing" is still the honest thing to seed, and the document that
+            # produced it is then the winning document -- so its drops are
+            # merged below rather than reduced to the sticky ones.
+            valueless = (rows, attempt, doc)
+            drops.record_group(group, "no_value_reported", doc_subject(unit_id, doc))
+            continue
         drops.merge(attempt, STICKY_DROPS)
         reasons = ",".join(attempt.reasons()) or "nothing_reported"
         drops.record_group(group, "passed_over", f"{doc_subject(unit_id, doc)} reasons=[{reasons}]")
+    if valueless is not None:
+        rows, attempt, doc = valueless
+        drops.merge(attempt)
+        return rows
     if candidates:
         drops.record_group(group, "unreported_in_every_doc", f"unit_id=[{unit_id}]")
     return []
 
 
 def build_seed(manifest, fields):
-    """The three seed tables (keyed by group name) + the drop ledger from raw
+    """The four seed tables (keyed by group name) + the drop ledger from raw
     corpus rows. Each group is taken from the newest document that reports it,
     independently of the other two: each table's natural key carries its own
     source_year, so a 2024 merit row beside a 2025 factors row is a first-class
     outcome rather than a compromise."""
     drops = Drops()
     documents = select_documents(manifest, drops)
-    fields_by_doc = group_fields(fields, drops)
+    fields_by_doc, unreported_by_doc = group_fields(fields, drops)
 
     seed = {group: [] for group, _, _, _ in FACT_GROUPS}
     for unit_id in sorted(documents):
         candidates = [
-            (doc, fields_by_doc[doc["document_id"]])
+            (doc, fields_by_doc[doc["document_id"]], unreported_by_doc.get(doc["document_id"], {}))
             for doc in documents[unit_id]
             if fields_by_doc.get(doc["document_id"])
         ]
         for group, _, _, build in FACT_GROUPS:
             seed[group].extend(find_newest_reporting(group, build, unit_id, candidates, drops))
     seed["deadlines"].sort(key=lambda r: (r["unit_id"], r["source_year"], r["round"]))
+    seed["aid_policy"].sort(key=lambda r: (r["unit_id"], r["source_year"], r["fact"]))
     return seed, drops
 
 
@@ -1028,7 +1424,12 @@ def require_plausible_seed(outdir, seed, manifest, fields):
     a renamed table, a filter that matched nothing or a rotated key -- never a
     real result -- and a group that collapsed against the row counts the
     committed PROVENANCE.json recorded is the same failure arriving quietly. A
-    successful-looking load is not evidence; this is where that is enforced."""
+    successful-looking load is not evidence; this is where that is enforced.
+
+    The per-fact aid-policy floors are NOT here: they describe the real
+    corpus's size, so main calls require_aid_policy_coverage only for a network
+    run. The guards here describe the seed's own shape and apply to every
+    run."""
     empty = [name for group, name, _, _ in FACT_GROUPS if not seed[group]]
     if empty:
         fatal(
@@ -1036,6 +1437,7 @@ def require_plausible_seed(outdir, seed, manifest, fields):
             f"refusing to overwrite the seed in [{outdir}] "
             f"(manifest_rows=[{len(manifest)}] cds_fields_rows=[{len(fields)}])"
         )
+
     previous_path = outdir / "PROVENANCE.json"
     if not previous_path.exists():
         return
@@ -1051,7 +1453,45 @@ def require_plausible_seed(outdir, seed, manifest, fields):
     ]
     if shrunk:
         fatal(
-            f"row counts collapsed against [{previous_path}] ({'; '.join(shrunk)}); "
+            f"row counts collapsed against [{previous_path}] [{'; '.join(shrunk)}]; "
+            f"refusing to overwrite the seed in [{outdir}]"
+        )
+
+
+def aid_policy_facts():
+    """Every fact name the seed can write -- the figures and the forms, in one
+    list, so a guard cannot silently cover a subset of them."""
+    return [fact for fact, _, _ in AID_POLICY_FIGURES] + [fact for fact, _ in AID_POLICY_FORMS]
+
+
+def require_aid_policy_coverage(outdir, rows):
+    """Refuses an aid-policy seed in which a single FACT has quietly collapsed.
+
+    The file-level guards above cannot see this: every fact shares one file, so
+    a renamed H.209 or an H8 block the extractor stopped ticking would leave the
+    row count almost unchanged while the answer to "does this school meet full
+    need?" silently became "not reported" for every school. The floors are per
+    fact, in distinct colleges, and set well below what the corpus reports."""
+    # The floor table and the fact table are kept in step HERE rather than by
+    # eye: a fact added without a floor is a fact this guard would pass over.
+    unfloored = [fact for fact in aid_policy_facts() if fact not in AID_POLICY_COVERAGE_FLOOR]
+    if unfloored:
+        fatal(
+            f"aid-policy facts have no coverage floor [{', '.join(sorted(unfloored))}]; "
+            f"add one to AID_POLICY_COVERAGE_FLOOR rather than leaving the fact unguarded"
+        )
+    colleges = defaultdict(set)
+    for row in rows:
+        if row["status"] == STATUS_REPORTED:
+            colleges[row["fact"]].add(row["unit_id"])
+    thin = [
+        f"[{fact}]: [{len(colleges[fact])}] colleges, floor [{floor}]"
+        for fact, floor in sorted(AID_POLICY_COVERAGE_FLOOR.items())
+        if len(colleges[fact]) < floor
+    ]
+    if thin:
+        fatal(
+            f"aid-policy coverage collapsed [{'; '.join(thin)}]; "
             f"refusing to overwrite the seed in [{outdir}]"
         )
 
@@ -1114,6 +1554,18 @@ def parse_args(argv):
 
     outdir = Path(given["-o"]) if "-o" in given else DEFAULT_OUTDIR
     fixtures = Path(given["-F"]) if "-F" in given else None
+    # The one post-parse rule only this script has, so it stays here rather than
+    # in pyfunctions (fetch-ipeds keeps its own output-directory check for the
+    # same reason). A fixtures path that is not a directory is a USAGE mistake:
+    # without this, `load_corpus` opens `<file>/manifest.json` and the operator
+    # gets a NotADirectoryError traceback and exit 1, which reads as a fault of
+    # the corpus rather than of the command they typed.
+    if fixtures is not None and not fixtures.is_dir():
+        fatal(
+            f"option [-F] names [{fixtures}], which is not a directory; an offline replay reads "
+            f"[manifest.json] and [fields.json] from inside it",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
     # The key stays a STRING, never a Path: it is a credential, not a location.
     anon_key = given.get("-K")
     return outdir, fixtures, anon_key
@@ -1126,6 +1578,13 @@ def main(argv):
     manifest, fields, anon_key_source = load_corpus(fixtures, anon_key)
     seed, drops = build_seed(manifest, fields)
     require_plausible_seed(outdir, seed, manifest, fields)
+    # A recorded fixture is a few schools by design, so the per-fact coverage
+    # floors are asked of a NETWORK run only. main knows which this is; a
+    # boolean mode flag threaded into the guard would make the guard ask. It
+    # runs BEFORE anything is written, like every other refusal here: a seed
+    # whose coverage collapsed must not reach the disk at all.
+    if fixtures is None:
+        require_aid_policy_coverage(outdir, seed["aid_policy"])
 
     # EVERY file this run produces is written as one set, or none of it is
     # (RFC 172, bin/pyfunctions.write_atomically). These three CSVs are

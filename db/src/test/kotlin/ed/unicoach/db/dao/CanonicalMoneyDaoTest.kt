@@ -1,21 +1,28 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AidForm
+import ed.unicoach.db.models.AidFormApplicantGroup
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
+import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.FactTable
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NewAidFormRequirement
 import ed.unicoach.db.models.NewCohortMoneyStat
 import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.NewResidencyBasis
+import ed.unicoach.db.models.NewSourceDocument
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
-import ed.unicoach.db.models.VINTAGE_UNDATED
+import ed.unicoach.db.models.SourceDocumentId
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -25,14 +32,16 @@ import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
  * The canonical money store's constraints and DAO (RFC 158): the D3
  * value-iff-status CHECKs on both fact tables, the `NULLS NOT DISTINCT`
  * natural key, the vocabulary foreign keys as the no-unknown-slug (and P6
- * no-blend) rule, the year/vintage format CHECKs, `aid_policy_facts`'
- * one-value-shape CHECK, and the vocabulary upsert/delete-not-in discipline.
+ * no-blend) rule, the `academic_year` domain, the RFC 170 forms relation and
+ * its `source_documents` reference, and the vocabulary upsert/delete-not-in
+ * discipline.
  */
 class CanonicalMoneyDaoTest {
   companion object {
@@ -66,7 +75,8 @@ class CanonicalMoneyDaoTest {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
       stmt.execute(
-        "TRUNCATE TABLE colleges, price_figures, cohort_money_stats, aid_policy_facts, " +
+        "TRUNCATE TABLE colleges, price_figures, cohort_money_stats, cohort_population_counts, " +
+          "aid_form_requirements, source_documents, aid_forms, " +
           "residency_bases, arrangements, figure_statuses, price_concepts, income_bands, " +
           "ipeds_regions, us_states, nces_locales CASCADE",
       )
@@ -94,7 +104,7 @@ class CanonicalMoneyDaoTest {
     concept: PriceConcept = PriceConcept.TUITION_AND_FEES,
     residency: ResidencyBasis = ResidencyBasis.IN_STATE,
     arrangement: FigureArrangement = FigureArrangement.NOT_APPLICABLE,
-    academicYear: String = "2022-23",
+    academicYear: AcademicYear = AcademicYear(2022),
     reading: FigureReading<Int> = FigureReading.Present(11000, ValueBearingStatus.REPORTED),
     sourceVariable: String = "TUITIONFEE_IN",
   ) = NewPriceFigure(
@@ -112,7 +122,7 @@ class CanonicalMoneyDaoTest {
     collegeId: UUID,
     measure: MoneyMeasure = MoneyMeasure.AVG_NET_PRICE,
     incomeBand: IncomeBand? = null,
-    vintage: String = "2021-22",
+    vintage: AcademicYear? = AcademicYear(2021),
     reading: FigureReading<Double> = FigureReading.Present(18000.0, ValueBearingStatus.REPORTED),
   ) = NewCohortMoneyStat(
     collegeId = collegeId,
@@ -145,7 +155,7 @@ class CanonicalMoneyDaoTest {
             .prepareStatement(
               "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
                 "academic_year, amount_usd, status, source, source_variable) " +
-                "VALUES (?, 'tuition_and_fees', 'in_state', 'not_applicable', '2022-23', $amount, " +
+                "VALUES (?, 'tuition_and_fees', 'in_state', 'not_applicable', 2022, $amount, " +
                 "'$status', 'scorecard', 'TUITIONFEE_IN')",
             ).use { stmt ->
               stmt.setObject(1, id)
@@ -168,7 +178,7 @@ class CanonicalMoneyDaoTest {
               "INSERT INTO cohort_money_stats (college_id, measure, population, residency_scope, " +
                 "aid_scope, income_band, vintage, value, status, source, source_variable) " +
                 "VALUES (?, 'avg_net_price', 'title_iv_aided_undergraduates', 'in_state_rate_paying', " +
-                "'federal_aid_receiving', NULL, '2021-22', $value, '$status', 'scorecard', 'NPT4_PUB')",
+                "'federal_aid_receiving', NULL, 2021, $value, '$status', 'scorecard', 'NPT4_PUB')",
             ).use { stmt ->
               stmt.setObject(1, id)
               stmt.executeUpdate()
@@ -187,7 +197,7 @@ class CanonicalMoneyDaoTest {
           .prepareStatement(
             "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
               "academic_year, amount_usd, status, source, source_variable) " +
-              "VALUES (?, 'tuition_and_fees', NULL, 'not_applicable', '2022-23', 11000, 'reported', " +
+              "VALUES (?, 'tuition_and_fees', NULL, 'not_applicable', 2022, 11000, 'reported', " +
               "'scorecard', 'TUITIONFEE_IN')",
           ).use { stmt ->
             stmt.setObject(1, id)
@@ -248,7 +258,7 @@ class CanonicalMoneyDaoTest {
         .prepareStatement(
           "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
             "academic_year, amount_usd, status, source, source_variable) " +
-            "VALUES (?, 'sticker_blend', 'in_state', 'not_applicable', '2022-23', 11000, 'reported', " +
+            "VALUES (?, 'sticker_blend', 'in_state', 'not_applicable', 2022, 11000, 'reported', " +
             "'scorecard', 'COSTT4_A')",
         ).use { stmt ->
           stmt.setObject(1, id)
@@ -277,19 +287,30 @@ class CanonicalMoneyDaoTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `a price row's academic_year must be a real YYYY-YY, never undated`() {
+  fun `the academic_year domain admits a real start year and refuses one outside its range`() {
     val id = college()
-    for (bad in listOf("2022", "undated", "2022-2023")) {
-      val thrown =
-        assertFailsWith<ConstraintViolationException> {
-          CanonicalMoneyDao.insertPriceFigures(session, listOf(priceFigure(id, academicYear = bad))).getOrThrow()
-        }
-      assertEquals("price_figures_academic_year_format_check", thrown.constraint, "for [$bad]")
-    }
+    CanonicalMoneyDao.insertPriceFigures(session, listOf(priceFigure(id, academicYear = AcademicYear(2025)))).getOrThrow()
+
+    // Through raw SQL, because the Kotlin type cannot spell the mistake: the
+    // domain is what refuses it at the database, for every writer.
+    val thrown =
+      assertFailsWith<Exception> {
+        connection
+          .prepareStatement(
+            "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+              "academic_year, amount_usd, status, source, source_variable) " +
+              "VALUES (?, 'tuition_and_fees', 'in_state', 'not_applicable', 2199, 11000, 'reported', " +
+              "'scorecard', 'TUITIONFEE_IN')",
+          ).use { stmt ->
+            stmt.setObject(1, id)
+            stmt.executeUpdate()
+          }
+      }
+    assertTrue(thrown.message!!.contains("academic_year_check"), thrown.message!!)
   }
 
   @Test
-  fun `a cohort vintage is YYYY-YY or the literal undated, nothing else`() {
+  fun `an undated cohort statistic carries an absent vintage, never a sentinel year`() {
     val id = college()
     CanonicalMoneyDao
       .insertCohortMoneyStats(
@@ -298,80 +319,263 @@ class CanonicalMoneyDaoTest {
           cohortStat(
             id,
             measure = MoneyMeasure.PELL_SHARE,
-            vintage = VINTAGE_UNDATED,
+            vintage = null,
             reading = FigureReading.Present(0.4, ValueBearingStatus.REPORTED),
-          ),
-        ),
-      ).getOrThrow()
-    val thrown =
-      assertFailsWith<ConstraintViolationException> {
-        CanonicalMoneyDao.insertCohortMoneyStats(session, listOf(cohortStat(id, vintage = "unknown"))).getOrThrow()
-      }
-    assertEquals("cohort_money_stats_vintage_format_check", thrown.constraint)
-  }
-
-  @Test
-  fun `the undated sentinel this build reads is the one the schema accepts and stores`() {
-    // The Kotlin constant and `0083`'s CHECK are two sides of ONE contract, and
-    // the reader turns exactly this literal into "no year at all". A constant
-    // that drifted from the column would not fail to compile: the reader would
-    // simply stop recognising the sentinel and hand it back AS an academic
-    // year, so median debt would acquire a year no publisher gave it. Asserted
-    // against a live database rather than against a second copy of the string.
-    val id = college()
-    CanonicalMoneyDao
-      .insertCohortMoneyStats(
-        session,
-        listOf(
-          cohortStat(
-            id,
-            measure = MoneyMeasure.MEDIAN_DEBT_AT_COMPLETION,
-            vintage = VINTAGE_UNDATED,
-            reading = FigureReading.Present(23000.0, ValueBearingStatus.REPORTED),
           ),
         ),
       ).getOrThrow()
 
     val stored =
       connection.createStatement().use { stmt ->
-        stmt
-          .executeQuery(
-            "SELECT vintage FROM cohort_money_stats WHERE college_id = '$id' AND measure = 'median_debt_at_completion'",
-          ).use { rows ->
-            assertTrue(rows.next(), "the row the fill writes is there to be read")
-            rows.getString("vintage")
-          }
+        stmt.executeQuery("SELECT count(*) AS n FROM cohort_money_stats WHERE vintage IS NULL").use { rs ->
+          rs.next()
+          rs.getInt("n")
+        }
       }
-    assertEquals(VINTAGE_UNDATED, stored, "the store returns the sentinel byte-for-byte, which is what the reader tests")
-
-    // And it is the ONLY sentinel the column admits: a second one ('pooled',
-    // 'multi-year') is refused by the schema rather than read back as a year.
-    val thrown =
-      assertFailsWith<ConstraintViolationException> {
-        CanonicalMoneyDao.insertCohortMoneyStats(session, listOf(cohortStat(id, vintage = "pooled"))).getOrThrow()
-      }
-    assertEquals("cohort_money_stats_vintage_format_check", thrown.constraint)
+    assertEquals(1, stored)
   }
 
   // ---------------------------------------------------------------------------
-  // aid_policy_facts (D9): modeled ahead, constrained now
+  // Forms and documents (RFC 170)
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `an aid policy row may carry one value shape, never both`() {
+  fun `the money layer stores a start year, never a YYYY-YY string`() {
+    // D14 in one assertion: the four columns that carried 'YYYY-YY' text are
+    // SMALLINT under the academic_year domain, and the label is rendered.
+    val typed =
+      connection.createStatement().use { stmt ->
+        stmt
+          .executeQuery(
+            "SELECT table_name || '.' || column_name AS col, data_type, domain_name " +
+              "FROM information_schema.columns " +
+              "WHERE (table_name, column_name) IN " +
+              "(('price_figures', 'academic_year'), ('college_ipeds_charges', 'academic_year'), " +
+              " ('cohort_money_stats', 'vintage'), ('cohort_population_counts', 'vintage'), " +
+              " ('aid_form_requirements', 'academic_year'), ('source_documents', 'academic_year')) " +
+              "ORDER BY col",
+          ).use { rs ->
+            buildList {
+              while (rs.next()) add(Triple(rs.getString("col"), rs.getString("data_type"), rs.getString("domain_name")))
+            }
+          }
+      }
+    assertEquals(6, typed.size, "every money-layer year column must be present: $typed")
+    for ((column, dataType, domain) in typed) {
+      assertEquals("smallint", dataType, "[$column] must be a start year")
+      assertEquals("academic_year", domain, "[$column] must carry the domain's range rule")
+    }
+    assertEquals("2025-26", AcademicYear(2025).label, "the label is rendered, never stored")
+  }
+
+  @Test
+  fun `aid_policy_facts is gone, not extended`() {
+    // D2: it was empty, with zero readers and zero writers, and its contents
+    // were two different shapes. A table that still EXISTS is a table the next
+    // slice can fill by accident.
+    val present =
+      connection.createStatement().use { stmt ->
+        stmt.executeQuery("SELECT to_regclass('aid_policy_facts') IS NOT NULL AS present").use { rs ->
+          rs.next()
+          rs.getBoolean("present")
+        }
+      }
+    assertFalse(present, "aid_policy_facts must be dropped (RFC 170, D2)")
+  }
+
+  @Test
+  fun `one document per college, publisher and year`() {
     val id = college()
+    val first = document(id)
+    // The same natural key upserts the SAME row -- which is the whole point:
+    // one filing, one url, however many facts cite it.
+    assertEquals(first, document(id, sourceUrl = "https://example.edu/corrected.pdf"))
+    assertEquals(
+      "https://example.edu/corrected.pdf",
+      scalarString("SELECT source_url FROM source_documents WHERE id = '${first.value}'"),
+    )
+    // A different year is a different document.
+    assertTrue(document(id, academicYear = AcademicYear(2025)) != first)
+  }
+
+  @Test
+  fun `a document url may not be an empty string`() {
+    val id = college()
+    val thrown =
+      assertFailsWith<Exception> {
+        SourceDocumentsDao
+          .upsert(
+            session,
+            NewSourceDocument(
+              collegeId = CollegeId(id),
+              source = MoneySource.COMMON_DATA_SET,
+              academicYear = AcademicYear(2024),
+              sourceUrl = "",
+              archiveUrl = null,
+            ),
+          ).getOrThrow()
+      }
+    assertTrue(causeChain(thrown).contains("source_documents_source_url_nonempty_check"), causeChain(thrown))
+  }
+
+  @Test
+  fun `an aid form requirement lands on its natural key, once`() {
+    val id = college()
+    val document = document(id)
+    assertEquals(1, CanonicalMoneyDao.insertAidFormRequirements(session, listOf(requirement(id, document))).getOrThrow())
+    val thrown =
+      assertFailsWith<Exception> {
+        CanonicalMoneyDao.insertAidFormRequirements(session, listOf(requirement(id, document))).getOrThrow()
+      }
+    assertTrue(causeChain(thrown).contains("aid_form_requirements_natural_key"), causeChain(thrown))
+  }
+
+  @Test
+  fun `the same form required of two applicant groups is two requirements`() {
+    val id = college()
+    val document = document(id)
+    assertEquals(
+      2,
+      CanonicalMoneyDao
+        .insertAidFormRequirements(
+          session,
+          listOf(
+            requirement(id, document, group = AidFormApplicantGroup.DOMESTIC_FIRST_YEAR),
+            requirement(id, document, group = AidFormApplicantGroup.NONRESIDENT_FIRST_YEAR),
+          ),
+        ).getOrThrow(),
+    )
+  }
+
+  @Test
+  fun `an applicant group outside the two published blocks is refused`() {
+    val id = college()
+    val document = document(id)
+    val thrown =
+      assertFailsWith<Exception> {
+        rawRequirement(id, document, applicantGroup = "transfer_applicants", form = "fafsa")
+      }
+    assertTrue(thrown.message!!.contains("aid_form_requirements_applicant_group_check"), thrown.message!!)
+  }
+
+  @Test
+  fun `a requirement carries a value exactly when its status bears one`() {
+    val id = college()
+    val document = document(id)
+    // OUR gap (D7): not_collected_by_us, and so no value.
+    assertEquals(
+      1,
+      CanonicalMoneyDao
+        .insertAidFormRequirements(
+          session,
+          listOf(
+            requirement(
+              id,
+              document,
+              reading = FigureReading.Absent(AbsenceStatus.NOT_COLLECTED_BY_US),
+            ),
+          ),
+        ).getOrThrow(),
+    )
+    val thrown =
+      assertFailsWith<Exception> {
+        rawRequirement(id, document, isRequired = "TRUE", status = "not_collected_by_us")
+      }
+    assertTrue(thrown.message!!.contains("aid_form_requirements_value_iff_status_check"), thrown.message!!)
+  }
+
+  @Test
+  fun `a Common Data Set fact must cite its document, and every other publisher may not`() {
+    val id = college()
+    // The invariant the read depends on: the citation join is inner, so a CDS
+    // fact written with no document would VANISH from the answer and the
+    // school would be told we hold no filing for it. Per source, because the
+    // Scorecard and IPEDS cite a national release and have no document row.
     val thrown =
       assertFailsWith<Exception> {
         connection
           .prepareStatement(
-            "INSERT INTO aid_policy_facts (college_id, policy, academic_year, value_boolean, value_number, " +
-              "status, source) VALUES (?, 'meets_full_need', '2024-25', TRUE, 0.5, 'reported', 'cds')",
+            "INSERT INTO cohort_money_stats (college_id, measure, population, residency_scope, aid_scope, " +
+              "vintage, value, status, source, source_variable) " +
+              "VALUES (?, 'avg_need_met_share', 'first_time_full_time_freshmen_awarded_need_based_grant', " +
+              "'all', 'need_based_aid_receiving', 2024, 0.9, 'reported', 'common_data_set', 'H.209')",
           ).use { stmt ->
             stmt.setObject(1, id)
             stmt.executeUpdate()
           }
       }
-    assertTrue(thrown.message!!.contains("aid_policy_facts_one_value_shape_check"), thrown.message!!)
+    assertTrue(
+      causeChain(thrown).contains("cohort_money_stats_cds_cites_document_check"),
+      causeChain(thrown),
+    )
+    // The same row from a publisher with no per-school document is fine.
+    CanonicalMoneyDao
+      .insertCohortMoneyStats(
+        session,
+        listOf(cohortStat(id, measure = MoneyMeasure.PELL_SHARE, reading = FigureReading.Present(0.4, ValueBearingStatus.REPORTED))),
+      ).getOrThrow()
+  }
+
+  @Test
+  fun `every CDS fact must cite a document that exists`() {
+    val id = college()
+    val ghost = UUID.randomUUID()
+    // source_document_id is a real reference, not a UUID-shaped column: a fact
+    // citing a document nobody stored is a fact nobody can check, which is the
+    // whole reason D13 made the document an entity. Table-driven, because all
+    // four fact tables carry the same reference and a new one must not be able
+    // to skip the check.
+    val inserts =
+      mapOf(
+        "college_merit_aid" to
+          "INSERT INTO college_merit_aid (college_id, source_year, source_document_id) VALUES (?, 2024, ?)",
+        "college_admission_factors" to
+          "INSERT INTO college_admission_factors (college_id, source_year, source_document_id) VALUES (?, 2024, ?)",
+        "college_deadlines" to
+          "INSERT INTO college_deadlines (college_id, source_year, round, offered, source_document_id) " +
+          "VALUES (?, 2024, 'regular', TRUE, ?)",
+        "aid_form_requirements" to
+          "INSERT INTO aid_form_requirements (college_id, aid_form, applicant_group, academic_year, " +
+          "is_required, status, source, source_variable, source_document_id) " +
+          "VALUES (?, 'fafsa', 'domestic_first_year_aid_applicants', 2024, TRUE, 'reported', " +
+          "'common_data_set', 'H.801', ?)",
+      )
+    for ((table, sql) in inserts) {
+      val thrown =
+        assertFailsWith<Exception>("[$table] accepted a document that does not exist") {
+          connection.prepareStatement(sql).use { stmt ->
+            stmt.setObject(1, id)
+            stmt.setObject(2, ghost)
+            stmt.executeUpdate()
+          }
+        }
+      assertTrue(
+        causeChain(thrown).contains("${table}_source_document_id_fkey"),
+        "[$table]: ${causeChain(thrown)}",
+      )
+    }
+  }
+
+  @Test
+  fun `a requirement names a form the vocabulary carries, and a publisher the domain admits`() {
+    val id = college()
+    val document = document(id)
+    val unknownForm =
+      assertFailsWith<Exception> { rawRequirement(id, document, form = "parent_tax_return") }
+    // The FK by NAME: "aid_form" alone also matches the natural key, the
+    // applicant-group CHECK and the table itself, so it would pass for a
+    // refusal that has nothing to do with the vocabulary.
+    assertTrue(
+      unknownForm.message!!.contains("aid_form_requirements_aid_form_fkey"),
+      unknownForm.message!!,
+    )
+
+    // The publisher axis is a DOMAIN (RFC 170), so the refusal names
+    // `money_source_check` -- once, for every source column in the schema --
+    // rather than a CHECK this table declares for itself.
+    val unknownSource =
+      assertFailsWith<Exception> { rawRequirement(id, document, source = "cds") }
+    assertTrue(unknownSource.message!!.contains("money_source_check"), unknownSource.message!!)
   }
 
   // ---------------------------------------------------------------------------
@@ -445,13 +649,96 @@ class CanonicalMoneyDaoTest {
       mapOf(FigureStatus.REPORTED to 2, FigureStatus.NOT_REPORTED_BY_INSTITUTION to 1),
       CanonicalMoneyDao.priceFigureCountsByStatus(session).getOrThrow(),
     )
-    assertEquals(3, CanonicalMoneyDao.deleteAllPriceFigures(session).getOrThrow())
+    assertEquals(
+      3,
+      CanonicalMoneyDao.deleteFactsOfSources(session, FactTable.PRICE_FIGURES, listOf(MoneySource.SCORECARD)).getOrThrow(),
+    )
     assertEquals(emptyMap<FigureStatus, Int>(), CanonicalMoneyDao.priceFigureCountsByStatus(session).getOrThrow())
   }
 
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /** The `source_documents` row a CDS fact cites (RFC 170, D13). */
+  private fun document(
+    collegeId: UUID,
+    academicYear: AcademicYear = AcademicYear(2024),
+    sourceUrl: String = "https://example.edu/cds-2024-25.pdf",
+  ): SourceDocumentId =
+    SourceDocumentsDao
+      .upsert(
+        session,
+        NewSourceDocument(
+          collegeId = CollegeId(collegeId),
+          source = MoneySource.COMMON_DATA_SET,
+          academicYear = academicYear,
+          sourceUrl = sourceUrl,
+          archiveUrl = null,
+        ),
+      ).getOrThrow()
+
+  private fun requirement(
+    collegeId: UUID,
+    sourceDocumentId: SourceDocumentId,
+    form: AidForm = AidForm.FAFSA,
+    group: AidFormApplicantGroup = AidFormApplicantGroup.DOMESTIC_FIRST_YEAR,
+    reading: FigureReading<Boolean> = FigureReading.Present(true, ValueBearingStatus.REPORTED),
+  ) = NewAidFormRequirement(
+    collegeId = collegeId,
+    form = form,
+    applicantGroup = group,
+    academicYear = AcademicYear(2024),
+    reading = reading,
+    source = MoneySource.COMMON_DATA_SET,
+    sourceVariable = "H.801",
+    sourceDocumentId = sourceDocumentId,
+  )
+
+  /**
+   * A requirement written as raw SQL, for the states the Kotlin types refuse
+   * to spell: an unknown applicant group, a value under an absent status, a
+   * form outside the vocabulary, a publisher outside the domain. Each of those
+   * is refused by the DATABASE, for every writer, which is what these tests
+   * pin.
+   */
+  private fun rawRequirement(
+    collegeId: UUID,
+    sourceDocumentId: SourceDocumentId,
+    form: String = "fafsa",
+    applicantGroup: String = "domestic_first_year_aid_applicants",
+    isRequired: String = "TRUE",
+    status: String = "reported",
+    source: String = "common_data_set",
+  ) {
+    connection
+      .prepareStatement(
+        "INSERT INTO aid_form_requirements (college_id, aid_form, applicant_group, academic_year, " +
+          "is_required, status, source, source_variable, source_document_id) " +
+          "VALUES (?, '$form', '$applicantGroup', 2024, $isRequired, '$status', '$source', 'H.801', ?)",
+      ).use { stmt ->
+        stmt.setObject(1, collegeId)
+        stmt.setObject(2, sourceDocumentId.value)
+        stmt.executeUpdate()
+      }
+  }
+
+  /**
+   * Every message in an exception's cause chain, joined. The DAO wraps a
+   * driver fault in its own typed exception, so the CONSTRAINT that fired is a
+   * cause down; asserting on the wrapper's own sentence would pass for any
+   * database error at all.
+   */
+  private fun causeChain(error: Throwable): String =
+    generateSequence<Throwable>(error) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
+
+  private fun scalarString(sql: String): String =
+    connection.createStatement().use { stmt ->
+      stmt.executeQuery(sql).use { rs ->
+        rs.next()
+        rs.getString(1)
+      }
+    }
 
   private fun updatedAt(
     table: String,

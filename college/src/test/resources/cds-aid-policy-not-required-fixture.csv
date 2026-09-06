@@ -1,0 +1,2 @@
+unit_id,source_year,fact,value,status,source_variable,source_url,archive_url
+110100,2024,fafsa_required,false,reported,H.801,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25

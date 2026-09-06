@@ -1,25 +1,59 @@
 {
-  "fetched_at": "2026-08-28T12:58:17+00:00",
+  "fetched_at": "2026-09-06T02:23:40+00:00",
   "source": "network",
   "anon_key_source": "scraped",
   "corpus": {
-    "manifest_rows": 4799,
-    "cds_fields_rows": 13983,
-    "documents_selected": 440,
+    "manifest_rows": 4810,
+    "cds_fields_rows": 16767,
+    "documents_selected": 454,
     "dropped": {
       "by_reason": {
+        "aid_policy_flag_junk": 31,
+        "aid_policy_h2_contradictory": 2,
+        "aid_policy_value_junk": 3,
         "deadline_date_unparseable": 36,
         "deadline_flag_junk": 26,
         "factor_rating_junk": 16,
         "field_status_not_applicable": 13,
-        "field_status_parse_error": 14,
+        "field_status_parse_error": 37,
         "manifest_docs_unusable_no_canonical_year": 35,
-        "manifest_docs_unusable_no_ipeds_id": 148,
+        "manifest_docs_unusable_no_ipeds_id": 149,
         "manifest_docs_unusable_sub_institutional": 3,
         "merit_h2a_contradictory": 1,
-        "merit_int_junk": 23
+        "merit_int_junk": 22
       },
       "samples": {
+        "aid_policy_flag_junk": [
+          "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] fact=[fafsa_required] field_id=[H.801] kind=[text] num=[None] bool=[None] text=[Response 'x']",
+          "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] fact=[other_institutional_form_required] field_id=[H.807] kind=[text] num=[None] bool=[None] text=[Response Text]",
+          "unit_id=[145637] document_id=[9d28b4a1-6012-465e-a461-fc4d440ef562] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[2025-02-15 00:00:00]",
+          "unit_id=[153384] document_id=[30bcb610-7e0b-4c33-8d25-0adcc4b03f14] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Response Text]",
+          "unit_id=[153384] document_id=[30bcb610-7e0b-4c33-8d25-0adcc4b03f14] fact=[other_institutional_form_required] field_id=[H.807] kind=[text] num=[None] bool=[None] text=[Other (specify):]",
+          "unit_id=[164076] document_id=[9932de75-fd04-457f-b36a-c11d5f056f5b] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Response Text]",
+          "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[other_institutional_form_required] field_id=[H.807] kind=[text] num=[None] bool=[None] text=[Text]",
+          "unit_id=[173647] document_id=[83d02f27-c2a0-4678-b66d-d17196c7ebe3] fact=[institutional_form_required] field_id=[H.802] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[173647] document_id=[83d02f27-c2a0-4678-b66d-d17196c7ebe3] fact=[css_profile_required] field_id=[H.803] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[173647] document_id=[83d02f27-c2a0-4678-b66d-d17196c7ebe3] fact=[noncustodial_css_profile_required] field_id=[H.805] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[173647] document_id=[83d02f27-c2a0-4678-b66d-d17196c7ebe3] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[173647] document_id=[83d02f27-c2a0-4678-b66d-d17196c7ebe3] fact=[other_institutional_form_required] field_id=[H.807] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[178396] document_id=[4c139ec7-9b89-4c8e-90cf-208a7fc870b0] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Response Text]",
+          "unit_id=[192819] document_id=[fb9edd29-d1e4-4a4d-8f20-dc0ab652165d] fact=[css_profile_required] field_id=[H.803] kind=[text] num=[None] bool=[None] text=[X (beginning Fall 2025)]",
+          "unit_id=[200004] document_id=[8ba79ebe-da41-4e93-99fb-eea5fd6ff522] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Response Text]",
+          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[fafsa_required] field_id=[H.801] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[institutional_form_required] field_id=[H.802] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[css_profile_required] field_id=[H.803] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[state_aid_form_required] field_id=[H.804] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[noncustodial_css_profile_required] field_id=[H.805] kind=[text] num=[None] bool=[None] text=[Not Selected]"
+        ],
+        "aid_policy_h2_contradictory": [
+          "unit_id=[100663] document_id=[8b6b1b66-9440-40c0-983e-f683375e3304] need_fully_met=[348123] aid_awarded=[5196]",
+          "unit_id=[166027] document_id=[9030eb3f-36ed-49ca-946a-d4a91e9f8da2] need_fully_met=[936] aid_awarded=[932]"
+        ],
+        "aid_policy_value_junk": [
+          "unit_id=[168430] document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] fact=[aid_awarded_freshmen_count] field_id=[H.204] kind=[number] num=[3126429.42] bool=[None] text=[3126429.42]",
+          "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[avg_need_based_grant_usd] field_id=[H.211] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
+          "unit_id=[228705] document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7] fact=[avg_need_based_grant_usd] field_id=[H.211] kind=[text] num=[None] bool=[None] text=[Nearest $1]"
+        ],
         "deadline_date_unparseable": [
           "unit_id=[122755] document_id=[5d06b1fb-8045-4b7a-827b-84d4243c27c9] field_id=[C.2104] value=[15-week]",
           "unit_id=[122755] document_id=[5d06b1fb-8045-4b7a-827b-84d4243c27c9] field_id=[C.2105] value=[10-week]",
@@ -98,20 +132,26 @@
           "document_id=[c10f4b42-f127-4b7a-a990-c0bbac571835] field_id=[C.711]"
         ],
         "field_status_parse_error": [
+          "document_id=[04c1a634-5f17-4722-83d7-f1662f5bc04e] field_id=[H.209]",
+          "document_id=[09f974b1-0f0e-46ab-8765-2a035c7d2c7c] field_id=[H.209]",
           "document_id=[14592f56-94e8-4593-9210-f243e9f21f78] field_id=[H.201]",
           "document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7] field_id=[H.201]",
+          "document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7] field_id=[H.204]",
+          "document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7] field_id=[H.209]",
+          "document_id=[1d3f9717-72a2-4137-a9ca-d74c1b10b76a] field_id=[H.209]",
+          "document_id=[2086f3ff-2f4f-49c6-b65e-c947cc0b877b] field_id=[C.2101]",
           "document_id=[2866e167-6ad1-4231-96cb-7778fd05a21e] field_id=[H.201]",
+          "document_id=[2866e167-6ad1-4231-96cb-7778fd05a21e] field_id=[H.204]",
+          "document_id=[2866e167-6ad1-4231-96cb-7778fd05a21e] field_id=[H.208]",
+          "document_id=[2866e167-6ad1-4231-96cb-7778fd05a21e] field_id=[H.209]",
+          "document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] field_id=[H.209]",
+          "document_id=[4e6b2a24-f143-4dd4-8640-8cbeae48bdcd] field_id=[H.209]",
+          "document_id=[636cbd35-731f-4769-ade9-4f4235509a89] field_id=[H.209]",
+          "document_id=[738de6c4-200a-4253-9204-0400d863cab9] field_id=[H.208]",
+          "document_id=[79fe97fc-0b95-4443-adb4-48156ec752d2] field_id=[H.209]",
+          "document_id=[812505fd-f7fb-4934-b24e-b0528635de7b] field_id=[H.209]",
           "document_id=[83625ee3-be46-423d-9ed0-39982b37306f] field_id=[H.201]",
-          "document_id=[83950eb0-0ddb-467b-b848-c5a004ff533d] field_id=[C.1401]",
-          "document_id=[87d0709c-a0ec-4e53-9239-c81409d3406d] field_id=[H.201]",
-          "document_id=[99de4308-8be2-4a7c-909f-b611dcd6973d] field_id=[C.2101]",
-          "document_id=[99de4308-8be2-4a7c-909f-b611dcd6973d] field_id=[C.2201]",
-          "document_id=[b27587f9-84ab-44e2-8ec7-df1189b66451] field_id=[C.1401]",
-          "document_id=[b27587f9-84ab-44e2-8ec7-df1189b66451] field_id=[C.2101]",
-          "document_id=[b27587f9-84ab-44e2-8ec7-df1189b66451] field_id=[C.2201]",
-          "document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] field_id=[H.201]",
-          "document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] field_id=[H.2A01]",
-          "document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] field_id=[H.2A02]"
+          "document_id=[83625ee3-be46-423d-9ed0-39982b37306f] field_id=[H.204]"
         ],
         "manifest_docs_unusable_no_canonical_year": [
           "document_id=[06541549-da8d-496c-9965-7e3f524a8c1b]",
@@ -150,12 +190,12 @@
           "document_id=[1c1c0bb9-7636-4198-8dc2-d46a9ed51bb4]",
           "document_id=[1c94c026-004c-4871-9b04-08ecbd0b379f]",
           "document_id=[1eb6ac51-ac05-4d92-89db-023c1faa9d60]",
+          "document_id=[2086f3ff-2f4f-49c6-b65e-c947cc0b877b]",
           "document_id=[2870a60d-a5c0-4d21-a725-db56252f20e6]",
           "document_id=[2a3f092f-3dce-473e-9637-9dd3c1a453b8]",
           "document_id=[2c9bac52-3f76-49b4-b6e7-c0407fa788c2]",
           "document_id=[2e145dc8-004f-472a-85c4-3847f4cb4cef]",
-          "document_id=[317c6fa5-33fe-4f42-9d1c-980e0c580313]",
-          "document_id=[32b83bae-7cb7-4bbd-838d-61e4cb7dac49]"
+          "document_id=[317c6fa5-33fe-4f42-9d1c-980e0c580313]"
         ],
         "manifest_docs_unusable_sub_institutional": [
           "document_id=[1c92c82b-fc47-4a55-a32e-013e02fafbff]",
@@ -184,8 +224,8 @@
           "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] field_id=[H.2A02] value=[2950.01]",
           "unit_id=[209612] document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[H.2A02] value=[33040.1515151515]",
           "unit_id=[210669] document_id=[83950eb0-0ddb-467b-b848-c5a004ff533d] field_id=[H.2A02] value=[36327.6]",
-          "unit_id=[217420] document_id=[6bca036d-98a7-4592-b9c7-b68c48566e6d] field_id=[H.2A02] value=[2129.11]",
-          "unit_id=[217864] document_id=[02fe8632-c79b-4cfc-9240-669c394676a1] field_id=[H.2A02] value=[9317.0576]"
+          "unit_id=[217864] document_id=[02fe8632-c79b-4cfc-9240-669c394676a1] field_id=[H.2A02] value=[9317.0576]",
+          "unit_id=[218724] document_id=[b0842f39-baee-48fc-bab3-d2ac0a3162dc] field_id=[H.2A02] value=[6413.11]"
         ]
       },
       "by_group": {
@@ -193,8 +233,8 @@
           "by_reason": {
             "documents_skipped": 17,
             "fell_back_to_older_doc": 17,
-            "passed_over": 97,
-            "unreported_in_every_doc": 61
+            "passed_over": 101,
+            "unreported_in_every_doc": 63
           },
           "samples": {
             "fell_back_to_older_doc": [
@@ -262,11 +302,86 @@
             ]
           }
         },
+        "aid_policy": {
+          "by_reason": {
+            "documents_skipped": 14,
+            "fell_back_to_older_doc": 14,
+            "no_value_reported": 2,
+            "passed_over": 135,
+            "unreported_in_every_doc": 102
+          },
+          "samples": {
+            "fell_back_to_older_doc": [
+              "unit_id=[102094] document_id=[67d81846-92cd-4e33-ac8e-c94147962cf0]",
+              "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce]",
+              "unit_id=[142115] document_id=[aa506b16-209a-4837-9766-c1c80997acd1]",
+              "unit_id=[143084] document_id=[b4bf4751-c54d-4e6b-983b-5d540acc5d4d]",
+              "unit_id=[143118] document_id=[e2384bc0-57c3-4aa4-a618-9c9fd9aeed96]",
+              "unit_id=[157085] document_id=[55b6480e-cf62-43cb-beea-67dcf2ed0279]",
+              "unit_id=[166027] document_id=[0e482995-83a3-4dcf-92f1-296ca4e8cf94]",
+              "unit_id=[168148] document_id=[7a5bb196-7973-4f7f-87c1-adc699248073]",
+              "unit_id=[168342] document_id=[5d262e0c-6d68-46b4-94a2-67de77259e92]",
+              "unit_id=[196015] document_id=[5afb8acc-d3dc-49a8-b91f-70b972da4b75]",
+              "unit_id=[211440] document_id=[4fea1316-20cf-4875-ab27-ee557b1239cd]",
+              "unit_id=[217420] document_id=[6bca036d-98a7-4592-b9c7-b68c48566e6d]",
+              "unit_id=[218964] document_id=[fb88632c-db75-405a-aaff-a61425951fa7]",
+              "unit_id=[219602] document_id=[1d3f9717-72a2-4137-a9ca-d74c1b10b76a]"
+            ],
+            "no_value_reported": [
+              "unit_id=[228705] document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7]",
+              "unit_id=[243780] document_id=[f2b9b618-6522-480a-97bd-b2c72b0f3eef]"
+            ],
+            "passed_over": [
+              "unit_id=[100663] document_id=[8b6b1b66-9440-40c0-983e-f683375e3304] reasons=[aid_policy_h2_contradictory]",
+              "unit_id=[102094] document_id=[cd34785d-8734-4b24-8401-1906fdc2e4bb] reasons=[nothing_reported]",
+              "unit_id=[106397] document_id=[9284e69c-4522-4f55-ba4d-a4f096bede9d] reasons=[nothing_reported]",
+              "unit_id=[109651] document_id=[239bc884-621d-4eb1-8969-5284d25f6eec] reasons=[nothing_reported]",
+              "unit_id=[110404] document_id=[e3a03667-8e1c-4a4d-8920-b01b5dffe465] reasons=[nothing_reported]",
+              "unit_id=[110404] document_id=[c330608c-e3bf-439e-b9e9-0f52df09aa6c] reasons=[nothing_reported]",
+              "unit_id=[110422] document_id=[6115c693-b459-4ae6-af0a-995d97a5361e] reasons=[nothing_reported]",
+              "unit_id=[110565] document_id=[4981c7b4-6b98-4e6f-b8cc-ea05e098b9a9] reasons=[nothing_reported]",
+              "unit_id=[110617] document_id=[76174b8a-31fd-410c-ac76-ec76a8373ff5] reasons=[nothing_reported]",
+              "unit_id=[110635] document_id=[74a1d1a8-cf76-4061-a6db-ec409a11bef5] reasons=[nothing_reported]",
+              "unit_id=[110662] document_id=[822fe1f7-d348-42b6-8b98-a1a42c3933e6] reasons=[nothing_reported]",
+              "unit_id=[110714] document_id=[5d7b1ca8-80ce-4f40-8d60-ad06257befdc] reasons=[nothing_reported]",
+              "unit_id=[111948] document_id=[22c8aab8-4fad-48e2-a5f2-d2d4384768c7] reasons=[nothing_reported]",
+              "unit_id=[117946] document_id=[c0f11f94-5e90-47f6-83cb-288bc7122b66] reasons=[nothing_reported]",
+              "unit_id=[121345] document_id=[7da3f8d7-7cf0-47a3-8761-5724a1ccaedf] reasons=[nothing_reported]",
+              "unit_id=[122409] document_id=[24b75759-ca04-45c5-bb76-aba91bdf1399] reasons=[nothing_reported]",
+              "unit_id=[122409] document_id=[a710563a-41a9-4b68-8d20-5fd19353bb55] reasons=[nothing_reported]",
+              "unit_id=[126614] document_id=[3307988e-e14c-4f4a-aaf3-879e02c5e962] reasons=[nothing_reported]",
+              "unit_id=[126614] document_id=[bc92eac7-99e9-4770-a4b2-8c83394be23d] reasons=[nothing_reported]",
+              "unit_id=[127200] document_id=[d57ecc9e-4b6f-4e78-9f81-5d7df94baafc] reasons=[nothing_reported]"
+            ],
+            "unreported_in_every_doc": [
+              "unit_id=[100663]",
+              "unit_id=[106397]",
+              "unit_id=[109651]",
+              "unit_id=[110404]",
+              "unit_id=[110422]",
+              "unit_id=[110565]",
+              "unit_id=[110617]",
+              "unit_id=[110662]",
+              "unit_id=[110714]",
+              "unit_id=[111948]",
+              "unit_id=[117946]",
+              "unit_id=[121345]",
+              "unit_id=[122409]",
+              "unit_id=[126614]",
+              "unit_id=[127200]",
+              "unit_id=[128498]",
+              "unit_id=[130590]",
+              "unit_id=[130943]",
+              "unit_id=[131159]",
+              "unit_id=[133669]"
+            ]
+          }
+        },
         "deadlines": {
           "by_reason": {
             "documents_skipped": 2,
             "fell_back_to_older_doc": 2,
-            "passed_over": 134,
+            "passed_over": 135,
             "unreported_in_every_doc": 120
           },
           "samples": {
@@ -279,7 +394,6 @@
               "unit_id=[100830] document_id=[2f81dce9-8038-4c7e-84af-ae6c4c29e5b5] reasons=[deadline_flag_junk]",
               "unit_id=[101879] document_id=[2ae04793-a888-4499-a150-a5353cd2785b] reasons=[nothing_reported]",
               "unit_id=[107558] document_id=[d529dd95-5e84-4236-937e-209dee6c0f6f] reasons=[nothing_reported]",
-              "unit_id=[110404] document_id=[c330608c-e3bf-439e-b9e9-0f52df09aa6c] reasons=[nothing_reported]",
               "unit_id=[110565] document_id=[4981c7b4-6b98-4e6f-b8cc-ea05e098b9a9] reasons=[nothing_reported]",
               "unit_id=[110592] document_id=[ba8b9dee-2927-47d3-b955-bf074311eeab] reasons=[nothing_reported]",
               "unit_id=[110617] document_id=[76174b8a-31fd-410c-ac76-ec76a8373ff5] reasons=[nothing_reported]",
@@ -294,13 +408,13 @@
               "unit_id=[131159] document_id=[14e284c0-d5a4-4a0d-8182-2d78a9046b4f] reasons=[nothing_reported]",
               "unit_id=[133492] document_id=[2368b6f1-5318-4f4b-bfd2-9b4213a2c6b1] reasons=[deadline_flag_junk]",
               "unit_id=[133669] document_id=[c3d5df48-f829-45ad-ba03-102e5dfa76d3] reasons=[nothing_reported]",
-              "unit_id=[133881] document_id=[bc073508-c771-4c11-bf23-09ea9426e0c4] reasons=[nothing_reported]"
+              "unit_id=[133881] document_id=[bc073508-c771-4c11-bf23-09ea9426e0c4] reasons=[nothing_reported]",
+              "unit_id=[133951] document_id=[5547814b-7b28-4383-a345-db8de786da76] reasons=[nothing_reported]"
             ],
             "unreported_in_every_doc": [
               "unit_id=[100830]",
               "unit_id=[101879]",
               "unit_id=[107558]",
-              "unit_id=[110404]",
               "unit_id=[110565]",
               "unit_id=[110592]",
               "unit_id=[110617]",
@@ -316,7 +430,8 @@
               "unit_id=[133492]",
               "unit_id=[133669]",
               "unit_id=[133881]",
-              "unit_id=[133951]"
+              "unit_id=[133951]",
+              "unit_id=[137078]"
             ]
           }
         },
@@ -324,8 +439,8 @@
           "by_reason": {
             "documents_skipped": 8,
             "fell_back_to_older_doc": 8,
-            "passed_over": 84,
-            "unreported_in_every_doc": 68
+            "passed_over": 86,
+            "unreported_in_every_doc": 69
           },
           "samples": {
             "fell_back_to_older_doc": [
@@ -340,7 +455,6 @@
             ],
             "passed_over": [
               "unit_id=[109651] document_id=[239bc884-621d-4eb1-8969-5284d25f6eec] reasons=[nothing_reported]",
-              "unit_id=[110404] document_id=[c330608c-e3bf-439e-b9e9-0f52df09aa6c] reasons=[nothing_reported]",
               "unit_id=[110565] document_id=[4981c7b4-6b98-4e6f-b8cc-ea05e098b9a9] reasons=[nothing_reported]",
               "unit_id=[110617] document_id=[76174b8a-31fd-410c-ac76-ec76a8373ff5] reasons=[nothing_reported]",
               "unit_id=[110635] document_id=[74a1d1a8-cf76-4061-a6db-ec409a11bef5] reasons=[nothing_reported]",
@@ -358,11 +472,11 @@
               "unit_id=[142115] document_id=[d2981bd1-078d-4230-b1e3-78be4987d5b7] reasons=[nothing_reported]",
               "unit_id=[143084] document_id=[33d77798-ea16-4f89-ad7d-832eac59fa8d] reasons=[nothing_reported]",
               "unit_id=[145600] document_id=[db73b984-fe13-4508-bfa9-f931635561e1] reasons=[nothing_reported]",
-              "unit_id=[152318] document_id=[b631d032-74cc-4836-9bf8-d3e0aba142ff] reasons=[nothing_reported]"
+              "unit_id=[152318] document_id=[b631d032-74cc-4836-9bf8-d3e0aba142ff] reasons=[nothing_reported]",
+              "unit_id=[155511] document_id=[f102b8e0-ef88-4324-b836-9ae665d03ad1] reasons=[nothing_reported]"
             ],
             "unreported_in_every_doc": [
               "unit_id=[109651]",
-              "unit_id=[110404]",
               "unit_id=[110565]",
               "unit_id=[110617]",
               "unit_id=[110635]",
@@ -380,7 +494,8 @@
               "unit_id=[152318]",
               "unit_id=[155511]",
               "unit_id=[164076]",
-              "unit_id=[164216]"
+              "unit_id=[164216]",
+              "unit_id=[165015]"
             ]
           }
         }
@@ -388,13 +503,15 @@
     }
   },
   "rows": {
-    "merit-aid.csv": 368,
-    "admission-factors.csv": 375,
-    "deadlines.csv": 1031
+    "merit-aid.csv": 371,
+    "admission-factors.csv": 377,
+    "deadlines.csv": 1033,
+    "aid_policy.csv": 1807
   },
   "sha256": {
-    "merit-aid.csv": "e83284dd45fc2daa6e4763c3ad6dfd4c13072197160b13a2996384b761e765a8",
-    "admission-factors.csv": "7c704fde4bcb0ea61ce401da8e58434b2f15bccdb56a3f6cadc8fa5e1d632f5b",
-    "deadlines.csv": "7140d8eb2ddfad77df86f5e1c972a6833cf585a1bb585b74db1fee34fe1dc18d"
+    "merit-aid.csv": "b785d368cc9b8ce6dd6b432f00ffdc1f7467b635cdda0d95ee03c29f425861c7",
+    "admission-factors.csv": "9fb7858067375d4a477d8f37eb4b1f3c074932f5513bcd127d01616abea6fda9",
+    "deadlines.csv": "4fa4691848e0b307d2bc9b70931ddce5a4b9bb9c5d8f9d383bfde020f4601736",
+    "aid_policy.csv": "5ab97ef8c87c82d394f31306d7ffdda37ef635f825b357ec04d1a87cc7af42fe"
   }
 }

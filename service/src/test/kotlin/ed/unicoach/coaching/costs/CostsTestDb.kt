@@ -6,6 +6,7 @@ import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.CodebookReferenceFixture
@@ -15,6 +16,8 @@ import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AidForm
+import ed.unicoach.db.models.AidFormApplicantGroup
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
@@ -27,14 +30,15 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NewAidFormRequirement
 import ed.unicoach.db.models.NewCohortMoneyStat
+import ed.unicoach.db.models.NewCohortPopulationCount
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.StudentId
-import ed.unicoach.db.models.VINTAGE_UNDATED
 import ed.unicoach.db.models.ValueBearingStatus
 import kotlinx.coroutines.runBlocking
 
@@ -98,10 +102,20 @@ object CostsTestDb {
    * literal, so a fixture that moves its year cannot leave an assertion quietly
    * describing a year nothing writes.
    */
-  const val PRICE_ACADEMIC_YEAR = "2023-24"
+  val PRICE_YEAR = AcademicYear(2023)
+
+  /**
+   * The same year as WORDS -- derived from [PRICE_YEAR], never a second literal
+   * beside it (RFC 170 D14): the store carries the start year, and the label is
+   * what a surface says back, so an assertion reads the one the payload renders.
+   */
+  val PRICE_ACADEMIC_YEAR = PRICE_YEAR.label
 
   /** The vintage every blended cohort row this fixture writes carries -- a year older, as the source publishes it. */
-  const val BLENDED_ACADEMIC_YEAR = "2022-23"
+  val BLENDED_YEAR = AcademicYear(2022)
+
+  /** [BLENDED_YEAR] as words, derived for the reason [PRICE_ACADEMIC_YEAR] is. */
+  val BLENDED_ACADEMIC_YEAR = BLENDED_YEAR.label
 
   const val SOURCE_URL: String = "https://example.edu/cds-2024-25.pdf"
   const val ARCHIVE_URL: String = "https://www.collegedata.fyi/schools/example/2024-25"
@@ -119,6 +133,10 @@ object CostsTestDb {
       "money_profiles",
       "college_list_entries",
       "college_merit_aid",
+      "cohort_money_stats",
+      "cohort_population_counts",
+      "aid_form_requirements",
+      "source_documents",
       // The IPEDS attribute row carries the no-dorms flag the cost read joins
       // (RFC 149), so it is part of this suite's fixture and must be reset with it.
       "college_ipeds",
@@ -140,6 +158,116 @@ object CostsTestDb {
     // fails on a foreign key that has nothing to do with what it asserts. The
     // fixture is idempotent, so it is safe after every truncate.
     MoneyVocabularyFixture.seed(sqlSession)
+  }
+
+  /**
+   * One school's Common Data Set aid policy (RFC 170), written as the ingest
+   * writes it: the two need figures as cohort statistics, the two headcounts as
+   * population counts, and the required forms as requirements -- all citing one
+   * `source_documents` row.
+   *
+   * Every figure is nullable and the form list may be empty, because the
+   * interesting cases are exactly the partial ones: a school with an average
+   * and no headcounts (so no fully-met share), a school with forms and no
+   * figures, and a school with no filing at all (which seeds nothing).
+   */
+  fun seedAidPolicy(
+    collegeId: CollegeId,
+    sourceYear: Int = 2024,
+    averageNeedMet: Double? = 0.943,
+    averageNeedBasedGrantUsd: Int? = 18007,
+    freshmenAwardedAnyAid: Int? = 800,
+    freshmenNeedFullyMet: Int? = 300,
+    requiredForms: List<AidForm> = listOf(AidForm.FAFSA, AidForm.CSS_PROFILE),
+    /**
+     * Forms this school requires of INTERNATIONAL applicants (CDS H7). The
+     * domestic read must not surface them, which is the D4 guarantee: a family
+     * in the wrong group must never be told to file.
+     */
+    nonresidentForms: List<AidForm> = emptyList(),
+    /**
+     * Forms the corpus carries but could not extract (D7): a row with status
+     * `not_collected_by_us` and no value. It states OUR gap and is not a
+     * requirement, so the read must not list it either.
+     */
+    notCollectedForms: List<AidForm> = emptyList(),
+    sourceUrl: String = SOURCE_URL,
+    archiveUrl: String? = ARCHIVE_URL,
+  ) {
+    val year = AcademicYear(sourceYear)
+    val document =
+      CoachingTestDb.seedSourceDocument(collegeId, sourceYear, sourceUrl, archiveUrl)
+    val stats =
+      listOfNotNull(
+        averageNeedMet?.let { MoneyMeasure.AVG_NEED_MET_SHARE to it },
+        averageNeedBasedGrantUsd?.let { MoneyMeasure.AVG_NEED_BASED_GRANT to it.toDouble() },
+      ).map { (measure, value) ->
+        NewCohortMoneyStat(
+          collegeId = collegeId.value,
+          measure = measure,
+          // Lines i and k are reported over line e, the freshmen who received
+          // need-based scholarship or grant aid -- not over the line-d count
+          // below (RFC 170).
+          population = CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
+          residencyScope = CohortResidencyScope.ALL,
+          aidScope = CohortAidScope.NEED_BASED_AID_RECEIVING,
+          incomeBand = null,
+          vintage = year,
+          reading = FigureReading.Present(value, ValueBearingStatus.REPORTED),
+          source = MoneySource.COMMON_DATA_SET,
+          sourceVariable = if (measure == MoneyMeasure.AVG_NEED_MET_SHARE) "H.209" else "H.211",
+          sourceDocumentId = document,
+        )
+      }
+    val counts =
+      listOfNotNull(
+        freshmenAwardedAnyAid?.let { CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_ANY_AID to it },
+        freshmenNeedFullyMet?.let { CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_NEED_FULLY_MET to it },
+      ).map { (population, headcount) ->
+        NewCohortPopulationCount(
+          collegeId = collegeId.value,
+          population = population,
+          residencyBasis = ResidencyBasis.NOT_APPLICABLE,
+          arrangement = FigureArrangement.NOT_APPLICABLE,
+          vintage = year,
+          reading = FigureReading.Present(headcount, ValueBearingStatus.REPORTED),
+          source = MoneySource.COMMON_DATA_SET,
+          sourceVariable = "H.204",
+          sourceDocumentId = document,
+        )
+      }
+
+    fun requirement(
+      form: AidForm,
+      group: AidFormApplicantGroup,
+      reading: FigureReading<Boolean>,
+    ) = NewAidFormRequirement(
+      collegeId = collegeId.value,
+      form = form,
+      applicantGroup = group,
+      academicYear = year,
+      reading = reading,
+      source = MoneySource.COMMON_DATA_SET,
+      sourceVariable = "H.801",
+      sourceDocumentId = document,
+    )
+
+    val required = FigureReading.Present(true, ValueBearingStatus.REPORTED)
+    val forms =
+      requiredForms.map { requirement(it, AidFormApplicantGroup.DOMESTIC_FIRST_YEAR, required) } +
+        nonresidentForms.map {
+          requirement(it, AidFormApplicantGroup.NONRESIDENT_FIRST_YEAR, required)
+        } +
+        notCollectedForms.map {
+          requirement(
+            it,
+            AidFormApplicantGroup.DOMESTIC_FIRST_YEAR,
+            FigureReading.Absent(AbsenceStatus.NOT_COLLECTED_BY_US),
+          )
+        }
+    CanonicalMoneyDao.insertCohortMoneyStats(sqlSession, stats).getOrThrow()
+    CanonicalMoneyDao.insertCohortPopulationCounts(sqlSession, counts).getOrThrow()
+    CanonicalMoneyDao.insertAidFormRequirements(sqlSession, forms).getOrThrow()
   }
 
   /**
@@ -238,7 +366,7 @@ object CostsTestDb {
     concept: PriceConcept,
     residency: ResidencyBasis = ResidencyBasis.NOT_APPLICABLE,
     arrangement: FigureArrangement = FigureArrangement.NOT_APPLICABLE,
-    academicYear: String = PRICE_ACADEMIC_YEAR,
+    academicYear: AcademicYear = PRICE_YEAR,
     reading: FigureReading<Int>,
     source: MoneySource = MoneySource.IPEDS_IC_AY,
     sourceVariable: String = "FIXTURE",
@@ -277,7 +405,7 @@ object CostsTestDb {
     collegeId: CollegeId,
     field: CostField,
     reading: FigureReading<Int>,
-    academicYear: String = PRICE_ACADEMIC_YEAR,
+    academicYear: AcademicYear = PRICE_YEAR,
     source: MoneySource = MoneySource.IPEDS_IC_AY,
     sourceVariable: String = "FIXTURE",
     publisherFlag: String? = null,
@@ -307,7 +435,7 @@ object CostsTestDb {
     residencyScope: CohortResidencyScope,
     aidScope: CohortAidScope,
     incomeBand: IncomeBand? = null,
-    vintage: String,
+    vintage: AcademicYear?,
     reading: FigureReading<Double>,
     sourceVariable: String = "FIXTURE",
   ) {
@@ -346,7 +474,7 @@ object CostsTestDb {
     collegeId: CollegeId,
     field: CostField,
     residencyScope: CohortResidencyScope,
-    vintage: String,
+    vintage: AcademicYear?,
     reading: FigureReading<Double>,
     incomeBand: IncomeBand? = null,
     sourceVariable: String = "FIXTURE",
@@ -467,14 +595,14 @@ object CostsTestDb {
       collegeId,
       CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD,
       blendScope,
-      vintage = BLENDED_ACADEMIC_YEAR,
+      vintage = BLENDED_YEAR,
       reading = readingOf(costOfAttendancePerYearUsd?.toDouble()),
     )
     seedCohortStat(
       collegeId,
       CostField.NET_PRICE,
       blendScope,
-      vintage = BLENDED_ACADEMIC_YEAR,
+      vintage = BLENDED_YEAR,
       reading = netPriceReading ?: readingOf(netPricePerYearUsd?.toDouble()),
     )
     IncomeBand.entries.forEach { band ->
@@ -482,7 +610,7 @@ object CostsTestDb {
         collegeId,
         CostField.NET_PRICE,
         blendScope,
-        vintage = BLENDED_ACADEMIC_YEAR,
+        vintage = BLENDED_YEAR,
         reading = readingOf(bandNetPrices[band]?.toDouble()),
         incomeBand = band,
       )
@@ -491,14 +619,14 @@ object CostsTestDb {
       collegeId,
       CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
       CohortResidencyScope.ALL,
-      vintage = VINTAGE_UNDATED,
+      vintage = null,
       reading = readingOf(medianDebtAtCompletionUsd?.toDouble()),
     )
     seedCohortStat(
       collegeId,
       CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD,
       CohortResidencyScope.ALL,
-      vintage = VINTAGE_UNDATED,
+      vintage = null,
       reading = readingOf(medianEarnings10yAfterEntryUsd?.toDouble()),
     )
   }

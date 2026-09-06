@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.ChargeKey
 import ed.unicoach.db.models.CollegeIpedsCharge
 import ed.unicoach.db.models.CollegeIpedsChargeId
@@ -43,7 +44,7 @@ object CollegeIpedsChargesDao {
         linkedMapOf(
           "college_id" to { stmt: PreparedStatement, i: Int -> stmt.setObject(i, input.collegeId) },
           "charge_variable" to { stmt: PreparedStatement, i: Int -> stmt.setString(i, input.chargeVariable) },
-          "academic_year" to { stmt: PreparedStatement, i: Int -> stmt.setString(i, input.academicYear) },
+          "academic_year" to { stmt: PreparedStatement, i: Int -> stmt.setInt(i, input.academicYear.firstCalendarYear) },
         ),
       columns =
         linkedMapOf<String, Bind>(
@@ -102,13 +103,13 @@ object CollegeIpedsChargesDao {
              AS staged (college_id, charge_variable, academic_year)
         WHERE staged.college_id = c.college_id::text
           AND staged.charge_variable = c.charge_variable
-          AND staged.academic_year = c.academic_year
+          AND staged.academic_year = c.academic_year::TEXT
       )
       """.trimIndent(),
     ) { stmt ->
       jsonbArrayBinder(stagedKeys.map { it.collegeId.toString() })(stmt, 1)
       jsonbArrayBinder(stagedKeys.map { it.chargeVariable })(stmt, 2)
-      jsonbArrayBinder(stagedKeys.map { it.academicYear })(stmt, 3)
+      jsonbArrayBinder(stagedKeys.map { it.academicYear.firstCalendarYear.toString() })(stmt, 3)
     }
 
   // ---------------------------------------------------------------------------
@@ -138,7 +139,7 @@ object CollegeIpedsChargesDao {
           id = CollegeIpedsChargeId(UUID.fromString(rs.getString("id"))),
           collegeId = UUID.fromString(rs.getString("college_id")),
           chargeVariable = rs.getString("charge_variable"),
-          academicYear = rs.getString("academic_year"),
+          academicYear = AcademicYear(rs.getInt("academic_year")),
           amountUsd = rs.getInt("amount_usd").takeUnless { rs.wasNull() },
           imputationFlag = rs.getString("imputation_flag"),
           createdAt = rs.getInstant("created_at"),

@@ -2,6 +2,7 @@ package ed.unicoach.college
 
 import ed.unicoach.college.CsvIngestSupport.intOrNull
 import ed.unicoach.college.CsvIngestSupport.stringOrNull
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeSfaDao
@@ -244,15 +245,15 @@ internal object SfaVariables {
   fun flagColumn(variable: String): String = "X${variable.uppercase()}"
 
   /**
-   * The aid year [variable] describes, as `'YYYY-YY'`, given the START year of
-   * the FILE's own aid year. Suffix `2` is that year, `1` is one earlier, `0`
-   * two earlier; a single-year variable is the file's own year.
+   * The aid year [variable] describes, given the START year of the FILE's own
+   * aid year. Suffix `2` is that year, `1` is one earlier, `0` two earlier; a
+   * single-year variable is the file's own year.
    */
   fun aidYear(
     variable: String,
     fileAidYearStart: Int,
-  ): String {
-    if (variable in SINGLE_YEAR) return academicYear(fileAidYearStart)
+  ): AcademicYear {
+    if (variable in SINGLE_YEAR) return AcademicYear(fileAidYearStart)
     val suffix = YEAR_SUFFIXES.indexOf(variable.takeLast(1))
     // A suffixed variable whose last character is not one of the three
     // suffixes would otherwise get a year quietly computed from -1. The whole
@@ -261,17 +262,12 @@ internal object SfaVariables {
       "SFA variable [$variable] is neither single-year nor suffixed 0/1/2; its aid year cannot be resolved"
     }
     val offset = suffix - (YEAR_SUFFIXES.size - 1)
-    return academicYear(fileAidYearStart + offset)
+    return AcademicYear(fileAidYearStart + offset)
   }
-
-  /** `'YYYY-YY'` for an academic/aid year given its START year. */
-  private fun academicYear(start: Int): String = "$start-${((start + 1) % CENTURY).toString().padStart(2, '0')}"
 
   /** Every column the loader reads, for the header assertion (RFC 139). */
   val REQUIRED_COLUMNS: List<String> =
     listOf(sourceColumn(UNIT_ID)) + ALL.flatMap { listOf(sourceColumn(it), flagColumn(it)) }
-
-  private const val CENTURY = 100
 }
 
 /**

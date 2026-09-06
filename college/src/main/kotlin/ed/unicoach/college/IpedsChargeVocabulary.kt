@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
@@ -109,9 +110,9 @@ object IpedsChargeVocabulary {
    * POSITION, not a year, so the academic year rides on the row (RFC 158 P5) —
    * never in a schema comment.
    */
-  val ACADEMIC_YEAR_BY_SUFFIX: Map<String, String> =
+  val ACADEMIC_YEAR_BY_SUFFIX: Map<String, AcademicYear> =
     (0 until YEARS_CARRIED).associate { position ->
-      position.toString() to mapAcademicYear(SURVEY_YEAR - (YEARS_CARRIED - 1) + position)
+      position.toString() to AcademicYear(SURVEY_YEAR - (YEARS_CARRIED - 1) + position)
     }
 
   /**
@@ -119,7 +120,7 @@ object IpedsChargeVocabulary {
    * retyped, so `source_variable` names the real published column (`CHG2AY3`)
    * and the two directions can never disagree.
    */
-  val SUFFIX_BY_ACADEMIC_YEAR: Map<String, String> =
+  val SUFFIX_BY_ACADEMIC_YEAR: Map<AcademicYear, String> =
     ACADEMIC_YEAR_BY_SUFFIX.entries.associate { (suffix, year) -> year to suffix }
 
   /**
@@ -131,7 +132,7 @@ object IpedsChargeVocabulary {
   fun assertSurveyYear(surveyYear: Int) {
     check(surveyYear == SURVEY_YEAR) {
       "IPEDS [--survey-year=$surveyYear] does not match the pinned IC_AY window [$SURVEY_YEAR] " +
-        "([${ACADEMIC_YEAR_BY_SUFFIX.values.first()}]..[${ACADEMIC_YEAR_BY_SUFFIX.values.last()}]): " +
+        "([${ACADEMIC_YEAR_BY_SUFFIX.values.first().label}]..[${ACADEMIC_YEAR_BY_SUFFIX.values.last().label}]): " +
         "IC_AY's [0-$LAST_SUFFIX] suffix is a POSITION in the file's own window, so decoding a " +
         "[$surveyYear] file against it would date every staged charge and every derived price " +
         "[${SURVEY_YEAR - surveyYear}] year(s) wrong; update IpedsChargeVocabulary.SURVEY_YEAR with the file"
@@ -140,18 +141,4 @@ object IpedsChargeVocabulary {
 
   /** The highest year suffix IC_AY publishes — the survey year's own column. */
   private const val LAST_SUFFIX = YEARS_CARRIED - 1
-
-  /**
-   * `2023` -> `2023-24`: the stored 'YYYY-YY' academic year of a starting
-   * calendar year.
-   *
-   * Built with TEXT operations, deliberately. `String.format` is
-   * LOCALE-SENSITIVE on its no-`Locale` overload: under `ar-SA` this repo's own
-   * dev-shell JDK renders `%d` as Arabic-Indic digits, which fails
-   * `college_ipeds_charges_academic_year_format_check` on every single insert
-   * — and the run would report ~180,000 anonymous row failures rather than the
-   * one locale fault that caused them. `takeLast(2)` also states the "last two
-   * digits" rule outright, where the `% 100` it replaces was a bare number.
-   */
-  private fun mapAcademicYear(startYear: Int): String = "$startYear-" + (startYear + 1).toString().takeLast(2)
 }

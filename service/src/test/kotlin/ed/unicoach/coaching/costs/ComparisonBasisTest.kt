@@ -6,6 +6,7 @@ import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.coaching.costs.canonical.ServedFigures
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.servedAt
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CollegeId
@@ -123,7 +124,7 @@ class ComparisonBasisTest {
     name: String,
     control: CollegeControl,
     chosen: ChosenLivingPlan = ChosenLivingPlan.NotChosen,
-    publishedPriceAcademicYear: String? = null,
+    publishedPriceAcademicYear: AcademicYear? = null,
     publishedReported: Set<CostField> = emptySet(),
   ): CollegeCost =
     CollegeCost(
@@ -156,6 +157,7 @@ class ComparisonBasisTest {
       breakdown = null,
       offersOnCampusHousing = null,
       meritAid = null,
+      aidPolicy = null,
       chosen = chosen,
     )
 
@@ -167,7 +169,7 @@ class ComparisonBasisTest {
    * here reads the AMOUNT; the row exists so the served year is a year this
    * school really publishes.
    */
-  private fun servedAt(academicYear: String?): ServedFigures {
+  private fun servedAt(academicYear: AcademicYear?): ServedFigures {
     val collegeId = CollegeId(UUID.randomUUID())
     val address =
       requireNotNull((CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.figureAddress as? FigureAddress.Price)?.address)
@@ -395,14 +397,14 @@ class ComparisonBasisTest {
       college(
         "Scorecard Only U",
         CollegeControl.PrivateNonprofit,
-        publishedPriceAcademicYear = "2022-23",
+        publishedPriceAcademicYear = AcademicYear(2022),
         publishedReported = setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD),
       )
     val ipeds =
       college(
         "Ipeds Year U",
         CollegeControl.PrivateNonprofit,
-        publishedPriceAcademicYear = "2023-24",
+        publishedPriceAcademicYear = AcademicYear(2023),
         publishedReported =
           setOf(
             CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
@@ -449,14 +451,14 @@ class ComparisonBasisTest {
       college(
         "Single Year One U",
         CollegeControl.PrivateNonprofit,
-        publishedPriceAcademicYear = "2023-24",
+        publishedPriceAcademicYear = AcademicYear(2023),
         publishedReported = setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
       )
     val two =
       college(
         "Single Year Two U",
         CollegeControl.PrivateNonprofit,
-        publishedPriceAcademicYear = "2023-24",
+        publishedPriceAcademicYear = AcademicYear(2023),
         publishedReported = setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
       )
 
@@ -485,14 +487,14 @@ class ComparisonBasisTest {
       college(
         "Columbia College",
         CollegeControl.PrivateNonprofit,
-        publishedPriceAcademicYear = "2022-23",
+        publishedPriceAcademicYear = AcademicYear(2022),
         publishedReported = setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
       )
     val newer =
       college(
         "Columbia College",
         CollegeControl.PrivateNonprofit,
-        publishedPriceAcademicYear = "2023-24",
+        publishedPriceAcademicYear = AcademicYear(2023),
         publishedReported = setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
       )
 

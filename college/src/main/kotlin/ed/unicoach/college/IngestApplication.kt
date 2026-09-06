@@ -13,8 +13,9 @@ private val logger = LoggerFactory.getLogger("ed.unicoach.college.IngestApplicat
 private const val CDS_MERIT_FLAG = "--cds-merit"
 private const val CDS_FACTORS_FLAG = "--cds-factors"
 private const val CDS_DEADLINES_FLAG = "--cds-deadlines"
+private const val CDS_AID_POLICY_FLAG = "--cds-aid-policy"
 
-private val CDS_FLAGS = listOf(CDS_MERIT_FLAG, CDS_FACTORS_FLAG, CDS_DEADLINES_FLAG)
+private val CDS_FLAGS = listOf(CDS_MERIT_FLAG, CDS_FACTORS_FLAG, CDS_DEADLINES_FLAG, CDS_AID_POLICY_FLAG)
 
 private const val USAGE =
   "Usage: ingest-colleges <institution.csv> <fields.csv> <aliases.json> " +
@@ -23,7 +24,7 @@ private const val USAGE =
     "[--subjects=subjects.json] [--subjects-source=ARG] " +
     "[--money-vocabulary=money-vocabulary.json] [--money-vocabulary-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
-    "$CDS_DEADLINES_FLAG <deadlines.csv>] " +
+    "$CDS_DEADLINES_FLAG <deadlines.csv> $CDS_AID_POLICY_FLAG <aid_policy.csv>] " +
     "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --ic-ay=ic_ay.csv " +
     "--survey-year=YYYY] " +
     "[--hd-source=ARG] [--ic-source=ARG] [--adm-source=ARG] [--completions-source=ARG] " +
@@ -81,9 +82,10 @@ internal data class CdsArgs(
   val meritAidCsv: File,
   val admissionFactorsCsv: File,
   val deadlinesCsv: File,
+  val aidPolicyCsv: File,
 ) {
   /**
-   * The provenance spelling of the same three files (RFC 148). The CDS flags
+   * The provenance spelling of the same four files (RFC 148). The CDS flags
    * name files the shell already split into their own argv slots, so the path
    * the caller typed IS the file's path — there is no `--*-source` partner to
    * carry a different original argument.
@@ -94,6 +96,7 @@ internal data class CdsArgs(
         meritAid = SourceFile(meritAidCsv, meritAidCsv.path),
         admissionFactors = SourceFile(admissionFactorsCsv, admissionFactorsCsv.path),
         deadlines = SourceFile(deadlinesCsv, deadlinesCsv.path),
+        aidPolicy = SourceFile(aidPolicyCsv, aidPolicyCsv.path),
       )
 }
 
@@ -300,6 +303,7 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
           meritAidCsv = File(group.getValue(CDS_MERIT_FLAG)),
           admissionFactorsCsv = File(group.getValue(CDS_FACTORS_FLAG)),
           deadlinesCsv = File(group.getValue(CDS_DEADLINES_FLAG)),
+          aidPolicyCsv = File(group.getValue(CDS_AID_POLICY_FLAG)),
         )
       },
     ipeds = ipeds,
@@ -618,6 +622,17 @@ fun main(args: Array<String>) {
       e,
     )
     kotlin.system.exitProcess(1)
+  } catch (e: MoneyVocabularyLoader.RetirementBlockedException) {
+    // Not a malformed file: the file is fine and the RUN is too narrow. The
+    // remedy is to re-run with the missing source's files, so it is named.
+    logger.error(
+      "Ingest aborted: money vocabulary [{}] retires a slug still held by [{}]; this run rebuilds only [{}]",
+      e.fileName,
+      e.strandedSources.map { it.value },
+      e.rebuiltSources.map { it.value },
+      e,
+    )
+    kotlin.system.exitProcess(1)
   } catch (e: MoneyVocabularyLoader.InvalidFileException) {
     logger.error(
       "Ingest aborted before any write: money vocabulary [{}] is invalid: [{}]",
@@ -696,6 +711,7 @@ private fun logCdsRun(result: CdsSeedLoader.LoadResult) {
   for ((table, summary) in result.tableSummaries) {
     logCdsTable(table.logLabel, summary)
   }
+  logCdsAidPolicy(result.aidPolicy)
   logCdsCoverage(result.coverage)
 }
 
@@ -715,6 +731,29 @@ private fun logCdsTable(
   logger.info(
     "CDS ingest [{}]: [skipped={}] seed rows have no college [ipeds_unit_ids={}]",
     table,
+    summary.skipped,
+    summary.unmatchedIpedsUnitIds,
+  )
+}
+
+/**
+ * The aid-policy rebuild (RFC 170), reported per DESTINATION table rather than
+ * as one file total: the seed's facts land in three different canonical
+ * tables, so one row count for the file would say nothing about which of them
+ * the corpus stopped reporting.
+ */
+private fun logCdsAidPolicy(summary: CdsSeedLoader.AidPolicySummary) {
+  logger.info(
+    "CDS ingest [aid policy]: [cohort_money_stats={}] [cohort_population_counts={}] " +
+      "[aid_form_requirements={}] [skipped={}]",
+    summary.cohortMoneyStats,
+    summary.cohortPopulationCounts,
+    summary.aidFormRequirements,
+    summary.skipped,
+  )
+  if (summary.unmatchedIpedsUnitIds.isEmpty()) return
+  logger.info(
+    "CDS ingest [aid policy]: [skipped={}] seed rows have no college [ipeds_unit_ids={}]",
     summary.skipped,
     summary.unmatchedIpedsUnitIds,
   )

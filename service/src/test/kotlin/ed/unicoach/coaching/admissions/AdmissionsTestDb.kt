@@ -3,6 +3,7 @@ package ed.unicoach.coaching.admissions
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CdsAdmissionsDao
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.ApplicationRound
@@ -40,6 +41,7 @@ object AdmissionsTestDb {
   fun reset() {
     CoachingTestDb.truncate(
       "college_merit_aid",
+      "source_documents",
       "college_admission_factors",
       "college_deadlines",
       "college_list_entries",
@@ -47,6 +49,11 @@ object AdmissionsTestDb {
       "students",
       "users",
     )
+    // The published state/locale rows migration 0067 made a precondition of
+    // inserting any college. Another suite on this shared test database
+    // empties them, so this one puts them back -- the CostsTestDb and
+    // CdsAdmissionsDaoTest rule, stated once more where it is needed.
+    CodebookReferenceFixture.seed(sqlSession)
   }
 
   fun createStudent(): StudentId = CoachingTestDb.createStudent("admissions")
@@ -168,8 +175,7 @@ object AdmissionsTestDb {
           volunteerWork = FactorRating.CONSIDERED,
           workExperience = FactorRating.CONSIDERED,
           applicantInterest = FactorRating.CONSIDERED,
-          sourceUrl = sourceUrl,
-          archiveUrl = archiveUrl,
+          sourceDocumentId = CoachingTestDb.seedSourceDocument(collegeId, sourceYear, sourceUrl, archiveUrl),
         ),
       ).getOrThrow()
   }
@@ -194,8 +200,7 @@ object AdmissionsTestDb {
           offered = offered,
           closing = closing,
           notification = notification,
-          sourceUrl = sourceUrl,
-          archiveUrl = archiveUrl,
+          sourceDocumentId = CoachingTestDb.seedSourceDocument(collegeId, sourceYear, sourceUrl, archiveUrl),
         ),
       ).getOrThrow()
   }

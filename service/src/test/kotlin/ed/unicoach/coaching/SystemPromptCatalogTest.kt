@@ -5,6 +5,7 @@ import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
 import ed.unicoach.coaching.aid.FederalAidPolicyChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
+import ed.unicoach.coaching.costs.AidPolicyWire
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.costs.PrecisionOffer
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
@@ -1357,6 +1358,120 @@ class SystemPromptCatalogTest {
       "the rollback target must not already name the v18 opt-out tool",
     )
   }
+
+  /**
+   * The 0088 seed's structural contract (RFC 170). v20 is ADDITIVE like every
+   * coach seed since 0047 except v19: the whole v19 body byte-identical as a
+   * prefix,
+   * joined by a single space to exactly one appended paragraph — the
+   * need-and-forms instruction. The paragraph's markers are asserted, not its
+   * full copy: the seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v20 is v19 plus one appended need-and-forms paragraph`() {
+    val appended = needAndFormsParagraph()
+
+    assertTrue(
+      appended.startsWith(" When a family asks whether a school meets full financial need"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(appended.contains(AidPolicyWire.KEY), "the paragraph must name the section it routes to")
+    assertTrue(appended.contains(AidPolicyWire.FORMS_KEY), "the paragraph must name the forms list")
+    assertTrue(
+      appended.contains(CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY),
+      "the paragraph must name the key that says why a school has no section",
+    )
+    // D6: no source publishes a yes/no about meeting full need, so the coach
+    // must never produce one.
+    assertTrue(
+      appended.contains("neither of them is a yes or a no"),
+      "the two figures answer the question; a verdict of the coach's own does not",
+    )
+    assertTrue(
+      appended.contains("never give one of your own"),
+      "RFC 170 D6: the meets-full-need verdict is not the coach's to give",
+    )
+    // RFC 148's denominator rule, carried into the copy: both figures are
+    // about a much smaller population than "freshmen".
+    assertTrue(
+      appended.contains("never about every freshman and never about this student"),
+      "each figure must be said over the cohort it is actually about",
+    )
+    // D5: absence is absence from a FILING, never a school's denial.
+    assertTrue(
+      appended.contains("not listed in that filing"),
+      "an absent form is absent from the filing",
+    )
+    assertTrue(
+      appended.contains("not the school saying it is not required"),
+      "RFC 170 D5: no source publishes a negative, so the coach must not imply one",
+    )
+    // The standing money guards still sweep the appended span, so a relaxation
+    // is reported as v20's own rather than as the catalog's.
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(appended),
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    // No bare CDS field id may reach the model, and the prompt is context too.
+    assertFalse(Regex("H\\.\\d").containsMatchIn(appended), "a CDS field id must never appear in the prompt")
+  }
+
+  /**
+   * Every word of v19 must survive RFC 170's append -- asserted as ONE equality
+   * rather than as a list of `contains` checks, which is what RFC 166's own v19
+   * test taught: v19 EDITED two interior blocks, so the interior paragraphs
+   * v18-era tests extracted are no longer byte-identical spans of the served
+   * body, and a list of them would be asserting the wrong contract.
+   *
+   * `v20 starts with v19` is strictly stronger than any such list: every ban,
+   * every citation rule and every figure-status sentence v19 carried survives
+   * by construction, or this fails. The remainder is the appended paragraph,
+   * which [`coach v20 is v19 plus one appended need-and-forms paragraph`]
+   * checks in full.
+   */
+  @Test
+  fun `coach v20 keeps the whole v19 body, byte for byte, as its prefix`() {
+    val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow().body
+    val v20 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v20").getOrThrow().body
+
+    assertTrue(v20.startsWith(v19), "v20 must carry the whole v19 body unchanged before what it appends")
+    assertEquals(v19 + needAndFormsParagraph(), v20, "v20 is v19 and exactly one appended paragraph, nothing else")
+    // The two paragraphs RFC 166's edits did NOT touch, named so a future
+    // interior edit to either is reported here rather than inferred.
+    assertTrue(v20.contains(federalAidParagraph()), "v17's federal-aid paragraph must survive the append byte-for-byte")
+    assertTrue(v20.contains(shareNudgeParagraph()), "v18's share-nudge paragraph must survive the append byte-for-byte")
+    assertTrue(v20.contains(FIGURE_STATUS_OPENER), "v19's figure-status paragraph must survive the append")
+  }
+
+  /**
+   * The rollback RFC 170 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v19`), which is only real if the v19 row
+   * is still in the insert-only catalog, still carries the copy it was approved
+   * with, and does not already carry the need-and-forms instruction.
+   */
+  @Test
+  fun `coach v19 stays selectable as v20's rollback target`() {
+    val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow()
+
+    assertEquals("v19", v19.version, "the rollback target must still be selectable by name and version")
+    assertTrue(v19.body.contains(FIGURE_STATUS_OPENER), "v19 must still carry RFC 166's figure-status copy")
+    // NOT a bare `aid_policy` check: v17's paragraph names the
+    // `federal_aid_policy` TOOL, which contains that key as a substring. The
+    // marker is the phrase the v20 paragraph actually adds.
+    assertFalse(
+      v19.body.contains("the ${AidPolicyWire.KEY} section of college_cost_profile"),
+      "the rollback target must not already name the v20 aid-policy section",
+    )
+  }
+
+  /** The v20 need-and-forms paragraph: everything v20 appends to the v19 body. The guards are [appendedParagraph]'s. */
+  private fun needAndFormsParagraph(): String = appendedParagraph(base = "v19", revised = "v20")
 
   /** The v18 share-nudge paragraph: everything v18 appends to the v17 body. The guards are [appendedParagraph]'s. */
   private fun shareNudgeParagraph(): String = appendedParagraph(base = "v17", revised = "v18")

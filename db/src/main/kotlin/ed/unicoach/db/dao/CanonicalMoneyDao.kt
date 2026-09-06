@@ -1,8 +1,11 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.FactTable
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NewAidForm
+import ed.unicoach.db.models.NewAidFormRequirement
 import ed.unicoach.db.models.NewArrangement
 import ed.unicoach.db.models.NewCohortMoneyStat
 import ed.unicoach.db.models.NewCohortPopulationCount
@@ -24,7 +27,7 @@ import java.sql.SQLException
  * `subjects` discipline: an authored row removed from the seed is removed from
  * the table, in the same transaction). The fact tables are never upserted:
  * the `canonical-money` phase is a wholesale DELETE + batch re-insert (P12),
- * so the write path here is [deleteAllPriceFigures]/[insertPriceFigures] and
+ * so the write path here is [deleteFactsOfSources]/[insertPriceFigures] and
  * their cohort twins, and idempotency is by construction.
  */
 object CanonicalMoneyDao {
@@ -91,6 +94,21 @@ object CanonicalMoneyDao {
       mapError = ::mapWriteError,
     )
 
+  /** Upserts one `aid_forms` row (RFC 170, D4); the vocabulary shape above. */
+  fun upsertAidForm(
+    session: SqlSession,
+    row: NewAidForm,
+  ): Result<UpsertOutcome> =
+    session.upsertDetectingChange(
+      table = "aid_forms",
+      keyColumns = linkedMapOf("slug" to { stmt: PreparedStatement, i: Int -> stmt.setString(i, row.slug) }),
+      columns =
+        linkedMapOf<String, Bind>(
+          "description" to { stmt, i -> stmt.setString(i, row.description) },
+        ),
+      mapError = ::mapWriteError,
+    )
+
   fun upsertIncomeBand(
     session: SqlSession,
     row: NewIncomeBand,
@@ -152,14 +170,33 @@ object CanonicalMoneyDao {
   // Fact-table writes: wholesale delete + batch insert (P12).
   // ---------------------------------------------------------------------------
 
-  /** Deletes every `price_figures` row, returning how many went. */
-  fun deleteAllPriceFigures(session: SqlSession): Result<Int> = session.execute("DELETE FROM price_figures")
-
-  /** Deletes every `cohort_money_stats` row, returning how many went. */
-  fun deleteAllCohortMoneyStats(session: SqlSession): Result<Int> = session.execute("DELETE FROM cohort_money_stats")
-
-  /** Deletes every `cohort_population_counts` row, returning how many went (RFC 162). */
-  fun deleteAllCohortPopulationCounts(session: SqlSession): Result<Int> = session.execute("DELETE FROM cohort_population_counts")
+  /**
+   * Deletes the rows of [table] published by [sources], returning how many
+   * went -- the first half of the wholesale rebuild (P12).
+   *
+   * BY SOURCE, not the whole table, because the fact tables now have TWO
+   * writers: the `canonical-money` phase rebuilds what it derives from the
+   * Scorecard and the two IPEDS surveys, and the `cds` phase rebuilds what it
+   * reads out of the Common Data Set seed (RFC 170). A blanket `DELETE FROM`
+   * in either would silently erase the other's rows -- and, because `cds` runs
+   * FIRST, the run would still exit green with the CDS figures gone. Each
+   * writer rebuilds exactly what it publishes; a caller that really means
+   * every row passes every source.
+   *
+   * [table] is a [FactTable] member rather than a table name: the identifier
+   * reaches SQL, so it must not be caller data, and an enum makes the mistake
+   * a compile error instead of a runtime `require` fired mid-transaction.
+   */
+  fun deleteFactsOfSources(
+    session: SqlSession,
+    table: FactTable,
+    sources: Collection<MoneySource>,
+  ): Result<Int> =
+    session.execute(
+      "DELETE FROM ${table.tableName} WHERE source = ANY ($TEXT_ARRAY_PARAM)",
+    ) { stmt ->
+      jsonbArrayBinder(sources.map { it.value })(stmt, 1)
+    }
 
   /**
    * Batch-inserts [rows] into `price_figures`, returning how many landed. A
@@ -186,7 +223,7 @@ object CanonicalMoneyDao {
       stmt.setString(2, row.priceConcept.value)
       stmt.setString(3, row.residencyBasis.value)
       stmt.setString(4, row.arrangement.value)
-      stmt.setString(5, row.academicYear)
+      stmt.setInt(5, row.academicYear.firstCalendarYear)
       // The two D3 columns derive from the ONE reading (a value exists
       // exactly when the status bears one, by construction).
       stmt.setIntOrNull(6, (row.reading as? FigureReading.Present)?.value)
@@ -206,9 +243,10 @@ object CanonicalMoneyDao {
       """
       INSERT INTO cohort_money_stats (
         college_id, measure, population, residency_scope, aid_scope, income_band,
-        vintage, value, status, source, source_variable, publisher_flag
+        vintage, value, status, source, source_variable, publisher_flag,
+        source_document_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """.trimIndent(),
       rows,
     ) { stmt, row ->
@@ -218,12 +256,13 @@ object CanonicalMoneyDao {
       stmt.setString(4, row.residencyScope.value)
       stmt.setString(5, row.aidScope.value)
       stmt.setStringOrNull(6, row.incomeBand?.value)
-      stmt.setString(7, row.vintage)
+      stmt.setIntOrNull(7, row.vintage?.firstCalendarYear)
       stmt.setDoubleOrNull(8, (row.reading as? FigureReading.Present)?.value)
       stmt.setString(9, row.reading.status.value)
       stmt.setString(10, row.source.value)
       stmt.setString(11, row.sourceVariable)
       stmt.setStringOrNull(12, row.publisherFlag)
+      stmt.setObject(13, row.sourceDocumentId?.value)
     }
 
   /** Batch-inserts [rows] into `cohort_population_counts` (RFC 162); see [insertPriceFigures]. */
@@ -236,9 +275,10 @@ object CanonicalMoneyDao {
       """
       INSERT INTO cohort_population_counts (
         college_id, population, residency_basis, arrangement, vintage,
-        headcount, status, source, source_variable, publisher_flag
+        headcount, status, source, source_variable, publisher_flag,
+        source_document_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """.trimIndent(),
       rows,
     ) { stmt, row ->
@@ -246,13 +286,78 @@ object CanonicalMoneyDao {
       stmt.setString(2, row.population.value)
       stmt.setString(3, row.residencyBasis.value)
       stmt.setString(4, row.arrangement.value)
-      stmt.setString(5, row.vintage)
+      stmt.setInt(5, row.vintage.firstCalendarYear)
       stmt.setIntOrNull(6, (row.reading as? FigureReading.Present)?.value)
       stmt.setString(7, row.reading.status.value)
       stmt.setString(8, row.source.value)
       stmt.setString(9, row.sourceVariable)
       stmt.setStringOrNull(10, row.publisherFlag)
+      stmt.setObject(11, row.sourceDocumentId?.value)
     }
+
+  /**
+   * Batch-inserts [rows] into `aid_form_requirements` (RFC 170); see
+   * [insertPriceFigures] for why there is no ON CONFLICT.
+   *
+   * `is_required` is bound from the reading, so a row with an absent status
+   * carries no value and a row with a value carries a value-bearing status --
+   * the pairing cannot be got wrong at a call site.
+   */
+  fun insertAidFormRequirements(
+    session: SqlSession,
+    rows: List<NewAidFormRequirement>,
+  ): Result<Int> =
+    batchInsert(
+      session,
+      """
+      INSERT INTO aid_form_requirements (
+        college_id, aid_form, applicant_group, academic_year, is_required,
+        status, source, source_variable, source_document_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """.trimIndent(),
+      rows,
+    ) { stmt, row ->
+      stmt.setObject(1, row.collegeId)
+      stmt.setString(2, row.form.value)
+      stmt.setString(3, row.applicantGroup.value)
+      stmt.setInt(4, row.academicYear.firstCalendarYear)
+      stmt.setBooleanOrNull(5, (row.reading as? FigureReading.Present)?.value)
+      stmt.setString(6, row.reading.status.value)
+      stmt.setString(7, row.source.value)
+      stmt.setString(8, row.sourceVariable)
+      stmt.setObject(9, row.sourceDocumentId.value)
+    }
+
+  /**
+   * Every publisher still holding rows in any fact table, EXCLUDING [sources] --
+   * "whose data would this deletion destroy?", asked before destroying it.
+   *
+   * The vocabulary phase needs it because a retirement deletes fact rows to
+   * free a slug, and it may only delete rows this run writes back.
+   */
+  fun factSourcesOtherThan(
+    session: SqlSession,
+    sources: Collection<MoneySource>,
+  ): Result<List<MoneySource>> =
+    session
+      .queryList(
+        FactTable.entries.joinToString(" UNION ") { "SELECT DISTINCT source FROM ${it.tableName}" } +
+          " ORDER BY source",
+        bind = {},
+        map = { rs -> rs.getString("source") },
+      ).mapCatching { stored ->
+        stored
+          .map { raw ->
+            MoneySource.fromValue(raw)
+              ?: throw CorruptPersistedValueException(
+                raw,
+                ed.unicoach.common.models.ValidationError
+                  .InvalidFormat(expected = "a known MoneySource value"),
+                location = "a canonical fact table's source column",
+              )
+          }.filterNot { it in sources }
+      }
 
   // ---------------------------------------------------------------------------
   // Provenance reads (P11).
@@ -364,5 +469,5 @@ object CanonicalMoneyDao {
 
   /** The closed identifier allowlist for the two vocabulary reads/deletes above. */
   val VOCABULARY_TABLES: Set<String> =
-    setOf("residency_bases", "arrangements", "figure_statuses", "price_concepts", "income_bands")
+    setOf("residency_bases", "arrangements", "figure_statuses", "price_concepts", "income_bands", "aid_forms")
 }

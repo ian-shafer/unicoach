@@ -1,6 +1,6 @@
 package ed.unicoach.coaching.aid
 
-import ed.unicoach.coaching.AcademicYear
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
@@ -14,6 +14,8 @@ import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import java.time.Clock
+import java.time.LocalDate
+import java.time.Month
 
 /**
  * Whether a topic's figures are the current award year's or a prior one's --
@@ -135,7 +137,7 @@ data class FederalAidPolicy(
  * ForbiddenCostArithmetic scan covers this package to keep it that way.
  *
  * "Current" is derived from the injected [clock] through
- * [AcademicYear.currentFederalAwardYear]. A topic resolves to the LATEST
+ * [currentAwardYear]. A topic resolves to the LATEST
  * COMPLETE award year at or before the current one -- a year FSA has
  * published for the future is never served as this year's policy, and a year
  * seeded only in part never eclipses the last complete one -- and when the
@@ -181,8 +183,21 @@ class FederalAidPolicyService(
     )
   }
 
-  /** The award year running at [clock]'s instant -- the July 1 rule, owned by [AcademicYear]. */
-  internal fun currentAwardYear(): AcademicYear = AcademicYear.currentFederalAwardYear(clock)
+  /**
+   * The award year running at [clock]'s instant: federal award years run July 1
+   * to June 30, so before July the running year started last calendar year.
+   *
+   * The ONE home for the July 1 rule (RFC 159), and it lives here rather than
+   * on [AcademicYear] because it is Federal Student Aid's calendar, not a
+   * property of academic years: the shared value type is named by four `:db`
+   * row types and must not carry one feature's fiscal convention (nor
+   * `Clock`/`LocalDate`) into every module that only wants to say a year.
+   */
+  internal fun currentAwardYear(): AcademicYear {
+    val today = LocalDate.now(clock)
+    val startYear = if (today.month >= Month.JULY) today.year else today.year - 1
+    return AcademicYear(startYear)
+  }
 
   private fun dependencyOf(
     session: SqlSession,

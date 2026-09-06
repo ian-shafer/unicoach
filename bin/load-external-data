@@ -6,7 +6,7 @@ help() {
 load-external-data [-n] [-h] <institution.csv> <fields.csv> [aliases.json]
 
 Runs bin/ingest-colleges ONCE, with every path this repo already knows defaulted
-(RFC 172). The maximal ingest command is fourteen flags and paths over
+(RFC 172, RFC 170). The maximal ingest command is fifteen flags and paths over
 case-sensitive option pairs (-a/-A, -y/-Y, -f) and year-stamped IPEDS filenames;
 nothing in the tree wrote it down, and the failure that invites is not a crash
 but a green run that loaded less than the operator believed it loaded.
@@ -16,6 +16,7 @@ Defaulted for you, with NO flag to override any of them:
   -k db/data/codebooks.json          -m db/seed/cds/merit-aid.csv
   -s db/data/subjects.json           -a db/seed/cds/admission-factors.csv
   -v db/data/money-vocabulary.json   -d db/seed/cds/deadlines.csv
+                                     -p db/seed/cds/aid_policy.csv
   -H -I -A -C -Y -y -S -f            read from db/seed/ipeds/PROVENANCE.json
 
 bin/ingest-colleges keeps every one of its flags and is still the tool to reach
@@ -107,6 +108,7 @@ MONEY_VOCABULARY_JSON="$PROJECT_ROOT/db/data/money-vocabulary.json"
 CDS_MERIT_AID="$PROJECT_ROOT/db/seed/cds/merit-aid.csv"
 CDS_ADMISSION_FACTORS="$PROJECT_ROOT/db/seed/cds/admission-factors.csv"
 CDS_DEADLINES="$PROJECT_ROOT/db/seed/cds/deadlines.csv"
+CDS_AID_POLICY="$PROJECT_ROOT/db/seed/cds/aid_policy.csv"
 IPEDS_DIR="$PROJECT_ROOT/db/seed/ipeds"
 IPEDS_MANIFEST="$IPEDS_DIR/PROVENANCE.json"
 
@@ -231,6 +233,7 @@ require_inputs() {
   require_input "$CDS_MERIT_AID" "the CDS merit-aid seed; run bin/fetch-cds-seed"
   require_input "$CDS_ADMISSION_FACTORS" "the CDS admission-factors seed; run bin/fetch-cds-seed"
   require_input "$CDS_DEADLINES" "the CDS deadlines seed; run bin/fetch-cds-seed"
+  require_input "$CDS_AID_POLICY" "the CDS aid-policy seed; run bin/fetch-cds-seed"
   require_input "$IPEDS_HD" "the IPEDS HD survey file; run bin/fetch-ipeds"
   require_input "$IPEDS_IC" "the IPEDS IC survey file; run bin/fetch-ipeds"
   require_input "$IPEDS_ADM" "the IPEDS ADM survey file; run bin/fetch-ipeds"
@@ -262,6 +265,7 @@ build_ingest_command() {
     -m "$CDS_MERIT_AID"
     -a "$CDS_ADMISSION_FACTORS"
     -d "$CDS_DEADLINES"
+    -p "$CDS_AID_POLICY"
     -H "$IPEDS_HD"
     -I "$IPEDS_IC"
     -A "$IPEDS_ADM"

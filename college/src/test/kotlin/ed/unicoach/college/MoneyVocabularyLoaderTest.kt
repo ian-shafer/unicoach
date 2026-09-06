@@ -2,6 +2,8 @@ package ed.unicoach.college
 
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.models.AidForm
+import ed.unicoach.db.models.AidFormApplicantGroup
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
@@ -11,6 +13,7 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.IpedsImputationFlag
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
 import kotlinx.coroutines.runBlocking
@@ -188,12 +191,12 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
   @Test
   fun `a first load inserts every row, and an unchanged re-load writes nothing`() {
     val parsed = parse(committedFile)
-    val first = runBlocking { loader.load("money-vocabulary.json", parsed) }
+    val first = runBlocking { loader.load("money-vocabulary.json", parsed, MoneySource.entries) }
     assertEquals(parsed.rows, first.rows)
     assertEquals(parsed.rows, first.inserted)
     assertEquals(0, first.deleted)
 
-    val again = runBlocking { loader.load("money-vocabulary.json", parsed) }
+    val again = runBlocking { loader.load("money-vocabulary.json", parsed, MoneySource.entries) }
     assertEquals(0, again.inserted)
     assertEquals(0, again.changed)
     assertEquals(parsed.rows, again.unchanged)
@@ -203,7 +206,7 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
   @Test
   fun `the loaded tables carry exactly the enum vocabularies`() {
     val parsed = parse(committedFile)
-    runBlocking { loader.load("money-vocabulary.json", parsed) }
+    runBlocking { loader.load("money-vocabulary.json", parsed, MoneySource.entries) }
     withSession { session ->
       assertEquals(
         ResidencyBasis.entries.map { it.value }.sorted(),
@@ -217,6 +220,14 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
         IncomeBand.entries.map { it.value }.sorted(),
         CanonicalMoneyDao.vocabularySlugs(session, "income_bands").getOrThrow(),
       )
+      // RFC 170's vocabulary, pinned both ways like its four siblings: the
+      // loader's validateAgainstEnums already fatals on a disagreement at run
+      // time, and this is what stops the file and the enum drifting apart in an
+      // edit nobody runs the ingest for.
+      assertEquals(
+        AidForm.entries.map { it.value }.sorted(),
+        CanonicalMoneyDao.vocabularySlugs(session, "aid_forms").getOrThrow(),
+      )
     }
   }
 
@@ -229,7 +240,7 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
     // later the same run (P12), so the loader clears them first and the
     // table follows the file in ONE run instead of failing forever.
     val parsed = parse(committedFile)
-    runBlocking { loader.load("money-vocabulary.json", parsed) }
+    runBlocking { loader.load("money-vocabulary.json", parsed, MoneySource.entries) }
     runBlocking {
       CollegeScorecardLoader(database).load(
         fixture("scorecard-institutions-fixture.csv"),
@@ -246,12 +257,12 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
         .prepareStatement(
           "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
             "academic_year, amount_usd, status, source, source_variable) " +
-            "SELECT id, 'retired_concept', 'in_state', 'not_applicable', '2022-23', 12345, 'reported', " +
+            "SELECT id, 'retired_concept', 'in_state', 'not_applicable', 2022, 12345, 'reported', " +
             "'scorecard', 'RETIRED' FROM colleges WHERE ipeds_unit_id = 110100",
         ).use { it.execute() }
     }
 
-    val result = runBlocking { loader.load("money-vocabulary.json", parsed) }
+    val result = runBlocking { loader.load("money-vocabulary.json", parsed, MoneySource.entries) }
 
     assertEquals(1, result.deleted, "the retired concept is deleted, not wedged behind the FK")
     withSession { session ->
@@ -260,6 +271,57 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
         CanonicalMoneyDao.vocabularySlugs(session, "price_concepts").getOrThrow(),
       )
       assertEquals(0, count(session, "price_figures"), "the referencing fact rows were cleared for the same-run rebuild")
+    }
+  }
+
+  @Test
+  fun `a retirement that would delete a source this run does not rebuild is refused, not performed`() {
+    // The silent-erasure path: `--money-vocabulary` runs on every ingest while
+    // the CDS group is optional, so a run without `-p` used to delete every
+    // Common Data Set fact row to free a retiring slug, refill only the
+    // sources it does rebuild, and exit green. A deletion nothing writes back
+    // is data loss; it is refused here, naming the source and the way out.
+    val parsed = parse(committedFile)
+    runBlocking { loader.load("money-vocabulary.json", parsed, MoneySource.entries) }
+    runBlocking {
+      CollegeScorecardLoader(database).load(
+        fixture("scorecard-institutions-fixture.csv"),
+        fixture("scorecard-fields-fixture.csv"),
+      )
+    }
+    withSession { session ->
+      session
+        .prepareStatement(
+          "INSERT INTO price_concepts (slug, description, arrangement_varies) " +
+            "VALUES ('retired_concept', 'run N leftovers', FALSE)",
+        ).use { it.execute() }
+      session
+        .prepareStatement(
+          "INSERT INTO source_documents (college_id, source, academic_year, source_url) " +
+            "SELECT id, 'common_data_set', 2024, 'https://example.edu/cds.pdf' FROM colleges " +
+            "WHERE ipeds_unit_id = 110100",
+        ).use { it.execute() }
+      session
+        .prepareStatement(
+          "INSERT INTO cohort_money_stats (college_id, measure, population, residency_scope, aid_scope, " +
+            "vintage, value, status, source, source_variable, source_document_id) " +
+            "SELECT c.id, 'avg_need_met_share', 'first_time_full_time_freshmen_awarded_need_based_grant', " +
+            "'all', 'need_based_aid_receiving', 2024, 0.9, 'reported', 'common_data_set', 'H.209', d.id " +
+            "FROM colleges c JOIN source_documents d ON d.college_id = c.id WHERE c.ipeds_unit_id = 110100",
+        ).use { it.execute() }
+    }
+
+    // A run that rebuilds everything BUT the Common Data Set -- an ingest
+    // given no CDS seed.
+    val thrown =
+      assertFailsWith<MoneyVocabularyLoader.RetirementBlockedException> {
+        runBlocking {
+          loader.load("money-vocabulary.json", parsed, MoneySource.entries - MoneySource.COMMON_DATA_SET)
+        }
+      }
+    assertEquals(listOf(MoneySource.COMMON_DATA_SET), thrown.strandedSources)
+    withSession { session ->
+      assertEquals(1, count(session, "cohort_money_stats"), "the CDS row must still be there")
     }
   }
 
@@ -302,7 +364,7 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
     // catch -- must fail, exactly as the value_bearing test above does. The
     // seeded income_bands rows are the third party to the agreement.
     val parsed = parse(committedFile)
-    runBlocking { loader.load("money-vocabulary.json", parsed) }
+    runBlocking { loader.load("money-vocabulary.json", parsed, MoneySource.entries) }
     val enumSlugs = IncomeBand.entries.map { it.value }.toSet()
     val definition = constraintDefinition("money_profiles_income_band_check")
     val listed =
@@ -338,6 +400,16 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
     // CohortPopulation member would pass the money table's pin above and then
     // fail this table's CHECK at insert time, in production.
     assertEquals(CohortPopulation.entries.map { it.value }.toSet(), listed("cohort_population_counts_population_check"))
+    // RFC 170's applicant group, pinned the same way and for the same reason:
+    // its own KDoc claims this test exists, and the H7 nonresident member the
+    // schema already admits is the next one to be added.
+    assertEquals(
+      AidFormApplicantGroup.entries.map { it.value }.toSet(),
+      listed("aid_form_requirements_applicant_group_check"),
+    )
+    // The publisher axis is a DOMAIN now (RFC 170), not a CHECK per table, so
+    // there is ONE constraint to pin -- which is the point of making it one.
+    assertEquals(MoneySource.entries.map { it.value }.toSet(), listed("money_source_check"))
   }
 
   @Test

@@ -21,6 +21,7 @@ import ed.unicoach.coaching.costs.figureStatusesOf
 import ed.unicoach.coaching.costs.notReportedOf
 import ed.unicoach.coaching.costs.reportedOf
 import ed.unicoach.coaching.costs.tuitionLineOf
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CohortMoneyStat
@@ -31,7 +32,6 @@ import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
-import ed.unicoach.db.models.VINTAGE_UNDATED
 import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
@@ -148,10 +148,16 @@ fun answeredMoney(
  * `CollegeFigures.publishedPriceYearOf`, which is the projection's own unit-tested
  * decision. What the page owes is that it prints the year the domain served.
  */
-const val FIXTURE_PRICE_ACADEMIC_YEAR: String = "2023-24"
+val FIXTURE_PRICE_YEAR: AcademicYear = AcademicYear(2023)
+
+/** [FIXTURE_PRICE_YEAR] as words, derived rather than a second literal (RFC 170 D14). */
+val FIXTURE_PRICE_ACADEMIC_YEAR: String = FIXTURE_PRICE_YEAR.label
 
 /** The vintage the blended averages carry -- a year behind the price list, as the two real sources are. */
-const val FIXTURE_BLENDED_ACADEMIC_YEAR: String = "2022-23"
+val FIXTURE_BLENDED_YEAR: AcademicYear = AcademicYear(2022)
+
+/** [FIXTURE_BLENDED_YEAR] as words, derived for the reason [FIXTURE_PRICE_ACADEMIC_YEAR] is. */
+val FIXTURE_BLENDED_ACADEMIC_YEAR: String = FIXTURE_BLENDED_YEAR.label
 
 /**
  * The OTHER academic year a fixture may hold a published figure at, and never
@@ -161,7 +167,10 @@ const val FIXTURE_BLENDED_ACADEMIC_YEAR: String = "2022-23"
  * Older than [FIXTURE_PRICE_ACADEMIC_YEAR] on purpose, so a row here can never
  * become the served year and turn a gap test into a year-selection test.
  */
-const val FIXTURE_YEAR_GAP_ACADEMIC_YEAR: String = "2021-22"
+val FIXTURE_YEAR_GAP_YEAR: AcademicYear = AcademicYear(2021)
+
+/** [FIXTURE_YEAR_GAP_YEAR] as words, derived for the reason [FIXTURE_PRICE_ACADEMIC_YEAR] is. */
+val FIXTURE_YEAR_GAP_ACADEMIC_YEAR: String = FIXTURE_YEAR_GAP_YEAR.label
 
 /**
  * One school's cost facts, assembled the way `CollegeCostService` assembles
@@ -262,7 +271,7 @@ fun costFixture(
     listStatus = listStatus,
     publishedStickerCostOfAttendancePerYearUsd = publishedPrice,
     served = served,
-    blendedAverageAcademicYear = served.blendedAverageVintage(band = null),
+    blendedAverageAcademicYear = served.blendedAverageVintage(band = null)?.label,
     residencyTiers = residencyTiersOf(served),
     figureStatuses = figureStatusesOf(served, netPrice, (netPrice as? NetPrice.BandSpecific)?.band),
     publishedNetPrice = netPrice,
@@ -276,6 +285,10 @@ fun costFixture(
     breakdown = CostBreakdown.of(served, tuitionLine, offersOnCampusHousing),
     offersOnCampusHousing = offersOnCampusHousing,
     meritAid = meritAid,
+    // The cost REPORT (RFC 155) renders no aid-policy section; the fake says
+    // so explicitly rather than leaving the field to a default that would
+    // quietly start rendering one.
+    aidPolicy = null,
     chosen = ChosenLivingPlan.NotChosen,
   )
 }
@@ -299,7 +312,7 @@ private fun priceRow(
   field: CostField,
   amountUsd: Int?,
   absenceStatuses: Map<CostField, AbsenceStatus> = emptyMap(),
-  academicYear: String = FIXTURE_PRICE_ACADEMIC_YEAR,
+  academicYear: AcademicYear = FIXTURE_PRICE_YEAR,
 ): PriceFigure? {
   val address = (field.figureAddress as? FigureAddress.Price)?.address ?: return null
   return PriceFigure(
@@ -326,7 +339,7 @@ private fun yearGapRow(
   collegeId: CollegeId,
   field: CostField,
   amountUsd: Int,
-): PriceFigure? = priceRow(collegeId, field, amountUsd, academicYear = FIXTURE_YEAR_GAP_ACADEMIC_YEAR)
+): PriceFigure? = priceRow(collegeId, field, amountUsd, academicYear = FIXTURE_YEAR_GAP_YEAR)
 
 /**
  * The cohort rows behind the two blended figures and the undated debt figure,
@@ -356,7 +369,7 @@ private fun cohortRows(
       field = CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD,
       residencyScope = blendScope,
       incomeBand = null,
-      vintage = FIXTURE_BLENDED_ACADEMIC_YEAR,
+      vintage = FIXTURE_BLENDED_YEAR,
       amountUsd = publishedPrice,
       absent = absenceStatuses[CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD],
     ),
@@ -365,7 +378,7 @@ private fun cohortRows(
       field = CostField.NET_PRICE,
       residencyScope = blendScope,
       incomeBand = (netPrice as? NetPrice.BandSpecific)?.band,
-      vintage = FIXTURE_BLENDED_ACADEMIC_YEAR,
+      vintage = FIXTURE_BLENDED_YEAR,
       amountUsd = netPrice.amount,
       absent = absenceStatuses[CostField.NET_PRICE],
     ),
@@ -374,7 +387,7 @@ private fun cohortRows(
       field = CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
-      vintage = VINTAGE_UNDATED,
+      vintage = null,
       amountUsd = medianDebt,
       absent = absenceStatuses[CostField.MEDIAN_DEBT_AT_COMPLETION_USD],
     ),
@@ -397,7 +410,7 @@ private fun cohortRow(
   field: CostField,
   residencyScope: CohortResidencyScope,
   incomeBand: IncomeBand?,
-  vintage: String,
+  vintage: AcademicYear?,
   amountUsd: Int?,
   absent: AbsenceStatus? = null,
 ): CohortMoneyStat {

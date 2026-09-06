@@ -16,6 +16,7 @@ import ed.unicoach.db.models.FactorRating
 import ed.unicoach.db.models.NewCollegeAdmissionFactors
 import ed.unicoach.db.models.NewCollegeDeadline
 import ed.unicoach.db.models.NewCollegeMeritAid
+import ed.unicoach.db.models.SourceDocumentId
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -180,14 +181,30 @@ object CdsAdmissionsDao {
       "source_year" to { stmt: PreparedStatement, i: Int -> stmt.setInt(i, sourceYear) },
     )
 
-  /** The provenance pair every CDS fact row carries. */
-  private fun mapProvenance(
-    sourceUrl: String,
-    archiveUrl: String?,
-  ): Map<String, Bind> =
+  /**
+   * The one join every read of these tables makes: the fact row plus the two
+   * urls of the document it cites (RFC 170, D13). The urls are READ from
+   * `source_documents` rather than stored beside each fact, so the row models
+   * still carry them and no table holds a second copy.
+   *
+   * A fixed DAO identifier reaches SQL here, never caller data: [table] comes
+   * from [LatestSource], the enum that owns this object's three table names. The alias is `f` for the fact table and `d`
+   * for the document, and every column reference in a caller's own clauses is
+   * qualified with one of them -- an unqualified `college_id` would be
+   * ambiguous across the join.
+   */
+  private fun withDocument(table: String): String =
+    "f.*, ${SourceDocumentJoin.CITATION_COLUMNS} ${SourceDocumentJoin.withDocumentById(table)}"
+
+  /**
+   * The provenance every CDS fact row carries: the `source_documents` row it
+   * was read out of (RFC 170, D13). One reference, not a copy of the two urls
+   * -- which is what made the same filing storable three times, with three
+   * chances to disagree.
+   */
+  private fun mapProvenance(sourceDocumentId: SourceDocumentId): Map<String, Bind> =
     linkedMapOf(
-      "source_url" to { stmt: PreparedStatement, i: Int -> stmt.setString(i, sourceUrl) },
-      "archive_url" to { stmt: PreparedStatement, i: Int -> stmt.setStringOrNull(i, archiveUrl) },
+      "source_document_id" to { stmt: PreparedStatement, i: Int -> stmt.setObject(i, sourceDocumentId.value) },
     )
 
   /**
@@ -208,7 +225,7 @@ object CdsAdmissionsDao {
           "first_time_full_time_freshmen_headcount" to { stmt, i -> stmt.setIntOrNull(i, input.firstTimeFullTimeFreshmenHeadcount) },
           "no_need_merit_recipients_headcount" to { stmt, i -> stmt.setIntOrNull(i, input.noNeedMeritRecipientsHeadcount) },
           "no_need_merit_average_usd" to { stmt, i -> stmt.setIntOrNull(i, input.noNeedMeritAverageUsd) },
-        ) + mapProvenance(input.sourceUrl, input.archiveUrl),
+        ) + mapProvenance(input.sourceDocumentId),
       mapError = writeError("college_merit_aid", input.collegeId, input.sourceYear),
     )
 
@@ -226,7 +243,7 @@ object CdsAdmissionsDao {
       columns =
         FACTOR_COLUMNS.associateTo(LinkedHashMap<String, Bind>()) { (column, read) ->
           column to { stmt: PreparedStatement, i: Int -> stmt.setStringOrNull(i, read(input)?.value) }
-        } + mapProvenance(input.sourceUrl, input.archiveUrl),
+        } + mapProvenance(input.sourceDocumentId),
       mapError = writeError("college_admission_factors", input.collegeId, input.sourceYear),
     )
 
@@ -252,7 +269,7 @@ object CdsAdmissionsDao {
           "closing_day" to { stmt, i -> stmt.setIntOrNull(i, input.closing?.day) },
           "notification_month" to { stmt, i -> stmt.setIntOrNull(i, input.notification?.month) },
           "notification_day" to { stmt, i -> stmt.setIntOrNull(i, input.notification?.day) },
-        ) + mapProvenance(input.sourceUrl, input.archiveUrl),
+        ) + mapProvenance(input.sourceDocumentId),
       mapError = writeError("college_deadlines", input.collegeId, input.sourceYear),
     )
 
@@ -268,7 +285,7 @@ object CdsAdmissionsDao {
   ): Result<CollegeMeritAid?> =
     session
       .queryOne(
-        "SELECT * FROM college_merit_aid WHERE college_id = ? AND source_year = ?",
+        "SELECT ${withDocument(LatestSource.MERIT_AID.table)} WHERE f.college_id = ? AND f.source_year = ?",
         bind = {
           it.setObject(1, collegeId.value)
           it.setInt(2, sourceYear)
@@ -284,7 +301,7 @@ object CdsAdmissionsDao {
   ): Result<CollegeAdmissionFactors?> =
     session
       .queryOne(
-        "SELECT * FROM college_admission_factors WHERE college_id = ? AND source_year = ?",
+        "SELECT ${withDocument(LatestSource.ADMISSION_FACTORS.table)} WHERE f.college_id = ? AND f.source_year = ?",
         bind = {
           it.setObject(1, collegeId.value)
           it.setInt(2, sourceYear)
@@ -299,7 +316,8 @@ object CdsAdmissionsDao {
     sourceYear: Int,
   ): Result<List<CollegeDeadline>> =
     session.queryList(
-      "SELECT * FROM college_deadlines WHERE college_id = ? AND source_year = ? ORDER BY round",
+      "SELECT ${withDocument(LatestSource.DEADLINES.table)} WHERE f.college_id = ? AND f.source_year = ? " +
+        "ORDER BY f.round",
       bind = {
         it.setObject(1, collegeId.value)
         it.setInt(2, sourceYear)
@@ -340,9 +358,9 @@ object CdsAdmissionsDao {
     // agreement.
     val keys = source.distinctOn.joinToString(", ")
     return session.queryList(
-      "SELECT DISTINCT ON ($keys) * FROM ${source.table} " +
-        "WHERE college_id IN ($placeholders) " +
-        "ORDER BY $keys, source_year DESC",
+      "SELECT DISTINCT ON ($keys) ${withDocument(source.table)} " +
+        "WHERE f.college_id IN ($placeholders) " +
+        "ORDER BY $keys, f.source_year DESC",
       bind = { stmt -> ids.forEachIndexed { i, id -> stmt.setObject(i + 1, id.value) } },
       map = map,
     )
@@ -362,11 +380,11 @@ object CdsAdmissionsDao {
     val table: String,
     val distinctOn: List<String>,
   ) {
-    MERIT_AID("college_merit_aid", listOf("college_id")),
-    ADMISSION_FACTORS("college_admission_factors", listOf("college_id")),
+    MERIT_AID("college_merit_aid", listOf("f.college_id")),
+    ADMISSION_FACTORS("college_admission_factors", listOf("f.college_id")),
 
     /** Keyed `(college_id, round)`: a deadline row is per round, so each round resolves to its own newest cycle. */
-    DEADLINES("college_deadlines", listOf("college_id", "round")),
+    DEADLINES("college_deadlines", listOf("f.college_id", "f.round")),
   }
 
   /** Each college's merit-aid row from its own latest CDS cycle; colleges with no row are absent. */

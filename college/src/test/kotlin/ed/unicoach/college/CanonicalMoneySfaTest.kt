@@ -60,7 +60,7 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
         "SELECT cms.value, cms.source, cms.source_variable, cms.publisher_flag FROM cohort_money_stats cms " +
           "JOIN colleges c ON c.id = cms.college_id " +
           "WHERE c.ipeds_unit_id = 209807 AND cms.measure = 'avg_net_price' AND cms.income_band = 'under_30k' " +
-          "AND cms.vintage = '2021-22'",
+          "AND cms.vintage = 2021",
       ) { rs -> listOf(rs.getBigDecimal(1).toInt().toString(), rs.getString(2), rs.getString(3), rs.getString(4)) }
     assertEquals(listOf(listOf("10311", "ipeds_sfa", "npis411", "R")), rows)
   }
@@ -92,7 +92,7 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
         "SELECT cms.aid_scope, cms.source, cms.source_variable, cms.value FROM cohort_money_stats cms " +
           "JOIN colleges c ON c.id = cms.college_id " +
           "WHERE c.ipeds_unit_id = 209807 AND cms.measure = 'avg_net_price' AND cms.income_band IS NULL " +
-          "AND cms.vintage = '2021-22' ORDER BY cms.aid_scope",
+          "AND cms.vintage = 2021 ORDER BY cms.aid_scope",
       ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getBigDecimal(4).toInt().toString()) }
     assertEquals(
       listOf(
@@ -227,12 +227,12 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
           "JOIN colleges c ON c.id = cms.college_id " +
           "WHERE c.ipeds_unit_id = 209807 AND cms.measure = 'avg_net_price' AND cms.aid_scope = 'grant_aided' " +
           "ORDER BY cms.vintage",
-      ) { rs -> Triple(rs.getString(1), rs.getBigDecimal(2).toInt(), rs.getString(3)) }
+      ) { rs -> Triple(rs.getInt(1), rs.getBigDecimal(2).toInt(), rs.getString(3)) }
     assertEquals(
       listOf(
-        Triple("2020-21", 12788, "npist0"),
-        Triple("2021-22", 12510, "npist1"),
-        Triple("2022-23", 12509, "npist2"),
+        Triple(2020, 12788, "npist0"),
+        Triple(2021, 12510, "npist1"),
+        Triple(2022, 12509, "npist2"),
       ),
       rows,
     )
@@ -340,7 +340,7 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
         "SELECT cpc.arrangement, cpc.headcount, cpc.status, cpc.publisher_flag FROM cohort_population_counts cpc " +
           "JOIN colleges c ON c.id = cpc.college_id " +
           "WHERE c.ipeds_unit_id = 144865 AND cpc.population = 'title_iv_aided_undergraduates' " +
-          "AND cpc.vintage = '2022-23' AND cpc.arrangement IN ('on_campus', 'with_family') " +
+          "AND cpc.vintage = 2022 AND cpc.arrangement IN ('on_campus', 'with_family') " +
           "ORDER BY cpc.arrangement",
       ) { rs -> listOf(rs.getString(1), rs.getObject(2)?.toString(), rs.getString(3), rs.getString(4)) }
     assertEquals(
@@ -360,7 +360,7 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
         "SELECT cpc.residency_basis, cpc.arrangement, cpc.headcount, cpc.source_variable FROM cohort_population_counts cpc " +
           "JOIN colleges c ON c.id = cpc.college_id " +
           "WHERE c.ipeds_unit_id = 164988 AND cpc.population = 'title_iv_aided_undergraduates' " +
-          "AND cpc.vintage = '2022-23' ORDER BY cpc.arrangement",
+          "AND cpc.vintage = 2022 ORDER BY cpc.arrangement",
       ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getInt(3).toString(), rs.getString(4)) }
     assertEquals(
       listOf(

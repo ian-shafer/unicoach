@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CollegeIpedsChargesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.FigureReading
@@ -42,23 +43,23 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
   private fun amount(
     ipedsUnitId: Int,
     variable: String,
-    academicYear: String = "2023-24",
+    academicYear: AcademicYear = AcademicYear(2023),
   ): Int? =
     query(
       "SELECT c.amount_usd FROM college_ipeds_charges c JOIN colleges g ON g.id = c.college_id " +
         "WHERE g.ipeds_unit_id = $ipedsUnitId AND c.charge_variable = '$variable' " +
-        "AND c.academic_year = '$academicYear'",
+        "AND c.academic_year = ${academicYear.firstCalendarYear}",
     ) { rs -> rs.getInt(1).takeUnless { rs.wasNull() } }.single()
 
   private fun flag(
     ipedsUnitId: Int,
     variable: String,
-    academicYear: String = "2023-24",
+    academicYear: AcademicYear = AcademicYear(2023),
   ): String =
     query(
       "SELECT c.imputation_flag FROM college_ipeds_charges c JOIN colleges g ON g.id = c.college_id " +
         "WHERE g.ipeds_unit_id = $ipedsUnitId AND c.charge_variable = '$variable' " +
-        "AND c.academic_year = '$academicYear'",
+        "AND c.academic_year = ${academicYear.firstCalendarYear}",
     ) { rs -> rs.getString(1) }.single()
 
   // ---------------------------------------------------------------------------
@@ -82,14 +83,16 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
   fun `the year suffix decodes to the academic year it means, all four landing distinctly`() {
     load()
     assertEquals(
-      listOf("2020-21", "2021-22", "2022-23", "2023-24"),
-      query("SELECT DISTINCT academic_year FROM college_ipeds_charges ORDER BY academic_year") { it.getString(1) },
+      listOf(2020, 2021, 2022, 2023).map(::AcademicYear),
+      query("SELECT DISTINCT academic_year FROM college_ipeds_charges ORDER BY academic_year") {
+        AcademicYear(it.getInt(1))
+      },
     )
     assertEquals(
-      listOf("2020-21" to 36, "2021-22" to 36, "2022-23" to 36, "2023-24" to 36),
+      listOf(2020, 2021, 2022, 2023).map { AcademicYear(it) to 36 },
       query(
         "SELECT academic_year, count(*) FROM college_ipeds_charges GROUP BY academic_year ORDER BY academic_year",
-      ) { rs -> rs.getString(1) to rs.getInt(2) },
+      ) { rs -> AcademicYear(rs.getInt(1)) to rs.getInt(2) },
     )
   }
 
@@ -152,10 +155,10 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
   @Test
   fun `earlier years carry their own values, not a copy of the latest`() {
     load()
-    assertEquals(15265, amount(110680, "CHG2AY", "2023-24"))
-    assertEquals(14906, amount(110680, "CHG2AY", "2022-23"))
-    assertEquals(17198, amount(110680, "CHG5AY", "2023-24"))
-    assertEquals(16710, amount(110680, "CHG5AY", "2022-23"))
+    assertEquals(15265, amount(110680, "CHG2AY", AcademicYear(2023)))
+    assertEquals(14906, amount(110680, "CHG2AY", AcademicYear(2022)))
+    assertEquals(17198, amount(110680, "CHG5AY", AcademicYear(2023)))
+    assertEquals(16710, amount(110680, "CHG5AY", AcademicYear(2022)))
   }
 
   // ---------------------------------------------------------------------------
@@ -281,7 +284,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
         id = chargeId,
         collegeId = collegeId,
         chargeVariable = "CHG5AY",
-        academicYear = "2023-24",
+        academicYear = AcademicYear(2023),
         sourceVariable = "CHG5AY3",
       )
     val fromStaging =
@@ -376,7 +379,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
       session
         .prepareStatement(
           "ALTER TABLE college_ipeds_charges ADD CONSTRAINT tmp_reject_one_key " +
-            "CHECK (NOT (charge_variable = 'CHG2AY' AND academic_year = '2023-24')) NOT VALID",
+            "CHECK (NOT (charge_variable = 'CHG2AY' AND academic_year = 2023)) NOT VALID",
         ).use { it.execute() }
     }
     try {
@@ -392,7 +395,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
         emptyList(),
         query(
           "SELECT amount_usd FROM college_ipeds_charges " +
-            "WHERE charge_variable = 'CHG2AY' AND academic_year = '2023-24'",
+            "WHERE charge_variable = 'CHG2AY' AND academic_year = 2023",
         ) { it.getInt(1) },
       )
       assertEquals(3 * 12 * 4 - 3, withSession { count(it, "college_ipeds_charges") })
@@ -496,7 +499,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
       session
         .prepareStatement(
           "INSERT INTO college_ipeds_charges (college_id, charge_variable, academic_year, amount_usd, " +
-            "imputation_flag) VALUES (?::uuid, 'CHG2AY', '2019-20', 7350, 'R')",
+            "imputation_flag) VALUES (?::uuid, 'CHG2AY', 2019, 7350, 'R')",
         ).use { stmt ->
           stmt.setString(1, collegeId)
           stmt.executeUpdate()
@@ -507,7 +510,9 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     assertEquals(1, again.pruned)
     assertEquals(
       IpedsChargeVocabulary.ACADEMIC_YEAR_BY_SUFFIX.values.toList(),
-      query("SELECT DISTINCT academic_year FROM college_ipeds_charges ORDER BY academic_year") { it.getString(1) },
+      query("SELECT DISTINCT academic_year FROM college_ipeds_charges ORDER BY academic_year") {
+        AcademicYear(it.getInt(1))
+      },
     )
   }
 

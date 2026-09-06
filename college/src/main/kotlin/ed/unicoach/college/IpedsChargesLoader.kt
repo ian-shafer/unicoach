@@ -4,6 +4,7 @@ import ed.unicoach.college.CsvIngestSupport.classifyUpsertFailure
 import ed.unicoach.college.CsvIngestSupport.logUpsertSkip
 import ed.unicoach.college.CsvIngestSupport.stringOrNull
 import ed.unicoach.college.CsvIngestSupport.upsertWithSavepoint
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegeIpedsChargesDao
 import ed.unicoach.db.dao.CollegeIpedsDao
@@ -258,7 +259,7 @@ class IpedsChargesLoader(
           reason,
           "ipeds-charges row",
           "ipeds_unit_id/charge_variable/academic_year",
-          "$ipedsUnitId/${row.chargeVariable}/${row.academicYear}",
+          "$ipedsUnitId/${row.chargeVariable}/${row.academicYear.label}",
           record.recordNumber,
           error,
         )
@@ -509,12 +510,12 @@ class IpedsChargesLoader(
       val id: CollegeIpedsChargeId,
       val collegeId: UUID,
       val chargeVariable: String,
-      val academicYear: String,
+      val academicYear: AcademicYear,
       val sourceVariable: String,
     ) : CellRef {
       override fun toString(): String =
         "$sourceVariable (id=${id.value}, college_id=$collegeId, " +
-          "charge_variable=$chargeVariable, academic_year=$academicYear)"
+          "charge_variable=$chargeVariable, academic_year=${academicYear.label})"
     }
   }
 

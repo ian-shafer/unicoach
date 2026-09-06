@@ -15,6 +15,7 @@ import ed.unicoach.coaching.costs.canonical.publishedTuitionTiersOf
 import ed.unicoach.coaching.costs.canonical.residencyTiersOf
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.AidPolicyDao
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
@@ -23,6 +24,7 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.College
+import ed.unicoach.db.models.CollegeAidPolicy
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
@@ -347,6 +349,13 @@ data class CollegeCost(
    */
   val meritAid: MeritPractice?,
   /**
+   * How this school treats need, and which aid forms its Common Data Set lists
+   * as required (RFC 170), or null when the corpus carries no filing for it.
+   * Purely additive, exactly like [meritAid], and for the same reason kept out
+   * of [notReported]: this is a second source with its own silences.
+   */
+  val aidPolicy: AidPolicyPractice?,
+  /**
    * The way of living this answer LEADS with, resolved once here from the
    * school's own override and the family's usual plan (RFC 152 D2a), rather
    * than re-derived by the renderer.
@@ -392,7 +401,7 @@ data class CollegeCost(
    * 2023-24. Null when the school publishes no price at all
    * ([ServedFigures.servesNoPublishedPrice]).
    */
-  val publishedPriceAcademicYear: String? get() = served.academicYear
+  val publishedPriceAcademicYear: String? get() = served.academicYear?.label
 
   /**
    * The academic year THIS school's figures of [group] describe, or null when it
@@ -1001,6 +1010,14 @@ class CollegeCostService(
         .getOrThrow()
         .associateBy { it.collegeId }
 
+    // The RFC 170 aid-policy read, batched the same way and on the same
+    // connection: one query for the whole answer, whatever the list's size.
+    val aidPolicyById =
+      AidPolicyDao
+        .listLatest(session, selection.selected)
+        .getOrThrow()
+        .associateBy { it.collegeId }
+
     // The no-dorms fact (RFC 149 D-B), on the SAME connection and batched over
     // the units already selected -- one IPEDS read for the whole answer, so a
     // fifty-school list still costs one statement here and not fifty. Joined by
@@ -1024,6 +1041,7 @@ class CollegeCostService(
           entry,
           moneyProfile,
           meritById[college.id],
+          aidPolicyById[college.id],
           offersHousingByUnitId[college.ipedsUnitId],
           // `getValue`, never a fabricated empty `CollegeFigures`: the reader's
           // contract is that every selected id gets an entry, empty or not
@@ -1164,6 +1182,7 @@ class CollegeCostService(
     entry: CollegeListEntry,
     moneyProfile: MoneyProfileStatuses,
     merit: CollegeMeritAid?,
+    aidPolicyRow: CollegeAidPolicy?,
     offersOnCampusHousing: Boolean?,
     figures: CollegeFigures,
   ): CollegeCost {
@@ -1197,7 +1216,7 @@ class CollegeCostService(
       publishedStickerCostOfAttendancePerYearUsd =
         served.cohortOf(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, band = null)?.amountUsd,
       served = served,
-      blendedAverageAcademicYear = served.blendedAverageVintage(band),
+      blendedAverageAcademicYear = served.blendedAverageVintage(band)?.label,
       residencyTiers = residencyTiersOf(served),
       figureStatuses = figureStatusesOf(served, published, band),
       publishedNetPrice = published,
@@ -1221,6 +1240,10 @@ class CollegeCostService(
       // to no merit sub-object at all, exactly like a school with no row. The
       // rule lives there, so both tools cannot disagree about a school's silence.
       meritAid = merit?.let { MeritPractice.from(college.name, it) },
+      // A filing with no aid-policy fact under it is a citation with nothing to
+      // cite: [AidPolicyPractice.from] returns null and the section is absent,
+      // exactly as a school with no filing at all is.
+      aidPolicy = aidPolicyRow?.let { AidPolicyPractice.from(college.name, it) },
       // Two rules, two helpers, orchestrated here: WHICH plan applies (the
       // entry and the profile) is a different question from whether THIS
       // school prices it (the breakdown and the housing flag).
@@ -1560,7 +1583,7 @@ fun tuitionLineOf(
   // ([ServedFigures.servesNoPublishedPrice]) and so no line -- stated as an
   // early return so the line this function builds carries a non-null year by
   // construction (RFC 166 §3).
-  val year = served.academicYear ?: return null
+  val year = served.academicYear?.label ?: return null
   return served.amountOf(field)?.let { CostLine(field, it, year, origin = LineOrigin.PUBLISHED) }
 }
 
@@ -1815,18 +1838,18 @@ private fun yearGapOf(
   field: CostField,
   served: ServedFigures,
 ): FigureStatusNote? {
-  val servedYear = served.academicYear ?: return null
+  val servedYear = served.academicYear?.label ?: return null
   val held = served.yearGapOf(field) ?: return null
   return FigureStatusNote(
     field = field,
     status = FigureStatusCopy.YEAR_GAP_STATUS,
-    statement = FigureStatusCopy.yearGapStatementOf(servedYear, held.academicYear),
+    statement = FigureStatusCopy.yearGapStatementOf(servedYear, held.academicYear.label),
     // The two years travel as DATA as well as inside the sentence: they are the
     // fact that distinguishes this case from a cell we have never collected,
     // and a consumer that can only reach them by parsing our English cannot
     // render the case at all (RFC 166 §3).
     servedAcademicYear = servedYear,
-    heldAcademicYear = held.academicYear,
+    heldAcademicYear = held.academicYear.label,
   )
 }
 

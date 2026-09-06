@@ -109,7 +109,7 @@ fun LivingArrangement.reportedComponentsOf(served: ServedFigures): List<CostLine
   // lines, stated once here rather than by each branch below, and every line
   // this function can build is dated -- which is why [CostLine] can require a
   // year rather than carry a null no caller may fill.
-  val servedYear = served.academicYear ?: return emptyList()
+  val servedYear = served.academicYear?.label ?: return emptyList()
   return components.mapNotNull { field ->
     if (field.isAssumedByUnicoach) {
       // Ours, so it is available in every year the school publishes anything at all.

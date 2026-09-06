@@ -10,8 +10,8 @@ import java.sql.PreparedStatement
 import java.sql.Types
 
 /**
- * The authored money vocabulary (RFC 158, D6) as a test fixture: the five
- * tables the canonical fact tables foreign-key into. P2 accepted, with eyes
+ * The authored money vocabulary (RFC 158 D6, widened by RFC 170 D4) as a test
+ * fixture: the six tables the canonical fact tables foreign-key into. P2 accepted, with eyes
  * open, that the vocabulary phase is a write precondition -- so every suite
  * that writes a `price_figures` / `cohort_money_stats` row needs these tables
  * non-empty, exactly as [CodebookReferenceFixture] serves 0067's precondition.
@@ -91,6 +91,14 @@ object MoneyVocabularyFixture {
       if (max is JsonNull) stmt.setNull(3, Types.INTEGER) else stmt.setInt(3, max.jsonPrimitive.content.toInt())
       stmt.setString(4, row.text("bracket_label"))
       stmt.setInt(5, row.text("sort_order").toInt())
+    }
+    insertAll(
+      session,
+      "INSERT INTO aid_forms (slug, description) VALUES (?, ?) ON CONFLICT DO NOTHING",
+      rows("aid_forms"),
+    ) { stmt, row ->
+      stmt.setString(1, row.text("slug"))
+      stmt.setString(2, row.text("description"))
     }
   }
 

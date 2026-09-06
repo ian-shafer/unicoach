@@ -819,7 +819,7 @@ class FitLensService(
       }
     return figure +
       "netPriceBasis=[${stat.residencyScope.value}] " +
-      "netPriceVintage=[${stat.vintage ?: NOT_DATED}]"
+      "netPriceVintage=[${stat.vintage?.label ?: NOT_DATED}]"
   }
 
   /**

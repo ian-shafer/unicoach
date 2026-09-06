@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.costs.canonical
 
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 
@@ -34,7 +35,7 @@ class ServedFigures(
    * The academic year this college's published price is served at, or null when
    * it publishes no price row at all ([servesNoPublishedPrice]).
    */
-  val academicYear: String?,
+  val academicYear: AcademicYear?,
 ) {
   init {
     require(academicYear == null || academicYear in figures.publishedPriceYears) {
@@ -104,7 +105,7 @@ class ServedFigures(
    * the served year; it is here so a caller holding this object needs no second
    * handle on the figures.
    */
-  fun blendedAverageVintage(band: IncomeBand?): String? = figures.blendedAverageVintage(band)
+  fun blendedAverageVintage(band: IncomeBand?): AcademicYear? = figures.blendedAverageVintage(band)
 
   /** The cohort statistic at one canonical address and band -- the address-shaped twin of [cohortOf]. */
   fun cohortOf(
@@ -116,4 +117,4 @@ class ServedFigures(
 }
 
 /** This college's figures served at [academicYear] -- the one way the pair is made. */
-fun CollegeFigures.servedAt(academicYear: String?): ServedFigures = ServedFigures(this, academicYear)
+fun CollegeFigures.servedAt(academicYear: AcademicYear?): ServedFigures = ServedFigures(this, academicYear)

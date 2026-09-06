@@ -15,8 +15,10 @@ import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AidForm
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
@@ -918,6 +920,300 @@ class CollegeCostChatToolTest {
     )
   }
 
+  // ---------------------------------------------------------------------------
+  // The aid-policy section (RFC 170)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the aid policy section names its cohort in every sentence it emits`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Need Met U")
+    CostsTestDb.seedAidPolicy(college)
+
+    val policy =
+      collegesOf(execute(student))
+        .single()[AidPolicyWire.KEY]!!
+        .jsonObject
+    assertEquals(
+      94.3,
+      policy
+        .getValue(AidPolicyWire.NEED_MET_SHARE_KEY)
+        .jsonPrimitive.content
+        .toDouble(),
+    )
+    // 300 of 800 -- derived at read time from the two stored counts, and said
+    // with the population it is over inside the sentence.
+    assertEquals(
+      37.5,
+      policy
+        .getValue(AidPolicyWire.FULLY_MET_SHARE_KEY)
+        .jsonPrimitive.content
+        .toDouble(),
+    )
+    // Both counts, and the cohort they are over, inside the sentence: the
+    // fully-met count is reported against the freshmen who received ANY aid
+    // (CDS H2 line d), which is neither "freshmen" nor the need-based-grant
+    // recipients the two averages are over.
+    assertEquals(
+      "of the 800 first-time full-time freshmen who received any financial aid, 300 had their " +
+        "full assessed need met -- 37.5%",
+      policy.getValue(AidPolicyWire.FULLY_MET_LABEL_KEY).jsonPrimitive.content,
+    )
+    assertTrue(
+      policy
+        .getValue(AidPolicyWire.NEED_MET_LABEL_KEY)
+        .jsonPrimitive.content
+        .contains("for the freshmen who received need-based aid"),
+    )
+    assertEquals(
+      800,
+      policy
+        .getValue(AidPolicyWire.AIDED_FRESHMEN_KEY)
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(
+      300,
+      policy
+        .getValue(AidPolicyWire.FULLY_MET_KEY)
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(
+      "Need Met U's 2024-25 Common Data Set",
+      policy
+        .getValue("source")
+        .jsonObject
+        .getValue("cited_as")
+        .jsonPrimitive.content,
+    )
+    // D6: no stored yes/no about meeting full need, and none on the wire.
+    assertFalse(policy.keys.any { it.contains("meets_full_need") }, "keys: ${policy.keys}")
+  }
+
+  @Test
+  fun `the fully-met share is emitted only when both of its counts exist`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Half Reported U")
+    CostsTestDb.seedAidPolicy(college, freshmenAwardedAnyAid = null)
+
+    val policy =
+      collegesOf(execute(student))
+        .single()[AidPolicyWire.KEY]!!
+        .jsonObject
+    // The average share of need met still stands -- it is an independent fact.
+    assertEquals(
+      94.3,
+      policy
+        .getValue(AidPolicyWire.NEED_MET_SHARE_KEY)
+        .jsonPrimitive.content
+        .toDouble(),
+    )
+    // The derived share and both counts go together or not at all: a share
+    // without its denominator is the figure this codebase refuses to publish.
+    assertNull(policy[AidPolicyWire.FULLY_MET_SHARE_KEY])
+    assertNull(policy[AidPolicyWire.FULLY_MET_LABEL_KEY])
+    assertNull(policy[AidPolicyWire.AIDED_FRESHMEN_KEY])
+    assertNull(policy[AidPolicyWire.FULLY_MET_KEY])
+    // The average grant is independent too, and its sentence names the
+    // recipients it is averaged over -- the claim the sibling test makes about
+    // every emitted figure, checked here for the one figure left standing.
+    assertEquals(
+      "the freshmen who received a need-based grant got \$18,007 in grant aid on average",
+      policy.getValue(AidPolicyWire.AVERAGE_GRANT_LABEL_KEY).jsonPrimitive.content,
+    )
+  }
+
+  @Test
+  fun `a form the school's CDS does not list is absent, and the note says what that means`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "One Form U")
+    CostsTestDb.seedAidPolicy(college, requiredForms = listOf(AidForm.FAFSA))
+
+    val policy =
+      collegesOf(execute(student))
+        .single()[AidPolicyWire.KEY]!!
+        .jsonObject
+    assertEquals(
+      listOf("fafsa"),
+      policy.getValue(AidPolicyWire.FORMS_KEY).jsonArray.map { it.jsonPrimitive.content },
+    )
+    // D5: the CSS Profile is simply not listed. Nothing on the wire says it is
+    // not required, and the note says so in words.
+    val note = policy.getValue(AidPolicyWire.FORMS_NOTE_KEY).jsonPrimitive.content
+    assertTrue(note.contains("is not listed in that filing"), note)
+    assertFalse(policy.toString().contains("not_required"), policy.toString())
+  }
+
+  @Test
+  fun `a form required only of international applicants never reaches a domestic family`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Two Group U")
+    // The D4 guarantee: applicant group is a domain axis, not a source shape.
+    // This school requires the CSS Profile of international applicants only,
+    // and a family in the other group must never be told to file it.
+    CostsTestDb.seedAidPolicy(
+      college,
+      requiredForms = listOf(AidForm.FAFSA),
+      nonresidentForms = listOf(AidForm.CSS_PROFILE),
+    )
+
+    val policy =
+      collegesOf(execute(student))
+        .single()[AidPolicyWire.KEY]!!
+        .jsonObject
+    assertEquals(
+      listOf("fafsa"),
+      policy.getValue(AidPolicyWire.FORMS_KEY).jsonArray.map { it.jsonPrimitive.content },
+      "the nonresident block is a different requirement, not this family's",
+    )
+  }
+
+  @Test
+  fun `a form the filing answers and we could not read is said as OUR gap, not as the school's silence`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Unread Form U")
+    CostsTestDb.seedAidPolicy(
+      college,
+      requiredForms = listOf(AidForm.FAFSA),
+      notCollectedForms = listOf(AidForm.CSS_PROFILE),
+    )
+
+    val policy =
+      collegesOf(execute(student))
+        .single()[AidPolicyWire.KEY]!!
+        .jsonObject
+    // D7: the filing DOES answer the CSS Profile. Saying "not listed in that
+    // filing" about it would report our own gap as the school's silence --
+    // the inversion the status vocabulary exists to prevent.
+    assertEquals(
+      listOf("css_profile"),
+      policy.getValue(AidPolicyWire.FORMS_NOT_COLLECTED_KEY).jsonArray.map { it.jsonPrimitive.content },
+    )
+    assertEquals(
+      listOf("fafsa"),
+      policy.getValue(AidPolicyWire.FORMS_KEY).jsonArray.map { it.jsonPrimitive.content },
+    )
+    val note = policy.getValue(AidPolicyWire.FORMS_NOT_COLLECTED_NOTE_KEY).jsonPrimitive.content
+    assertTrue(note.contains("we could not read"), note)
+    assertTrue(note.contains("never that the school does not require them"), note)
+  }
+
+  @Test
+  fun `a form the corpus failed to extract is not listed as required`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Our Gap U")
+    // D7: the row exists and states OUR gap (not_collected_by_us, no value).
+    // It is not the school saying the form is required, so the read must not
+    // put it in front of a family as one.
+    CostsTestDb.seedAidPolicy(
+      college,
+      requiredForms = listOf(AidForm.FAFSA),
+      notCollectedForms = listOf(AidForm.NONCUSTODIAL_CSS_PROFILE),
+    )
+
+    val policy =
+      collegesOf(execute(student))
+        .single()[AidPolicyWire.KEY]!!
+        .jsonObject
+    assertEquals(
+      listOf("fafsa"),
+      policy.getValue(AidPolicyWire.FORMS_KEY).jsonArray.map { it.jsonPrimitive.content },
+    )
+  }
+
+  @Test
+  fun `a school with no CDS filing says so, in our own voice`() {
+    val student = createStudent()
+    seedListedCollege(student, "No Filing U")
+
+    val college = collegesOf(execute(student)).single()
+    assertNull(college[AidPolicyWire.KEY])
+    val line = college.getValue(CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY).jsonPrimitive.content
+    assertTrue(line.contains("no Common Data Set filing"), line)
+  }
+
+  @Test
+  fun `a filing that reports nothing we can read is a different sentence from no filing at all`() {
+    val student = createStudent()
+    val noFiling = seedListedCollege(student, "No Filing U")
+    val emptyFiling = seedListedCollege(student, "Silent Filing U")
+    // A real school in the committed seed: its Common Data Set is in the
+    // corpus and reports one line-d headcount and nothing else, so there is
+    // nothing renderable under the citation. Telling a family "we hold no
+    // filing for this school" would be a false statement about OUR coverage.
+    CostsTestDb.seedAidPolicy(
+      emptyFiling,
+      averageNeedMet = null,
+      averageNeedBasedGrantUsd = null,
+      freshmenNeedFullyMet = null,
+      requiredForms = emptyList(),
+    )
+
+    val byName = collegesOf(execute(student)).associateBy { it.getValue("name").jsonPrimitive.content }
+    val absent = byName.getValue("No Filing U")
+    val silent = byName.getValue("Silent Filing U")
+    assertNull(absent[AidPolicyWire.KEY])
+    assertNull(silent[AidPolicyWire.KEY])
+    assertEquals(
+      CollegeCostChatTool.AID_POLICY_NO_FILING,
+      absent.getValue(CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY).jsonPrimitive.content,
+    )
+    assertEquals(
+      CollegeCostChatTool.AID_POLICY_NO_FACT_IN_FILING,
+      silent.getValue(CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY).jsonPrimitive.content,
+    )
+    assertTrue(
+      CollegeCostChatTool.AID_POLICY_NO_FACT_IN_FILING.contains("We hold this school's Common Data Set filing"),
+      "the second silence must say we DO hold the filing",
+    )
+  }
+
+  @Test
+  fun `a filing whose only row is one we could not read still speaks, as our own gap`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Our Gap Only U")
+    // D7 at the section level: a filing carrying nothing but
+    // not_collected_by_us rows has no figure and no requirement -- but it does
+    // have something true to say, which is WHICH form we could not read. That
+    // is a fact about our coverage, and it is the section, not a silence.
+    CostsTestDb.seedAidPolicy(
+      college,
+      averageNeedMet = null,
+      averageNeedBasedGrantUsd = null,
+      freshmenAwardedAnyAid = null,
+      freshmenNeedFullyMet = null,
+      requiredForms = emptyList(),
+      notCollectedForms = listOf(AidForm.NONCUSTODIAL_CSS_PROFILE),
+    )
+
+    val rendered = collegesOf(execute(student)).single()
+    val policy = rendered[AidPolicyWire.KEY]!!.jsonObject
+    assertNull(rendered[CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY], "the filing exists, so no absence line")
+    assertEquals(
+      listOf("noncustodial_css_profile"),
+      policy.getValue(AidPolicyWire.FORMS_NOT_COLLECTED_KEY).jsonArray.map { it.jsonPrimitive.content },
+    )
+    // Nothing is claimed as required, and no figure is invented.
+    assertNull(policy[AidPolicyWire.FORMS_KEY])
+    assertNull(policy[AidPolicyWire.NEED_MET_SHARE_KEY])
+  }
+
+  @Test
+  fun `the aid policy feed carries no bare source code into the cost result`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Guarded Policy U")
+    CostsTestDb.seedAidPolicy(college)
+
+    val payload = execute(student)
+    // The CDS field ids (H.209, H.801, ...) live in source_variable and must
+    // never reach a tool result; the guard also catches any bare number that
+    // slipped in without a contract.
+    assertEquals(emptyList(), listViolations(payload))
+    assertFalse(payload.toString().contains("H.2"), "a CDS field id reached the result: $payload")
+    assertFalse(payload.toString().contains("H.8"), "a CDS field id reached the result: $payload")
+  }
+
   @Test
   fun `merit_aid rides its own citation, not the Scorecard source string`() {
     val student = createStudent()
@@ -1793,7 +2089,7 @@ class CollegeCostChatToolTest {
       college,
       CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD,
       reading = FigureReading.Present(2400, ValueBearingStatus.REPORTED),
-      academicYear = OLDER_ACADEMIC_YEAR,
+      academicYear = OLDER_YEAR,
     )
     answerResidency(student, "CA")
 
@@ -3038,7 +3334,10 @@ private const val OUT_OF_STATE_TUITION_USD = 10590
  * (`CostsTestDb.PRICE_ACADEMIC_YEAR`), for the year-gap case: a figure this
  * school published, at a year that is not the one its price is quoted at.
  */
-private const val OLDER_ACADEMIC_YEAR = "2021-22"
+private val OLDER_YEAR = AcademicYear(2021)
+
+/** [OLDER_YEAR] as words, derived rather than a second literal (RFC 170 D14). */
+private val OLDER_ACADEMIC_YEAR = OLDER_YEAR.label
 
 /** The fees split (RFC 166 §5): the fees PART of each combined tuition and fees figure above. */
 private const val FEES_ONLY_IN_STATE_USD = 1200
@@ -3046,8 +3345,8 @@ private const val FEES_ONLY_OUT_OF_STATE_USD = 1800
 private const val FEES_ONLY_IN_DISTRICT_USD = 900
 
 /**
- * Every key `collegeObject` rendered BEFORE the RFC 148 merit feed -- the whole
- * key vocabulary of a college, so `a cost answer with no merit row is
+ * Every key `collegeObject` renders for a school with no Common Data Set facts
+ * -- the whole key vocabulary of a college, so `a cost answer with no merit row is
  * unchanged` can assert the shape rather than one absent key. The cost measures
  * are read from [CostField], their one home, so a future cost field costs no
  * edit here; a key the merit feed adds anywhere else does.
@@ -3075,6 +3374,11 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
     // the store's own reason for it.
     CollegeCostChatTool.RESIDENCY_TIERS_KEY,
     CollegeCostChatTool.FIGURE_STATUSES_KEY,
+    // RFC 170: the sentence that says why a college carries no aid_policy
+    // section. ALWAYS written when the section is absent, which is exactly the
+    // case these "unchanged" assertions describe -- a school with no CDS
+    // filing must not be silent about being silent.
+    CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY,
   ) + CostField.entries.map { it.wireName } + FigureGroup.entries.map { it.wireName }
 
 // ---------------------------------------------------------------------------
@@ -3095,12 +3399,8 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
  * `update_money_profile` accepts, and `college_id`) ride as STRINGS and so
  * never reach this check.
  */
-private val NUMBERS_BY_CONTRACT =
-  CostField.entries.map { it.wireName }.toSet() +
-    setOf("count", "amount_usd", CollegeCostChatTool.TOTAL_KEY) +
-    MeritAidWire.NUMERIC_KEYS
-
-private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSourceCodeGuard.listViolations(payload, NUMBERS_BY_CONTRACT)
+private fun listViolations(payload: JsonElement): List<BareSourceCode> =
+  BareSourceCodeGuard.listViolations(payload, CollegeCostChatTool.NUMBERS_BY_CONTRACT)
 
 /**
  * Every key in [element] at ANY depth.

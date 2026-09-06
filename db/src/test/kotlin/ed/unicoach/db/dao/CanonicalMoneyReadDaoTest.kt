@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationError
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
@@ -76,7 +77,7 @@ class CanonicalMoneyReadDaoTest {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
       stmt.execute(
-        "TRUNCATE TABLE colleges, price_figures, cohort_money_stats, aid_policy_facts, " +
+        "TRUNCATE TABLE colleges, price_figures, cohort_money_stats, " +
           "residency_bases, arrangements, figure_statuses, price_concepts, income_bands, " +
           "ipeds_regions, us_states, nces_locales CASCADE",
       )
@@ -109,7 +110,7 @@ class CanonicalMoneyReadDaoTest {
     concept: PriceConcept = PriceConcept.TUITION_AND_FEES,
     residency: ResidencyBasis = ResidencyBasis.IN_STATE,
     arrangement: FigureArrangement = FigureArrangement.NOT_APPLICABLE,
-    academicYear: String = "2022-23",
+    academicYear: AcademicYear = AcademicYear(2022),
     reading: FigureReading<Int> = FigureReading.Present(11000, ValueBearingStatus.REPORTED),
     sourceVariable: String = "TUITIONFEE_IN",
   ) = NewPriceFigure(
@@ -128,7 +129,7 @@ class CanonicalMoneyReadDaoTest {
     collegeId: CollegeId,
     measure: MoneyMeasure = MoneyMeasure.AVG_NET_PRICE,
     incomeBand: IncomeBand? = null,
-    vintage: String = "2021-22",
+    vintage: AcademicYear? = AcademicYear(2021),
     reading: FigureReading<Double> = FigureReading.Present(18000.0, ValueBearingStatus.REPORTED),
   ) = NewCohortMoneyStat(
     collegeId = collegeId.value,
@@ -183,7 +184,7 @@ class CanonicalMoneyReadDaoTest {
     assertEquals(alsoAsked, row.collegeId)
     assertEquals(ResidencyBasis.IN_STATE, row.residencyBasis)
     assertEquals(FigureArrangement.NOT_APPLICABLE, row.arrangement)
-    assertEquals("2022-23", row.academicYear)
+    assertEquals(AcademicYear(2022), row.academicYear)
     assertEquals(MoneySource.SCORECARD, row.source)
     assertEquals("TUITIONFEE_IN", row.sourceVariable)
     assertEquals(null, row.publisherFlag)
@@ -215,7 +216,7 @@ class CanonicalMoneyReadDaoTest {
     assertEquals(CohortPopulation.TITLE_IV_AIDED_UNDERGRADUATES, overall.population)
     assertEquals(CohortResidencyScope.IN_STATE_RATE_PAYING, overall.residencyScope)
     assertEquals(CohortAidScope.FEDERAL_AID_RECEIVING, overall.aidScope)
-    assertEquals("2021-22", overall.vintage)
+    assertEquals(AcademicYear(2021), overall.vintage)
     assertEquals(FigureReading.Present(18000.0, ValueBearingStatus.REPORTED), overall.reading)
   }
 
@@ -248,7 +249,7 @@ class CanonicalMoneyReadDaoTest {
   @Test
   fun `every one of the six statuses round-trips through the real writer`() {
     val id = college()
-    val years = listOf("2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24")
+    val years = (2018..2023).map(::AcademicYear)
     val written = FigureStatus.entries.zip(years)
     CanonicalMoneyDao
       .insertPriceFigures(
@@ -274,7 +275,7 @@ class CanonicalMoneyReadDaoTest {
   @Test
   fun `every one of the six statuses round-trips on the cohort table too`() {
     val id = college()
-    val years = listOf("2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24")
+    val years = (2018..2023).map(::AcademicYear)
     val written = FigureStatus.entries.zip(years)
     CanonicalMoneyDao
       .insertCohortMoneyStats(
@@ -324,7 +325,7 @@ class CanonicalMoneyReadDaoTest {
             .prepareStatement(
               "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
                 "academic_year, amount_usd, status, source, source_variable) " +
-                "VALUES (?, 'tuition_and_fees', 'in_state', 'not_applicable', '2022-23', $amount, " +
+                "VALUES (?, 'tuition_and_fees', 'in_state', 'not_applicable', 2022, $amount, " +
                 "'$status', 'scorecard', 'TUITIONFEE_IN')",
             ).use { stmt ->
               stmt.setObject(1, id.value)

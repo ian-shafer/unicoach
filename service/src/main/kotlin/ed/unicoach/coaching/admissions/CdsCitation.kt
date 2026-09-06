@@ -1,6 +1,6 @@
 package ed.unicoach.coaching.admissions
 
-import ed.unicoach.coaching.AcademicYear
+import ed.unicoach.common.util.AcademicYear
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.put
 

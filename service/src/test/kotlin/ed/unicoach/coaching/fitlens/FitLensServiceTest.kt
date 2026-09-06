@@ -13,6 +13,7 @@ import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
 import ed.unicoach.college.CollegeSearchService
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CanonicalMoneyDao
@@ -88,7 +89,10 @@ class FitLensServiceTest {
     private const val CONTROL_PRIVATE_NONPROFIT = 2
 
     /** The vintage every fixture net-price row carries, stated so a test can assert the digest speaks it. */
-    private const val NET_PRICE_VINTAGE = "2022-23"
+    private val NET_PRICE_YEAR = AcademicYear(2022)
+
+    /** [NET_PRICE_YEAR] as words, derived rather than a second literal (RFC 170 D14). */
+    private val NET_PRICE_VINTAGE = NET_PRICE_YEAR.label
 
     @JvmStatic
     @BeforeAll
@@ -316,7 +320,7 @@ class FitLensServiceTest {
     control: Int = CONTROL_PUBLIC,
     indexNetPricePerYearUsd: Int? = 20_000,
     netPriceReading: FigureReading<Double> = FigureReading.Present(20_000.0, ValueBearingStatus.REPORTED),
-    netPriceVintage: String = NET_PRICE_VINTAGE,
+    netPriceVintage: AcademicYear = NET_PRICE_YEAR,
     // No canonical row at all -- the college the fill has never reached, and the
     // shape a DEGRADED read leaves every college in (RFC 166 §9).
     seedsNetPriceRow: Boolean = true,
@@ -385,7 +389,7 @@ class FitLensServiceTest {
     collegeId: CollegeId,
     control: Int,
     reading: FigureReading<Double>,
-    vintage: String,
+    vintage: AcademicYear?,
   ) {
     CanonicalMoneyDao
       .insertCohortMoneyStats(

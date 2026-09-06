@@ -26,6 +26,7 @@ import ed.unicoach.college.ScorecardInstitutionColumns.SUFFIX_PUBLIC
 import ed.unicoach.college.ScorecardInstitutionColumns.TUITIONFEE_IN
 import ed.unicoach.college.ScorecardInstitutionColumns.TUITIONFEE_OUT
 import ed.unicoach.college.ScorecardInstitutionColumns.UNITID
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.CollegeIpedsChargesDao
@@ -39,12 +40,12 @@ import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeIpedsCharge
 import ed.unicoach.db.models.CollegeSfaCell
+import ed.unicoach.db.models.FactTable
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.IpedsImputationFlag
-import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCohortMoneyStat
@@ -52,7 +53,6 @@ import ed.unicoach.db.models.NewCohortPopulationCount
 import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
-import ed.unicoach.db.models.VINTAGE_UNDATED
 import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.db.models.reading
 import org.apache.commons.csv.CSVRecord
@@ -150,7 +150,7 @@ class CanonicalMoneyLoader internal constructor(
     val code: String,
   ) : RuntimeException(
       "staged IC_AY row [id=${charge.id.value}] [college_id=${charge.collegeId}] " +
-        "[charge_variable=${charge.chargeVariable}] [academic_year=${charge.academicYear}] carries the " +
+        "[charge_variable=${charge.chargeVariable}] [academic_year=${charge.academicYear.label}] carries the " +
         "imputation flag [$code], which is not one of the published codes " +
         "${IpedsImputationFlag.CODES}; college_ipeds_charges was written by something " +
         "other than IpedsChargesLoader",
@@ -307,12 +307,29 @@ class CanonicalMoneyLoader internal constructor(
             sfaFill = fillFromSfa(session, sfa, collegeIds, stats, counts)
             matched += sfaFill.colleges
           }
+
+          // Unreachable: this loop walks ORDERED_SOURCES, which deliberately
+          // does not rank the Common Data Set -- its canonical rows are
+          // written by the `cds` phase, out of the committed seed (RFC 170).
+          // Spelled as a refusal rather than covered by an `else`, so a source
+          // added to ORDERED_SOURCES with no mapping is still a compile error.
+          MoneySource.COMMON_DATA_SET -> {
+            error(
+              "canonical-money does not fill [${MoneySource.COMMON_DATA_SET.value}]: the cds phase writes " +
+                "its rows from the committed seed, and ORDERED_SOURCES must not rank it",
+            )
+          }
         }
       }
 
-      CanonicalMoneyDao.deleteAllPriceFigures(session).getOrThrow()
-      CanonicalMoneyDao.deleteAllCohortMoneyStats(session).getOrThrow()
-      CanonicalMoneyDao.deleteAllCohortPopulationCounts(session).getOrThrow()
+      // Wholesale rebuild (P12), bounded to the sources THIS fill publishes:
+      // the `cds` phase owns the Common Data Set rows in these same tables
+      // (RFC 170) and rebuilt them earlier in this very run.
+      CanonicalMoneyDao.deleteFactsOfSources(session, FactTable.PRICE_FIGURES, ORDERED_SOURCES).getOrThrow()
+      CanonicalMoneyDao.deleteFactsOfSources(session, FactTable.COHORT_MONEY_STATS, ORDERED_SOURCES).getOrThrow()
+      CanonicalMoneyDao
+        .deleteFactsOfSources(session, FactTable.COHORT_POPULATION_COUNTS, ORDERED_SOURCES)
+        .getOrThrow()
       val priceRows = CanonicalMoneyDao.insertPriceFigures(session, prices.values.toList()).getOrThrow()
       val statRows = CanonicalMoneyDao.insertCohortMoneyStats(session, stats.values.toList()).getOrThrow()
       val countRows = CanonicalMoneyDao.insertCohortPopulationCounts(session, counts.values.toList()).getOrThrow()
@@ -490,7 +507,7 @@ class CanonicalMoneyLoader internal constructor(
       // at all: there is nothing honest to write. The MAPPER stays pure and
       // this accumulator's own closure folds the tally (the `MapResult`
       // convention).
-      val reading = cell.reading(publishedScale(address.measure))
+      val reading = cell.reading(address.measure.unit)
       if (reading == null) {
         fill.cellsWithoutValue.merge(cell.variable, 1, Int::plus)
         return
@@ -538,8 +555,8 @@ class CanonicalMoneyLoader internal constructor(
 
     // Pell, at the all-undergraduate level. The share is the source's own
     // published INTEGER PERCENT (UPGRNTP = 18), converted to the 0-1 share
-    // every MeasureUnit.SHARE row carries by [publishedScale] -- from the
-    // MEASURE's unit, so no call site can forget it. The Pell RECIPIENT COUNT
+    // every MeasureUnit.SHARE row carries by MeasureUnit.storedValueOf --
+    // read off the MEASURE's unit, so no call site can forget it. The Pell RECIPIENT COUNT
     // is not here: a headcount is not money, so it is a
     // `cohort_population_counts` row (RFC 162).
     stat(SfaVariables.PELL_SHARE, PELL_SHARE, CohortResidencyScope.ALL)
@@ -693,7 +710,7 @@ class CanonicalMoneyLoader internal constructor(
       }
       val suffix = IpedsChargeVocabulary.SUFFIX_BY_ACADEMIC_YEAR[charge.academicYear]
       if (suffix == null) {
-        recordStaleCharge(charge, ChargeDrift.UNDECODABLE_ACADEMIC_YEAR, charge.academicYear, ignored)
+        recordStaleCharge(charge, ChargeDrift.UNDECODABLE_ACADEMIC_YEAR, charge.academicYear.label, ignored)
         continue
       }
       // Each call site raises its own failure with the context it holds: here
@@ -785,7 +802,7 @@ class CanonicalMoneyLoader internal constructor(
       charge.id.value,
       charge.collegeId,
       charge.chargeVariable,
-      charge.academicYear,
+      charge.academicYear.label,
       drift.slug,
       value,
     )
@@ -888,7 +905,7 @@ class CanonicalMoneyLoader internal constructor(
           concept = concept,
           residency = residency,
           arrangement = arrangement,
-          academicYear = PUBLISHED_PRICE_ACADEMIC_YEAR,
+          academicYear = PUBLISHED_PRICE_YEAR,
           reading = grossCell(record, column, coercions).reading(),
           source = MoneySource.SCORECARD,
           sourceVariable = column,
@@ -930,7 +947,7 @@ class CanonicalMoneyLoader internal constructor(
       address: CohortCoordinate,
       residencyScope: CohortResidencyScope,
       incomeBand: IncomeBand?,
-      vintage: String,
+      vintage: AcademicYear?,
       cell: StatusfulCell<Double>,
       sourceVariable: String,
     ) {
@@ -966,7 +983,7 @@ class CanonicalMoneyLoader internal constructor(
         address = PUBLISHED_COST_BLEND,
         residencyScope = blendScope,
         incomeBand = null,
-        vintage = BLENDED_AVERAGE_ACADEMIC_YEAR,
+        vintage = BLENDED_AVERAGE_VINTAGE,
         cell = grossCell(record, COSTT4_A, coercions).toDouble(),
         sourceVariable = COSTT4_A,
       )
@@ -983,7 +1000,7 @@ class CanonicalMoneyLoader internal constructor(
           address = AVG_NET_PRICE,
           residencyScope = blendScope,
           incomeBand = band,
-          vintage = BLENDED_AVERAGE_ACADEMIC_YEAR,
+          vintage = BLENDED_AVERAGE_VINTAGE,
           cell = statusfulIntCell(record, column).toDouble(),
           sourceVariable = column,
         )
@@ -1034,7 +1051,7 @@ class CanonicalMoneyLoader internal constructor(
     val concept: PriceConcept,
     val residency: ResidencyBasis,
     val arrangement: FigureArrangement,
-    val academicYear: String,
+    val academicYear: AcademicYear,
   )
 
   /** The natural key of a `cohort_population_counts` row (RFC 162). */
@@ -1043,7 +1060,7 @@ class CanonicalMoneyLoader internal constructor(
     val population: CohortPopulation,
     val residency: ResidencyBasis,
     val arrangement: FigureArrangement,
-    val vintage: String,
+    val vintage: AcademicYear,
   )
 
   /** The natural key of a `cohort_money_stats` row, NULL band included (P4). */
@@ -1054,7 +1071,7 @@ class CanonicalMoneyLoader internal constructor(
     val residencyScope: CohortResidencyScope,
     val aidScope: CohortAidScope,
     val incomeBand: IncomeBand?,
-    val vintage: String,
+    val vintage: AcademicYear?,
   )
 
   companion object {
@@ -1099,16 +1116,27 @@ class CanonicalMoneyLoader internal constructor(
      */
     internal val ORDERED_SOURCES = listOf(MoneySource.IPEDS_SFA, MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD)
 
+    /**
+     * The sources whose canonical rows another phase writes, and which
+     * [ORDERED_SOURCES] therefore must NOT rank (RFC 170): the Common Data Set
+     * facts are read out of the committed CDS seed by the `cds` phase, in its
+     * own transaction, and this fill never sees them. Named here so the
+     * unranked-source check below can tell "written elsewhere" from "silently
+     * never written", which is the mistake that check exists to catch.
+     */
+    internal val SOURCES_FILLED_ELSEWHERE = setOf(MoneySource.COMMON_DATA_SET)
+
     init {
       // What a catch-all `else` in the dispatch could never catch: a member
       // that HAS a mapping branch but was never ranked here would simply never
       // be iterated, so its rows would silently stop being written and no
       // branch would run to complain. Checked at class-init, so the phase
       // cannot start with a half-declared precedence order.
-      val unranked = MoneySource.entries - ORDERED_SOURCES.toSet()
+      val unranked = MoneySource.entries - ORDERED_SOURCES.toSet() - SOURCES_FILLED_ELSEWHERE
       check(unranked.isEmpty()) {
-        "ORDERED_SOURCES must rank every MoneySource; ${unranked.map { it.value }} is/are unranked, so its " +
-          "rows would silently never be written (RFC 161)"
+        "ORDERED_SOURCES must rank every MoneySource this fill writes; ${unranked.map { it.value }} is/are " +
+          "neither ranked nor declared SOURCES_FILLED_ELSEWHERE, so its rows would silently never be " +
+          "written (RFC 161)"
       }
       check(ORDERED_SOURCES.size == ORDERED_SOURCES.toSet().size) {
         "ORDERED_SOURCES ranks a source twice: ${ORDERED_SOURCES.map { it.value }}"
@@ -1116,15 +1144,15 @@ class CanonicalMoneyLoader internal constructor(
     }
 
     /**
-     * The Scorecard published-price academic year ('YYYY-YY'), the stored
-     * twin of `FigureGroup.PUBLISHED_PRICE` in the service cost domain:
+     * The Scorecard published-price academic year, the stored twin of
+     * `FigureGroup.PUBLISHED_PRICE` in the service cost domain:
      * the year is a property of the pinned snapshot and rides on every row
      * (P5), so a snapshot bump edits these two constants together.
      */
-    internal const val PUBLISHED_PRICE_ACADEMIC_YEAR = "2022-23"
+    internal val PUBLISHED_PRICE_YEAR = AcademicYear(2022)
 
     /** The blended-average year (`FigureGroup.BLENDED_AVERAGE`): COSTT4_A and the NPT4 family. */
-    internal const val BLENDED_AVERAGE_ACADEMIC_YEAR = "2021-22"
+    internal val BLENDED_AVERAGE_VINTAGE = AcademicYear(2021)
 
     /** COSTT4_A, the blended published price: Title IV-aided undergraduates, whole cohort. */
     val PUBLISHED_COST_BLEND: CohortCoordinate =
@@ -1213,27 +1241,11 @@ class CanonicalMoneyLoader internal constructor(
       )
 
     /**
-     * The factor that converts one measure's PUBLISHED unit to the stored one,
-     * derived from the measure itself.
-     *
-     * IPEDS SFA publishes every share as an integer percent (`UPGRNTP = 18`)
-     * and every award as whole dollars, and `MeasureUnit` is exactly that
-     * distinction -- so the conversion is read off the measure rather than
-     * passed at each call site. It used to be a `scale` parameter applied at
-     * two of the eight call sites; a `_P` variable added without it would have
-     * stored 18.0 in a 0-1 share row, and nothing would have refused it. The
-     * `when` is exhaustive, so a third unit is a compile error here, and
-     * `cohort_money_stats_share_range_check` refuses the value the day this
-     * reasoning is wrong anyway.
+     * The honest vintage for figures the source pools or does not date (P5):
+     * an ABSENT year (RFC 170, D14), not a magic string a reader must know is
+     * not a year.
      */
-    private fun publishedScale(measure: MoneyMeasure): Double =
-      when (measure.unit) {
-        MeasureUnit.USD_PER_YEAR -> 1.0
-        MeasureUnit.SHARE -> PERCENT_TO_SHARE
-      }
-
-    /** Percent (the SFA `_P` variables' published unit) to the 0-1 share every MeasureUnit.SHARE row carries. */
-    private const val PERCENT_TO_SHARE = 0.01
+    internal val VINTAGE_UNDATED: AcademicYear? = null
 
     /**
      * The family this institution publishes, or NULL when it publishes
@@ -1357,7 +1369,7 @@ class CanonicalMoneyLoader internal constructor(
       concept: PriceConcept,
       residency: ResidencyBasis,
       arrangement: FigureArrangement,
-      academicYear: String,
+      academicYear: AcademicYear,
       reading: FigureReading<Int>,
       source: MoneySource,
       sourceVariable: String,
@@ -1399,7 +1411,7 @@ class CanonicalMoneyLoader internal constructor(
       residencyScope: CohortResidencyScope,
       aidScope: CohortAidScope,
       incomeBand: IncomeBand?,
-      vintage: String,
+      vintage: AcademicYear?,
       reading: FigureReading<Double>,
       /** The [ORDERED_SOURCES] publisher this row is attributed to: REQUIRED, because upstream-wins reads it. */
       source: MoneySource,

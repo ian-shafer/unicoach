@@ -14,6 +14,7 @@ import ed.unicoach.coaching.costs.canonical.FigureAddress
 import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.figureGroup
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
@@ -55,10 +56,16 @@ class CollegeCostServiceTest {
   private val service = CollegeCostService(CostsTestDb.database)
 
   /** One academic year NEWER than the fixture's own, for the year-selection cases (RFC 166 §3). */
-  private val newerAcademicYear = "2024-25"
+  private val newerYear = AcademicYear(2024)
+
+  /** [newerYear] as words, for the assertions that read the payload's own label. */
+  private val newerAcademicYear = newerYear.label
 
   /** One academic year OLDER than the fixture's own -- a figure this school published, but not in the served year. */
-  private val olderAcademicYear = "2021-22"
+  private val olderYear = AcademicYear(2021)
+
+  /** [olderYear] as words, derived for the reason [newerAcademicYear] is. */
+  private val olderAcademicYear = olderYear.label
 
   /**
    * The college the directly-constructed [ArrangementCost] fixtures below price.
@@ -105,7 +112,7 @@ class CollegeCostServiceTest {
       PriceConcept.TUITION_AND_FEES,
       ed.unicoach.db.models.ResidencyBasis.IN_STATE,
       FigureArrangement.NOT_APPLICABLE,
-      academicYear = newerAcademicYear,
+      academicYear = newerYear,
       reading = FigureReading.Present(13000, ValueBearingStatus.REPORTED),
     )
     CostsTestDb.seedPriceFigure(
@@ -113,7 +120,7 @@ class CollegeCostServiceTest {
       PriceConcept.HOUSING_AND_FOOD,
       ed.unicoach.db.models.ResidencyBasis.NOT_APPLICABLE,
       FigureArrangement.ON_CAMPUS,
-      academicYear = newerAcademicYear,
+      academicYear = newerYear,
       reading = FigureReading.Present(9500, ValueBearingStatus.REPORTED),
     )
     addToCollegeList(student, collegeId)
@@ -259,7 +266,7 @@ class CollegeCostServiceTest {
       CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
       CohortResidencyScope.IN_STATE_RATE_PAYING,
       CohortAidScope.GRANT_AIDED,
-      vintage = "2099-00",
+      vintage = AcademicYear(2099),
       reading = FigureReading.Present(12345.0, ValueBearingStatus.REPORTED),
     )
     addToCollegeList(student, collegeId)
@@ -1117,7 +1124,7 @@ class CollegeCostServiceTest {
       CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
       CohortResidencyScope.IN_STATE_RATE_PAYING,
       CohortAidScope.GRANT_AIDED,
-      vintage = newerAcademicYear,
+      vintage = newerYear,
       reading = FigureReading.Present(12345.0, ValueBearingStatus.REPORTED),
     )
     addToCollegeList(student, collegeId)
@@ -1231,7 +1238,7 @@ class CollegeCostServiceTest {
       PriceConcept.OTHER_EXPENSES,
       ed.unicoach.db.models.ResidencyBasis.NOT_APPLICABLE,
       FigureArrangement.OFF_CAMPUS,
-      academicYear = olderAcademicYear,
+      academicYear = olderYear,
       reading = FigureReading.Present(2400, ValueBearingStatus.REPORTED),
     )
     addToCollegeList(student, collegeId)
@@ -1300,14 +1307,14 @@ class CollegeCostServiceTest {
     CostsTestDb.seedPriceFigure(
       collegeId,
       CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD,
-      academicYear = olderAcademicYear,
+      academicYear = olderYear,
       reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
     )
     // And the SCHOOL's own silence, likewise held only for an older year.
     CostsTestDb.seedPriceFigure(
       collegeId,
       CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD,
-      academicYear = olderAcademicYear,
+      academicYear = olderYear,
       reading = FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
     )
     addToCollegeList(student, collegeId)

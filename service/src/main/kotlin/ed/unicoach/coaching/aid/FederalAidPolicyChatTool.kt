@@ -2,6 +2,7 @@ package ed.unicoach.coaching.aid
 
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.noArgumentToolDefinition
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.putDependency
 import kotlinx.serialization.json.JsonObject
@@ -69,9 +70,9 @@ class FederalAidPolicyChatTool(
 
   /** The award-year facts every topic carries: the year label, its currency code, and the prior-year sentence when it applies. */
   private fun JsonObjectBuilder.putAwardYear(
-    awardYear: ed.unicoach.coaching.AcademicYear,
+    awardYear: AcademicYear,
     currency: AwardYearCurrency,
-    current: ed.unicoach.coaching.AcademicYear,
+    current: AcademicYear,
   ) {
     put(AWARD_YEAR_KEY, awardYear.label)
     put(AWARD_YEAR_STATUS_KEY, currency.value)
@@ -95,7 +96,7 @@ class FederalAidPolicyChatTool(
 
   private fun pellObject(
     pell: PellParameters,
-    current: ed.unicoach.coaching.AcademicYear,
+    current: AcademicYear,
   ): JsonObject =
     buildJsonObject {
       putAwardYear(pell.awardYear, pell.currency, current)
@@ -117,7 +118,7 @@ class FederalAidPolicyChatTool(
 
   private fun undergradLoansObject(
     loans: UndergradLoanParameters,
-    current: ed.unicoach.coaching.AcademicYear,
+    current: AcademicYear,
   ): JsonObject =
     buildJsonObject {
       putAwardYear(loans.awardYear, loans.currency, current)
@@ -144,7 +145,7 @@ class FederalAidPolicyChatTool(
 
   private fun gradLoansObject(
     loans: GradLoanParameters,
-    current: ed.unicoach.coaching.AcademicYear,
+    current: AcademicYear,
   ): JsonObject =
     buildJsonObject {
       putAwardYear(loans.awardYear, loans.currency, current)
@@ -227,8 +228,8 @@ class FederalAidPolicyChatTool(
      * the two years it glosses (RFC 159 D-G: never silently served).
      */
     fun priorYearStatement(
-      served: ed.unicoach.coaching.AcademicYear,
-      current: ed.unicoach.coaching.AcademicYear,
+      served: AcademicYear,
+      current: AcademicYear,
     ): String =
       "These are the ${served.label} award year figures; Federal Student Aid has not yet published " +
         "figures we have verified for the ${current.label} award year."

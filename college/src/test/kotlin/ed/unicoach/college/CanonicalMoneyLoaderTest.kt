@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.college.CsvIngestSupport.StatusfulCell
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
@@ -146,22 +147,22 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
     fill()
     // The stored-shape successor of CostBreakdown's mixed-vintage rule: every
     // price row is one real year; the blended stats carry THEIR year; the
-    // pooled/undated figures say `undated` rather than borrowing one.
+    // pooled/undated figures carry NO year rather than borrowing one.
     assertEquals(
-      listOf("2022-23"),
-      query("SELECT DISTINCT academic_year FROM price_figures") { it.getString(1) },
+      listOf(AcademicYear(2022)),
+      query("SELECT DISTINCT academic_year FROM price_figures") { AcademicYear(it.getInt(1)) },
     )
     val vintages =
       query(
         "SELECT DISTINCT measure, vintage FROM cohort_money_stats ORDER BY measure, vintage",
-      ) { rs -> rs.getString(1) to rs.getString(2) }
+      ) { rs -> rs.getString(1) to rs.getInt(2).takeUnless { rs.wasNull() } }
     assertEquals(
       listOf(
-        "avg_net_price" to "2021-22",
-        "median_debt_at_completion" to "undated",
-        "median_earnings_10y" to "undated",
-        "pell_share" to "undated",
-        "published_cost_blend" to "2021-22",
+        "avg_net_price" to 2021,
+        "median_debt_at_completion" to null,
+        "median_earnings_10y" to null,
+        "pell_share" to null,
+        "published_cost_blend" to 2021,
       ),
       vintages,
     )
@@ -180,9 +181,9 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
       ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)) }
     assertEquals(
       listOf(
-        listOf("median_debt_at_completion", "federal_loan_borrowing_completers", "all", "federal_loan_borrowing", "undated"),
-        listOf("median_earnings_10y", "employed_not_enrolled_10y_after_entry", "all", "all", "undated"),
-        listOf("pell_share", "undergraduates", "all", "all", "undated"),
+        listOf("median_debt_at_completion", "federal_loan_borrowing_completers", "all", "federal_loan_borrowing", null),
+        listOf("median_earnings_10y", "employed_not_enrolled_10y_after_entry", "all", "all", null),
+        listOf("pell_share", "undergraduates", "all", "all", null),
       ),
       bases,
     )
@@ -266,7 +267,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
           concept = PriceConcept.TUITION_AND_FEES,
           residency = ResidencyBasis.IN_STATE,
           arrangement = FigureArrangement.ON_CAMPUS,
-          academicYear = "2022-23",
+          academicYear = AcademicYear(2022),
           reading = FigureReading.Present(11000, ValueBearingStatus.REPORTED),
           source = MoneySource.SCORECARD,
           sourceVariable = "TUITIONFEE_IN",
@@ -285,7 +286,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
         concept = PriceConcept.HOUSING_AND_FOOD,
         residency = ResidencyBasis.NOT_APPLICABLE,
         arrangement = FigureArrangement.NOT_APPLICABLE,
-        academicYear = "2022-23",
+        academicYear = AcademicYear(2022),
         reading = FigureReading.Present(9000, ValueBearingStatus.REPORTED),
         source = MoneySource.SCORECARD,
         sourceVariable = "ROOMBOARD_ON",
@@ -303,7 +304,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
           concept = PriceConcept.PUBLISHED_PRICE,
           residency = ResidencyBasis.IN_STATE,
           arrangement = FigureArrangement.ON_CAMPUS,
-          academicYear = "2021-22",
+          academicYear = AcademicYear(2021),
           reading = FigureReading.Present(32000, ValueBearingStatus.REPORTED),
           source = MoneySource.SCORECARD,
           sourceVariable = "COSTT4_A",
@@ -325,7 +326,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
           residencyScope = CohortResidencyScope.ALL,
           aidScope = CohortAidScope.ALL,
           incomeBand = IncomeBand.UNDER_30K,
-          vintage = "undated",
+          vintage = null,
           reading = FigureReading.Present(0.4, ValueBearingStatus.REPORTED),
           source = MoneySource.SCORECARD,
           sourceVariable = "PCTPELL",

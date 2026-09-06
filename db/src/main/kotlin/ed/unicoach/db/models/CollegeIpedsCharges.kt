@@ -1,5 +1,6 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.util.AcademicYear
 import java.time.Instant
 import java.util.UUID
 
@@ -20,7 +21,8 @@ import java.util.UUID
  * and no timestamps (DB-managed).
  *
  * [chargeVariable] is the IPEDS stem with the `0`-`3` year suffix removed, so
- * `CHG2AY3` arrives as `CHG2AY` + `2023-24`. [amountUsd] is `null` exactly when
+ * `CHG2AY3` arrives as `CHG2AY` + academic year 2023 (its START year; the
+ * '2023-24' label is rendered at read time -- RFC 170, D14). [amountUsd] is `null` exactly when
  * [imputationFlag] bears no value -- WHICH published codes those are belongs to
  * [IpedsImputationFlag], their one declaration, and is not restated
  * here. The loader enforces the pairing at parse, the
@@ -30,7 +32,7 @@ import java.util.UUID
 data class NewCollegeIpedsCharge(
   val collegeId: UUID,
   val chargeVariable: String,
-  val academicYear: String,
+  val academicYear: AcademicYear,
   val amountUsd: Int?,
   val imputationFlag: String,
 )
@@ -49,7 +51,7 @@ data class NewCollegeIpedsCharge(
 data class ChargeKey(
   val collegeId: UUID,
   val chargeVariable: String,
-  val academicYear: String,
+  val academicYear: AcademicYear,
 )
 
 /**
@@ -76,7 +78,7 @@ data class CollegeIpedsCharge(
   override val id: CollegeIpedsChargeId,
   val collegeId: UUID,
   val chargeVariable: String,
-  val academicYear: String,
+  val academicYear: AcademicYear,
   val amountUsd: Int?,
   val imputationFlag: String,
   override val createdAt: Instant,

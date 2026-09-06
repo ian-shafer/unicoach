@@ -41,3 +41,7 @@ terraform.tfvars
 db/seed/ipeds/*
 !db/seed/ipeds/PROVENANCE.json
 !db/seed/ipeds/FETCH-NOTES.md
+
+# Python bytecode: interpreter artifacts, never source.
+__pycache__/
+*.pyc

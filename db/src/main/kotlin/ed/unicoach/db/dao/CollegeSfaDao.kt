@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.CollegeSfaCell
 import ed.unicoach.db.models.IpedsImputationFlag
 import ed.unicoach.db.models.NewCollegeSfaCell
@@ -42,7 +43,7 @@ object CollegeSfaDao {
       stmt.setInt(1, row.ipedsUnitId)
       stmt.setInt(2, row.aidYearStart)
       stmt.setString(3, row.variable)
-      stmt.setString(4, row.aidYear)
+      stmt.setInt(4, row.aidYear.firstCalendarYear)
       stmt.setDoubleOrNull(5, row.value)
       stmt.setString(6, row.flag.code)
     }
@@ -74,7 +75,7 @@ object CollegeSfaDao {
         val value = rs.getBigDecimal("value")
         val ipedsUnitId = rs.getInt("ipeds_unit_id")
         val variable = rs.getString("variable")
-        val aidYear = rs.getString("aid_year")
+        val aidYear = AcademicYear(rs.getInt("aid_year"))
         CollegeSfaCell(
           ipedsUnitId = ipedsUnitId,
           variable = variable,
@@ -89,7 +90,7 @@ object CollegeSfaDao {
             IpedsImputationFlag.fromCode(raw)
               ?: error(
                 "college_sfa holds a publisher_flag no IpedsImputationFlag reads: [$raw] at " +
-                  "[ipeds_unit_id=$ipedsUnitId] [variable=$variable] [aid_year=$aidYear]",
+                  "[ipeds_unit_id=$ipedsUnitId] [variable=$variable] [aid_year=${aidYear.label}]",
               ),
         )
       },

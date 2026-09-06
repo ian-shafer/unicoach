@@ -148,5 +148,35 @@
       "bracket_label": "$110,000 or more",
       "sort_order": 5
     }
+  ],
+  "aid_forms": [
+    {
+      "slug": "fafsa",
+      "description": "The Free Application for Federal Student Aid: the federal aid application, filed once and read by every school on it."
+    },
+    {
+      "slug": "css_profile",
+      "description": "The CSS Profile, the College Board's own aid application, which some schools require in addition to the FAFSA."
+    },
+    {
+      "slug": "noncustodial_css_profile",
+      "description": "A second CSS Profile from the noncustodial parent's household, filed separately from the custodial one."
+    },
+    {
+      "slug": "institutional_form",
+      "description": "The school's own financial aid form, published and collected by the school itself."
+    },
+    {
+      "slug": "state_aid_form",
+      "description": "A state financial aid form, for aid the student's state awards."
+    },
+    {
+      "slug": "business_farm_supplement",
+      "description": "The business/farm supplement, for a household with self-employment, business or farm income."
+    },
+    {
+      "slug": "other_institutional_form",
+      "description": "Another aid form the school names for itself, beyond the forms above."
+    }
   ]
 }

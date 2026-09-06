@@ -100,7 +100,8 @@ abstract class CollegeScorecardTestBase {
               "subjects, ipeds_regions, us_states, nces_locales, carnegie_2021_basic_classes, " +
               "carnegie_2021_size_settings, religious_affiliations, athletic_associations, " +
               "football_conferences, admission_test_policies, cip_codes, codebook_sources, " +
-              "price_figures, cohort_money_stats, aid_policy_facts, residency_bases, arrangements, " +
+              "price_figures, cohort_money_stats, aid_form_requirements, source_documents, " +
+              "residency_bases, arrangements, aid_forms, " +
               "figure_statuses, price_concepts, income_bands CASCADE",
           ).use { it.execute() }
         if (seedsCodebookReference) CodebookReferenceFixture.seed(session)

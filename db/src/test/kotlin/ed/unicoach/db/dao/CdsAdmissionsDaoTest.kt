@@ -1,13 +1,17 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AdmissionFactor
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FactorRating
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCollegeAdmissionFactors
 import ed.unicoach.db.models.NewCollegeDeadline
 import ed.unicoach.db.models.NewCollegeMeritAid
+import ed.unicoach.db.models.NewSourceDocument
+import ed.unicoach.db.models.SourceDocumentId
 import ed.unicoach.db.models.StudentId
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -57,7 +61,7 @@ class CdsAdmissionsDaoTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE college_merit_aid, college_admission_factors, college_deadlines, " +
-          "college_list_entries, students, users, colleges CASCADE",
+          "source_documents, college_list_entries, students, users, colleges CASCADE",
       )
     }
     // The published state/locale rows `colleges` foreign-keys into since
@@ -102,20 +106,81 @@ class CdsAdmissionsDaoTest {
     }
   }
 
+  @Test
+  fun `no CDS table stores a url, and one document backs all of a school's facts for a cycle`() {
+    // RFC 170, D13. The three tables used to carry the SAME filing's two urls,
+    // so the copies could disagree and a correction had to be written three
+    // times. The columns are gone; the reads join the document instead.
+    val urlColumns =
+      connection.createStatement().use { stmt ->
+        stmt
+          .executeQuery(
+            "SELECT table_name || '.' || column_name AS col FROM information_schema.columns " +
+              "WHERE table_name IN ('college_merit_aid', 'college_admission_factors', 'college_deadlines') " +
+              "AND column_name IN ('source_url', 'archive_url') ORDER BY col",
+          ).use { rs -> buildList { while (rs.next()) add(rs.getString("col")) } }
+      }
+    assertEquals(emptyList(), urlColumns, "a url belongs to the document, not to each fact")
+
+    val collegeId = createCollege()
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId)).getOrThrow()
+    CdsAdmissionsDao.upsertAdmissionFactors(session, newFactors(collegeId)).getOrThrow()
+    CdsAdmissionsDao.upsertDeadline(session, newDeadline(collegeId)).getOrThrow()
+
+    val documents =
+      connection.createStatement().use { stmt ->
+        stmt
+          .executeQuery(
+            "SELECT DISTINCT source_document_id FROM (" +
+              "SELECT source_document_id FROM college_merit_aid UNION ALL " +
+              "SELECT source_document_id FROM college_admission_factors UNION ALL " +
+              "SELECT source_document_id FROM college_deadlines) AS all_facts",
+          ).use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+      }
+    assertEquals(1, documents.size, "one filing, one document row: $documents")
+
+    // And the read still speaks the url, joined rather than copied.
+    val stored = assertNotNull(CdsAdmissionsDao.findMeritAid(session, collegeId, 2024).getOrThrow())
+    assertEquals("https://example.edu/cds-2024-25.pdf", stored.sourceUrl)
+  }
+
+  /**
+   * The `source_documents` row a CDS fact cites (RFC 170, D13). The urls live
+   * here, once, so the fixtures below name a document rather than repeating a
+   * pair of urls per fact.
+   */
+  private fun document(
+    collegeId: CollegeId,
+    sourceYear: Int = 2024,
+    sourceUrl: String = "https://example.edu/cds-2024-25.pdf",
+    archiveUrl: String? = "https://www.collegedata.fyi/schools/example/2024-25",
+  ): SourceDocumentId =
+    SourceDocumentsDao
+      .upsert(
+        session,
+        NewSourceDocument(
+          collegeId = collegeId,
+          source = MoneySource.COMMON_DATA_SET,
+          academicYear = AcademicYear(sourceYear),
+          sourceUrl = sourceUrl,
+          archiveUrl = archiveUrl,
+        ),
+      ).getOrThrow()
+
   private fun newMeritAid(
     collegeId: CollegeId,
     sourceYear: Int = 2024,
     firstTimeFullTimeFreshmenHeadcount: Int? = 2760,
     noNeedMeritRecipientsHeadcount: Int? = 358,
     noNeedMeritAverageUsd: Int? = 16112,
+    sourceDocumentId: SourceDocumentId = document(collegeId, sourceYear),
   ) = NewCollegeMeritAid(
     collegeId = collegeId,
     sourceYear = sourceYear,
     firstTimeFullTimeFreshmenHeadcount = firstTimeFullTimeFreshmenHeadcount,
     noNeedMeritRecipientsHeadcount = noNeedMeritRecipientsHeadcount,
     noNeedMeritAverageUsd = noNeedMeritAverageUsd,
-    sourceUrl = "https://example.edu/cds-2024-25.pdf",
-    archiveUrl = "https://www.collegedata.fyi/schools/example/2024-25",
+    sourceDocumentId = sourceDocumentId,
   )
 
   private fun newFactors(
@@ -123,6 +188,7 @@ class CdsAdmissionsDaoTest {
     sourceYear: Int = 2024,
     rigor: FactorRating? = FactorRating.VERY_IMPORTANT,
     testScores: FactorRating? = FactorRating.CONSIDERED,
+    sourceDocumentId: SourceDocumentId = document(collegeId, sourceYear, archiveUrl = null),
   ) = NewCollegeAdmissionFactors(
     collegeId = collegeId,
     sourceYear = sourceYear,
@@ -144,8 +210,7 @@ class CdsAdmissionsDaoTest {
     volunteerWork = FactorRating.CONSIDERED,
     workExperience = FactorRating.CONSIDERED,
     applicantInterest = null,
-    sourceUrl = "https://example.edu/cds-2024-25.pdf",
-    archiveUrl = null,
+    sourceDocumentId = sourceDocumentId,
   )
 
   private fun newDeadline(
@@ -155,6 +220,7 @@ class CdsAdmissionsDaoTest {
     offered: Boolean = true,
     closing: CdsMonthDay? = CdsMonthDay(11, 1),
     notification: CdsMonthDay? = CdsMonthDay(12, 15),
+    sourceDocumentId: SourceDocumentId = document(collegeId, sourceYear, archiveUrl = null),
   ) = NewCollegeDeadline(
     collegeId = collegeId,
     sourceYear = sourceYear,
@@ -162,8 +228,7 @@ class CdsAdmissionsDaoTest {
     offered = offered,
     closing = closing,
     notification = notification,
-    sourceUrl = "https://example.edu/cds-2024-25.pdf",
-    archiveUrl = null,
+    sourceDocumentId = sourceDocumentId,
   )
 
   private fun updatedAt(
@@ -244,8 +309,14 @@ class CdsAdmissionsDaoTest {
     assertTrue(overCount is ConstraintViolationException)
     assertEquals("college_merit_aid_recipients_le_freshmen_check", overCount.constraint)
 
+    // The document is this college's real 2024 filing: the row under test is
+    // the one with the impossible SOURCE YEAR, and its citation must not be
+    // what fails (the `academic_year` domain would refuse a 1999 document
+    // first, which is a different constraint from the one this pins).
     val badYear =
-      CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId, sourceYear = 1999)).exceptionOrNull()
+      CdsAdmissionsDao
+        .upsertMeritAid(session, newMeritAid(collegeId, sourceYear = 1999, sourceDocumentId = document(collegeId)))
+        .exceptionOrNull()
     assertTrue(badYear is ConstraintViolationException)
     assertEquals("cds_source_year_check", badYear.constraint)
   }
@@ -253,7 +324,11 @@ class CdsAdmissionsDaoTest {
   @Test
   fun `merit aid for an absent college maps to a located NotFoundException`() {
     val ghost = CollegeId(UUID.randomUUID())
-    val error = CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(ghost)).exceptionOrNull()
+    // A real document from a real college, so the FK that fails is the FACT
+    // row's college -- not its citation's.
+    val document = document(createCollege())
+    val error =
+      CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(ghost, sourceDocumentId = document)).exceptionOrNull()
     assertTrue(error is NotFoundException)
     // The FK failure names the key that failed and keeps the driver's evidence:
     // a constant "Referenced college not found" shared by three tables and
@@ -330,8 +405,8 @@ class CdsAdmissionsDaoTest {
         assertFailsWith<SQLException>("column [$column] accepted a non-whitelist rating") {
           connection.createStatement().use { stmt ->
             stmt.execute(
-              "INSERT INTO college_admission_factors (college_id, source_year, $column, source_url) " +
-                "VALUES ('${collegeId.value}', 2024, 'Very Important', 'https://example.edu/cds.pdf')",
+              "INSERT INTO college_admission_factors (college_id, source_year, $column, source_document_id) " +
+                "VALUES ('${collegeId.value}', 2024, 'Very Important', '${document(collegeId).value}')",
             )
           }
         }
@@ -413,8 +488,7 @@ class CdsAdmissionsDaoTest {
       volunteerWork = rating(AdmissionFactor.VOLUNTEER_WORK),
       workExperience = rating(AdmissionFactor.WORK_EXPERIENCE),
       applicantInterest = rating(AdmissionFactor.APPLICANT_INTEREST),
-      sourceUrl = "https://example.edu/cds-2024-25.pdf",
-      archiveUrl = null,
+      sourceDocumentId = document(collegeId, archiveUrl = null),
     )
   }
 
@@ -481,8 +555,8 @@ class CdsAdmissionsDaoTest {
       assertFailsWith<SQLException> {
         connection.createStatement().use { stmt ->
           stmt.execute(
-            "INSERT INTO college_deadlines (college_id, source_year, round, offered, source_url) " +
-              "VALUES ('${collegeId.value}', 2024, 'early_bird', true, 'https://example.edu/cds.pdf')",
+            "INSERT INTO college_deadlines (college_id, source_year, round, offered, source_document_id) " +
+              "VALUES ('${collegeId.value}', 2024, 'early_bird', true, '${document(collegeId).value}')",
           )
         }
       }
@@ -505,8 +579,8 @@ class CdsAdmissionsDaoTest {
         assertFailsWith<SQLException>("[$columns] = [$values] was accepted") {
           connection.createStatement().use { stmt ->
             stmt.execute(
-              "INSERT INTO college_deadlines (college_id, source_year, round, offered, $columns, source_url) " +
-                "VALUES ('${collegeId.value}', 2024, 'regular', true, $values, 'https://example.edu/cds.pdf')",
+              "INSERT INTO college_deadlines (college_id, source_year, round, offered, $columns, source_document_id) " +
+                "VALUES ('${collegeId.value}', 2024, 'regular', true, $values, '${document(collegeId).value}')",
             )
           }
         }
@@ -556,8 +630,8 @@ class CdsAdmissionsDaoTest {
         assertFailsWith<SQLException>("[$day] without its month was accepted") {
           connection.createStatement().use { stmt ->
             stmt.execute(
-              "INSERT INTO college_deadlines (college_id, source_year, round, offered, $day, source_url) " +
-                "VALUES ('${collegeId.value}', 2024, 'regular', true, 15, 'https://example.edu/cds.pdf')",
+              "INSERT INTO college_deadlines (college_id, source_year, round, offered, $day, source_document_id) " +
+                "VALUES ('${collegeId.value}', 2024, 'regular', true, 15, '${document(collegeId).value}')",
             )
           }
         }

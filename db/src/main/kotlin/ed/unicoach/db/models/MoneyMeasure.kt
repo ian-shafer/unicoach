@@ -13,6 +13,28 @@ package ed.unicoach.db.models
 enum class MeasureUnit {
   USD_PER_YEAR,
   SHARE,
+  ;
+
+  /**
+   * [published] as the store holds it.
+   *
+   * Every publisher in the corpus states a share as a percent (IPEDS
+   * `UPGRNTP = 18`, the CDS's "87.5") and money as whole dollars, while the
+   * store holds a 0-1 share. The CONVERSION is exposed, not the factor: a bare
+   * multiplier hands a caller the chance to apply it, forget it, or apply it to
+   * the wrong unit, which is the same 100x hazard two copies of the constant
+   * had. Exhaustive, so a third unit is a compile error here.
+   */
+  fun storedValueOf(published: Double): Double =
+    when (this) {
+      USD_PER_YEAR -> published
+      SHARE -> published * PERCENT_TO_STORED_SHARE
+    }
+
+  private companion object {
+    /** The published percent -> the stored 0-1 share; one home for the literal. */
+    const val PERCENT_TO_STORED_SHARE = 0.01
+  }
 }
 
 /**
@@ -70,6 +92,27 @@ enum class MoneyMeasure(
 
   /** Average student loan per borrower (IPEDS LOAN_A: the same any-loan scope LOAN_P counts). */
   STUDENT_LOAN_AVERAGE_AMOUNT("student_loan_average_amount", MeasureUnit.USD_PER_YEAR),
+
+  /**
+   * Average need-based scholarship and grant award per recipient, as the
+   * school reports it in its own Common Data Set (H2 line k, RFC 170).
+   * Per-recipient, so the row's aid scope is the recipients it is averaged
+   * over -- the naming rule stated at [PELL_AVERAGE_AWARD].
+   */
+  AVG_NEED_BASED_GRANT("avg_need_based_grant", MeasureUnit.USD_PER_YEAR),
+
+  /**
+   * The average SHARE of assessed financial need that was met, over the
+   * freshmen awarded need-based aid (CDS H2 line i, RFC 170). Stored as a 0-1
+   * share like every other `_share`, though the CDS publishes "87.5%": one
+   * rule for shares, not one per publisher.
+   *
+   * It is emphatically NOT "does this school meet full need" -- no source
+   * publishes that, and D6 refuses to store a derived boolean. The read layer
+   * answers that question from this average and the fully-met headcount over
+   * its denominator, both cited, both naming their cohort.
+   */
+  AVG_NEED_MET_SHARE("avg_need_met_share", MeasureUnit.SHARE),
   ;
 
   companion object {

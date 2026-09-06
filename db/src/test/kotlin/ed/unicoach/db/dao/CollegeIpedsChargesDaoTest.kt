@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIpedsCharge
@@ -10,8 +11,10 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.sql.SQLException
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -111,7 +114,7 @@ class CollegeIpedsChargesDaoTest {
   private fun charge(
     collegeId: CollegeId,
     chargeVariable: String = "CHG2AY",
-    academicYear: String = "2023-24",
+    academicYear: AcademicYear = AcademicYear(2023),
     amountUsd: Int? = 8580,
     imputationFlag: String = "R",
   ) = NewCollegeIpedsCharge(collegeId.value, chargeVariable, academicYear, amountUsd, imputationFlag)
@@ -170,7 +173,7 @@ class CollegeIpedsChargesDaoTest {
     // The whole point of the narrow reshape: four carried years and twelve
     // variable stems are rows, not columns, and none of them collide.
     val collegeId = seedCollege(222992)
-    for (year in listOf("2020-21", "2021-22", "2022-23", "2023-24")) {
+    for (year in listOf(2020, 2021, 2022, 2023).map(::AcademicYear)) {
       for (variable in listOf("CHG1AY", "CHG2AY", "CHG3AY")) {
         assertEquals(
           UpsertOutcome.INSERTED,
@@ -240,16 +243,26 @@ class CollegeIpedsChargesDaoTest {
   }
 
   @Test
-  fun `an academic year that is not YYYY-YY is refused by its named CHECK`() {
-    val collegeId = seedCollege(222992)
-    for (bad in listOf("2023", "2023-2024", "undated", "23-24")) {
-      val error = CollegeIpedsChargesDao.upsert(session, charge(collegeId, academicYear = bad)).exceptionOrNull()
-      assertTrue(error is ConstraintViolationException, "[$bad] must be refused, got $error")
-      assertEquals(
-        "college_ipeds_charges_academic_year_format_check",
-        (error as ConstraintViolationException).constraint,
-      )
+  fun `an academic year outside the range is refused by the type, and by the domain behind it`() {
+    // The stored year is a START year under the `academic_year` domain (RFC
+    // 170, D14), so the mistakes the old 'YYYY-YY' regex admitted -- '2025-30'
+    // above all -- cannot be spelled at all. What is left to refuse is a
+    // number that is not a year, and it is refused TWICE: by the type, so no
+    // caller can build one, and by the domain, once for every column.
+    for (bad in listOf(1999, 2199)) {
+      assertFailsWith<IllegalArgumentException>("[$bad] must not be constructible") { AcademicYear(bad) }
     }
+    val collegeId = seedCollege(222992)
+    val error =
+      assertFailsWith<SQLException> {
+        connection.createStatement().use { stmt ->
+          stmt.execute(
+            "INSERT INTO college_ipeds_charges (college_id, charge_variable, academic_year, amount_usd, " +
+              "imputation_flag) VALUES ('${collegeId.value}', 'CHG2AY', 2199, 8580, 'R')",
+          )
+        }
+      }
+    assertTrue(error.message!!.contains("academic_year_check"), error.message!!)
   }
 
   @Test
@@ -307,18 +320,18 @@ class CollegeIpedsChargesDaoTest {
   @Test
   fun `list reads every staged row back in natural-key order`() {
     val collegeId = seedCollege(222992)
-    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG2AY", "2023-24", 8580, "R")).getOrThrow()
-    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG1AY", "2023-24", 2550, "R")).getOrThrow()
-    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG1AY", "2022-23", 2550, "R")).getOrThrow()
-    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG5AY", "2023-24", null, "A")).getOrThrow()
+    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG2AY", AcademicYear(2023), 8580, "R")).getOrThrow()
+    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG1AY", AcademicYear(2023), 2550, "R")).getOrThrow()
+    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG1AY", AcademicYear(2022), 2550, "R")).getOrThrow()
+    CollegeIpedsChargesDao.upsert(session, charge(collegeId, "CHG5AY", AcademicYear(2023), null, "A")).getOrThrow()
 
     val rows = CollegeIpedsChargesDao.list(session).getOrThrow()
     assertEquals(
       listOf(
-        Triple("CHG1AY", "2022-23", 2550),
-        Triple("CHG1AY", "2023-24", 2550),
-        Triple("CHG2AY", "2023-24", 8580),
-        Triple("CHG5AY", "2023-24", null),
+        Triple("CHG1AY", AcademicYear(2022), 2550),
+        Triple("CHG1AY", AcademicYear(2023), 2550),
+        Triple("CHG2AY", AcademicYear(2023), 8580),
+        Triple("CHG5AY", AcademicYear(2023), null),
       ),
       rows.map { Triple(it.chargeVariable, it.academicYear, it.amountUsd) },
     )

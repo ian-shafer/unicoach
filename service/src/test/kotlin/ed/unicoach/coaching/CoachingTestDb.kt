@@ -1,14 +1,19 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
+import ed.unicoach.db.dao.SourceDocumentsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.NewCollegeMeritAid
+import ed.unicoach.db.models.NewSourceDocument
+import ed.unicoach.db.models.SourceDocumentId
 import ed.unicoach.db.models.StudentId
 import java.sql.Connection
 import java.sql.DriverManager
@@ -127,9 +132,31 @@ object CoachingTestDb {
           firstTimeFullTimeFreshmenHeadcount = firstTimeFullTimeFreshmenHeadcount,
           noNeedMeritRecipientsHeadcount = noNeedMeritRecipientsHeadcount,
           noNeedMeritAverageUsd = noNeedMeritAverageUsd,
+          sourceDocumentId = seedSourceDocument(collegeId, sourceYear, sourceUrl, archiveUrl),
+        ),
+      ).getOrThrow()
+  }
+
+  /**
+   * The `source_documents` row a CDS fact cites (RFC 170, D13), upserted on
+   * its natural key so every fact of one school's one cycle shares ONE
+   * document -- which is the point: the urls are stored once.
+   */
+  fun seedSourceDocument(
+    collegeId: CollegeId,
+    sourceYear: Int,
+    sourceUrl: String,
+    archiveUrl: String?,
+  ): SourceDocumentId =
+    SourceDocumentsDao
+      .upsert(
+        sqlSession,
+        NewSourceDocument(
+          collegeId = collegeId,
+          source = MoneySource.COMMON_DATA_SET,
+          academicYear = AcademicYear(sourceYear),
           sourceUrl = sourceUrl,
           archiveUrl = archiveUrl,
         ),
       ).getOrThrow()
-  }
 }

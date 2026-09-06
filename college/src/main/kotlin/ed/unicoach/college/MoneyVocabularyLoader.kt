@@ -4,9 +4,13 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UpsertOutcome
+import ed.unicoach.db.models.AidForm
+import ed.unicoach.db.models.FactTable
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NewAidForm
 import ed.unicoach.db.models.NewArrangement
 import ed.unicoach.db.models.NewFigureStatus
 import ed.unicoach.db.models.NewIncomeBand
@@ -70,6 +74,24 @@ class MoneyVocabularyLoader(
       cause,
     )
 
+  /**
+   * A vocabulary slug is retiring, but fact rows a source this run will not
+   * rebuild still reference it -- so honouring the retirement would delete data
+   * nothing is going to write back.
+   *
+   * Fatal, and it names the way out: re-run the ingest with that source's files
+   * so its rows are rebuilt in the same run.
+   */
+  class RetirementBlockedException(
+    val fileName: String,
+    val strandedSources: List<MoneySource>,
+    val rebuiltSources: Collection<MoneySource>,
+  ) : RuntimeException(
+      "money vocabulary [$fileName] retires a slug, but canonical fact rows published by " +
+        "${strandedSources.map { it.value }} would have to be deleted and this run rebuilds only " +
+        "${rebuiltSources.map { it.value }}; re-run with that source's files so its rows are written back",
+    )
+
   /** The parsed five sections, verified as a file but not yet written. */
   data class ParsedVocabulary(
     val residencyBases: List<NewResidencyBasis>,
@@ -77,9 +99,12 @@ class MoneyVocabularyLoader(
     val figureStatuses: List<NewFigureStatus>,
     val priceConcepts: List<NewPriceConcept>,
     val incomeBands: List<NewIncomeBand>,
+    val aidForms: List<NewAidForm>,
   ) {
     val rows: Int
-      get() = residencyBases.size + arrangements.size + figureStatuses.size + priceConcepts.size + incomeBands.size
+      get() =
+        residencyBases.size + arrangements.size + figureStatuses.size + priceConcepts.size +
+          incomeBands.size + aidForms.size
   }
 
   /** What one [load] did, for the ingest's human summary and the build row. */
@@ -156,6 +181,10 @@ class MoneyVocabularyLoader(
               sortOrder = entry.int("sort_order"),
             )
           },
+        aidForms =
+          section(file, obj, "aid_forms", setOf("slug", "description")) { entry, _ ->
+            NewAidForm(slug = entry.slug(), description = entry.text("description"))
+          },
       )
     validateAgainstEnums(file, parsed)
     return parsed
@@ -168,12 +197,19 @@ class MoneyVocabularyLoader(
    * the `subjects` shape. With the enum agreement already proven, the delete
    * is a transition guard: a slug can leave the file only together with its
    * enum member, and the table must follow the file. When a retirement is
-   * pending, the (wholesale-rebuilt, P12) fact tables are cleared first so
-   * the delete cannot wedge on a foreign key from the previous fill.
+   * pending, the fact rows THIS RUN REBUILDS ([rebuiltSources]) are cleared
+   * first so the delete cannot wedge on a foreign key from the previous fill.
+   *
+   * [rebuiltSources] is the run's own answer to "whose rows will exist again
+   * when this ingest finishes": the canonical-money fill's sources always, plus
+   * the Common Data Set when the run was given the CDS seed. A retirement that
+   * would need to delete anyone else's rows is refused
+   * ([RetirementBlockedException]) rather than performed.
    */
   suspend fun load(
     fileName: String,
     vocabulary: ParsedVocabulary,
+    rebuiltSources: Collection<MoneySource>,
   ): LoadResult =
     database.withConnection { session ->
       var inserted = 0
@@ -191,22 +227,37 @@ class MoneyVocabularyLoader(
       for (row in vocabulary.figureStatuses) record(CanonicalMoneyDao.upsertFigureStatus(session, row).getOrThrow())
       for (row in vocabulary.priceConcepts) record(CanonicalMoneyDao.upsertPriceConcept(session, row).getOrThrow())
       for (row in vocabulary.incomeBands) record(CanonicalMoneyDao.upsertIncomeBand(session, row).getOrThrow())
+      for (row in vocabulary.aidForms) record(CanonicalMoneyDao.upsertAidForm(session, row).getOrThrow())
       // A retired slug may still be referenced by the previous fill's fact
       // rows, and the delete-not-in below would then fail 23503 BEFORE the
-      // canonical-money phase ever clears them -- wedging every re-run. Both
-      // fact tables are rebuilt wholesale later in this same run (P12), so
-      // clearing them here loses nothing and lets the table follow the file
-      // in one run instead of wedging on the FK.
+      // canonical-money phase ever clears them -- wedging every re-run. The
+      // rows this run REBUILDS are cleared here, which loses nothing: they are
+      // written again later in the same run (P12).
+      //
+      // Only those. Deleting every source's rows was a silent data-loss path:
+      // `--money-vocabulary` runs on every ingest while the CDS group is
+      // optional, so a run without `-p` erased every aid-form requirement and
+      // every Common Data Set cohort row, refilled only the sources it does
+      // rebuild, and exited green. A slug still held by a source this run will
+      // NOT rebuild is a refusal, not a deletion -- the operator re-runs with
+      // that source's files rather than losing its rows.
       if (hasRetiredSlugs(session, vocabulary)) {
-        CanonicalMoneyDao.deleteAllPriceFigures(session).getOrThrow()
-        CanonicalMoneyDao.deleteAllCohortMoneyStats(session).getOrThrow()
+        for (table in FactTable.entries) {
+          CanonicalMoneyDao.deleteFactsOfSources(session, table, rebuiltSources).getOrThrow()
+        }
+        val stranded = CanonicalMoneyDao.factSourcesOtherThan(session, rebuiltSources).getOrThrow()
+        if (stranded.isNotEmpty()) {
+          throw RetirementBlockedException(fileName, stranded, rebuiltSources)
+        }
       }
+
       val deleted =
         deleteNotIn(session, "residency_bases", vocabulary.residencyBases.map { it.slug }) +
           deleteNotIn(session, "arrangements", vocabulary.arrangements.map { it.slug }) +
           deleteNotIn(session, "figure_statuses", vocabulary.figureStatuses.map { it.slug }) +
           deleteNotIn(session, "price_concepts", vocabulary.priceConcepts.map { it.slug }) +
-          deleteNotIn(session, "income_bands", vocabulary.incomeBands.map { it.slug })
+          deleteNotIn(session, "income_bands", vocabulary.incomeBands.map { it.slug }) +
+          deleteNotIn(session, "aid_forms", vocabulary.aidForms.map { it.slug })
       val result =
         LoadResult(
           rows = vocabulary.rows,
@@ -217,7 +268,7 @@ class MoneyVocabularyLoader(
         )
       logger.info(
         "Money vocabulary [{}]: [{}] rows ([{}] inserted, [{}] changed, [{}] unchanged, [{}] deleted) across " +
-          "residency_bases, arrangements, figure_statuses, price_concepts, income_bands",
+          "residency_bases, arrangements, figure_statuses, price_concepts, income_bands, aid_forms",
         fileName,
         result.rows,
         result.inserted,
@@ -245,6 +296,7 @@ class MoneyVocabularyLoader(
       "figure_statuses" to vocabulary.figureStatuses.map { it.slug },
       "price_concepts" to vocabulary.priceConcepts.map { it.slug },
       "income_bands" to vocabulary.incomeBands.map { it.slug },
+      "aid_forms" to vocabulary.aidForms.map { it.slug },
     ).any { (table, kept) ->
       CanonicalMoneyDao.vocabularySlugs(session, table).getOrThrow().any { it !in kept }
     }
@@ -309,6 +361,12 @@ class MoneyVocabularyLoader(
       parsed.incomeBands.map { it.slug }.toSet(),
       "IncomeBand",
       IncomeBand.entries.map { it.value }.toSet(),
+    )
+    requireSameMembers(
+      "aid_forms",
+      parsed.aidForms.map { it.slug }.toSet(),
+      "AidForm",
+      AidForm.entries.map { it.value }.toSet(),
     )
 
     // The authored flags agree with the enum's own declaration, per member:
@@ -471,7 +529,7 @@ class MoneyVocabularyLoader(
 
     /** The exact top-level key set -- a surplus section is a typo, never surplus data. */
     private val SECTION_KEYS =
-      setOf("residency_bases", "arrangements", "figure_statuses", "price_concepts", "income_bands")
+      setOf("residency_bases", "arrangements", "figure_statuses", "price_concepts", "income_bands", "aid_forms")
 
     /**
      * The canonical-money slug spelling, restated from the migration's

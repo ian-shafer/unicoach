@@ -32,9 +32,13 @@ data class CollegeDeadline(
   val closing: CdsMonthDay?,
   /** When the school notifies, or null when unreported. */
   val notification: CdsMonthDay?,
-  /** The school's own published CDS document. */
+  /**
+   * The school's own published CDS document, read from the `source_documents`
+   * row this fact cites (RFC 170, D13) -- joined at read time, never a second
+   * stored copy.
+   */
   val sourceUrl: String,
-  /** The corpus's archived copy. */
+  /** The corpus's archived copy, from the same document row. */
   val archiveUrl: String?,
   override val createdAt: Instant,
   override val updatedAt: Instant,

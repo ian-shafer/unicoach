@@ -1616,13 +1616,16 @@ assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with only -m exit
   bin/ingest-colleges -m merit.csv a.csv b.csv
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with -m -a but no -d exits 21" \
   bin/ingest-colleges -m merit.csv -a factors.csv a.csv b.csv
+# RFC 170 made the group four: three of the four is still a partial load.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with -m -a -d but no -p exits 21" \
+  bin/ingest-colleges -m merit.csv -a factors.csv -d deadlines.csv a.csv b.csv
 assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -m without a value exits 11" \
   bin/ingest-colleges -m
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects an unknown option (10)" \
   bin/ingest-colleges -z a.csv b.csv
 test_ingest_colleges_missing_cds_file() {
   bin/ingest-colleges -m "/no/such/$$-m.csv" -a "/no/such/$$-a.csv" -d "/no/such/$$-d.csv" \
-    bin/functions bin/functions >/dev/null 2>&1
+    -p "/no/such/$$-p.csv" bin/functions bin/functions >/dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent CDS seed path" test_ingest_colleges_missing_cds_file
 
@@ -1685,6 +1688,20 @@ EOF
    "value_status": "reported", "value_text": "100", "value_num": 100},
   {"document_id": "doc-alpha-new", "field_id": "H.2A02", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "$12,000", "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.204", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "800", "value_num": 800},
+  {"document_id": "doc-alpha-new", "field_id": "H.208", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "300", "value_num": 300},
+  {"document_id": "doc-alpha-new", "field_id": "H.209", "schema_version": "2025-26",
+   "value_kind": "percent", "value_status": "reported", "value_text": "94.3", "value_num": 0.943},
+  {"document_id": "doc-alpha-new", "field_id": "H.211", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "18006.5357", "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.801", "schema_version": "2025-26",
+   "value_kind": "checkbox", "value_status": "reported", "value_text": "X", "value_bool": true, "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.803", "schema_version": "2025-26",
+   "value_kind": "yesno", "value_status": "reported", "value_text": "Yes", "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.805", "schema_version": "2025-26",
+   "value_status": "parse_error", "value_text": "??", "value_num": null},
   {"document_id": "doc-alpha-new", "field_id": "C.701", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "Very Important", "value_num": null},
   {"document_id": "doc-alpha-new", "field_id": "C.702", "schema_version": "2025-26",
@@ -1733,10 +1750,22 @@ EOF
    "value_status": "reported", "value_text": "99", "value_num": 99},
   {"document_id": "doc-epsilon", "field_id": "H.2A02", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "$9,000", "value_num": null},
+  {"document_id": "doc-epsilon", "field_id": "H.204", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "50", "value_num": 50},
+  {"document_id": "doc-epsilon", "field_id": "H.208", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "51", "value_num": 51},
   {"document_id": "doc-zeta", "field_id": "H.201", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "1,200", "value_num": null},
   {"document_id": "doc-zeta", "field_id": "H.2A01", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "N/A", "value_num": null},
+  {"document_id": "doc-zeta", "field_id": "H.209", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Nearest 1%", "value_num": null},
+  {"document_id": "doc-zeta", "field_id": "H.211", "schema_version": "2025-26",
+   "value_status": "not_applicable", "value_text": null, "value_num": null},
+  {"document_id": "doc-zeta", "field_id": "H.802", "schema_version": "2025-26",
+   "value_kind": "checkbox", "value_status": "reported", "value_text": "No", "value_bool": false, "value_num": null},
+  {"document_id": "doc-zeta", "field_id": "H.804", "schema_version": "2025-26",
+   "value_kind": "checkbox", "value_status": "reported", "value_text": "Response Text", "value_num": null},
   {"document_id": "doc-zeta", "field_id": "C.703", "schema_version": "2025-26",
    "value_status": "parse_error", "value_text": "??", "value_num": null},
   {"document_id": "doc-zeta", "field_id": "C.1402", "schema_version": "2025-26",
@@ -1761,6 +1790,27 @@ CDS_OUT="$(mktemp -d)"
 write_cds_fixtures "$CDS_FIXTURES"
 assert_success "fetch-cds-seed runs offline from fixtures" \
   bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$CDS_OUT" > /dev/null
+
+# The bin/ rule: this script's product is FILES, so a normal run writes nothing
+# at all to stdout -- the closing summary is a diagnostic and goes to stderr
+# with every other one. Asserted, because the regression is invisible: a
+# summary moved back to stdout still looks right on a terminal, where the two
+# streams are the same screen.
+test_cds_fetch_stdout_is_empty() {
+  local out
+  out="$(bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$(mktemp -d)" 2>/dev/null)"
+  [ -z "$out" ]
+}
+assert_success "fetch-cds-seed writes NOTHING to stdout on a normal run" \
+  test_cds_fetch_stdout_is_empty
+
+# ... and the summary is still emitted, on stderr.
+test_cds_fetch_summary_on_stderr() {
+  bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$(mktemp -d)" 2>&1 >/dev/null |
+    grep -q "seed written to"
+}
+assert_success "fetch-cds-seed's closing summary goes to stderr" \
+  test_cds_fetch_summary_on_stderr
 
 seed_has() { grep -q "$1" "$CDS_OUT/$2"; }
 seed_lacks() { ! grep -q "$1" "$CDS_OUT/$2"; }
@@ -1905,11 +1955,71 @@ assert_success "the whitelist-missing rating text is recorded, not just counted"
 assert_success "the parsed merit cells still seed a row beside the junk one" \
   seed_has '^666666,2025,1200,,,' merit-aid.csv
 
+
+# RFC 170: the H2 need figures and the H8 forms, each row carrying its own
+# status. The seed's fourth file is the first place a cell the corpus HAS but
+# could not extract survives as a fact about OUR gap, rather than as a drop
+# counter nobody downstream can see.
+assert_success "a percent cell is read from value_num, not from its text" \
+  seed_has '^111111,2025,avg_need_met_percent,94.3,reported,H.209,' aid_policy.csv
+assert_success "a dollar average keeps its cents, which get_int would have dropped" \
+  seed_has '^111111,2025,avg_need_based_grant_usd,18006.5357,reported,H.211,' aid_policy.csv
+assert_success "the two H2 headcounts land as reported integers" \
+  seed_has '^111111,2025,aid_awarded_freshmen_count,800,reported,H.204,' aid_policy.csv
+assert_success "a ticked form checkbox lands as required" \
+  seed_has '^111111,2025,fafsa_required,true,reported,H.801,' aid_policy.csv
+assert_success "a Yes-spelled form flag lands as required too" \
+  seed_has '^111111,2025,css_profile_required,true,reported,H.803,' aid_policy.csv
+# D7: a corpus parse_error is OUR gap, and says so in a row with no value --
+# NOT the school's silence, which is row-absence.
+assert_success "a corpus parse_error lands as not_collected_by_us, with no value" \
+  seed_has '^111111,2025,noncustodial_css_profile_required,,not_collected_by_us,H.805,' aid_policy.csv
+assert_success "a form the school did not list gets no row at all" \
+  seed_lacks 'business_farm_supplement_required' aid_policy.csv
+# D5: the corpus publishes 9,072 ticks and no unticked box; a false that some
+# future corpus does publish is counted, never seeded as "not required".
+assert_success "an explicit false form flag is dropped, never seeded as not-required" \
+  seed_lacks 'institutional_form_required' aid_policy.csv
+assert_success "the ignored false flag is counted in PROVENANCE.json" \
+  cds_drop_count aid_policy_form_not_required_ignored 1
+# The corpus's own not_applicable is the SOURCE speaking, so it keeps its own
+# status rather than being read as our gap.
+assert_success "a corpus not_applicable keeps its own status" \
+  seed_has '^666666,2025,avg_need_based_grant_usd,,not_applicable,H.211,' aid_policy.csv
+assert_success "a reported-but-unparseable need figure is counted, and says so as our own gap" \
+  cds_drop_count aid_policy_value_junk 1
+assert_success "the unreadable need figure seeds a valueless row rather than vanishing" \
+  seed_has '^666666,2025,avg_need_met_percent,,not_collected_by_us,H.209,' aid_policy.csv
+# The drop records the WHOLE cell, not value_text alone: the rules that refuse
+# a cell test value_num and value_bool too, so a ledger naming only the text
+# names a column that did not fail.
+assert_success "the junk need cell's field and every part of the cell are recorded" \
+  cds_drop_sample_has aid_policy_value_junk 'field_id=[H.209] kind=[None] num=[None] bool=[None] text=[Nearest 1%]'
+# A form flag the tri-state reader cannot recognise ('Response Text' is a real
+# corpus value) is OUR gap, not the school's silence: the corpus carries the
+# cell and we could not read it, which is the same statement its own
+# parse_error makes. It is counted AND seeded as a valueless row, so the row's
+# absence keeps meaning "this school's CDS does not list the form".
+assert_success "a reported-but-unrecognised form flag seeds our own gap, not silence" \
+  seed_has '^666666,2025,state_aid_form_required,,not_collected_by_us,H.804,' aid_policy.csv
+assert_success "the junk form flag is counted in PROVENANCE.json" \
+  cds_drop_count aid_policy_flag_junk 1
+assert_success "the junk form cell's field and every part of the cell are recorded" \
+  cds_drop_sample_has aid_policy_flag_junk 'field_id=[H.804] kind=[checkbox] num=[None] bool=[None] text=[Response Text]'
+# The same all-or-nothing rule H2A already applies: a fully-met headcount above
+# the denominator it is reported against means the block was mis-extracted.
+assert_success "a contradictory H2 block emits no aid-policy row at all" \
+  seed_lacks '^555555,' aid_policy.csv
+assert_success "the contradictory H2 block is counted in PROVENANCE.json" \
+  cds_drop_count aid_policy_h2_contradictory 1
+
 # group_fields' two silent skips are counted: a non-'reported' status (an
 # extraction failure an operator needs a number for) and a duplicate field row
 # (a corpus disagreeing with itself must not look clean).
 assert_success "a non-reported field status is counted per status" \
-  cds_drop_count field_status_parse_error 1
+  cds_drop_count field_status_parse_error 2
+assert_success "the corpus's own not_applicable is counted under its own status" \
+  cds_drop_count field_status_not_applicable 1
 assert_success "a duplicate field row is counted, not silently resolved" \
   cds_drop_count field_duplicate_ignored 1
 
@@ -2010,6 +2120,12 @@ assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed refuses a repeated -o
   bin/fetch-cds-seed -o /tmp -o /tmp
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed refuses a repeated -F rather than last-wins (22)" \
   bin/fetch-cds-seed -F /tmp -F /tmp
+# RFC 170: the one post-parse rule this fetcher has of its own -- a -F that names
+# something other than a directory. getopt cannot see it, and without the guard
+# the operator gets a NotADirectoryError traceback and exit 1 for what is a
+# mistake in the command they typed.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed refuses a -F that is not a directory (22)" \
+  bin/fetch-cds-seed -F "$PROJECT_ROOT/bin/functions"
 
 # RFC 172 §5: --anon-key is RETIRED, replaced by -K. The bin/ conventions allow
 # short options only, and this is a hand-run operator tool with no callers in the
@@ -4919,6 +5035,7 @@ PY
     "-m $EXTERNAL_ROOT/db/seed/cds/merit-aid.csv" \
     "-a $EXTERNAL_ROOT/db/seed/cds/admission-factors.csv" \
     "-d $EXTERNAL_ROOT/db/seed/cds/deadlines.csv" \
+    "-p $EXTERNAL_ROOT/db/seed/cds/aid_policy.csv" \
     "-H $EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv" \
     "-I $EXTERNAL_ROOT/db/seed/ipeds/IC2026.csv" \
     "-A $EXTERNAL_ROOT/db/seed/ipeds/adm2026.csv" \
@@ -5404,7 +5521,8 @@ test_load_external_data_reports_every_missing_input_at_once() {
   write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
   rm -f "$EXTERNAL_ROOT/db/seed/ipeds/sfa2526.csv"
   seed="$(mktemp -d)"
-  cp "$PROJECT_ROOT/db/seed/cds/merit-aid.csv" "$PROJECT_ROOT/db/seed/cds/admission-factors.csv" "$seed/"
+  cp "$PROJECT_ROOT/db/seed/cds/merit-aid.csv" "$PROJECT_ROOT/db/seed/cds/admission-factors.csv" \
+    "$PROJECT_ROOT/db/seed/cds/aid_policy.csv" "$seed/"
   rm -f "$EXTERNAL_ROOT/db/seed/cds"
   ln -s "$seed" "$EXTERNAL_ROOT/db/seed/cds"
   data="$(mktemp -d)"
@@ -5431,7 +5549,8 @@ test_load_external_data_refuses_a_missing_cds_seed() {
   local seed
   write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
   seed="$(mktemp -d)"
-  cp "$PROJECT_ROOT/db/seed/cds/merit-aid.csv" "$PROJECT_ROOT/db/seed/cds/deadlines.csv" "$seed/"
+  cp "$PROJECT_ROOT/db/seed/cds/merit-aid.csv" "$PROJECT_ROOT/db/seed/cds/deadlines.csv" \
+    "$PROJECT_ROOT/db/seed/cds/aid_policy.csv" "$seed/"
   rm -f "$EXTERNAL_ROOT/db/seed/cds"
   ln -s "$seed" "$EXTERNAL_ROOT/db/seed/cds"
   local rc=0
@@ -5443,6 +5562,27 @@ test_load_external_data_refuses_a_missing_cds_seed() {
 }
 assert_success "a missing CDS seed CSV is refused by name, and names bin/fetch-cds-seed" \
   test_load_external_data_refuses_a_missing_cds_seed
+
+# RFC 170 made the CDS group FOUR files, and bin/ingest-colleges refuses three of
+# the four (21). So the aid-policy seed is a required input of this wrapper too:
+# without this it would be the one CDS file whose absence is reported by the
+# ingest, after the wrapper had already said every input was there.
+test_load_external_data_refuses_a_missing_aid_policy_seed() {
+  local seed rc=0
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  seed="$(mktemp -d)"
+  cp "$PROJECT_ROOT/db/seed/cds/merit-aid.csv" "$PROJECT_ROOT/db/seed/cds/admission-factors.csv" \
+    "$PROJECT_ROOT/db/seed/cds/deadlines.csv" "$seed/"
+  rm -f "$EXTERNAL_ROOT/db/seed/cds"
+  ln -s "$seed" "$EXTERNAL_ROOT/db/seed/cds"
+  external_load_refuses "aid_policy.csv] does not exist -- the CDS aid-policy seed; run bin/fetch-cds-seed" || rc=1
+  rm -f "$EXTERNAL_ROOT/db/seed/cds"
+  ln -s "$PROJECT_ROOT/db/seed/cds" "$EXTERNAL_ROOT/db/seed/cds"
+  rm -rf "$seed"
+  return "$rc"
+}
+assert_success "a missing CDS aid-policy seed is refused by name (RFC 170's fourth CDS file)" \
+  test_load_external_data_refuses_a_missing_aid_policy_seed
 
 test_load_external_data_refuses_a_missing_codebook() {
   local data rc=0

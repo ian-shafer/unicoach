@@ -383,15 +383,28 @@ class CollegeAdmissionsServiceTest {
   fun `each section carries its own citation, and a null archive copy is simply absent`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Cited College")
+    // ONE filing backs all three sections (RFC 170, D13), so the mirror is a
+    // property of that filing: a school whose CDS we have not archived shows
+    // no archive copy anywhere, rather than showing one under merit aid and
+    // not under deadlines. The two urls cannot disagree between sections
+    // because there is only one copy of them.
     AdmissionsTestDb.seedMeritAid(college, archiveUrl = null)
-    AdmissionsTestDb.seedFactors(college)
-    AdmissionsTestDb.seedDeadline(college)
+    AdmissionsTestDb.seedFactors(college, archiveUrl = null)
+    AdmissionsTestDb.seedDeadline(college, archiveUrl = null)
 
     val admissions = read(student).colleges.single()
     assertEquals(AdmissionsTestDb.SOURCE_URL, admissions.meritAid?.source?.url)
     assertNull(admissions.meritAid?.source?.archiveUrl)
-    assertEquals(AdmissionsTestDb.ARCHIVE_URL, admissions.factors?.source?.archiveUrl)
+    assertNull(admissions.factors?.source?.archiveUrl)
+    assertNull(admissions.deadlines?.source?.archiveUrl)
     assertEquals("Cited College's 2024-25 Common Data Set", admissions.deadlines?.source?.citedAs)
+
+    val mirrored = AdmissionsTestDb.seedListedCollege(student, "Mirrored College")
+    AdmissionsTestDb.seedMeritAid(mirrored)
+    AdmissionsTestDb.seedFactors(mirrored)
+    val second = read(student, listOf(mirrored)).colleges.single()
+    assertEquals(AdmissionsTestDb.ARCHIVE_URL, second.meritAid?.source?.archiveUrl)
+    assertEquals(AdmissionsTestDb.ARCHIVE_URL, second.factors?.source?.archiveUrl)
   }
 
   @Test

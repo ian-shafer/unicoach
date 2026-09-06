@@ -1,5 +1,6 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.util.AcademicYear
 import java.util.UUID
 
 /*
@@ -9,24 +10,6 @@ import java.util.UUID
  * The [NewSubject]/[NewIpedsRegion] convention: one input type per table,
  * write-shaped, no surrogate ids.
  */
-
-/**
- * The literal `cohort_money_stats.vintage` and `cohort_population_counts.vintage`
- * carry where the source dates nothing (RFC 158 P5).
- *
- * ONE home, in the module the writer (`:college`), the reader (`:service`) and
- * every fixture all depend on, because it is one side of a contract with the
- * SCHEMA: `db/schema/0083.create-canonical-money-tables.sql` admits
- * `'YYYY-YY'` or exactly this string, and
- * `CanonicalMoneyDaoTest` pins the two together against a live database.
- *
- * It is load-bearing for what a family is told about a year. The reader turns
- * this literal into "no year at all"; a copy of it that drifted from the
- * writer's would hand the sentinel back AS an academic year, and median debt
- * would acquire a spoken year no publisher gave it. Three constants that agree
- * by coincidence compile perfectly, which is why there is now one.
- */
-const val VINTAGE_UNDATED: String = "undated"
 
 /** One `residency_bases` row (RFC 158, D4). */
 data class NewResidencyBasis(
@@ -46,6 +29,12 @@ data class NewFigureStatus(
   val slug: String,
   val description: String,
   val valueBearing: Boolean,
+)
+
+/** One `aid_forms` row (RFC 170, D4). */
+data class NewAidForm(
+  val slug: String,
+  val description: String,
 )
 
 /** One `price_concepts` row (RFC 158, D2/P3). */
@@ -76,8 +65,8 @@ data class NewPriceFigure(
   val priceConcept: PriceConcept,
   val residencyBasis: ResidencyBasis,
   val arrangement: FigureArrangement,
-  /** Always a real 'YYYY-YY' academic year (P5). */
-  val academicYear: String,
+  /** The academic year the price is published for; the 'YYYY-YY' label is rendered at read time (D14, P5). */
+  val academicYear: AcademicYear,
   /** The USD amount and its status as ONE reading (D3): the invalid pairings do not compile. */
   val reading: FigureReading<Int>,
   /** The publisher, as the owned enumeration (RFC 161 decision 6) -- never a free string. */
@@ -98,14 +87,21 @@ data class NewCohortMoneyStat(
   val residencyScope: CohortResidencyScope,
   val aidScope: CohortAidScope,
   val incomeBand: IncomeBand?,
-  /** 'YYYY-YY' where the source dates the cohort, [VINTAGE_UNDATED] where it does not (P5). */
-  val vintage: String,
+  /** The year the source dates the cohort, or null where it pools or does not date it (RFC 170 D14, P5). */
+  val vintage: AcademicYear?,
   /** The numeric value and its status as ONE reading (D3): the invalid pairings do not compile. */
   val reading: FigureReading<Double>,
   /** The publisher, as the owned enumeration (RFC 161 decision 6) -- never a free string. */
   val source: MoneySource,
   val sourceVariable: String,
   val publisherFlag: String? = null,
+  /**
+   * The published document this figure was read out of (RFC 170, D13), or null
+   * for a publisher with no per-school document -- the Scorecard and the two
+   * IPEDS surveys cite a national release. The reference, not the urls: they
+   * live on the document row, once.
+   */
+  val sourceDocumentId: SourceDocumentId? = null,
 )
 
 /**
@@ -120,12 +116,44 @@ data class NewCohortPopulationCount(
   val population: CohortPopulation,
   val residencyBasis: ResidencyBasis,
   val arrangement: FigureArrangement,
-  /** 'YYYY-YY' where the source dates the cohort, [VINTAGE_UNDATED] where it does not (P5). */
-  val vintage: String,
+  /** The year the source dates the cohort with; never absent here (RFC 170 D14, P5). */
+  val vintage: AcademicYear,
   /** The headcount and its status as ONE reading (D3): the invalid pairings do not compile. */
   val reading: FigureReading<Int>,
   /** The publisher, as the owned enumeration (RFC 161 decision 6) -- never a free string. */
   val source: MoneySource,
   val sourceVariable: String,
   val publisherFlag: String? = null,
+  /**
+   * The published document this figure was read out of (RFC 170, D13), or null
+   * for a publisher with no per-school document -- the Scorecard and the two
+   * IPEDS surveys cite a national release. The reference, not the urls: they
+   * live on the document row, once.
+   */
+  val sourceDocumentId: SourceDocumentId? = null,
+)
+
+/**
+ * One `aid_form_requirements` row (RFC 170, D4/D5): this college requires this
+ * form of this applicant group in this academic year.
+ *
+ * A REQUIREMENT, not a statistic -- which is why it is a relation and not a
+ * `cohort_money_stats` measure. [reading] carries the value exactly when its
+ * status bears one (D3), by construction, and the value is only ever `true`:
+ * no source publishes "not required", and a form a school's CDS does not list
+ * gets NO row at all (D5).
+ */
+data class NewAidFormRequirement(
+  val collegeId: UUID,
+  val form: AidForm,
+  val applicantGroup: AidFormApplicantGroup,
+  val academicYear: AcademicYear,
+  /** The requirement and its status as ONE reading: the invalid pairings do not compile. */
+  val reading: FigureReading<Boolean>,
+  /** The publisher, as the owned enumeration -- never a free string. */
+  val source: MoneySource,
+  /** The published cell this row was read from: a CDS field id, raw. */
+  val sourceVariable: String,
+  /** The document it was read out of (D13): the urls live there, once. */
+  val sourceDocumentId: SourceDocumentId,
 )

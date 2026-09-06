@@ -1,10 +1,10 @@
 package ed.unicoach.coaching.aid
 
-import ed.unicoach.coaching.AcademicYear
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.StudentId

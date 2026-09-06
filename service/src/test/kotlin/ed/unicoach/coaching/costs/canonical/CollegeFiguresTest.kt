@@ -8,6 +8,7 @@ import ed.unicoach.coaching.costs.NoTotalReason
 import ed.unicoach.coaching.costs.components
 import ed.unicoach.coaching.costs.isAssumedByUnicoach
 import ed.unicoach.coaching.costs.reportedComponentsOf
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortMoneyStat
@@ -23,7 +24,6 @@ import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
-import ed.unicoach.db.models.VINTAGE_UNDATED
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -59,12 +59,12 @@ class CollegeFiguresTest {
   fun `a figure quoted alone is quoted at its own latest year`() {
     val figures =
       figuresOf(
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2020-21", 9000),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 12000),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2021-22", 10000),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2020), 9000),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 12000),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2021), 10000),
       )
     val latest = assertNotNull(figures.latestPriceOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD))
-    assertEquals("2023-24", latest.academicYear)
+    assertEquals(AcademicYear(2023), latest.academicYear)
     assertEquals(12000, latest.amountUsd)
   }
 
@@ -76,11 +76,11 @@ class CollegeFiguresTest {
     // reporting years. RFC 166 §3 rule 2.
     val figures =
       figuresOf(
-        *completeYear("2022-23"),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 13000),
-        price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, "2023-24", 9500),
+        *completeYear(AcademicYear(2022)),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 13000),
+        price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, AcademicYear(2023), 9500),
       )
-    assertEquals("2022-23", chosenYearOf(figures))
+    assertEquals(AcademicYear(2022), chosenYearOf(figures))
   }
 
   @Test
@@ -91,12 +91,12 @@ class CollegeFiguresTest {
     // unreachable from the read path by construction.
     val figures =
       figuresOf(
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2021-22", 11000),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 13000),
-        price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, "2023-24", 9500),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2021), 11000),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 13000),
+        price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, AcademicYear(2023), 9500),
       )
     val year = assertNotNull(chosenYearOf(figures))
-    assertEquals("2023-24", year)
+    assertEquals(AcademicYear(2023), year)
     assertFalse(
       figures.hasValuesAt(
         setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD) + LivingArrangement.ON_CAMPUS.components,
@@ -108,27 +108,27 @@ class CollegeFiguresTest {
 
   @Test
   fun `every line of a served arrangement shares one academic year`() {
-    val figures = figuresOf(*completeYear("2022-23"), *completeYear("2023-24"))
+    val figures = figuresOf(*completeYear(AcademicYear(2022)), *completeYear(AcademicYear(2023)))
     val year = assertNotNull(chosenYearOf(figures))
     val lines = LivingArrangement.ON_CAMPUS.reportedComponentsOf(figures.servedAt(year))
     assertTrue(lines.isNotEmpty())
-    assertEquals(setOf(year), lines.map { it.academicYear }.toSet())
+    assertEquals(setOf(year.label), lines.map { it.academicYear }.toSet())
   }
 
   @Test
   fun `a suppressed cell is not a value, so it cannot complete a year`() {
     val figures =
       figuresOf(
-        *completeYear("2022-23"),
-        *completeYear("2023-24"),
+        *completeYear(AcademicYear(2022)),
+        *completeYear(AcademicYear(2023)),
         price(
           CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
         ),
       )
     assertEquals(
-      "2022-23",
+      AcademicYear(2022),
       chosenYearOf(figures),
       "a withheld figure is a figure with no value, whoever withheld it",
     )
@@ -145,7 +145,7 @@ class CollegeFiguresTest {
     // column carries no non-negative CHECK for exactly that reason.
     val figures =
       figuresOf(
-        cohort(CostField.NET_PRICE, "2022-23", -1499.6),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), -1499.6),
       )
     assertEquals(-1500, assertNotNull(figures.cohortOf(CostField.NET_PRICE, band = null)).amountUsd)
   }
@@ -154,19 +154,19 @@ class CollegeFiguresTest {
   fun `an undated cohort row carries no year at all, rather than borrowing one`() {
     val figures =
       figuresOf(
-        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, VINTAGE_UNDATED, 23000.0),
-        cohort(CostField.NET_PRICE, "2022-23", 20000.0),
+        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, null, 23000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 20000.0),
       )
     assertNull(assertNotNull(figures.cohortOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, band = null)).vintage)
-    assertEquals("2022-23", figures.blendedAverageVintage(band = null))
+    assertEquals(AcademicYear(2022), figures.blendedAverageVintage(band = null))
   }
 
   @Test
   fun `the latest vintage per measure wins`() {
     val figures =
       figuresOf(
-        cohort(CostField.NET_PRICE, "2021-22", 18000.0),
-        cohort(CostField.NET_PRICE, "2022-23", 20000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2021), 18000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 20000.0),
       )
     assertEquals(20000, assertNotNull(figures.cohortOf(CostField.NET_PRICE, band = null)).amountUsd)
   }
@@ -182,7 +182,7 @@ class CollegeFiguresTest {
           MoneyMeasure.PELL_SHARE,
           CohortPopulation.UNDERGRADUATES,
           CohortAidScope.ALL,
-          VINTAGE_UNDATED,
+          null,
           0.4,
         ),
       )
@@ -199,12 +199,12 @@ class CollegeFiguresTest {
     // a different cohort's number, materially different, and unlabelled.
     val figures =
       figuresOf(
-        cohort(CostField.NET_PRICE, "2022-23", 20000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 20000.0),
         rawCohort(
           MoneyMeasure.AVG_NET_PRICE,
           CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
           CohortAidScope.GRANT_AIDED,
-          "2023-24",
+          AcademicYear(2023),
           12345.0,
         ),
       )
@@ -213,20 +213,20 @@ class CollegeFiguresTest {
       assertNotNull(figures.cohortOf(CostField.NET_PRICE, band = null)).amountUsd,
       "the served figure is the one at the address RFC 166 §8 pins, whatever else shares its measure",
     )
-    assertEquals("2022-23", assertNotNull(figures.cohortOf(CostField.NET_PRICE, band = null)).vintage)
+    assertEquals(AcademicYear(2022), assertNotNull(figures.cohortOf(CostField.NET_PRICE, band = null)).vintage)
   }
 
   @Test
   fun `a band figure is the band's row, and never the band-less row of another population`() {
     val figures =
       figuresOf(
-        cohort(CostField.NET_PRICE, "2022-23", 20000.0),
-        cohort(CostField.NET_PRICE, "2022-23", 6000.0, band = IncomeBand.UNDER_30K),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 20000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 6000.0, band = IncomeBand.UNDER_30K),
         rawCohort(
           MoneyMeasure.AVG_NET_PRICE,
           CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
           CohortAidScope.GRANT_AIDED,
-          "2023-24",
+          AcademicYear(2023),
           12345.0,
         ),
       )
@@ -243,17 +243,17 @@ class CollegeFiguresTest {
     // beside it must come from one row.
     val figures =
       figuresOf(
-        cohort(CostField.NET_PRICE, "2021-22", 20000.0),
-        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, "2021-22", 41000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2021), 20000.0),
+        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, AcademicYear(2021), 41000.0),
         rawCohort(
           MoneyMeasure.AVG_NET_PRICE,
           CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
           CohortAidScope.GRANT_AIDED,
-          "2023-24",
+          AcademicYear(2023),
           12345.0,
         ),
       )
-    assertEquals("2021-22", figures.blendedAverageVintage(band = null))
+    assertEquals(AcademicYear(2021), figures.blendedAverageVintage(band = null))
     assertEquals(20000, assertNotNull(figures.cohortOf(CostField.NET_PRICE, band = null)).amountUsd)
   }
 
@@ -261,11 +261,11 @@ class CollegeFiguresTest {
   fun `the blended-average year follows the band-selected row the family was served`() {
     val figures =
       figuresOf(
-        cohort(CostField.NET_PRICE, "2021-22", 20000.0),
-        cohort(CostField.NET_PRICE, "2022-23", 6000.0, band = IncomeBand.UNDER_30K),
-        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, "2022-23", 41000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2021), 20000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 6000.0, band = IncomeBand.UNDER_30K),
+        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, AcademicYear(2022), 41000.0),
       )
-    assertEquals("2022-23", figures.blendedAverageVintage(IncomeBand.UNDER_30K))
+    assertEquals(AcademicYear(2022), figures.blendedAverageVintage(IncomeBand.UNDER_30K))
     assertEquals(
       null,
       figures.blendedAverageVintage(band = null),
@@ -283,8 +283,8 @@ class CollegeFiguresTest {
     // the comparison basis -- under an academic year no row of it carries.
     val figures =
       figuresOf(
-        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, "2021-22", 41000.0),
-        cohort(CostField.NET_PRICE, "2022-23", 6000.0, band = IncomeBand.UNDER_30K),
+        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, AcademicYear(2021), 41000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 6000.0, band = IncomeBand.UNDER_30K),
       )
     assertEquals(41000, assertNotNull(figures.cohortOf(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, band = null)).amountUsd)
     assertEquals(6000, assertNotNull(figures.cohortOf(CostField.NET_PRICE, IncomeBand.UNDER_30K)).amountUsd)
@@ -296,10 +296,10 @@ class CollegeFiguresTest {
     // One year across both, and the label is that year.
     val agreed =
       figuresOf(
-        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, "2021-22", 41000.0),
-        cohort(CostField.NET_PRICE, "2021-22", 6000.0, band = IncomeBand.UNDER_30K),
+        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, AcademicYear(2021), 41000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2021), 6000.0, band = IncomeBand.UNDER_30K),
       )
-    assertEquals("2021-22", agreed.blendedAverageVintage(IncomeBand.UNDER_30K))
+    assertEquals(AcademicYear(2021), agreed.blendedAverageVintage(IncomeBand.UNDER_30K))
   }
 
   @Test
@@ -310,12 +310,12 @@ class CollegeFiguresTest {
     // really does write one measure at one key both ways.
     val figures =
       figuresOf(
-        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, VINTAGE_UNDATED, 23000.0),
-        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, "2022-23", 19500.0),
+        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, null, 23000.0),
+        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, AcademicYear(2022), 19500.0),
       )
     val debt = assertNotNull(figures.cohortOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, band = null))
     assertEquals(19500, debt.amountUsd, "the dated row is the better answer")
-    assertEquals("2022-23", debt.vintage, "and it keeps its own year")
+    assertEquals(AcademicYear(2022), debt.vintage, "and it keeps its own year")
   }
 
   @Test
@@ -326,7 +326,7 @@ class CollegeFiguresTest {
     // sentence -- and nothing would say the year was unknown.
     val error =
       assertFailsWith<IllegalStateException> {
-        figuresOf(cohort(CostField.NET_PRICE, VINTAGE_UNDATED, 20000.0))
+        figuresOf(cohort(CostField.NET_PRICE, null, 20000.0))
       }
     assertTrue(
       error.message.orEmpty().contains("avg_net_price") && error.message.orEmpty().contains(collegeId.value.toString()),
@@ -336,7 +336,7 @@ class CollegeFiguresTest {
     // untouched by the rule.
     assertNull(
       assertNotNull(
-        figuresOf(cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, VINTAGE_UNDATED, 23000.0))
+        figuresOf(cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, null, 23000.0))
           .cohortOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, band = null),
       ).vintage,
     )
@@ -350,8 +350,8 @@ class CollegeFiguresTest {
     // is a coincidence of the current vocabulary and not a property of the type.
     val figures =
       figuresOf(
-        rawCohort(MoneyMeasure.PELL_SHARE, CohortPopulation.UNDERGRADUATES, CohortAidScope.ALL, "2022-23", 0.183),
-        cohort(CostField.NET_PRICE, "2022-23", 20000.0),
+        rawCohort(MoneyMeasure.PELL_SHARE, CohortPopulation.UNDERGRADUATES, CohortAidScope.ALL, AcademicYear(2022), 0.183),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 20000.0),
       )
     assertEquals(MeasureUnit.SHARE, MoneyMeasure.PELL_SHARE.unit)
     assertTrue(
@@ -378,7 +378,7 @@ class CollegeFiguresTest {
     listOf(Double.NaN, 4_000_000_000.0, -4_000_000_000.0).forEach { value ->
       val error =
         assertFailsWith<IllegalArgumentException>("[$value] has no whole-dollar form") {
-          figuresOf(cohort(CostField.NET_PRICE, "2022-23", value))
+          figuresOf(cohort(CostField.NET_PRICE, AcademicYear(2022), value))
         }
       assertTrue(error.message.orEmpty().contains("whole-dollar"), "[${error.message}]")
     }
@@ -392,8 +392,8 @@ class CollegeFiguresTest {
     // a public school quoted -- and the surfaces carry no key saying which.
     val figures =
       figuresOf(
-        cohort(CostField.NET_PRICE, "2022-23", 20000.0),
-        cohort(CostField.NET_PRICE, "2022-23", 17000.0, residencyScope = CohortResidencyScope.ALL),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 20000.0),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 17000.0, residencyScope = CohortResidencyScope.ALL),
       )
     val error =
       assertFailsWith<IllegalArgumentException> {
@@ -408,7 +408,7 @@ class CollegeFiguresTest {
 
   @Test
   fun `a field read through the wrong door is refused, never answered as a school with no figure`() {
-    val figures = figuresOf(*completeYear("2023-24"))
+    val figures = figuresOf(*completeYear(AcademicYear(2023)))
     val error =
       assertFailsWith<IllegalStateException> {
         figures.cohortOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, band = null)
@@ -429,14 +429,14 @@ class CollegeFiguresTest {
       figuresOf(
         cohort(
           CostField.NET_PRICE,
-          "2022-23",
+          AcademicYear(2022),
           0.0,
           reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
         ),
       )
-    assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, figures.statusOf(CostField.NET_PRICE, "2023-24", band = null))
+    assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, figures.statusOf(CostField.NET_PRICE, AcademicYear(2023), band = null))
     assertNull(
-      figures.figureOf(CostField.NET_PRICE, "2023-24"),
+      figures.figureOf(CostField.NET_PRICE, AcademicYear(2023)),
       "the price door still answers nothing for a cohort figure -- a statistic takes no published-price year",
     )
   }
@@ -448,26 +448,26 @@ class CollegeFiguresTest {
     // tomorrow must be answerable through the same door.
     val figures =
       figuresOf(
-        *completeYear("2023-24"),
-        cohort(CostField.NET_PRICE, "2022-23", 20000.0),
-        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, "2022-23", 41000.0),
-        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, VINTAGE_UNDATED, 23000.0),
-        cohort(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, VINTAGE_UNDATED, 45000.0),
+        *completeYear(AcademicYear(2023)),
+        cohort(CostField.NET_PRICE, AcademicYear(2022), 20000.0),
+        cohort(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, AcademicYear(2022), 41000.0),
+        cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, null, 23000.0),
+        cohort(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, null, 45000.0),
       )
-    val answered = CostField.entries.filter { figures.statusOf(it, "2023-24", band = null) != null }
+    val answered = CostField.entries.filter { figures.statusOf(it, AcademicYear(2023), band = null) != null }
     assertTrue(
       CostField.entries.filter { it.figureAddress is FigureAddress.Cohort }.all { it in answered },
       "a cohort field with a row must carry a status: [${answered.map { it.wireName }}]",
     )
     assertNull(
-      figures.statusOf(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD, "2023-24", band = null),
+      figures.statusOf(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD, AcademicYear(2023), band = null),
       "our own assumption has no publisher status, and must not borrow one",
     )
   }
 
   @Test
   fun `an income band on a measure that files no band series is refused, never answered with null`() {
-    val figures = figuresOf(cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, VINTAGE_UNDATED, 23000.0))
+    val figures = figuresOf(cohort(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, null, 23000.0))
     val error =
       assertFailsWith<IllegalArgumentException> {
         figures.cohortOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, IncomeBand.UNDER_30K)
@@ -488,15 +488,15 @@ class CollegeFiguresTest {
     // and this school's off-campus travel allowance exists only two years back.
     val figures =
       figuresOf(
-        *completeYear("2023-24").filterNot { it.arrangement == FigureArrangement.OFF_CAMPUS }.toTypedArray(),
-        price(CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD, "2023-24", 11000),
-        price(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, "2021-22", 2400),
+        *completeYear(AcademicYear(2023)).filterNot { it.arrangement == FigureArrangement.OFF_CAMPUS }.toTypedArray(),
+        price(CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2023), 11000),
+        price(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2021), 2400),
       )
     val year = assertNotNull(chosenYearOf(figures))
-    assertEquals("2023-24", year)
+    assertEquals(AcademicYear(2023), year)
 
     val gap = assertNotNull(figures.yearGapOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, year))
-    assertEquals("2021-22", gap.academicYear, "the year we DO hold it for is named")
+    assertEquals(AcademicYear(2021), gap.academicYear, "the year we DO hold it for is named")
     assertEquals(2400, gap.amountUsd)
 
     // A figure that IS at the served year is no gap, and neither is one this
@@ -516,12 +516,12 @@ class CollegeFiguresTest {
       .forEach { absence ->
         val figures =
           figuresOf(
-            *completeYear("2023-24").filterNot { it.arrangement == FigureArrangement.OFF_CAMPUS }.toTypedArray(),
-            price(CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD, "2023-24", 11000),
-            price(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, "2021-22", reading = FigureReading.Absent(absence)),
+            *completeYear(AcademicYear(2023)).filterNot { it.arrangement == FigureArrangement.OFF_CAMPUS }.toTypedArray(),
+            price(CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2023), 11000),
+            price(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2021), reading = FigureReading.Absent(absence)),
           )
         val year = assertNotNull(chosenYearOf(figures))
-        assertEquals("2023-24", year)
+        assertEquals(AcademicYear(2023), year)
         assertNull(
           figures.yearGapOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, year),
           "[${absence.status.value}] at another year is that year's own answer, not a figure we hold",
@@ -541,17 +541,17 @@ class CollegeFiguresTest {
     // never neither.
     val figures =
       figuresOf(
-        *completeYear("2023-24").filterNot { it.arrangement == FigureArrangement.OFF_CAMPUS }.toTypedArray(),
-        price(CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD, "2023-24", 11000),
-        price(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, "2021-22", 2400),
+        *completeYear(AcademicYear(2023)).filterNot { it.arrangement == FigureArrangement.OFF_CAMPUS }.toTypedArray(),
+        price(CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2023), 11000),
+        price(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2021), 2400),
       )
-    assertEquals(2400, assertNotNull(figures.yearGapOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, "2023-24")).amountUsd)
+    assertEquals(2400, assertNotNull(figures.yearGapOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2023))).amountUsd)
     assertNull(
-      figures.statusOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, "2023-24", band = null),
+      figures.statusOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2023), band = null),
       "the year gap speaks for a value-bearing other-year row, so the status door stays silent and neither doubles the other",
     )
     assertNull(
-      figures.statusOf(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD, "2023-24", band = null),
+      figures.statusOf(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD, AcademicYear(2023), band = null),
       "a field with no row in any year still has no status at all",
     )
   }
@@ -632,11 +632,11 @@ class CollegeFiguresTest {
       figuresOf(
         price(
           CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Present(0, ValueBearingStatus.IMPUTED_BY_PUBLISHER),
         ),
       )
-    val fees = assertNotNull(figures.figureOf(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD, "2023-24"))
+    val fees = assertNotNull(figures.figureOf(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD, AcademicYear(2023)))
     assertEquals(0, fees.amountUsd)
     assertEquals(
       "This is the publisher's own estimate for this school, not a figure the school reported.",
@@ -655,18 +655,18 @@ class CollegeFiguresTest {
     // at all.
     val figures =
       figuresOf(
-        price(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD, "2023-24", 2550),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 8580),
-        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, "2023-24", 10590),
+        price(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD, AcademicYear(2023), 2550),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 8580),
+        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2023), 10590),
       )
-    assertEquals(ResidencyTierBasis.THREE_TIERS_PUBLISHED, residencyTiersOf(figures.servedAt("2023-24")))
+    assertEquals(ResidencyTierBasis.THREE_TIERS_PUBLISHED, residencyTiersOf(figures.servedAt(AcademicYear(2023))))
     assertEquals(
       listOf(
         CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
         CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
         CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD,
       ),
-      publishedTuitionTiersOf(figures.servedAt("2023-24")),
+      publishedTuitionTiersOf(figures.servedAt(AcademicYear(2023))),
     )
   }
 
@@ -678,14 +678,14 @@ class CollegeFiguresTest {
       figuresOf(
         price(
           CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.NOT_APPLICABLE),
         ),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 12000),
-        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, "2023-24", 30000),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 12000),
+        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2023), 30000),
       )
-    assertEquals(ResidencyTierBasis.TWO_TIERS_PUBLISHED, residencyTiersOf(figures.servedAt("2023-24")))
-    assertTrue(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD !in publishedTuitionTiersOf(figures.servedAt("2023-24")))
+    assertEquals(ResidencyTierBasis.TWO_TIERS_PUBLISHED, residencyTiersOf(figures.servedAt(AcademicYear(2023))))
+    assertTrue(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD !in publishedTuitionTiersOf(figures.servedAt(AcademicYear(2023))))
   }
 
   @Test
@@ -696,14 +696,14 @@ class CollegeFiguresTest {
     // PRICE.
     val figures =
       figuresOf(
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2022-23", 12000, source = MoneySource.SCORECARD),
-        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, "2022-23", 30000, source = MoneySource.SCORECARD),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2022), 12000, source = MoneySource.SCORECARD),
+        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2022), 30000, source = MoneySource.SCORECARD),
       )
-    val basis = residencyTiersOf(figures.servedAt("2022-23"))
+    val basis = residencyTiersOf(figures.servedAt(AcademicYear(2022)))
     assertEquals(ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT, basis)
     assertTrue(basis.statement.contains("district"), "the code ships with the words: [${basis.statement}]")
-    assertTrue(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD !in publishedTuitionTiersOf(figures.servedAt("2022-23")))
-    assertNull(figures.figureOf(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD, "2022-23"))
+    assertTrue(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD !in publishedTuitionTiersOf(figures.servedAt(AcademicYear(2022))))
+    assertNull(figures.figureOf(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD, AcademicYear(2022)))
   }
 
   @Test
@@ -721,11 +721,11 @@ class CollegeFiguresTest {
       )
     (0 until 8).forEach { mask ->
       val present = tiers.filterIndexed { index, _ -> (mask shr index) and 1 == 1 }
-      val figures = figuresOf(*present.map { price(it, "2023-24", 9000) }.toTypedArray())
+      val figures = figuresOf(*present.map { price(it, AcademicYear(2023), 9000) }.toTypedArray())
       // The empty combination publishes no price row at all, so it has no year
       // to be served at ([ServedFigures.servesNoPublishedPrice]) -- and it still
       // has to answer, with one price named and no key emitted.
-      val served = figures.servedAt("2023-24".takeIf { present.isNotEmpty() })
+      val served = figures.servedAt(AcademicYear(2023).takeIf { present.isNotEmpty() })
       val basis = residencyTiersOf(served)
       val emitted = publishedTuitionTiersOf(served)
       assertEquals(present.toSet(), emitted.toSet(), "every value-bearing tier is emitted: [$present]")
@@ -743,12 +743,12 @@ class CollegeFiguresTest {
   fun `a district price beside one state tier is named as such, and never as a single price`() {
     val figures =
       figuresOf(
-        price(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD, "2023-24", 2550),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 8580),
+        price(CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD, AcademicYear(2023), 2550),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 8580),
       )
-    val basis = residencyTiersOf(figures.servedAt("2023-24"))
+    val basis = residencyTiersOf(figures.servedAt(AcademicYear(2023)))
     assertEquals(ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER, basis)
-    assertEquals(2, publishedTuitionTiersOf(figures.servedAt("2023-24")).size)
+    assertEquals(2, publishedTuitionTiersOf(figures.servedAt(AcademicYear(2023))).size)
     assertTrue(basis.statement.contains("district"), "the code ships with the words: [${basis.statement}]")
   }
 
@@ -759,12 +759,12 @@ class CollegeFiguresTest {
   @Test
   fun `the assumed at-home line has no address in the store, and is available in the served year`() {
     assertEquals(FigureAddress.AssumedByUnicoach, CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.figureAddress)
-    val figures = figuresOf(*completeYear("2023-24"))
-    val lines = LivingArrangement.WITH_FAMILY.reportedComponentsOf(figures.servedAt("2023-24"))
+    val figures = figuresOf(*completeYear(AcademicYear(2023)))
+    val lines = LivingArrangement.WITH_FAMILY.reportedComponentsOf(figures.servedAt(AcademicYear(2023)))
     val assumed = assertNotNull(lines.singleOrNull { it.origin == LineOrigin.ASSUMED_BY_UNICOACH })
     assertEquals(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD, assumed.field)
     assertEquals(ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD, assumed.amountUsd)
-    assertEquals("2023-24", assumed.academicYear, "our line dates with the budget it belongs to")
+    assertEquals(AcademicYear(2023).label, assumed.academicYear, "our line dates with the budget it belongs to")
   }
 
   @Test
@@ -772,11 +772,11 @@ class CollegeFiguresTest {
     // A school that publishes nothing at home is not priced at home. If the
     // assumption counted toward completeness, every school in the corpus would
     // appear to price an at-home budget it never published a part of.
-    val figures = figuresOf(price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 12000))
+    val figures = figuresOf(price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 12000))
     assertFalse(
       figures.hasAnyValueAt(
         LivingArrangement.WITH_FAMILY.components.filter { it != CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD },
-        "2023-24",
+        AcademicYear(2023),
       ),
     )
   }
@@ -799,9 +799,9 @@ class CollegeFiguresTest {
       "a field is ours exactly when its address says no publisher fills it",
     )
 
-    val figures = figuresOf(*completeYear("2023-24"))
+    val figures = figuresOf(*completeYear(AcademicYear(2023)))
     LivingArrangement.entries.forEach { arrangement ->
-      val lines = arrangement.reportedComponentsOf(figures.servedAt("2023-24"))
+      val lines = arrangement.reportedComponentsOf(figures.servedAt(AcademicYear(2023)))
       arrangement.components.filter { it in addressedToUs }.forEach { field ->
         val line = assertNotNull(lines.singleOrNull { it.field == field }, "[${field.wireName}] is built as our line")
         assertEquals(LineOrigin.ASSUMED_BY_UNICOACH, line.origin, "[${field.wireName}] is named as ours")
@@ -867,12 +867,12 @@ class CollegeFiguresTest {
     // college does not carry, so every read degraded to "this school reports
     // nothing" and a real price list was rendered as a blank. Bound into
     // [ServedFigures], the wrong year has no constructor.
-    val figures = figuresOf(*completeYear("2023-24"))
-    val served = figures.servedAt("2023-24")
-    assertEquals("2023-24", served.academicYear)
+    val figures = figuresOf(*completeYear(AcademicYear(2023)))
+    val served = figures.servedAt(AcademicYear(2023))
+    assertEquals(AcademicYear(2023), served.academicYear)
     assertNotNull(served.amountOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD))
     assertFailsWith<IllegalArgumentException>("a year this college publishes nothing in is not a served year") {
-      figures.servedAt("2019-20")
+      figures.servedAt(AcademicYear(2019))
     }
   }
 
@@ -892,9 +892,9 @@ class CollegeFiguresTest {
       "and no arrangement is built for it -- not even out of our own assumption",
     )
     assertFailsWith<IllegalArgumentException>("a school with a price list is served at one of its years") {
-      figuresOf(*completeYear("2023-24")).servedAt(null)
+      figuresOf(*completeYear(AcademicYear(2023))).servedAt(null)
     }
-    assertFalse(figuresOf(*completeYear("2023-24")).servedAt("2023-24").servesNoPublishedPrice)
+    assertFalse(figuresOf(*completeYear(AcademicYear(2023))).servedAt(AcademicYear(2023)).servesNoPublishedPrice)
   }
 
   // ---------------------------------------------------------------------------
@@ -909,7 +909,7 @@ class CollegeFiguresTest {
     )
 
   /** The chosen published-price year for an ordinary in-state family, through the composer's own rule. */
-  private fun chosenYearOf(figures: CollegeFigures): String? =
+  private fun chosenYearOf(figures: CollegeFigures): AcademicYear? =
     figures.publishedPriceYearOf(
       LivingArrangement.entries.map { arrangement ->
         (
@@ -921,7 +921,7 @@ class CollegeFiguresTest {
 
   private fun price(
     field: CostField,
-    academicYear: String,
+    academicYear: AcademicYear,
     amountUsd: Int? = null,
     reading: FigureReading<Int>? = null,
     source: MoneySource = MoneySource.IPEDS_IC_AY,
@@ -954,7 +954,7 @@ class CollegeFiguresTest {
    */
   private fun cohort(
     field: CostField,
-    vintage: String,
+    vintage: AcademicYear?,
     value: Double,
     band: IncomeBand? = null,
     residencyScope: CohortResidencyScope = CohortResidencyScope.IN_STATE_RATE_PAYING,
@@ -981,7 +981,7 @@ class CollegeFiguresTest {
     measure: MoneyMeasure,
     population: CohortPopulation,
     aidScope: CohortAidScope,
-    vintage: String,
+    vintage: AcademicYear?,
     value: Double,
     band: IncomeBand? = null,
     residencyScope: CohortResidencyScope = CohortResidencyScope.IN_STATE_RATE_PAYING,
@@ -1002,7 +1002,7 @@ class CollegeFiguresTest {
     )
 
   /** Every published component and the in-state tuition, at one year -- a year that prices all three ways of living. */
-  private fun completeYear(academicYear: String): Array<PriceFigure> =
+  private fun completeYear(academicYear: AcademicYear): Array<PriceFigure> =
     arrayOf(
       price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, academicYear, 12000),
       price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, academicYear, 9000),

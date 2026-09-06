@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.MoneySource
 import kotlinx.coroutines.runBlocking
@@ -58,14 +59,14 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     concept: String,
     residency: String,
     arrangement: String = "not_applicable",
-    academicYear: String = "2023-24",
+    academicYear: AcademicYear = AcademicYear(2023),
   ): Figure? =
     query(
       "SELECT p.amount_usd, p.status, p.source, p.source_variable, p.publisher_flag " +
         "FROM price_figures p JOIN colleges g ON g.id = p.college_id " +
         "WHERE g.ipeds_unit_id = $ipedsUnitId AND p.price_concept = '$concept' " +
         "AND p.residency_basis = '$residency' AND p.arrangement = '$arrangement' " +
-        "AND p.academic_year = '$academicYear'",
+        "AND p.academic_year = ${academicYear.firstCalendarYear}",
     ) { rs ->
       Figure(
         amountUsd = rs.getInt(1).takeUnless { rs.wasNull() },
@@ -102,7 +103,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     // The Scorecard writes TUITIONFEE_IN at its published-price year, which
     // IC_AY also carries, so IPEDS takes that key too. 2,550 survives ONLY
     // under in_district.
-    val scorecardYear = CanonicalMoneyLoader.PUBLISHED_PRICE_ACADEMIC_YEAR
+    val scorecardYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR
     val inState = assertNotNull(figure(222992, "tuition_and_fees", "in_state", academicYear = scorecardYear))
     assertEquals(8580, inState.amountUsd)
     assertEquals(MoneySource.IPEDS_IC_AY.value, inState.source)
@@ -124,7 +125,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       query(
         "SELECT p.residency_basis, p.amount_usd FROM price_figures p JOIN colleges g ON g.id = p.college_id " +
           "WHERE g.ipeds_unit_id = 222992 AND p.price_concept = 'tuition_and_fees' " +
-          "AND p.academic_year = '2023-24' ORDER BY p.residency_basis",
+          "AND p.academic_year = 2023 ORDER BY p.residency_basis",
       ) { rs -> rs.getString(1) to rs.getInt(2) }
     assertEquals(listOf("in_district" to 2550, "in_state" to 8580, "out_of_state" to 10590), tiers)
   }
@@ -165,7 +166,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     ingest()
     // UCSD's two sources agree on the number and disagree on nothing; the
     // point is WHICH row is stored, and that there is exactly one.
-    val year = CanonicalMoneyLoader.PUBLISHED_PRICE_ACADEMIC_YEAR
+    val year = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR
     val row = assertNotNull(figure(110680, "tuition_and_fees", "in_state", academicYear = year))
     assertEquals(MoneySource.IPEDS_IC_AY.value, row.source)
     assertEquals("CHG2AY2", row.sourceVariable)
@@ -181,7 +182,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     // remainder IC_AY does not cover. Upstream-wins must not delete it.
     val row =
       assertNotNull(
-        figure(10236801, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_ACADEMIC_YEAR),
+        figure(10236801, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
       )
     assertEquals(MoneySource.SCORECARD.value, row.source)
     assertEquals("TUITIONFEE_IN", row.sourceVariable)
@@ -218,13 +219,13 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       query("SELECT DISTINCT source FROM price_figures") { it.getString(1) },
     )
     assertEquals(
-      listOf(CanonicalMoneyLoader.PUBLISHED_PRICE_ACADEMIC_YEAR),
-      query("SELECT DISTINCT academic_year FROM price_figures") { it.getString(1) },
+      listOf(CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+      query("SELECT DISTINCT academic_year FROM price_figures") { AcademicYear(it.getInt(1)) },
     )
     assertEquals(mapOf(MoneySource.SCORECARD to result.priceFigureRows), result.priceFigureSourceCounts)
     val inState =
       assertNotNull(
-        figure(222992, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_ACADEMIC_YEAR),
+        figure(222992, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
       )
     assertEquals(2550, inState.amountUsd)
     assertEquals("TUITIONFEE_IN", inState.sourceVariable)
@@ -243,12 +244,12 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       // and 2021-22 (10,830 -> 8,580) and has held since. History is stored
       // (D15) even though only the latest year is served today, so a later
       // slice can show the change without a re-ingest.
-      listOf("2020-21" to 10830, "2021-22" to 8580, "2022-23" to 8580, "2023-24" to 8580),
+      listOf(2020 to 10830, 2021 to 8580, 2022 to 8580, 2023 to 8580),
       query(
         "SELECT p.academic_year, p.amount_usd FROM price_figures p JOIN colleges g ON g.id = p.college_id " +
           "WHERE g.ipeds_unit_id = 222992 AND p.price_concept = 'tuition_and_fees' " +
           "AND p.residency_basis = 'in_state' ORDER BY p.academic_year",
-      ) { rs -> rs.getString(1) to rs.getInt(2) },
+      ) { rs -> rs.getInt(1) to rs.getInt(2) },
     )
   }
 
@@ -310,31 +311,39 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `MoneySource and EVERY schema domain CHECK name the same sources`() {
-    // Three tables carry a source column now: the two 0084 pinned and the
-    // cohort_population_counts 0085 added. Asserting only one twin would let
-    // the others drift -- exactly the failure the CHECK exists to prevent.
-    for (
-    constraint in
-    listOf(
-      "price_figures_source_domain_check",
-      "cohort_money_stats_source_domain_check",
-      "cohort_population_counts_source_domain_check",
-    )
-    ) {
-      val stored =
-        query(
-          "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = '$constraint'",
-        ) { it.getString(1) }.single()
-      for (member in MoneySource.entries) {
-        assertTrue(stored.contains("'${member.value}'"), "[$constraint] must name ${member.value}: $stored")
-      }
-      assertEquals(
-        3,
-        MoneySource.entries.size,
-        "a fourth source needs a migration, not just an enum member: [$constraint] $stored",
-      )
+  fun `MoneySource and the money_source domain name the same sources`() {
+    // ONE constraint, because the publisher axis is a DOMAIN (RFC 170): every
+    // source column carries the rule by type, so a fifth publisher is one
+    // ALTER DOMAIN and this pin does not grow a name per fact table. The list
+    // used to be pasted into five CHECKs and enumerated here.
+    val stored =
+      query(
+        "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c " +
+          "JOIN pg_type t ON t.oid = c.contypid WHERE t.typname = 'money_source'",
+      ) { it.getString(1) }.single()
+    for (member in MoneySource.entries) {
+      assertTrue(stored.contains("'${member.value}'"), "money_source must name ${member.value}: $stored")
     }
+    assertEquals(
+      MoneySource.entries.size,
+      Regex("'[a-z0-9_]+'").findAll(stored).count(),
+      "the domain must name exactly MoneySource's members, no more: $stored",
+    )
+    // And every source column really is the domain, so none of them can drift
+    // back to a private CHECK.
+    assertEquals(
+      listOf(
+        "aid_form_requirements.source",
+        "cohort_money_stats.source",
+        "cohort_population_counts.source",
+        "price_figures.source",
+        "source_documents.source",
+      ),
+      query(
+        "SELECT table_name || '.' || column_name FROM information_schema.columns " +
+          "WHERE domain_name = 'money_source' ORDER BY 1",
+      ) { it.getString(1) },
+    )
   }
 
   @Test
@@ -349,8 +358,8 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       session
         .prepareStatement(
           "INSERT INTO college_ipeds_charges (college_id, charge_variable, academic_year, amount_usd, " +
-            "imputation_flag) VALUES (?::uuid, 'CHG2AT', '2023-24', 4200, 'R'), " +
-            "(?::uuid, 'CHG2AY', '2019-20', 7350, 'R')",
+            "imputation_flag) VALUES (?::uuid, 'CHG2AT', 2023, 4200, 'R'), " +
+            "(?::uuid, 'CHG2AY', 2019, 7350, 'R')",
         ).use { stmt ->
           stmt.setString(1, collegeId)
           stmt.setString(2, collegeId)
@@ -385,7 +394,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       session
         .prepareStatement(
           "INSERT INTO college_ipeds_charges (college_id, charge_variable, academic_year, amount_usd, " +
-            "imputation_flag) VALUES (?::uuid, 'CHG2AT', '2023-24', 4200, 'R')",
+            "imputation_flag) VALUES (?::uuid, 'CHG2AT', 2023, 4200, 'R')",
         ).use { stmt ->
           stmt.setString(1, collegeId)
           stmt.executeUpdate()
@@ -408,9 +417,17 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     // the opposite mistake: a member that HAS a branch but was never ranked
     // here would simply never be iterated, its rows would stop being written,
     // and nothing would run to say so.
+    // Every source is accounted for: ranked here, or declared as one another
+    // phase writes (RFC 170 -- the Common Data Set rows are written by the
+    // `cds` phase, out of the committed seed, and this fill never sees them).
     assertEquals(
       MoneySource.entries.toSet(),
-      CanonicalMoneyLoader.ORDERED_SOURCES.toSet(),
+      CanonicalMoneyLoader.ORDERED_SOURCES.toSet() + CanonicalMoneyLoader.SOURCES_FILLED_ELSEWHERE,
+    )
+    assertEquals(
+      emptySet(),
+      CanonicalMoneyLoader.ORDERED_SOURCES.toSet() intersect CanonicalMoneyLoader.SOURCES_FILLED_ELSEWHERE,
+      "a source cannot both be ranked here and be filled elsewhere",
     )
     assertEquals(
       CanonicalMoneyLoader.ORDERED_SOURCES.size,
@@ -436,7 +453,10 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
             ).use { it.executeUpdate() }
         }
       }
-    assertContains(error.message ?: "", "price_figures_source_domain_check")
+    // The DOMAIN refuses it, by its own name: one constraint standing behind
+    // every source column, rather than a per-table CHECK that has to be added
+    // to each new fact table (RFC 170).
+    assertContains(error.message ?: "", "money_source_check")
   }
 
   @Test

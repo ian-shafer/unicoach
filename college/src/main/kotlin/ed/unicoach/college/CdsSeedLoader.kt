@@ -1,18 +1,40 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.SourceDocumentsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UpsertOutcome
+import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AidForm
+import ed.unicoach.db.models.AidFormApplicantGroup
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsCoverage
 import ed.unicoach.db.models.CdsMonthDay
+import ed.unicoach.db.models.CohortAidScope
+import ed.unicoach.db.models.CohortPopulation
+import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.FactTable
 import ed.unicoach.db.models.FactorRating
+import ed.unicoach.db.models.FigureArrangement
+import ed.unicoach.db.models.FigureReading
+import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NewAidFormRequirement
+import ed.unicoach.db.models.NewCohortMoneyStat
+import ed.unicoach.db.models.NewCohortPopulationCount
 import ed.unicoach.db.models.NewCollegeAdmissionFactors
 import ed.unicoach.db.models.NewCollegeDeadline
 import ed.unicoach.db.models.NewCollegeMeritAid
+import ed.unicoach.db.models.NewSourceDocument
+import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.ValueBearingStatus
 import org.apache.commons.csv.CSVRecord
 import java.io.File
 
@@ -26,9 +48,10 @@ data class CdsSources(
   val meritAid: SourceFile,
   val admissionFactors: SourceFile,
   val deadlines: SourceFile,
+  val aidPolicy: SourceFile,
 ) {
-  /** The three files in provenance order, for digesting. */
-  val files: List<SourceFile> get() = listOf(meritAid, admissionFactors, deadlines)
+  /** The four files in provenance order, for digesting. */
+  val files: List<SourceFile> get() = listOf(meritAid, admissionFactors, deadlines, aidPolicy)
 
   /**
    * Each file paired with the ROLE it fills -- the CDS flag the operator typed,
@@ -45,6 +68,7 @@ data class CdsSources(
         "cds-merit" to meritAid,
         "cds-factors" to admissionFactors,
         "cds-deadlines" to deadlines,
+        "cds-aid-policy" to aidPolicy,
       )
 }
 
@@ -96,6 +120,14 @@ class CdsSeedLoader(
     MERIT_AID("merit-aid", "merit_aid", "merit aid"),
     ADMISSION_FACTORS("admission-factors", "admission_factors", "admission factors"),
     DEADLINES("deadlines", "deadlines", "deadlines"),
+
+    /**
+     * The RFC 170 need-and-forms seed. Unlike the three above it does not have
+     * a table of its own: its rows are CANONICAL money facts, so they land in
+     * `cohort_money_stats`, `cohort_population_counts` and
+     * `aid_form_requirements` -- the tables the domain already puts them in.
+     */
+    AID_POLICY("aid-policy", "aid_policy", "aid policy"),
   }
 
   /**
@@ -158,6 +190,47 @@ class CdsSeedLoader(
       val day: Int,
     ) : Defect
 
+    /** A year cell outside the academic years the store admits ([AcademicYear]'s own range). */
+    data class NotAnAcademicYear(
+      val table: Table,
+      val line: Long,
+      val column: String,
+      val value: Int,
+    ) : Defect
+
+    /** A decimal cell that is not a decimal: the CDS publishes 18006.5357, so "not an integer" would be wrong. */
+    data class NotADecimal(
+      val table: Table,
+      val line: Long,
+      val column: String,
+      val value: String,
+    ) : Defect
+
+    /**
+     * A cell carrying a value under a status that bears none (RFC 158 D3). Its
+     * own variant because the alternative -- an `UnknownCode` whose allowed
+     * list is `listOf("")` -- renders as "is not one of []", which tells an
+     * operator nothing.
+     */
+    data class ValueUnderValuelessStatus(
+      val table: Table,
+      val line: Long,
+      val status: String,
+      val value: String,
+    ) : Defect
+
+    /**
+     * Two seed rows naming one filing with different urls (RFC 170, D13). Both
+     * documents ride on the defect: which url is "wrong" is the operator's
+     * call, and a message that names only one cannot be acted on.
+     */
+    data class ConflictingFilingUrls(
+      val table: Table,
+      val line: Long,
+      val first: NewSourceDocument,
+      val second: NewSourceDocument,
+    ) : Defect
+
     /** A month/day pair that is not a real calendar date (month out of 1..12,
      * or a day past that month's length -- Feb 29 IS a real CDS date, the
      * corpus is cycle-relative and carries no year). */
@@ -210,10 +283,28 @@ class CdsSeedLoader(
     val skipped: Int get() = unmatchedIpedsUnitIds.size
   }
 
+  /**
+   * What the aid-policy file wrote (RFC 170). Not a [TableSummary]: these rows
+   * are not upserted per natural key, they are a WHOLESALE rebuild of the
+   * Common Data Set's share of three canonical tables, so "changed" and
+   * "unchanged" are not facts about them -- the count that lands is the count
+   * that exists.
+   */
+  data class AidPolicySummary(
+    val cohortMoneyStats: Int,
+    val cohortPopulationCounts: Int,
+    val aidFormRequirements: Int,
+    val unmatchedIpedsUnitIds: List<Int>,
+  ) {
+    val rows: Int get() = cohortMoneyStats + cohortPopulationCounts + aidFormRequirements
+    val skipped: Int get() = unmatchedIpedsUnitIds.size
+  }
+
   data class LoadResult(
     val meritAid: TableSummary,
     val admissionFactors: TableSummary,
     val deadlines: TableSummary,
+    val aidPolicy: AidPolicySummary,
     val coverage: CdsCoverage,
   ) {
     /**
@@ -235,7 +326,12 @@ class CdsSeedLoader(
     var upserted = 0
     var changed = 0
     var unchanged = 0
-    val unmatchedIpedsUnitIds = mutableListOf<Int>()
+    private val unmatchedIpedsUnitIds = mutableListOf<Int>()
+
+    /** The unmatched UNITIDs this file skipped -- appended THROUGH the tally, never into its list from outside. */
+    fun recordUnmatched(ipedsUnitIds: List<Int>) {
+      unmatchedIpedsUnitIds += ipedsUnitIds
+    }
 
     fun record(outcome: UpsertOutcome) {
       when (outcome) {
@@ -263,6 +359,7 @@ class CdsSeedLoader(
     assertHeader(sources.meritAid, MERIT_AID_COLUMNS)
     assertHeader(sources.admissionFactors, ADMISSION_FACTORS_COLUMNS)
     assertHeader(sources.deadlines, DEADLINES_COLUMNS)
+    assertHeader(sources.aidPolicy, AID_POLICY_COLUMNS)
   }
 
   /** Loads the three seed files (header-asserted first) and computes the
@@ -271,6 +368,7 @@ class CdsSeedLoader(
     meritAidCsv: File,
     admissionFactorsCsv: File,
     deadlinesCsv: File,
+    aidPolicyCsv: File,
   ): LoadResult =
     database.withConnection { session ->
       // Assert every header before any row of any file is written, so a renamed
@@ -287,37 +385,60 @@ class CdsSeedLoader(
       assertHeader(SourceFile(meritAidCsv, meritAidCsv.path), MERIT_AID_COLUMNS)
       assertHeader(SourceFile(admissionFactorsCsv, admissionFactorsCsv.path), ADMISSION_FACTORS_COLUMNS)
       assertHeader(SourceFile(deadlinesCsv, deadlinesCsv.path), DEADLINES_COLUMNS)
+      assertHeader(SourceFile(aidPolicyCsv, aidPolicyCsv.path), AID_POLICY_COLUMNS)
+
+      // The seed carries the two urls on every ROW because a CSV has no other
+      // shape to carry them in; the database stores them ONCE, on the document
+      // (RFC 170, D13). This value is how the four files agree about that one
+      // document: the first row of a filing fixes its urls and a later row --
+      // in this file or another -- naming different ones is refused, rather
+      // than resolved by write order with nobody told.
+      var filings = Filings()
 
       val meritAid =
         loadTable(session, meritAidCsv, Table.MERIT_AID, MERIT_AID_COLUMNS) { collegeId, record ->
-          CdsAdmissionsDao.upsertMeritAid(session, mapMeritAid(collegeId, record))
+          val (id, seen) = documentIdFor(session, collegeId, record, Table.MERIT_AID, filings)
+          filings = seen
+          id.thenWrite { document -> CdsAdmissionsDao.upsertMeritAid(session, mapMeritAid(collegeId, record, document)) }
         }
       val factors =
         loadTable(session, admissionFactorsCsv, Table.ADMISSION_FACTORS, ADMISSION_FACTORS_COLUMNS) { collegeId, record ->
-          CdsAdmissionsDao.upsertAdmissionFactors(session, mapAdmissionFactors(collegeId, record))
+          val (id, seen) = documentIdFor(session, collegeId, record, Table.ADMISSION_FACTORS, filings)
+          filings = seen
+          id.thenWrite { document ->
+            CdsAdmissionsDao.upsertAdmissionFactors(session, mapAdmissionFactors(collegeId, record, document))
+          }
         }
       val deadlines =
         loadTable(session, deadlinesCsv, Table.DEADLINES, DEADLINES_COLUMNS) { collegeId, record ->
-          CdsAdmissionsDao.upsertDeadline(session, mapDeadline(collegeId, record))
+          val (id, seen) = documentIdFor(session, collegeId, record, Table.DEADLINES, filings)
+          filings = seen
+          id.thenWrite { document -> CdsAdmissionsDao.upsertDeadline(session, mapDeadline(collegeId, record, document)) }
         }
+      val aidPolicy = loadAidPolicy(session, aidPolicyCsv, filings)
       val coverage = CdsAdmissionsDao.getCoverage(session).getOrThrow()
-      LoadResult(meritAid, factors, deadlines, coverage)
+      LoadResult(meritAid, factors, deadlines, aidPolicy, coverage)
     }
 
   /**
-   * Streams one seed file: per row, resolve UNITID -> `colleges.id` (unmatched:
-   * skip and record the UNITID), map, upsert, tally the [UpsertOutcome]. Any
-   * mapping or upsert failure propagates -- a machine-generated seed row that
-   * fails is a broken seed, not a skippable line.
+   * Streams one seed file's MATCHED rows: arity check, `unit_id` parse, and the
+   * `colleges` lookup, in that order, for every row; returns the UNITIDs no
+   * college carried.
+   *
+   * The one traversal every seed file gets, so the arity rule, the located
+   * defects and the unmatched discipline cannot differ between them -- they
+   * already had two copies, and the copies had already begun to differ. What a
+   * caller does with a matched row is [onRow]'s business: a per-key upsert
+   * tallies its outcome, the canonical rebuild accumulates rows to insert.
    */
-  private fun loadTable(
+  private fun forEachResolvedRow(
     session: SqlSession,
     file: File,
     table: Table,
     columns: List<String>,
-    upsert: (CollegeId, CSVRecord) -> Result<UpsertOutcome>,
-  ): TableSummary {
-    val tally = Tally()
+    onRow: (CollegeId, Int, CSVRecord) -> Unit,
+  ): List<Int> {
+    val unmatched = mutableListOf<Int>()
     parseCsv(file).use { records ->
       for (record in records) {
         // The header assertion covers column NAMES only; this covers a
@@ -332,14 +453,39 @@ class CdsSeedLoader(
           rawIpedsUnitId.trim().toIntOrNull() ?: throw FormatException(
             Defect.NotAnInteger(table, record.recordNumber, "unit_id", rawIpedsUnitId),
           )
-        val college = withRowLocation(table, record, ipedsUnitId) { CollegesDao.findByIpedsUnitId(session, ipedsUnitId) }
+        val college =
+          withRowLocation(table, record, ipedsUnitId) { CollegesDao.findByIpedsUnitId(session, ipedsUnitId) }
         if (college == null) {
-          tally.unmatchedIpedsUnitIds += ipedsUnitId
+          // The ONE tolerated mismatch: the corpus covers schools our
+          // Scorecard snapshot lacks. Its identity is kept so the run report
+          // can name it.
+          unmatched += ipedsUnitId
           continue
         }
-        tally.record(withRowLocation(table, record, ipedsUnitId) { upsert(college.id, record) })
+        onRow(college.id, ipedsUnitId, record)
       }
     }
+    return unmatched
+  }
+
+  /**
+   * Streams one seed file into a per-key upsert, tallying the [UpsertOutcome].
+   * Any mapping or upsert failure propagates -- a machine-generated seed row
+   * that fails is a broken seed, not a skippable line.
+   */
+  private fun loadTable(
+    session: SqlSession,
+    file: File,
+    table: Table,
+    columns: List<String>,
+    upsert: (CollegeId, CSVRecord) -> Result<UpsertOutcome>,
+  ): TableSummary {
+    val tally = Tally()
+    tally.recordUnmatched(
+      forEachResolvedRow(session, file, table, columns) { collegeId, ipedsUnitId, record ->
+        tally.record(withRowLocation(table, record, ipedsUnitId) { upsert(collegeId, record) })
+      },
+    )
     return tally.getSummary()
   }
 
@@ -356,25 +502,450 @@ class CdsSeedLoader(
     }
 
   // ---------------------------------------------------------------------------
+  // The aid-policy seed (RFC 170): canonical facts, not a table of their own.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * What one `aid_policy.csv` fact IS, in the canonical store's own terms. A
+   * closed mapping keyed by the seed's `fact` column: an unknown fact is a
+   * broken seed, never a row quietly dropped, and the destination of every
+   * known one is stated here rather than inferred from its name.
+   *
+   * [table] is on the member because the rebuild's DELETE set is derived from
+   * this mapping: route a new fact to a fourth table and it would otherwise be
+   * inserted but never cleared, and the wholesale rebuild would quietly stop
+   * being wholesale.
+   */
+  internal sealed interface AidPolicyFact {
+    val table: FactTable
+
+    /**
+     * A cohort STATISTIC.
+     *
+     * [population] rides on the member because the CDS reports its H2 averages
+     * over a DIFFERENT line from its fully-met headcount -- lines i and k are
+     * "of students who were awarded any need-based aid" and "of those in line
+     * e", while line h is "in line d". One population constant for the whole
+     * group would have filed both averages against a larger cohort than the
+     * school measured.
+     *
+     * The published-unit conversion is NOT here: it belongs to the measure's
+     * own [ed.unicoach.db.models.MeasureUnit], which is where every other
+     * loader reads it.
+     */
+    data class Stat(
+      val measure: MoneyMeasure,
+      val population: CohortPopulation,
+    ) : AidPolicyFact {
+      override val table: FactTable get() = FactTable.COHORT_MONEY_STATS
+    }
+
+    /** A HEADCOUNT: not money, so `cohort_population_counts` (RFC 162). */
+    data class Count(
+      val population: CohortPopulation,
+    ) : AidPolicyFact {
+      override val table: FactTable get() = FactTable.COHORT_POPULATION_COUNTS
+    }
+
+    /** A REQUIREMENT: a relation, not a statistic (RFC 170, D4). */
+    data class Form(
+      val form: AidForm,
+    ) : AidPolicyFact {
+      override val table: FactTable get() = FactTable.AID_FORM_REQUIREMENTS
+    }
+  }
+
+  /** Everything one aid-policy seed read produced, before a single row is written. */
+  private data class ReadAidPolicy(
+    val stats: List<NewCohortMoneyStat>,
+    val counts: List<NewCohortPopulationCount>,
+    val forms: List<NewAidFormRequirement>,
+    val unmatchedIpedsUnitIds: List<Int>,
+  )
+
+  /**
+   * Loads `aid_policy.csv` into the three canonical tables it belongs to,
+   * inside the caller's transaction: read the file into rows, then rebuild.
+   *
+   * The two halves are separate functions because they answer different
+   * questions -- what does the seed say, and what does the database now hold --
+   * and because the read is the half that can fail on a malformed cell, before
+   * anything has been deleted.
+   */
+  private fun loadAidPolicy(
+    session: SqlSession,
+    file: File,
+    filings: Filings,
+  ): AidPolicySummary = writeAidPolicy(session, readAidPolicy(session, file, filings))
+
+  /**
+   * `aid_policy.csv` as canonical rows. Writes ONE thing itself -- the
+   * `source_documents` row each fact cites, which must exist before the fact
+   * that references it can be inserted.
+   */
+  private fun readAidPolicy(
+    session: SqlSession,
+    file: File,
+    filings: Filings,
+  ): ReadAidPolicy {
+    val stats = mutableListOf<NewCohortMoneyStat>()
+    val counts = mutableListOf<NewCohortPopulationCount>()
+    val forms = mutableListOf<NewAidFormRequirement>()
+    var seen = filings
+    val unmatched =
+      forEachResolvedRow(session, file, Table.AID_POLICY, AID_POLICY_COLUMNS) { collegeId, ipedsUnitId, record ->
+        val row = aidPolicyRow(session, collegeId, ipedsUnitId, record, seen)
+        seen = row.filings
+        // A pure router: which of the three canonical shapes this row IS, and
+        // nothing else. The row building lives with the shape it builds.
+        when (val fact = getCode(record, "fact", Table.AID_POLICY, AID_POLICY_FACTS)) {
+          is AidPolicyFact.Stat -> stats += statOf(fact, row)
+          is AidPolicyFact.Count -> counts += countOf(fact, row)
+          is AidPolicyFact.Form -> forms += formOf(fact, row)
+        }
+      }
+    return ReadAidPolicy(stats, counts, forms, unmatched)
+  }
+
+  /**
+   * One aid-policy row's shared reading: everything the three canonical row
+   * types need and none of them derive differently -- the college, the cycle,
+   * the status, the published cell id, and the document this row cites.
+   *
+   * [filings] rides through as a VALUE rather than a mutated map: the filing
+   * agreement check is order-dependent by nature, and a getter that quietly
+   * writes to shared state is how that becomes accidental.
+   */
+  private data class AidPolicyRow(
+    val record: CSVRecord,
+    val collegeId: CollegeId,
+    val year: AcademicYear,
+    val status: FigureStatus,
+    val sourceVariable: String,
+    val document: SourceDocumentId,
+    val filings: Filings,
+  )
+
+  private fun aidPolicyRow(
+    session: SqlSession,
+    collegeId: CollegeId,
+    ipedsUnitId: Int,
+    record: CSVRecord,
+    filings: Filings,
+  ): AidPolicyRow {
+    val year = getAcademicYear(record, "source_year", Table.AID_POLICY)
+    val filing = filingOf(record, collegeId, year, Table.AID_POLICY, filings)
+    val document =
+      withRowLocation(Table.AID_POLICY, record, ipedsUnitId) {
+        SourceDocumentsDao.upsert(session, filing.document)
+      }
+    return AidPolicyRow(
+      record = record,
+      collegeId = collegeId,
+      year = year,
+      status = getCode(record, "status", Table.AID_POLICY, AID_POLICY_STATUSES),
+      sourceVariable = getString(record, "source_variable", Table.AID_POLICY),
+      document = document,
+      filings = filing.filings,
+    )
+  }
+
+  /** One H2 statistic: the measure's own population and its own published unit. */
+  private fun statOf(
+    fact: AidPolicyFact.Stat,
+    row: AidPolicyRow,
+  ) = NewCohortMoneyStat(
+    collegeId = row.collegeId.value,
+    measure = fact.measure,
+    // The denominator, said out loud and per measure: the CDS reports each H2
+    // line against a named earlier line, and the fact table's job is to carry
+    // that population rather than a convenient one (RFC 162's scope rule).
+    population = fact.population,
+    residencyScope = CohortResidencyScope.ALL,
+    aidScope = CohortAidScope.NEED_BASED_AID_RECEIVING,
+    incomeBand = null,
+    vintage = row.year,
+    reading =
+      aidPolicyReading(
+        row.record,
+        row.status,
+        ::decimalOrNull,
+        fact.measure.unit::storedValueOf,
+        { raw -> Defect.NotADecimal(Table.AID_POLICY, row.record.recordNumber, "value", raw) },
+      ),
+    source = MoneySource.COMMON_DATA_SET,
+    sourceVariable = row.sourceVariable,
+    sourceDocumentId = row.document,
+  )
+
+  /** One H2 headcount: not money, so the sibling table and the explicit not_applicable axes. */
+  private fun countOf(
+    fact: AidPolicyFact.Count,
+    row: AidPolicyRow,
+  ) = NewCohortPopulationCount(
+    collegeId = row.collegeId.value,
+    population = fact.population,
+    // The CDS does not split these counts by residency or by way of living, and
+    // the vocabulary has an explicit key for that: inapplicability is chosen,
+    // never defaulted (RFC 158, P3).
+    residencyBasis = ResidencyBasis.NOT_APPLICABLE,
+    arrangement = FigureArrangement.NOT_APPLICABLE,
+    vintage = row.year,
+    reading = aidPolicyReading(row.record, row.status, String::toIntOrNull, { it }),
+    source = MoneySource.COMMON_DATA_SET,
+    sourceVariable = row.sourceVariable,
+    sourceDocumentId = row.document,
+  )
+
+  /** One H8 requirement: `true` or nothing, of the domestic first-year group. */
+  private fun formOf(
+    fact: AidPolicyFact.Form,
+    row: AidPolicyRow,
+  ) = NewAidFormRequirement(
+    collegeId = row.collegeId.value,
+    form = fact.form,
+    // The H8 block. The nonresident group (H7) is the other value the schema
+    // admits and this seed does not carry.
+    applicantGroup = AidFormApplicantGroup.DOMESTIC_FIRST_YEAR,
+    academicYear = row.year,
+    reading =
+      aidPolicyReading(
+        row.record,
+        row.status,
+        ::requiredFlag,
+        { it },
+        // A flag cell is a coded cell: say which value would have been
+        // accepted, rather than calling `false` a bad integer.
+        { raw ->
+          Defect.UnknownCode(Table.AID_POLICY, row.record.recordNumber, "value", raw, listOf(REQUIRED_FLAG))
+        },
+      ),
+    source = MoneySource.COMMON_DATA_SET,
+    sourceVariable = row.sourceVariable,
+    sourceDocumentId = row.document,
+  )
+
+  /**
+   * Rebuilds the Common Data Set's share of the three canonical tables, and
+   * only its share: the `canonical-money` phase owns the Scorecard and IPEDS
+   * rows in the same tables and rebuilds them in the same run
+   * ([CanonicalMoneyDao.deleteFactsOfSources]). Idempotency is by construction
+   * (RFC 158 P12); a school that stops reporting a figure loses its row rather
+   * than keeping last year's.
+   */
+  private fun writeAidPolicy(
+    session: SqlSession,
+    rows: ReadAidPolicy,
+  ): AidPolicySummary {
+    // DERIVED from the fact mapping, never a second list: a fact routed to a
+    // new table is cleared because it is routed there, not because someone
+    // remembered to add the table name here too.
+    for (table in AID_POLICY_FACTS.values.map { it.table }.distinct()) {
+      CanonicalMoneyDao.deleteFactsOfSources(session, table, listOf(MoneySource.COMMON_DATA_SET)).getOrThrow()
+    }
+    return AidPolicySummary(
+      cohortMoneyStats = CanonicalMoneyDao.insertCohortMoneyStats(session, rows.stats).getOrThrow(),
+      cohortPopulationCounts = CanonicalMoneyDao.insertCohortPopulationCounts(session, rows.counts).getOrThrow(),
+      aidFormRequirements = CanonicalMoneyDao.insertAidFormRequirements(session, rows.forms).getOrThrow(),
+      unmatchedIpedsUnitIds = rows.unmatchedIpedsUnitIds.distinct(),
+    )
+  }
+
+  /**
+   * The id of the `source_documents` row one seed row cites, upserted on its
+   * natural key. Every one of the four seed files goes through here, so a
+   * filing is one document however many rows and files name it.
+   */
+  private fun documentIdFor(
+    session: SqlSession,
+    collegeId: CollegeId,
+    record: CSVRecord,
+    table: Table,
+    filings: Filings,
+  ): Pair<Result<SourceDocumentId>, Filings> {
+    val year = getAcademicYear(record, "source_year", table)
+    val filing = filingOf(record, collegeId, year, table, filings)
+    return SourceDocumentsDao.upsert(session, filing.document) to filing.filings
+  }
+
+  /**
+   * Chains the document write into the fact write, keeping this loader's two
+   * error kinds apart: a DB failure stays a [Result] (which the row-location
+   * wrapper turns into a located [LoadException]), while a malformed CELL
+   * still THROWS [FormatException] out of [block] as it always did.
+   * `mapCatching` would have swallowed the second into the first, and every
+   * "named by file and line" guarantee with it.
+   */
+  private inline fun <T, R> Result<T>.thenWrite(block: (T) -> Result<R>): Result<R> = fold(block) { Result.failure(it) }
+
+  /**
+   * The filings this load has read so far, as a VALUE.
+   *
+   * One filing has one pair of urls (D13), and the seed repeats them on every
+   * row they back -- so the first row of a filing fixes them and a later row,
+   * in this file or another, naming different ones is refused. Immutable
+   * because the check is order-dependent by nature: a shared map written in
+   * place by something that reads like a getter is how "first wins" quietly
+   * becomes "whoever ran last".
+   */
+  @JvmInline
+  internal value class Filings(
+    private val documents: Map<Pair<CollegeId, AcademicYear>, NewSourceDocument> = emptyMap(),
+  ) {
+    /** The document already read for this filing, or null when it is the first. */
+    fun first(
+      collegeId: CollegeId,
+      year: AcademicYear,
+    ): NewSourceDocument? = documents[collegeId to year]
+
+    /** This set plus [document] -- a new value, never a mutation of the old one. */
+    fun with(document: NewSourceDocument): Filings = Filings(documents + ((document.collegeId to document.academicYear) to document))
+  }
+
+  /** One row's filing and the filing set that now includes it. */
+  private data class ReadFiling(
+    val document: NewSourceDocument,
+    val filings: Filings,
+  )
+
+  /**
+   * The filing one seed row cites, refusing a second row that names a DIFFERENT
+   * url for the same (college, cycle).
+   *
+   * D13 stores one copy of the two urls, which is what stops them disagreeing
+   * in the database -- but a seed carrying two urls for one filing would then
+   * be resolved by write order, unreported. This is where that is a located
+   * defect instead. PURE: it returns the filing set it would have written.
+   */
+  private fun filingOf(
+    record: CSVRecord,
+    collegeId: CollegeId,
+    year: AcademicYear,
+    table: Table,
+    filings: Filings,
+  ): ReadFiling {
+    val document =
+      NewSourceDocument(
+        collegeId = collegeId,
+        source = MoneySource.COMMON_DATA_SET,
+        academicYear = year,
+        sourceUrl = getString(record, "source_url", table),
+        archiveUrl = getStringOrNull(record, "archive_url"),
+      )
+    val first = filings.first(collegeId, year)
+    if (first != null && first != document) {
+      throw FormatException(Defect.ConflictingFilingUrls(table, record.recordNumber, first, document))
+    }
+    return ReadFiling(document, filings.with(document))
+  }
+
+  /**
+   * The seed's value and status as ONE reading, whatever the value's type.
+   *
+   * The seed states the pairing and this is where a seed that breaks it is
+   * refused: a value under a status that bears none, or a value-bearing status
+   * with an empty cell, is a broken seed rather than a row to patch up. [parse]
+   * is the cell's own reading and [scale] its published-unit conversion, so the
+   * three fact kinds share one rule instead of three copies of it.
+   *
+   * [unreadable] names the defect a bad cell IS, and defaults to the numeric
+   * one the two figure kinds want: "is not an integer" is the wrong sentence
+   * about a checkbox, and the message an operator reads is the whole product of
+   * this loader's error contract.
+   */
+  private fun <T> aidPolicyReading(
+    record: CSVRecord,
+    status: FigureStatus,
+    parse: (String) -> T?,
+    scale: (T) -> T,
+    unreadable: (String) -> Defect = { raw -> Defect.NotAnInteger(Table.AID_POLICY, record.recordNumber, "value", raw) },
+  ): FigureReading<T> {
+    val raw =
+      valueCell(record, status) ?: return FigureReading.Absent(
+        // The partitions are total on FigureStatus and the branch above proved
+        // which half this status is in, so neither `?:` can fire -- and if the
+        // partition ever stops being total, it says so here rather than
+        // defaulting to a status the seed did not state.
+        AbsenceStatus.ofOrNull(status) ?: throw FormatException(mapUnpartitionedStatusDefect(record, status)),
+      )
+    val value = parse(raw) ?: throw FormatException(unreadable(raw))
+    return FigureReading.Present(
+      scale(value),
+      ValueBearingStatus.ofOrNull(status) ?: throw FormatException(mapUnpartitionedStatusDefect(record, status)),
+    )
+  }
+
+  /** A status that is in neither half of the value-bearing partition -- a code defect, reported as a located one. */
+  private fun mapUnpartitionedStatusDefect(
+    record: CSVRecord,
+    status: FigureStatus,
+  ): Defect =
+    Defect.UnknownCode(
+      table = Table.AID_POLICY,
+      line = record.recordNumber,
+      column = "status",
+      value = status.value,
+      allowed = AID_POLICY_STATUSES.keys.toList(),
+    )
+
+  /**
+   * A decimal cell, strictly: digits with at most one decimal point.
+   *
+   * NOT `toDoubleOrNull`, which accepts `NaN`, `Infinity`, `0x1p3` and a
+   * trailing `d`/`f` -- so a NaN cell was scaled, inserted, and refused by the
+   * database with no file or line on the message. The integer twin has always
+   * been strict; this is the same rule for the money and percent cells.
+   */
+  private fun decimalOrNull(raw: String): Double? = if (DECIMAL.matches(raw)) raw.toDoubleOrNull() else null
+
+  /**
+   * A form requirement's value: `true`, and nothing else.
+   *
+   * `false` is refused rather than stored (RFC 170, D5). No source publishes a
+   * negative, so a `false` in the seed means the fetcher changed its mind about
+   * what an unticked box means, and storing it would turn "not listed in this
+   * school's CDS" into the promise "this school does not require it".
+   */
+  private fun requiredFlag(raw: String): Boolean? = if (raw == REQUIRED_FLAG) true else null
+
+  /** The raw value cell for a value-bearing status, or null when the status bears none. */
+  private fun valueCell(
+    record: CSVRecord,
+    status: FigureStatus,
+  ): String? {
+    val raw = getStringOrNull(record, "value")
+    if (!status.valueBearing) {
+      if (raw != null) {
+        throw FormatException(
+          Defect.ValueUnderValuelessStatus(Table.AID_POLICY, record.recordNumber, status.value, raw),
+        )
+      }
+      return null
+    }
+    return raw ?: throw FormatException(Defect.EmptyRequiredCell(Table.AID_POLICY, record.recordNumber, "value"))
+  }
+
+  // ---------------------------------------------------------------------------
   // Row mapping -- pure CSV-to-model, fatal on any malformed cell.
   // ---------------------------------------------------------------------------
 
   private fun mapMeritAid(
     collegeId: CollegeId,
     record: CSVRecord,
+    sourceDocumentId: SourceDocumentId,
   ) = NewCollegeMeritAid(
     collegeId = collegeId,
     sourceYear = getInt(record, "source_year", Table.MERIT_AID),
     firstTimeFullTimeFreshmenHeadcount = getIntOrNull(record, "freshmen_ft_total", Table.MERIT_AID),
     noNeedMeritRecipientsHeadcount = getIntOrNull(record, "no_need_merit_count", Table.MERIT_AID),
     noNeedMeritAverageUsd = getIntOrNull(record, "no_need_merit_avg", Table.MERIT_AID),
-    sourceUrl = getString(record, "source_url", Table.MERIT_AID),
-    archiveUrl = getStringOrNull(record, "archive_url"),
+    sourceDocumentId = sourceDocumentId,
   )
 
   private fun mapAdmissionFactors(
     collegeId: CollegeId,
     record: CSVRecord,
+    sourceDocumentId: SourceDocumentId,
   ): NewCollegeAdmissionFactors {
     fun getRatingOrNull(
       record: CSVRecord,
@@ -412,14 +983,14 @@ class CdsSeedLoader(
       volunteerWork = getRatingOrNull(record, "volunteer_work"),
       workExperience = getRatingOrNull(record, "work_experience"),
       applicantInterest = getRatingOrNull(record, "applicant_interest"),
-      sourceUrl = getString(record, "source_url", Table.ADMISSION_FACTORS),
-      archiveUrl = getStringOrNull(record, "archive_url"),
+      sourceDocumentId = sourceDocumentId,
     )
   }
 
   private fun mapDeadline(
     collegeId: CollegeId,
     record: CSVRecord,
+    sourceDocumentId: SourceDocumentId,
   ): NewCollegeDeadline {
     val roundRaw = getString(record, "round", Table.DEADLINES)
     val offeredRaw = getString(record, "offered", Table.DEADLINES)
@@ -454,8 +1025,7 @@ class CdsSeedLoader(
         },
       closing = getMonthDayOrNull(record, "closing_month", "closing_day"),
       notification = getMonthDayOrNull(record, "notification_month", "notification_day"),
-      sourceUrl = getString(record, "source_url", Table.DEADLINES),
-      archiveUrl = getStringOrNull(record, "archive_url"),
+      sourceDocumentId = sourceDocumentId,
     )
   }
 
@@ -558,6 +1128,55 @@ class CdsSeedLoader(
     column: String,
   ): String? = record.get(column).trim().ifEmpty { null }
 
+  /**
+   * A year cell as an [AcademicYear], with the range refusal LOCATED.
+   *
+   * The type carries the same range its SQL domain states, so constructing one
+   * from a raw cell would otherwise throw an unlocated
+   * `IllegalArgumentException` -- outside this loader's contract that every
+   * malformed cell names its file, line and column.
+   */
+  private fun getAcademicYear(
+    record: CSVRecord,
+    column: String,
+    table: Table,
+  ): AcademicYear {
+    val year = getInt(record, column, table)
+    if (year !in AcademicYear.FIRST_YEAR..AcademicYear.LAST_YEAR) {
+      throw FormatException(Defect.NotAnAcademicYear(table, record.recordNumber, column, year))
+    }
+    return AcademicYear(year)
+  }
+
+  /**
+   * A coded cell decoded through [allowed], or a located [Defect.UnknownCode]
+   * naming every value that would have been accepted.
+   *
+   * The ONE place a seed's coded column becomes a typed member: five sites used
+   * to write the lookup-else-UnknownCode block themselves, and they had already
+   * begun to disagree about what `allowed` means.
+   */
+  private fun <T> getCode(
+    record: CSVRecord,
+    column: String,
+    table: Table,
+    allowed: Map<String, T>,
+  ): T {
+    val raw = getString(record, column, table)
+    return allowed[raw] ?: throw FormatException(
+      Defect.UnknownCode(table, record.recordNumber, column, raw, allowed.keys.toList()),
+    )
+  }
+
+  /** [getCode] over an enumeration's own values -- the seed's usual case. */
+  private fun <T> getEnumCode(
+    record: CSVRecord,
+    column: String,
+    table: Table,
+    values: List<T>,
+    slugOf: (T) -> String,
+  ): T = getCode(record, column, table, values.associateBy(slugOf))
+
   companion object {
     val MERIT_AID_COLUMNS =
       listOf(
@@ -594,6 +1213,77 @@ class CdsSeedLoader(
         "applicant_interest",
         "source_url",
         "archive_url",
+      )
+
+    val AID_POLICY_COLUMNS =
+      listOf(
+        "unit_id",
+        "source_year",
+        "fact",
+        "value",
+        "status",
+        "source_variable",
+        "source_url",
+        "archive_url",
+      )
+
+    /**
+     * The statuses this seed can carry -- the three `bin/fetch-cds-seed`
+     * writes, not all six [FigureStatus] members.
+     *
+     * A seed row is not free to claim `imputed_by_publisher`: the Common Data
+     * Set publishes no imputation, so accepting the slug would let a value-
+     * bearing status the generator cannot produce enter the store unremarked.
+     */
+    internal val AID_POLICY_STATUSES: Map<String, FigureStatus> =
+      listOf(FigureStatus.REPORTED, FigureStatus.NOT_COLLECTED_BY_US, FigureStatus.NOT_APPLICABLE)
+        .associateBy { it.value }
+
+    /**
+     * The ONE token a form-requirement cell may carry, read by the parser and
+     * named in the operator-facing allowed list, so the two cannot disagree
+     * about what the seed is permitted to say.
+     */
+    internal const val REQUIRED_FLAG = "true"
+
+    /** A decimal seed cell: digits, optionally one decimal point. Never NaN, Infinity or a hex float. */
+    private val DECIMAL = Regex("""\d+(\.\d+)?""")
+
+    /**
+     * The seed's `fact` vocabulary, and what each fact IS in the canonical
+     * store (RFC 170). Written here, once: the seed's own names are a CSV
+     * detail, and every one of them must resolve to a measure, a population or
+     * a form -- an unknown one is a broken seed.
+     *
+     * The published-unit conversion is not here: it is read off the measure's
+     * own MeasureUnit, which is where every loader reads it.
+     */
+    internal val AID_POLICY_FACTS: Map<String, AidPolicyFact> =
+      mapOf(
+        // Lines i and k: both averages are reported over line e, the freshmen
+        // awarded need-based scholarship or grant aid.
+        "avg_need_met_percent" to
+          AidPolicyFact.Stat(
+            MoneyMeasure.AVG_NEED_MET_SHARE,
+            CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
+          ),
+        "avg_need_based_grant_usd" to
+          AidPolicyFact.Stat(
+            MoneyMeasure.AVG_NEED_BASED_GRANT,
+            CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
+          ),
+        // Line d, whose only role is to be line h's denominator.
+        "aid_awarded_freshmen_count" to
+          AidPolicyFact.Count(CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_ANY_AID),
+        "need_fully_met_count" to
+          AidPolicyFact.Count(CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_NEED_FULLY_MET),
+        "fafsa_required" to AidPolicyFact.Form(AidForm.FAFSA),
+        "institutional_form_required" to AidPolicyFact.Form(AidForm.INSTITUTIONAL),
+        "css_profile_required" to AidPolicyFact.Form(AidForm.CSS_PROFILE),
+        "state_aid_form_required" to AidPolicyFact.Form(AidForm.STATE),
+        "noncustodial_css_profile_required" to AidPolicyFact.Form(AidForm.NONCUSTODIAL_CSS_PROFILE),
+        "business_farm_supplement_required" to AidPolicyFact.Form(AidForm.BUSINESS_FARM_SUPPLEMENT),
+        "other_institutional_form_required" to AidPolicyFact.Form(AidForm.OTHER_INSTITUTIONAL),
       )
 
     val DEADLINES_COLUMNS =
@@ -650,6 +1340,30 @@ private fun renderDefect(defect: CdsSeedLoader.Defect): String =
 
     is CdsSeedLoader.Defect.NotAnInteger -> {
       "[${defect.table.label}] line [${defect.line}]: [${defect.column}] value [${defect.value}] is not an integer"
+    }
+
+    is CdsSeedLoader.Defect.NotAnAcademicYear -> {
+      "[${defect.table.label}] line [${defect.line}]: [${defect.column}] value [${defect.value}] is not an " +
+        "academic year (the range is [${AcademicYear.FIRST_YEAR}..${AcademicYear.LAST_YEAR}])"
+    }
+
+    is CdsSeedLoader.Defect.NotADecimal -> {
+      "[${defect.table.label}] line [${defect.line}]: [${defect.column}] value [${defect.value}] is not a decimal " +
+        "number (digits, optionally one decimal point)"
+    }
+
+    is CdsSeedLoader.Defect.ValueUnderValuelessStatus -> {
+      "[${defect.table.label}] line [${defect.line}]: status [${defect.status}] bears no value, but [value] " +
+        "carries [${defect.value}]"
+    }
+
+    is CdsSeedLoader.Defect.ConflictingFilingUrls -> {
+      "[${defect.table.label}] line [${defect.line}]: this filing " +
+        "(college [${defect.second.collegeId.value}], year [${defect.second.academicYear.label}]) " +
+        "was already read with " +
+        "source_url [${defect.first.sourceUrl}] archive_url [${defect.first.archiveUrl}], and this row names " +
+        "source_url [${defect.second.sourceUrl}] archive_url [${defect.second.archiveUrl}]; one filing has one " +
+        "pair of urls"
     }
 
     is CdsSeedLoader.Defect.EmptyRequiredCell -> {

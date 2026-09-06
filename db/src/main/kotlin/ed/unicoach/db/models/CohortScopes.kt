@@ -38,6 +38,49 @@ enum class CohortPopulation(
    * [MoneyMeasure] with an invented "count" unit (RFC 162).
    */
   PELL_RECEIVING_UNDERGRADUATES("pell_receiving_undergraduates"),
+
+  /**
+   * CDS H2 **line d**: first-time full-time freshmen "in line c who were
+   * awarded any financial aid" -- of those determined to have need (line c),
+   * the ones who got something (RFC 170).
+   *
+   * NOT "the freshmen with need": that is line c, which this seed does not
+   * fetch. The distinction is the whole reason this member is named after the
+   * line's own words -- line d is the denominator of line h (need fully met)
+   * and of NOTHING else. Lines i and k are reported against line e, which is
+   * [FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT].
+   *
+   * The freshmen block, not the full-time-undergraduate or
+   * less-than-full-time one: the CDS repeats the same thirteen lines for three
+   * cohorts and labels none of them, and this is the block the merit-aid seed
+   * already reads.
+   */
+  FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_ANY_AID("first_time_full_time_freshmen_awarded_any_aid"),
+
+  /**
+   * CDS H2 **line e**: freshmen "in line d who were awarded any need-based
+   * scholarship or grant aid" (RFC 170).
+   *
+   * A SUBSET of line d, and the population the two H2 averages are actually
+   * reported over: line i is "the percentage of need that was met of students
+   * who were awarded any need-based aid" and line k is "average need-based
+   * scholarship and grant award of those in line e". Filing either of them
+   * under line d would state an average over a larger population than the one
+   * the school measured.
+   */
+  FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT("first_time_full_time_freshmen_awarded_need_based_grant"),
+
+  /**
+   * CDS H2 **line h**: freshmen "in line d whose need was fully met" --
+   * excluding any aid above the need the school assessed (RFC 170).
+   *
+   * Its denominator is [FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_ANY_AID] (line d)
+   * and no other member here. The read enforces exactly that pairing: a
+   * fully-met count larger than the line-d count it is reported against is a
+   * corrupt stored value, not a share to serve, because a school cannot have
+   * met the full need of more students than it aided at all.
+   */
+  FIRST_TIME_FULL_TIME_FRESHMEN_NEED_FULLY_MET("first_time_full_time_freshmen_need_fully_met"),
   ;
 
   companion object {
@@ -107,6 +150,17 @@ enum class CohortAidScope(
    * the two must not share a scope slug. The [FEDERAL_GRANT_RECEIVING] rule.
    */
   LOAN_RECEIVING("loan_receiving"),
+
+  /**
+   * Awarded need-based scholarship or grant aid (CDS H2 **line e**, RFC 170):
+   * the denominator both CDS need figures are published against. Line d, one
+   * line above it, is a WIDER group -- the freshmen awarded any financial aid
+   * at all -- so this scope is line e alone and never the pair. Neither
+   * [ALL] nor any federal scope -- "the percentage of need that was met" is an
+   * average over the students who got need-based aid, and filing it under
+   * [ALL] would read as a claim about every freshman.
+   */
+  NEED_BASED_AID_RECEIVING("need_based_aid_receiving"),
   ;
 
   companion object {

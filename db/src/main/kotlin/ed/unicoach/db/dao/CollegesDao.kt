@@ -2596,10 +2596,11 @@ object CollegesDao :
       INSERT INTO college_index_build (
         started_at, finished_at, sources, rows_ingested, name_words_rows,
         search_index_rows, price_figure_rows, cohort_money_stat_rows,
-        cohort_population_count_rows, canonical_money_summary, change_summary,
+        cohort_population_count_rows, aid_form_requirement_rows,
+        canonical_money_summary, change_summary,
         method_version
       )
-      VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
+      VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
       RETURNING id
       """.trimIndent()
     return session.mutateReturning(
@@ -2614,9 +2615,10 @@ object CollegesDao :
         stmt.setIntOrNull(7, input.priceFigureRows)
         stmt.setIntOrNull(8, input.cohortMoneyStatRows)
         stmt.setIntOrNull(9, input.cohortPopulationCountRows)
-        stmt.setJsonbOrNull(10, input.canonicalMoneySummary)
-        stmt.setJsonbOrNull(11, input.changeSummary)
-        stmt.setInt(12, input.methodVersion)
+        stmt.setIntOrNull(10, input.aidFormRequirementRows)
+        stmt.setJsonbOrNull(11, input.canonicalMoneySummary)
+        stmt.setJsonbOrNull(12, input.changeSummary)
+        stmt.setInt(13, input.methodVersion)
       },
       map = { rs -> UUID.fromString(rs.getString("id")) },
       mapError = ::mapCollegeWriteError,

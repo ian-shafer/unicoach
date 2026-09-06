@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.AcademicYear
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import java.io.File
@@ -69,18 +70,20 @@ class CollegeSfaLoaderTest : CollegeScorecardTestBase() {
     val years =
       query(
         "SELECT variable, aid_year FROM college_sfa WHERE ipeds_unit_id = 209807 AND variable LIKE 'npist%' ORDER BY variable",
-      ) { rs -> rs.getString(1) to rs.getString(2) }
+      ) { rs -> rs.getString(1) to AcademicYear(rs.getInt(2)) }
     assertEquals(
-      listOf("npist0" to "2020-21", "npist1" to "2021-22", "npist2" to "2022-23"),
+      listOf("npist0" to AcademicYear(2020), "npist1" to AcademicYear(2021), "npist2" to AcademicYear(2022)),
       years,
     )
     // A single-year variable carries the file's own aid year, not a suffix.
     assertEquals(
-      listOf("2022-23"),
-      query("SELECT aid_year FROM college_sfa WHERE ipeds_unit_id = 209807 AND variable = 'upgrnta'") { it.getString(1) },
+      listOf(AcademicYear(2022)),
+      query("SELECT aid_year FROM college_sfa WHERE ipeds_unit_id = 209807 AND variable = 'upgrnta'") {
+        AcademicYear(it.getInt(1))
+      },
     )
     assertEquals(
-      "2020-21",
+      AcademicYear(2020),
       SfaVariables.aidYear("npis412", 2020),
       "the rule is arithmetic on the FILE's year, so a 2020-21 file's suffix 2 is 2020-21",
     )

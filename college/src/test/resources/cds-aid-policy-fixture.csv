@@ -1,0 +1,11 @@
+unit_id,source_year,fact,value,status,source_variable,source_url,archive_url
+110100,2024,aid_awarded_freshmen_count,800,reported,H.204,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,avg_need_based_grant_usd,18006.5357,reported,H.211,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,avg_need_met_percent,94.3,reported,H.209,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,css_profile_required,true,reported,H.803,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,fafsa_required,true,reported,H.801,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,need_fully_met_count,300,reported,H.208,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,noncustodial_css_profile_required,,not_collected_by_us,H.805,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+220200,2025,avg_need_met_percent,62.7,reported,H.209,https://lakeside.example.edu/cds-2025-26.pdf,
+220200,2025,fafsa_required,true,reported,H.801,https://lakeside.example.edu/cds-2025-26.pdf,
+999999,2024,fafsa_required,true,reported,H.801,https://ghost.example.edu/cds.pdf,

@@ -752,10 +752,21 @@ class CollegeScorecardLoader(
     // into (P2's write precondition). Nothing here reads the codebooks or the
     // taxonomy; the position just keeps every authored-reference load together
     // and ahead of the row phases.
+    // The sources whose canonical rows THIS run rebuilds: the fill's own,
+    // always, plus the Common Data Set exactly when the CDS seed was supplied.
+    // A vocabulary retirement may clear those rows and no others -- deleting a
+    // source's rows that nothing in this run writes back is silent data loss
+    // (the `cds` group is optional; `--money-vocabulary` is not).
+    val rebuiltSources =
+      CanonicalMoneyLoader.ORDERED_SOURCES + listOfNotNull(MoneySource.COMMON_DATA_SET.takeIf { cds != null })
     val moneyVocabularyResult =
       parsedMoneyVocabulary?.let { parsed ->
         phase("money-vocabulary", committedPhases) {
-          moneyVocabularyLoader.load(moneyVocabulary?.file?.path ?: "money-vocabulary.json", parsed)
+          moneyVocabularyLoader.load(
+            moneyVocabulary?.file?.path ?: "money-vocabulary.json",
+            parsed,
+            rebuiltSources,
+          )
         }
       }
     val scorecard = loadScorecard(institution, fields, committedPhases, codebooks?.file?.path)
@@ -806,13 +817,18 @@ class CollegeScorecardLoader(
     // The CDS seed is a row phase like the others, and it runs BEFORE
     // `name-words` and `provenance` so its counts are provenance rather than a
     // number written after the row that should have carried it (RFC 148 D10).
-    // It brings its own single transaction, so a fatal here rolls its three
-    // tables back as a unit and — like every other phase failure — reaches no
+    // It brings its own single transaction, so a fatal here rolls its four
+    // files back as a unit and — like every other phase failure — reaches no
     // build row at all.
     val cdsResult =
       cds?.let { sources ->
         phase("cds", committedPhases) {
-          cdsSeedLoader.load(sources.meritAid.file, sources.admissionFactors.file, sources.deadlines.file)
+          cdsSeedLoader.load(
+            sources.meritAid.file,
+            sources.admissionFactors.file,
+            sources.deadlines.file,
+            sources.aidPolicy.file,
+          )
         }
       }
     // Phase 2 of the two-phase ingest (RFC 146): rows first, derived state
@@ -874,6 +890,7 @@ class CollegeScorecardLoader(
           nameWordsRows = nameWords,
           searchIndexRows = searchIndex,
           canonicalMoney = canonicalMoney,
+          cds = cdsResult,
         )
       }
 
@@ -916,6 +933,7 @@ class CollegeScorecardLoader(
     nameWordsRows: Int,
     searchIndexRows: Int,
     canonicalMoney: CanonicalMoneyLoader.FillResult,
+    cds: CdsSeedLoader.LoadResult?,
   ): java.util.UUID =
     database
       .withConnection { session ->
@@ -931,6 +949,7 @@ class CollegeScorecardLoader(
             priceFigureRows = canonicalMoney.priceFigureRows,
             cohortMoneyStatRows = canonicalMoney.cohortMoneyStatRows,
             cohortPopulationCountRows = canonicalMoney.cohortPopulationCountRows,
+            aidFormRequirementRows = cds?.aidPolicy?.aidFormRequirements,
             canonicalMoneySummary = canonicalMoneySummaryJson(canonicalMoney),
             changeSummary = changeSummary,
             methodVersion = METHOD_VERSION,
@@ -1339,6 +1358,7 @@ class CollegeScorecardLoader(
           for ((table, summary) in result.tableSummaries) {
             putJsonObject(table.wireKey) { putCdsTable(summary) }
           }
+          putJsonObject(CdsSeedLoader.Table.AID_POLICY.wireKey) { putCdsAidPolicy(result.aidPolicy) }
         }
       }
     }
@@ -1372,6 +1392,20 @@ class CollegeScorecardLoader(
     putJsonObject("skips_by_reason") {
       for ((kind, count) in skipsByKind(skips)) put(kind, count)
     }
+  }
+
+  /**
+   * The aid-policy rebuild, per DESTINATION table (RFC 170). It has no
+   * upserted/changed/unchanged split to report, because it is not an upsert:
+   * the Common Data Set's share of three canonical tables is deleted and
+   * rebuilt in one transaction, so the row count IS the disposition.
+   */
+  private fun JsonObjectBuilder.putCdsAidPolicy(summary: CdsSeedLoader.AidPolicySummary) {
+    put("cohort_money_stat_rows", summary.cohortMoneyStats)
+    put("cohort_population_count_rows", summary.cohortPopulationCounts)
+    put("aid_form_requirement_rows", summary.aidFormRequirements)
+    put("skipped", summary.skipped)
+    putJsonArray("unmatched_ipeds_unit_ids") { summary.unmatchedIpedsUnitIds.forEach { add(it) } }
   }
 
   /**

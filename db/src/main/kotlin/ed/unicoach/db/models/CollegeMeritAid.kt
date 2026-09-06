@@ -33,9 +33,13 @@ data class CollegeMeritAid(
   val noNeedMeritRecipientsHeadcount: Int?,
   /** H.2A02: school-reported average award, whole US dollars. */
   val noNeedMeritAverageUsd: Int?,
-  /** The school's own published CDS document. */
+  /**
+   * The school's own published CDS document, read from the `source_documents`
+   * row this fact cites (RFC 170, D13) -- joined at read time, never a second
+   * stored copy.
+   */
   val sourceUrl: String,
-  /** The corpus's archived copy. */
+  /** The corpus's archived copy, from the same document row. */
   val archiveUrl: String?,
   override val createdAt: Instant,
   override val updatedAt: Instant,

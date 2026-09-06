@@ -12,6 +12,8 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.apache.commons.csv.CSVFormat
+import org.apache.commons.csv.CSVParser
 import org.junit.jupiter.api.Test
 import java.io.File
 import java.security.MessageDigest
@@ -34,6 +36,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
   private val meritCsv = fixture("cds-merit-aid-fixture.csv")
   private val factorsCsv = fixture("cds-admission-factors-fixture.csv")
   private val deadlinesCsv = fixture("cds-deadlines-fixture.csv")
+  private val aidPolicyCsv = fixture("cds-aid-policy-fixture.csv")
 
   private fun seedColleges() =
     runBlocking {
@@ -60,10 +63,10 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     }
 
   @Test
-  fun `loads the three seed files, skipping and counting unknown UNITIDs`() =
+  fun `loads the four seed files, skipping and counting unknown UNITIDs`() =
     runBlocking {
       seedColleges()
-      val result = loader.load(meritCsv, factorsCsv, deadlinesCsv)
+      val result = loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
 
       // merit-aid: 2 matched rows, the 999999 row has no college -> skipped.
       assertEquals(2, result.meritAid.upserted)
@@ -115,12 +118,200 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
       assertEquals(emptyList(), result.coverage.studentListedMissing)
     }
 
+  // ---------------------------------------------------------------------------
+  // The aid-policy seed (RFC 170)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the need figures land as canonical cohort rows, with the published percent stored as a share`() =
+    runBlocking {
+      seedColleges()
+      val result = loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
+
+      // Two schools' figures; the 999999 row has no college and is skipped.
+      assertEquals(3, result.aidPolicy.cohortMoneyStats)
+      assertEquals(2, result.aidPolicy.cohortPopulationCounts)
+      assertEquals(listOf(999999), result.aidPolicy.unmatchedIpedsUnitIds)
+
+      // 94.3% of need met is stored as the 0-1 share every other share is
+      // stored as, under the population and aid scope that name its cohort.
+      val share =
+        query(
+          "SELECT cms.value, cms.population, cms.aid_scope, cms.vintage, cms.source, cms.source_variable " +
+            "FROM cohort_money_stats cms JOIN colleges c ON c.id = cms.college_id " +
+            "WHERE c.ipeds_unit_id = 110100 AND cms.measure = 'avg_need_met_share'",
+        ) { rs ->
+          listOf(
+            rs.getBigDecimal(1).toDouble().toString(),
+            rs.getString(2),
+            rs.getString(3),
+            rs.getInt(4).toString(),
+            rs.getString(5),
+            rs.getString(6),
+          )
+        }.single()
+      assertEquals(
+        listOf(
+          "0.943",
+          "first_time_full_time_freshmen_awarded_need_based_grant",
+          "need_based_aid_receiving",
+          "2024",
+          "common_data_set",
+          "H.209",
+        ),
+        share,
+      )
+
+      // The dollar average keeps its cents -- the whole reason get_decimal
+      // exists beside get_int.
+      assertEquals(
+        listOf("18006.5357"),
+        query(
+          "SELECT cms.value FROM cohort_money_stats cms JOIN colleges c ON c.id = cms.college_id " +
+            "WHERE c.ipeds_unit_id = 110100 AND cms.measure = 'avg_need_based_grant'",
+        ) { it.getBigDecimal(1).stripTrailingZeros().toPlainString() },
+      )
+
+      // The two headcounts are counts, not money: they land in the sibling
+      // table, on the explicit not_applicable axes.
+      assertEquals(
+        listOf(
+          listOf("first_time_full_time_freshmen_awarded_any_aid", "800", "not_applicable", "not_applicable"),
+          listOf("first_time_full_time_freshmen_need_fully_met", "300", "not_applicable", "not_applicable"),
+        ),
+        query(
+          "SELECT cpc.population, cpc.headcount, cpc.residency_basis, cpc.arrangement " +
+            "FROM cohort_population_counts cpc JOIN colleges c ON c.id = cpc.college_id " +
+            "WHERE c.ipeds_unit_id = 110100 ORDER BY cpc.population",
+        ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)) },
+      )
+    }
+
+  @Test
+  fun `every aid-policy measure is written against the CDS line it is reported over`() =
+    runBlocking {
+      seedColleges()
+      loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
+
+      // The CDS reports each H2 line against a NAMED earlier line, and the
+      // lines are not interchangeable:
+      //   line i (% of need met)     -- "of students who were awarded any need-based aid" = line e
+      //   line k (avg need grant)    -- "of those in line e"                              = line e
+      //   line h (need fully met)    -- "of students in line d"                           = line d
+      // Pointing a figure at the wrong one states an average over a population
+      // the school never measured, which no CHECK can catch: both slugs are
+      // legal in the column. This is the pin.
+      assertEquals(
+        listOf(
+          "avg_need_based_grant" to "first_time_full_time_freshmen_awarded_need_based_grant",
+          "avg_need_met_share" to "first_time_full_time_freshmen_awarded_need_based_grant",
+        ),
+        query(
+          "SELECT DISTINCT measure, population FROM cohort_money_stats WHERE source = 'common_data_set' " +
+            "ORDER BY measure",
+        ) { rs -> rs.getString(1) to rs.getString(2) },
+      )
+      assertEquals(
+        listOf(
+          "first_time_full_time_freshmen_awarded_any_aid",
+          "first_time_full_time_freshmen_need_fully_met",
+        ),
+        query(
+          "SELECT DISTINCT population FROM cohort_population_counts WHERE source = 'common_data_set' " +
+            "ORDER BY population",
+        ) { it.getString(1) },
+      )
+    }
+
+  @Test
+  fun `a required form lands per applicant group, and OUR gap lands as a valueless row`() =
+    runBlocking {
+      seedColleges()
+      val result = loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
+      assertEquals(4, result.aidPolicy.aidFormRequirements)
+
+      assertEquals(
+        listOf(
+          listOf("css_profile", "t", "reported", "domestic_first_year_aid_applicants", "H.803"),
+          listOf("fafsa", "t", "reported", "domestic_first_year_aid_applicants", "H.801"),
+          // D7: the corpus HAS the cell and could not extract it. That is our
+          // gap, and it is a row -- distinct from the school's silence, which
+          // is no row at all.
+          listOf("noncustodial_css_profile", null, "not_collected_by_us", "domestic_first_year_aid_applicants", "H.805"),
+        ),
+        query(
+          "SELECT a.aid_form, a.is_required, a.status, a.applicant_group, a.source_variable " +
+            "FROM aid_form_requirements a JOIN colleges c ON c.id = a.college_id " +
+            "WHERE c.ipeds_unit_id = 110100 ORDER BY a.aid_form",
+        ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)) },
+      )
+
+      // A form this school's CDS does not list gets NO row -- never a stored
+      // "not required" (D5).
+      assertEquals(
+        emptyList(),
+        query(
+          "SELECT a.aid_form FROM aid_form_requirements a JOIN colleges c ON c.id = a.college_id " +
+            "WHERE c.ipeds_unit_id = 110100 AND a.aid_form = 'state_aid_form'",
+        ) { it.getString(1) },
+      )
+    }
+
+  @Test
+  fun `the loader refuses to write is_required FALSE, whatever the seed says`() =
+    runBlocking {
+      seedColleges()
+      // D5, pinned at the loader rather than by a CHECK: the column can hold a
+      // FALSE the day some source publishes one, but this seed's `false` means
+      // the fetcher changed its mind about an unticked box, and storing it
+      // would turn "not listed in this school's CDS" into a promise.
+      val thrown =
+        assertFailsWith<CdsSeedLoader.FormatException> {
+          loader.load(
+            meritCsv,
+            factorsCsv,
+            deadlinesCsv,
+            fixture("cds-aid-policy-not-required-fixture.csv"),
+          )
+        }
+      val defect = thrown.defect as CdsSeedLoader.Defect.UnknownCode
+      assertEquals("value", defect.column)
+      assertEquals("false", defect.value)
+      assertEquals(listOf("true"), defect.allowed)
+      assertEquals(0, withSession { count(it, "aid_form_requirements") })
+    }
+
+  @Test
+  fun `a fact the canonical store has no home for is a broken seed, not a dropped row`() =
+    runBlocking {
+      seedColleges()
+      val thrown =
+        assertFailsWith<CdsSeedLoader.FormatException> {
+          loader.load(meritCsv, factorsCsv, deadlinesCsv, fixture("cds-aid-policy-unknown-fact-fixture.csv"))
+        }
+      val defect = thrown.defect as CdsSeedLoader.Defect.UnknownCode
+      assertEquals("fact", defect.column)
+      assertEquals("meets_full_need", defect.value)
+    }
+
+  @Test
+  fun `the aid-policy rebuild is wholesale, so a re-run neither duplicates nor accumulates`() =
+    runBlocking {
+      seedColleges()
+      val first = loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
+      val second = loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
+      assertEquals(first.aidPolicy, second.aidPolicy)
+      assertEquals(3, withSession { count(it, "cohort_money_stats") })
+      assertEquals(2, withSession { count(it, "cohort_population_counts") })
+      assertEquals(4, withSession { count(it, "aid_form_requirements") })
+    }
+
   @Test
   fun `re-running the load is idempotent -- every row unchanged`() =
     runBlocking {
       seedColleges()
-      loader.load(meritCsv, factorsCsv, deadlinesCsv)
-      val second = loader.load(meritCsv, factorsCsv, deadlinesCsv)
+      loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
+      val second = loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
 
       assertEquals(0, second.meritAid.upserted)
       assertEquals(0, second.meritAid.changed)
@@ -136,12 +327,12 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
   fun `a changed value updates in place and advances updated_at`() =
     runBlocking {
       seedColleges()
-      loader.load(meritCsv, factorsCsv, deadlinesCsv)
+      loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)
       val before = withSession { CdsAdmissionsDao.findMeritAid(it, collegeId(110100), 2024).getOrThrow() }
       assertNotNull(before)
 
       Thread.sleep(5)
-      val result = loader.load(fixture("cds-merit-aid-changed-fixture.csv"), factorsCsv, deadlinesCsv)
+      val result = loader.load(fixture("cds-merit-aid-changed-fixture.csv"), factorsCsv, deadlinesCsv, aidPolicyCsv)
       assertEquals(1, result.meritAid.changed)
       assertEquals(1, result.meritAid.unchanged)
 
@@ -157,7 +348,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     seedColleges()
     val error =
       assertFailsWith<CdsSeedLoader.FormatException> {
-        runBlocking { loader.load(fixture("cds-merit-aid-bad-header-fixture.csv"), factorsCsv, deadlinesCsv) }
+        runBlocking { loader.load(fixture("cds-merit-aid-bad-header-fixture.csv"), factorsCsv, deadlinesCsv, aidPolicyCsv) }
       }
     // Asserted on the structured defect, not the rendered sentence: the fields
     // are the payload, the message is one rendering of them.
@@ -181,7 +372,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     seedColleges()
     val error =
       assertFailsWith<CdsSeedLoader.FormatException> {
-        runBlocking { loader.load(meritCsv, fixture("cds-admission-factors-junk-fixture.csv"), deadlinesCsv) }
+        runBlocking { loader.load(meritCsv, fixture("cds-admission-factors-junk-fixture.csv"), deadlinesCsv, aidPolicyCsv) }
       }
     val defect = error.defect as CdsSeedLoader.Defect.UnknownCode
     assertEquals(CdsSeedLoader.Table.ADMISSION_FACTORS, defect.table)
@@ -197,7 +388,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
       // Real CDS reporting: "applications close in March". Stored raw (never
       // interpolated to a day), but the launch-set gate counts only complete
       // month+day dates, so it must not inflate deadlinesWithDateCount.
-      val result = loader.load(meritCsv, factorsCsv, fixture("cds-deadlines-half-date-fixture.csv"))
+      val result = loader.load(meritCsv, factorsCsv, fixture("cds-deadlines-half-date-fixture.csv"), aidPolicyCsv)
       assertEquals(1, result.deadlines.upserted)
 
       val round = withSession { CdsAdmissionsDao.listDeadlines(it, collegeId(110100), 2024).getOrThrow() }.single()
@@ -212,7 +403,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     seedColleges()
     val error =
       assertFailsWith<CdsSeedLoader.FormatException> {
-        runBlocking { loader.load(meritCsv, factorsCsv, fixture("cds-deadlines-day-only-fixture.csv")) }
+        runBlocking { loader.load(meritCsv, factorsCsv, fixture("cds-deadlines-day-only-fixture.csv"), aidPolicyCsv) }
       }
     val defect = error.defect as CdsSeedLoader.Defect.DayWithoutMonth
     assertEquals(CdsSeedLoader.Table.DEADLINES, defect.table)
@@ -226,7 +417,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     seedColleges()
     val error =
       assertFailsWith<CdsSeedLoader.FormatException> {
-        runBlocking { loader.load(meritCsv, factorsCsv, fixture("cds-deadlines-impossible-date-fixture.csv")) }
+        runBlocking { loader.load(meritCsv, factorsCsv, fixture("cds-deadlines-impossible-date-fixture.csv"), aidPolicyCsv) }
       }
     // Feb 30 is what a mangled extraction produces. Rejected HERE, with the
     // line and columns, rather than as an anonymous constraint violation.
@@ -245,7 +436,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     seedColleges()
     val error =
       assertFailsWith<CdsSeedLoader.FormatException> {
-        runBlocking { loader.load(fixture("cds-merit-aid-short-row-fixture.csv"), factorsCsv, deadlinesCsv) }
+        runBlocking { loader.load(fixture("cds-merit-aid-short-row-fixture.csv"), factorsCsv, deadlinesCsv, aidPolicyCsv) }
       }
     // The header assertion proves the column NAMES; a truncated row would
     // otherwise escape as Commons CSV's unlocated IllegalArgumentException.
@@ -257,16 +448,34 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
   }
 
   @Test
+  fun `a source_year outside the academic years the store admits is a located seed defect`() =
+    runBlocking {
+      seedColleges()
+      // The type carries the SQL domain's range, so a bad year is refused
+      // before any write -- and it is refused HERE, with the file, line and
+      // column, rather than as an unlocated IllegalArgumentException from a
+      // value class three frames down.
+      val thrown =
+        assertFailsWith<CdsSeedLoader.FormatException> {
+          loader.load(fixture("cds-merit-aid-impossible-year-fixture.csv"), factorsCsv, deadlinesCsv, aidPolicyCsv)
+        }
+      val defect = thrown.defect as CdsSeedLoader.Defect.NotAnAcademicYear
+      assertEquals("source_year", defect.column)
+      assertEquals(1999, defect.value)
+      assertEquals(1L, defect.line)
+    }
+
+  @Test
   fun `a DB fault mid-load names the seed row that provoked it`() {
     seedColleges()
     val error =
       assertFailsWith<CdsSeedLoader.LoadException> {
-        runBlocking { loader.load(fixture("cds-merit-aid-bad-year-fixture.csv"), factorsCsv, deadlinesCsv) }
+        runBlocking { loader.load(fixture("cds-merit-aid-bad-year-fixture.csv"), factorsCsv, deadlinesCsv, aidPolicyCsv) }
       }
-    // A source_year outside cds_source_year is refused by the DB, not by the
-    // loader's own cell checks -- so this is the DB-fault path, and it must
-    // still carry the row's seed coordinates rather than a bare
-    // "Database constraint violation".
+    // A source_year inside the academic_year range but outside cds_source_year
+    // (2015..2100) is refused by the DB, not by the loader's own cell checks --
+    // so this is the DB-fault path, and it must still carry the row's seed
+    // coordinates rather than a bare "Database constraint violation".
     assertEquals(CdsSeedLoader.Table.MERIT_AID, error.table)
     assertEquals(1L, error.line)
     assertEquals(110100, error.ipedsUnitId)
@@ -279,7 +488,8 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
 
   private fun source(file: File) = SourceFile(file, file.path)
 
-  private val cdsSources = CdsSources(source(meritCsv), source(factorsCsv), source(deadlinesCsv))
+  private val cdsSources =
+    CdsSources(source(meritCsv), source(factorsCsv), source(deadlinesCsv), source(aidPolicyCsv))
 
   /** One full ingest run over the Scorecard fixtures, with the CDS group
    * supplied or omitted — the only two shapes `bin/ingest-colleges` can produce. */
@@ -298,7 +508,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     val report = ingest()
     val load = assertNotNull(report.cds, "the run carries the CDS result it loaded")
 
-    assertEquals(6, report.sources.size, "three Scorecard sources plus the three CDS seed files")
+    assertEquals(7, report.sources.size, "three Scorecard sources plus the four CDS seed files")
     // Digested the way every other source is: the recorded sha256 is the file's,
     // recomputed here independently rather than read back from the loader.
     val recorded = report.sources.first { it.fileName == meritCsv.name }
@@ -316,7 +526,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // the sequence, RFC 158's canonical money fill is 6, and 7 is RFC 161's
     // second canonical money source together with RFC 162's third.
     assertEquals(7, row.methodVersion, "RFC 161 and RFC 162 took the method version to 7: two new sources changed the derivation")
-    for (file in listOf(meritCsv, factorsCsv, deadlinesCsv)) {
+    for (file in listOf(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)) {
       assertTrue(row.sources.contains(file.name), "sources names ${file.name}: ${row.sources}")
     }
     assertTrue(row.sources.contains(expectedDigest), "sources carries the CDS digest, not just the name: ${row.sources}")
@@ -335,10 +545,20 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // object keys in its own normalised order, so key order is not a property
     // this row can carry and asserting it would only pin Postgres's ordering.
     assertEquals(
-      setOf("merit_aid", "admission_factors", "deadlines"),
+      setOf("merit_aid", "admission_factors", "deadlines", "aid_policy"),
       cds.keys,
-      "one block per CDS table",
+      "one block per CDS seed file",
     )
+    // The aid-policy block reports per DESTINATION table, because that seed
+    // has no table of its own: its rows are canonical money facts (RFC 170).
+    val aidPolicy = cds.getValue("aid_policy").jsonObject
+    assertEquals(load.aidPolicy.cohortMoneyStats, aidPolicy.getValue("cohort_money_stat_rows").jsonPrimitive.int)
+    assertEquals(
+      load.aidPolicy.cohortPopulationCounts,
+      aidPolicy.getValue("cohort_population_count_rows").jsonPrimitive.int,
+    )
+    assertEquals(load.aidPolicy.aidFormRequirements, aidPolicy.getValue("aid_form_requirement_rows").jsonPrimitive.int)
+    assertEquals(1, aidPolicy.getValue("skipped").jsonPrimitive.int)
     val meritAid = cds.getValue("merit_aid").jsonObject
     assertEquals(load.meritAid.upserted, upserted("merit_aid"))
     assertEquals(2, upserted("merit_aid"))
@@ -476,16 +696,56 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // constants -- was never exercised: a renamed column stayed green in CI and
     // fatalled only at operator ingest. Content-agnostic: whatever is committed
     // is read and compared.
-    val expectedByFile =
-      mapOf(
-        "merit-aid.csv" to CdsSeedLoader.MERIT_AID_COLUMNS,
-        "admission-factors.csv" to CdsSeedLoader.ADMISSION_FACTORS_COLUMNS,
-        "deadlines.csv" to CdsSeedLoader.DEADLINES_COLUMNS,
-      )
-    for ((name, expected) in expectedByFile) {
+    // Driven off Table.entries with an exhaustive `when`: a seed file added to
+    // the loader and forgotten here is a COMPILE error, which is what a fourth
+    // file left out of a three-entry map cost -- aid_policy.csv's header
+    // contract went unchecked until this was rewritten.
+    for (table in CdsSeedLoader.Table.entries) {
+      val (name, expected) =
+        when (table) {
+          CdsSeedLoader.Table.MERIT_AID -> {
+            "merit-aid.csv" to CdsSeedLoader.MERIT_AID_COLUMNS
+          }
+
+          CdsSeedLoader.Table.ADMISSION_FACTORS -> {
+            "admission-factors.csv" to CdsSeedLoader.ADMISSION_FACTORS_COLUMNS
+          }
+
+          CdsSeedLoader.Table.DEADLINES -> {
+            "deadlines.csv" to CdsSeedLoader.DEADLINES_COLUMNS
+          }
+
+          CdsSeedLoader.Table.AID_POLICY -> {
+            "aid_policy.csv" to CdsSeedLoader.AID_POLICY_COLUMNS
+          }
+        }
       val header = File(committedSeedDir, name).useLines { it.first() }.split(",")
       assertEquals(expected, header, "db/seed/cds/$name header drifted from CdsSeedLoader")
     }
+  }
+
+  @Test
+  fun `the committed seed writes exactly the facts this loader routes`() {
+    // The fetcher's fact vocabulary and the loader's routing table are two
+    // lists of the same names in two languages. A fact the seed writes and the
+    // loader does not route is a fatal ingest for the operator; a fact the
+    // loader routes and the seed never writes is a destination nothing fills.
+    // Parsed, not split on commas: a source_url carrying a comma would shift
+    // every column and this test would compare the WRONG field -- a wrong
+    // answer rather than an error. The module's own CSV reader is on the test
+    // classpath for exactly this reason.
+    val facts =
+      CSVParser
+        .parse(
+          File(committedSeedDir, "aid_policy.csv"),
+          Charsets.UTF_8,
+          CSVFormat.DEFAULT
+            .builder()
+            .setHeader()
+            .setSkipHeaderRecord(true)
+            .build(),
+        ).use { records -> records.map { it.get("fact").trim() }.toSet() }
+    assertEquals(CdsSeedLoader.AID_POLICY_FACTS.keys, facts)
   }
 
   @Test

@@ -27,7 +27,7 @@ usage or manifest fault exits in the band bin/functions reserves (10 unknown
 option, 11 option without its value, 20 an unexpected positional, 21 a manifest
 that cannot be read, 22 a malformed value).
 
-WHY THIS EXISTS. bin/ingest-colleges takes fourteen flags, six of them
+WHY THIS EXISTS. bin/ingest-colleges takes fifteen flags, six of them
 year-stamped IPEDS paths over case-sensitive letters. Every one of those facts is
 already DECLARED by bin/fetch-ipeds and recorded per artifact in the manifest:
 the member name it wrote, the `ingest_option` that member is loaded as, and the

@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.costs.canonical
 
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
@@ -59,15 +60,15 @@ class ResidencyTiersTest {
       figuresOf(
         price(
           CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
         ),
         price(
           CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
         ),
-      ).servedAt("2023-24")
+      ).servedAt(AcademicYear(2023))
 
     assertEquals(ResidencyTierBasis.NO_PUBLISHED_TUITION, residencyTiersOf(served))
     assertTrue(publishedTuitionTiersOf(served).isEmpty())
@@ -80,13 +81,13 @@ class ResidencyTiersTest {
     // applies whoever the student is.
     val served =
       figuresOf(
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 8580),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 8580),
         price(
           CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
         ),
-      ).servedAt("2023-24")
+      ).servedAt(AcademicYear(2023))
 
     val basis = residencyTiersOf(served)
 
@@ -112,8 +113,8 @@ class ResidencyTiersTest {
     (0 until 8).forEach { mask ->
       val present = tiers.filterIndexed { index, _ -> (mask shr index) and 1 == 1 }
       val served =
-        figuresOf(*present.map { price(it, "2023-24", 9000) }.toTypedArray())
-          .servedAt("2023-24".takeIf { present.isNotEmpty() })
+        figuresOf(*present.map { price(it, AcademicYear(2023), 9000) }.toTypedArray())
+          .servedAt(AcademicYear(2023).takeIf { present.isNotEmpty() })
       val basis = residencyTiersOf(served)
       val emitted = publishedTuitionTiersOf(served)
 
@@ -144,12 +145,12 @@ class ResidencyTiersTest {
       figuresOf(
         price(
           CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
         ),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 8580),
-        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, "2023-24", 10590),
-      ).servedAt("2023-24")
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 8580),
+        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2023), 10590),
+      ).servedAt(AcademicYear(2023))
 
     val basis = residencyTiersOf(served)
 
@@ -166,12 +167,12 @@ class ResidencyTiersTest {
       figuresOf(
         price(
           CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
         ),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 8580),
-        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, "2023-24", 10590),
-      ).servedAt("2023-24")
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 8580),
+        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2023), 10590),
+      ).servedAt(AcademicYear(2023))
 
     assertEquals(ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT, residencyTiersOf(served))
   }
@@ -185,12 +186,12 @@ class ResidencyTiersTest {
       figuresOf(
         price(
           CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD,
-          "2023-24",
+          AcademicYear(2023),
           reading = FigureReading.Absent(AbsenceStatus.NOT_APPLICABLE),
         ),
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, "2023-24", 12000),
-        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, "2023-24", 30000),
-      ).servedAt("2023-24")
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2023), 12000),
+        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2023), 30000),
+      ).servedAt(AcademicYear(2023))
 
     assertEquals(ResidencyTierBasis.TWO_TIERS_PUBLISHED, residencyTiersOf(served))
     assertTrue(
@@ -204,7 +205,7 @@ class ResidencyTiersTest {
 
   private fun price(
     field: CostField,
-    academicYear: String,
+    academicYear: AcademicYear,
     amountUsd: Int? = null,
     reading: FigureReading<Int>? = null,
   ): PriceFigure {

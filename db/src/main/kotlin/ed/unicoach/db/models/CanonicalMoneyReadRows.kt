@@ -1,5 +1,6 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CorruptPersistedValueException
 
 /*
@@ -21,8 +22,8 @@ data class PriceFigure(
   val priceConcept: PriceConcept,
   val residencyBasis: ResidencyBasis,
   val arrangement: FigureArrangement,
-  /** Always a real 'YYYY-YY' academic year (P5). */
-  val academicYear: String,
+  /** Always a real academic year, never absent here (P5). */
+  val academicYear: AcademicYear,
   val reading: FigureReading<Int>,
   val source: MoneySource,
   val sourceVariable: String,
@@ -41,8 +42,8 @@ data class CohortMoneyStat(
   val residencyScope: CohortResidencyScope,
   val aidScope: CohortAidScope,
   val incomeBand: IncomeBand?,
-  /** 'YYYY-YY' where the source dates the cohort, [VINTAGE_UNDATED] where it does not (P5). */
-  val vintage: String,
+  /** The year the source dates the cohort, or null where it pools or does not date it (RFC 170 D14, P5). */
+  val vintage: AcademicYear?,
   val reading: FigureReading<Double>,
   val source: MoneySource,
   val sourceVariable: String,

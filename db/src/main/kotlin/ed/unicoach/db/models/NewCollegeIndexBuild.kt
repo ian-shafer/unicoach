@@ -36,6 +36,13 @@ data class NewCollegeIndexBuild(
   /** The `cohort_population_counts` rebuild count (RFC 162); NULL for every earlier-era row. */
   val cohortPopulationCountRows: Int?,
   /**
+   * The `aid_form_requirements` rebuild count (RFC 170); NULL for every
+   * earlier-era row, and NULL for a run that supplied no CDS seed -- the `cds`
+   * phase is what writes those rows, so a run without it did not rebuild them
+   * and must not report 0 as if it had.
+   */
+  val aidFormRequirementRows: Int?,
+  /**
    * The per-status row counts per canonical table (RFC 158, P11), keyed by OUR
    * vocabulary slugs -- the operator-visible fact that suppression survived
    * the fill. NULL for every earlier-era row.

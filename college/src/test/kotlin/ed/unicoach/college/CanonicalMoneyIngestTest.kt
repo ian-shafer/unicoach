@@ -78,15 +78,15 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
             "WHERE measure IN ('median_debt_at_completion', 'median_earnings_10y', 'pell_share') ORDER BY measure",
         ).use { stmt ->
           stmt.executeQuery().use { rs ->
-            val bases = mutableListOf<List<String>>()
+            val bases = mutableListOf<List<String?>>()
             while (rs.next()) {
               bases += listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5))
             }
             assertEquals(
               listOf(
-                listOf("median_debt_at_completion", "federal_loan_borrowing_completers", "all", "federal_loan_borrowing", "undated"),
-                listOf("median_earnings_10y", "employed_not_enrolled_10y_after_entry", "all", "all", "undated"),
-                listOf("pell_share", "undergraduates", "all", "all", "undated"),
+                listOf("median_debt_at_completion", "federal_loan_borrowing_completers", "all", "federal_loan_borrowing", null),
+                listOf("median_earnings_10y", "employed_not_enrolled_10y_after_entry", "all", "all", null),
+                listOf("pell_share", "undergraduates", "all", "all", null),
               ),
               bases,
             )

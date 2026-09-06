@@ -11,6 +11,10 @@ data class NewCollegeMeritAid(
   val firstTimeFullTimeFreshmenHeadcount: Int?,
   val noNeedMeritRecipientsHeadcount: Int?,
   val noNeedMeritAverageUsd: Int?,
-  val sourceUrl: String,
-  val archiveUrl: String?,
+  /**
+   * The document these facts were read out of (RFC 170, D13): the school's own
+   * CDS filing for this cycle. The urls live on that row, once, rather than on
+   * every fact read out of it.
+   */
+  val sourceDocumentId: SourceDocumentId,
 )

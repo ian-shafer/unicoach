@@ -1,5 +1,7 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.util.AcademicYear
+
 /**
  * One `college_sfa` staging cell (RFC 162): an institution's one published
  * IPEDS SFA variable, the aid year it describes, the value, and the raw X
@@ -19,8 +21,8 @@ data class NewCollegeSfaCell(
    */
   val aidYearStart: Int,
   val variable: String,
-  /** 'YYYY-YY': the file-relative year suffix resolved against [aidYearStart]. */
-  val aidYear: String,
+  /** The year this cell describes: the file-relative suffix resolved against [aidYearStart]. */
+  val aidYear: AcademicYear,
   val value: Double?,
   val flag: IpedsImputationFlag,
 )
@@ -29,7 +31,7 @@ data class NewCollegeSfaCell(
 data class CollegeSfaCell(
   val ipedsUnitId: Int,
   val variable: String,
-  val aidYear: String,
+  val aidYear: AcademicYear,
   val value: Double?,
   val flag: IpedsImputationFlag,
 )
@@ -37,8 +39,9 @@ data class CollegeSfaCell(
 /**
  * This staged cell as a [FigureReading] (RFC 162 D3): the X flag decides the
  * status by an EXHAUSTIVE [FlagMeaning] `when`, and the value must agree with
- * it. [scale] converts the source's published unit (an integer percent) to the
- * stored one (a 0-1 share) -- a unit conversion, never a derivation.
+ * it. [unit] converts the source's published value to the stored one through
+ * [MeasureUnit.storedValueOf] -- a unit conversion, never a derivation, and the
+ * measure's own unit rather than a bare factor a caller could mis-apply.
  *
  * NULL for the one disagreement the source should never publish -- a
  * value-bearing flag over an empty cell, measured at zero occurrences over
@@ -51,8 +54,8 @@ data class CollegeSfaCell(
  * which is where the count belongs (the `MapResult` convention: the mapper
  * maps, the loop folds the counters).
  */
-fun CollegeSfaCell.reading(scale: Double = 1.0): FigureReading<Double>? =
+fun CollegeSfaCell.reading(unit: MeasureUnit = MeasureUnit.USD_PER_YEAR): FigureReading<Double>? =
   when (val meaning = flag.meaning) {
     is FlagMeaning.Absent -> FigureReading.Absent(meaning.absence)
-    is FlagMeaning.Bears -> value?.let { FigureReading.Present(it * scale, meaning.bearing) }
+    is FlagMeaning.Bears -> value?.let { FigureReading.Present(unit.storedValueOf(it), meaning.bearing) }
   }

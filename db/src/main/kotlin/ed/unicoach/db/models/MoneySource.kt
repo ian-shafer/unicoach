@@ -31,6 +31,15 @@ enum class MoneySource(
 
   /** The College Scorecard institution file (RFC 158's v1 source). */
   SCORECARD("scorecard"),
+
+  /**
+   * The school's own Common Data Set filing, read through the collegedata.fyi
+   * corpus (RFC 170, D8). One more publisher on the same source axis: the CDS
+   * FIELD IDS it publishes (H.209, H.801, ...) are source-defined codes and
+   * live in `source_variable`, never in a table name, a column name or a
+   * vocabulary slug.
+   */
+  COMMON_DATA_SET("common_data_set"),
   ;
 
   companion object {

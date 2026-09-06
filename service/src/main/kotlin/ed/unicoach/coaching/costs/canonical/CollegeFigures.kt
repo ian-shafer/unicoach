@@ -2,6 +2,7 @@ package ed.unicoach.coaching.costs.canonical
 
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.FigureGroup
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortMoneyStat
 import ed.unicoach.db.models.CohortPopulation
@@ -16,7 +17,6 @@ import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.PriceFigure
 import ed.unicoach.db.models.ResidencyBasis
-import ed.unicoach.db.models.VINTAGE_UNDATED
 import kotlin.math.roundToInt
 
 /**
@@ -299,7 +299,7 @@ val CostField.figureGroup: FigureGroup?
  * behind an IC_AY one.
  */
 data class DatedFigure(
-  val academicYear: String,
+  val academicYear: AcademicYear,
   val reading: FigureReading<Int>,
 ) {
   /** The dollars, or null when the reading bears no value. */
@@ -324,7 +324,7 @@ data class DatedFigure(
  * exactly as they do today, rather than borrowing one.
  */
 data class DatedStat(
-  val vintage: String?,
+  val vintage: AcademicYear?,
   val residencyScope: CohortResidencyScope,
   val reading: FigureReading<Int>,
 ) {
@@ -365,7 +365,7 @@ class CollegeFigures(
    * this object about a field once per field per arrangement per college, and
    * a college carries ~48 price rows.
    */
-  private val pricesByAddress: Map<PriceAddress, Map<String, FigureReading<Int>>> =
+  private val pricesByAddress: Map<PriceAddress, Map<AcademicYear, FigureReading<Int>>> =
     priceFigures
       .groupBy { PriceAddress(it.priceConcept, it.residencyBasis, it.arrangement) }
       .mapValues { (_, rows) -> rows.associate { it.academicYear to it.reading } }
@@ -404,15 +404,15 @@ class CollegeFigures(
       .filter { it.measure.unit == MeasureUnit.USD_PER_YEAR }
       .groupBy { CohortKey(it.measure, it.population, it.residencyScope, it.aidScope, it.incomeBand) }
       .mapValues { (key, rows) ->
-        // Latest DATED vintage wins, and the `'undated'` sentinel is normalised
-        // to null BEFORE the ordering rather than after it -- it is not a year
-        // and may not be compared as one. Ordering the raw column got this
-        // BACKWARDS: `"undated" > "2023-24"` by char code ('u' is 0x75, '2' is
-        // 0x32), so `maxBy` preferred the undated row and the dated row's year
-        // was then discarded. A measure DOES carry both at one key -- the SFA
-        // fill writes `pell_share` dated beside the Scorecard's undated one.
-        val row = rows.maxWith(compareBy(VINTAGE_ORDER) { it.vintage.takeIf { vintage -> vintage != VINTAGE_UNDATED } })
-        val vintage = row.vintage.takeIf { it != VINTAGE_UNDATED }
+        // Latest DATED vintage wins, and "undated" is an ABSENT year rather
+        // than a magic string (RFC 170 D14), so it sorts first by TYPE and
+        // cannot be compared as though it were a year. The sentinel this
+        // replaced ordered BACKWARDS against the raw column -- `"undated" >
+        // "2023-24"` by char code -- and the dated row's year was discarded. A
+        // measure DOES carry both at one key: the SFA fill writes `pell_share`
+        // dated beside the Scorecard's undated one.
+        val row = rows.maxWith(compareBy(VINTAGE_ORDER) { it.vintage })
+        val vintage = row.vintage
         // A series whose ADDRESS declares a [FigureGroup] is dated by
         // definition, so an undated row at it is a store/address contradiction
         // rather than a figure. Refused HERE, so a blended amount can never
@@ -441,7 +441,7 @@ class CollegeFigures(
    * caller outside this module asks for a figure AT a year rather than doing
    * its own sums over the years available.
    */
-  internal val publishedPriceYears: List<String> =
+  internal val publishedPriceYears: List<AcademicYear> =
     pricesByAddress.values
       .flatMap { it.keys }
       .distinct()
@@ -463,7 +463,7 @@ class CollegeFigures(
    * the payload served: the band selects the row for a band-selected address,
    * and is ignored for the others.
    */
-  fun blendedAverageVintage(band: IncomeBand?): String? =
+  fun blendedAverageVintage(band: IncomeBand?): AcademicYear? =
     CostField.entries
       .filter { it.figureGroup == FigureGroup.BLENDED_AVERAGE }
       .map { field ->
@@ -514,7 +514,7 @@ class CollegeFigures(
    */
   fun figureOf(
     field: CostField,
-    year: String?,
+    year: AcademicYear?,
   ): DatedFigure? =
     when (val address = field.figureAddress) {
       is FigureAddress.Price -> priceAt(address.address, year)
@@ -544,7 +544,7 @@ class CollegeFigures(
    */
   fun statusOf(
     field: CostField,
-    year: String?,
+    year: AcademicYear?,
     band: IncomeBand?,
   ): FigureStatus? =
     when (val address = field.figureAddress) {
@@ -565,7 +565,7 @@ class CollegeFigures(
   /** This field's price row at [year] specifically, or null when this college has none. */
   fun priceAt(
     address: PriceAddress,
-    year: String?,
+    year: AcademicYear?,
   ): DatedFigure? {
     if (year == null) return null
     val reading = pricesByAddress[address]?.get(year) ?: return null
@@ -591,7 +591,7 @@ class CollegeFigures(
    */
   fun yearGapOf(
     field: CostField,
-    year: String?,
+    year: AcademicYear?,
   ): DatedFigure? {
     val address = (field.figureAddress as? FigureAddress.Price)?.address ?: return null
     if (priceAt(address, year) != null) return null
@@ -724,7 +724,7 @@ class CollegeFigures(
    */
   internal fun hasValuesAt(
     fields: Collection<CostField>,
-    year: String,
+    year: AcademicYear,
   ): Boolean =
     fields.all { field ->
       when (val address = field.figureAddress) {
@@ -743,7 +743,7 @@ class CollegeFigures(
    */
   internal fun hasAnyValueAt(
     fields: Collection<CostField>,
-    year: String,
+    year: AcademicYear,
   ): Boolean =
     fields.any { field ->
       val address = (field.figureAddress as? FigureAddress.Price)?.address ?: return@any false
@@ -764,7 +764,7 @@ class CollegeFigures(
    * than derived here because which tuition applies is a fact about the FAMILY,
    * and this type knows only about the school.
    */
-  fun publishedPriceYearOf(candidateSets: List<Set<CostField>>): String? {
+  fun publishedPriceYearOf(candidateSets: List<Set<CostField>>): AcademicYear? {
     val complete = publishedPriceYears.firstOrNull { year -> candidateSets.any { it.isNotEmpty() && hasValuesAt(it, year) } }
     if (complete != null) return complete
     val allFields = candidateSets.flatten().toSet()
@@ -826,15 +826,17 @@ class CollegeFigures(
 
   companion object {
     /**
-     * How a cohort vintage orders: an undated row (already normalised to null)
-     * below every dated `'YYYY-YY'`.
+     * How a cohort vintage orders: an undated row -- an ABSENT year, which is
+     * how the store says it (RFC 170 D14) -- below every [AcademicYear], and
+     * years among themselves in calendar order.
      *
-     * Named, and applied to the NORMALISED value, because the sentinel ordered
-     * as a raw string sorts the OPPOSITE way -- `"undated" > "2023-24"` by char
-     * code -- so the policy has to be stated rather than inherited from an
-     * accident of the alphabet.
+     * Named rather than inlined because "undated sorts oldest" is a POLICY
+     * about what a missing year means here, not a property of the type; the
+     * type only refuses to compare one. (It was also once a `'undated'` string
+     * that sorted ABOVE every year by char code, which is the accident this
+     * comparator was first written to undo.)
      */
-    private val VINTAGE_ORDER: Comparator<String?> = nullsFirst()
+    private val VINTAGE_ORDER: Comparator<AcademicYear?> = nullsFirst()
 
     /**
      * The cohort series this surface serves that a [FigureGroup] DATES -- the

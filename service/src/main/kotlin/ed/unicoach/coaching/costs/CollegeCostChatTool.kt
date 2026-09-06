@@ -460,6 +460,11 @@ class CollegeCostChatTool(
       // and carrying its OWN citation, because merit aid is not a Scorecard
       // fact and must never fold into the payload's Scorecard `source` string.
       cost.meritAid?.let { put(MeritAidWire.KEY, MeritAidWire.objectOf(it)) }
+      // The RFC 170 aid-policy section, additive in exactly the same way, and
+      // with the coverage-honest line when the corpus carries no filing for
+      // this school: silence about a school's aid policy is a fact about OUR
+      // corpus, and leaving it unsaid invites the model to fill it.
+      putAidPolicy(cost)
       putFieldsWithNoAmount(cost)
       putWithheldFigures(cost)
       putFigureStatuses(cost)
@@ -551,6 +556,32 @@ class CollegeCostChatTool(
     val offers = profile.precisionOffersFor(cost)
     if (offers.isNotEmpty()) {
       putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it, cost)) } }
+    }
+  }
+
+  /**
+   * The aid-policy section, or the one sentence saying why there is none (RFC
+   * 170, D11).
+   *
+   * The absence line is NOT a [DATA_AVAILABILITY_KEY] entry: that list speaks
+   * the [CostField] vocabulary, which means "this college does not report this
+   * SCORECARD cost field", and the Common Data Set is a different publisher
+   * with its own silences (the rule [CollegeCost.meritAid] already states).
+   * Mixing them would misattribute whose silence it is. So the sentence keys
+   * itself, and says which of the two silences this is: we hold no filing for
+   * the school, rather than the school having reported nothing.
+   */
+  private fun JsonObjectBuilder.putAidPolicy(cost: CollegeCost) {
+    val policy = cost.aidPolicy
+    when {
+      // Two silences, two sentences. "We hold no filing" said about a school
+      // whose filing we DO hold is a false statement about our own coverage,
+      // and it is the one the model would repeat to a family.
+      policy == null -> put(AID_POLICY_AVAILABILITY_KEY, AID_POLICY_NO_FILING)
+
+      !policy.hasFact -> put(AID_POLICY_AVAILABILITY_KEY, AID_POLICY_NO_FACT_IN_FILING)
+
+      else -> put(AidPolicyWire.KEY, AidPolicyWire.objectOf(policy))
     }
   }
 
@@ -1221,6 +1252,46 @@ class CollegeCostChatTool(
     const val DATA_AVAILABILITY_KEY = "data_availability"
 
     /**
+     * Why a college result carries no [AidPolicyWire.KEY] section (RFC 170):
+     * present exactly when that section is absent, so the model never has to
+     * infer a school's aid policy from a missing key.
+     */
+    const val AID_POLICY_AVAILABILITY_KEY = "aid_policy_availability"
+
+    /**
+     * The keys whose value is a NUMBER by contract -- the RFC 143 guard's
+     * allowlist for this tool's payload.
+     *
+     * On the TOOL, as `CollegeAdmissionsChatTool.NUMBERS_BY_CONTRACT` already
+     * is: it is a statement about what this tool emits, so a test-only copy
+     * would be a production contract asserted from a duplicate. Every measure
+     * list is read from its own home ([CostField], the two wire objects), so a
+     * new figure joins by being declared rather than by being remembered here.
+     */
+    val NUMBERS_BY_CONTRACT: Set<String> =
+      CostField.entries.map { it.wireName }.toSet() +
+        setOf("count", "amount_usd", TOTAL_KEY) +
+        MeritAidWire.NUMERIC_KEYS +
+        AidPolicyWire.NUMERIC_KEYS
+
+    /** OUR coverage: the corpus carries no filing for this school at all. */
+    const val AID_POLICY_NO_FILING: String =
+      "We hold no Common Data Set filing for this school, so we have nothing to say about how it treats " +
+        "financial need or which aid forms it requires. Say that plainly and point the family at the school's " +
+        "financial aid office; never estimate it from another school."
+
+    /**
+     * THEIR filing, and nothing in it we can read -- a different fact from
+     * having no filing, and it must not be spoken as one. It is also not the
+     * school saying it requires nothing: an absent form is absent from the
+     * filing (D5).
+     */
+    const val AID_POLICY_NO_FACT_IN_FILING: String =
+      "We hold this school's Common Data Set filing, but it reports none of the need figures or aid forms we " +
+        "read out of it. Say that we have nothing on this school's aid policy rather than that the school " +
+        "requires nothing, and point the family at its financial aid office."
+
+    /**
      * WHICH of the three blended-figure outcomes applies at one school
      * ([BlendedFigureApplicability]), ALWAYS written beside the known-only
      * [APPLIES_KEY] boolean.
@@ -1454,6 +1525,18 @@ class CollegeCostChatTool(
         "${CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD.wireName} are the fees PART of the matching " +
         "combined figure, not a cost beside it: never add one to a tuition and fees figure or to any " +
         "total, and never subtract one from the other. " +
+        "A college result may also carry ${AidPolicyWire.KEY}, also from that school's own Common Data Set and " +
+        "cited there: ${AidPolicyWire.NEED_MET_SHARE_KEY} and ${AidPolicyWire.FULLY_MET_SHARE_KEY} are about the " +
+        "freshmen that school gave need-based aid to, never about every freshman and never about this student - " +
+        "say each one the way its label says it. Neither figure means the school meets full need: no school " +
+        "publishes that, so answer 'do they meet full need?' with these two cited figures and their year, never " +
+        "with a yes or a no of your own. ${AidPolicyWire.FORMS_KEY} lists the aid forms that school's Common Data " +
+        "Set says are required of first-year applicants; a form that is not in the list is not listed in that " +
+        "filing, which is NOT the school saying it is not required - ${AidPolicyWire.FORMS_NOTE_KEY} says that in " +
+        "words and you must not contradict it. ${AidPolicyWire.FORMS_NOT_COLLECTED_KEY} is a different thing " +
+        "again: that school's filing answers those forms and WE could not read the answer, so say we could not " +
+        "read it and never that the school does not require them. When the section is absent, " +
+        "${AID_POLICY_AVAILABILITY_KEY} says why. " +
         "A college result may also carry $BREAKDOWN_KEY, the published price split into the parts a family can " +
         "actually influence, keyed by where the student would live: " +
         "${LivingArrangement.ON_CAMPUS.value}, ${LivingArrangement.OFF_CAMPUS.value}, " +
