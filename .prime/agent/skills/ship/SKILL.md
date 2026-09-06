@@ -138,29 +138,40 @@ history, so resetting to one would put the worktree back on the old base with
 the other run's landed work missing. `ship-recover` only ever targets
 post-rebase checkpoints.
 
-### A slow step must announce its own ending
+### Landing must report itself, in the same turn
 
-The two slowest things in a run — `bin/test` at verify, and the hook at commit —
-are exactly the two whose outcome Ian is waiting on. Neither may be started as a
-bare background shell job (`nohup … &`) that the session then ends its turn on:
-**nothing wakes the session when a shell job finishes**, so the run stalls at the
+Ian's clock starts when a phase begins and stops when he is TOLD it ended. Two
+distinct ways this skill has wasted it, both real:
+
+**1. A background job nobody wakes from.** `nohup … &` followed by ending the
+turn: nothing wakes a session when a shell job exits, so the run stalls at the
 one moment it has news, and the next thing that moves it is Ian asking for a
 status he should have been handed.
 
-The mechanism that does wake it is a message. So a long command is either
+**2. A turn that ends on a tool result.** The hook returned `[main abc1234]` and
+the turn ended with no text. A tool result Ian cannot see is not a report. Half
+the wait was the gate; the other half was a finished answer sitting unread.
 
-- **run to completion in the turn** — correct whenever waiting is the only work
-  left, or
-- **dispatched to a child** that runs it and replies with
-  `agent_message.send(..., receiver_role='parent')`.
+So, concretely, for the phase 6 block:
 
-Do not split a sequence that has a natural ending. Phase 6 after the hook is
-`git commit` → `ship-land` → done: put the whole block in **one** script so
-"landed" arrives on its own, rather than leaving a completed hook sitting in a
-log file waiting to be noticed.
+- **Say the wait has started**, before running it: what is running, and roughly
+  how long. `bin/test check` cold is a few minutes; Ian should not have to guess
+  whether anything is happening.
+- **Run the whole post-lock sequence as ONE foreground command** — squash,
+  format, `git commit`, `ship-land` — in a single script if it is long. Not one
+  turn per command. The commit's success is not the outcome; the fast-forward is,
+  and it is twenty seconds past the part that took minutes.
+- **The next thing generated after that command returns is the report.** Not
+  another tool call, not silence. If the answer is already in hand, it goes to
+  Ian in the SAME turn it arrived.
+- **Never `nohup` a step whose result the run needs.** If something genuinely
+  must run detached, dispatch it to a child that replies with
+  `agent_message.send(..., receiver_role='parent')` — a message wakes the
+  session, a shell job does not.
 
-Report a terminal outcome — landed, failed, blocked — in its own message the
-moment it is known, ahead of any other content.
+The same rule holds for a failure inside the lock: release, then report
+immediately. "Landed", "failed", "blocked" are terminal outcomes, and a terminal
+outcome is announced the moment it is known, ahead of any other content.
 
 ### 1. claim
 
@@ -250,8 +261,9 @@ screenshots as artifacts (see
     nix develop -c git commit --no-verify  # RFC markdown only, lane A
     scripts/ship-land -s <rs>            # ff-merge, then releases  ← exit
 
-Run that whole block as one unit — one script if it is delegated — so the land
-completes without a further turn; see "A slow step must announce its own ending".
+Run that block as ONE foreground sequence, and report the fast-forward in the
+same turn it returns — see "Landing must report itself, in the same turn". A
+`git commit` that succeeded is not the news; a landed SHA is.
 
 The lock is repo-wide and serialises the whole sequence, not the `git commit`
 alone: the hook's result is only valid for the base it started on, so the rebase
