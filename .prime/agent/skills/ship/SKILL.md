@@ -138,6 +138,30 @@ history, so resetting to one would put the worktree back on the old base with
 the other run's landed work missing. `ship-recover` only ever targets
 post-rebase checkpoints.
 
+### A slow step must announce its own ending
+
+The two slowest things in a run — `bin/test` at verify, and the hook at commit —
+are exactly the two whose outcome Ian is waiting on. Neither may be started as a
+bare background shell job (`nohup … &`) that the session then ends its turn on:
+**nothing wakes the session when a shell job finishes**, so the run stalls at the
+one moment it has news, and the next thing that moves it is Ian asking for a
+status he should have been handed.
+
+The mechanism that does wake it is a message. So a long command is either
+
+- **run to completion in the turn** — correct whenever waiting is the only work
+  left, or
+- **dispatched to a child** that runs it and replies with
+  `agent_message.send(..., receiver_role='parent')`.
+
+Do not split a sequence that has a natural ending. Phase 6 after the hook is
+`git commit` → `ship-land` → done: put the whole block in **one** script so
+"landed" arrives on its own, rather than leaving a completed hook sitting in a
+log file waiting to be noticed.
+
+Report a terminal outcome — landed, failed, blocked — in its own message the
+moment it is known, ahead of any other content.
+
 ### 1. claim
 
 `scripts/ship-claim -l <lane> [-s <slug>]` from the original checkout. Capture
@@ -225,6 +249,9 @@ screenshots as artifacts (see
     nix develop -c git commit            # code — through the FULL hook. The gate.
     nix develop -c git commit --no-verify  # RFC markdown only, lane A
     scripts/ship-land -s <rs>            # ff-merge, then releases  ← exit
+
+Run that whole block as one unit — one script if it is delegated — so the land
+completes without a further turn; see "A slow step must announce its own ending".
 
 The lock is repo-wide and serialises the whole sequence, not the `git commit`
 alone: the hook's result is only valid for the base it started on, so the rebase
