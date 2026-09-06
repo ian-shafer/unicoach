@@ -53,6 +53,30 @@ wait_for_port_free() {
   return 1
 }
 
+# This checkout's identity as a NUMBER, from the same input every other
+# per-worktree derivation uses (bin/functions' checkout_block_base, .env.dev's
+# database name): the checkout root path. Two checkouts of this repo run this
+# harness at the same time, so anything it names in a namespace the machine
+# shares has to carry this tag — see the sentinel sleeps below and the isolation
+# section's fake checkout names.
+CKP_CHECKOUT_TAG="$(printf '%s' "$PROJECT_ROOT" | cksum | cut -d' ' -f1)"
+
+# The daemon-up port tests park a long `sleep <n>` as their fake daemon and then
+# find it again with `pgrep -f` / `pkill -f` — which match the WHOLE process
+# table, not this checkout's children. Fixed numbers therefore had each
+# concurrent checkout pkill'ing the OTHER's fake daemon: the victim's daemon-up
+# died on SIGTERM and the run failed with "did not reclaim the port and boot
+# (exit 143)", while the survivor's `pgrep` saw the other's child and failed with
+# "daemon-up spawned a child despite the collision". Same defect as the isotest
+# database names, in the process namespace instead of the database server.
+#
+# Spaced by 10 so the three offsets of one checkout can never overlap another's
+# block, and kept 7 digits so the pattern cannot match an ordinary `sleep`.
+SLEEP_SENTINEL_BASE=$(( 1000000 + (CKP_CHECKOUT_TAG % 800000) * 10 ))
+SLEEP_SENTINEL_COLLISION=$(( SLEEP_SENTINEL_BASE + 1 ))
+SLEEP_SENTINEL_RECLAIM=$(( SLEEP_SENTINEL_BASE + 2 ))
+SLEEP_SENTINEL_KILL9=$(( SLEEP_SENTINEL_BASE + 3 ))
+
 # Every foreign listener this harness spawns records its PID here so the EXIT
 # trap can reap any that a test forgot or that a mid-run abort skipped — a leaked
 # listen socket would block a later run's curl / probe on the same port.
@@ -65,9 +89,39 @@ reap_foreign_listeners() {
   done
 }
 
+# Same contract for the cross-checkout isolation section's two REAL dev
+# databases: the section sets ISO_DATABASES_LIVE while they exist, so a mid-run abort —
+# fail_test exits the harness without unwinding, and a SIGINT does not unwind at
+# all — still drops them. A leaked database is not the harness's own mess to
+# tolerate: it sits on the cluster every checkout shares. iso_cleanup is defined
+# with that section, far below; a trap body is resolved when it fires, not when
+# it is installed.
+reap_iso_databases() {
+  [ -n "${ISO_DATABASES_LIVE:-}" ] || return 0
+  iso_cleanup
+}
+
 # Tear down only the daemons this harness starts. The PostgreSQL cluster is
 # shared across worktrees (see bin/INVARIANTS.md) — never stop it.
-trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true; bin/daemon-down idem-test >/dev/null 2>&1 || true; bin/daemon-down collision-test >/dev/null 2>&1 || true; bin/daemon-down reclaim-test >/dev/null 2>&1 || true; reap_foreign_listeners' EXIT INT TERM
+reap_harness_resources() {
+  bin/rest-server-down >/dev/null 2>&1 || true
+  bin/queue-worker-down >/dev/null 2>&1 || true
+  bin/daemon-down idem-test >/dev/null 2>&1 || true
+  bin/daemon-down collision-test >/dev/null 2>&1 || true
+  bin/daemon-down reclaim-test >/dev/null 2>&1 || true
+  reap_foreign_listeners
+  reap_iso_databases
+}
+
+# INT and TERM EXIT rather than falling back into the script. A bash signal
+# handler RESUMES where it interrupted, and this reaper now destroys state the
+# run is still using — it drops the isolation section's two databases and removes
+# its fake checkouts — so a Ctrl-C mid-section would otherwise be reported as a
+# cascade of fabricated assertion failures instead of an interrupt. Exiting
+# re-enters the same reaper through the EXIT trap; it is idempotent.
+trap reap_harness_resources EXIT
+trap 'reap_harness_resources; exit 130' INT
+trap 'reap_harness_resources; exit 143' TERM
 
 echo "Harness up"
 echo ""
@@ -487,6 +541,12 @@ pass_test "checkout-port returns the same block base on repeated calls in one ch
 # here: a fake checkout root is a directory of symlinks back into this one, so
 # `basename $PROJECT_ROOT` — the only input — is the only thing that differs.
 CKP_FAKE_PARENT="$(mktemp -d)"
+# CALLER'S INVARIANT: a fake checkout that goes on to create a REAL object on
+# shared state — a dev database above all, since .env.dev derives its name from
+# the checkout name alone and every checkout shares one server — must be given a
+# name that no OTHER checkout can derive (the isolation section below tags its
+# two names with a cksum of $PROJECT_ROOT). A name-only or port-only fixture,
+# like the two searches here, needs no tag: they derive numbers and bind nothing.
 make_fake_checkout() {
   local name="$1" entry root
   # Assigned on its own line: a `local` statement expands all its words before
@@ -863,13 +923,13 @@ coll_listener="$FOREIGN_LISTENER_PID"
 up_status=0
 # Unique sentinel arg so this daemon command cannot be confused with the
 # other `sleep 60` daemons elsewhere in the suite.
-bin/daemon-up -p "$PORT_FREE" collision-test -- sleep 987654 >/dev/null 2>&1 || up_status=$?
-if [ "$up_status" -ne 3 ]; then echo "Fail: daemon-up on a held port did not exit 3 (got $up_status)"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
-if [ -f "$PROJECT_ROOT/var/run/collision-test.pid" ]; then echo "Fail: daemon-up wrote a PID file despite the collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
-if [ -d "$PROJECT_ROOT/var/run/collision-test.daemon.lock" ]; then echo "Fail: daemon-up left the lock directory after a collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
-if pgrep -f 'sleep 987654' >/dev/null 2>&1; then echo "Fail: daemon-up spawned a child despite the collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+bin/daemon-up -p "$PORT_FREE" collision-test -- sleep "$SLEEP_SENTINEL_COLLISION" >/dev/null 2>&1 || up_status=$?
+if [ "$up_status" -ne 3 ]; then echo "Fail: daemon-up on a held port did not exit 3 (got $up_status)"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if [ -f "$PROJECT_ROOT/var/run/collision-test.pid" ]; then echo "Fail: daemon-up wrote a PID file despite the collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if [ -d "$PROJECT_ROOT/var/run/collision-test.daemon.lock" ]; then echo "Fail: daemon-up left the lock directory after a collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if pgrep -f "sleep $SLEEP_SENTINEL_COLLISION" >/dev/null 2>&1; then echo "Fail: daemon-up spawned a child despite the collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
 # Defensive reap: if a future regression DID spawn, do not leak it.
-pkill -f 'sleep 987654' 2>/dev/null || true
+pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null || true
 stop_foreign_listener "$coll_listener"
 pass_test "daemon-up fatals (exit 3) on cross-process port collision without spawning or writing a PID"
 
@@ -983,13 +1043,13 @@ rm -rf "$PROJECT_ROOT/var/run/reclaim-test.daemon.lock"
 start_foreign_listener "$PORT_KILL" || { echo "Fail: could not bind foreign listener on $PORT_KILL"; exit 1; }
 rk_listener="$FOREIGN_LISTENER_PID"
 up_status=0
-bin/daemon-up -k -p "$PORT_KILL" reclaim-test -- sleep 876543 >/dev/null 2>&1 || up_status=$?
-if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -k did not reclaim the port and boot (exit $up_status)"; pkill -f 'sleep 876543' 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
-if bin/check-pid "$rk_listener" >/dev/null 2>&1; then echo "Fail: daemon-up -k left the listener (PID $rk_listener) alive"; pkill -f 'sleep 876543' 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$rk_listener"; exit 1; fi
+bin/daemon-up -k -p "$PORT_KILL" reclaim-test -- sleep "$SLEEP_SENTINEL_RECLAIM" >/dev/null 2>&1 || up_status=$?
+if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -k did not reclaim the port and boot (exit $up_status)"; pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
+if bin/check-pid "$rk_listener" >/dev/null 2>&1; then echo "Fail: daemon-up -k left the listener (PID $rk_listener) alive"; pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$rk_listener"; exit 1; fi
 rk_pid="$(cat "$PROJECT_ROOT/var/run/reclaim-test.pid" 2>/dev/null || true)"
-if [ -z "$rk_pid" ] || ! bin/check-pid "$rk_pid" >/dev/null 2>&1; then echo "Fail: daemon-up -k did not spawn/record a live daemon (pid=[$rk_pid])"; pkill -f 'sleep 876543' 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
+if [ -z "$rk_pid" ] || ! bin/check-pid "$rk_pid" >/dev/null 2>&1; then echo "Fail: daemon-up -k did not spawn/record a live daemon (pid=[$rk_pid])"; pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
 bin/daemon-down reclaim-test >/dev/null 2>&1 || true
-pkill -f 'sleep 876543' 2>/dev/null || true
+pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null || true
 stop_foreign_listener "$rk_listener"
 pass_test "daemon-up -k reclaims the port listener (SIGTERM) and boots"
 
@@ -1000,11 +1060,11 @@ k9_listener="$FOREIGN_LISTENER_PID"
 rm -f "$PROJECT_ROOT/var/run/reclaim-test.pid"
 rm -rf "$PROJECT_ROOT/var/run/reclaim-test.daemon.lock"
 up_status=0
-bin/daemon-up -9 -p "$PORT_KILL" reclaim-test -- sleep 989898 >/dev/null 2>&1 || up_status=$?
-if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -9 did not reclaim a SIGTERM-ignoring listener (exit $up_status)"; pkill -f 'sleep 989898' 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$k9_listener"; exit 1; fi
-if bin/check-pid "$k9_listener" >/dev/null 2>&1; then echo "Fail: daemon-up -9 left the SIGTERM-ignoring listener (PID $k9_listener) alive"; pkill -f 'sleep 989898' 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$k9_listener"; exit 1; fi
+bin/daemon-up -9 -p "$PORT_KILL" reclaim-test -- sleep "$SLEEP_SENTINEL_KILL9" >/dev/null 2>&1 || up_status=$?
+if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -9 did not reclaim a SIGTERM-ignoring listener (exit $up_status)"; pkill -f "sleep $SLEEP_SENTINEL_KILL9" 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$k9_listener"; exit 1; fi
+if bin/check-pid "$k9_listener" >/dev/null 2>&1; then echo "Fail: daemon-up -9 left the SIGTERM-ignoring listener (PID $k9_listener) alive"; pkill -f "sleep $SLEEP_SENTINEL_KILL9" 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$k9_listener"; exit 1; fi
 bin/daemon-down reclaim-test >/dev/null 2>&1 || true
-pkill -f 'sleep 989898' 2>/dev/null || true
+pkill -f "sleep $SLEEP_SENTINEL_KILL9" 2>/dev/null || true
 stop_foreign_listener "$k9_listener"
 pass_test "daemon-up -9 (SIGKILL) reclaims a listener that ignores SIGTERM"
 
@@ -1223,9 +1283,42 @@ assert_success "db-reset drops/recreates non-interactively (relays db-drop -y)" 
 #      was precisely that the two names were the same string.
 echo ""
 echo "==== Testing cross-checkout dev database isolation ===="
+# The two fake names must differ PER CHECKOUT, not merely per directory. The dev
+# database is derived from the checkout NAME (.env.dev: POSTGRES_DB=
+# unicoach-dev-$(checkout_name "$PROJECT_ROOT")) and every checkout shares one
+# server, so the former fixed names had every checkout deriving the SAME two
+# databases — and iso_cleanup's DROP DATABASE ... WITH (FORCE) then terminated a
+# CONCURRENT run's sessions, failing it with a bare "terminating connection due
+# to administrator command": a name collision wearing the costume of a Postgres
+# crash. The tag is a cksum of this checkout's ROOT PATH, the same input the port
+# block already keys on.
+#
+# Deliberately NOT unique per run (no $$): CKP_CHECKOUT_TAG is a pure function of
+# the checkout, so a leaked database is one THIS checkout's next run derives
+# again and drops, and only ever this checkout's to drop. A per-run tag would buy
+# nothing: two runs of this harness in ONE checkout already collide on that
+# checkout's test database, its var/run daemons and its port block, so the pair
+# is not a supported configuration — and paying $$ would cost the reclaimability
+# above.
 CKP_FAKE_PARENT="$(mktemp -d)"
-iso_root_a="$(make_fake_checkout "unicoach-isotest-a")"
-iso_root_b="$(make_fake_checkout "unicoach-isotest-b")"
+iso_name_a="unicoach-isotest-a-$CKP_CHECKOUT_TAG"
+iso_name_b="unicoach-isotest-b-$CKP_CHECKOUT_TAG"
+# A tripwire, not a live risk: the names are at most 29 bytes today (a 19-byte
+# prefix plus cksum's 10-digit ceiling) against a 50-byte bound, so this cannot
+# fire until someone lengthens the prefix. Checked HERE anyway, before any
+# database exists: checkout_name refuses an over-long name with a fatal inside a
+# CHILD process, which would surface two steps later as an empty derived name and
+# a misleading message. Bytes, not characters — the limit the server truncates at
+# is bytes.
+for iso_name in "$iso_name_a" "$iso_name_b"; do
+  iso_name_bytes="$(printf '%s' "$iso_name" | LC_ALL=C wc -c | tr -d '[:space:]')"
+  if [ "$iso_name_bytes" -gt "$CHECKOUT_NAME_MAX_BYTES" ]; then
+    rm -rf "$CKP_FAKE_PARENT"
+    fail_test "fake checkout name [$iso_name] is [$iso_name_bytes] bytes, over checkout_name's [$CHECKOUT_NAME_MAX_BYTES]; its dev database would be truncated by PostgreSQL and could collide with another checkout's"
+  fi
+done
+iso_root_a="$(make_fake_checkout "$iso_name_a")"
+iso_root_b="$(make_fake_checkout "$iso_name_b")"
 
 # Every invocation drops the harness's exported ENV_FILES: the dev database only
 # exists under the AMBIENT `.env -> .env.dev` layering, which is the layering an
@@ -1237,11 +1330,19 @@ iso_dev() {
 iso_db_name() {
   env -u ENV_FILES -u ENV_FILE bash -c 'source "$1/bin/common"; echo "$POSTGRES_DB"' _ "$1"
 }
+# Idempotent, and clears ISO_DATABASES_LIVE last so the EXIT trap does not repeat a
+# cleanup the section already ran.
 iso_cleanup() {
   iso_dev "$iso_root_a" db-drop -y >/dev/null 2>&1 || true
   iso_dev "$iso_root_b" db-drop -y >/dev/null 2>&1 || true
   rm -rf "$CKP_FAKE_PARENT"
+  ISO_DATABASES_LIVE=""
 }
+# Armed BEFORE anything can create a database — db-create runs below and may fail
+# halfway — and only now that iso_cleanup is DEFINED: a signal arriving between
+# the two would otherwise pass the trap's guard and call a command that does not
+# exist yet, reaping nothing.
+ISO_DATABASES_LIVE=1
 # The ONE failure exit for this section. fail_test exits the harness, so every
 # abort has to drop the two real databases first — repeating that cleanup at each
 # branch is exactly how one forgotten copy leaks a database into the shared dev
@@ -1251,11 +1352,26 @@ iso_fail() {
   fail_test "$1"
 }
 
+# Two properties, checked in the order that reports the RFC 156 regression in its
+# own words. FIRST that the two names DIFFER — one string for both checkouts is
+# the regression itself, and it deserves to say so rather than arrive as a
+# mismatch against an expected name. THEN that each equals .env.dev's derivation,
+# unicoach-dev-<checkout name>, restated here over the names we ASKED for and
+# compared against a child that really sources bin/common (iso_db_name): derived
+# rather than hardcoded, since
+# the fake names carry this checkout's tag and no literal could be right in every
+# checkout — but still the full rule, not a weaker "they are different".
 test_iso_derives_distinct_dev_databases() {
+  local want_a want_b
   iso_db_a="$(iso_db_name "$iso_root_a")"
   iso_db_b="$(iso_db_name "$iso_root_b")"
-  if [ "$iso_db_a" != "unicoach-dev-unicoach-isotest-a" ] || [ "$iso_db_b" != "unicoach-dev-unicoach-isotest-b" ]; then
-    iso_fail ".env.dev did not derive a per-worktree dev database (got [$iso_db_a] and [$iso_db_b])"
+  if [ "$iso_db_a" = "$iso_db_b" ]; then
+    iso_fail "the two fake checkouts derived the SAME dev database [$iso_db_a]; per-worktree derivation is gone"
+  fi
+  want_a="unicoach-dev-$iso_name_a"
+  want_b="unicoach-dev-$iso_name_b"
+  if [ "$iso_db_a" != "$want_a" ] || [ "$iso_db_b" != "$want_b" ]; then
+    iso_fail ".env.dev did not derive a per-worktree dev database (got [$iso_db_a] and [$iso_db_b], expected [$want_a] and [$want_b])"
   fi
   return 0
 }
