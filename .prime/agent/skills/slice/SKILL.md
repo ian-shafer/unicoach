@@ -124,6 +124,15 @@ transient, and an unwritten edge is how folklore starts.
 A `Needs:` entry with **no reason is not a dependency** — reject it and report
 it as a doc defect rather than blocking on it.
 
+**One edge per `-` bullet. Never several in one paragraph.** An inline
+`**Needs:**` paragraph is joined to the next blank line and parsed as ONE entry,
+so a second `BLOCKS` inside it used to vanish into the first edge's reason —
+that is how `shape/08/drop-the-publisher-shape` printed READY while it still
+BLOCKED on `shape/05`, i.e. the slice that DROPS the publisher money columns
+looked startable while another reader was live. `slice-board` now refuses that
+shape as a doc defect (exit 1), but write the bullets and the question never
+arises.
+
 ### 2. GATE
 
 | Kind          | Meaning                              | Action                               |

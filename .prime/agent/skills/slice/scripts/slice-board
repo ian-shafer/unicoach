@@ -187,6 +187,23 @@ function parse_entry(owner, text, f, ln,   kind, rest, p, tgts, reason, n, a, i)
     defect(f, ln, "Needs entry for " owner " has an empty reason: " kind " " tgts)
     return
   }
+  # A SECOND edge hiding inside the reason of this one. An inline Needs
+  # paragraph is joined until a blank line and parsed as ONE entry, so a doc
+  # that writes two edges in one paragraph silently loses every edge after the
+  # first -- it does not misparse loudly, it just stops seeing a dependency.
+  # That is how shape/08 printed READY while it still BLOCKED on shape/05: the
+  # slice that DROPS the publisher money columns looked startable while another
+  # reader was still live. Refusing here is the same treatment an empty reason
+  # and an unknown target already get.
+  #
+  # The pattern is deliberately the SHAPE of an edge -- a keyword followed by
+  # something that looks like a slice id -- not the bare keyword, so a reason
+  # may still say CONFLICTS-free or discuss blocking in prose.
+  # (No apostrophes in this awk program: it is a single-quoted bash string.)
+  if (match(" " reason " ", /[^A-Za-z](BLOCKS|PREFER|CONFLICTS)[ \t]+[a-z0-9-]+\/[0-9]/)) {
+    defect(f, ln, "Needs entry for " owner " hides a second edge in its reason -- write one edge per bullet, never several in one paragraph: " kind " " tgts)
+    return
+  }
   n = allids(tgts, a)
   if (n == 0) {
     defect(f, ln, "Needs entry for " owner " names no slice id: " text)
