@@ -138,39 +138,60 @@ history, so resetting to one would put the worktree back on the old base with
 the other run's landed work missing. `ship-recover` only ever targets
 post-rebase checkpoints.
 
-### Landing must report itself, in the same turn
+### Long commands run in a subagent; landing reports itself
 
 Ian's clock starts when a phase begins and stops when he is TOLD it ended. Two
-distinct ways this skill has wasted it, both real:
+ways this skill has wasted it, and they are different failures:
 
-**1. A background job nobody wakes from.** `nohup … &` followed by ending the
-turn: nothing wakes a session when a shell job exits, so the run stalls at the
-one moment it has news, and the next thing that moves it is Ian asking for a
-status he should have been handed.
+**1. A detached job nobody wakes from.** `nohup … &` and then the turn ends.
+Nothing wakes a session when a shell job exits, so the run stalls at the one
+moment it has news, and the next thing that moves it is Ian asking for a status
+he should have been handed.
 
 **2. A turn that ends on a tool result.** The hook returned `[main abc1234]` and
 the turn ended with no text. A tool result Ian cannot see is not a report. Half
-the wait was the gate; the other half was a finished answer sitting unread.
+that wait was the gate; the other half was a finished answer sitting unread.
 
-So, concretely, for the phase 6 block:
+**Default: give a long command to a child.** Anything over roughly a minute —
+`bin/test`, the hook, `installDist`, a concurrency demonstration — goes to a
+subagent that runs it and replies. Four reasons, and the second is the important
+one:
 
-- **Say the wait has started**, before running it: what is running, and roughly
-  how long. `bin/test check` cold is a few minutes; Ian should not have to guess
-  whether anything is happening.
-- **Run the whole post-lock sequence as ONE foreground command** — squash,
-  format, `git commit`, `ship-land` — in a single script if it is long. Not one
-  turn per command. The commit's success is not the outcome; the fast-forward is,
-  and it is twenty seconds past the part that took minutes.
-- **The next thing generated after that command returns is the report.** Not
-  another tool call, not silence. If the answer is already in hand, it goes to
-  Ian in the SAME turn it arrived.
-- **Never `nohup` a step whose result the run needs.** If something genuinely
-  must run detached, dispatch it to a child that replies with
-  `agent_message.send(..., receiver_role='parent')` — a message wakes the
-  session, a shell job does not.
+- The wake-up is free. A message resumes the session; a shell job cannot.
+- **Ian can watch it without asking.** A child's session is in the harness, live,
+  under the same view as everything else. A `nohup` log is a path he would have
+  to know and `tail` himself. This is the difference between a wait he can see
+  and a wait he has to interrupt.
+- Context hygiene: a 1300-line Gradle log lands in the child's context, and four
+  lines land in this one. Over a run that gap is large.
+- A child can REACT — capture the failing assertion verbatim, check whether it
+  reproduces — where a log file only sits there.
 
-The same rule holds for a failure inside the lock: release, then report
-immediately. "Landed", "failed", "blocked" are terminal outcomes, and a terminal
+Four conditions, each from a real failure:
+
+1. **State the report contract.** Exit code, executed test counts, and failing
+   text VERBATIM. Not a summary — a gate result is exactly where the skill's
+   two-hops-of-paraphrase warning bites.
+2. **The child logs to disk as well as replying**, so a stall still leaves
+   evidence and `agent_observe` shows where it stopped.
+3. **The tree is frozen while a child runs a gate.** Editing a file a child is
+   executing invalidates its run: bash reads a script incrementally, and that run
+   has to be thrown away. Whoever runs the gate owns the tree until it reports.
+4. **A green result is valid only for the commit it ran on.** The reply names the
+   SHA; check it has not moved — the same reasoning as the land lock.
+
+**Foreground** stays right for anything short (under about a minute), and for the
+case where waiting is the only work left. **`nohup` is not banned** — it suits
+fire-and-forget work whose result the run does not need — but a detached job owns
+its poll, and a single poll that finds the job still running means a wake-up is
+now required before the turn ends.
+
+**Landing is the case that must report itself.** Announce the wait before it
+starts, run the post-lock sequence — squash, format, `git commit`, `ship-land` —
+as ONE unit rather than a turn per command, and make the report the next thing
+generated after it returns. A `git commit` that succeeded is not the news; a
+landed SHA is. The same holds for a failure inside the lock: release, then report
+at once. "Landed", "failed" and "blocked" are terminal outcomes, and a terminal
 outcome is announced the moment it is known, ahead of any other content.
 
 ### 1. claim
@@ -243,8 +264,8 @@ tier: `<rs>/findings/lens-plan.json` (ran + skipped, with the skip reason) and
 `ship-verify-scope … | tee <rs>/findings/write-scope.txt` — so the archive shows
 the check ran, not merely that nobody complained.
 
-Then the real gate — `nix develop -c bin/test` — and, for any UI change,
-screenshots as artifacts (see
+Then the real gate — `nix develop -c bin/test`, dispatched to a child like any
+other long command — and, for any UI change, screenshots as artifacts (see
 [`references/visual-gate.md`](references/visual-gate.md)).
 
 ### 6. land
@@ -262,7 +283,8 @@ screenshots as artifacts (see
     scripts/ship-land -s <rs>            # ff-merge, then releases  ← exit
 
 Run that block as ONE foreground sequence, and report the fast-forward in the
-same turn it returns — see "Landing must report itself, in the same turn". A
+same turn it returns — see "Long commands run in a subagent; landing reports
+itself". A
 `git commit` that succeeded is not the news; a landed SHA is.
 
 The lock is repo-wide and serialises the whole sequence, not the `git commit`
