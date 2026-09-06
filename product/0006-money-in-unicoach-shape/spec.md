@@ -119,10 +119,13 @@ ingest summary names the canonical row counts and the per-status breakdown.
 
 ## shape/02/ipeds-ic-ay
 
-**Needs:** BLOCKS shape/01/canonical-store — the canonical tables are this
-slice's write target; without them the new source has nowhere honest to land.
-CONFLICTS shape/03/ipeds-sfa — both edit `bin/ingest-colleges`, the loader phase
-list and `bin/fetch-*` plumbing; rebase risk only.\
+**Needs:**
+
+- BLOCKS shape/01/canonical-store — the canonical tables are this slice's write
+  target; without them the new source has nowhere honest to land.
+- CONFLICTS shape/03/ipeds-sfa — both edit `bin/ingest-colleges`, the loader
+  phase list and `bin/fetch-*` plumbing; rebase risk only.
+
 **What:** Un-defer IPEDS IC_AY (D5, resolving brief 0003 D7): pin
 `IC2023_AY.csv` (+ its Stata codebook) via the `bin/fetch-*`/PROVENANCE pattern,
 load it as staging, and map into `price_figures`: three-tier tuition
@@ -161,9 +164,12 @@ and flag distribution in the ingest summary.
 
 ## shape/03/ipeds-sfa
 
-**Needs:** BLOCKS shape/01/canonical-store — writes `cohort_money_stats`; the
-population-basis attribute it needs is that slice's schema. CONFLICTS
-shape/02/ipeds-ic-ay — same ingest/fetch files; rebase only.\
+**Needs:**
+
+- BLOCKS shape/01/canonical-store — writes `cohort_money_stats`; the
+  population-basis attribute it needs is that slice's schema.
+- CONFLICTS shape/02/ipeds-ic-ay — same ingest/fetch files; rebase only.
+
 **What:** Pin and ingest IPEDS SFA (D5): net price with honest population labels
 (`NPIST*` publics = in-state-rate-paying grant-aided; `NPGRN*` privates),
 income-band net price (`NPIS41-45`, three years per file), Pell
@@ -194,11 +200,14 @@ is /ship design.
 
 ## shape/04/cost-answers-from-canonical
 
-**Needs:** BLOCKS shape/01/canonical-store — reads the canonical tables. PREFER
-shape/02/ipeds-ic-ay — technically cuttable on Scorecard-only rows, but the
-user-visible payoff (in-district tier, fees split, the stated with-family
-assumption per D17, imputation named) is IC_AY's; cutting over before it lands
-ships plumbing with no visible change.\
+**Needs:**
+
+- BLOCKS shape/01/canonical-store — reads the canonical tables.
+- PREFER shape/02/ipeds-ic-ay — technically cuttable on Scorecard-only rows, but
+  the user-visible payoff (in-district tier, fees split, the stated with-family
+  assumption per D17, imputation named) is IC_AY's; cutting over before it lands
+  ships plumbing with no visible change.
+
 **What:** The first consumer cutover (D10): `CollegeCostService`,
 `CollegeCostChatTool`, the family cost report, and `FitLensService`'s cost
 digest read ONLY canonical tables. The RFC 149/151/152/157 layer becomes a
@@ -241,22 +250,25 @@ with the residency question offered, not forced.
 
 ## shape/05/search-on-your-price
 
-**Needs:** BLOCKS shape/01/canonical-store — the index rebuild's price inputs
-become canonical rows. PREFER shape/02/ipeds-ic-ay — residency-correct published
-price per school is far more complete (fees split, four vintages) with IC_AY;
-Scorecard-only rows would ship the feature with thinner coverage.\
-**Build on what RFC 166 landed** _(added 2026-09-05; the code wins over this
-spec text, which was written before `shape/04` ran)_: the **FitLens digest half
-of this slice is already done** — `FitLensService` reads the canonical store
-through the injected `CanonicalCostReader` and emits basis, vintage and status —
-so keep it rather than rebuilding it. The search-index net-price column and its
-whole path were deliberately left alone and are still this slice's. Four
-constraints the landed code imposes: read only through `CanonicalCostReader`,
-keyed on the FULL address, copying the `CanonicalAddressContractTest` pattern
-(this is what gives D14c's "one ruler" teeth); normalise `VINTAGE_UNDATED` out
-before any latest-vintage pick, because it sorts lexicographically ABOVE every
-real `YYYY-YY`; never collapse a SUPPRESSED figure into "we do not have it"; and
-decode per row, so one bad row cannot fail a search page.
+**Needs:**
+
+- BLOCKS shape/01/canonical-store — the index rebuild's price inputs become
+  canonical rows.
+- PREFER shape/02/ipeds-ic-ay — residency-correct published price per school is
+  far more complete (fees split, four vintages) with IC_AY; Scorecard-only rows
+  would ship the feature with thinner coverage.\ **Build on what RFC 166
+  landed** _(added 2026-09-05; the code wins over this spec text, which was
+  written before `shape/04` ran)_: the **FitLens digest half of this slice is
+  already done** — `FitLensService` reads the canonical store through the
+  injected `CanonicalCostReader` and emits basis, vintage and status — so keep
+  it rather than rebuilding it. The search-index net-price column and its whole
+  path were deliberately left alone and are still this slice's. Four constraints
+  the landed code imposes: read only through `CanonicalCostReader`, keyed on the
+  FULL address, copying the `CanonicalAddressContractTest` pattern (this is what
+  gives D14c's "one ruler" teeth); normalise `VINTAGE_UNDATED` out before any
+  latest-vintage pick, because it sorts lexicographically ABOVE every real
+  `YYYY-YY`; never collapse a SUPPRESSED figure into "we do not have it"; and
+  decode per row, so one bad row cannot fail a search page.
 
 **What:** Brief 0005's question, re-cut on the canonical layer (D11): the search
 index's price axes are rebuilt from `price_figures` / `cohort_money_stats`, and
@@ -339,10 +351,13 @@ question, and declining still yields the general answer.
 
 ## shape/07/need-and-forms
 
-**Needs:** BLOCKS shape/01/canonical-store — writes `aid_policy_facts` (modeled
-there). CONFLICTS shape/02/ipeds-ic-ay — shares `bin/ingest-colleges` phase
-plumbing; rebase only. CONFLICTS shape/03/ipeds-sfa — same plumbing; rebase
-only.\
+**Needs:**
+
+- BLOCKS shape/01/canonical-store — writes `aid_policy_facts` (modeled there).
+- CONFLICTS shape/02/ipeds-ic-ay — shares `bin/ingest-colleges` phase plumbing;
+  rebase only.
+- CONFLICTS shape/03/ipeds-sfa — same plumbing; rebase only.
+
 **What:** Fill D9's modeled-ahead facts from the CDS corpus we already pull:
 extend `bin/fetch-cds-seed` extraction from H2A to **H2** (% of need met, need
 fully met, average need-based grant), **H4/H5** (borrowing incl. private loans),
@@ -394,9 +409,12 @@ school's CDS".
 
 ## shape/08/drop-the-publisher-shape
 
-**Needs:** BLOCKS shape/04/cost-answers-from-canonical — a reader of the
-publisher-shaped columns, which may be dropped only at reader-count zero. BLOCKS
-shape/05/search-on-your-price — the other reader, same reason.\
+**Needs:**
+
+- BLOCKS shape/04/cost-answers-from-canonical — a reader of the publisher-shaped
+  columns, which may be dropped only at reader-count zero.
+- BLOCKS shape/05/search-on-your-price — the other reader, same reason.
+
 **What:** The end state (D10): cut the remaining readers (admin-web
 `CollegesResource`, any stragglers from the audit §2 checklist) to canonical,
 then DROP the publisher money columns from `colleges`/`colleges_versions`
@@ -425,13 +443,15 @@ nothing changes.
 
 **Status:** DEFERRED
 
-**Needs:** BLOCKS shape/01/canonical-store — participation rows need the
-canonical store; PREFER shape/02/ipeds-ic-ay — the WUE ceiling formula (≤150%)
-hangs off a stored in-state tuition row.\
-Parked by intent (gate 1 D9): WUE/MSEP/NEBHE-RSP/SREB-ACM rosters as
-participation facts + read-time ceiling narration, never a stored price. Needs a
-curated roster source and a licence look; schedule when a real family
-conversation wants it. Remove this Status line when scheduled.
+**Needs:**
+
+- BLOCKS shape/01/canonical-store — participation rows need the canonical store.
+- PREFER shape/02/ipeds-ic-ay — the WUE ceiling formula (≤150%) hangs off a
+  stored in-state tuition row.\ Parked by intent (gate 1 D9):
+  WUE/MSEP/NEBHE-RSP/SREB-ACM rosters as participation facts + read-time ceiling
+  narration, never a stored price. Needs a curated roster source and a licence
+  look; schedule when a real family conversation wants it. Remove this Status
+  line when scheduled.
 
 ---
 

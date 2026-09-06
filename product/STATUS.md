@@ -1250,17 +1250,22 @@ reader left. `shape/07/need-and-forms` split at RFC 170's design gate into
 spec** — the split is declared in `spec.md`, so the board shows it, but its text
 is a design note rather than a specification.
 
-**BOARD DEFECT, do not act on it (found 2026-09-05, after RFC 170).** The board
-currently prints `shape/08/drop-the-publisher-shape` as **READY. It is not.**
-Its `Needs:` line BLOCKS on `shape/05/search-on-your-price`, which is still in
-flight (`rfc-169`). The board marks a slice LANDED when its id appears anywhere
-in a ledger line containing the word LANDED, and RFC 166's ledger line mentions
-`shape/05` in prose while explaining what it deliberately did NOT cut over. So
-one slice's honest prose marks another slice landed. **Acting on this would drop
-the publisher-shaped money columns while `shape/05` still reads them.** Two
-fixes for /chart and the tooling: match ids only in a ledger line's subject
-position, and keep other slices' ids out of a landed line's prose. Until then,
-read `shape/08` from its `Needs:` edges, not from the board.
+**A board defect found and FIXED (2026-09-05, after RFC 170).** For a while the
+board printed `shape/08/drop-the-publisher-shape` as READY when it is not. The
+cause was not the ledgers: brief 0006's `Needs:` lines were written INLINE with
+two or three edges in one paragraph, and the board's inline parser takes the
+FIRST edge and swallows the rest into that edge's reason text. `shape/08`'s
+second edge — BLOCKS `shape/05/search-on-your-price` — was therefore invisible,
+so a slice that must not run until `shape/05` lands looked startable. Acting on
+it would have dropped the publisher-shaped money columns while `shape/05` still
+reads them.
+
+All six affected `Needs:` blocks in this brief are now bullet lists, which the
+parser reads correctly, and `shape/08` shows BLOCKED again with its real unmet
+edge. **Write multi-edge `Needs:` as bullets, one edge per bullet.** The parser
+should refuse an inline block that holds a second edge rather than silently
+dropping it — that hardening is an open item, and until it lands the doc form is
+the guarantee.
 
 **The rules the board applies**, for reading its output:
 
