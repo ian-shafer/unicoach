@@ -114,6 +114,58 @@ WAS live and did land first, so this run rebased onto it and collapsed three
 duplicated abstractions — `MoneySource`, the imputation-flag vocabulary, and the
 ingest option-group parser — to one each).
 
+shape/04/cost-answers-from-canonical LANDED as RFC 166 (main@1cf8bcf1 +
+7ab71b90, 2026-09-05) — the door. Every cost answer the product gives now comes
+from `price_figures` and `cohort_money_stats` instead of the publisher-shaped
+columns on `colleges`, and four things a family could not be told before are
+told now: the **in-district** tuition tier named as its own tier (value-bearing
+for ~269 colleges today, the exact set RFC 161 measured); **fees split from
+tuition** where the publisher reports them split; a complete **living-at-home
+total** whose food-and-housing line is a labelled `$0`, typed
+`ASSUMED_BY_UNICOACH`, with D17's assumption stated in words as OURS and never
+attributed to the school; and the **six figure statuses, spoken** — the
+publisher's suppression named as the publisher's, an imputation named as the
+publisher's estimate, and a gap of ours said as ours. The RFC 149/151/152/157
+honesty layer survives intact as a **projection**: the domain types are
+unchanged and only the source under them moved, which is the whole claim of D1.
+Coach prompt **v19** (rollback `COACHING_SYSTEM_PROMPT_VERSION=v18`), migration
+0086. `colleges` keeps its exact row shape — dropping those columns is
+`shape/08`, after a reader audit, and this slice deliberately left the
+search-index net-price path alone because that reader is `shape/05`. Review over
+39 lenses in four sequential tiers found **ten blockers, every one a wrong or
+misattributed money statement rather than a style call**, and three of them
+existed only because an earlier tier's own fix created or exposed them. The most
+instructive: **RFC 162 landed mid-run and added a second `avg_net_price`
+series** — different cohort, different aid scope, newer vintage — and the
+projection keyed cohort rows on `(measure, income_band)` and took the newest
+vintage, so the coach payload, the parent report and the FitLens digest would
+all have served the SFA grant-aided figure as "the overall average net price";
+nothing failed, because the fixtures wrote at the reader's own addresses, so a
+green suite proved only that the reader agreed with itself. Fixed by keying on
+the full address and closed by a **cross-module contract test asserting the
+reader's address grid matches the loader's in both directions**. Second:
+**suppressed cohort figures spoke as the school's silence** — a withheld net
+price, the most-read money figure on the surface, was published as "this college
+does not report it" and the privacy sentence never reached the family; status
+notes now route to the parent report so it cannot blame the school for our gap
+or the publisher's. Third: **"take the newest" is a defect when the key is
+incomplete** — three separate blockers were a `max`-by-date over rows never
+narrowed to one address, and the year fix had to be taken twice, because after
+the first fix the newest of the two _served_ addresses still put the sticker
+price under the net price's year for any family who answered the income-band
+question; `ServedFigures` now binds the year to the figures it dates. Structural
+fixes taken: one injected `CanonicalCostReader` for both consumers, per-row
+decode so one unreadable row cannot fail a whole college's answer, and the
+FitLens digest degrading as a state (key omitted) rather than asserting a false
+data claim. Gate: **2865 tests, 0 failures**, base `main@54113515`. Open and
+recorded, not silent: the year-gap blank still shares one phrase (new copy needs
+a product decision), `IncomeBand.bracket` is **superseded** rather than deferred
+because RFC 165 serves the bands from the enum at `/api/v1/vocabularies`, and
+`IncomeBand.netPriceFor(College)` survives only for the search-index row builder
+for `shape/05` to retire. No `Needs:` gate answers were required (BLOCKS
+shape/01 and PREFER shape/02 were both already LANDED; CONFLICTS-free, though
+shape/03 landed mid-run and rebased in without conflict).
+
 ## The question
 
 Every money figure unicoach serves today is stored in the shape its publisher
