@@ -13,6 +13,8 @@ struct AuthenticatedRootView: View {
     let authClient: AuthClientProtocol
     let conversationClient: ConversationClientProtocol
     let collegeListClient: CollegeListClientProtocol
+    let moneyProfileClient: MoneyProfileClientProtocol
+    let vocabularyClient: VocabularyClientProtocol
     let onProfileRequired: () -> Void
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
@@ -41,6 +43,7 @@ struct AuthenticatedRootView: View {
         case conversation(Conversation)
         case conversations
         case collegeList
+        case yourDetails
         case settings
     }
 
@@ -118,6 +121,8 @@ struct AuthenticatedRootView: View {
         authClient: AuthClientProtocol,
         conversationClient: ConversationClientProtocol,
         collegeListClient: CollegeListClientProtocol,
+        moneyProfileClient: MoneyProfileClientProtocol,
+        vocabularyClient: VocabularyClientProtocol,
         coachingUsageClient: CoachingUsageClientProtocol,
         subscriptionStore: SubscriptionStoreProtocol,
         transactionRecorder: TransactionRecording,
@@ -129,6 +134,8 @@ struct AuthenticatedRootView: View {
         self.authClient = authClient
         self.conversationClient = conversationClient
         self.collegeListClient = collegeListClient
+        self.moneyProfileClient = moneyProfileClient
+        self.vocabularyClient = vocabularyClient
         self.onProfileRequired = onProfileRequired
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
@@ -294,6 +301,7 @@ struct AuthenticatedRootView: View {
             viewModel: menuViewModel,
             onNewConversation: startNewConversation,
             onSelect: { conversation in push(.conversation(conversation)) },
+            onYourDetails: { push(.yourDetails) },
             onMyColleges: { push(.collegeList) },
             onAllConversations: { push(.conversations) },
             onSettings: { push(.settings) }
@@ -336,6 +344,15 @@ struct AuthenticatedRootView: View {
             CollegeListView(
                 client: collegeListClient,
                 onProfileRequired: onProfileRequired
+            )
+        case .yourDetails:
+            YourDetailsView(
+                moneyProfileClient: moneyProfileClient,
+                vocabularyClient: vocabularyClient,
+                onProfileRequired: onProfileRequired,
+                // The college list keeps its own screen: the footer link is a
+                // push onto this same stack, not a second copy of the list.
+                onMyColleges: { push(.collegeList) }
             )
         case .settings:
             SettingsView(
@@ -437,12 +454,27 @@ private final class AuthenticatedRootPreviewCollegeListClient: CollegeListClient
     func searchColleges(query: String) async throws -> [CollegeSummary] { [] }
 }
 
+private final class AuthenticatedRootPreviewMoneyProfileClient: MoneyProfileClientProtocol, @unchecked Sendable {
+    func fetch() async throws -> PublicMoneyProfile? { nil }
+    func update(_ request: UpdateMoneyProfileRequest) async throws -> PublicMoneyProfile {
+        PublicMoneyProfile.answering(request, createdAt: Date(), updatedAt: Date())
+    }
+}
+
+private final class AuthenticatedRootPreviewVocabularyClient: VocabularyClientProtocol, @unchecked Sendable {
+    func fetch() async throws -> VocabulariesResponse {
+        VocabulariesResponse(version: "preview", vocabularies: [:])
+    }
+}
+
 @MainActor private var authenticatedRootPreview: some View {
     AuthenticatedRootView(
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
         authClient: AuthenticatedRootPreviewAuthClient(),
         conversationClient: AuthenticatedRootPreviewClient(),
         collegeListClient: AuthenticatedRootPreviewCollegeListClient(),
+        moneyProfileClient: AuthenticatedRootPreviewMoneyProfileClient(),
+        vocabularyClient: AuthenticatedRootPreviewVocabularyClient(),
         coachingUsageClient: PreviewCoachingUsageClient(),
         subscriptionStore: PreviewSubscriptionStore(),
         transactionRecorder: PreviewTransactionRecorder(),

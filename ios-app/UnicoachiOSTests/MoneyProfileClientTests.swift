@@ -41,6 +41,54 @@ class MoneyProfileClientTests: XCTestCase {
         return try XCTUnwrap(object as? [String: Any])
     }
 
+    func testFetchSendsGetToTheMoneyProfilePathAndDecodesTheProfile() async throws {
+        let expected = makeProfile(request: UpdateMoneyProfileRequest(residency: .set(california)))
+        let responseData = try encodedResponse(expected)
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/students/me/money-profile")
+            XCTAssertEqual(request.httpMethod, "GET")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, responseData)
+        }
+
+        let result = try await moneyProfileClient.fetch()
+        XCTAssertEqual(result, expected)
+    }
+
+    /// The `404` the server answers before the first write is the benign
+    /// "no profile yet" state, and only the READ verb may read it that way: the
+    /// same status on the `PUT` means the owning student row is gone. Both
+    /// carry `code: "not_found"`, so this mapping can only live on the verb.
+    func testFetchMapsTheNotFoundBeforeTheFirstWriteToNil() async throws {
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"code":"not_found","message":"No money profile yet"}"#.utf8))
+        }
+
+        let result = try await moneyProfileClient.fetch()
+        XCTAssertNil(result)
+    }
+
+    /// The other side of the same coin: a `404` on the WRITE is a real fault and
+    /// must still throw, or a lost student row would read as a saved answer.
+    func testUpdateNotFoundStillThrows() async {
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"code":"not_found","message":"Owning student not found"}"#.utf8))
+        }
+
+        do {
+            _ = try await moneyProfileClient.update(UpdateMoneyProfileRequest(income: .declined))
+            XCTFail("a 404 on the PUT is a fault, not an empty profile")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.status, 404)
+            XCTAssertEqual(error.message, "Owning student not found")
+        } catch {
+            XCTFail("unexpected error type: [\(error)]")
+        }
+    }
+
     func testUpdateSendsPutToTheMoneyProfilePath() async throws {
         let request = UpdateMoneyProfileRequest(residency: .set(california))
         let expected = makeProfile(request: request)

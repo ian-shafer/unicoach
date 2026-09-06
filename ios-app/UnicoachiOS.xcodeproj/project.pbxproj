@@ -71,6 +71,13 @@
 		AB3700000000000000000B04 /* AddCollegeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F04 /* AddCollegeViewModel.swift */; };
 		AB3700000000000000000B05 /* CollegeListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F05 /* CollegeListView.swift */; };
 		AB3700000000000000000B06 /* CollegeEntryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F06 /* CollegeEntryDetailView.swift */; };
+		AB7100000000000000000B01 /* VocabularyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F01 /* VocabularyClient.swift */; };
+		AB7100000000000000000B02 /* YourDetailsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F02 /* YourDetailsViewModel.swift */; };
+		AB7100000000000000000B03 /* YourDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F03 /* YourDetailsView.swift */; };
+		AB7100000000000000000B04 /* MockVocabularyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F04 /* MockVocabularyClient.swift */; };
+		AB7100000000000000000B05 /* YourDetailsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F05 /* YourDetailsViewModelTests.swift */; };
+		AB7100000000000000000B06 /* IncomeBandLabelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F06 /* IncomeBandLabelTests.swift */; };
+		AB7100000000000000000B07 /* VocabularyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F07 /* VocabularyClientTests.swift */; };
 		AB3700000000000000000B07 /* AddCollegeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F07 /* AddCollegeView.swift */; };
 		AB3700000000000000000B08 /* MockCollegeListClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F08 /* MockCollegeListClient.swift */; };
 		AB3700000000000000000B09 /* CollegeListClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F09 /* CollegeListClientTests.swift */; };
@@ -208,6 +215,13 @@
 		AB3700000000000000000F04 /* AddCollegeViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AddCollegeViewModel.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F05 /* CollegeListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListView.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F06 /* CollegeEntryDetailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeEntryDetailView.swift; sourceTree = "<group>"; };
+		AB7100000000000000000F01 /* VocabularyClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VocabularyClient.swift; sourceTree = "<group>"; };
+		AB7100000000000000000F02 /* YourDetailsViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsViewModel.swift; sourceTree = "<group>"; };
+		AB7100000000000000000F03 /* YourDetailsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsView.swift; sourceTree = "<group>"; };
+		AB7100000000000000000F04 /* MockVocabularyClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockVocabularyClient.swift; sourceTree = "<group>"; };
+		AB7100000000000000000F05 /* YourDetailsViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsViewModelTests.swift; sourceTree = "<group>"; };
+		AB7100000000000000000F06 /* IncomeBandLabelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IncomeBandLabelTests.swift; sourceTree = "<group>"; };
+		AB7100000000000000000F07 /* VocabularyClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VocabularyClientTests.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F07 /* AddCollegeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AddCollegeView.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F08 /* MockCollegeListClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockCollegeListClient.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F09 /* CollegeListClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListClientTests.swift; sourceTree = "<group>"; };
@@ -341,6 +355,9 @@
 				AB3700000000000000000F04 /* AddCollegeViewModel.swift */,
 				AB3700000000000000000F05 /* CollegeListView.swift */,
 				AB3700000000000000000F06 /* CollegeEntryDetailView.swift */,
+				AB7100000000000000000F01 /* VocabularyClient.swift */,
+				AB7100000000000000000F02 /* YourDetailsViewModel.swift */,
+				AB7100000000000000000F03 /* YourDetailsView.swift */,
 				AB3700000000000000000F07 /* AddCollegeView.swift */,
 				BBBB00010000000000000F03 /* OnboardingViewModel.swift */,
 				BBBB00010000000000000F04 /* OnboardingView.swift */,
@@ -415,6 +432,10 @@
 				AB3700000000000000000F08 /* MockCollegeListClient.swift */,
 				AB3700000000000000000F09 /* CollegeListClientTests.swift */,
 				AB3700000000000000000F10 /* CollegeListViewModelTests.swift */,
+				AB7100000000000000000F04 /* MockVocabularyClient.swift */,
+				AB7100000000000000000F05 /* YourDetailsViewModelTests.swift */,
+				AB7100000000000000000F06 /* IncomeBandLabelTests.swift */,
+				AB7100000000000000000F07 /* VocabularyClientTests.swift */,
 				AB3700000000000000000F11 /* AddCollegeViewModelTests.swift */,
 				BBBB00010000000000000F07 /* MockStudentClient.swift */,
 				BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */,
@@ -620,6 +641,9 @@
 				AB3700000000000000000B04 /* AddCollegeViewModel.swift in Sources */,
 				AB3700000000000000000B05 /* CollegeListView.swift in Sources */,
 				AB3700000000000000000B06 /* CollegeEntryDetailView.swift in Sources */,
+				AB7100000000000000000B01 /* VocabularyClient.swift in Sources */,
+				AB7100000000000000000B02 /* YourDetailsViewModel.swift in Sources */,
+				AB7100000000000000000B03 /* YourDetailsView.swift in Sources */,
 				AB3700000000000000000B07 /* AddCollegeView.swift in Sources */,
 				BBBB00010000000000000B03 /* OnboardingViewModel.swift in Sources */,
 				BBBB00010000000000000B04 /* OnboardingView.swift in Sources */,
@@ -680,6 +704,10 @@
 				AB3700000000000000000B08 /* MockCollegeListClient.swift in Sources */,
 				AB3700000000000000000B09 /* CollegeListClientTests.swift in Sources */,
 				AB3700000000000000000B10 /* CollegeListViewModelTests.swift in Sources */,
+				AB7100000000000000000B04 /* MockVocabularyClient.swift in Sources */,
+				AB7100000000000000000B05 /* YourDetailsViewModelTests.swift in Sources */,
+				AB7100000000000000000B06 /* IncomeBandLabelTests.swift in Sources */,
+				AB7100000000000000000B07 /* VocabularyClientTests.swift in Sources */,
 				AB3700000000000000000B11 /* AddCollegeViewModelTests.swift in Sources */,
 				BBBB00010000000000000B07 /* MockStudentClient.swift in Sources */,
 				BBBB00010000000000000B08 /* OnboardingViewModelTests.swift in Sources */,

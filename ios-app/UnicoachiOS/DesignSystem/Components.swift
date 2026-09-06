@@ -1118,6 +1118,36 @@ struct DSHairline: View {
     }
 }
 
+// MARK: - DSCaptioned
+
+/// A control with the line naming what answering it buys or costs — the one
+/// shape both `OnboardingView` and `YourDetailsView` repeat.
+///
+/// The `sm` gap is the whole point of the component: a caption belongs to the
+/// control ABOVE it, so it must sit closer to that control than to the next
+/// pair. Written out per site, one site eventually gets `md` and the caption
+/// starts reading as an introduction to the row below.
+struct DSCaptioned<Content: View>: View {
+    private let caption: String
+    private let control: Content
+
+    init(_ caption: String, @ViewBuilder control: () -> Content) {
+        self.caption = caption
+        self.control = control()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.sm) {
+            control
+
+            Text(caption)
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 // MARK: - FieldErrorText
 
 struct FieldErrorText: View {

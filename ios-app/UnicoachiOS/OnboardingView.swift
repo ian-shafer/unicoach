@@ -86,7 +86,7 @@ struct OnboardingView: View {
 
             precisionPicker
 
-            captioned("Sets your application deadlines and the award years I price against.") {
+            DSCaptioned("Sets your application deadlines and the award years I price against.") {
                 VStack(spacing: DSControl.stackGap) {
                     yearRow
                     monthAndDay
@@ -182,12 +182,12 @@ struct OnboardingView: View {
                 .font(.dsBody)
                 .foregroundStyle(Color.dsTextSecondary)
 
-            captioned("Public colleges publish two prices. Knowing your state lets me show the one you'd "
+            DSCaptioned("Public colleges publish two prices. Knowing your state lets me show the one you'd "
                 + "actually pay — a median $6,300 a year difference.") {
                 stateRow
             }
 
-            captioned("Net price varies a lot by income. With a bracket I can show your family's figure "
+            DSCaptioned("Net price varies a lot by income. With a bracket I can show your family's figure "
                 + "instead of the all-family average — about $1,376 a year for a middle bracket.") {
                 incomeRow
             }
@@ -218,27 +218,6 @@ struct OnboardingView: View {
         )
     }
 
-
-    /// A control with the line that says what answering it buys — the screen's
-    /// one repeated shape (RFC 163: every input says what it unlocks, in the
-    /// same breath).
-    ///
-    /// The `sm` gap is the whole point and is why this is a function rather
-    /// than three hand-built stacks: a caption belongs to the control ABOVE it,
-    /// so it sits closer to that control than the `md` between one pair and the
-    /// next. Written out per site, one of the three eventually gets `md` and
-    /// the caption starts reading as an introduction to the row below.
-    @ViewBuilder
-    private func captioned(_ text: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: DSSpacing.sm) {
-            content()
-
-            Text(text)
-                .font(.dsCaption)
-                .foregroundStyle(Color.dsTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
 
     /// The month's name in the user's own calendar and locale — a reading, not
     /// arithmetic, which is why this is `Calendar.current` where the view
@@ -281,6 +260,9 @@ private final class OnboardingPreviewStudentClient: StudentClientProtocol, @unch
 }
 
 private final class OnboardingPreviewMoneyProfileClient: MoneyProfileClientProtocol, @unchecked Sendable {
+    /// Onboarding never reads: the screen always starts blank (RFC 163 §5).
+    func fetch() async throws -> PublicMoneyProfile? { nil }
+
     func update(_ request: UpdateMoneyProfileRequest) async throws -> PublicMoneyProfile {
         PublicMoneyProfile.answering(request, createdAt: Date(), updatedAt: Date())
     }

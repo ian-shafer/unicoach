@@ -158,6 +158,33 @@ final class APIClient: @unchecked Sendable {
         throw decodeError(data: data, status: response.statusCode)
     }
 
+    /// A `GET` whose `404` is an answer, not a fault: the resource has not been
+    /// written yet.
+    ///
+    /// Absence is read off the STATUS, never off `code` — several resources
+    /// answer `404 not_found` on a write to mean a genuinely missing owner —
+    /// and this exists on the read verb ALONE, so a `PUT` keeps throwing. It is
+    /// also opt-in per call site: a caller that has no benign `404` uses `get`
+    /// plus `decode` and is unaffected.
+    func getIfPresent<T: Decodable>(_ path: String) async throws -> T? {
+        let (data, response) = try await get(path)
+        if response.statusCode == 404 {
+            // Every other status in this file reaches `decodeError` and is
+            // logged. A benign absence is not worth an error line, but the
+            // body is the only thing that tells it from a wrong path or a
+            // gateway's 404, so it is read rather than discarded.
+            let absence = try? jsonDecoder.decode(ErrorResponse.self, from: data)
+            logger.debug("""
+                Absent resource, reading 404 as "not written yet": \
+                path=[\(path, privacy: .public)] \
+                code=[\(absence?.code ?? "none", privacy: .public)] \
+                message=[\(absence?.message ?? "none", privacy: .public)]
+                """)
+            return nil
+        }
+        return try decode(data: data, response: response, expectedStatus: 200)
+    }
+
     func expect(data: Data, response: HTTPURLResponse, expectedStatus: Int) throws {
         if response.statusCode != expectedStatus {
             throw decodeError(data: data, status: response.statusCode)

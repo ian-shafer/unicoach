@@ -23,6 +23,7 @@ struct SlideOverMenu: View {
 
     private let onNewConversation: () -> Void
     private let onSelect: (Conversation) -> Void
+    private let onYourDetails: () -> Void
     private let onMyColleges: () -> Void
     private let onAllConversations: () -> Void
     private let onSettings: () -> Void
@@ -31,6 +32,7 @@ struct SlideOverMenu: View {
         viewModel: ConversationListViewModel,
         onNewConversation: @escaping () -> Void,
         onSelect: @escaping (Conversation) -> Void,
+        onYourDetails: @escaping () -> Void,
         onMyColleges: @escaping () -> Void,
         onAllConversations: @escaping () -> Void,
         onSettings: @escaping () -> Void
@@ -38,6 +40,7 @@ struct SlideOverMenu: View {
         self.viewModel = viewModel
         self.onNewConversation = onNewConversation
         self.onSelect = onSelect
+        self.onYourDetails = onYourDetails
         self.onMyColleges = onMyColleges
         self.onAllConversations = onAllConversations
         self.onSettings = onSettings
@@ -89,6 +92,8 @@ struct SlideOverMenu: View {
             // bottom. Without the ScrollView that used to hold the space, the
             // footer would float up under the last row.
             Spacer(minLength: DSSpacing.md)
+
+            yourDetailsButton
 
             myCollegesButton
 
@@ -172,6 +177,14 @@ struct SlideOverMenu: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("menuConversationRow")
+    }
+
+    /// The money profile (RFC 171): the other durable non-chat surface, and the
+    /// only door to the two answers that change every price the coach quotes.
+    /// It sits above "My colleges" because it is about the family, not about a
+    /// list they are building.
+    private var yourDetailsButton: some View {
+        menuRow("Your details", systemImage: "person.text.rectangle", identifier: "yourDetailsButton", action: onYourDetails)
     }
 
     /// The college list (RFC 137): a durable non-chat surface, so it joins

@@ -179,7 +179,7 @@ struct StudentResponse: Codable {
 /// cannot be written down. Onboarding's rule — a sign-up screen may never spend
 /// a permanent decision (RFC 163) — is then a fact about which cases that screen
 /// constructs, not a pair of tests hoping nobody sets a flag.
-enum MoneyProfileFieldUpdate<Value: MoneyProfileFieldValue>: Equatable {
+enum MoneyProfileFieldUpdate<Value: MoneyProfileFieldValue>: Equatable, Sendable {
     case set(Value)
     case declined
     case clear
@@ -188,7 +188,10 @@ enum MoneyProfileFieldUpdate<Value: MoneyProfileFieldValue>: Equatable {
 /// A value that can be the payload of a [MoneyProfileFieldUpdate], i.e. one that
 /// knows its own wire string. The three closed vocabularies conform; nothing
 /// else can, so a free-text state code cannot be sent by accident.
-protocol MoneyProfileFieldValue: Equatable {
+/// `Sendable` because a request built on one actor is handed to a client that
+/// awaits on another — the concurrency checker has to be told these are values,
+/// or every screen has to build its request inside the call it makes.
+protocol MoneyProfileFieldValue: Equatable, Sendable {
     var wireValue: String { get }
 }
 
@@ -202,7 +205,7 @@ protocol MoneyProfileFieldValue: Equatable {
 /// `FAIL_ON_UNKNOWN_PROPERTIES` **and** `FAIL_ON_MISSING_CREATOR_PROPERTIES`, so
 /// the client may send no key the DTO does not declare and should not lean on a
 /// Kotlin default for one it does. The wire is unchanged by the typing above it.
-struct UpdateMoneyProfileRequest: Encodable, Equatable {
+struct UpdateMoneyProfileRequest: Encodable, Equatable, Sendable {
     var income: MoneyProfileFieldUpdate<IncomeBand>?
     var residency: MoneyProfileFieldUpdate<ResidencyState>?
     /// Where the student would live when they have the choice (RFC 152).
@@ -354,6 +357,73 @@ extension PublicMoneyProfile {
     var knownResidencyStatus: AnswerStatus? { AnswerStatus(rawValue: residencyStatus) }
     var knownLivingPlanStatus: AnswerStatus? { AnswerStatus(rawValue: livingPlanStatus) }
     var knownLivingPlan: LivingPlan? { livingPlan.flatMap(LivingPlan.init(rawValue:)) }
+}
+
+// MARK: - Served vocabulary models (RFC 165 surface, RFC 171 client)
+
+/// `GET /api/v1/vocabularies` (RFC 165): the closed lists this app renders,
+/// keyed by name (`income_bands`, `residency_states`).
+///
+/// `version` is a content hash of the served document — a plain field, not an
+/// ETag, and unrelated to `PublicMoneyProfile.version`, which is a row's OCC
+/// counter. Same key name, different resource, different meaning.
+///
+/// A vocabulary this client has no screen for still decodes: the map is keyed
+/// by `String` rather than by a Swift enum, so a name added server-side is
+/// carried, not rejected.
+struct VocabulariesResponse: Codable, Equatable, Sendable {
+    let version: String
+    let vocabularies: [String: PublicVocabulary]
+}
+
+struct PublicVocabulary: Codable, Equatable, Sendable {
+    let entries: [VocabularyEntry]
+}
+
+/// One entry of a served vocabulary.
+///
+/// The wire shape is **flat**: the server's `@JsonAnyGetter` flattens its
+/// extras beside `value` and `label`, so an extra is a sibling key and there is
+/// never an `extras` object (`VocabulariesResponse.kt:23-31`).
+///
+/// Only what the screen renders is decoded. Extras are an open set by design,
+/// so an unknown one is ignored rather than failing the whole document — a
+/// picker that refuses to render because the server started serving a new
+/// attribute is the failure this shape prevents. Swift's synthesized
+/// `Decodable` already ignores unknown keys, and
+/// `VocabularyClientTests.testAnUnknownExtraKeyIsIgnoredRatherThanFatal` is
+/// what keeps that true; the point is that nothing here may be made required
+/// later without re-reading this comment.
+///
+/// `jurisdictionKind` is deliberately **not** decoded: this screen's answer to
+/// "do not call Guam a state" is its own field label ("State or territory of
+/// residence"), so the key had no reader and a decoded field with no reader is
+/// kept alive only by its own tests.
+struct VocabularyEntry: Codable, Equatable, Sendable {
+    let value: String
+    let label: String
+}
+
+extension VocabulariesResponse {
+    /// The names this app renders. The decoded map stays `String`-keyed — a
+    /// name added server-side is data, not a decode failure — but a name this
+    /// app can ask for is closed, so a misspelled lookup does not compile.
+    ///
+    /// The raw values are the server's own
+    /// (`VocabularyService.INCOME_BANDS` / `RESIDENCY_STATES`), and
+    /// `VocabularyNameTests` reads them out of that file so a rename fails a
+    /// test instead of silently degrading the screen to the fallback lists.
+    enum Name: String {
+        case incomeBands = "income_bands"
+        case residencyStates = "residency_states"
+    }
+
+    /// The entries served under `name`, or `nil` when the server did not serve
+    /// that vocabulary — which the screen treats exactly as a failed fetch:
+    /// fall back to the shipped list and say the list may be incomplete.
+    func entries(_ name: Name) -> [VocabularyEntry]? {
+        vocabularies[name.rawValue]?.entries
+    }
 }
 
 // MARK: - Subscription and coaching-usage domain models

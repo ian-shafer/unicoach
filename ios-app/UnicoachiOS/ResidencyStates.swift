@@ -21,6 +21,24 @@ struct ResidencyState: Hashable, Identifiable, MoneyProfileFieldValue {
         self.code = code
         self.name = name
     }
+
+    /// A jurisdiction the **server** published (RFC 165), accepted only in the
+    /// exact shape this type is: the two-letter USPS code, uppercase ASCII.
+    ///
+    /// Construction stays gated exactly as the `fileprivate` init gates it:
+    /// there is still no initializer from a bare `String`, so a hand-typed
+    /// `"XX"` does not compile. The shape check is a backstop on the decoded
+    /// entry, not a second source of truth — the server's rule is membership of
+    /// `MoneyProfileService.USPS_STATE_CODES`, which this app deliberately does
+    /// not copy — and it refuses a malformed served code here rather than
+    /// letting it become a menu row whose write the server answers with a 400
+    /// the family cannot act on. This is how the details screen offers all 59
+    /// jurisdictions while this file's menu offers 51 (RFC 171).
+    init?(served entry: VocabularyEntry) {
+        guard entry.value.count == 2,
+              entry.value.allSatisfy({ $0.isASCII && $0.isUppercase }) else { return nil }
+        self.init(entry.value, entry.label)
+    }
 }
 
 /// The residency menu this app offers (RFC 163 §4).

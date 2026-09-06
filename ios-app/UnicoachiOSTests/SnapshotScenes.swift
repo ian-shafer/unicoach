@@ -165,6 +165,43 @@ enum SnapshotSeed {
         return OnboardingView(viewModel: viewModel, userName: "Kendall")
     }
 
+    // MARK: - Your details (RFC 171)
+
+    /// The profile the mixed scene shows: one field answered, one declined —
+    /// the two states that read differently, with the declined field's picker
+    /// still fully live beneath its "Remove my answer" control.
+    static let mixedMoneyProfile = PublicMoneyProfile(
+        incomeBandStatus: AnswerStatus.answered.rawValue,
+        incomeBand: IncomeBand.k48To75k.rawValue,
+        residencyStatus: AnswerStatus.declined.rawValue,
+        residencyState: nil,
+        livingPlanStatus: AnswerStatus.unanswered.rawValue,
+        livingPlan: nil,
+        version: 3,
+        createdAt: SnapshotClock.agoDays(7),
+        updatedAt: SnapshotClock.agoHours(2)
+    )
+
+    /// A `YourDetailsView` over seeded mocks, loading through its own `.task`
+    /// exactly as the college-list scenes do. The vocabulary mock serves the
+    /// real fixture document, so the scene photographs the SERVED menu rather
+    /// than the fallback.
+    static func yourDetails(
+        profile: PublicMoneyProfile? = nil,
+        fetchResult: Result<PublicMoneyProfile?, Error>? = nil
+    ) -> some View {
+        let moneyProfileClient = MockMoneyProfileClient()
+        moneyProfileClient.fetchResult = fetchResult ?? .success(profile)
+        return NavigationStack {
+            YourDetailsView(
+                moneyProfileClient: moneyProfileClient,
+                vocabularyClient: MockVocabularyClient(),
+                onProfileRequired: {},
+                onMyColleges: {}
+            )
+        }
+    }
+
     static func gate(_ rail: SubscriptionViewModel) -> PaywallGate {
         // One `SubscriptionSheet?` binding, not two `Bool`s (RFC 123). Nothing
         // here presents a sheet -- each sheet is its own scene, hosted
@@ -693,6 +730,29 @@ enum SnapshotCatalogue {
                 )
             },
 
+            // --- Your details (RFC 171): the drawer's "Your details"
+            // destination. Each scene hands the view seeded mocks and lets its
+            // own `.task` load, the college-list precedent. Three states,
+            // because they are three different screens to read: nothing
+            // answered (both undo controls resolve to one), a mixed profile
+            // (an answer and a decline, with the decline's picker still fully
+            // live), and the whole-screen load failure. A taller canvas than
+            // the device: the form does not scroll for a reviewer, and a
+            // clipped screen cannot be reviewed.
+            SnapshotScene(name: "your-details-unanswered", size: SnapshotScene.tallCanvas(height: 1200)) {
+                AnyView(SnapshotSeed.yourDetails())
+            },
+            SnapshotScene(name: "your-details-answered-and-declined", size: SnapshotScene.tallCanvas(height: 1200)) {
+                AnyView(SnapshotSeed.yourDetails(profile: SnapshotSeed.mixedMoneyProfile))
+            },
+            SnapshotScene(name: "your-details-failed") {
+                AnyView(SnapshotSeed.yourDetails(
+                    fetchResult: .failure(ErrorResponse(
+                        code: "SERVER_ERROR", message: "An unexpected error occurred.", fieldErrors: nil
+                    ))
+                ))
+            },
+
             // --- Onboarding (RFC 163). This screen is entirely visual and had
             // no scene at all, which is how a form grew to 1.9 viewports without
             // anyone seeing it. Three states: the default first paint, the
@@ -756,6 +816,7 @@ enum SnapshotCatalogue {
                 viewModel: viewModel,
                 onNewConversation: {},
                 onSelect: { _ in },
+                onYourDetails: {},
                 onMyColleges: {},
                 onAllConversations: {},
                 onSettings: {}

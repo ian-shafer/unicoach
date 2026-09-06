@@ -21,13 +21,13 @@ class StudentClient: StudentClientProtocol, @unchecked Sendable {
         return studentResponse.student
     }
 
+    /// Reads the student profile, mapping `404` to `nil`: an account that has
+    /// not created a student row yet is a legitimate answer on this read, not a
+    /// failure. The mapping is opt-in per call site — `createStudent` keeps
+    /// throwing on `404`, where it would mean a genuinely missing owner.
     func fetchProfile() async throws -> PublicStudent? {
         logger.debug("Fetching student profile")
-        let (data, response) = try await apiClient.get("/api/v1/students/me")
-        if response.statusCode == 404 {
-            return nil
-        }
-        let studentResponse: StudentResponse = try apiClient.decode(data: data, response: response, expectedStatus: 200)
-        return studentResponse.student
+        let studentResponse: StudentResponse? = try await apiClient.getIfPresent("/api/v1/students/me")
+        return studentResponse?.student
     }
 }

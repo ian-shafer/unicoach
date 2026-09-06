@@ -9,6 +9,7 @@ class AppViewModel: ObservableObject {
     let moneyProfileClient: MoneyProfileClientProtocol
     let conversationClient: ConversationClientProtocol
     let collegeListClient: CollegeListClientProtocol
+    let vocabularyClient: VocabularyClientProtocol
     let googleSignInProvider: SsoSignInProviding
     let appleSignInProvider: SsoSignInProviding
     let cookieStorage: CookieStorageProtocol
@@ -84,6 +85,7 @@ class AppViewModel: ObservableObject {
         moneyProfileClient: MoneyProfileClientProtocol? = nil,
         conversationClient: ConversationClientProtocol? = nil,
         collegeListClient: CollegeListClientProtocol? = nil,
+        vocabularyClient: VocabularyClientProtocol? = nil,
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
         subscriptionClient: SubscriptionClientProtocol? = nil,
         subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = AppViewModel.defaultSubscriptionStore(),
@@ -95,6 +97,7 @@ class AppViewModel: ObservableObject {
         self.moneyProfileClient = moneyProfileClient ?? MoneyProfileClient(apiClient: apiClient)
         self.conversationClient = conversationClient ?? ConversationClient(apiClient: apiClient)
         self.collegeListClient = collegeListClient ?? CollegeListClient(apiClient: apiClient)
+        self.vocabularyClient = vocabularyClient ?? VocabularyClient(apiClient: apiClient)
         self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)
         self.googleSignInProvider = googleSignInProvider
         self.appleSignInProvider = appleSignInProvider
