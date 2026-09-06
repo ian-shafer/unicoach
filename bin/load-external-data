@@ -35,8 +35,13 @@ matters because the load is not transactional across its phases: a missing file
 discovered by phase 9 is a re-run, and a missing file discovered by argument
 validation is a corrected command.
 
-The two Scorecard positionals are required and have no fetcher -- download them
-by hand from collegescorecard.ed.gov (RFC 172 deliberately does not add one).
+The two Scorecard positionals are still REQUIRED and are still typed by hand,
+but they now have a fetcher: bin/fetch-scorecard (RFC 173) downloads them from
+collegescorecard.ed.gov and writes
+db/seed/scorecard/Most-Recent-Cohorts-Institution.csv and
+db/seed/scorecard/Most-Recent-Cohorts-Field-of-Study.csv. This wrapper does not
+yet read db/seed/scorecard/PROVENANCE.json the way it reads the IPEDS manifest,
+so pass those two paths yourself.
 The optional third argument is the curated aliases JSON, defaulting to
 db/data/college-aliases.json. All three may be s3:// URIs: they are forwarded
 untouched and bin/ingest-colleges' resolve_file_arg does the resolving.
@@ -224,8 +229,8 @@ require_year() {
 }
 
 require_inputs() {
-  require_positional "$INSTITUTION_CSV" "the College Scorecard institution CSV; download it from collegescorecard.ed.gov (RFC 172 adds no fetcher for it)"
-  require_positional "$FIELDS_CSV" "the College Scorecard fields CSV; download it from collegescorecard.ed.gov (RFC 172 adds no fetcher for it)"
+  require_positional "$INSTITUTION_CSV" "the College Scorecard institution CSV from collegescorecard.ed.gov; run bin/fetch-scorecard and pass db/seed/scorecard/Most-Recent-Cohorts-Institution.csv"
+  require_positional "$FIELDS_CSV" "the College Scorecard fields CSV from collegescorecard.ed.gov; run bin/fetch-scorecard and pass db/seed/scorecard/Most-Recent-Cohorts-Field-of-Study.csv"
   require_positional "$ALIASES_JSON" "the curated college aliases; it is committed at db/data/college-aliases.json"
   require_input "$CODEBOOKS_JSON" "the generated published codebook; run bin/fetch-codebooks"
   require_input "$SUBJECTS_JSON" "the authored subject taxonomy; it is committed at db/data/subjects.json"

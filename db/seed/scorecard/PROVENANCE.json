@@ -1,0 +1,30 @@
+{
+  "fetched_at": "2026-09-06T03:49:14+00:00",
+  "source": "network",
+  "fixture_derived": false,
+  "release": "06102026",
+  "artifacts": {
+    "Most-Recent-Cohorts-Institution": {
+      "url": "https://ed-public-download.scorecard.network/downloads/Most-Recent-Cohorts-Institution_06102026.zip",
+      "fetched_at": "2026-09-06T03:49:14+00:00",
+      "bytes": 23559465,
+      "sha256": "f56a181b000ca4914e924c16b6b81dcc656e25aeb2ac68ab7d271ac0f29ffd58",
+      "member": "Most-Recent-Cohorts-Institution.csv",
+      "member_bytes": 100102932,
+      "member_sha256": "89e8a35a6588dfb81a6ce78fa9df4cb99b36ef7aa4b28fb0157f9e3e1a7d81b5",
+      "rows": 6273,
+      "ingest_position": 1
+    },
+    "Most-Recent-Cohorts-Field-of-Study": {
+      "url": "https://ed-public-download.scorecard.network/downloads/Most-Recent-Cohorts-Field-of-Study_06102026.zip",
+      "fetched_at": "2026-09-06T03:49:14+00:00",
+      "bytes": 17188590,
+      "sha256": "9c4339d65f0699a60d6078fe54fc3bf03fded30a65079222d9221952b8578165",
+      "member": "Most-Recent-Cohorts-Field-of-Study.csv",
+      "member_bytes": 153479459,
+      "member_sha256": "3184f634cea46a94a3e8dc73f6d2147ecaea5b3b648b26adbfdfdd9133ce8d35",
+      "rows": 227980,
+      "ingest_position": 2
+    }
+  }
+}

@@ -158,11 +158,16 @@ nix develop -c bin/load-external-data institution.csv fields.csv
 nix develop -c bin/reload-external-data institution.csv fields.csv   # both, in order
 ```
 
-`institution.csv` and `fields.csv` are the College Scorecard pair, downloaded by
-hand from collegescorecard.ed.gov; there is no fetcher for them. Everything else
-is defaulted — `load-external-data` assembles the whole `bin/ingest-colleges`
-command, reading the IPEDS filenames, the collection year and the SFA aid year
-out of `db/seed/ipeds/PROVENANCE.json` rather than asking you to type them.
+`institution.csv` and `fields.csv` are the College Scorecard pair.
+`bin/fetch-scorecard` downloads them (RFC 173) to
+`db/seed/scorecard/Most-Recent-Cohorts-Institution.csv` and
+`db/seed/scorecard/Most-Recent-Cohorts-Field-of-Study.csv`, but the two paths
+are still typed by hand: these wrappers do not yet read
+`db/seed/scorecard/PROVENANCE.json` the way they read the IPEDS one. Everything
+else is defaulted — `load-external-data` assembles the whole
+`bin/ingest-colleges` command, reading the IPEDS filenames, the collection year
+and the SFA aid year out of `db/seed/ipeds/PROVENANCE.json` rather than asking
+you to type them.
 
 - A failed source does not cancel the others; the fetch run ends with a
   per-source tally and exits 1.

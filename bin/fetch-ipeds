@@ -122,25 +122,21 @@ manifest.
 import contextlib
 import csv
 import hashlib
-import http.client
 import io
 import json
 import os
 import posixpath
 import shlex
 import sys
-import time
-import urllib.error
-import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 # The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
-# the log-* family, fatal, and the post-getopt guard suite all three fetchers
-# need. Resolved against THIS script's own directory rather than the caller's
-# cwd, because these scripts are run from anywhere.
+# the log-* family, fatal, the download stack and the post-getopt guard suite
+# every fetcher needs. Resolved against THIS script's own directory rather than
+# the caller's cwd, because these scripts are run from anywhere.
 # ...and no bytecode cache beside it: importing a module normally writes
 # bin/__pycache__/, and bin/ is a reviewed directory of scripts, not a package
 # build tree. The import cost is microseconds; an untracked directory appearing
@@ -151,21 +147,19 @@ from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap ab
     EXIT_INVALID_ARG_VALUE,
     EXIT_OPTION_REQUIRES_VALUE,
     HTTP_ERROR_BODY_PREVIEW_BYTES,
-    HTTP_MAX_ATTEMPTS,
-    HTTP_RETRY_BACKOFF_SECONDS,
-    HTTP_TIMEOUT_SECONDS,
-    RETRYABLE_STATUS,
     bracketed,
+    decode as shared_decode,
     fatal as shared_fatal,
+    format_bytes,
+    http_get as shared_http_get,
     log_error,
     log_info,
-    log_warning,
     parse_short_options,
     write_atomically,
 )
 
 
-# Every refusal this script makes names the script. The three fetchers run under
+# Every refusal this script makes names the script. The fetchers all run under
 # one orchestrator (bin/fetch-external-data), so a bare "[FATAL] fixtures
 # directory does not exist" costs the reader a lookup to find out WHICH fetcher
 # said it. pyfunctions' own refusals already carry the name; this gives the
@@ -289,42 +283,14 @@ ARTIFACTS = (
 # whenever it sorted first.
 REVISED_SUFFIX = "_rv"
 
-# The network bounds and the error-body preview bound come from
-# bin/pyfunctions.py, shared with the other two fetchers.
-# The body is read in CHUNKS rather than in one response.read(), so that a
-# download the operator is waiting on reports as it goes. 64 KiB is a read size,
-# not a progress interval -- how often anything is PRINTED is decided below.
-DOWNLOAD_CHUNK_BYTES = 64 * 1024
-# On a TTY the progress line is rewritten in place, at most this often: a fast
-# local read arrives in hundreds of chunks a second and formatting every one of
-# them is work spent on frames nobody sees.
-PROGRESS_TTY_INTERVAL_SECONDS = 0.1
-# Off a TTY (a log, a CI capture, bin/scripts-tests) there is no line to rewrite,
-# so progress is printed at coarse milestones instead -- every this-many percent,
-# plus the final line. A carriage-return update stream there is thousands of
-# lines of noise in a captured log.
-PROGRESS_MILESTONE_PERCENT = 25
+# The network bounds, the error-body preview bound and the whole download stack
+# -- format_bytes, the progress reporter, the chunked read and the retrying
+# http_get -- come from bin/pyfunctions.py, shared with the sibling fetchers.
 
 # A re-fetched artifact carrying fewer than this fraction of the data rows the
 # manifest recorded is treated as a failed extraction rather than a real survey
 # change: a survey loses institutions in dozens, never in thousands.
 SEED_SHRINK_FLOOR = 0.5
-
-def format_bytes(count):
-    """A byte count an operator can read: [9.3 MB] rather than [9294160].
-
-    Decimal units (1000), because that is what the publisher's page and every
-    download UI states a file size in, and this number is read beside them. The
-    exact byte counts are still what PROVENANCE.json records -- this is for the
-    progress channel only, where "is it nearly done" is the whole question."""
-    size = float(count)
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(size) < 1000 or unit == "GB":
-            # Whole bytes stay whole: [512 B], not [512.0 B].
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1000
-    raise AssertionError("unreachable")
-
 
 def year_tokens(year):
     """The two ways a published IPEDS archive name spells one year: the plain
@@ -375,167 +341,22 @@ def require_survey_year():
 # ---------------------------------------------------------------------------
 
 
-def content_length(headers):
-    """The Content-Length as an int, or None when the server did not send a
-    usable one.
-
-    MISSING is normal (a chunked response has no length at all) and malformed is
-    possible, and neither may cost the download: an absent total means progress
-    reports bytes so far with no percentage, never "None%" and never a
-    traceback three quarters of the way through a 9 MB fetch."""
-    raw = headers.get("Content-Length")
-    if raw is None:
-        return None
-    try:
-        total = int(raw.strip())
-    except (AttributeError, ValueError):
-        return None
-    # A zero or negative length is not a total anything can be a fraction of.
-    return total if total > 0 else None
-
-
-class DownloadProgress:
-    """The running report of one download, on log_info's channel.
-
-    TWO shapes, because there are two readers. On a TTY a human is watching one
-    line, so it is rewritten in place with \r and closed with a newline. Off a
-    TTY -- a log file, CI, bin/scripts-tests -- there is nothing to rewrite, and
-    a \r stream is thousands of unreadable lines in the capture, so the same
-    facts are printed at milestones (every PROGRESS_MILESTONE_PERCENT) plus one
-    final line. The final line is ALWAYS printed on both, so a download that
-    reported nothing is a download that did not happen."""
-
-    def __init__(self, label, total):
-        self.label = label
-        self.total = total
-        self.tty = sys.stderr.isatty()
-        self.last_emit = 0.0
-        # The last milestone REPORTED, so a chunk that crosses two of them still
-        # prints one line and a stalled read prints none.
-        self.last_milestone = -1
-        # The in-place line is padded back to the longest line already written:
-        # "9.3 MB of 9.3 MB [100%]" is shorter than what preceded it, and without
-        # the padding the tail of the previous line survives on screen.
-        self.width = 0
-
-    def line(self, seen):
-        if self.total is None:
-            return f"    [{self.label}] [{format_bytes(seen)}] (total not published)"
-        percent = min(100, int(seen * 100 / self.total))
-        return (
-            f"    [{self.label}] [{format_bytes(seen)}] of [{format_bytes(self.total)}] "
-            f"[{percent}%]"
-        )
-
-    def update(self, seen):
-        """Report an in-flight position, or say nothing. Called once per chunk,
-        so every path here is throttled."""
-        if self.tty:
-            now = time.monotonic()
-            if now - self.last_emit < PROGRESS_TTY_INTERVAL_SECONDS:
-                return
-            self.last_emit = now
-            self.write(seen, end="")
-            return
-        if self.total is None:
-            # No total, so no milestone can be computed; the final line below
-            # still reports what arrived. Guessing an interval in bytes would
-            # print an unbounded number of lines for an unknown-size body.
-            return
-        milestone = int(seen * 100 / self.total) // PROGRESS_MILESTONE_PERCENT
-        # 100% belongs to finish(), which prints it exactly once.
-        if milestone <= self.last_milestone or milestone * PROGRESS_MILESTONE_PERCENT >= 100:
-            return
-        self.last_milestone = milestone
-        log_info(self.line(seen))
-
-    def finish(self, seen):
-        """The final position, always printed, and on a TTY the newline that
-        ends the line every update() has been overwriting."""
-        if self.tty:
-            self.write(seen, end="\n")
-            return
-        log_info(self.line(seen))
-
-    def write(self, seen, end):
-        text = self.line(seen)
-        self.width = max(self.width, len(text))
-        print(f"\r{text:<{self.width}}", end=end, file=sys.stderr, flush=True)
-
-
-def read_body_with_progress(response, label):
-    """The whole response body, read in chunks so that the wait is visible.
-
-    A single response.read() is one call that returns after however long the
-    body takes; the operator sees nothing until it does, and the largest artifact
-    here is ~9 MB. Chunking changes nothing about what is returned -- the bytes
-    are joined and hashed exactly as before -- only about what is said while it
-    arrives."""
-    progress = DownloadProgress(label, content_length(response.headers))
-    chunks = []
-    seen = 0
-    while True:
-        chunk = response.read(DOWNLOAD_CHUNK_BYTES)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        seen += len(chunk)
-        progress.update(seen)
-    progress.finish(seen)
-    return b"".join(chunks)
-
-
 def http_get(url, label):
-    """The response body, retrying only TRANSIENT faults. A permanent fault is
-    reported immediately through this script's own fatal channel -- naming the
-    attempt it died on and carrying the head of the response body, which is
-    where a publisher's own explanation lives -- and the swallowed causes of the
-    earlier attempts are logged rather than discarded.
+    """The shared retrying download (bin/pyfunctions.py), reporting through this
+    script's own name so a refusal under bin/fetch-external-data still says
+    which fetcher died."""
+    return shared_http_get(url, label, SCRIPT_NAME)
 
-    `label` names the artifact in the progress report: the URL is already on the
-    start line, and a 9 MB download reporting itself against the full URL wraps
-    the terminal line it is trying to rewrite in place."""
-    request = urllib.request.Request(url, headers={"User-Agent": "unicoach"})
-    for attempt in range(HTTP_MAX_ATTEMPTS):
-        try:
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                # Read INSIDE the try: a connection that drops mid-body now
-                # faults here, in a chunk read, rather than in one read() call,
-                # and must still be caught as the transient fault it is.
-                return read_body_with_progress(response, label)
-        except urllib.error.HTTPError as error:
-            # Bound to a `with`: the body is read and the connection released
-            # here, rather than held open across the retry sleep below.
-            with error:
-                # One byte MORE than is quoted: reading the preview plus one
-                # says whether the body was truncated without holding the rest
-                # of a publisher's error page in memory.
-                raw = error.read()[: HTTP_ERROR_BODY_PREVIEW_BYTES + 1]
-            body = raw[:HTTP_ERROR_BODY_PREVIEW_BYTES].decode("utf-8", errors="replace")
-            if len(raw) > HTTP_ERROR_BODY_PREVIEW_BYTES:
-                body += f"... (truncated at [{HTTP_ERROR_BODY_PREVIEW_BYTES}] bytes)"
-            cause = f"HTTP [{error.code}] [{error.reason}] body [{body}]"
-            if error.code not in RETRYABLE_STATUS:
-                fatal(f"GET [{url}] failed permanently on attempt [{attempt + 1}]: {cause}")
-        except TimeoutError as error:
-            # Its own branch, so the bound that was exceeded is named: a socket
-            # timeout reports as an empty message otherwise.
-            cause = (
-                f"[{type(error).__name__}] timed out after [{HTTP_TIMEOUT_SECONDS}]s [{error}]"
-            )
-        except urllib.error.URLError as error:
-            cause = f"[{type(error).__name__}] [{error}]"
-        except (http.client.IncompleteRead, ConnectionResetError) as error:
-            # A connection dropped mid-body. Neither a URLError nor a
-            # TimeoutError, and as transient as either: retried, not escaped.
-            cause = f"[{type(error).__name__}] connection dropped mid-body [{error}]"
-        if attempt == HTTP_MAX_ATTEMPTS - 1:
-            fatal(f"GET [{url}] failed after [{HTTP_MAX_ATTEMPTS}] attempts: {cause}")
-        log_warning(
-            f"GET [{url}] attempt [{attempt + 1}]/[{HTTP_MAX_ATTEMPTS}] failed: {cause}; retrying"
-        )
-        time.sleep(HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1))
-    raise AssertionError("unreachable")
+
+def decode(body, filename):
+    """The shared guarded decode (bin/pyfunctions.py), named for this script.
+
+    utf-8-sig strips a BOM where there is one (HD/IC/C_A) and is plain UTF-8
+    where there is not (adm2023), so every member is decoded the same way and a
+    BOM never survives into the first header name. The cp1252 fallback is
+    GUARDED: the text this returns is what gets WRITTEN and hashed into
+    member_sha256, so an undecodable member is a refusal, not a traceback."""
+    return shared_decode(body, filename, SCRIPT_NAME)
 
 
 def find_fixture(fixtures, artifact):
@@ -713,35 +534,6 @@ def read_member(body, origin, expected_member, url, is_text=True, prefer_revised
     return (decode(member_body, member).encode("utf-8") if is_text else member_body), member
 
 
-def decode(body, filename):
-    """utf-8-sig, falling back to the Windows codepage IPEDS' tooling emits.
-    utf-8-sig strips a BOM where there is one (HD/IC/C_A) and is plain UTF-8
-    where there is not (adm2023), so every member is decoded the same way and a
-    BOM never survives into the first header name.
-
-    The fallback is GUARDED rather than trusted: cp1252 leaves five byte values
-    undefined (0x81, 0x8d, 0x8f, 0x90, 0x9d), so a payload that is neither UTF-8
-    nor cp1252 would raise from inside the recovery path. That matters more here
-    than in the sibling fetchers: the text this returns is what gets WRITTEN and
-    hashed into member_sha256, so an undecodable member is a refusal, not a
-    traceback."""
-    try:
-        return body.decode("utf-8-sig")
-    except UnicodeDecodeError as error:
-        log_warning(
-            f"[{filename}] is not UTF-8 ([{error.reason}] at byte [{error.start}]); "
-            f"decoding as cp1252"
-        )
-    try:
-        return body.decode("cp1252")
-    except UnicodeDecodeError as error:
-        fatal(
-            f"[{filename}] decodes as neither UTF-8 nor cp1252 ([{error.reason}] at byte "
-            f"[{error.start}]); the payload is not the text member this expects, and its "
-            f"bytes are what member_sha256 would describe"
-        )
-
-
 def count_data_rows(member_body, origin, member):
     """The data rows, header EXCLUDED, counted with csv.reader: a line count
     would miscount the quoted institution names that carry embedded newlines.
@@ -753,8 +545,10 @@ def count_data_rows(member_body, origin, member):
 
     csv.Error is reported through this script's channel: this count is what the
     whole shrink guard rests on, so a member the reader cannot walk (a NUL byte,
-    a field past the reader's limit) is a named refusal naming the archive and
-    the member, not a traceback."""
+    a field past the reader's limit) is a named refusal naming the archive, the
+    member and the LINE the reader stopped on, not a traceback. The line number
+    is free (the reader carries it) and it is the only locator anything will
+    have: the member is held in memory and this run refuses to write it."""
     # newline="" is load-bearing: without it StringIO translates the newlines
     # inside quoted institution names and csv.reader sees extra rows. An
     # INFLATED count is the dangerous direction -- it can never trip the shrink
@@ -766,9 +560,11 @@ def count_data_rows(member_body, origin, member):
         return sum(1 for _ in reader)
     except csv.Error as error:
         fatal(
-            f"[{origin}] -> [{member}] could not be read as CSV: [{type(error).__name__}] "
-            f"[{error}]; the data-row count is what the shrink guard compares against, so "
-            f"an unreadable member is refused rather than counted as zero"
+            f"[{origin}] -> [{member}] could not be read as CSV at line "
+            f"[{reader.line_num}]: [{type(error).__name__}] [{error}]; the data-row count is "
+            f"what the shrink guard compares against, so an unreadable member is refused "
+            f"rather than counted as zero. The member is not written, so this line number is "
+            f"the only locator there will be for it"
         )
 
 
@@ -921,16 +717,28 @@ def read_manifest(outdir):
     record; a list or a scalar would instead raise AttributeError from whichever
     reader touched it first. Both are the same fault and get the same refusal.
 
-    The exception TYPE is reported beside its message throughout: "cannot open"
-    and "is not JSON" need different repairs."""
+    A file that is not UTF-8 TEXT is the same damage one level lower.
+    read_text() decodes, and UnicodeDecodeError is a ValueError, so it is caught
+    by neither the OSError clause here nor main's OSError boundary: one stray
+    byte would leave this script as a stdlib traceback naming a /nix/store path,
+    which is the outcome this whole channel exists to prevent.
+
+    The exception TYPE is reported beside its message throughout: "cannot open",
+    "is not UTF-8" and "is not JSON" need different repairs."""
     path = outdir / MANIFEST_NAME
     try:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
     except OSError as error:
         fatal(
             f"[{path}] is unreadable: [{type(error).__name__}] [{error}]. {_MANIFEST_REPAIR}"
+        )
+    except UnicodeDecodeError as error:
+        fatal(
+            f"[{path}] is unreadable, it is not UTF-8 text ([{error.reason}] at byte "
+            f"[{error.start}]); every run that writes this file writes UTF-8, so a byte that "
+            f"is not is damage. {_MANIFEST_REPAIR}"
         )
     try:
         manifest = json.loads(raw)
@@ -946,7 +754,35 @@ def read_manifest(outdir):
             f"it as absent is exactly how a reviewed record gets overwritten. "
             f"{_MANIFEST_REPAIR}"
         )
+    require_agreeing_route(path, manifest)
     return manifest
+
+
+def require_agreeing_route(path, manifest):
+    """Refuses a manifest whose two statements of its own route disagree.
+
+    build_manifest writes `source` and `fixture_derived` from the ONE `offline`
+    flag, so exactly two combinations are ever written. Which route made this
+    record is what decides whether it may be overwritten, and reading that off a
+    file that says both would rest the protection of a committed record on one
+    field of two agreeing unchecked -- so `fixture_derived` is READ BACK here
+    rather than only written.
+
+    A record declaring the replay route must declare it with BOTH fields: that
+    is the reading which leaves a committed record replaceable, and a hand edit
+    (this file invites one) that sets one field and not the other must not reach
+    it. Both values are named, because which of the two was edited is the
+    repair."""
+    declared = manifest.get("source")
+    fixture_derived = manifest.get("fixture_derived")
+    if (declared == ROUTE_FIXTURES) != (fixture_derived is True):
+        fatal(
+            f"[{path}] declares [source={declared}] beside "
+            f"[fixture_derived={fixture_derived}], and those two contradict each other: one "
+            f"manifest states its route twice, and every run writes them together. Which "
+            f"route made this record decides whether it may be overwritten, and it is not "
+            f"read off a file that says both. {_MANIFEST_REPAIR}"
+        )
 
 
 _MANIFEST_REPAIR = (
@@ -972,7 +808,12 @@ def manifest_route(manifest):
     The DECLARED value comes back with the classification because it is the
     diagnosis. A manifest declaring "netwrok" is not a manifest that declares
     nothing, and a refusal saying so sends the operator looking for a missing
-    key instead of at the typo in front of them."""
+    key instead of at the typo in front of them.
+
+    `source` alone is enough HERE only because read_manifest has already refused
+    a manifest whose `source` and `fixture_derived` disagree
+    (require_agreeing_route): the replay route is declared by both fields or by
+    neither, so no record classified below states its route twice."""
     declared = manifest.get("source")
     if declared in (ROUTE_NETWORK, ROUTE_FIXTURES):
         return declared, declared
@@ -985,8 +826,15 @@ def get_manifest_artifacts(manifest):
     Both baseline readers walk this, so its SHAPE is checked once here rather
     than assumed twice: a list-valued `artifacts`, or an entry that is not an
     object, would otherwise crash whichever reader reached it first with an
-    AttributeError instead of this script's refusal."""
-    artifacts = manifest.get("artifacts", {})
+    AttributeError instead of this script's refusal.
+
+    ABSENCE is damage too, not an empty baseline. build_manifest always writes
+    the key, so a manifest without it is a record that lost part of itself, and
+    defaulting it to {} would leave the run measuring against nothing, both
+    guards reporting NOT armed, and the reviewed record overwritten with exit 0 --
+    the same fault read_manifest refuses one level up. No default: None is not a
+    dict, so an absent key falls into the refusal already written below."""
+    artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
         fatal(
             f"the manifest's [artifacts] is a [{type(artifacts).__name__}], not a JSON "
@@ -1391,7 +1239,7 @@ def print_ingest_command(outdir, sources):
 
 
 # The name this script reports itself as; every refusal names it, because the
-# three fetchers run under one wrapper and a message must say which refused.
+# fetchers all run under one wrapper and a message must say which refused.
 SCRIPT_NAME = "fetch-ipeds"
 
 # The option grammar, in getopt's own notation and declared ONCE: this is what
@@ -1406,7 +1254,7 @@ def parse_args(argv):
 
     The grammar, the -h answer and every value-shape guard getopt cannot make --
     a repeated option, an empty value, a value that is really the next option --
-    live in bin/pyfunctions.py, shared with the other two fetchers. What is
+    live in bin/pyfunctions.py, shared with the sibling fetchers. What is
     decided HERE is what only this script knows:
 
     -F REQUIRES -o. Without it, an offline replay defaults to db/seed/ipeds --
@@ -1444,7 +1292,19 @@ def main(argv):
     outdir, fixtures = parse_args(argv)
     offline = fixtures is not None
     if offline and not fixtures.is_dir():
-        fatal(f"fixtures directory [{fixtures}] does not exist")
+        # Reported by what is actually THERE. is_dir() is false for an existing
+        # FILE as well as for nothing at all, and "does not exist" sends an
+        # operator who pointed -F at a zip to check their spelling instead of at
+        # the mistake they made. It is the same distinction parse_args already
+        # draws for -o, three lines up.
+        fatal(
+            f"fixtures directory [{fixtures}] "
+            + (
+                "exists and is not a directory"
+                if fixtures.exists()
+                else "does not exist"
+            )
+        )
 
     # Read once, under one corruption policy, before anything is written --
     # including the directory itself.

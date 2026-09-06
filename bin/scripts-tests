@@ -2454,7 +2454,7 @@ PY
   # The guard's whole claim is that the reviewed file is NOT overwritten, so
   # that is what is asserted: the named refusal, and no output file at all.
   case "$output" in
-    # The refusal names the SCRIPT that made it (RFC 172: the three fetchers run
+    # The refusal names the SCRIPT that made it (RFC 172: the fetchers all run
     # under one orchestrator, so an unattributed [FATAL] costs a lookup).
     *"[FATAL] fetch-codebooks: code counts collapsed"*) ;;
     *) rm -rf "$out"; return 1 ;;
@@ -2487,7 +2487,7 @@ PY
   status=$?
   rm -rf "$out"
   case "$output" in
-    # The refusal names the SCRIPT that made it (RFC 172: the three fetchers run
+    # The refusal names the SCRIPT that made it (RFC 172: the fetchers all run
     # under one orchestrator, so an unattributed [FATAL] costs a lookup).
     *"[FATAL] fetch-codebooks: code counts collapsed"*) ;;
     *) return 1 ;;
@@ -3052,17 +3052,57 @@ assert_success "every member is written under the name the ingest is given" \
 # prefixes this harness is grepped by, and there are sixteen of those messages.
 # The heredoc each caller writes is this function's stdin, which python3
 # inherits, so the call sites read exactly as they would with python3 itself.
-ipeds_python() {
+logged_python() {
   local message rc=0
   message="$(python3 "$@" 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || log-error "$message"
   return "$rc"
 }
 
+# Loading a bin/ script as a module for a unit-level assertion is five lines of
+# importlib plus the rule that makes them safe: bin/ is a reviewed source
+# directory in a git checkout, not a package build tree, so no run of this
+# harness may leave a bin/__pycache__ behind for the next `git status` to report
+# as untracked. Written ONCE, in a module the heredocs import, rather than
+# restated at every site that loads a fetcher.
+FETCHER_LOADER_DIR="$(mktemp -d)"
+cat > "$FETCHER_LOADER_DIR/fetcher_loader.py" << 'PY'
+import importlib.machinery
+import importlib.util
+import sys
+
+# Set on IMPORT, so it is already in force by the time load() runs: the flag has
+# to precede the exec_module it protects.
+sys.dont_write_bytecode = True
+
+
+def load(path, name="fetcher"):
+    """The bin/ script at `path`, executed as a module under `name`."""
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+PY
+
+# logged_python with the loader above importable. The loader lives in a temp dir
+# of its own so importing it cannot write a cache into a checked-out directory.
+FETCHER_PYTHONPATH="$FETCHER_LOADER_DIR${PYTHONPATH:+:$PYTHONPATH}"
+fetcher_python() {
+  PYTHONPATH="$FETCHER_PYTHONPATH" logged_python "$@"
+}
+
+# The same loader path for a script whose OUTPUT is the wanted value, not its
+# exit status: logged_python captures stdout to report it on failure, so a
+# command substitution around fetcher_python reads back an empty string.
+fetcher_python_out() {
+  PYTHONPATH="$FETCHER_PYTHONPATH" python3 "$@"
+}
+
 # PROVENANCE is read as JSON, not grepped: `rows` is what the shrink guard
 # compares against next time, and `member` is the trap this fetcher exists for.
-ipeds_provenance_assert() {
-  ipeds_python - "$1" "$2" << 'PY'
+provenance_assert() {
+  logged_python - "$1" "$2" << 'PY'
 import json, sys
 provenance = json.load(open(sys.argv[1]))
 scope = {"provenance": provenance, "artifacts": provenance["artifacts"]}
@@ -3086,6 +3126,98 @@ open(path, "w").write(json.dumps(provenance, indent=2) + "\n")
 PY
 }
 
+# The three guard harnesses below are ONE policy each, and the fetcher is data:
+# bin/fetch-ipeds and bin/fetch-scorecard read the same manifest through the same
+# bin/pyfunctions loader, so the fetcher is the FIRST argument and each claim is
+# asserted by one copy. A second copy per fetcher is a second chance to drift,
+# and nothing would tell the copy it was missed.
+
+# PROVENANCE.json is the ONLY committed record of a real fetch -- the data files
+# are far too large to commit -- so an offline replay into a directory holding
+# one is refused OUTRIGHT, before anything is written. Writing the fixture CSVs
+# and then declining to touch the manifest would leave a directory whose manifest
+# describes the real download and whose files are a handful of rows. The mutation
+# damages a real manifest in one specific way; the phrase is the refusal it must
+# name.
+fetcher_offline_refused() {
+  local fetcher="$1" baseline="$2" fixtures="$3" mutation="$4" phrase="$5"
+  local out before after output status listing
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" "$mutation"
+  before="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  output="$(bin/$fetcher -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  after="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  listing="$(ls -A "$out")"
+  rm -rf "$out"
+  [ "$status" -ne 0 ] || { log-error "expected a refusal, exited 0"; return 1; }
+  [ "$before" = "$after" ] || { log-error "the manifest was rewritten"; return 1; }
+  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] as well"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"$phrase"*) return 0 ;;
+  esac
+  log-error "output was [$output]"
+  return 1
+}
+
+# A baseline that records nothing usable DISARMS a guard. That is legitimate --
+# a survey-year bump and a first generation both reach it -- and it must be said
+# out loud rather than printed as the success an armed run prints. The optional
+# fifth argument is the SUMMARY line, asserted after the warning, because a run
+# whose only gap was one guard must not be described with one word covering both.
+fetcher_unarmed_warns() {
+  local fetcher="$1" baseline="$2" fixtures="$3" mutation="$4" phrase="$5" summary="${6:-}"
+  local out output status
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" "$mutation"
+  output="$(bin/$fetcher -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
+  case "$output" in
+    *"[ERROR]"*"$phrase"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ -n "$summary" ] || return 0
+  case "$output" in
+    *"$phrase"*"$summary"*) return 0 ;;
+  esac
+  log-error "the summary overstated the guard state, output [$output]"
+  return 1
+}
+
+# A manifest that cannot be READ is not an absent manifest: it is the baseline
+# and the provenance record, damaged. One loader with one policy, so neither the
+# replay refusal nor the shrink guard can quietly step past it. The literal
+# `null` is the dangerous one -- it PARSES and is falsy, so "no manifest" would
+# disarm the replay refusal outright and let a three-row replay overwrite the
+# reviewed record.
+fetcher_broken_manifest_refused() {
+  local fetcher="$1" manifest_json="$2" fixtures="$3" phrase="${4:-is unreadable}"
+  local out output status before
+  out="$(mktemp -d)"
+  printf '%s\n' "$manifest_json" > "$out/PROVENANCE.json"
+  before="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  output="$(bin/$fetcher -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  [ "$before" = "$(shasum -a 256 < "$out/PROVENANCE.json")" ] \
+    || { log-error "the damaged manifest was overwritten"; rm -rf "$out"; return 1; }
+  [ "$(ls -A "$out")" = "PROVENANCE.json" ] \
+    || { log-error "wrote [$(ls -A "$out")] despite refusing"; rm -rf "$out"; return 1; }
+  rm -rf "$out"
+  case "$output" in
+    *Traceback*) log-error "raw traceback [$output]"; return 1 ;;
+  esac
+  case "$output" in
+    *"[FATAL]"*"$phrase"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+
 # The MODE is read from the typed fields that declare it -- source and
 # fixture_derived -- and not from a null timestamp. `fetched_at` is asserted for
 # its SHAPE instead: one caller-supplied value, stamped identically at both
@@ -3093,7 +3225,7 @@ PY
 # whole download. Reading a null timestamp as "this was offline" would make the
 # mode depend on a field whose real job is to say WHEN.
 assert_success "PROVENANCE records the offline route, the member taken and its row count" \
-  ipeds_provenance_assert "$IPEDS_OUT/PROVENANCE.json" \
+  provenance_assert "$IPEDS_OUT/PROVENANCE.json" \
     'provenance["source"] == "fixtures"
      and provenance["fixture_derived"] is True
      and sorted(artifacts) == ["ADM2023.zip", "C2023_A.zip", "HD2023.zip",
@@ -3174,30 +3306,30 @@ write_ipeds_zips "$IPEDS_ZIPS"
 assert_success "fetch-ipeds extracts from published-shape archives (synthesised, no network)" \
   bin/fetch-ipeds -F "$IPEDS_ZIPS" -o "$IPEDS_ZIP_OUT" > /dev/null 2>&1
 assert_success "a member whose name is cased differently still resolves" \
-  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+  provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["HD2023.zip"]["member"] == "hd2023.CSV" and artifacts["HD2023.zip"]["rows"] == 4'
 assert_success "the _RV revised member is never the one taken" \
-  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+  provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["IC2023.zip"]["member"] == "IC2023.csv" and artifacts["IC2023.zip"]["rows"] == 4'
 assert_success "the _RV refusal covers IC2023_AY too, not only the two archives that ship one today" \
-  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+  provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["IC2023_AY.zip"]["member"] == "ic2023_ay.csv" and artifacts["IC2023_AY.zip"]["rows"] == 4'
 # RFC 162 D2: the SAME archive shape, the OPPOSITE choice, because SFA declares
 # prefer_revised. Asserted against IC2023 above rather than alone -- the claim is
 # that the rule is per-artifact and DECLARED, not that _RV is globally preferred.
 assert_success "the SFA artifact takes the _RV member the ingest is pinned away from elsewhere" \
-  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+  provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["SFA2223.zip"]["member"] == "sfa2223_rv.csv"
      and artifacts["SFA2223.zip"]["rows"] == 9
      and artifacts["IC2023.zip"]["member"] != "IC2023_RV.csv"'
 # A member that is not text has no row count, and None is a different fact from
 # zero: a 0 here would arm the shrink guard against a file that never had rows.
 assert_success "the dictionary member is byte-passed and carries no row count" \
-  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+  provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["SFA2223_Dict.zip"]["member"] == "sfa2223.xlsx"
      and artifacts["SFA2223_Dict.zip"]["rows"] is None'
 assert_success "a BOM-carrying member and a BOM-less member parse to the same row count" \
-  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+  provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
     'artifacts["HD2023.zip"]["rows"] == artifacts["ADM2023.zip"]["rows"]
      and artifacts["C2023_A.zip"]["rows"] == artifacts["ADM2023.zip"]["rows"]'
 # A row count can never see a BOM: it shifts the byte count by three and the row
@@ -3206,7 +3338,7 @@ assert_success "a BOM-carrying member and a BOM-less member parse to the same ro
 # members, at the written file and at the first header name, because a BOM left
 # in place lands inside UNITID and every column lookup for it misses.
 test_ipeds_bom_never_reaches_the_data() {
-  ipeds_python - "$IPEDS_ZIP_OUT" << 'PY'
+  logged_python - "$IPEDS_ZIP_OUT" << 'PY'
 import csv, io, sys
 from pathlib import Path
 
@@ -3347,7 +3479,7 @@ for artifact in provenance['artifacts'].values():
   esac
   # The recorded counts must still be the OLD ones: a refusal that rewrote the
   # manifest would disarm itself on the next run.
-  ipeds_provenance_assert "$out/PROVENANCE.json" "artifacts['HD2023.zip']['rows'] == $collapsed" \
+  provenance_assert "$out/PROVENANCE.json" "artifacts['HD2023.zip']['rows'] == $collapsed" \
     || { rm -rf "$out"; return 1; }
   [ "$status" -ne 0 ] || { rm -rf "$out"; return 1; }
   rm -rf "$out"
@@ -3419,61 +3551,23 @@ assert_success "an output dir holding only the manifest does not disarm the guar
 # is refused OUTRIGHT, before anything is written. Writing the fixture CSVs and
 # then declining to touch the manifest would leave a directory whose manifest
 # describes the real survey and whose files are a three-row replay.
-test_ipeds_offline_refuses_a_network_provenance() {
-  local baseline="$1" fixtures="$2" out before after output status listing
-  out="$(mktemp -d)"
-  cp "$baseline/PROVENANCE.json" "$out/"
-  provenance_rewrite "$out/PROVENANCE.json" '
+assert_success "an offline run into a directory with a network manifest is refused, writing nothing" \
+  fetcher_offline_refused fetch-ipeds "$IPEDS_OUT" "$IPEDS_FIXTURES" '
 provenance["source"] = "network"
 provenance["fixture_derived"] = False
-'
-  before="$(shasum -a 256 < "$out/PROVENANCE.json")"
-  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
-  status=$?
-  after="$(shasum -a 256 < "$out/PROVENANCE.json")"
-  listing="$(ls -A "$out")"
-  rm -rf "$out"
-  [ "$status" -ne 0 ] || { log-error "expected a refusal, exited 0"; return 1; }
-  [ "$before" = "$after" ] || { log-error "the manifest was rewritten"; return 1; }
-  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] as well"; return 1; }
-  case "$output" in
-    *"[FATAL]"*"records a real fetch"*) return 0 ;;
-    *) log-error "output was [$output]"; return 1 ;;
-  esac
-}
-assert_success "an offline run into a directory with a network manifest is refused, writing nothing" \
-  test_ipeds_offline_refuses_a_network_provenance "$IPEDS_OUT" "$IPEDS_FIXTURES"
+' "records a real fetch"
 
 # The same protection must not depend on an OPTIONAL key being present. A
 # manifest carrying real fetched_at/bytes/sha256 and simply missing `source` is
 # not a fixture replay, and probing for source == "network" would classify it as
 # replaceable and let a three-row replay overwrite the reviewed record. The
 # classification is exhaustive: unknown joins the protected side.
-test_ipeds_offline_refuses_a_sourceless_provenance() {
-  local baseline="$1" fixtures="$2" out before after output status listing
-  out="$(mktemp -d)"
-  cp "$baseline/PROVENANCE.json" "$out/"
-  provenance_rewrite "$out/PROVENANCE.json" '
+assert_success "a manifest that declares no source is protected like a network one, not overwritten" \
+  fetcher_offline_refused fetch-ipeds "$IPEDS_OUT" "$IPEDS_FIXTURES" '
 provenance.pop("source", None)
 provenance.pop("fixture_derived", None)
 provenance["fetched_at"] = "2026-08-31T00:00:00+00:00"
-'
-  before="$(shasum -a 256 < "$out/PROVENANCE.json")"
-  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
-  status=$?
-  after="$(shasum -a 256 < "$out/PROVENANCE.json")"
-  listing="$(ls -A "$out")"
-  rm -rf "$out"
-  [ "$status" -ne 0 ] || { log-error "expected a refusal, exited 0"; return 1; }
-  [ "$before" = "$after" ] || { log-error "the manifest was rewritten"; return 1; }
-  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] as well"; return 1; }
-  case "$output" in
-    *"[FATAL]"*"declares [source=None]"*) return 0 ;;
-    *) log-error "output was [$output]"; return 1 ;;
-  esac
-}
-assert_success "a manifest that declares no source is protected like a network one, not overwritten" \
-  test_ipeds_offline_refuses_a_sourceless_provenance "$IPEDS_OUT" "$IPEDS_FIXTURES"
+' "declares [source=None]"
 
 # A manifest that cannot be PARSED is not an absent manifest: it is the baseline
 # and the provenance record, damaged. There is one loader with one policy, so
@@ -3528,27 +3622,13 @@ assert_success "a directory with no manifest writes a first generation, and says
 # A baseline from ANOTHER survey year keys its counts by an archive name this run
 # never sees, so the comparison has nothing to compare: legitimate (a survey-year
 # bump is a reviewed change) but it DISARMS the guard, which must be said.
-test_ipeds_unarmed_guard_warns() {
-  local baseline="$1" fixtures="$2" out output status
-  out="$(mktemp -d)"
-  cp "$baseline/PROVENANCE.json" "$out/"
-  provenance_rewrite "$out/PROVENANCE.json" '
+assert_success "a baseline from another survey year warns that the guard is not armed" \
+  fetcher_unarmed_warns fetch-ipeds "$IPEDS_OUT" "$IPEDS_FIXTURES" '
 provenance["artifacts"] = {
     name.replace("2023", "2022"): artifact
     for name, artifact in provenance["artifacts"].items()
 }
-'
-  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
-  status=$?
-  rm -rf "$out"
-  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
-  case "$output" in
-    *"[ERROR]"*"shrink guard is NOT armed"*) return 0 ;;
-    *) log-error "output was [$output]"; return 1 ;;
-  esac
-}
-assert_success "a baseline from another survey year warns that the guard is not armed" \
-  test_ipeds_unarmed_guard_warns "$IPEDS_OUT" "$IPEDS_FIXTURES"
+' "shrink guard is NOT armed"
 
 # A mistyped -F path is a caller error, named as one, rather than an empty read.
 test_ipeds_missing_fixtures_dir_refused() {
@@ -3616,7 +3696,7 @@ IPEDS_COMMITTED="$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json"
 # bare date it observed ("2026-08-31"). Both parse; "31/08/2026" does not, which
 # is why BOTH shapes are accepted below rather than only the one in the file.
 test_ipeds_committed_is_a_network_record() {
-  ipeds_python - "$IPEDS_COMMITTED" << 'PY'
+  logged_python - "$IPEDS_COMMITTED" << 'PY'
 import json, sys
 from datetime import date, datetime
 from pathlib import Path
@@ -3649,7 +3729,7 @@ assert_success "the committed db/seed/ipeds manifest records a real network fetc
 # manifest and an invented one. Pinned here rather than derived from the file
 # they check.
 test_ipeds_committed_digests_are_the_verified_ones() {
-  ipeds_python - "$IPEDS_COMMITTED" << 'PY'
+  logged_python - "$IPEDS_COMMITTED" << 'PY'
 import json, sys
 from pathlib import Path
 
@@ -3682,7 +3762,7 @@ assert_success "the committed manifest pins the seven operator-verified archive 
 # digests, the member taken is the ORIGINAL release rather than the _RV revision,
 # and the row counts are a real survey rather than a fixture replay.
 test_ipeds_committed_members_are_the_published_ones() {
-  ipeds_python - "$IPEDS_COMMITTED" << 'PY'
+  logged_python - "$IPEDS_COMMITTED" << 'PY'
 import json, sys
 from pathlib import PurePosixPath, Path
 
@@ -3740,29 +3820,10 @@ assert_success "the extracted members are gitignored and the committed record is
 # overwritten by a three-row replay -- the loudest possible failure of the one
 # rule this directory has. An empty or wrongly-typed manifest is DAMAGE, and the
 # same policy that catches unparseable text catches it.
-ipeds_broken_manifest_refused() {
-  local manifest_json="$1" fixtures="$2" out output status after
-  out="$(mktemp -d)"
-  printf '%s\n' "$manifest_json" > "$out/PROVENANCE.json"
-  after="$(shasum -a 256 < "$out/PROVENANCE.json")"
-  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
-  status=$?
-  [ "$after" = "$(shasum -a 256 < "$out/PROVENANCE.json")" ] \
-    || { log-error "the damaged manifest was overwritten"; rm -rf "$out"; return 1; }
-  [ "$(ls -A "$out")" = "PROVENANCE.json" ] \
-    || { log-error "wrote [$(ls -A "$out")] despite refusing"; rm -rf "$out"; return 1; }
-  rm -rf "$out"
-  case "$output" in
-    *"[FATAL]"*"is unreadable"*) ;;
-    *) log-error "output was [$output]"; return 1 ;;
-  esac
-  [ "$status" -ne 0 ] || return 1
-  return 0
-}
 assert_success "a manifest holding null is damage, not an absent manifest, and is refused" \
-  ipeds_broken_manifest_refused "null" "$IPEDS_FIXTURES"
+  fetcher_broken_manifest_refused fetch-ipeds "null" "$IPEDS_FIXTURES"
 assert_success "a manifest that parses as a list is refused, not read as an object" \
-  ipeds_broken_manifest_refused "[]" "$IPEDS_FIXTURES"
+  fetcher_broken_manifest_refused fetch-ipeds "[]" "$IPEDS_FIXTURES"
 
 # `artifacts` is walked by BOTH baseline readers. A list-valued one, or an entry
 # that is not an object, must reach this script's refusal rather than an
@@ -3785,9 +3846,11 @@ ipeds_bad_artifacts_refused() {
   return 0
 }
 assert_success "a list-valued artifacts is refused by name, not crashed on" \
-  ipeds_bad_artifacts_refused '{"source": "fixtures", "artifacts": []}' "$IPEDS_FIXTURES"
+  ipeds_bad_artifacts_refused '{"source": "fixtures", "fixture_derived": true, "artifacts": []}' \
+    "$IPEDS_FIXTURES"
 assert_success "an artifacts entry that is not an object is refused by name" \
-  ipeds_bad_artifacts_refused '{"source": "fixtures", "artifacts": {"HD2023.zip": 3}}' \
+  ipeds_bad_artifacts_refused \
+    '{"source": "fixtures", "fixture_derived": true, "artifacts": {"HD2023.zip": 3}}' \
     "$IPEDS_FIXTURES"
 
 # A truncated download is THE flaky-network failure here, and it arrives as a
@@ -3833,18 +3896,13 @@ assert_success "a truncated archive is refused by name on the FATAL channel, not
 # status -- never the survey. The raw-CSV branch exists for -F fixtures only, and
 # this is the boundary asserted directly (no test ever fetches).
 test_ipeds_network_non_zip_refused() {
-  ipeds_python - "$PROJECT_ROOT/bin/fetch-ipeds" << 'PY'
-import importlib.machinery, importlib.util, io, sys
+  fetcher_python - "$PROJECT_ROOT/bin/fetch-ipeds" << 'PY'
+import io, sys
 from contextlib import redirect_stderr
 
-# No bytecode cache: loading the script by path would otherwise leave a
-# bin/__pycache__ directory in the checkout.
-sys.dont_write_bytecode = True
-spec = importlib.util.spec_from_loader(
-    "fetch_ipeds", importlib.machinery.SourceFileLoader("fetch_ipeds", sys.argv[1])
-)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from fetcher_loader import load
+
+module = load(sys.argv[1], "fetch_ipeds")
 
 captured = io.StringIO()
 try:
@@ -3874,52 +3932,20 @@ assert_success "a non-zip body on the network route is refused, while -F still r
 # -- the only check that can see an _RV swap, since a revision carries the same
 # row count -- disarmed, and a run that armed on `rows` alone would print a fully
 # guarded success over that hole.
-test_ipeds_member_guard_alone_is_unarmed() {
-  local baseline="$1" fixtures="$2" out output status
-  out="$(mktemp -d)"
-  cp "$baseline/PROVENANCE.json" "$out/"
-  provenance_rewrite "$out/PROVENANCE.json" '
+assert_success "a baseline with rows but no member warns, and the summary says which guard is armed" \
+  fetcher_unarmed_warns fetch-ipeds "$IPEDS_OUT" "$IPEDS_FIXTURES" '
 for artifact in provenance["artifacts"].values():
     artifact.pop("member", None)
-'
-  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
-  status=$?
-  rm -rf "$out"
-  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
-  case "$output" in
-    *"[ERROR]"*"member-drift guard is NOT armed"*) ;;
-    *) log-error "the unarmed member guard was not warned about, output [$output]"; return 1 ;;
-  esac
-  case "$output" in
-    *"guards [shrink: armed, member: NOT armed]"*) return 0 ;;
-    *) log-error "the summary overstated the guard state, output [$output]"; return 1 ;;
-  esac
-}
-assert_success "a baseline with rows but no member warns, and the summary says which guard is armed" \
-  test_ipeds_member_guard_alone_is_unarmed "$IPEDS_OUT" "$IPEDS_FIXTURES"
+' "member-drift guard is NOT armed" "guards [shrink: armed, member: NOT armed]"
 
 # A recorded row count of the WRONG TYPE is not an absent one, and the warning
 # must show the value rather than claim the manifest records nothing.
-test_ipeds_string_rows_warns_with_the_value() {
-  local baseline="$1" fixtures="$2" out output status
-  out="$(mktemp -d)"
-  cp "$baseline/PROVENANCE.json" "$out/"
-  provenance_rewrite "$out/PROVENANCE.json" '
+assert_success "a row count recorded as a string names the offending value in the warning" \
+  fetcher_unarmed_warns fetch-ipeds "$IPEDS_OUT" "$IPEDS_FIXTURES" '
 for artifact in provenance["artifacts"].values():
     if artifact["rows"] is not None:
         artifact["rows"] = str(artifact["rows"])
-'
-  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
-  status=$?
-  rm -rf "$out"
-  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
-  case "$output" in
-    *"[ERROR]"*"records row count [3], a [str]"*"shrink guard is NOT armed"*) return 0 ;;
-    *) log-error "output was [$output]"; return 1 ;;
-  esac
-}
-assert_success "a row count recorded as a string names the offending value in the warning" \
-  test_ipeds_string_rows_warns_with_the_value "$IPEDS_OUT" "$IPEDS_FIXTURES"
+' "records row count [3], a [str]" "shrink guard is NOT armed"
 
 # -o is checked as an ARGUMENT, before anything reads a disk: an existing
 # non-directory is a usage error, not the FileExistsError traceback mkdir raises,
@@ -3990,20 +4016,19 @@ assert_success "the SFA aid year is checked separately, against its own archive 
 # reports coarse milestones plus a final 100% line and nothing per chunk; a
 # MISSING or unparseable one still reports the bytes that arrived and never the
 # string "None%"; and neither writes a carriage return off a TTY.
+#
+# Driven against bin/pyfunctions.py, which is where the reporter lives: every
+# fetcher downloads through this ONE copy (RFC 173), so asserting it against any
+# one of them would be asserting it against an import.
 test_ipeds_download_progress_reports_a_percentage() {
-  ipeds_python - "$PROJECT_ROOT/bin/fetch-ipeds" << 'PY'
-import contextlib, importlib.machinery, importlib.util, io, sys
+  fetcher_python - "$PROJECT_ROOT/bin/pyfunctions.py" << 'PY'
+import contextlib, io, sys
 
-# bin/ is a source directory in a git checkout, not a package: loading a script
-# out of it must not leave a bin/__pycache__ behind for the next `git status` to
-# report as an untracked directory.
-sys.dont_write_bytecode = True
-loader = importlib.machinery.SourceFileLoader("fetch_ipeds", sys.argv[1])
-spec = importlib.util.spec_from_loader("fetch_ipeds", loader)
-fetch_ipeds = importlib.util.module_from_spec(spec)
-loader.exec_module(fetch_ipeds)
+from fetcher_loader import load
 
-SIZE = 8 * fetch_ipeds.DOWNLOAD_CHUNK_BYTES
+pyfunctions = load(sys.argv[1], "pyfunctions")
+
+SIZE = 8 * pyfunctions.DOWNLOAD_CHUNK_BYTES
 
 class FakeResponse:
     """A body that arrives in chunks, with whatever headers the case declares."""
@@ -4018,7 +4043,7 @@ class FakeResponse:
 def run(headers):
     captured = io.StringIO()
     with contextlib.redirect_stderr(captured):
-        body = fetch_ipeds.read_body_with_progress(FakeResponse(SIZE, headers), "X2023.zip")
+        body = pyfunctions.read_body_with_progress(FakeResponse(SIZE, headers), "X2023.zip")
     if len(body) != SIZE:
         sys.exit(f"read {len(body)} bytes of {SIZE}")
     return captured.getvalue()
@@ -4042,8 +4067,25 @@ for headers in ({}, {"Content-Length": "banana"}, {"Content-Length": "0"}):
         sys.exit(f"headers {headers} reported a percentage it does not have: {unknown!r}")
     if "[524.3 KB]" not in unknown:
         sys.exit(f"headers {headers} did not report the bytes read: {unknown!r}")
-    if len([line for line in unknown.splitlines() if line.strip()]) != 1:
+    # The PROGRESS is still one line. A header that could not be parsed also
+    # earns a warning naming it, which is a different channel line and is
+    # asserted below rather than counted here.
+    progress = [
+        line
+        for line in unknown.splitlines()
+        if line.strip() and not line.startswith("[WARNING]")
+    ]
+    if len(progress) != 1:
         sys.exit(f"headers {headers} reported more than the final line: {unknown!r}")
+
+# A MALFORMED length is not a missing one, and the difference is said out loud:
+# a publisher serving "Content-Length: 23,559,465" is not a chunked response, and
+# swallowing the exception reported the opposite of what happened.
+malformed = run({"Content-Length": "banana"})
+if "[Content-Length: banana]" not in malformed or "ValueError" not in malformed:
+    sys.exit(f"an unusable Content-Length was swallowed: {malformed!r}")
+if "[WARNING]" in run({}):
+    sys.exit("an ABSENT Content-Length is normal and must not warn")
 PY
 }
 assert_success "a chunked download reports a percentage, and a missing Content-Length degrades" \
@@ -4733,14 +4775,14 @@ echo "==== Testing RFC 172 external-data wrappers ===="
 
 assert_success "bin/pyfunctions.py parses as python3" \
   python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/pyfunctions.py').read())"
-# The three fetchers now IMPORT that module, so parsing each one alone is no
+# The four fetchers now IMPORT that module, so parsing each one alone is no
 # longer enough: an import resolved against the caller's cwd would parse and then
 # fail at run time from any other directory. Imported here from a directory that
 # is deliberately not bin/.
 test_fetchers_import_pyfunctions_from_anywhere() {
   local fetcher elsewhere
   elsewhere="$(mktemp -d)"
-  for fetcher in fetch-ipeds fetch-codebooks fetch-cds-seed; do
+  for fetcher in fetch-scorecard fetch-ipeds fetch-codebooks fetch-cds-seed; do
     if ! (cd "$elsewhere" && "$PROJECT_ROOT/bin/$fetcher" -h > /dev/null 2> "$elsewhere/stderr"); then
       log-error "[$fetcher] could not run from [$elsewhere]: [$(cat "$elsewhere/stderr")]"
       rm -rf "$elsewhere"
@@ -4749,7 +4791,7 @@ test_fetchers_import_pyfunctions_from_anywhere() {
   done
   rm -rf "$elsewhere"
 }
-assert_success "all three fetchers import bin/pyfunctions.py from any working directory" \
+assert_success "all four fetchers import bin/pyfunctions.py from any working directory" \
   test_fetchers_import_pyfunctions_from_anywhere
 
 # ...and importing it leaves NO bin/__pycache__ behind. bin/ is a reviewed
@@ -4832,10 +4874,13 @@ assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "reload-external-data with one pos
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "reload-external-data with four positionals exits 20" \
   bin/reload-external-data a.csv b.csv c.json d.json
 
-# One offline fixture directory serving all three fetchers: the recorded IPEDS
-# CSVs and codebook .do files are matched by EXACT name out of the shared test
-# resources, so only the ten this replay reads are linked in, and the CDS
-# fixtures are the same recorded API responses the RFC 140 section above writes.
+# One offline fixture directory serving all four fetchers: the recorded IPEDS
+# CSVs, codebook .do files and Scorecard archives are matched by EXACT name out
+# of the shared test resources, so only the fifteen this replay reads are linked
+# in, and the CDS fixtures are the same recorded API responses the RFC 140
+# section above writes. The Scorecard half needs three of them, because its
+# release discovery runs offline too: the recorded /data/ page as well as the two
+# archives (RFC 173).
 # No EXIT trap here: the harness's daemon-teardown trap (top of file) must not be
 # clobbered. The dirs are removed at the end of this section.
 EXTERNAL_FIXTURES="$(mktemp -d)"
@@ -4845,7 +4890,9 @@ for fixture in \
   codebooks-c2023-a-fixture.do codebooks-ic2023-ay-fixture.do \
   ipeds-hd2023-fixture.csv ipeds-ic2023-fixture.csv ipeds-adm2023-fixture.csv \
   ipeds-c2023-a-fixture.csv ipeds-ic2023-ay-fixture.csv ipeds-sfa2223-fixture.csv \
-  ipeds-sfa2223-dict-fixture.xlsx; do
+  ipeds-sfa2223-dict-fixture.xlsx \
+  scorecard-data-page-fixture.html scorecard-institution-zip-fixture.zip \
+  scorecard-field-of-study-zip-fixture.zip; do
   ln -s "$PROJECT_ROOT/college/src/test/resources/$fixture" "$EXTERNAL_FIXTURES/$fixture"
 done
 write_cds_fixtures "$EXTERNAL_FIXTURES"
@@ -4861,12 +4908,12 @@ EXTERNAL_STDOUT="$(mktemp)"
 run_external_offline_fetch() {
   bin/fetch-external-data -F "$EXTERNAL_FIXTURES" -o "$EXTERNAL_OUT" > "$EXTERNAL_STDOUT" 2>/dev/null
 }
-assert_success "fetch-external-data runs all three fetchers offline from fixtures" \
+assert_success "fetch-external-data runs all four fetchers offline from fixtures" \
   run_external_offline_fetch
 
 # The stdout contract of RFC 172 1: the product is files on disk plus a
 # diagnostic summary, and the summary is a diagnostic. This is only true because
-# all three fetchers now log to stderr (RFC 172 5).
+# all four fetchers now log to stderr (RFC 172 5, RFC 173).
 test_fetch_external_data_stdout_stays_empty() {
   [ -s "$EXTERNAL_STDOUT" ] || return 0
   log-error "fetch-external-data wrote to stdout: [$(cat "$EXTERNAL_STDOUT")]"
@@ -4876,18 +4923,20 @@ assert_success "fetch-external-data writes nothing to stdout on a normal run" \
   test_fetch_external_data_stdout_stays_empty
 
 # -o is an output ROOT: each source lands in its own subdirectory, because all
-# three fetchers write a PROVENANCE.json and one shared directory would have
+# four fetchers write a PROVENANCE.json and one shared directory would have
 # them overwrite each other's.
-test_fetch_external_data_writes_three_sources() {
+test_fetch_external_data_writes_four_sources() {
   local name
-  for name in codebooks/PROVENANCE.json codebooks/codebooks.json ipeds/PROVENANCE.json \
+  for name in scorecard/PROVENANCE.json scorecard/Most-Recent-Cohorts-Institution.csv \
+    scorecard/Most-Recent-Cohorts-Field-of-Study.csv \
+    codebooks/PROVENANCE.json codebooks/codebooks.json ipeds/PROVENANCE.json \
     ipeds/HD2023.csv ipeds/ic2023_ay.csv ipeds/sfa2223.csv cds/PROVENANCE.json cds/merit-aid.csv; do
     [ -s "$EXTERNAL_OUT/$name" ] || { log-error "offline run did not write [$name]"; return 1; }
   done
   return 0
 }
-assert_success "each source is written under its own subdirectory of -o" \
-  test_fetch_external_data_writes_three_sources
+assert_success "each of the four sources is written under its own subdirectory of -o" \
+  test_fetch_external_data_writes_four_sources
 
 test_fetch_external_data_spares_the_committed_codebook() {
   local after
@@ -4950,18 +4999,18 @@ assert_success "an unusable -o is one source's tallied failure, not an aborted r
 # RFC 172: the survey year is RECORDED, so bin/load-external-data never has to
 # infer it from a filename. An offline replay records it from the same constant.
 assert_success "a fetch-ipeds run records the survey year in PROVENANCE.json" \
-  ipeds_provenance_assert "$EXTERNAL_OUT/ipeds/PROVENANCE.json" \
+  provenance_assert "$EXTERNAL_OUT/ipeds/PROVENANCE.json" \
     "provenance['survey_year'] == $IPEDS_SURVEY_YEAR_DECLARED
      and all('year' in a and 'ingest_option' in a for a in artifacts.values())
      and artifacts['SFA2223.zip']['year'] == $IPEDS_SFA_YEAR_DECLARED"
 assert_success "the committed db/seed/ipeds/PROVENANCE.json records the fetcher's declared survey year" \
-  ipeds_provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
+  provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
     "provenance['survey_year'] == $IPEDS_SURVEY_YEAR_DECLARED and provenance['source'] == 'network'"
 # Every artifact records its OWN year, and the two SFA ones record the aid year
 # (2022), not the collection year: SFA2223 covers aid year 2022-23 inside the
 # 2023 collection (RFC 162), and one number cannot label both.
 assert_success "the committed manifest records a per-artifact year, the SFA aid year on the SFA archives" \
-  ipeds_provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
+  provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
     "all('year' in a for a in artifacts.values())
      and {name for name, a in artifacts.items() if a['year'] == $IPEDS_SFA_YEAR_DECLARED} == {'SFA2223.zip', 'SFA2223_Dict.zip'}
      and {a['year'] for name, a in artifacts.items() if not name.startswith('SFA')} == {$IPEDS_SURVEY_YEAR_DECLARED}"
@@ -4969,7 +5018,7 @@ assert_success "the committed manifest records a per-artifact year, the SFA aid 
 # the wrapper reads a declaration instead of re-deriving it from archive names --
 # and the dictionary's null is how the fetcher says "never ingested".
 assert_success "the committed manifest records the ingest option of every artifact, null for the dictionary" \
-  ipeds_provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
+  provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
     'all("ingest_option" in a for a in artifacts.values())
      and artifacts["SFA2223_Dict.zip"]["ingest_option"] is None
      and {a["ingest_option"] for name, a in artifacts.items() if name != "SFA2223_Dict.zip"}
@@ -4996,6 +5045,16 @@ make_external_stub_root() {
   ln -s "$PROJECT_ROOT/db/data" "$root/db/data"
   ln -s "$PROJECT_ROOT/db/seed/cds" "$root/db/seed/cds"
   mkdir -p "$root/db/seed/ipeds"
+}
+
+# Marker-writing stubs for the four fetchers, so which children ran is a fact on
+# disk rather than a guess from scrollback. `exit $1` is what makes the
+# best-effort and exit-code rules testable with no network.
+write_fetcher_stub() {
+  local path="$1" marker="$2" status="$3"
+  rm -f "$path"
+  printf '#!/usr/bin/env bash\ntouch %q\nexit %s\n' "$marker" "$status" > "$path"
+  chmod +x "$path"
 }
 
 # The manifest shapes a reader must tell apart. The fixture COLLECTION year is
@@ -5715,8 +5774,13 @@ test_load_external_data_refuses_a_missing_codebook() {
 assert_success "a missing db/data/codebooks.json is refused by name, and names bin/fetch-codebooks" \
   test_load_external_data_refuses_a_missing_codebook
 
-# The Scorecard pair has no fetcher (RFC 172 says so deliberately), so its
-# remedy names the download instead of a command.
+# The Scorecard pair DOES have a fetcher now (bin/fetch-scorecard, RFC 173), but
+# it is still typed by hand HERE: bin/load-external-data does not read
+# db/seed/scorecard/PROVENANCE.json the way it reads the IPEDS manifest, so the
+# two Scorecard CSVs stay positionals the operator supplies, and the remedy for a
+# missing one names where the data comes from rather than a defaulted path. RFC
+# 173 records teaching the wrappers to default these two out of that manifest as
+# the follow-on it deliberately does not do.
 test_load_external_data_refuses_a_missing_scorecard_csv() {
   local out rc=0
   out="$("$EXTERNAL_ROOT/bin/load-external-data" -n \
@@ -5728,7 +5792,7 @@ test_load_external_data_refuses_a_missing_scorecard_csv() {
   log-error "the refusal does not name the Scorecard CSV and where it comes from: [$out]"
   return 1
 }
-assert_success "a missing Scorecard positional is refused by name (no fetcher to name)" \
+assert_success "a missing Scorecard positional is refused by name, as the hand-typed path it is" \
   test_load_external_data_refuses_a_missing_scorecard_csv
 
 # S13: an explicitly EMPTY positional is a wrong value, not an omitted one, and
@@ -5740,7 +5804,7 @@ assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "load-external-data rejects an emp
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "reload-external-data rejects an empty <institution.csv>" \
   bin/reload-external-data "" fields.csv
 
-# S9: a mistyped Scorecard path must not cost a three-source download first. The
+# S9: a mistyped Scorecard path must not cost a four-source download first. The
 # fetch half is a real script here and would egress if it ran, so the assertion
 # that it did NOT is the point: this refusal happens before any fetch.
 test_reload_external_data_refuses_a_missing_positional_before_fetching() {
@@ -5833,23 +5897,14 @@ test_load_external_data_reads_the_committed_manifest() {
 assert_success "the committed IPEDS manifest yields -y 2023, -f 2022 and its six recorded members" \
   test_load_external_data_reads_the_committed_manifest
 
-# Marker-writing stubs for the three fetchers, so which children ran is a fact on
-# disk rather than a guess from scrollback. `exit $1` is what makes the
-# best-effort and exit-code rules testable with no network.
-write_fetcher_stub() {
-  local path="$1" marker="$2" status="$3"
-  rm -f "$path"
-  printf '#!/usr/bin/env bash\ntouch %q\nexit %s\n' "$marker" "$status" > "$path"
-  chmod +x "$path"
-}
-
 test_fetch_external_data_selector_runs_one_fetcher() {
   local root markers pair selector expected rc=0
-  # All three mappings, not just -c: the default run executes every fetcher, so
+  # All four mappings, not just -c: the default run executes every fetcher, so
   # it cannot tell a -i wired to the CDS fetcher from a correct one. -s in
   # particular is the CDS seed here and `deadlines` in bin/ingest-colleges, the
-  # letter clash RFC 172 1 calls out.
-  for pair in c:codebooks i:ipeds s:cds; do
+  # letter clash RFC 172 1 calls out, and -r is the Scorecard for the same reason
+  # -- both of its obvious letters are already taken elsewhere (RFC 173).
+  for pair in c:codebooks i:ipeds r:scorecard s:cds; do
     selector="${pair%%:*}"
     expected="${pair#*:}"
     root="$(mktemp -d)/checkout"
@@ -5857,6 +5912,7 @@ test_fetch_external_data_selector_runs_one_fetcher() {
     make_external_stub_root "$root"
     markers="$root/markers"
     mkdir -p "$markers"
+    write_fetcher_stub "$root/bin/fetch-scorecard" "$markers/scorecard" 0
     write_fetcher_stub "$root/bin/fetch-codebooks" "$markers/codebooks" 0
     write_fetcher_stub "$root/bin/fetch-ipeds" "$markers/ipeds" 0
     write_fetcher_stub "$root/bin/fetch-cds-seed" "$markers/cds" 0
@@ -5872,11 +5928,45 @@ test_fetch_external_data_selector_runs_one_fetcher() {
   done
   return 0
 }
-assert_success "each of -c, -i and -s runs exactly its own fetcher and no other" \
+assert_success "each of -c, -i, -r and -s runs exactly its own fetcher and no other" \
   test_fetch_external_data_selector_runs_one_fetcher
 
+# No selector means ALL FOUR (RFC 173 filled the socket RFC 172 reserved).
+# Asserted against the stub MARKERS and not the tally alone: a default that
+# dropped a source would still tally what it ran, and the count would look right.
+test_fetch_external_data_default_runs_four_sources() {
+  local root markers stderr ran rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  markers="$root/markers"
+  mkdir -p "$markers"
+  write_fetcher_stub "$root/bin/fetch-scorecard" "$markers/scorecard" 0
+  write_fetcher_stub "$root/bin/fetch-codebooks" "$markers/codebooks" 0
+  write_fetcher_stub "$root/bin/fetch-ipeds" "$markers/ipeds" 0
+  write_fetcher_stub "$root/bin/fetch-cds-seed" "$markers/cds" 0
+  stderr="$root/stderr"
+  if ! "$root/bin/fetch-external-data" > /dev/null 2>"$stderr"; then
+    log-error "the default run did not exit 0: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  ran="$(ls "$markers" | sort | tr '\n' ' ')"
+  if [ "$ran" != "cds codebooks ipeds scorecard " ]; then
+    log-error "the default run ran [$ran], not all four sources"
+    rc=1
+  elif ! grep -qF "[4] of [4] sources fetched; [0] failed" "$stderr"; then
+    log-error "the summary does not tally four sources: [$(cat "$stderr")]"
+    rc=1
+  fi
+  rm -rf "$(dirname "$root")"
+  return "$rc"
+}
+assert_success "a run with no selector runs all four fetchers and tallies four sources" \
+  test_fetch_external_data_default_runs_four_sources
+
 # Best-effort with explicit reporting (recipes/BEST_EFFORT_BATCH_INGEST.md): the
-# failed source does not cancel the other two, the tally says how many ran, and
+# failed source does not cancel the others, the tally says how many ran, and
 # the exit code is this script's own 1 -- NEVER the child's 10, which would tell
 # the caller they invoked fetch-external-data wrongly when they did not.
 test_fetch_external_data_is_best_effort() {
@@ -5886,6 +5976,7 @@ test_fetch_external_data_is_best_effort() {
   make_external_stub_root "$root"
   markers="$root/markers"
   mkdir -p "$markers"
+  write_fetcher_stub "$root/bin/fetch-scorecard" "$markers/scorecard" 0
   write_fetcher_stub "$root/bin/fetch-codebooks" "$markers/codebooks" 0
   write_fetcher_stub "$root/bin/fetch-ipeds" "$markers/ipeds" 10
   write_fetcher_stub "$root/bin/fetch-cds-seed" "$markers/cds" 0
@@ -5896,21 +5987,21 @@ test_fetch_external_data_is_best_effort() {
     rm -rf "$(dirname "$root")"
     return 1
   fi
-  if [ ! -f "$markers/codebooks" ] || [ ! -f "$markers/cds" ]; then
+  if [ ! -f "$markers/scorecard" ] || [ ! -f "$markers/codebooks" ] || [ ! -f "$markers/cds" ]; then
     log-error "a failed source cancelled the others: [$(ls "$markers" | tr '\n' ' ')]"
     rm -rf "$(dirname "$root")"
     return 1
   fi
-  # -F: the tally is bracketed now, and an unescaped [2] in a regex is a
+  # -F: the tally is bracketed now, and an unescaped [3] in a regex is a
   # character class that would match the OLD unbracketed wording.
-  if ! grep -qF "[2] of [3] sources fetched; [1] failed" "$stderr"; then
-    log-error "the summary does not tally 2 of 3: [$(cat "$stderr")]"
+  if ! grep -qF "[3] of [4] sources fetched; [1] failed" "$stderr"; then
+    log-error "the summary does not tally 3 of 4: [$(cat "$stderr")]"
     rm -rf "$(dirname "$root")"
     return 1
   fi
   rm -rf "$(dirname "$root")"
 }
-assert_success "one failed fetcher still runs the other two, tallies 2 of 3 and exits 1" \
+assert_success "one failed fetcher still runs the other three, tallies 3 of 4 and exits 1" \
   test_fetch_external_data_is_best_effort
 
 # Between the halves it is ALL-OR-NOTHING: loading after a partly failed fetch is
@@ -6001,9 +6092,11 @@ test_reload_external_data_runs_the_load_after_a_good_fetch() {
 assert_success "reload-external-data runs the load half after a good fetch, forwarding -n and all three positionals" \
   test_reload_external_data_runs_the_load_after_a_good_fetch
 
-# S6/S4: the selectors and the corpus key reach the fetch half. "Refetch IPEDS
-# only, then reload" is an ordinary operation, and a key that can only arrive by
-# inherited env is a key with no path through the composed tool.
+# S6/S4: the selectors and the corpus key reach the fetch half, in the order the
+# fetch half declares them. "Refetch IPEDS and the Scorecard, then reload" is an
+# ordinary operation, and a key that can only arrive by inherited env is a key
+# with no path through the composed tool. TWO selectors are passed on purpose:
+# with one, a wrapper that forwarded a fixed flag would still pass.
 test_reload_external_data_forwards_selectors_and_key() {
   local root recorded rc=0
   root="$(mktemp -d)/checkout"
@@ -6016,12 +6109,12 @@ test_reload_external_data_forwards_selectors_and_key() {
   chmod +x "$root/bin/fetch-external-data" "$root/bin/load-external-data"
   : > "$root/institution.csv"
   : > "$root/fields.csv"
-  "$root/bin/reload-external-data" -i -K secret-jwt "$root/institution.csv" "$root/fields.csv" \
+  "$root/bin/reload-external-data" -i -r -K secret-jwt "$root/institution.csv" "$root/fields.csv" \
     >/dev/null 2>"$root/stderr" || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "the reload exited [$rc]: [$(cat "$root/stderr")]"
-  elif [ "$(cat "$recorded" 2>/dev/null)" != "-i -K secret-jwt" ]; then
-    log-error "the fetch half was invoked as [$(cat "$recorded" 2>/dev/null)], not [-i -K secret-jwt]"
+  elif [ "$(cat "$recorded" 2>/dev/null)" != "-i -r -K secret-jwt" ]; then
+    log-error "the fetch half was invoked as [$(cat "$recorded" 2>/dev/null)], not [-i -r -K secret-jwt]"
     rc=1
   fi
   rm -rf "$(dirname "$root")"
@@ -6125,5 +6218,975 @@ assert_success "reload-external-data reports a directory as a directory, before 
   test_reload_external_data_distinguishes_a_directory_from_a_missing_file
 
 rm -rf "$(dirname "$EXTERNAL_ROOT")"
+
+# ── RFC 173: the College Scorecard pair (bin/fetch-scorecard) ────────────────
+echo ""
+echo "==== Testing RFC 173 College Scorecard fetch ===="
+
+assert_success "bin/fetch-scorecard parses as python3" \
+  python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/fetch-scorecard').read())"
+
+# The whole run happens offline (-F, no network), RELEASE DISCOVERY INCLUDED: the
+# recorded /data/ page is read exactly where a network run reads the live one, so
+# the most publisher-dependent code in this fetcher is exercised by every replay
+# below rather than skipped by it. The two recorded archives carry the real
+# member names, the real identity columns and -- for the institution half -- the
+# __MACOSX AppleDouble entry the publisher ships beside the data.
+SCORECARD_FIXTURES="$PROJECT_ROOT/college/src/test/resources"
+# No EXIT trap here: the harness's daemon-teardown trap (top of file) must not be
+# clobbered. The dirs are removed at the end of this section.
+SCORECARD_OUT="$(mktemp -d)"
+assert_success "fetch-scorecard runs offline from the recorded page and zip fixtures" \
+  bin/fetch-scorecard -F "$SCORECARD_FIXTURES" -o "$SCORECARD_OUT" > /dev/null 2>&1
+
+# EXACTLY three files, compared as a whole LISTING rather than probed one name at
+# a time: this fetcher's product is the two positionals bin/ingest-colleges takes
+# plus the manifest, and a per-name existence check would pass over a fourth file
+# it had no business writing.
+test_scorecard_writes_exactly_its_three_files() {
+  local listing expected name
+  listing="$(ls -A "$SCORECARD_OUT" | sort | tr '\n' ' ')"
+  expected="Most-Recent-Cohorts-Field-of-Study.csv Most-Recent-Cohorts-Institution.csv PROVENANCE.json "
+  [ "$listing" = "$expected" ] || { log-error "wrote [$listing], expected [$expected]"; return 1; }
+  for name in Most-Recent-Cohorts-Institution.csv Most-Recent-Cohorts-Field-of-Study.csv; do
+    [ -s "$SCORECARD_OUT/$name" ] || { log-error "[$name] was written empty"; return 1; }
+  done
+  return 0
+}
+assert_success "both members are written under the names the ingest takes as positionals, and nothing else" \
+  test_scorecard_writes_exactly_its_three_files
+
+# The manifest is read as JSON, not grepped, for the reason the RFC 144 section
+# states: `rows` is the shrink baseline and `member` is the trap this fetcher
+# exists for. provenance_assert is that reader -- a manifest path and an
+# expression over `provenance`/`artifacts`, reported on log-error's channel --
+# and it is named for the claim rather than for either fetcher, so both sections
+# assert through one copy.
+
+# The ROUTE is read from the typed fields that declare it. `release` is null for
+# the same reason every `fetched_at` is: a recorded stamp would claim a published
+# release the replay never read, and null means exactly "this was not a fetch".
+# The timestamp is asserted for its SHAPE too -- ONE caller-supplied value at
+# both levels -- so the top-level field can never be later than the artifacts by
+# the whole download.
+assert_success "PROVENANCE records the offline route, a null release and one timestamp at both levels" \
+  provenance_assert "$SCORECARD_OUT/PROVENANCE.json" \
+    'provenance["source"] == "fixtures"
+     and provenance["fixture_derived"] is True
+     and provenance["release"] is None
+     and provenance["fetched_at"] is None
+     and all(a["fetched_at"] == provenance["fetched_at"] for a in artifacts.values())'
+
+# The pair, keyed by the url_name each artifact declares, with the POSITION each
+# becomes. ingest_position is a declaration a later reader must not re-derive
+# from a filename: the two paths are interchangeable to the shell and are not
+# interchangeable to bin/ingest-colleges.
+assert_success "PROVENANCE records both artifacts, the member taken, its row count and its ingest position" \
+  provenance_assert "$SCORECARD_OUT/PROVENANCE.json" \
+    'sorted(artifacts) == ["Most-Recent-Cohorts-Field-of-Study",
+                           "Most-Recent-Cohorts-Institution"]
+     and artifacts["Most-Recent-Cohorts-Institution"]["member"] == "Most-Recent-Cohorts-Institution.csv"
+     and artifacts["Most-Recent-Cohorts-Field-of-Study"]["member"] == "Most-Recent-Cohorts-Field-of-Study.csv"
+     and artifacts["Most-Recent-Cohorts-Institution"]["rows"] == 2
+     and artifacts["Most-Recent-Cohorts-Field-of-Study"]["rows"] == 5
+     and artifacts["Most-Recent-Cohorts-Institution"]["ingest_position"] == 1
+     and artifacts["Most-Recent-Cohorts-Field-of-Study"]["ingest_position"] == 2
+     and all(a["url"] is None for a in artifacts.values())'
+
+# Every refusal below is a property of what the PUBLISHER served -- the page it
+# rendered, the members inside an archive, the header of one of them -- so each
+# is driven from a synthesised fixture set rather than described in prose. One
+# writer, one header per artifact, one page builder: a damaged set differs from
+# the good one in exactly one way, which is what makes the refusal it triggers
+# attributable.
+write_scorecard_fixtures() {
+  python3 - "$1" "${2:-}" << 'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+out, damage = Path(sys.argv[1]), sys.argv[2]
+RELEASE = "06102026"
+DOWNLOADS = "https://ed-public-download.scorecard.network/downloads"
+# The identity columns each artifact declares (UNITID/INSTNM/CONTROL/PREDDEG and
+# UNITID/CIPCODE/CREDLEV) plus one payload column, so a header is a real header
+# and a renamed identity column is one edit rather than a rewritten fixture.
+# PREDDEG is what makes the INSTITUTION set discriminating: the published
+# field-of-study header carries UNITID, INSTNM and CONTROL as well, so a set
+# built from those three alone accepts a field-of-study member in the
+# institution slot -- exactly the swap the guard exists to refuse.
+HEADERS = {
+    "Institution": ["UNITID", "INSTNM", "CONTROL", "PREDDEG", "ADM_RATE"],
+    "Field-of-Study": ["UNITID", "CIPCODE", "CREDLEV", "EARN_MDN_HI_2YR"],
+}
+FIXTURES = {
+    "Institution": "scorecard-institution-zip-fixture.zip",
+    "Field-of-Study": "scorecard-field-of-study-zip-fixture.zip",
+}
+PAGE = "scorecard-data-page-fixture.html"
+
+
+def body(columns, rows):
+    lines = [",".join(columns)]
+    for row in range(rows):
+        lines.append(",".join(
+            str(100000 + row) if index == 0 else f"v{row}-{index}"
+            for index in range(len(columns))
+        ))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def archive(artifact, members):
+    with zipfile.ZipFile(out / FIXTURES[artifact], "w") as zipped:
+        for member, content in members.items():
+            zipped.writestr(member, content)
+
+
+def anchors(hrefs):
+    return "".join(f'<a href="{href}"> Download </a>\n' for href in hrefs)
+
+
+def download(artifact, release):
+    return f"{DOWNLOADS}/Most-Recent-Cohorts-{artifact}_{release}.zip"
+
+
+def write_page(damage):
+    """The /data/ page the release is discovered from. The 470 MB raw-data href
+    is always present and must never match the pattern: it is the one anchor on
+    the real page that is neither of the two files and would be a plausible
+    thing to fetch."""
+    hrefs = [download("Institution", RELEASE), download("Field-of-Study", RELEASE)]
+    if damage == "no-download":
+        # A publisher change: the page renders, and names neither file.
+        hrefs = []
+    elif damage == "stamp-mismatch":
+        # The pair offered from two different releases. bin/ingest-colleges
+        # cross-reads them by UNITID, so this loads without error and is wrong.
+        hrefs = [download("Institution", RELEASE), download("Field-of-Study", "05012026")]
+    elif damage == "two-institutions":
+        # Two releases of ONE artifact: which is current is a reading of the page.
+        hrefs = [download("Institution", RELEASE), download("Institution", "05012026"),
+                 download("Field-of-Study", RELEASE)]
+    elif damage == "query-string":
+        # The href the page serves is LONGER than the ".zip": a signed or
+        # versioned link, the shape a CDN change produces. An unbounded pattern
+        # would match a PREFIX of it and download a URL the page never served.
+        hrefs = [download("Institution", RELEASE) + "?ver=2&sig=deadbeef",
+                 download("Field-of-Study", RELEASE)]
+    (out / PAGE).write_text(
+        "<html><body>\n"
+        + anchors(hrefs)
+        + f'<a href="{DOWNLOADS}/College_Scorecard_Raw_Data_{RELEASE}.zip"> All Data Files </a>\n'
+        + "</body></html>\n"
+    )
+
+
+def institution_members(damage):
+    """The institution archive's members. The published archive ships an
+    __MACOSX/ AppleDouble entry beside the data member, so the good fixture does
+    too: the junk filter is exercised on every run rather than only by the
+    damaged case."""
+    header = list(HEADERS["Institution"])
+    if damage == "dropped-preddeg":
+        # The institution-only column gone: the header that is left is a SUBSET
+        # of the published field-of-study one, which is what a field-of-study
+        # member resolved into this slot looks like.
+        header.remove("PREDDEG")
+    if damage == "appledouble-only":
+        # The ONLY remaining member is the AppleDouble, and it carries a
+        # perfectly readable CSV: a resolution that fell back to "the one other
+        # member" would succeed here and write it as the institution file.
+        # Refusing is the claim.
+        return {
+            "__MACOSX/": b"",
+            "__MACOSX/._Most-Recent-Cohorts-Institution.csv": body(header, 3),
+        }
+    data = {"header-only": body(header, 0), "zero-byte": b""}.get(damage, body(header, 3))
+    return {
+        "__MACOSX/": b"",
+        "__MACOSX/._Most-Recent-Cohorts-Institution.csv": b"\x00\x05\x16\x07resource fork",
+        "Most-Recent-Cohorts-Institution.csv": data,
+    }
+
+
+def fields_members(damage):
+    """The field-of-study archive's one member."""
+    header = list(HEADERS["Field-of-Study"])
+    if damage == "renamed-cipcode":
+        # The publisher renamed an identity column, or the two positionals were
+        # swapped: either way this member is not the file the artifact names.
+        header[header.index("CIPCODE")] = "CIP_CODE"
+    return {"Most-Recent-Cohorts-Field-of-Study.csv": body(header, 3)}
+
+
+write_page(damage)
+archive("Institution", institution_members(damage))
+archive("Field-of-Study", fields_members(damage))
+PY
+}
+
+SCORECARD_ZIPS="$(mktemp -d)"
+SCORECARD_ZIP_OUT="$(mktemp -d)"
+write_scorecard_fixtures "$SCORECARD_ZIPS"
+assert_success "fetch-scorecard extracts from published-shape archives (synthesised, no network)" \
+  bin/fetch-scorecard -F "$SCORECARD_ZIPS" -o "$SCORECARD_ZIP_OUT" > /dev/null 2>&1
+assert_success "the data member is taken and the AppleDouble entry is not, on a published-shape archive" \
+  provenance_assert "$SCORECARD_ZIP_OUT/PROVENANCE.json" \
+    'artifacts["Most-Recent-Cohorts-Institution"]["member"] == "Most-Recent-Cohorts-Institution.csv"
+     and artifacts["Most-Recent-Cohorts-Institution"]["rows"] == 3'
+
+# The NAMED fatal and nothing written: a non-zero exit alone would be satisfied
+# by a traceback, and a partial write is the state every guard here exists to
+# prevent.
+#
+# A THIRD argument names a command that damages the written fixtures in place,
+# for the one case the python writer cannot express: a truncated download is a
+# well-formed archive whose member BYTES are wrong, which only a post-write edit
+# produces. Everything after it -- the capture, the listing check, the traceback
+# and [FATAL] cases -- is the same refusal harness, so it is not written twice.
+scorecard_variant_refused() {
+  local damage="$1" phrase="$2" corrupt="${3:-}" fixtures out output status written
+  fixtures="$(mktemp -d)"; out="$(mktemp -d)"
+  write_scorecard_fixtures "$fixtures" "$damage"
+  [ -z "$corrupt" ] || "$corrupt" "$fixtures"
+  output="$(bin/fetch-scorecard -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  written="$(ls -A "$out")"
+  rm -rf "$fixtures" "$out"
+  case "$output" in
+    *Traceback*) log-error "raw traceback [$output]"; return 1 ;;
+  esac
+  case "$output" in
+    *"[FATAL]"*"$phrase"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ -z "$written" ] || { log-error "wrote [$written] despite refusing"; return 1; }
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+
+# Release discovery. All four refusals are publisher changes a human looks at,
+# and none of them may pick a fallback -- least of all the unversioned URL, which
+# still answers 200 with the August 2024 release.
+assert_success "a page naming no download is refused, writing nothing" \
+  scorecard_variant_refused no-download "names no download for [Most-Recent-Cohorts-Institution]"
+# An href LONGER than the ".zip" -- a signed or versioned link, a ".zip.html"
+# landing page -- is a publisher change, not a URL to truncate. Matching a PREFIX
+# of it would download a string this script assembled and the page never served,
+# which is the one construction the whole discovery exists to prevent.
+assert_success "an href carrying a query string is refused, never truncated to the .zip" \
+  scorecard_variant_refused query-string "names no download for [Most-Recent-Cohorts-Institution]"
+assert_success "two disagreeing release stamps are refused: the pair is cross-read by UNITID" \
+  scorecard_variant_refused stamp-mismatch "the release stamps disagree"
+assert_success "two downloads offered for one artifact are refused, never chosen between" \
+  scorecard_variant_refused two-institutions "names [2] downloads for [Most-Recent-Cohorts-Institution]"
+
+# The unversioned names are the trap this fetcher is built around: they answer
+# HTTP 200 with a 2024 release, so a script that can SPELL one is a script that
+# can fetch it. The URLs downloaded are the hrefs the page served, and the source
+# is asserted never to contain either literal -- the stamped names it does carry
+# ("..._06102026.zip") are a different string.
+test_scorecard_never_spells_an_unversioned_url() {
+  local name
+  for name in Most-Recent-Cohorts-Institution.zip Most-Recent-Cohorts-Field-of-Study.zip; do
+    if grep -qF -- "$name" "$PROJECT_ROOT/bin/fetch-scorecard"; then
+      log-error "bin/fetch-scorecard spells the unversioned [$name]: [$(grep -nF -- "$name" "$PROJECT_ROOT/bin/fetch-scorecard")]"
+      return 1
+    fi
+  done
+  return 0
+}
+assert_success "the fetcher source never spells an unversioned zip URL" \
+  test_scorecard_never_spells_an_unversioned_url
+
+# The other half of the same claim, and the positive one: what DISCOVERY yields
+# off the recorded page, matched by the fetcher's own pattern, is the publisher's
+# stamped href. The source check above says no unversioned name is spelled; this
+# says every name that IS used carries a release stamp. (A replay manifest cannot
+# make this claim: it records `url: null` by house style, so it carries no URL to
+# check -- the recorded manifest assertion is the committed NETWORK one below.)
+#
+# The pattern is LOADED, not read out of the source as a literal: its artifact
+# alternation is built from ARTIFACTS, so the published names are spelled once
+# and there is no longer a regex literal for a test to re-read.
+test_scorecard_discovers_only_stamped_urls() {
+  fetcher_python - "$PROJECT_ROOT/bin/fetch-scorecard" \
+    "$SCORECARD_FIXTURES/scorecard-data-page-fixture.html" << 'PY'
+import sys
+from pathlib import Path
+
+from fetcher_loader import load
+
+module = load(sys.argv[1], "fetch_scorecard")
+href = module.RELEASE_HREF_PATTERN
+
+matched = href.findall(Path(sys.argv[2]).read_text())
+if len(matched) != 2:
+    sys.exit(f"the recorded page yields {matched}, expected both artifacts once")
+# The first group IS the ARTIFACTS key, not a fragment a caller concatenates a
+# prefix onto: that is what lets find_release_hrefs group by what it matched.
+declared = [artifact.url_name for artifact in module.ARTIFACTS]
+for artifact, stamp in matched:
+    if artifact not in declared:
+        sys.exit(f"the pattern yields {artifact!r}, which is not an ARTIFACTS url_name")
+    if not stamp.isdigit() or len(stamp) != 8:
+        sys.exit(f"{artifact}: the discovered URL carries no release stamp")
+# And the negative half, which is the trap itself: the UNVERSIONED name answers
+# HTTP 200 with a 2024 release, so the pattern must not match it at all. A stamp
+# made optional would still pass the loop above -- the recorded page carries no
+# unversioned href -- and would let discovery accept one from a future page.
+for unversioned in ("Most-Recent-Cohorts-Institution.zip",
+                    "Most-Recent-Cohorts-Field-of-Study.zip"):
+    url = f"https://ed-public-download.scorecard.network/downloads/{unversioned}"
+    if href.search(url) is not None:
+        sys.exit(f"the discovery pattern matches the unversioned [{url}]")
+# A LONGER token is not a match either. Without a right boundary the pattern
+# matches a prefix of a signed or versioned href and yields a truncated URL --
+# a string this script assembled, which is the one thing discovery may never do.
+for longer in ('_06102026.zip?ver=2&sig=deadbeef"', '_06102026.zip.html"', '_060102026.zip"'):
+    url = (
+        f'href="https://ed-public-download.scorecard.network/downloads/'
+        f"Most-Recent-Cohorts-Institution{longer}"
+    )
+    if href.search(url) is not None:
+        sys.exit(f"the discovery pattern matched a PREFIX of [{url}]")
+PY
+}
+
+assert_success "every URL the recorded page yields carries a release stamp" \
+  test_scorecard_discovers_only_stamped_urls
+
+# Member resolution, on the case the publisher actually ships: the AppleDouble
+# entry's name ends .csv, so an extension-based or "the only other member"
+# resolution would write 200-odd bytes of resource fork as the institution file.
+assert_success "an archive whose only remaining member is the AppleDouble entry is refused, never substituted" \
+  scorecard_variant_refused appledouble-only "holds no member that is not macOS archiver junk"
+
+# Both published Scorecard artifacts are zips, so a body that is not one on the
+# NETWORK route is an error page or a redirect served with a success status --
+# never the release. The raw-CSV branch exists for -F fixtures only, and this is
+# the boundary asserted directly (no test ever fetches), so read_member is called
+# with a stamped url the way a network run calls it.
+test_scorecard_network_non_zip_refused() {
+  fetcher_python - "$PROJECT_ROOT/bin/fetch-scorecard" << 'PY'
+import io, sys
+from contextlib import redirect_stderr
+
+from fetcher_loader import load
+
+module = load(sys.argv[1], "fetch_scorecard")
+
+captured = io.StringIO()
+try:
+    with redirect_stderr(captured):
+        module.read_member(
+            b"<html>Service Unavailable</html>",
+            "Most-Recent-Cohorts-Institution.zip",
+            "Most-Recent-Cohorts-Institution.csv",
+            "https://ed-public-download.scorecard.network/downloads/"
+            "Most-Recent-Cohorts-Institution_06102026.zip",
+        )
+except SystemExit as error:
+    if error.code == 0:
+        sys.exit("a non-zip network body exited 0")
+else:
+    sys.exit("a non-zip network body was accepted as the release")
+message = captured.getvalue()
+if "[FATAL]" not in message or "not a zip archive" not in message:
+    sys.exit(f"unexpected refusal: {message!r}")
+
+# The same body on the FIXTURE route (no url) is a plain CSV, which -F accepts.
+text, member = module.read_member(
+    b"UNITID,INSTNM\n100001,Example\n", "fixture.csv",
+    "Most-Recent-Cohorts-Institution.csv", None,
+)
+if member != "fixture.csv":
+    sys.exit(f"the fixture route resolved member {member!r}")
+PY
+}
+assert_success "a non-zip Scorecard body on the network route is refused, while -F still reads a raw CSV" \
+  test_scorecard_network_non_zip_refused
+
+# A truncated download is THE flaky-network failure here, and it arrives as a
+# well-formed archive whose MEMBER DATA is damaged: the directory still opens and
+# the member still resolves, and the fault surfaces from the read as a CRC
+# failure. It must be named on the [FATAL] channel -- a stdlib traceback naming a
+# /nix/store path is neither greppable nor actionable -- and nothing may be
+# written, since one of the pair may already have been read successfully.
+write_unreadable_institution_zip() {
+  python3 - "$1/scorecard-institution-zip-fixture.zip" << 'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+raw = bytearray(path.read_bytes())
+at = raw.index(b"UNITID")
+raw[at] = raw[at] ^ 0xFF
+path.write_bytes(bytes(raw))
+PY
+}
+assert_success "an archive that will not open is refused by name, not as a traceback" \
+  scorecard_variant_refused "" "could not be read as a zip archive" write_unreadable_institution_zip
+
+# The identity guard answers ONE question -- is this the file we think it is --
+# and it is the only check that sees the two positionals swapped, since a swap
+# survives every check made of a filename. BOTH directions are pinned, because
+# the subset test is one-directional: CIPCODE and CREDLEV are absent from the
+# published institution header, but UNITID, INSTNM and CONTROL are carried by
+# BOTH files, so PREDDEG is the only thing standing between a field-of-study
+# member and the institution slot.
+assert_success "a field-of-study header with CIPCODE renamed is refused, and nothing is written" \
+  scorecard_variant_refused renamed-cipcode "is missing [CIPCODE]"
+assert_success "an institution header without the institution-only PREDDEG is refused, and nothing is written" \
+  scorecard_variant_refused dropped-preddeg "is missing [PREDDEG]"
+
+# An empty CSV is never a real Scorecard release. A ZERO-BYTE member and a
+# HEADER-ONLY member both count zero rows and are NOT the same operator action --
+# one is a truncated extraction to re-run, the other a real file whose data rows
+# are gone -- so each is named for what it is, by the same guard.
+assert_success "a header-only member is refused as one, and nothing is written" \
+  scorecard_variant_refused header-only "holds a header and no data rows"
+assert_success "a zero-byte member is refused by the SAME guard, named as zero bytes" \
+  scorecard_variant_refused zero-byte "is zero bytes (nothing was extracted)"
+
+# The shrink baseline is DERIVED from the floor the script actually applies, not
+# from a round number that happens to trip it: a change to SEED_SHRINK_FLOOR must
+# move this number rather than leave the test green for a reason that no longer
+# holds. Authored once and passed to the test, so the count written into the
+# manifest and the count asserted back out of it cannot drift apart.
+SCORECARD_SHRINK_BASELINE="$(fetcher_python_out - "$PROJECT_ROOT/bin/fetch-scorecard" "$SCORECARD_OUT/PROVENANCE.json" << 'PY'
+import json
+import sys
+
+from fetcher_loader import load
+
+# The floor is LOADED, not grepped: a regex over the source reads a constant
+# this script may reflow or comment, and an unmatched pattern is an
+# AttributeError on None rather than a readable failure.
+floor = load(sys.argv[1], "fetch_scorecard").SEED_SHRINK_FLOOR
+rows = max(a["rows"] for a in json.load(open(sys.argv[2]))["artifacts"].values())
+# Strictly above rows/floor, so `rows < floor * baseline` holds for both artifacts.
+print(int(rows / floor) + 1)
+PY
+)"
+
+# The guard compares data-row COUNTS, not zip bytes: the failure it exists to
+# catch (a truncated or collapsed extraction) leaves the downloaded archive
+# byte-perfect. A refusal that rewrote the manifest would disarm itself on the
+# next run, so the recorded counts are read back after it.
+test_scorecard_shrink_refused() {
+  local baseline="$1" fixtures="$2" collapsed="$3" out output status before after name
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  # SENTINELS, not copies of what this run would write: copying the real members
+  # would make a leaked write byte-identical to the untouched file, so the
+  # "nothing was written" claim could not fail. The digest is the evidence.
+  for name in Most-Recent-Cohorts-Institution.csv Most-Recent-Cohorts-Field-of-Study.csv; do
+    printf 'SENTINEL,%s\n' "$name" > "$out/$name"
+  done
+  before="$(cat "$out"/*.csv | shasum -a 256)"
+  provenance_rewrite "$out/PROVENANCE.json" "
+for artifact in provenance['artifacts'].values():
+    artifact['rows'] = $collapsed
+"
+  output="$(bin/fetch-scorecard -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  after="$(cat "$out"/*.csv | shasum -a 256)"
+  [ "$before" = "$after" ] || { log-error "the refused run overwrote a CSV"; rm -rf "$out"; return 1; }
+  case "$output" in
+    *"[FATAL] fetch-scorecard: row counts collapsed"*) ;;
+    *) log-error "output was [$output]"; rm -rf "$out"; return 1 ;;
+  esac
+  provenance_assert "$out/PROVENANCE.json" \
+    "artifacts['Most-Recent-Cohorts-Institution']['rows'] == $collapsed" \
+    || { rm -rf "$out"; return 1; }
+  [ "$status" -ne 0 ] || { rm -rf "$out"; return 1; }
+  rm -rf "$out"
+  return 0
+}
+assert_success "a collapsed row count is refused, and the manifest is NOT overwritten" \
+  test_scorecard_shrink_refused "$SCORECARD_OUT" "$SCORECARD_FIXTURES" "$SCORECARD_SHRINK_BASELINE"
+
+# The row count CANNOT see a wrong member: a member resolved under a different
+# name out of the same archive carries whatever rows it carries. Only the NAME is
+# damaged here -- every row count is left exactly as this run recomputes it -- so
+# nothing but the member comparison can fail.
+test_scorecard_member_drift_refused() {
+  local baseline="$1" fixtures="$2" out output status listing
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" '
+provenance["artifacts"]["Most-Recent-Cohorts-Institution"]["member"] = "__MACOSX/._Most-Recent-Cohorts-Institution.csv"
+'
+  output="$(bin/fetch-scorecard -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  listing="$(ls -A "$out")"
+  rm -rf "$out"
+  case "$output" in
+    *"[FATAL]"*"resolved member changed"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] despite refusing"; return 1; }
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "a resolved member that is not the recorded one is refused, at an unchanged row count" \
+  test_scorecard_member_drift_refused "$SCORECARD_OUT" "$SCORECARD_FIXTURES"
+
+# PROVENANCE.json is the ONLY committed record of the real download here -- the
+# two members are 100 MB and 153 MB and are gitignored -- so an offline replay
+# into a directory holding one is refused OUTRIGHT, by the shared harness the
+# RFC 144 section defines: one manifest policy, read by both fetchers.
+assert_success "an offline run into a directory with a network manifest is refused, writing nothing" \
+  fetcher_offline_refused fetch-scorecard "$SCORECARD_OUT" "$SCORECARD_FIXTURES" '
+provenance["source"] = "network"
+provenance["fixture_derived"] = False
+provenance["release"] = "06102026"
+' "records a real fetch"
+# The same protection must not depend on an OPTIONAL key being present. A
+# manifest carrying real digests and simply missing `source` is not a replay, and
+# probing for source == "network" would classify it as replaceable. The
+# classification is exhaustive: unknown joins the protected side, and the refusal
+# names what was declared rather than saying "no source", so a typo is visible.
+assert_success "a manifest that declares no source is protected exactly like a network one" \
+  fetcher_offline_refused fetch-scorecard "$SCORECARD_OUT" "$SCORECARD_FIXTURES" '
+provenance.pop("source", None)
+provenance.pop("fixture_derived", None)
+provenance["fetched_at"] = "2026-08-31T00:00:00+00:00"
+' "declares [source=None]"
+
+# The MIRROR case, and the one that must fire before a byte is fetched: a real
+# fetch measured against a replay's manifest would compare real member names and
+# row counts against three fixture rows, and blame a member drift and a row
+# collapse that are neither. The fault is the ROUTE. No -F here, and no network
+# is reached -- the refusal precedes discovery, which is exactly the claim.
+test_scorecard_network_refuses_a_fixture_manifest() {
+  local baseline="$1" out output status listing
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  output="$(bin/fetch-scorecard -o "$out" 2>&1)"
+  status=$?
+  listing="$(ls -A "$out")"
+  rm -rf "$out"
+  [ "$status" -ne 0 ] || { log-error "expected a refusal, exited 0"; return 1; }
+  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] as well"; return 1; }
+  case "$output" in
+    *"collegescorecard.ed.gov"*) log-error "the run reached discovery: [$output]"; return 1 ;;
+  esac
+  case "$output" in
+    *"[FATAL]"*"the record of an offline (-F) replay"*) return 0 ;;
+  esac
+  log-error "output was [$output]"
+  return 1
+}
+assert_success "a network run against a replay's manifest is refused before any discovery" \
+  test_scorecard_network_refuses_a_fixture_manifest "$SCORECARD_OUT"
+
+# A genuinely fresh -o -- no manifest at all -- has no baseline and writes, which
+# is what makes a first generation possible. It is also COMPLETELY unguarded, and
+# that is said out loud on stderr and in the summary line: a run with no
+# protection must not print what an armed run prints.
+test_scorecard_fresh_outdir_writes_and_warns() {
+  local fixtures="$1" out output status name
+  out="$(mktemp -d)/fresh"
+  output="$(bin/fetch-scorecard -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  for name in Most-Recent-Cohorts-Institution.csv Most-Recent-Cohorts-Field-of-Study.csv PROVENANCE.json; do
+    [ -s "$out/$name" ] || { rm -rf "$out"; log-error "no [$name]"; return 1; }
+  done
+  rm -rf "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
+  case "$output" in
+    *"[ERROR]"*"NEITHER baseline guard is armed for any artifact"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  # PER GUARD: one word over two independent checks would either overstate a run
+  # whose member baseline was missing or understate one whose only gap was a
+  # renamed artifact.
+  case "$output" in
+    *"guards [shrink: NOT armed, member: NOT armed]"*) return 0 ;;
+  esac
+  log-error "the summary line did not state the guard verdict, output [$output]"
+  return 1
+}
+assert_success "a directory with no manifest writes a first generation, and says it is UNGUARDED" \
+  test_scorecard_fresh_outdir_writes_and_warns "$SCORECARD_FIXTURES"
+
+# The stamp is DISCOVERED, not pinned, so a MOVED release is the normal case this
+# fetcher exists for: it is reported and the run PROCEEDS. That is the opposite
+# stance from the member-drift guard, and a run that refused here would pin the
+# seed to whichever release was fetched first. The reporter is called directly
+# because no -F run can reach the reporting branch: the ROUTE is an argument of
+# it, and an offline replay -- whose stamp came off a RECORDED page -- returns at
+# once rather than measuring a fixture's release against a published one. All
+# three arms are asserted: the moved one for its sentence and for NOT being
+# fatal, the unchanged one for saying so instead, and the offline one for saying
+# nothing at all.
+test_scorecard_release_move_is_reported_not_refused() {
+  fetcher_python - "$PROJECT_ROOT/bin/fetch-scorecard" << 'PY'
+import io, sys
+from contextlib import redirect_stderr
+from pathlib import Path
+
+from fetcher_loader import load
+
+module = load(sys.argv[1], "fetch_scorecard")
+
+outdir = Path("db/seed/scorecard")
+captured = io.StringIO()
+# A SystemExit here is the failure this asserts against: refusing a new release
+# is the one thing this branch must never do, and it would leave python non-zero.
+with redirect_stderr(captured):
+    module.report_release_change(outdir, {"release": "05012026"}, "06102026", False)
+moved = captured.getvalue()
+if "The release moved: [06102026] now, [05012026] recorded" not in moved:
+    sys.exit(f"a moved release was not reported: {moved!r}")
+if "[FATAL]" in moved or "[ERROR]" in moved:
+    sys.exit(f"a moved release was treated as a fault: {moved!r}")
+
+captured = io.StringIO()
+with redirect_stderr(captured):
+    module.report_release_change(outdir, {"release": "06102026"}, "06102026", False)
+same = captured.getvalue()
+if "The release [06102026] is the one" not in same or "moved" in same:
+    sys.exit(f"an unchanged release was reported as {same!r}")
+
+# The OFFLINE route reports nothing, whatever the manifest records: the replay
+# read its stamp off the recorded page, so comparing it with a published release
+# would report a move that did not happen.
+captured = io.StringIO()
+with redirect_stderr(captured):
+    module.report_release_change(outdir, {"release": "05012026"}, "06102026", True)
+offline = captured.getvalue()
+if offline != "":
+    sys.exit(f"an offline replay reported a release change: {offline!r}")
+PY
+}
+assert_success "a discovered release that is not the recorded one is reported, and the run proceeds" \
+  test_scorecard_release_move_is_reported_not_refused
+
+# A recorded value of the wrong TYPE is not an absent one: the key is there and
+# the baseline still is not, and the warning must show the offending value and
+# its type rather than claim the manifest records nothing. The two guards are
+# independent and are reported independently -- a manifest with usable rows and
+# no member leaves the ONLY check that can see a member swap disarmed. Asserted
+# by the shared harness: the warning is one policy, and the fetcher is data.
+assert_success "a row count recorded as a string names the value and its type, and disarms only the shrink guard" \
+  fetcher_unarmed_warns fetch-scorecard "$SCORECARD_OUT" "$SCORECARD_FIXTURES" '
+for artifact in provenance["artifacts"].values():
+    artifact["rows"] = str(artifact["rows"])
+' "records row count [2], a [str]" "guards [shrink: NOT armed, member: armed]"
+assert_success "a baseline with rows but no member warns, and the summary says which guard is armed" \
+  fetcher_unarmed_warns fetch-scorecard "$SCORECARD_OUT" "$SCORECARD_FIXTURES" '
+for artifact in provenance["artifacts"].values():
+    artifact.pop("member", None)
+' "member-drift guard is NOT armed" "guards [shrink: armed, member: NOT armed]"
+
+# A manifest that cannot be READ is refused here for the same reason and by the
+# same harness as in the RFC 144 section: it is the baseline and the provenance
+# record, damaged, and the literal `null` is the dangerous one -- it PARSES and
+# is falsy, so "no manifest" would disarm the replay refusal outright and
+# overwrite the reviewed record.
+assert_success "a manifest holding null is damage, not an absent manifest, and is refused" \
+  fetcher_broken_manifest_refused fetch-scorecard "null" "$SCORECARD_FIXTURES" "is unreadable"
+assert_success "a manifest that parses as a list is refused, not read as an object" \
+  fetcher_broken_manifest_refused fetch-scorecard "[]" "$SCORECARD_FIXTURES" "is unreadable"
+# `artifacts` is walked by BOTH baseline readers, so its shape is checked once
+# rather than assumed twice: a list-valued one must reach this refusal and not an
+# AttributeError from whichever reader touched it first.
+assert_success "a list-valued artifacts is refused by name, not crashed on" \
+  fetcher_broken_manifest_refused fetch-scorecard \
+    '{"source": "fixtures", "fixture_derived": true, "artifacts": []}' \
+    "$SCORECARD_FIXTURES" "artifacts"
+
+# The committed manifest is both the provenance of the real download and the
+# baseline every later fetch is measured against. Three separate claims, so three
+# named checks: which of them broke is the whole diagnosis.
+SCORECARD_COMMITTED="$PROJECT_ROOT/db/seed/scorecard/PROVENANCE.json"
+
+# 1. A NETWORK record with a real timestamp and a real release stamp is what
+# distinguishes this file from a replay: an offline run writes source "fixtures",
+# fixture_derived true, release null and every fetched_at null, and such a file
+# must never become the committed provenance -- it would claim a download that
+# never happened. The timestamp is checked for its FORMAT, not for being truthy.
+test_scorecard_committed_is_a_network_record() {
+  logged_python - "$SCORECARD_COMMITTED" << 'PY'
+import json, sys
+from datetime import date, datetime
+from pathlib import Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text())
+if provenance.get("source") != "network" or provenance.get("fixture_derived"):
+    sys.exit("db/seed/scorecard/PROVENANCE.json is not a network fetch record")
+if provenance.get("release") != "06102026":
+    sys.exit(f"release {provenance.get('release')!r} is not the fetched 06102026")
+
+def iso(value, where):
+    if not value:
+        sys.exit(f"{where}: fetched_at is empty; null is the OFFLINE replay marker")
+    for parse in (datetime.fromisoformat, date.fromisoformat):
+        try:
+            parse(value)
+            return
+        except ValueError:
+            continue
+    sys.exit(f"{where}: fetched_at {value!r} is not an ISO-8601 date or datetime")
+
+iso(provenance.get("fetched_at"), "top level")
+for name, artifact in provenance["artifacts"].items():
+    iso(artifact.get("fetched_at"), name)
+PY
+}
+assert_success "the committed db/seed/scorecard manifest records a real network fetch of release 06102026" \
+  test_scorecard_committed_is_a_network_record
+
+# 2. Neither the archives nor the extracted members are committed, so these
+# digests -- verified by the operator against the real download -- are the only
+# thing standing between this manifest and an invented one. Pinned HERE rather
+# than derived from the file they check, which is what makes them evidence.
+test_scorecard_committed_digests_are_the_verified_ones() {
+  logged_python - "$SCORECARD_COMMITTED" << 'PY'
+import json, sys
+from pathlib import Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text())
+VERIFIED = {
+    "Most-Recent-Cohorts-Institution": {
+        "bytes": 23559465,
+        "sha256": "f56a181b000ca4914e924c16b6b81dcc656e25aeb2ac68ab7d271ac0f29ffd58",
+        "member": "Most-Recent-Cohorts-Institution.csv",
+        "member_bytes": 100102932,
+        "member_sha256": "89e8a35a6588dfb81a6ce78fa9df4cb99b36ef7aa4b28fb0157f9e3e1a7d81b5",
+        "rows": 6273,
+        "ingest_position": 1,
+    },
+    "Most-Recent-Cohorts-Field-of-Study": {
+        "bytes": 17188590,
+        "sha256": "9c4339d65f0699a60d6078fe54fc3bf03fded30a65079222d9221952b8578165",
+        "member": "Most-Recent-Cohorts-Field-of-Study.csv",
+        "member_bytes": 153479459,
+        "member_sha256": "3184f634cea46a94a3e8dc73f6d2147ecaea5b3b648b26adbfdfdd9133ce8d35",
+        "rows": 227980,
+        "ingest_position": 2,
+    },
+}
+if set(provenance["artifacts"]) != set(VERIFIED):
+    sys.exit(f"artifacts are {sorted(provenance['artifacts'])}, expected {sorted(VERIFIED)}")
+for name, verified in VERIFIED.items():
+    artifact = provenance["artifacts"][name]
+    for field, value in verified.items():
+        if artifact[field] != value:
+            sys.exit(f"{name}: {field} is {artifact[field]!r}, not the verified {value!r}")
+    # The URL is the href the /data/ page served, and it carries the release the
+    # top level records -- never the unversioned name, which is a live 2024 file.
+    if not artifact["url"].endswith(f"/{name}_{provenance['release']}.zip"):
+        sys.exit(f"{name}: url {artifact['url']} is not the stamped download of this release")
+PY
+}
+assert_success "the committed manifest pins the operator-verified archive and member digests" \
+  test_scorecard_committed_digests_are_the_verified_ones
+
+# The gitignore rule is the only thing keeping two files totalling 253 MB out of
+# the repo. The member names come from the committed manifest rather than being
+# retyped here, so a rename moves the assertion with the record.
+test_scorecard_members_are_gitignored() {
+  local members member
+  members="$(python3 -c 'import json,sys
+provenance = json.load(open(sys.argv[1]))
+print("\n".join(a["member"] for a in provenance["artifacts"].values()))' \
+    "$SCORECARD_COMMITTED")" || return 1
+  [ -n "$members" ] || { log-error "no members read from the committed manifest"; return 1; }
+  # read -r, not `for member in $members`: the names come out of a manifest a
+  # publisher's file naming reaches, so word-splitting and globbing them would
+  # check a different path than the one recorded.
+  while IFS= read -r member; do
+    [ -n "$member" ] || continue
+    git -C "$PROJECT_ROOT" check-ignore -q "db/seed/scorecard/$member" \
+      || { log-error "[db/seed/scorecard/$member] is NOT gitignored"; return 1; }
+  done <<< "$members"
+  # The two committed files are the negations, and they must survive the rule.
+  git -C "$PROJECT_ROOT" check-ignore -q db/seed/scorecard/PROVENANCE.json \
+    && { log-error "[db/seed/scorecard/PROVENANCE.json] is gitignored"; return 1; }
+  git -C "$PROJECT_ROOT" check-ignore -q db/seed/scorecard/FETCH-NOTES.md \
+    && { log-error "[db/seed/scorecard/FETCH-NOTES.md] is gitignored"; return 1; }
+  return 0
+}
+assert_success "the extracted Scorecard members are gitignored and the committed record is not" \
+  test_scorecard_members_are_gitignored
+
+# A mistyped -F path is a caller error, named as one, rather than an empty read.
+test_scorecard_missing_fixtures_dir_refused() {
+  local out output status
+  out="$(mktemp -d)"
+  output="$(bin/fetch-scorecard -F "/no/such/$$-scorecard-fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  [ "$status" -ne 0 ] || return 1
+  case "$output" in
+    *"[FATAL]"*"fixtures directory"*"does not exist"*) return 0 ;;
+  esac
+  log-error "output was [$output]"
+  return 1
+}
+assert_success "a -F directory that does not exist is refused by name" \
+  test_scorecard_missing_fixtures_dir_refused
+
+# -F REQUIRES -o, decided from the ARGUMENTS. Without that rule an offline replay
+# defaults to db/seed/scorecard -- the committed record -- and whether it is
+# stopped then depends on what is inside a data file. The manifest refusal stays
+# as the second line of defence; this is the first, and it fires before a single
+# fixture is read.
+test_scorecard_offline_without_outdir_refused() {
+  local output status before after listing
+  before="$(shasum -a 256 < "$SCORECARD_COMMITTED")"
+  # The DIRECTORY LISTING, compared before against after rather than against a
+  # fixed list: a developer who has actually run the fetcher legitimately has the
+  # two gitignored members sitting there.
+  listing="$(ls -A "$PROJECT_ROOT/db/seed/scorecard" | sort)"
+  output="$(bin/fetch-scorecard -F "$SCORECARD_FIXTURES" 2>&1)"
+  status=$?
+  after="$(shasum -a 256 < "$SCORECARD_COMMITTED")"
+  [ "$status" -eq "$EXIT_OPTION_REQUIRES_VALUE" ] \
+    || { log-error "exit [$status], expected [$EXIT_OPTION_REQUIRES_VALUE], output [$output]"; return 1; }
+  [ "$before" = "$after" ] || { log-error "the committed manifest was rewritten"; return 1; }
+  [ "$listing" = "$(ls -A "$PROJECT_ROOT/db/seed/scorecard" | sort)" ] \
+    || { log-error "db/seed/scorecard changed to [$(ls -A "$PROJECT_ROOT/db/seed/scorecard")]"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"requires an explicit [-o]"*) return 0 ;;
+  esac
+  log-error "output was [$output]"
+  return 1
+}
+assert_success "a -F run with no -o is refused as a usage error, leaving db/seed/scorecard untouched" \
+  test_scorecard_offline_without_outdir_refused
+
+# -o is checked as an ARGUMENT, before anything reads a disk: an existing
+# non-directory is a usage error, not the FileExistsError traceback mkdir raises.
+test_scorecard_outdir_is_a_file_refused() {
+  local out output status
+  out="$(mktemp -d)/not-a-directory"
+  : > "$out"
+  output="$(bin/fetch-scorecard -F "$SCORECARD_FIXTURES" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$(dirname "$out")"
+  case "$output" in
+    *Traceback*) log-error "raw traceback [$output]"; return 1 ;;
+  esac
+  [ "$status" -eq "$EXIT_INVALID_ARG_VALUE" ] \
+    || { log-error "exit [$status], expected [$EXIT_INVALID_ARG_VALUE], output [$output]"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"is not a directory"*) return 0 ;;
+  esac
+  log-error "output was [$output]"
+  return 1
+}
+assert_success "an -o naming an existing file is a usage error, not a traceback" \
+  test_scorecard_outdir_is_a_file_refused
+
+# LOGGING GOES TO STDERR, all of it. This script's product is files on disk, so a
+# successful run writes NOTHING AT ALL to stdout -- the property that regresses
+# the moment someone puts the summary or the paste-able load command back on
+# stdout, and one only visible when the two channels are captured SEPARATELY
+# (every other test here reads them merged with 2>&1). The same run proves the
+# report is not vacuous: discovery, both artifacts, both guard phases, the write
+# and the load command are asserted on stderr by content.
+test_scorecard_logs_to_stderr_and_stdout_stays_empty() {
+  local out stdout stderr status phrase
+  out="$(mktemp -d)"
+  stdout="$(mktemp)"
+  stderr="$(mktemp)"
+  bin/fetch-scorecard -F "$SCORECARD_FIXTURES" -o "$out" > "$stdout" 2> "$stderr"
+  status=$?
+  scorecard_stderr_cleanup() { rm -rf "$out" "$stdout" "$stderr"; }
+  if [ "$status" -ne 0 ]; then
+    log-error "exit [$status], stderr [$(cat "$stderr")]"; scorecard_stderr_cleanup; return 1
+  fi
+  if [ -s "$stdout" ]; then
+    log-error "stdout is not empty, it holds [$(cat "$stdout")]"; scorecard_stderr_cleanup; return 1
+  fi
+  for phrase in \
+    "Reading the release page fixture" \
+    "publishes release [06102026]" \
+    "[1/2] [Most-Recent-Cohorts-Institution] -> member" \
+    "[2/2] [Most-Recent-Cohorts-Field-of-Study] -> member" \
+    "Checking both artifacts produced data rows" \
+    "Checking each member's header carries that artifact's identity columns" \
+    "Writing [3] files" \
+    "College Scorecard an offline replay (no release) written to" \
+    "bin/load-external-data"; do
+    grep -qF -- "$phrase" "$stderr" \
+      || { log-error "stderr does not report [$phrase]"; scorecard_stderr_cleanup; return 1; }
+  done
+  scorecard_stderr_cleanup
+  return 0
+}
+assert_success "a successful fetch writes its whole report to stderr and NOTHING to stdout" \
+  test_scorecard_logs_to_stderr_and_stdout_stays_empty
+
+# The load command is printed from the POSITION each artifact declares, not from
+# the order the names sort in: the two paths are positionals, so a swap loads the
+# field-of-study file as the institution file and fails nine phases into the
+# ingest.
+test_scorecard_prints_the_load_command_in_position_order() {
+  local out stderr status
+  out="$(mktemp -d)"
+  stderr="$(mktemp)"
+  bin/fetch-scorecard -F "$SCORECARD_FIXTURES" -o "$out" > /dev/null 2> "$stderr"
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    log-error "exit [$status], stderr [$(cat "$stderr")]"; rm -rf "$out" "$stderr"; return 1
+  fi
+  if ! grep -qF -- \
+    "bin/load-external-data $out/Most-Recent-Cohorts-Institution.csv $out/Most-Recent-Cohorts-Field-of-Study.csv" \
+    "$stderr"; then
+    log-error "the printed load command is not <institution> then <fields>: [$(cat "$stderr")]"
+    rm -rf "$out" "$stderr"
+    return 1
+  fi
+  rm -rf "$out" "$stderr"
+  return 0
+}
+assert_success "the printed load command puts the institution file first and the field-of-study file second" \
+  test_scorecard_prints_the_load_command_in_position_order
+
+# The three usage bands, kept apart because they are three different operator
+# mistakes: an unknown option (10), an option whose value was left out (11) and a
+# stray operand (20) -- this script declares none. A value-shape mistake is 22.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-scorecard rejects an unknown option (10)" \
+  bin/fetch-scorecard -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-scorecard -F without a value exits 11" \
+  bin/fetch-scorecard -F
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-scorecard -o without a value exits 11" \
+  bin/fetch-scorecard -o
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-scorecard rejects a stray positional (20, not 10)" \
+  bin/fetch-scorecard stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-scorecard rejects a positional after a good option (20)" \
+  bin/fetch-scorecard -o /tmp stray
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-scorecard rejects [-o -F], a dropped operand (22)" \
+  bin/fetch-scorecard -o -F
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-scorecard rejects an empty -o value (22)" \
+  bin/fetch-scorecard -o ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-scorecard refuses a repeated -o rather than last-wins (22)" \
+  bin/fetch-scorecard -o /tmp -o /tmp
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-scorecard refuses a repeated -F rather than last-wins (22)" \
+  bin/fetch-scorecard -o /tmp -F /tmp -F /tmp
+
+# -h is the ONE thing this script puts on stdout: stdout carries what the caller
+# explicitly asked for, and a caller passing -h asked for the help text.
+test_scorecard_help_exits_zero_on_stdout() {
+  local out err status
+  out="$(mktemp)"
+  err="$(mktemp)"
+  bin/fetch-scorecard -h > "$out" 2> "$err"
+  status=$?
+  [ "$status" -eq 0 ] || { log-error "-h exited [$status]"; rm -f "$out" "$err"; return 1; }
+  grep -q "fetch-scorecard: download the two College Scorecard CSVs" "$out" \
+    || { log-error "-h printed no help: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -3 "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+  return 0
+}
+assert_success "fetch-scorecard -h prints the help to stdout and exits 0, stderr empty" \
+  test_scorecard_help_exits_zero_on_stdout
+rm -rf "$SCORECARD_OUT" "$SCORECARD_ZIPS" "$SCORECARD_ZIP_OUT" "$FETCHER_LOADER_DIR"
 
 end_tests

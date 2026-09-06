@@ -73,8 +73,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 # The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
-# the log-* family, fatal, and the post-getopt guard suite all three fetchers
-# need. Resolved against THIS script's own directory rather than the caller's
+# the log-* family, fatal, and the post-getopt guard suite every fetcher
+# needs. Resolved against THIS script's own directory rather than the caller's
 # cwd, because these scripts are run from anywhere.
 # ...and no bytecode cache beside it: importing a module normally writes
 # bin/__pycache__/, and bin/ is a reviewed directory of scripts, not a package
@@ -97,7 +97,7 @@ from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap ab
 )
 
 
-# Every refusal this script makes names the script. The three fetchers run under
+# Every refusal this script makes names the script. The fetchers all run under
 # one orchestrator (bin/fetch-external-data), so a bare "[FATAL] fixtures
 # directory does not exist" costs the reader a lookup to find out WHICH fetcher
 # said it. pyfunctions' own refusals already carry the name; this gives the
@@ -1528,7 +1528,7 @@ def build_provenance(outdir, bodies, seed, drops, manifest, fields, source, anon
 
 
 # The name this script reports itself as; every refusal names it, because the
-# three fetchers run under one wrapper and a message must say which refused.
+# fetchers all run under one wrapper and a message must say which refused.
 SCRIPT_NAME = "fetch-cds-seed"
 
 # The option grammar, in getopt's own notation and declared ONCE: this is what
@@ -1548,7 +1548,7 @@ def parse_args(argv):
     The grammar, the -h answer and every value-shape guard getopt cannot make --
     a repeated option, an empty value (which for -K is an unusable credential the
     fallbacks would then never be consulted for), a value that is really the next
-    option -- live in bin/pyfunctions.py, shared with the other two fetchers. All
+    option -- live in bin/pyfunctions.py, shared with the sibling fetchers. All
     this adds is the typing of the three values."""
     given = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
 

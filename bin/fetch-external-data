@@ -3,19 +3,21 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-fetch-external-data [-c] [-i] [-s] [-K <jwt>] [-F <fixtures-dir> -o <outdir>] [-h]
+fetch-external-data [-c] [-i] [-r] [-s] [-K <jwt>] [-F <fixtures-dir> -o <outdir>] [-h]
 
-Runs the three external-data fetchers -- the published codebooks, the IPEDS
-survey files and the collegedata.fyi Common Data Set seed -- in the order the
-load consumes them (RFC 172). It holds no fetching logic of its own: each
-source's rules, guards and provenance stay in its own script.
+Runs the four external-data fetchers -- the College Scorecard pair, the
+published codebooks, the IPEDS survey files and the collegedata.fyi Common Data
+Set seed -- in the order the load consumes them (RFC 172, RFC 173). It holds no
+fetching logic of its own: each source's rules, guards and provenance stay in
+its own script.
 
+  bin/fetch-scorecard   ->  db/seed/scorecard/
   bin/fetch-codebooks   ->  db/data/codebooks.json + db/seed/codebooks/
   bin/fetch-ipeds       ->  db/seed/ipeds/
   bin/fetch-cds-seed    ->  db/seed/cds/
 
-Selecting no source runs all three. The selectors exist so one failed or one
-changed source can be re-fetched without re-downloading the other two.
+Selecting no source runs all four. The selectors exist so one failed or one
+changed source can be re-fetched without re-downloading the other three.
 
 This is BEST-EFFORT with explicit reporting (recipes/BEST_EFFORT_BATCH_INGEST.md):
 every selected source runs even after an earlier one fails, and the run ends with
@@ -34,10 +36,10 @@ LOGGING GOES TO STDERR, all of it, including the per-source summary: this
 script's product is files on disk, so a normal run writes NOTHING to stdout. The
 help answering -h is the one thing that does.
 
-It is OPERATOR-RUN and LAPTOP-ONLY (RFC 172 6): it egresses to nces.ed.gov and
-collegedata.fyi and writes committed, reviewed files in the working tree, so it
-is deliberately absent from bin/remote's ops-tool allowlist and bin/deploy's
-bundle.
+It is OPERATOR-RUN and LAPTOP-ONLY (RFC 172 6): it egresses to nces.ed.gov,
+collegescorecard.ed.gov and collegedata.fyi and writes committed, reviewed
+files in the working tree, so it is deliberately absent from bin/remote's
+ops-tool allowlist and bin/deploy's bundle.
 
 Run inside the nix dev shell (python3 lives there):
   nix develop -c bin/fetch-external-data
@@ -46,6 +48,12 @@ Run inside the nix dev shell (python3 lives there):
 Options:
   -c: fetch the published codebooks (bin/fetch-codebooks)
   -i: fetch the IPEDS survey files (bin/fetch-ipeds)
+  -r: fetch the College Scorecard pair (bin/fetch-scorecard). -r, not -s or -S:
+      -s is the CDS seed here and `subjects.json` in bin/ingest-colleges, and -S
+      is the SFA survey file there, so both obvious letters are already taken
+      for a different meaning -- the same hazard the -s-not--d note below
+      records (RFC 172, RFC 173). -r is the r of scorecard, and it is free in
+      every script in this family.
   -s: fetch the CDS seed (bin/fetch-cds-seed). -s, not -d: -d is `deadlines` in
       bin/ingest-colleges and these two scripts sit side by side in every
       runbook, so a letter reused across them for a different meaning is the
@@ -58,11 +66,12 @@ Options:
       $COLLEGEDATA_ANON_KEY and then to scraping the corpus's own API page, and
       records in PROVENANCE.json which route the run used.
   -o DIR: output ROOT. Each source is written into its own subdirectory --
-      <root>/codebooks, <root>/ipeds, <root>/cds -- because all three fetchers
-      write a PROVENANCE.json and one shared directory would have them overwrite
-      each other's. Each fetcher creates its own directory and each honours -o
-      for ALL of its output -- bin/fetch-codebooks' generated codebook included --
-      so a redirected run rewrites nothing committed.
+      <root>/scorecard, <root>/codebooks, <root>/ipeds, <root>/cds -- because
+      all four fetchers write a PROVENANCE.json and one shared directory would
+      have them overwrite each other's. Each fetcher creates its own directory
+      and each honours -o for ALL of its output -- bin/fetch-codebooks'
+      generated codebook included -- so a redirected run rewrites nothing
+      committed.
   -h: Help
 EOF
   exit 0
@@ -70,6 +79,7 @@ EOF
 
 FETCH_CODEBOOKS=""
 FETCH_IPEDS=""
+FETCH_SCORECARD=""
 FETCH_CDS=""
 FIXTURES_DIR=""
 OUTPUT_ROOT=""
@@ -79,10 +89,11 @@ ANON_KEY=""
 # only, no hand-rolled argument loop). An explicitly-empty -F/-o value is a wrong
 # value, refused rather than read as "the current directory" -- the same rule
 # bin/fetch-ipeds states for its own -F/-o.
-while getopts ":cisF:o:K:h" opt; do
+while getopts ":cisrF:o:K:h" opt; do
   case "$opt" in
   c) FETCH_CODEBOOKS="yes" ;;
   i) FETCH_IPEDS="yes" ;;
+  r) FETCH_SCORECARD="yes" ;;
   s) FETCH_CDS="yes" ;;
   F) FIXTURES_DIR="$OPTARG"
      [ -n "$FIXTURES_DIR" ] ||
@@ -123,11 +134,12 @@ if [ -n "$FIXTURES_DIR" ] && [ -z "$OUTPUT_ROOT" ]; then
     "fetch-external-data: [-F] requires an explicit [-o]; an offline replay must not be aimed at the committed default output directories"
 fi
 
-# No selector means all three. Selection is judged on the FLAGS, once, so the
+# No selector means all four. Selection is judged on the FLAGS, once, so the
 # "which sources" question is answered in one place.
-if [ -z "$FETCH_CODEBOOKS" ] && [ -z "$FETCH_IPEDS" ] && [ -z "$FETCH_CDS" ]; then
+if [ -z "$FETCH_CODEBOOKS" ] && [ -z "$FETCH_IPEDS" ] && [ -z "$FETCH_SCORECARD" ] && [ -z "$FETCH_CDS" ]; then
   FETCH_CODEBOOKS="yes"
   FETCH_IPEDS="yes"
+  FETCH_SCORECARD="yes"
   FETCH_CDS="yes"
 fi
 
@@ -152,6 +164,11 @@ build_codebooks_command() {
 build_ipeds_command() {
   COMMAND=("$PROJECT_ROOT/bin/fetch-ipeds")
   if [ -n "$OUTPUT_ROOT" ]; then COMMAND+=(-o "$OUTPUT_ROOT/ipeds"); fi
+}
+
+build_scorecard_command() {
+  COMMAND=("$PROJECT_ROOT/bin/fetch-scorecard")
+  if [ -n "$OUTPUT_ROOT" ]; then COMMAND+=(-o "$OUTPUT_ROOT/scorecard"); fi
 }
 
 build_cds_command() {
@@ -202,6 +219,7 @@ run_fetcher() {
   case "$name" in
   codebooks) build_codebooks_command ;;
   ipeds) build_ipeds_command ;;
+  scorecard) build_scorecard_command ;;
   cds) build_cds_command ;;
   *) fatal "fetch-external-data: no fetcher is defined for the source [$name]" ;;
   esac
@@ -225,10 +243,13 @@ report_summary() {
   log-info "fetch-external-data: [$OK_COUNT] of [${#SOURCE_NAMES[@]}] sources fetched; [$FAILED_COUNT] failed"
 }
 
-# Codebooks, then IPEDS, then CDS. The three fetches are independent -- no
-# fetcher reads another's output -- so this order is a presentation choice: it is
-# the order bin/load-external-data consumes them in, so a reader who learns one
-# has learned both.
+# Scorecard first, then codebooks, then IPEDS, then CDS. The four fetches are
+# independent -- no fetcher reads another's output -- so this order is a
+# presentation choice: it is the order bin/load-external-data consumes them in,
+# so a reader who learns one has learned both. Scorecard leads because the load
+# consumes it first: the Scorecard pair is bin/load-external-data's two
+# positionals, written before any of its defaulted flags.
+if [ -n "$FETCH_SCORECARD" ]; then run_fetcher scorecard; fi
 if [ -n "$FETCH_CODEBOOKS" ]; then run_fetcher codebooks; fi
 if [ -n "$FETCH_IPEDS" ]; then run_fetcher ipeds; fi
 if [ -n "$FETCH_CDS" ]; then run_fetcher cds; fi

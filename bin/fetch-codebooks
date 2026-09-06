@@ -67,8 +67,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
-# the log-* family, fatal, and the post-getopt guard suite all three fetchers
-# need. Resolved against THIS script's own directory rather than the caller's
+# the log-* family, fatal, the guarded decode and the post-getopt guard suite
+# every fetcher needs. Resolved against THIS script's own directory rather than
+# the caller's
 # cwd, because these scripts are run from anywhere.
 # ...and no bytecode cache beside it: importing a module normally writes
 # bin/__pycache__/, and bin/ is a reviewed directory of scripts, not a package
@@ -77,6 +78,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    decode as shared_decode,
     fatal as shared_fatal,
     log_info,
     HTTP_MAX_ATTEMPTS,
@@ -89,7 +91,7 @@ from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap ab
 )
 
 
-# Every refusal this script makes names the script. The three fetchers run under
+# Every refusal this script makes names the script. The fetchers all run under
 # one orchestrator (bin/fetch-external-data), so a bare "[FATAL] fixtures
 # directory does not exist" costs the reader a lookup to find out WHICH fetcher
 # said it. pyfunctions' own refusals already carry the name; this gives the
@@ -135,7 +137,7 @@ ARTIFACTS = (
 )
 
 # The network bounds (attempts, timeout, backoff) and the retryable statuses come
-# from bin/pyfunctions.py, shared with the other two fetchers: a retry covers
+# from bin/pyfunctions.py, shared with the sibling fetchers: a retry covers
 # throttling and server-side faults only, because every other status is the
 # REQUEST being wrong (a renamed or retired syntax file) and retrying that only
 # delays the diagnosis.
@@ -271,13 +273,14 @@ def read_syntax(body, filename):
 
 
 def decode(body, filename):
-    """UTF-8, falling back to the Windows codepage IPEDS' tooling emits. A
-    silently replaced character would land in a label a student reads."""
-    try:
-        return body.decode("utf-8")
-    except UnicodeDecodeError:
-        log_warning(f"[{filename}] is not UTF-8; decoding as cp1252")
-        return body.decode("cp1252")
+    """The shared guarded decode (bin/pyfunctions.py), named for this script.
+
+    UTF-8 (a BOM stripped where the publisher's tooling left one), falling back
+    to the Windows codepage that tooling emits. A silently replaced character
+    would land in a label a student reads, and the fallback is GUARDED rather
+    than trusted: cp1252 leaves five byte values undefined, so a payload that is
+    neither is a refusal instead of a traceback out of the recovery path."""
+    return shared_decode(body, filename, SCRIPT_NAME)
 
 
 class Source:
@@ -939,7 +942,7 @@ def relative_to_repo(path):
 
 
 # The name this script reports itself as; every refusal names it, because the
-# three fetchers run under one wrapper and a message must say which refused.
+# fetchers all run under one wrapper and a message must say which refused.
 SCRIPT_NAME = "fetch-codebooks"
 
 # The option grammar, in getopt's own notation and declared ONCE: this is what
@@ -953,7 +956,7 @@ def parse_args(argv):
 
     The grammar, the -h answer and every value-shape guard getopt cannot make --
     a repeated option, an empty value, a value that is really the next option --
-    live in bin/pyfunctions.py, shared with the other two fetchers.
+    live in bin/pyfunctions.py, shared with the sibling fetchers.
 
     What is decided HERE is the DEFAULT of -j, and it follows -o: with no -o the
     generated codebook is the committed db/data/codebooks.json, and with an -o it
@@ -977,7 +980,19 @@ def parse_args(argv):
 def main(argv):
     outdir, json_path, fixtures = parse_args(argv)
     if fixtures is not None and not fixtures.is_dir():
-        fatal(f"fixtures directory [{fixtures}] does not exist")
+        # Reported by what is actually THERE. is_dir() is false for an existing
+        # FILE as well as for nothing at all, and "does not exist" sends an
+        # operator who pointed -F at a file to check their spelling instead of
+        # at the mistake they made. The sibling fetchers draw the same
+        # distinction, and one wording for one filesystem shape is the point.
+        fatal(
+            f"fixtures directory [{fixtures}] "
+            + (
+                "exists and is not a directory"
+                if fixtures.exists()
+                else "does not exist"
+            )
+        )
     outdir.mkdir(parents=True, exist_ok=True)
     json_path.parent.mkdir(parents=True, exist_ok=True)
 

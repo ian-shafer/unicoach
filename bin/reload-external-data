@@ -3,7 +3,7 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-reload-external-data [-n] [-c] [-i] [-s] [-K <jwt>] [-h]
+reload-external-data [-n] [-c] [-i] [-r] [-s] [-K <jwt>] [-h]
                      <institution.csv> <fields.csv> [aliases.json]
 
 Refreshes the external data and then loads it: bin/fetch-external-data with no
@@ -15,8 +15,8 @@ degraded modes.
 
 The two halves have deliberately different failure rules:
 
-  WITHIN the fetch, best-effort -- three independent sources, and one outage
-  must not cancel two good refreshes (bin/fetch-external-data);
+  WITHIN the fetch, best-effort -- four independent sources, and one outage
+  must not cancel three good refreshes (bin/fetch-external-data);
   BETWEEN fetch and load, all-or-nothing -- the load consumes what the fetch
   produced, so loading after a partly failed fetch is precisely the partial
   processing recipes/BEST_EFFORT_BATCH_INGEST.md forbids.
@@ -24,9 +24,13 @@ The two halves have deliberately different failure rules:
 A failed fetch therefore runs no load at all, says so, and exits with the fetch
 half's code; bin/fetch-external-data has already named the source that failed.
 
-The name says "external-data" and not "all" because the College Scorecard pair
-has no fetcher: those two CSVs are still downloaded by hand and passed in as the
-positionals below (RFC 172 says why, and leaves the socket for a fourth fetcher).
+The name says "external-data" and not "all" because the two College Scorecard
+CSVs are still passed in as the positionals below, even though
+bin/fetch-scorecard now downloads them (RFC 173): that fetcher writes
+db/seed/scorecard/Most-Recent-Cohorts-Institution.csv and
+Most-Recent-Cohorts-Field-of-Study.csv, but this wrapper does not yet read
+db/seed/scorecard/PROVENANCE.json the way it reads the IPEDS one, so the two
+paths are still typed by hand.
 
 LOGGING GOES TO STDERR. Nothing is written to stdout except -h and, under -n,
 the one bin/ingest-colleges command line the load half prints.
@@ -37,9 +41,10 @@ Run inside the nix dev shell (python3 and the JVM live there):
 Options:
   -n: forwarded to the load half -- fetch, then PRINT the bin/ingest-colleges
       command instead of running it
-  -c, -i, -s: forwarded to the fetch half, selecting the codebooks, the IPEDS
-      survey files or the CDS seed. No selector fetches all three. "Refetch
-      IPEDS only, then reload" is an ordinary operation, not a degraded one.
+  -c, -i, -r, -s: forwarded to the fetch half, selecting the codebooks, the
+      IPEDS survey files, the College Scorecard pair or the CDS seed. No
+      selector fetches all four. "Refetch IPEDS only, then reload" is an
+      ordinary operation, not a degraded one.
   -K JWT: forwarded to the fetch half for bin/fetch-cds-seed. Omit it and that
       fetcher falls back to $COLLEGEDATA_ANON_KEY and then to scraping the
       corpus's own API page.
@@ -51,14 +56,16 @@ EOF
 DRY_RUN=""
 FETCH_CODEBOOKS=""
 FETCH_IPEDS=""
+FETCH_SCORECARD=""
 FETCH_CDS=""
 ANON_KEY=""
 
-while getopts ":ncisK:h" opt; do
+while getopts ":ncisrK:h" opt; do
   case "$opt" in
   n) DRY_RUN="yes" ;;
   c) FETCH_CODEBOOKS="yes" ;;
   i) FETCH_IPEDS="yes" ;;
+  r) FETCH_SCORECARD="yes" ;;
   s) FETCH_CDS="yes" ;;
   K) ANON_KEY="$OPTARG"
      [ -n "$ANON_KEY" ] ||
@@ -72,7 +79,7 @@ done
 shift $((OPTIND-1))
 
 # The positional grammar is checked HERE as well as in the load half, because the
-# fetch half runs first: a mistyped command must not cost a full three-source
+# fetch half runs first: a mistyped command must not cost a full four-source
 # download before the load refuses it. It is the SAME check, owned by
 # bin/functions, so the two scripts cannot drift.
 require_ingest_positionals reload-external-data "$@"
@@ -80,7 +87,9 @@ require_ingest_positionals reload-external-data "$@"
 # ...and so are the paths themselves. Arity alone still lets a mistyped
 # institution.csv cost the whole fetch, which is the cost this up-front check
 # exists to avoid. Only the SCORECARD arguments are checked: they are the inputs
-# an operator supplies by hand and that no fetcher produces.
+# an operator supplies by hand -- bin/fetch-scorecard writes them, but this
+# wrapper still takes them as typed paths rather than reading them out of
+# db/seed/scorecard/PROVENANCE.json.
 #
 # This is deliberately NOT "run the load half's checks first". Most of what the
 # load half requires -- every IPEDS CSV -- legitimately does NOT exist before the
@@ -107,21 +116,22 @@ require_scorecard_arg() {
 }
 
 require_scorecard_inputs() {
-  require_scorecard_arg "$1" "the College Scorecard institution CSV, downloaded by hand from collegescorecard.ed.gov"
-  require_scorecard_arg "$2" "the College Scorecard fields CSV, downloaded by hand from collegescorecard.ed.gov"
+  require_scorecard_arg "$1" "the College Scorecard institution CSV from collegescorecard.ed.gov; run bin/fetch-scorecard, which writes db/seed/scorecard/Most-Recent-Cohorts-Institution.csv"
+  require_scorecard_arg "$2" "the College Scorecard fields CSV from collegescorecard.ed.gov; run bin/fetch-scorecard, which writes db/seed/scorecard/Most-Recent-Cohorts-Field-of-Study.csv"
   if [ "$#" -eq "$INGEST_POSITIONAL_COUNT" ]; then
     require_scorecard_arg "$3" "the curated aliases JSON (db/data/college-aliases.json is the default)"
   fi
 }
 
 # The fetch half, carrying the selectors and the corpus key this script was
-# given: with no selector it fetches all three, exactly as bin/fetch-external-data
+# given: with no selector it fetches all four, exactly as bin/fetch-external-data
 # does when run directly. "Refetch IPEDS only, then reload" is an ordinary
 # operation and must have a path through the composed tool.
 run_fetch() {
   FETCH_COMMAND=("$PROJECT_ROOT/bin/fetch-external-data")
   if [ -n "$FETCH_CODEBOOKS" ]; then FETCH_COMMAND+=(-c); fi
   if [ -n "$FETCH_IPEDS" ]; then FETCH_COMMAND+=(-i); fi
+  if [ -n "$FETCH_SCORECARD" ]; then FETCH_COMMAND+=(-r); fi
   if [ -n "$FETCH_CDS" ]; then FETCH_COMMAND+=(-s); fi
   if [ -n "$ANON_KEY" ]; then FETCH_COMMAND+=(-K "$ANON_KEY"); fi
 

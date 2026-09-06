@@ -1,0 +1,1630 @@
+#!/usr/bin/env python3
+"""fetch-scorecard: download the two College Scorecard CSVs bin/ingest-colleges takes as positionals.
+
+RFC 173. Discovers the current release on collegescorecard.ed.gov, downloads the
+institution-level and field-of-study archives of THAT release, extracts the one
+data member from each, and writes the members plus a manifest:
+
+    db/seed/scorecard/Most-Recent-Cohorts-Institution.csv     institution level
+    db/seed/scorecard/Most-Recent-Cohorts-Field-of-Study.csv  field of study
+    db/seed/scorecard/PROVENANCE.json  release, url, fetched_at, bytes, sha256
+                                       per archive, plus the member taken, its
+                                       digest, its data-row count and the
+                                       bin/load-external-data POSITION it is
+                                       passed as
+
+The pair is fetched TOGETHER, from ONE release. bin/ingest-colleges cross-reads
+them by UNITID, so an institution file from one release beside a field-of-study
+file from another is a silent mismatch no header assertion can see.
+
+The release stamp is DISCOVERED, not pinned, and that is this script's one
+departure from bin/fetch-ipeds (which pins SURVEY_YEAR and its archive
+names as literals). The two publishers publish differently: IPEDS names a survey
+year that stays fetchable, so a year bump there is a reviewed edit of the script,
+while the Scorecard publishes exactly one "most recent cohorts" release whose
+predecessor's stamped URL goes away. Pinning the stamp would mean this script
+starts 404ing on the publisher's schedule.
+
+THE UNVERSIONED URLs ARE A TRAP AND ARE NEVER CONSTRUCTED HERE. The same two
+names under /downloads/ with the _NNNNNNNN stamp LEFT OFF -- the strings this
+file deliberately never spells in full, so that a grep for one finds nothing --
+still return HTTP 200 and are Last-Modified 2024-08-22. A fetcher
+pointed at it would ingest the August-2024 release forever, with a green exit and
+a passing header assertion -- exactly the failure this repo's fetchers exist to
+refuse. /downloads/ is itself a 404, so there is no directory listing: the stamp
+is read off the /data/ page, and the URL that is downloaded is the href that page
+served, never a string this script assembled.
+
+So: GET https://collegescorecard.ed.gov/data/, match the hrefs, require EXACTLY
+ONE match per artifact and require the two stamps to be EQUAL. Zero matches,
+several matches for one artifact, or two disagreeing stamps are FATAL -- that is
+a publisher change a human looks at, the same stance bin/fetch-ipeds takes on a
+member it cannot resolve. A run whose discovered stamp differs from the one
+PROVENANCE.json records LOGS the change and PROCEEDS: a new release is the whole
+point of the fetcher, so it is reported, never refused. The member-drift guard
+below is the one that refuses.
+
+The members are NOT committed: extracted they are ~100 MB and ~153 MB against a
+16 MB .git -- worse than the IPEDS members bin/fetch-ipeds already keeps out --
+so db/seed/scorecard/ is gitignored except for PROVENANCE.json and
+FETCH-NOTES.md. That manifest is the committed record of the real fetch AND the
+baseline the shrink guard below reads, which is why an offline (-F) replay is
+refused outright against a directory holding one that is not itself a fixture
+replay.
+
+The `fetched_at` CONTRACT, at both levels of the manifest (top level and per
+artifact), is part of that record:
+
+  * a network run writes ISO-8601 UTC to SECONDS precision, e.g.
+    "2026-09-05T09:14:02+00:00";
+  * a fixture (-F) replay writes null, and null means exactly that -- an offline
+    replay -- so it is never a stand-in for "unknown";
+  * `release` is null on a replay for the same reason: a recorded stamp would
+    claim a published release the replay never read.
+
+ALL member interpretation lives here (the ingest is handed plain CSV paths):
+
+  * The member is resolved by EXACT name, after the __MACOSX/ directory entries
+    and their AppleDouble ._* members are dropped. Most-Recent-Cohorts-Institution
+    ships one of those beside the CSV, and it is precisely the wrong-member
+    hazard: an archive missing its expected member is FATAL and the lone
+    surviving member is never taken as a substitute.
+  * Members are decoded utf-8-sig and re-encoded UTF-8, so no BOM survives into
+    the UNITID header name the loaders match on.
+  * Each artifact declares a SMALL set of IDENTITY columns -- UNITID, INSTNM,
+    CONTROL, PREDDEG for the institution file; UNITID, CIPCODE, CREDLEV for the
+    field of study -- and a header missing any of them is fatal. Each set holds
+    at least one column the OTHER file does not carry (PREDDEG one way, CIPCODE
+    and CREDLEV the other), which is what lets the check see a swap in either
+    direction: UNITID, INSTNM and CONTROL alone appear in BOTH published
+    headers. This is deliberately NOT
+    a copy of the loaders' REQUIRED_INSTITUTION_COLUMNS: that list is the
+    INGEST's contract, asserted there before any write (RFC 139), and a second
+    copy here would drift the day a column is added to the Kotlin list. This
+    check answers a different question -- did the extraction produce the
+    institution file or the field-of-study one -- which is a fact about the
+    FETCH. No column COUNT is asserted: 3,308 and 178 are today's numbers and
+    the publisher adds columns.
+
+Stdlib-only (dev-shell python3), no dependencies. Usage:
+
+    fetch-scorecard [-o <outdir>] [-F <fixtures-dir>]
+
+    -o DIR    extracted CSV + PROVENANCE.json directory
+              (default: db/seed/scorecard under the repo root)
+    -F DIR    offline mode for tests: read the recorded /data/ page and the
+              recorded archives or CSVs from <dir> instead of downloading.
+              REQUIRES an explicit -o: the recorded fixtures are a handful of
+              rows while the committed manifest under the DEFAULT -o records the
+              real release, so a replay into the default directory would either
+              be refused or, worse, overwrite the committed record.
+    -h        help
+
+There is no -K: nothing here is authenticated. The bulk zips are anonymous
+downloads. (The api.data.gov Scorecard API does need a key, and would need 63
+paged requests for what one zip gives, so this script does not use it.)
+
+Options are parsed with the stdlib getopt, the model of the getopts builtin the
+bash scripts in bin/ use, and the checks getopt does NOT make are made after it:
+each option may be given at most once, its value may not be empty or begin with
+"-", and this script takes no positional arguments at all. A stray positional
+exits 20, an unknown option 10, an option missing its value 11, and a malformed
+value 22.
+
+EVERYTHING this script prints goes to STDERR -- the progress (including a
+per-archive download percentage), the final summary, and the load command. Its
+product is files on disk, not a data stream, so a normal run leaves stdout EMPTY.
+The ONE exception is `-h`: the help text is what a caller passing -h explicitly
+asked for, so it is printed on stdout and the run exits 0.
+
+It is OPERATOR-RUN: no ingest and no test ever fetches. A successful run PRINTS
+the bin/load-external-data command to paste next, built from the files it
+actually wrote and the POSITION each artifact declares, so the two positionals
+are never put the wrong way round.
+
+The run REFUSES to write an artifact that resolved to a member with ZERO data
+rows, REFUSES a member whose header does not carry that artifact's identity
+columns, REFUSES when a data-row count collapsed against the count
+PROVENANCE.json recorded, and REFUSES when the resolved member NAME is not the
+one PROVENANCE.json recorded. Nothing is written until all of them pass, and the
+write itself is all-or-nothing across both extracted members AND the manifest.
+"""
+
+import csv
+import hashlib
+import io
+import json
+import posixpath
+import re
+import shlex
+import sys
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import NamedTuple
+
+# The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
+# the log-* family, fatal, the download stack and the post-getopt guard suite
+# every fetcher needs. Resolved against THIS script's own directory rather than
+# the caller's cwd, because these scripts are run from anywhere.
+# ...and no bytecode cache beside it: importing a module normally writes
+# bin/__pycache__/, and bin/ is a reviewed directory of scripts, not a package
+# build tree. The import cost is microseconds; an untracked directory appearing
+# in the working tree every time an operator runs a fetcher is a real cost.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    EXIT_INVALID_ARG_VALUE,
+    EXIT_OPTION_REQUIRES_VALUE,
+    HTTP_ERROR_BODY_PREVIEW_BYTES,
+    bracketed,
+    decode as shared_decode,
+    fatal as shared_fatal,
+    format_bytes,
+    http_get as shared_http_get,
+    log_error,
+    log_info,
+    log_warning,
+    parse_short_options,
+    write_atomically,
+)
+
+
+# Every refusal this script makes names the script. The fetchers all run under
+# one orchestrator (bin/fetch-external-data), so a bare "[FATAL] fixtures
+# directory does not exist" costs the reader a lookup to find out WHICH fetcher
+# said it. pyfunctions' own refusals already carry the name; this gives the
+# script-local ones the same prefix through one wrapper rather than 40 edited
+# f-strings.
+def fatal(message, status=1):
+    shared_fatal(f"{SCRIPT_NAME}: {message}", status=status)
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "scorecard"
+
+# The page that names the current release. It is the ONLY discovery surface:
+# https://ed-public-download.scorecard.network/downloads/ is a 404, so there is
+# no directory listing to read, and the site's _payload.json carries the
+# glossary rather than the download hrefs. The HTML is the source.
+DATA_PAGE_URL = "https://collegescorecard.ed.gov/data/"
+# The recorded stand-in an offline (-F) run reads that page from, so the
+# discovery below is exercised by the shell harness with no network at all.
+DATA_PAGE_FIXTURE = "scorecard-data-page-fixture.html"
+
+MANIFEST_NAME = "PROVENANCE.json"
+
+# The manifest's `source` vocabulary, named once. It is a PERSISTED guard
+# vocabulary -- compared by == wherever the replay refusal and the route check
+# read it back -- so a typo in one of those comparisons would silently downgrade
+# a committed record from "protected" to "replaceable". Plain constants rather
+# than an enum: the values are written to and read from JSON, and nothing here
+# needs more than the names.
+ROUTE_NETWORK = "network"
+ROUTE_FIXTURES = "fixtures"
+# Not a value ever WRITTEN: what manifest_route calls a manifest that declares
+# neither, which joins the protected side.
+ROUTE_UNKNOWN = "unknown"
+
+# The zip entries macOS' own archiver adds beside the real member. The
+# institution zip carries __MACOSX/._Most-Recent-Cohorts-Institution.csv -- a
+# 226-byte resource fork whose name ends .csv, so an extension-based resolution
+# would happily "find" it. Dropped by prefix (the directory entry) and by
+# basename (the AppleDouble file itself), because the archiver writes both.
+MACOSX_DIR_PREFIX = "__MACOSX/"
+APPLEDOUBLE_PREFIX = "._"
+
+
+class Artifact(NamedTuple):
+    """One published Scorecard artifact, by NAME rather than by tuple position.
+
+    url_name, member_name and fixture_name are three look-alike strings --
+    "Most-Recent-Cohorts-Institution" appears in all three, differing only by a
+    suffix -- and a positional unpacking that swapped two of them would still
+    run: it would download the right archive and look for the wrong member.
+    bin/fetch-ipeds and bin/fetch-cds-seed already state this house rule.
+
+    url_name is BOTH the manifest key and the artifact half of the discovered
+    URL. It carries no release stamp, deliberately: the stamp belongs to the
+    RELEASE (one for the pair), not to either file, and it is discovered rather
+    than declared.
+
+    ingest_position is which POSITIONAL of bin/load-external-data /
+    bin/ingest-colleges the written file becomes -- 1 is <institution.csv>, 2 is
+    <fields.csv>. It is a declaration, and it is serialised into the manifest for
+    the same reason bin/fetch-ipeds serialises ingest_option: a later reader that
+    wants to build the load command must not re-derive the order from a filename.
+
+    identity_columns is the SMALL set of header names that say "this is the file
+    we think it is", and every row carries at least one column the other row's
+    file does not. It is not the ingest's required-column contract
+    (REQUIRED_INSTITUTION_COLUMNS, asserted in Kotlin before any write) -- see
+    the module docstring for why duplicating that list here would be a second
+    copy that drifts."""
+
+    url_name: str
+    member_name: str
+    fixture_name: str
+    ingest_position: int
+    identity_columns: tuple[str, ...]
+
+
+# The two artifacts, in the order bin/load-external-data takes them. Both are
+# extracted from the SMALL per-file zips rather than the 448 MB
+# College_Scorecard_Raw_Data_*.zip, which is a strict superset holding
+# byte-identical copies of exactly these two members: 40 MB against 448 MB for
+# the same bytes. (That archive also unpacks to a top directory stamped with a
+# DIFFERENT date from its URL -- 06102026 vs 06032026 -- so a future variant that
+# reached for it must resolve its top directory by pattern, never by
+# reconstructing it from the URL stamp.)
+#
+# member_name is the name the extracted member is WRITTEN under, and it is the
+# publisher's own name, so the load command printed at the end of a run is
+# copy-pasteable. The fixture_name is the recorded stand-in an offline (-F) run
+# accepts under that exact name, beside the stamped archive's own name.
+ARTIFACTS = (
+    Artifact(
+        "Most-Recent-Cohorts-Institution",
+        "Most-Recent-Cohorts-Institution.csv",
+        "scorecard-institution-zip-fixture.zip",
+        1,
+        # PREDDEG is institution-ONLY. UNITID, INSTNM and CONTROL are all carried
+        # by the published field-of-study header too (they are 3 of the 5 columns
+        # the two files share), so a set built from those three alone ACCEPTS a
+        # field-of-study member in this slot -- precisely the swap this guard
+        # exists to refuse. The other direction already discriminated, because
+        # CIPCODE and CREDLEV are absent from the institution header.
+        ("UNITID", "INSTNM", "CONTROL", "PREDDEG"),
+    ),
+    Artifact(
+        "Most-Recent-Cohorts-Field-of-Study",
+        "Most-Recent-Cohorts-Field-of-Study.csv",
+        "scorecard-field-of-study-zip-fixture.zip",
+        2,
+        ("UNITID", "CIPCODE", "CREDLEV"),
+    ),
+)
+
+# The href shape the page serves, and the ONE place a download URL comes from.
+# The URL that is fetched is the MATCHED TEXT, never a string assembled here:
+# the unstamped institution download is three years stale and still answers 200,
+# so a script that could build a URL could build that one.
+#
+# The artifact alternation is built FROM ARTIFACTS, so the name a match yields IS
+# the key the rest of this script looks an artifact up by: the published name is
+# spelled once, in the table above, and no site re-assembles it from a regex
+# fragment plus a literal prefix. The two capture groups are that url_name and
+# the eight-digit release stamp (MMDDYYYY as the publisher writes it).
+#
+# The href ENDS at the ".zip". Without the boundary the match is a PREFIX of a
+# longer token -- "..._06102026.zip?ver=2" would yield "..._06102026.zip" -- and
+# that is a URL this script ASSEMBLED by truncation, not one the page served. A
+# query string, a signature or a ".zip.html" landing page is a publisher change
+# for a human to read, exactly like a renamed file, so it matches nothing and is
+# refused by require_one_download_each.
+#
+# The host is ed-public-download.scorecard.network. It MOVED: the
+# ed-public-download.app.cloud.gov older prose in this tree names now 404s on
+# everything including /, so an href pointing there is not a download this
+# script silently accepts -- it simply does not match.
+RELEASE_HREF_PATTERN = re.compile(
+    r"https://ed-public-download\.scorecard\.network/downloads/"
+    r"(" + "|".join(re.escape(artifact.url_name) for artifact in ARTIFACTS) + r")"
+    r"_(\d{8})\.zip"
+    r"(?=[\"'\s<])"
+)
+
+# The network bounds, the error-body preview bound and the whole download stack
+# -- format_bytes, the progress reporter, the chunked read and the retrying
+# http_get -- come from bin/pyfunctions.py, shared with the sibling fetchers.
+# Nothing in them is Scorecard-specific, and a private copy here was a copy that
+# could drift from the one every other fetcher downloads with.
+
+# A re-fetched artifact carrying fewer than this fraction of the data rows the
+# manifest recorded is treated as a failed extraction rather than a real release
+# change: the Scorecard loses institutions in dozens, never in thousands.
+SEED_SHRINK_FLOOR = 0.5
+
+
+def http_get(url, label):
+    """The shared retrying download (bin/pyfunctions.py), reporting through this
+    script's own name so a refusal under bin/fetch-external-data still says
+    which fetcher died."""
+    return shared_http_get(url, label, SCRIPT_NAME)
+
+
+def decode(body, filename):
+    """The shared guarded decode (bin/pyfunctions.py), named for this script.
+
+    utf-8-sig strips a BOM where there is one, so none survives into the UNITID
+    header name the loaders match on, and a payload that is neither UTF-8 nor
+    cp1252 is a refusal rather than a traceback out of the recovery path."""
+    return shared_decode(body, filename, SCRIPT_NAME)
+
+
+# ---------------------------------------------------------------------------
+# Release discovery
+# ---------------------------------------------------------------------------
+
+
+def read_data_page(fixtures):
+    """(page text, origin): the /data/ page downloaded, or read from the
+    recorded fixture when this is an offline (-F) replay, named by what was
+    actually read.
+
+    The origin is RETURNED rather than re-derived by the caller: it is the label
+    every discovery refusal below carries, and a second branch deciding it could
+    name a page this never opened.
+
+    The page is read on BOTH routes rather than skipped offline, because the
+    discovery below is this script's most publisher-dependent code and a replay
+    that jumped straight to the recorded zips would exercise none of it.
+
+    This SELECTS a route; the two readers below perform it, and the decode is
+    stated once rather than per branch."""
+    body, origin = read_page_fixture(fixtures) if fixtures is not None else download_data_page()
+    return decode_page(body, origin), origin
+
+
+def read_page_fixture(fixtures):
+    """(page bytes, origin) from the recorded page, matched by its EXACT
+    declared name, like every other fixture here."""
+    path = fixtures / DATA_PAGE_FIXTURE
+    log_info(f"Reading the release page fixture [{path}]")
+    try:
+        return path.read_bytes(), str(path)
+    except FileNotFoundError as error:
+        # The caught error is CARRIED, as read_manifest and read_member already
+        # do here: ENOENT on a dangling symlink is reported by the OS about the
+        # link's TARGET, and "no fixture in this directory" is a claim about the
+        # directory that `ls` would then contradict.
+        fatal(
+            f"no release page fixture [{DATA_PAGE_FIXTURE}] in [{fixtures}] "
+            f"([{type(error).__name__}] [{error}]); an offline replay discovers the release "
+            f"from the recorded page exactly as a network run discovers it from "
+            f"[{DATA_PAGE_URL}]"
+        )
+
+
+def download_data_page():
+    """(page bytes, origin) from the live page, the ONLY discovery surface:
+    /downloads/ is a 404, so there is no listing to read."""
+    log_info(f"Discovering the current release from [{DATA_PAGE_URL}]")
+    return http_get(DATA_PAGE_URL, "data page"), DATA_PAGE_URL
+
+
+def decode_page(body, origin):
+    """The page as text, REPORTING the bytes that were not text.
+
+    errors="replace" is right here -- this is HTML being scanned for a URL
+    shape, not data being ingested, so one undecodable byte in a page footer
+    must not end a fetch, and what is MATCHED is still an exact ASCII pattern.
+    But a body that is mostly replacement characters is a gzipped, cp1252 or
+    captive-portal response rather than the release page, and the zero-match
+    refusal below would otherwise blame the publisher for renaming a file."""
+    page = body.decode("utf-8", errors="replace")
+    replaced = page.count("\ufffd")
+    if replaced:
+        log_warning(
+            f"[{origin}] carries [{replaced}] bytes that are not UTF-8, replaced for "
+            f"matching; a body that is not text at all is an error page or a compressed "
+            f"response, not the release page"
+        )
+    return page
+
+
+class Download(NamedTuple):
+    """One matched href: the URL the page served and the release stamp inside
+    it.
+
+    A NamedTuple because `url` and `stamp` are both strings read off the same
+    match, and a positional unpacking that swapped them would still run -- it
+    would compare URLs for release equality and try to download a stamp."""
+
+    url: str
+    stamp: str
+
+
+def find_release_hrefs(page):
+    """{url_name -> [Download]}: every stamped download the page serves, grouped
+    by artifact.
+
+    Reads the page and judges nothing. The two refusals below are what decide
+    whether what it read is a release.
+
+    The key is the CAPTURED url_name, not a name rebuilt from a prefix and a
+    fragment: the alternation is built from ARTIFACTS, so what a match yields is
+    already the key every artifact is looked up by."""
+    downloads = {}
+    for match in RELEASE_HREF_PATTERN.finditer(page):
+        downloads.setdefault(match.group(1), []).append(Download(match.group(0), match.group(2)))
+    return downloads
+
+
+def page_preview(page):
+    """The head of a page, on ONE line.
+
+    Whitespace is collapsed because this goes into a [FATAL] message: the
+    channel bin/scripts-tests and every operator grep on is line-oriented, and
+    an HTML body pasted in raw would break one refusal across twenty lines.
+
+    Bounded by HTTP_ERROR_BODY_PREVIEW_BYTES even though this slices CHARACTERS,
+    not bytes: the number is a readability bound on one log line, not a memory
+    bound, and one preview length for every body this script quotes is worth
+    more than an exact unit."""
+    return " ".join(page[:HTTP_ERROR_BODY_PREVIEW_BYTES].split())
+
+
+def require_one_download_each(downloads, origin, page):
+    """Refuses a page that offers no download for an artifact, or several.
+
+    Zero matches is a publisher change -- a renamed file, a moved host, a page
+    that stopped server-rendering its links -- and picking a fallback would mean
+    fetching something nobody chose; several means which of them is current is a
+    reading of the page this script does not make.
+
+    BOTH artifacts are judged before anything is refused, the way
+    require_data_rows, require_identity_columns and require_stable_baseline all
+    do: a moved host renames both hrefs, and reporting only the first sends the
+    operator round the publisher-change loop twice.
+
+    The refusal quotes what the page DID offer and how long it was, because
+    those are the facts that separate "one artifact renamed beside a matched
+    sibling" from "this is not the /data/ page at all" -- an error page, a
+    captive portal, a gzipped body or an empty one served with HTTP 200. On the
+    network route the page is not retained, so it is quoted here or it is
+    lost."""
+    complaints = []
+    for artifact in ARTIFACTS:
+        matches = downloads.get(artifact.url_name, [])
+        if not matches:
+            offered = bracketed(downloads) if downloads else "no stamped download at all"
+            complaints.append(
+                f"[{origin}] names no download for [{artifact.url_name}] "
+                f"(pattern [{RELEASE_HREF_PATTERN.pattern}]); the page read was "
+                f"[{len(page)}] characters, it names {offered}, and it begins "
+                f"[{page_preview(page)}]"
+            )
+        elif len(matches) > 1:
+            complaints.append(
+                f"[{origin}] names [{len(matches)}] downloads for [{artifact.url_name}] "
+                f"{bracketed(download.url for download in matches)}, expected exactly one; "
+                f"which of them is the current release is a reading of the page this script "
+                f"does not make"
+            )
+    if complaints:
+        fatal(
+            f"{'; also '.join(complaints)}. The publisher renamed a file, moved the host or "
+            f"stopped rendering the links, and which URL to fetch instead is a review, never "
+            f"a guess. The unversioned URL is not a fallback: it still answers 200 with a "
+            f"release from 2024"
+        )
+
+
+def require_one_release(downloads, origin):
+    """The ONE release stamp both artifacts are offered from.
+
+    Reached only AFTER require_one_download_each: that refusal is what makes
+    downloads[artifact.url_name][0] safe here, since it has already established
+    that every artifact has exactly one match. Called out of that order this
+    raises KeyError instead of refusing.
+
+    bin/ingest-colleges cross-reads the two files by UNITID, so a pair taken
+    from two releases loads without error and is wrong. The stamp is never
+    parsed as a date: it is an opaque identity compared for equality, and
+    reading it as a date would invite a fetcher that reasons about which release
+    is newer."""
+    stamps = {artifact.url_name: downloads[artifact.url_name][0].stamp for artifact in ARTIFACTS}
+    if len(set(stamps.values())) > 1:
+        fatal(
+            "the release stamps disagree ("
+            + ", ".join(f"[{name}] is [{stamp}]" for name, stamp in stamps.items())
+            + f"): [{origin}] is offering the two files from different releases, and "
+            f"bin/ingest-colleges cross-reads them by UNITID, so a mismatched pair loads "
+            f"without error and is wrong. Both halves come from ONE release or neither does"
+        )
+    return next(iter(stamps.values()))
+
+
+def discover_release(page, origin):
+    """(release, {url_name: url}) read off the /data/ page: matched, refused if
+    the page does not offer exactly one download per artifact from one release,
+    then reported.
+
+    Both halves come from the SAME regex match: the URL that is downloaded is
+    the href the publisher served, and the release stamp is the group inside it.
+    Nothing here assembles a URL, which is the point -- the unstamped
+    institution download answers 200 with the August 2024 release, so the
+    ability to build a URL is the ability to build that one."""
+    downloads = find_release_hrefs(page)
+    require_one_download_each(downloads, origin, page)
+    release = require_one_release(downloads, origin)
+    # Indexed, not .get(): require_one_download_each above has already refused a
+    # page offering zero or several downloads for an artifact, so exactly one
+    # match per url_name exists by this line.
+    urls = {artifact.url_name: downloads[artifact.url_name][0].url for artifact in ARTIFACTS}
+    log_info(f"[{origin}] publishes release [{release}]")
+    return release, urls
+
+
+def report_release_change(outdir, previous, release, offline):
+    """Says so when the discovered release is not the one PROVENANCE.json
+    records -- and PROCEEDS.
+
+    A new release is the whole POINT of this fetcher, so it is reported, never
+    refused. That is the opposite stance from the member-drift guard below, and
+    deliberately: a changed member NAME means the extraction may have taken the
+    wrong file, while a changed release stamp means the publisher published, and
+    an operator running the fetcher asked for exactly that.
+
+    It is still worth a line. The row counts about to be measured against the
+    recorded ones come from a DIFFERENT release, so this is the sentence that
+    explains a legitimate shift in them.
+
+    An offline (-F) replay reports nothing: the stamp it discovered came from
+    the RECORDED page, so measuring it against a manifest would compare a
+    fixture's release with a published one. The route is taken as an argument --
+    the way require_offline_outdir, require_matching_route, build_manifest and
+    print_summary all take it -- rather than read out of a nulled `release`,
+    because `release` is exactly as real on a replay as on a fetch."""
+    if offline or previous is None:
+        return
+    recorded = previous.get("release")
+    if recorded == release:
+        log_info(f"The release [{release}] is the one [{outdir / MANIFEST_NAME}] records")
+        return
+    log_info(
+        f"The release moved: [{release}] now, [{recorded}] recorded in "
+        f"[{outdir / MANIFEST_NAME}]. That is what this fetcher is for, so it proceeds -- the "
+        f"guards below still measure this release's members and row counts against the "
+        f"recorded ones"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reading the archives
+# ---------------------------------------------------------------------------
+
+
+def find_fixture(fixtures, artifact, url):
+    """The one file in `fixtures` that stands in for `artifact`: either the
+    published archive under the name the discovered href carries, or the
+    recorded zip/CSV named in ARTIFACTS.
+
+    Both are matched by EXACT name. A normalised substring search would be
+    friendlier, but the fixture directory (college/src/test/resources) is shared
+    with every other test in the repo, and it already holds unrelated files
+    whose names begin "scorecard-"; this script does not own it, so one new file named by
+    that directory's own convention would make a substring search ambiguous and
+    this fetcher fatal, from a change with nothing to do with the Scorecard.
+    Ambiguity is still fatal -- picking the first of two candidates would make
+    the harness depend on readdir order -- but it now takes two files this table
+    actually names.
+
+    The stamped name is offered as a candidate so an operator can replay a REAL
+    downloaded archive, whose name carries the release the recorded page
+    declares, without renaming it. It is the BASENAME of the href the page
+    served, not a name assembled here from the artifact and the stamp: the
+    publisher's "<url_name>_<stamp>.zip" rule is declared once, by
+    RELEASE_HREF_PATTERN, and re-typing it in a function body is how a rename
+    splits the two."""
+    published = posixpath.basename(url)
+    candidates = [
+        path
+        for path in (fixtures / published, fixtures / artifact.fixture_name)
+        if path.is_file()
+    ]
+    if not candidates:
+        fatal(
+            f"no fixture for [{artifact.url_name}] in [{fixtures}]: expected [{published}] "
+            f"or [{artifact.fixture_name}]"
+        )
+    if len(candidates) > 1:
+        fatal(
+            f"[{len(candidates)}] fixtures stand in for [{artifact.url_name}] in "
+            f"[{fixtures}]: {bracketed(path.name for path in candidates)}"
+        )
+    return candidates[0]
+
+
+def is_macos_junk(member):
+    """Whether a zip member is macOS archiver junk rather than published data.
+
+    Most-Recent-Cohorts-Institution_*.zip ships
+    __MACOSX/._Most-Recent-Cohorts-Institution.csv beside the real member: a
+    226-byte AppleDouble resource fork whose name ends ".csv" and whose basename
+    is the real member's basename with a "._" in front. It is filtered on BOTH
+    facts the archiver writes, because either alone is a guess about the other's
+    stability -- and what is being protected against is precisely a resolution
+    that "finds" the resource fork and writes 226 bytes of binary as the
+    institution file."""
+    return member.startswith(MACOSX_DIR_PREFIX) or posixpath.basename(member).startswith(
+        APPLEDOUBLE_PREFIX
+    )
+
+
+def resolve_member(archive, origin, expected_member):
+    """The name of the one DATA member of an opened ARCHIVE, matched by EXACT
+    name. (A raw payload has no member to resolve -- the body IS the member --
+    so this is reached only for a zip.)
+
+    The macOS junk is dropped FIRST, so it can neither be matched nor counted as
+    "the only other member". Then the published name must be present exactly
+    once: no member under it is as fatal as two of them, and the lone surviving
+    member under an UNPUBLISHED name is never substituted in. That is the same
+    rule bin/fetch-ipeds states, and here it has a live case rather than a
+    hypothetical one -- the AppleDouble entry IS the wrong member sitting in the
+    archive, so a "take whatever else is there" fallback would have a candidate
+    every single run.
+
+    The match is case-SENSITIVE, unlike IPEDS'. IPEDS ships its ARTIFACTS
+    members under mixed casing and the casing is nobody's published rule; the Scorecard
+    publishes two members whose names are stable and are the names this script
+    writes, so a member differing only in case is a publisher change to look at,
+    not a spelling to absorb."""
+    members = [name for name in archive.namelist() if not is_macos_junk(name)]
+    if not members:
+        fatal(
+            f"[{origin}] holds no member that is not macOS archiver junk "
+            f"(members: {bracketed(archive.namelist())}); nothing in it is the published data"
+        )
+    named = [name for name in members if posixpath.basename(name) == expected_member]
+    if len(named) == 1:
+        return named[0]
+    if len(named) > 1:
+        fatal(
+            f"[{origin}] holds [{len(named)}] members named [{expected_member}] "
+            f"{bracketed(named)}, expected exactly one (all members: {bracketed(members)})"
+        )
+    fatal(
+        f"[{origin}] holds no member named [{expected_member}]; its [{len(members)}] "
+        f"non-junk members are {bracketed(members)}, and which of them is the release -- or "
+        f"whether the publisher renamed it -- is a review, never a guess "
+        f"(all members: {bracketed(archive.namelist())})"
+    )
+
+
+def read_member(body, origin, expected_member, url):
+    """(member_body, member) for a payload: the one resolved member of a zip, or
+    -- on the FIXTURE route only -- the body itself when the payload is already
+    a plain CSV. A raw payload has no member to resolve, so member-name matching
+    applies to zip members only, and the member recorded is the file that was
+    read.
+
+    member_body is BYTES, decoded and re-encoded UTF-8 first, so the digest
+    describes the file the ingest reads and no BOM survives into the UNITID
+    header name the loaders match on.
+
+    Zip-ness is decided by reading the archive's structure (zipfile.is_zipfile),
+    never by the extension -- which is what makes a fixture directory able to
+    hold either form under the same name.
+
+    On the NETWORK route a non-zip body is FATAL. Both published Scorecard
+    artifacts are zips, so a body that is not one is an error page, a redirect
+    notice or a captive-portal splash served with HTTP 200; treating it as the
+    release would write a CSV of HTML and record its digest as provenance.
+
+    A zip that will not open is reported through this script's own channel too. A
+    truncated download is THE flaky-network failure here, and it must not arrive
+    as a stdlib traceback naming a /nix/store path.
+
+    The ROUTE is carried by `url`: a network fetch always has one, and `url is
+    None` is what an offline (-F) replay means. That is the single value the
+    raw-CSV branch below is allowed to open on."""
+    if not zipfile.is_zipfile(io.BytesIO(body)):
+        # url is None only on the FIXTURE route, so this is where -F accepts a
+        # recorded CSV; a network body that is not a zip can never reach it.
+        if url is not None:
+            preview = body[:HTTP_ERROR_BODY_PREVIEW_BYTES].decode("utf-8", errors="replace")
+            fatal(
+                f"GET [{url}] returned [{len(body)}] bytes that are not a zip archive; both "
+                f"published Scorecard artifacts are zips, so this is an error page or a "
+                f"redirect served as a success, not the release. Body begins [{preview}]"
+            )
+        return decode(body, origin).encode("utf-8"), origin
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            member = resolve_member(archive, origin, expected_member)
+            member_body = archive.read(member)
+    except (zipfile.BadZipFile, EOFError, RuntimeError) as error:
+        fatal(
+            f"[{origin}] (from [{url or origin}], [{len(body)}] bytes) could not be read as a "
+            f"zip archive: [{type(error).__name__}] [{error}]. A truncated or partial "
+            f"download is the usual cause -- re-run the fetch; an encrypted or otherwise "
+            f"unreadable archive is a publisher change and needs a look."
+        )
+    return decode(member_body, member).encode("utf-8"), member
+
+
+def read_header_and_rows(member_body, origin, member):
+    """(header, data rows) for an extracted member, from ONE parse.
+
+    One walk, because the member is up to 153 MB and both facts come off the
+    same reader: the header the identity guard checks, and the data-row count --
+    header EXCLUDED -- the shrink guard reads. A line count would miscount both,
+    since institution names carry embedded newlines inside quoted fields.
+
+    A member with no header line AT ALL reports ([], 0), exactly as a
+    header-only member reports (header, 0). Both are "the extraction produced no
+    data", and there is one guard that refuses it (require_data_rows) rather
+    than an exit from inside a constructor for one shape and a guard for the
+    other.
+
+    csv.Error is reported through this script's channel: this count is what the
+    whole shrink guard rests on, so a member the reader cannot walk (a NUL byte,
+    a field past the reader's limit) is a named refusal naming the archive, the
+    member and the LINE the reader stopped on, not a traceback. The line number
+    is free (the reader carries it) and it is the only locator anything will
+    have: the member is held in memory and this run refuses to write it."""
+    # newline="" is load-bearing: without it StringIO translates the newlines
+    # inside quoted institution names and csv.reader sees extra rows. An
+    # INFLATED count is the dangerous direction -- it can never trip the shrink
+    # floor, so a miscount would pass every guard here.
+    reader = csv.reader(io.StringIO(member_body.decode("utf-8"), newline=""))
+    try:
+        header = next(reader, None)
+        if header is None:
+            return [], 0
+        return header, sum(1 for _ in reader)
+    except csv.Error as error:
+        fatal(
+            f"[{origin}] -> [{member}] could not be read as CSV at line "
+            f"[{reader.line_num}]: [{type(error).__name__}] [{error}]; the data-row count is "
+            f"what the shrink guard compares against, so an unreadable member is refused "
+            f"rather than counted as zero. The member is not written, so this line number is "
+            f"the only locator there will be for it"
+        )
+
+
+class Source:
+    """One Scorecard artifact: the archive it came from, the member taken out of
+    it, and the bytes about to be written. A value: everything it reports is
+    passed in or computed from the bytes, and nothing here can exit."""
+
+    def __init__(self, artifact, url, body, member, member_body, header, rows, fetched_at):
+        self.artifact = artifact
+        self.url_name = artifact.url_name
+        self.output_name = artifact.member_name
+        self.url = url
+        self.bytes = len(body)
+        self.sha256 = hashlib.sha256(body).hexdigest()
+        self.member = member
+        # The member exactly as it will be written: decoded, BOM stripped and
+        # re-encoded UTF-8. The digest describes the file that lands, not the
+        # member as it sat compressed in the archive. The decoded TEXT is
+        # deliberately not retained -- the field-of-study member alone is ~153 MB
+        # of it, and nothing reads it after the header and the row count.
+        self.member_body = member_body
+        self.member_bytes = len(member_body)
+        self.member_sha256 = hashlib.sha256(member_body).hexdigest()
+        self.header = header
+        self.rows = rows
+        self.fetched_at = fetched_at
+
+    def as_json(self):
+        """The recorded fact sheet for one artifact.
+
+        `ingest_position` is this table's declaration of WHICH POSITIONAL the
+        written member becomes -- 1 is <institution.csv>, 2 is <fields.csv> --
+        and it is serialised for the reason bin/fetch-ipeds serialises
+        ingest_option: a later reader that builds the load command must read the
+        order the fetcher declared, not re-derive it from a filename. The two
+        positionals are interchangeable to the shell and are not interchangeable
+        to bin/ingest-colleges, and nothing downstream would report a swap.
+
+        The RELEASE is not repeated here. It belongs to the pair, is checked to
+        be one value for both artifacts before anything is downloaded, and is
+        recorded once at the top level; a per-artifact copy could only ever
+        disagree with it."""
+        return {
+            "url": self.url,
+            "fetched_at": self.fetched_at,
+            "bytes": self.bytes,
+            "sha256": self.sha256,
+            "member": self.member,
+            "member_bytes": self.member_bytes,
+            "member_sha256": self.member_sha256,
+            "rows": self.rows,
+            "ingest_position": self.artifact.ingest_position,
+        }
+
+
+def load_sources(fixtures, urls, fetched_at):
+    """{url_name -> Source} for both artifacts, downloaded from the DISCOVERED
+    urls, or read from `fixtures` with no network at all. Nothing is written
+    here: the CSVs land only once the header and the counts they carry have been
+    believed.
+
+    The header and the row count are taken HERE, beside the decode that produced
+    the text, so that a member which yields neither is an ordinary Source
+    carrying rows=0 and is refused by a guard like any other, rather than by an
+    exit from inside a constructor."""
+    sources = {}
+    for index, artifact in enumerate(ARTIFACTS, start=1):
+        # An [index/total] prefix on every line of one artifact's report, so a
+        # run that is being watched says how far through ARTIFACTS it is, and a
+        # captured log can be read back per artifact.
+        step = f"[{index}/{len(ARTIFACTS)}]"
+        if fixtures is not None:
+            path = find_fixture(fixtures, artifact, urls[artifact.url_name])
+            log_info(f"{step} [{artifact.url_name}] reading fixture [{path}]")
+            body = path.read_bytes()
+            # None IS the fixture route: read_member and the manifest both read
+            # the absence of a url as "this was not downloaded".
+            url = None
+            # The fixture's own name, so PROVENANCE names the file actually read
+            # rather than the artifact it stands in for.
+            origin = path.name
+        else:
+            url = urls[artifact.url_name]
+            log_info(f"{step} [{artifact.url_name}] downloading [{url}]")
+            body = http_get(url, artifact.url_name)
+            origin = posixpath.basename(url)
+        member_body, member = read_member(body, origin, artifact.member_name, url)
+        header, rows = read_header_and_rows(member_body, origin, member)
+        # The facts the guards below are about to decide on -- the member that
+        # was resolved, how big it is, how many columns it declares and how many
+        # data rows it holds -- reported as they are learned rather than only
+        # when one of them fails.
+        log_info(
+            f"{step} [{artifact.url_name}] -> member [{member}] "
+            f"[{format_bytes(len(member_body))}] [{len(header)}] columns [{rows}] data rows"
+        )
+        sources[artifact.url_name] = Source(
+            artifact,
+            url,
+            body,
+            member,
+            member_body,
+            header,
+            rows,
+            fetched_at,
+        )
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# The manifest this run would overwrite
+# ---------------------------------------------------------------------------
+
+
+def read_manifest(outdir):
+    """The parsed manifest OBJECT in `outdir`, or None where there is no file.
+
+    ONE loader with ONE corruption policy, because both readers of this file --
+    the offline-replay refusal and the shrink guard -- are protecting the same
+    thing. A manifest that cannot be read is not an absent manifest: it is the
+    baseline and the provenance record, damaged. Neither caller may quietly
+    proceed past it, which is why this fatals rather than returning None.
+
+    "Absent" is decided by the READ failing with FileNotFoundError, not by a
+    prior exists() probe: a path whose parent is a file (ENOTDIR), a symlink loop
+    (ELOOP) or an unreadable directory all make exists() answer False, and every
+    one of those would disarm the replay refusal on a directory that does hold a
+    manifest.
+
+    A parsed value that is not an OBJECT is corruption, not absence. A file
+    holding the literal `null` parses fine and is falsy, and treating it as "no
+    manifest" would step straight past the refusal and overwrite the reviewed
+    record; a list or a scalar would instead raise AttributeError from whichever
+    reader touched it first. Both are the same fault and get the same refusal.
+
+    A file that is not UTF-8 TEXT is the same damage one level lower.
+    read_text() decodes, and UnicodeDecodeError is a ValueError, so it is caught
+    by neither the OSError clause here nor main's OSError boundary: one stray
+    byte would leave this script as a stdlib traceback naming a /nix/store path,
+    which is the outcome this whole channel exists to prevent.
+
+    The exception TYPE is reported beside its message throughout: "cannot open",
+    "is not UTF-8" and "is not JSON" need different repairs."""
+    path = outdir / MANIFEST_NAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        fatal(f"[{path}] is unreadable: [{type(error).__name__}] [{error}]. {_MANIFEST_REPAIR}")
+    except UnicodeDecodeError as error:
+        fatal(
+            f"[{path}] is unreadable, it is not UTF-8 text ([{error.reason}] at byte "
+            f"[{error.start}]); every run that writes this file writes UTF-8, so a byte that "
+            f"is not is damage. {_MANIFEST_REPAIR}"
+        )
+    try:
+        manifest = json.loads(raw)
+    except ValueError as error:
+        fatal(
+            f"[{path}] is unreadable, it is not JSON: [{type(error).__name__}] [{error}]. "
+            f"{_MANIFEST_REPAIR}"
+        )
+    if not isinstance(manifest, dict):
+        fatal(
+            f"[{path}] is unreadable: it parses as [{type(manifest).__name__}], not a JSON "
+            f"object. An empty or `null` manifest is DAMAGE, never an absent one -- reading "
+            f"it as absent is exactly how a reviewed record gets overwritten. "
+            f"{_MANIFEST_REPAIR}"
+        )
+    require_agreeing_route(path, manifest)
+    return manifest
+
+
+def require_agreeing_route(path, manifest):
+    """Refuses a manifest whose two statements of its own route disagree.
+
+    build_manifest writes `source` and `fixture_derived` from the ONE `offline`
+    flag, so exactly two combinations are ever written. Which route made this
+    record is what decides whether it may be overwritten, and reading that off a
+    file that says both would rest the protection of a committed record on one
+    field of two agreeing unchecked -- so `fixture_derived` is READ BACK here
+    rather than only written.
+
+    A record declaring the replay route must declare it with BOTH fields: that
+    is the reading which leaves a committed record replaceable, and a hand edit
+    (this file invites one) that sets one field and not the other must not reach
+    it. Both values are named, because which of the two was edited is the
+    repair."""
+    declared = manifest.get("source")
+    fixture_derived = manifest.get("fixture_derived")
+    if (declared == ROUTE_FIXTURES) != (fixture_derived is True):
+        fatal(
+            f"[{path}] declares [source={declared}] beside "
+            f"[fixture_derived={fixture_derived}], and those two contradict each other: one "
+            f"manifest states its route twice, and every run writes them together. Which "
+            f"route made this record decides whether it may be overwritten, and it is not "
+            f"read off a file that says both. {_MANIFEST_REPAIR}"
+        )
+
+
+_MANIFEST_REPAIR = (
+    "It is both the record of the fetch that produced this directory and the baseline "
+    "this run would be measured against, so nothing here can proceed past it: repair it, "
+    "or point -o at a different directory."
+)
+
+
+def manifest_route(manifest):
+    """(route, declared) for a parsed manifest: one of ROUTE_NETWORK,
+    ROUTE_FIXTURES or ROUTE_UNKNOWN, and the value the manifest actually
+    declares.
+
+    EXHAUSTIVE on purpose. Reading `source == "fixtures"` and treating everything
+    else as a fetch would be equally safe, but reading `source == "network"` and
+    treating everything else as replaceable is not: a manifest carrying real
+    fetched_at/bytes/sha256 and simply missing the optional `source` key would be
+    read as a replay and overwritten by one. Safety must not depend on a key
+    being present, so the third case is named and joins the protected side (see
+    require_offline_outdir).
+
+    The DECLARED value comes back with the classification because it is the
+    diagnosis. A manifest declaring "netwrok" is not a manifest that declares
+    nothing, and a refusal saying so sends the operator looking for a missing
+    key instead of at the typo in front of them.
+
+    `source` alone is enough HERE only because read_manifest has already refused
+    a manifest whose `source` and `fixture_derived` disagree
+    (require_agreeing_route): the replay route is declared by both fields or by
+    neither, so no record classified below states its route twice."""
+    declared = manifest.get("source")
+    if declared in (ROUTE_NETWORK, ROUTE_FIXTURES):
+        return declared, declared
+    return ROUTE_UNKNOWN, declared
+
+
+def get_manifest_artifacts(manifest):
+    """The manifest's `artifacts` object, validated.
+
+    Both baseline readers walk this, so its SHAPE is checked once here rather
+    than assumed twice: a list-valued `artifacts`, or an entry that is not an
+    object, would otherwise crash whichever reader reached it first with an
+    AttributeError instead of this script's refusal.
+
+    ABSENCE is damage too, not an empty baseline. build_manifest always writes
+    the key, so a manifest without it is a record that lost part of itself, and
+    defaulting it to {} would leave the run measuring against nothing, both
+    guards reporting NOT armed, and the reviewed record overwritten with exit 0 --
+    the same fault read_manifest refuses one level up. No default: None is not a
+    dict, so an absent key falls into the refusal already written below."""
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        fatal(
+            f"the manifest's [artifacts] is a [{type(artifacts).__name__}], not a JSON "
+            f"object keyed by artifact name; the baseline cannot be read from it. "
+            f"{_MANIFEST_REPAIR}"
+        )
+    wrong = sorted(
+        f"[{name}] is a [{type(entry).__name__}]"
+        for name, entry in artifacts.items()
+        if not isinstance(entry, dict)
+    )
+    if wrong:
+        fatal(
+            f"the manifest records {', '.join(wrong)} under [artifacts], not a JSON object; "
+            f"the baseline cannot be read from it. {_MANIFEST_REPAIR}"
+        )
+    return artifacts
+
+
+def get_baseline(manifest, field):
+    """{url_name -> the recorded `field`} -- only for artifacts that RECORD one.
+
+    ONE accessor parameterised by the field, because the field name is the only
+    thing that varies between the two baselines this script keeps (`rows` and
+    `member`) and a third recorded field would otherwise be a third copy of the
+    same comprehension.
+
+    An absent key is an absent entry. Defaulting it to None here and then asking
+    isinstance at every call site puts the same policy in three places, and a
+    site that forgot it would compare against None."""
+    return {
+        name: entry[field]
+        for name, entry in get_manifest_artifacts(manifest).items()
+        if field in entry
+    }
+
+
+def is_usable_row_count(rows):
+    """Whether a recorded row count can be a baseline.
+
+    bool is rejected explicitly: isinstance(True, int) is True in Python, so a
+    manifest recording `"rows": true` would otherwise arm the shrink guard
+    against a baseline of 1. A count of zero or less is not a release either, and
+    a floor computed from it can never fire."""
+    return isinstance(rows, int) and not isinstance(rows, bool) and rows > 0
+
+
+def is_usable_member_name(member):
+    """Whether a recorded member name can be a baseline.
+
+    An empty string is refused rather than compared: it is a name no archive
+    publishes, so a manifest carrying one would arm the member-drift guard
+    against a value every real member differs from, and every run afterwards
+    would refuse a correct extraction. A non-string is damage the guard has
+    nothing to compare against at all."""
+    return isinstance(member, str) and member != ""
+
+
+# ---------------------------------------------------------------------------
+# The plausibility guards, in the order main runs them
+# ---------------------------------------------------------------------------
+
+
+def require_data_rows(outdir, sources):
+    """Refuses an extraction that produced no data.
+
+    Fatal on its own, with or without a baseline: an empty CSV is never a real
+    Scorecard release, and a first run has no committed counts to be caught by.
+
+    A zero-byte member and a header-only member both count zero rows, but they
+    are NOT the same operator action -- one is a missing or truncated file to
+    re-fetch, the other is a real file whose data rows are gone -- so each is
+    named for what it is."""
+    log_info(f"Checking both artifacts produced data rows ([{len(sources)}] artifacts)")
+    empty = sorted(
+        f"[{source.url_name}] -> [{source.member}] "
+        + (
+            "is zero bytes (nothing was extracted)"
+            if source.member_bytes == 0
+            else f"holds a header and no data rows ([{source.member_bytes}] bytes)"
+        )
+        for source in sources.values()
+        if source.rows == 0
+    )
+    if empty:
+        fatal(
+            f"{', '.join(empty)}; produced no data rows, so refusing to write the "
+            f"extracted CSVs in [{outdir}]"
+        )
+
+
+# How much of a refused header is quoted back. The institution file declares
+# 3,308 columns, and the swap this guard exists to refuse is decided in the first
+# handful -- the two published headers diverge at CIPCODE and CREDLEV. The member
+# is never written (every guard runs before write_atomically), so what is quoted
+# is the only surviving copy of the value that failed.
+IDENTITY_HEADER_PREVIEW_COLUMNS = 8
+
+
+def header_preview(header):
+    """The first column names of a header, in PUBLISHED order.
+
+    Not bracketed(): that SORTS, and the order the publisher wrote the columns in
+    is half of what identifies the file -- the institution header opens
+    UNITID,OPEID,... and the field-of-study one does not."""
+    shown = ", ".join(f"[{name}]" for name in header[:IDENTITY_HEADER_PREVIEW_COLUMNS])
+    if len(header) <= IDENTITY_HEADER_PREVIEW_COLUMNS:
+        return shown
+    return f"{shown}, ... ([{len(header) - IDENTITY_HEADER_PREVIEW_COLUMNS}] more)"
+
+
+def require_identity_columns(outdir, sources):
+    """Refuses a member whose header does not carry that artifact's identity
+    columns.
+
+    This asks ONE question: is this the file we think it is? The institution
+    file declares UNITID/INSTNM/CONTROL/PREDDEG and the field-of-study file
+    declares UNITID/CIPCODE/CREDLEV, so the two are told apart by their headers
+    and not by the name of the zip they arrived in. That is the fetch-time
+    failure worth catching, because the pair is loaded as two POSITIONALS: a
+    swap survives every check made of a filename.
+
+    The subset test is one-directional, so each set must hold a column the OTHER
+    file does not carry, or half the swap passes: the published field-of-study
+    header carries UNITID, INSTNM and CONTROL as well, and PREDDEG is what it
+    does not.
+
+    It is deliberately NOT the ingest's required-column contract. The Kotlin
+    loaders assert REQUIRED_INSTITUTION_COLUMNS and REQUIRED_FIELDS_COLUMNS
+    before any write (RFC 139); re-typing those lists here would be a second
+    copy that drifts silently the day a column is added to the first, and it
+    would move the ingest's contract into a script the ingest does not run.
+
+    No column COUNT is asserted either. 3,308 and 178 are today's numbers and
+    the publisher ADDS columns; a count assertion would turn a routine release
+    into a fetch failure, which is the opposite of what a guard is for.
+
+    The refusal QUOTES the header it refused, bounded. That header is the value
+    that failed and it is the one fact separating "the two positionals were
+    swapped" from "the publisher renamed a column"; the member is never written,
+    so a refusal that dropped it would destroy the evidence permanently."""
+    log_info("Checking each member's header carries that artifact's identity columns")
+    missing = sorted(
+        f"[{source.url_name}] -> [{source.member}] has [{len(source.header)}] columns "
+        f"beginning {header_preview(source.header)} and is missing "
+        f"{bracketed(set(source.artifact.identity_columns) - set(source.header))}"
+        for source in sources.values()
+        if not set(source.artifact.identity_columns) <= set(source.header)
+    )
+    if missing:
+        fatal(
+            f"{', '.join(missing)}; a member without those columns is not the file this "
+            f"artifact names -- the two positionals may have been swapped, or the publisher "
+            f"renamed a column the loaders match on -- so refusing to write the extracted "
+            f"CSVs in [{outdir}]"
+        )
+
+
+def armed_guards(outdir, previous, sources):
+    """(rows_armed, member_armed): whether EACH baseline guard is armed for every
+    artifact. It also REPORTS as it goes -- one log_error per guard that is not
+    armed, naming the artifacts and the recorded value that disarmed it -- so a
+    caller reads the verdict and the operator reads the reason.
+
+    There are two independent guards and they must be reported independently. A
+    manifest recording `rows` but no usable `member` disarms the MEMBER guard --
+    the only check that can see a member swap, since the AppleDouble entry and a
+    renamed member say nothing about a row count -- and a run that armed on
+    `rows` alone would print a fully guarded success while that hole was open.
+
+    Three ways to be unarmed, and the quiet ones are the worse. With NO manifest
+    at all there is no baseline for anything, and a run with no protection must
+    not print what a protected run prints. With a manifest whose artifact keys
+    this run never sees the baseline is keyed by names that no longer exist. With
+    a recorded value of the wrong TYPE (a row count as a string, a member as
+    null) the key is there and the baseline still is not -- and the offending
+    value is printed, because it is the diagnosis."""
+    manifest_path = outdir / MANIFEST_NAME
+    if previous is None:
+        log_error(
+            f"[{manifest_path}] does not exist, so NEITHER baseline guard is armed for any "
+            f"artifact: this run's row counts and resolved members are believed as they "
+            f"are. That is how a first generation is made -- but against a directory that "
+            f"should already hold a manifest it means the baseline was lost."
+        )
+        return False, False
+    return (
+        _warn_unarmed(
+            manifest_path,
+            sources,
+            get_baseline(previous, "rows"),
+            is_usable_row_count,
+            "row count",
+            "the shrink guard is NOT armed",
+        ),
+        _warn_unarmed(
+            manifest_path,
+            sources,
+            get_baseline(previous, "member"),
+            is_usable_member_name,
+            "member name",
+            "the member-drift guard is NOT armed -- a renamed or substituted member carries "
+            "its own row count, so nothing else can see it",
+        ),
+    )
+
+
+def _warn_unarmed(manifest_path, sources, recorded, usable, baseline_label, consequence):
+    """Whether one baseline covers every artifact, reporting per artifact it does
+    not and naming the value that made it unusable.
+
+    The value is printed beside its TYPE rather than as a repr: a row count
+    recorded as the string "3" and one recorded as 3 must stay distinguishable,
+    and so must a member recorded as null from one recorded as "None", but a
+    repr wraps the value in the single quotes this project's messages never
+    use."""
+    unarmed = sorted(
+        f"[{source.url_name}] (no {baseline_label} recorded)"
+        if source.url_name not in recorded
+        else f"[{source.url_name}] (records {baseline_label} [{recorded[source.url_name]}], "
+        f"a [{type(recorded[source.url_name]).__name__}])"
+        for source in sources.values()
+        if not usable(recorded.get(source.url_name))
+    )
+    if not unarmed:
+        return True
+    log_error(f"[{manifest_path}]: {', '.join(unarmed)}; {consequence}.")
+    return False
+
+
+def list_member_drift(manifest_path, previous, sources):
+    """The member-drift complaints, if any.
+
+    Catches a wrong member resolution, which the row count CANNOT: a member
+    resolved out of the same archive under a different name carries whatever
+    rows it carries, and nothing about the count says which file was read. The
+    manifest records `member`; this is what reads it back."""
+    recorded = get_baseline(previous, "member")
+    drifted = [
+        f"[{source.url_name}]: [{source.member}] now, [{recorded[source.url_name]}] recorded"
+        for source in sources.values()
+        if is_usable_member_name(recorded.get(source.url_name))
+        and recorded[source.url_name] != source.member
+    ]
+    if not drifted:
+        return []
+    return [
+        f"the resolved member changed against [{manifest_path}] ({'; '.join(drifted)}); "
+        f"a renamed or substituted member says nothing about a row count, so this is the "
+        f"only check that sees it"
+    ]
+
+
+def list_row_shrink(manifest_path, previous, sources):
+    """The shrink complaints, if any.
+
+    Catches a truncated or collapsed read: an extraction that succeeded and
+    produced a fraction of the release. It compares DATA-ROW COUNTS per
+    artifact, not zip bytes and not CSV bytes -- counts are immune to encoding
+    drift, where a BOM appearing or disappearing moves the byte count by three
+    and the row count by zero. The three sibling fetchers compare counts (rows,
+    codes) for the same reason."""
+    recorded = get_baseline(previous, "rows")
+    shrunk = [
+        f"[{source.url_name}]: [{source.rows}] now, [{recorded[source.url_name]}] recorded"
+        for source in sources.values()
+        if is_usable_row_count(recorded.get(source.url_name))
+        and source.rows < SEED_SHRINK_FLOOR * recorded[source.url_name]
+    ]
+    if not shrunk:
+        return []
+    return [f"row counts collapsed against [{manifest_path}] ({'; '.join(shrunk)})"]
+
+
+def require_stable_baseline(outdir, previous, sources):
+    """Refuses to overwrite a recorded extraction with an implausible one.
+
+    Two independent comparisons -- the member NAME and the row COUNT -- because
+    they catch different failures. Both are run and BOTH verdicts are collected
+    into one refusal: an extraction that drifted its member and collapsed its
+    counts has two things wrong with it, and reporting only the first sends the
+    operator round the loop twice.
+
+    A new RELEASE is not one of the failures. The release stamp changing is
+    reported by report_release_change and proceeds; what these two compare is
+    whether THIS release's extraction looks like a release at all."""
+    if previous is None:
+        return
+    manifest_path = outdir / MANIFEST_NAME
+    log_info(f"Checking the resolved member names against [{manifest_path}]")
+    complaints = list_member_drift(manifest_path, previous, sources)
+    log_info(f"Checking the row counts against [{manifest_path}]")
+    complaints += list_row_shrink(manifest_path, previous, sources)
+    if complaints:
+        fatal(
+            f"{'; also '.join(complaints)}. Refusing to overwrite the extracted CSVs in "
+            f"[{outdir}]."
+        )
+
+
+def require_matching_route(outdir, previous, offline):
+    """A real (network) fetch is refused against a directory whose manifest
+    records a FIXTURE replay.
+
+    Without this the run reaches the baseline guards and fails there, and the
+    message it fails with is a lie: every real member name is compared against a
+    fixture CSV's name, so the member-drift guard blames a renamed member, and
+    the real row counts are compared against three. The fault is the ROUTE, and
+    the route is knowable before a byte is fetched.
+
+    (The mirror case -- an offline replay against a real record -- is
+    require_offline_outdir, which refuses for a different reason: there it is the
+    committed provenance that must not be overwritten.)"""
+    if offline or previous is None:
+        return
+    route, declared = manifest_route(previous)
+    if route != ROUTE_FIXTURES:
+        return
+    manifest_path = outdir / MANIFEST_NAME
+    fatal(
+        f"[{manifest_path}] declares [source={declared}] (a [{type(declared).__name__}]): it "
+        f"is the record of an offline (-F) replay, not of a fetch. Its members are fixture "
+        f"file names and its row counts are a handful of rows, so measuring a real download "
+        f"against it would report a member drift and a row collapse that are neither -- the "
+        f"ROUTE changed. Fetch into a directory whose manifest records a real fetch, or into "
+        f"an empty one."
+    )
+
+
+def require_offline_outdir(outdir, previous, offline):
+    """An offline (-F) replay is REFUSED against an output directory whose
+    manifest is not itself a fixture replay, before anything at all is written.
+
+    PROVENANCE.json is the only committed record of the real download and the
+    shrink baseline every later fetch is measured against. Writing fixture CSVs
+    beside it would leave a directory whose manifest describes the real release
+    and whose files are a three-row replay -- silently inconsistent, and worse
+    than either half alone. So the run stops here rather than writing some of
+    it: a replay wants its own -o.
+
+    A manifest that declares NOTHING is refused with the same force as one that
+    declares a fetch (manifest_route): the protection may not depend on an
+    optional key being present in a file this script did not necessarily write.
+    The refusal NAMES what was declared -- "netwrok" is a typo the operator can
+    fix, and a message saying "declares no source" would hide it."""
+    if not offline or previous is None:
+        return
+    route, declared = manifest_route(previous)
+    if route == ROUTE_FIXTURES:
+        return
+    manifest_path = outdir / MANIFEST_NAME
+    claim = (
+        f"declares [source={declared}] (a [{type(declared).__name__}]) and so records a "
+        f"real fetch"
+        if route == ROUTE_NETWORK
+        else f"declares [source={declared}] (a [{type(declared).__name__}]), which is not "
+        f"[{ROUTE_NETWORK}] or [{ROUTE_FIXTURES}], so it is read as one that records a real "
+        f"fetch"
+    )
+    fatal(
+        f"[{manifest_path}] {claim}; an offline (-F) replay refuses to write into that "
+        f"directory at all -- its CSVs would not be the ones the manifest describes. Give "
+        f"the replay its own output directory with -o."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Writing
+# ---------------------------------------------------------------------------
+
+
+def build_manifest(sources, offline, release, fetched_at):
+    """The manifest: which release it is, when and from where each archive came,
+    its size and digest, which member was taken out of it, that member's digest
+    as written, the data-row count the shrink guard reads next time, and the
+    positional the member is loaded as.
+
+    This file is the ONLY committed record of the fetch -- the CSVs themselves
+    are far too large to commit -- so an OFFLINE (-F) run is refused outright
+    against a directory that holds one (require_offline_outdir, before anything
+    is written).
+
+    Where an offline run DOES write one -- a fresh output directory, which is
+    what the shell harness uses -- it is marked unmistakably: fixture_derived
+    true, source "fixtures", every fetched_at null, and release null. `offline`
+    is the ONE input that decides source and fixture_derived, and `release` is
+    the value main derived from that same flag ONCE and handed to every consumer
+    that reports what this run got, so the manifest and the summary line cannot
+    disagree about it. `fetched_at` is likewise the caller's single timestamp,
+    stamped identically at both levels: asking the clock again here would make
+    the top-level field later than every artifact by the whole download.
+
+    The RELEASE is top level because it is a property of the PAIR: discovery has
+    already refused two artifacts whose stamps disagree, so one recorded value
+    cannot contradict the files beside it. It is the only version identity the
+    publisher gives these files -- there is no survey year here -- and recording
+    it is what lets the next run say the release moved instead of silently
+    fetching a different one."""
+    return {
+        "fetched_at": fetched_at,
+        "source": ROUTE_FIXTURES if offline else ROUTE_NETWORK,
+        "fixture_derived": offline,
+        "release": release,
+        "artifacts": {source.url_name: source.as_json() for source in sources.values()},
+    }
+
+
+def print_summary(outdir, sources, offline, release, rows_armed, member_armed):
+    """The one success line, reporting each guard as it actually stood.
+
+    `release` is the release this run FETCHED -- null on an offline replay, the
+    same value the manifest records -- not the stamp discovery read off the
+    page.
+
+    The guard state is stated PER GUARD. A single "guarded"/"not guarded" verdict
+    over two independent checks either overstates a run whose member baseline was
+    missing, or understates one whose only gap was a renamed artifact -- and this
+    line is the whole record an operator has of which protection was in force."""
+    counts = " ".join(f"[{source.output_name}]=[{source.rows}]" for source in sources.values())
+    route = ROUTE_FIXTURES if offline else ROUTE_NETWORK
+    guards = (
+        f"shrink: {'armed' if rows_armed else 'NOT armed'}, "
+        f"member: {'armed' if member_armed else 'NOT armed'}"
+    )
+    # `release` is the value that was FETCHED, derived once in main, so this line
+    # and the manifest beside it cannot disagree: a replay read its stamp off a
+    # RECORDED page, and naming it here would claim a published release this run
+    # never fetched.
+    #
+    # Decided from the ROUTE, which is the fact being reported and is a parameter
+    # of this function -- not from `release is None`, which would make a null
+    # carry "this was a replay" and print "an offline replay" about a network
+    # fetch whose stamp somehow went missing.
+    named = "an offline replay (no release)" if offline else f"release [{release}]"
+    log_info(
+        f"College Scorecard {named} written to [{outdir}] from [{route}]; "
+        f"guards [{guards}]: {counts}"
+    )
+
+
+def print_load_command(outdir, sources):
+    """The bin/load-external-data command to paste next, built from the files
+    this run actually wrote.
+
+    The ORDER comes from each artifact's declared ingest_position, not from the
+    order they happen to sit in ARTIFACTS and not from their names: the two
+    paths are positionals, so swapping them produces a run that loads the
+    field-of-study file as the institution file and fails nine phases in. Sorting
+    on the declaration means the printed command is right because the table says
+    so.
+
+    Every path is shell-quoted (shlex.quote, as bin/remote does), because -o may
+    legitimately name "$HOME/Google Drive/scorecard" and an unquoted path there
+    prints a command bash splits into two arguments."""
+    ordered = sorted(sources.values(), key=lambda source: source.artifact.ingest_position)
+    paths = " ".join(shlex.quote(str(outdir / source.output_name)) for source in ordered)
+    log_info("Feed them to the ingest with:")
+    log_info(f"  nix develop -c bin/load-external-data {paths}")
+
+
+# The name this script reports itself as; every refusal names it, because the
+# fetchers all run under one wrapper and a message must say which refused.
+SCRIPT_NAME = "fetch-scorecard"
+
+# The option grammar, in getopt's own notation and declared ONCE: this is what
+# pyfunctions.parse_short_options parses argv with, and what it derives the
+# value-taking letters from. A second hand-written list of those letters is a
+# declaration that can drift from the one getopt actually uses.
+GETOPT_SPEC = "o:F:h"
+
+
+def parse_args(argv):
+    """(outdir, fixtures) from argv, fataling on a malformed option.
+
+    The grammar, the -h answer and every value-shape guard getopt cannot make --
+    a repeated option, an empty value, a value that is really the next option --
+    live in bin/pyfunctions.py, shared with the sibling fetchers. What is
+    decided HERE is what only this script knows:
+
+    -F REQUIRES -o. Without it, an offline replay defaults to db/seed/scorecard
+    -- the committed record -- and whether it is stopped then depends on what is
+    inside a data file: a missing manifest, or one already marked `fixtures`, and
+    the replay writes over the committed seed. require_offline_outdir stays as
+    the second line of defence for an explicit -o, but the argument shape is
+    decided by the arguments.
+
+    And an -o naming something that exists and is not a directory is a usage
+    error, judged as an ARGUMENT before anything reads a disk, rather than the
+    traceback mkdir would raise."""
+    given = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
+
+    outdir = Path(given["-o"]) if "-o" in given else DEFAULT_OUTDIR
+    fixtures = Path(given["-F"]) if "-F" in given else None
+    if fixtures is not None and "-o" not in given:
+        fatal(
+            f"option [-F] requires an explicit [-o]: an offline replay must not be aimed "
+            f"at the default output directory [{DEFAULT_OUTDIR}], which holds the "
+            f"committed record of the real fetch",
+            status=EXIT_OPTION_REQUIRES_VALUE,
+        )
+    if outdir.exists() and not outdir.is_dir():
+        fatal(
+            f"option [-o] names [{outdir}], which exists and is not a directory; the output "
+            f"directory cannot be created there",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    return outdir, fixtures
+
+
+def main(argv):
+    outdir, fixtures = parse_args(argv)
+    offline = fixtures is not None
+    if offline and not fixtures.is_dir():
+        # Reported by what is actually THERE. is_dir() is false for an existing
+        # FILE as well as for nothing at all, and "does not exist" sends an
+        # operator who pointed -F at a zip to check their spelling instead of at
+        # the mistake they made. It is the same distinction parse_args already
+        # draws for -o, three lines up.
+        fatal(
+            f"fixtures directory [{fixtures}] "
+            + (
+                "exists and is not a directory"
+                if fixtures.exists()
+                else "does not exist"
+            )
+        )
+
+    # Read once, under one corruption policy, before anything is written --
+    # including the directory itself.
+    previous = read_manifest(outdir)
+    require_offline_outdir(outdir, previous, offline)
+    require_matching_route(outdir, previous, offline)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # The start line: the ROUTE (the discovery page, or the fixture directory a
+    # replay reads) and the directory this will write. Both are decisions the
+    # arguments just made, and both are what an operator checks before letting a
+    # ~250 MB extraction run.
+    route = f"fixtures [{fixtures}]" if offline else f"network [{DATA_PAGE_URL}]"
+    log_info(f"Fetching the College Scorecard pair from {route} into [{outdir}]")
+
+    # Discovery FIRST, and on both routes: it decides which URLs are fetched at
+    # all, and a page that no longer names the pair must stop the run before a
+    # 23 MB download rather than after it.
+    page, page_origin = read_data_page(fixtures)
+    release, urls = discover_release(page, page_origin)
+    # The stamp DISCOVERED is not the release FETCHED. A replay discovers one --
+    # the recorded page names it, and find_fixture matches a stamped archive by
+    # it -- and publishes none, so everything that REPORTS what this run got is
+    # handed the second value. Derived here, once: the same "None if offline"
+    # written at each consumer is one a consumer can forget, and one of them did.
+    fetched_release = None if offline else release
+    report_release_change(outdir, previous, release, offline)
+
+    fetched_at = None if offline else datetime.now(timezone.utc).isoformat(timespec="seconds")
+    sources = load_sources(fixtures, urls, fetched_at)
+    # Nothing is written until the extraction is believed: a fetch that succeeded
+    # and a member resolution that went wrong must leave the recorded CSVs and
+    # the manifest that describes them exactly as they were.
+    require_data_rows(outdir, sources)
+    require_identity_columns(outdir, sources)
+    rows_armed, member_armed = armed_guards(outdir, previous, sources)
+    require_stable_baseline(outdir, previous, sources)
+
+    # Both members AND the manifest, staged together, and the MANIFEST IS LAST.
+    # write_atomically stages all-or-nothing but RENAMES in list order, and a
+    # rename that fails part way through cannot be undone (bin/pyfunctions.py):
+    # the directory can be left MIXED. With the manifest last, that leaves new
+    # members under the OLD manifest -- a record whose row counts and member
+    # names still describe a real fetch, so the next run's guards stay armed and
+    # its refusal is honest. Manifest first would leave a manifest describing
+    # files that were never written. The order is load-bearing; do not sort this
+    # list.
+    provenance = build_manifest(sources, offline, fetched_release, fetched_at)
+    files = [(outdir / source.output_name, source.member_body) for source in sources.values()] + [
+        (
+            outdir / MANIFEST_NAME,
+            (json.dumps(provenance, indent=2) + "\n").encode("utf-8"),
+        )
+    ]
+    # The write is its own wait: the real members are ~250 MB together, staged
+    # and then renamed, so a run that said nothing here would look finished long
+    # before it was.
+    log_info(
+        f"Writing [{len(files)}] files ([{format_bytes(sum(len(body) for _, body in files))}]) "
+        f"to [{outdir}]"
+    )
+    write_atomically(files, SCRIPT_NAME)
+
+    print_summary(outdir, sources, offline, fetched_release, rows_armed, member_armed)
+    print_load_command(outdir, sources)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except OSError as error:
+        # The one boundary for a filesystem fault this script did not anticipate.
+        # A traceback would print off the [FATAL] channel that bin/scripts-tests
+        # and every operator grep key on, and would name a /nix/store path instead
+        # of the thing that failed.
+        fatal(f"[{type(error).__name__}] [{error}]")

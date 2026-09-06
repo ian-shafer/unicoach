@@ -23,8 +23,13 @@ caller's cwd:
 
 import contextlib
 import getopt
+import http.client
 import os
+import ssl
 import sys
+import time
+import urllib.error
+import urllib.request
 
 # The usage-error exit-code band bin/functions reserves (10-29), so a caller who
 # invoked a script wrongly is distinguishable from a run that faulted. The values
@@ -107,8 +112,19 @@ def write_atomically(files, script_name):
     once all of them are on disk are they renamed into place: os.replace is
     atomic within a filesystem. On any fault the staged files are removed, so no
     orphan ".partial" is left in the operator's output directory, and the refusal
-    comes through the script's own channel."""
+    comes through the script's own channel.
+
+    The RENAME half cannot be undone. Staging is all-or-nothing, but a fault on
+    the second or third os.replace (a target that exists as a directory, an
+    unwritable or immutable target, EPERM on a shared mount) leaves the earlier
+    targets already replaced and the later ones -- the manifest among them --
+    standing as they were. That state is REPORTED rather than denied: the files
+    already renamed are named, and the refusal says the directory is mixed and
+    must be re-fetched. Claiming "nothing partial was left behind" there would
+    tell an operator no repair is needed for exactly the half-written refresh
+    these guards exist to prevent."""
     staged = []
+    replaced = []
     try:
         for target, body in files:
             partial = target.with_name(f".{target.name}.partial")
@@ -116,14 +132,319 @@ def write_atomically(files, script_name):
             staged.append((partial, target))
         for partial, target in staged:
             os.replace(partial, target)
+            replaced.append(target)
     except OSError as error:
         for partial, _ in staged:
             with contextlib.suppress(OSError):
                 partial.unlink()
+        if replaced:
+            left_on_disk = (
+                f"[{len(replaced)}] of [{len(files)}] files had ALREADY been renamed into "
+                f"place ({bracketed(str(target) for target in replaced)}) and the rest stand "
+                f"as they were: the directory is MIXED -- some files are from this run, some "
+                f"are not, and the manifest may describe neither set. Do not load from it; "
+                f"re-run the fetch."
+            )
+        else:
+            left_on_disk = (
+                "Nothing partial was left behind; the previous contents of the directory "
+                "stand as they were."
+            )
         fatal(
-            f"{script_name}: writing [{len(files)}] files failed: [{type(error).__name__}] [{error}]. "
-            f"Nothing partial was left behind; the previous contents of the directory "
-            f"stand as they were."
+            f"{script_name}: writing [{len(files)}] files failed: "
+            f"[{type(error).__name__}] [{error}]. {left_on_disk}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The download stack, shared by every fetcher that downloads anything
+# ---------------------------------------------------------------------------
+#
+# The retry policy, the chunked read and the progress reporter were a private
+# copy in each fetcher, beside the HTTP_* bounds they already imported from
+# here. Nothing in them knows what any one publisher publishes, so they live
+# with the constants they consume and the refusal channel takes the caller's
+# name, exactly as write_atomically does.
+#
+# The body is read in CHUNKS rather than in one response.read(), so that a
+# download the operator is waiting on reports as it goes. 64 KiB is a read size,
+# not a progress interval -- how often anything is PRINTED is decided below.
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
+# On a TTY the progress line is rewritten in place, at most this often: a fast
+# local read arrives in hundreds of chunks a second and formatting every one of
+# them is work spent on frames nobody sees.
+PROGRESS_TTY_INTERVAL_SECONDS = 0.1
+# Off a TTY (a log, a CI capture, bin/scripts-tests) there is no line to rewrite,
+# so progress is printed at coarse milestones instead -- every this-many percent,
+# plus the final line. A carriage-return update stream there is thousands of
+# lines of noise in a captured log.
+PROGRESS_MILESTONE_PERCENT = 25
+
+
+def format_bytes(count):
+    """A byte count an operator can read: [23.6 MB] rather than [23559465].
+
+    Decimal units (1000), because that is what the publishers' pages and every
+    download UI state a file size in, and this number is read beside them. The
+    exact byte counts are still what a PROVENANCE.json records -- this is for the
+    progress channel only, where "is it nearly done" is the whole question."""
+    size = float(count)
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(size) < 1000 or unit == "GB":
+            # Whole bytes stay whole: [512 B], not [512.0 B].
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+    raise AssertionError("unreachable")
+
+
+def get_content_length(headers):
+    """The Content-Length as an int, or None when the server did not send a
+    usable one.
+
+    MISSING is normal (a chunked response has no length at all) and malformed is
+    possible, and neither may cost the download: an absent total means progress
+    reports bytes so far with no percentage, never "None%" and never a
+    traceback three quarters of the way through a large fetch."""
+    raw = headers.get("Content-Length")
+    if raw is None:
+        return None
+    try:
+        total = int(raw.strip())
+    except (AttributeError, ValueError) as error:
+        # Said out loud rather than folded into "the server sent no length": a
+        # publisher serving [Content-Length: 23,559,465] is not a chunked
+        # response, and the difference is what an operator needs to know when
+        # the progress line stops reporting a percentage.
+        log_warning(
+            f"the server sent an unusable [Content-Length: {raw}] "
+            f"([{type(error).__name__}] [{error}]); the download proceeds, reporting bytes "
+            f"so far with no percentage"
+        )
+        return None
+    # A zero or negative length is not a total anything can be a fraction of.
+    return total if total > 0 else None
+
+
+class DownloadProgress:
+    """The running report of one download, on log_info's channel.
+
+    TWO shapes, because there are two readers. On a TTY a human is watching one
+    line, so it is rewritten in place with \r and closed with a newline. Off a
+    TTY -- a log file, CI, bin/scripts-tests -- there is nothing to rewrite, and
+    a \r stream is thousands of unreadable lines in the capture, so the same
+    facts are printed at milestones (every PROGRESS_MILESTONE_PERCENT) plus one
+    final line. The final line is ALWAYS printed on both, so a download that
+    reported nothing is a download that did not happen."""
+
+    def __init__(self, label, total):
+        self.label = label
+        self.total = total
+        self.tty = sys.stderr.isatty()
+        self.last_emit = 0.0
+        # The last milestone REPORTED, so a chunk that crosses two of them still
+        # prints one line and a stalled read prints none.
+        self.last_milestone = -1
+        # The in-place line is padded back to the longest line already written:
+        # "23.6 MB of 23.6 MB [100%]" is shorter than what preceded it, and
+        # without the padding the tail of the previous line survives on screen.
+        self.width = 0
+
+    def format_line(self, seen):
+        if self.total is None:
+            return f"    [{self.label}] [{format_bytes(seen)}] (total not published)"
+        percent = min(100, int(seen * 100 / self.total))
+        return (
+            f"    [{self.label}] [{format_bytes(seen)}] of [{format_bytes(self.total)}] "
+            f"[{percent}%]"
+        )
+
+    def update(self, seen):
+        """Report an in-flight position, or say nothing. Called once per chunk,
+        so every path here is throttled."""
+        if self.tty:
+            now = time.monotonic()
+            if now - self.last_emit < PROGRESS_TTY_INTERVAL_SECONDS:
+                return
+            self.last_emit = now
+            self.write(seen, end="")
+            return
+        if self.total is None:
+            # No total, so no milestone can be computed; the final line below
+            # still reports what arrived. Guessing an interval in bytes would
+            # print an unbounded number of lines for an unknown-size body.
+            return
+        milestone = int(seen * 100 / self.total) // PROGRESS_MILESTONE_PERCENT
+        # 100% belongs to finish(), which prints it exactly once.
+        if milestone <= self.last_milestone or milestone * PROGRESS_MILESTONE_PERCENT >= 100:
+            return
+        self.last_milestone = milestone
+        log_info(self.format_line(seen))
+
+    def finish(self, seen):
+        """The final position, always printed, and on a TTY the newline that
+        ends the line every update() has been overwriting."""
+        if self.tty:
+            self.write(seen, end="\n")
+            return
+        log_info(self.format_line(seen))
+
+    def write(self, seen, end):
+        text = self.format_line(seen)
+        self.width = max(self.width, len(text))
+        print(f"\r{text:<{self.width}}", end=end, file=sys.stderr, flush=True)
+
+
+def read_body_with_progress(response, label):
+    """The whole response body, read in chunks so that the wait is visible.
+
+    A single response.read() is one call that returns after however long the
+    body takes; the operator sees nothing until it does, and the largest
+    artifact any of these fetchers takes is tens of megabytes. Chunking changes
+    nothing about what is returned -- the bytes are joined and hashed exactly as
+    before -- only about what is said while it arrives.
+
+    A body SHORTER than the declared Content-Length is a dropped connection, and
+    it is raised here as the transient fault http_get already retries. It has to
+    be detected here: http.client's own source says a bounded read("amt") returns
+    a short body rather than raising IncompleteRead ("Ideally, we would raise
+    IncompleteRead if the content-length wasn't satisfied, but it might break
+    compatibility"), so chunked reading turns the one fault the payload guards
+    below cannot re-derive -- did the response finish -- into a silent
+    success."""
+    total = get_content_length(response.headers)
+    progress = DownloadProgress(label, total)
+    chunks = []
+    seen = 0
+    while True:
+        chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        seen += len(chunk)
+        progress.update(seen)
+    progress.finish(seen)
+    body = b"".join(chunks)
+    if total is not None and seen != total:
+        # An UNDER-read is a dropped connection; an over-read is a response that
+        # contradicts its own header. Neither is the artifact, and neither may be
+        # returned as one: a truncated zip loses its end-of-central-directory and
+        # is then misdiagnosed as an error page served with a 200, while a
+        # truncated CSV simply parses.
+        raise http.client.IncompleteRead(body, total - seen)
+    return body
+
+
+def http_get(url, label, script_name):
+    """The response body, retrying only TRANSIENT faults. A permanent fault is
+    reported immediately on the [FATAL] channel -- naming the attempt it died
+    on and carrying the head of the response body, which is where a publisher's
+    own explanation lives -- and the swallowed causes of the earlier attempts
+    are logged rather than discarded.
+
+    `label` names the artifact in the progress report: the URL is already on the
+    start line, and a 23 MB download reporting itself against the full URL wraps
+    the terminal line it is trying to rewrite in place.
+
+    `script_name` prefixes every refusal, because the fetchers all run under one
+    orchestrator (bin/fetch-external-data) and a bare "[FATAL] GET ... failed"
+    costs the reader a lookup to find out which one died."""
+    request = urllib.request.Request(url, headers={"User-Agent": "unicoach"})
+    for attempt in range(HTTP_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                # Read INSIDE the try: a connection that drops mid-body now
+                # faults here, in a chunk read, rather than in one read() call,
+                # and must still be caught as the transient fault it is.
+                return read_body_with_progress(response, label)
+        except urllib.error.HTTPError as error:
+            # Bound to a `with`: the body is read and the connection released
+            # here, rather than held open across the retry sleep below.
+            with error:
+                # One byte MORE than is quoted: reading the preview plus one
+                # says whether the body was truncated without holding the rest
+                # of a publisher's error page in memory.
+                #
+                # Best-effort, because this read is network I/O on a connection
+                # that has already misbehaved AND it sits inside an except
+                # clause, where a raised fault is caught by none of the branches
+                # below it. The STATUS is what is being reported; a body that
+                # will not come off a broken connection must not replace a clean
+                # "HTTP 503, retrying" with a traceback.
+                try:
+                    raw = error.read()[: HTTP_ERROR_BODY_PREVIEW_BYTES + 1]
+                except (http.client.HTTPException, OSError) as body_error:
+                    raw = (
+                        f"<body unreadable: [{type(body_error).__name__}] [{body_error}]>"
+                    ).encode("utf-8")
+            body = raw[:HTTP_ERROR_BODY_PREVIEW_BYTES].decode("utf-8", errors="replace")
+            if len(raw) > HTTP_ERROR_BODY_PREVIEW_BYTES:
+                body += f"... (truncated at [{HTTP_ERROR_BODY_PREVIEW_BYTES}] bytes)"
+            cause = f"HTTP [{error.code}] [{error.reason}] body [{body}]"
+            if error.code not in RETRYABLE_STATUS:
+                fatal(
+                    f"{script_name}: GET [{url}] failed permanently on attempt "
+                    f"[{attempt + 1}]: {cause}"
+                )
+        except TimeoutError as error:
+            # Its own branch, so the bound that was exceeded is named: a socket
+            # timeout reports as an empty message otherwise.
+            cause = f"[{type(error).__name__}] timed out after [{HTTP_TIMEOUT_SECONDS}]s [{error}]"
+        except urllib.error.URLError as error:
+            cause = f"[{type(error).__name__}] [{error}]"
+        except http.client.IncompleteRead as error:
+            # The body did not match the declared Content-Length -- SHORT (the
+            # connection dropped mid-body) or LONG (the response contradicts its
+            # own header); read_body_with_progress raises this for both, because
+            # neither body is the artifact. Neither a URLError nor a
+            # TimeoutError, and as transient as either: retried, not escaped.
+            cause = (
+                f"[{type(error).__name__}] body did not match the declared "
+                f"Content-Length [{error}]"
+            )
+        except (http.client.HTTPException, ssl.SSLError, ConnectionResetError) as error:
+            # The rest of the transport layer: a malformed status line, an
+            # over-long header, a TLS record fault mid-body, a reset. urllib wraps
+            # NONE of these, and HTTPException is not even an OSError, so an
+            # uncaught one leaves the calling script as a stdlib traceback naming
+            # a /nix/store path -- off the [FATAL] channel bin/scripts-tests and
+            # every operator grep on. The family is caught, not one member of it.
+            cause = f"[{type(error).__name__}] transport fault [{error}]"
+        if attempt == HTTP_MAX_ATTEMPTS - 1:
+            fatal(
+                f"{script_name}: GET [{url}] failed after [{HTTP_MAX_ATTEMPTS}] attempts: {cause}"
+            )
+        log_warning(
+            f"GET [{url}] attempt [{attempt + 1}]/[{HTTP_MAX_ATTEMPTS}] failed: {cause}; retrying"
+        )
+        time.sleep(HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+def decode(body, filename, script_name):
+    """utf-8-sig, falling back to the Windows codepage the publishers' tooling
+    emits. utf-8-sig strips a BOM where there is one and is plain UTF-8 where
+    there is not, so every payload is decoded the same way and a BOM never
+    survives into the first header name a loader matches on.
+
+    The fallback is GUARDED rather than trusted: cp1252 leaves five byte values
+    undefined (0x81, 0x8d, 0x8f, 0x90, 0x9d), so a payload that is neither UTF-8
+    nor cp1252 would raise from inside the recovery path. What this returns is
+    what gets WRITTEN and hashed, so an undecodable payload is a refusal, not a
+    traceback."""
+    try:
+        return body.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        log_warning(
+            f"[{filename}] is not UTF-8 ([{error.reason}] at byte [{error.start}]); "
+            f"decoding as cp1252"
+        )
+    try:
+        return body.decode("cp1252")
+    except UnicodeDecodeError as error:
+        fatal(
+            f"{script_name}: [{filename}] decodes as neither UTF-8 nor cp1252 "
+            f"([{error.reason}] at byte [{error.start}]); the payload is not the text this "
+            f"expects, and its bytes are what the recorded digest describes"
         )
 
 

@@ -45,3 +45,12 @@ db/seed/ipeds/*
 # Python bytecode: interpreter artifacts, never source.
 __pycache__/
 *.pyc
+
+# The College Scorecard pair fetched by bin/fetch-scorecard (RFC 173). The two
+# extracted CSVs are ~100 MB and ~153 MB -- worse than the IPEDS members above
+# -- so only the record lands: PROVENANCE.json is the committed record of the
+# real fetch, carries the release stamp, and is the baseline the fetcher's
+# shrink guard reads; FETCH-NOTES.md says how it was made.
+db/seed/scorecard/*
+!db/seed/scorecard/PROVENANCE.json
+!db/seed/scorecard/FETCH-NOTES.md
