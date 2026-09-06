@@ -28,6 +28,15 @@ Stdlib-only (dev-shell python3), no dependencies. Usage:
               from <dir> instead of downloading, and do not write artifacts
     -h        help
 
+Options are parsed by the stdlib getopt module, the same short-option grammar
+every bash script in bin/ uses; there are no long options and no positionals. A
+usage mistake exits in the band bin/functions reserves: 10 unknown option, 11
+option without its value, 20 an unexpected positional, 22 a malformed value.
+
+LOGGING GOES TO STDERR, all of it, including the closing summary: this script's
+product is files on disk, so a normal run writes NOTHING to stdout. The help
+answering -h is the one thing that does.
+
 It is OPERATOR-RUN: no ingest and no test ever fetches. Regenerating from the
 committed artifacts (-F db/seed/codebooks) reproduces db/data/codebooks.json
 byte for byte, which is what makes the committed file reviewable rather than
@@ -56,6 +65,39 @@ import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+# The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
+# the log-* family, fatal, and the post-getopt guard suite all three fetchers
+# need. Resolved against THIS script's own directory rather than the caller's
+# cwd, because these scripts are run from anywhere.
+# ...and no bytecode cache beside it: importing a module normally writes
+# bin/__pycache__/, and bin/ is a reviewed directory of scripts, not a package
+# build tree. The import cost is microseconds; an untracked directory appearing
+# in the working tree every time an operator runs a fetcher is a real cost.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    fatal as shared_fatal,
+    log_info,
+    HTTP_MAX_ATTEMPTS,
+    HTTP_RETRY_BACKOFF_SECONDS,
+    HTTP_TIMEOUT_SECONDS,
+    RETRYABLE_STATUS,
+    log_warning,
+    parse_short_options,
+    write_atomically,
+)
+
+
+# Every refusal this script makes names the script. The three fetchers run under
+# one orchestrator (bin/fetch-external-data), so a bare "[FATAL] fixtures
+# directory does not exist" costs the reader a lookup to find out WHICH fetcher
+# said it. pyfunctions' own refusals already carry the name; this gives the
+# script-local ones the same prefix through one wrapper rather than 40 edited
+# f-strings.
+def fatal(message, status=1):
+    shared_fatal(f"{SCRIPT_NAME}: {message}", status=status)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "codebooks"
@@ -92,24 +134,15 @@ ARTIFACTS = (
     ("icay", "IC2023_AY_Stata.zip", "codebooks-ic2023-ay-fixture.do"),
 )
 
-# The network bounds, named once each.
-HTTP_MAX_ATTEMPTS = 3
-HTTP_TIMEOUT_SECONDS = 60
-HTTP_RETRY_BACKOFF_SECONDS = 2
-# Transient statuses: throttling and server-side faults are worth another
-# attempt. Every other status is the REQUEST being wrong (a renamed or retired
-# survey file) and retrying it only delays the diagnosis.
-RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+# The network bounds (attempts, timeout, backoff) and the retryable statuses come
+# from bin/pyfunctions.py, shared with the other two fetchers: a retry covers
+# throttling and server-side faults only, because every other status is the
+# REQUEST being wrong (a renamed or retired syntax file) and retrying that only
+# delays the diagnosis.
 
 # A regenerated domain smaller than this fraction of the committed one is
 # treated as a failed parse rather than a real vocabulary change.
 SEED_SHRINK_FLOOR = 0.5
-
-# The usage-error exit codes bin/functions reserves (10-29), kept in step here
-# so a caller that invoked this script wrongly is distinguishable from a fetch
-# that faulted.
-EXIT_UNKNOWN_OPTION = 10
-EXIT_OPTION_REQUIRES_VALUE = 11
 
 # One line, one label, each carrying its own label-set name: the Stata .do is
 # the only line-oriented syntax file IPEDS publishes, and this regex matched
@@ -164,17 +197,6 @@ SLUG_OVERRIDES = {
 FEDERAL_DISTRICT = frozenset({"DC"})
 TERRITORIES = frozenset({"AS", "GU", "MP", "PR", "VI"})
 FREELY_ASSOCIATED_STATES = frozenset({"FM", "MH", "PW"})
-
-
-def log_warning(message):
-    """A non-fatal fault, on the channel and with the prefix bin/functions'
-    log-warning uses, so one grep finds them across shell and python."""
-    print(f"[WARNING] {message}", file=sys.stderr)
-
-
-def fatal(message, status=1):
-    print(f"[FATAL] {message}", file=sys.stderr)
-    sys.exit(status)
 
 
 # ---------------------------------------------------------------------------
@@ -836,22 +858,28 @@ def require_plausible_codebooks(outdir, json_path, codebooks):
         )
 
 
-def write_artifacts(outdir, sources):
-    """The published archives, byte for byte. They are committed so that the
-    generated codebook can be REGENERATED and compared rather than trusted."""
-    for source in sources.values():
-        (outdir / source.filename).write_bytes(source.body)
+def build_artifact_files(outdir, sources):
+    """[(path, bytes)] for the published archives, byte for byte. They are
+    committed so that the generated codebook can be REGENERATED and compared
+    rather than trusted."""
+    return [(outdir / source.filename, source.body) for source in sources.values()]
 
 
-def write_codebooks(path, codebooks):
-    """Two-space JSON with a trailing newline: the shape deno fmt already agrees
-    with, so a generated file never fights the formatter."""
-    path.write_text(json.dumps(codebooks, indent=2, ensure_ascii=False) + "\n")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def build_codebooks_json(codebooks):
+    """The generated codebook as bytes, with its digest.
+
+    Two-space JSON with a trailing newline: the shape deno fmt already agrees
+    with, so a generated file never fights the formatter. Rendered rather than
+    written, because every file this run produces is written as ONE set (see
+    main): the digest is taken from the bytes that will land, not by reading the
+    file back after writing it."""
+    body = (json.dumps(codebooks, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return body, hashlib.sha256(body).hexdigest()
 
 
-def write_provenance(outdir, sources, codebooks, notes, source_kind, json_path, digest, fixtures):
-    """The regenerable-codebook manifest: when and from where each artifact came,
+def build_provenance(outdir, sources, codebooks, notes, source_kind, json_path, digest, fixtures):
+    """The regenerable-codebook manifest AS BYTES, or None when this run must
+    leave the existing one alone: when and from where each artifact came,
     its size and digest, how many label lines it carried, the per-domain code
     counts the shrink guard reads next time, and the digest of the file that was
     generated from all of it.
@@ -872,8 +900,8 @@ def write_provenance(outdir, sources, codebooks, notes, source_kind, json_path, 
 
     Unlike codebooks.json, this file is NOT byte-reproducible: it embeds
     fetched_at at two levels, so any real re-fetch churns the diff by design."""
-    path = outdir / "PROVENANCE.json"
     offline = fixtures is not None
+    path = outdir / "PROVENANCE.json"
     if offline and path.exists():
         try:
             existing = json.loads(path.read_text())
@@ -884,7 +912,7 @@ def write_provenance(outdir, sources, codebooks, notes, source_kind, json_path, 
                 f"[{path}] records a real fetch; an offline (-F) run leaves it untouched "
                 f"rather than replacing it with a replay's provenance"
             )
-            return
+            return None
     artifacts = {source.filename: source.as_json() for source in sources.values()}
     if offline:
         for artifact in artifacts.values():
@@ -898,7 +926,7 @@ def write_provenance(outdir, sources, codebooks, notes, source_kind, json_path, 
         "notes": notes,
         "output": {"path": relative_to_repo(json_path), "sha256": digest},
     }
-    path.write_text(json.dumps(provenance, indent=2) + "\n")
+    return (json.dumps(provenance, indent=2) + "\n").encode("utf-8")
 
 
 def relative_to_repo(path):
@@ -910,30 +938,39 @@ def relative_to_repo(path):
         return path.name
 
 
+# The name this script reports itself as; every refusal names it, because the
+# three fetchers run under one wrapper and a message must say which refused.
+SCRIPT_NAME = "fetch-codebooks"
+
+# The option grammar, in getopt's own notation and declared ONCE: this is what
+# pyfunctions.parse_short_options parses argv with, and what it derives the
+# value-taking letters from.
+GETOPT_SPEC = "o:j:F:h"
+
+
 def parse_args(argv):
-    """(outdir, json_path, fixtures) from argv, fataling on a malformed
-    option."""
-    outdir = DEFAULT_OUTDIR
-    json_path = DEFAULT_JSON_PATH
-    fixtures = None
-    args = list(argv[1:])
-    while args:
-        arg = args.pop(0)
-        if arg == "-h":
-            print(__doc__)
-            sys.exit(0)
-        if arg in ("-o", "-j", "-F"):
-            if not args:
-                fatal(f"option [{arg}] requires a value", status=EXIT_OPTION_REQUIRES_VALUE)
-            value = Path(args.pop(0))
-            if arg == "-o":
-                outdir = value
-            elif arg == "-j":
-                json_path = value
-            else:
-                fixtures = value
-        else:
-            fatal(f"unknown argument [{arg}]", status=EXIT_UNKNOWN_OPTION)
+    """(outdir, json_path, fixtures) from argv, fataling on a malformed option.
+
+    The grammar, the -h answer and every value-shape guard getopt cannot make --
+    a repeated option, an empty value, a value that is really the next option --
+    live in bin/pyfunctions.py, shared with the other two fetchers.
+
+    What is decided HERE is the DEFAULT of -j, and it follows -o: with no -o the
+    generated codebook is the committed db/data/codebooks.json, and with an -o it
+    is <outdir>/codebooks.json. An -o that redirected the artifacts while the
+    generated file kept going to the committed path would be a half-honoured
+    option -- and an offline replay aimed at a scratch directory would still
+    rewrite a reviewed file. An explicit -j still wins over both."""
+    given = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
+
+    outdir = Path(given["-o"]) if "-o" in given else DEFAULT_OUTDIR
+    if "-j" in given:
+        json_path = Path(given["-j"])
+    elif "-o" in given:
+        json_path = outdir / DEFAULT_JSON_PATH.name
+    else:
+        json_path = DEFAULT_JSON_PATH
+    fixtures = Path(given["-F"]) if "-F" in given else None
     return outdir, json_path, fixtures
 
 
@@ -949,14 +986,26 @@ def main(argv):
     # Nothing is written until the parse is believed: a fetch that succeeded and
     # a parse that collapsed must leave the committed artifacts untouched.
     require_plausible_codebooks(outdir, json_path, codebooks)
-    if fixtures is None:
-        write_artifacts(outdir, sources)
-    digest = write_codebooks(json_path, codebooks)
-    source_kind = "fixtures" if fixtures is not None else "network"
-    write_provenance(outdir, sources, codebooks, notes, source_kind, json_path, digest, fixtures)
 
-    counts = " ".join(f"{name}={len(entry['codes'])}" for name, entry in codebooks.items())
-    print(f"codebook written to [{json_path}] from [{source_kind}]: {counts}")
+    # EVERY file this run produces is written as one set, or none of it is
+    # (RFC 172, bin/pyfunctions.write_atomically). These are committed,
+    # reviewed files: writing the artifacts and the codebook one at a time means
+    # a fault partway through leaves new data under a STALE PROVENANCE.json, and
+    # the next run then measures its shrink guard against a baseline that
+    # describes files that are no longer there.
+    source_kind = "fixtures" if fixtures is not None else "network"
+    body, digest = build_codebooks_json(codebooks)
+    files = [] if fixtures is not None else build_artifact_files(outdir, sources)
+    files.append((json_path, body))
+    provenance = build_provenance(
+        outdir, sources, codebooks, notes, source_kind, json_path, digest, fixtures
+    )
+    if provenance is not None:
+        files.append((outdir / "PROVENANCE.json", provenance))
+    write_atomically(files, SCRIPT_NAME)
+
+    counts = " ".join(f"{name}=[{len(entry['codes'])}]" for name, entry in codebooks.items())
+    log_info(f"codebook written to [{json_path}] from [{source_kind}]: {counts}")
     return 0
 
 

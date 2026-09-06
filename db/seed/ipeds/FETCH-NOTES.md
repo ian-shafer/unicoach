@@ -64,6 +64,32 @@ restated cells in the 2021-22 file) rather than layout. That fetch will fail the
 member-drift guard first, which is the point: the change is reviewed, not
 silent.
 
+## The recorded years
+
+Two year fields were **added by RFC 172** and backfilled into this committed
+record by hand; the archives were **not** re-fetched for either. The top-level
+`"survey_year": 2023` is the IPEDS **collection** year, and every artifact block
+also carries its own `"year"`. Both values come from the `ARTIFACTS` table of
+`bin/fetch-ipeds` for this exact fetch — `SURVEY_YEAR` (2023) on the five
+collection artifacts, and `SFA_AID_YEAR` (2022) on `SFA2223.zip` and
+`SFA2223_Dict.zip`, because the SFA survey covers the **prior aid year**
+(2022-23) inside the 2023 collection. The fetcher declared both all along and
+simply never serialised them; a re-fetch now writes the same fields from the
+same constants.
+
+A third backfilled field, `"ingest_option"`, records which `bin/ingest-colleges`
+flag each artifact is loaded as (`-H`, `-I`, `-A`, `-C`, `-Y`, `-S`), and `null`
+for `SFA2223_Dict.zip`, which is a data dictionary and is deliberately never
+ingested. It too comes from the `ARTIFACTS` table — the `ingest_option` field
+the fetcher already declared — so the mapping is stated once, by the fetcher,
+instead of being re-derived from archive names by whatever reads the manifest.
+
+`bin/load-external-data` reads all three to build the `bin/ingest-colleges`
+command: `-y` from `survey_year`, `-f` from the SFA artifact's `year`, and each
+survey file's flag from its `ingest_option`. Nothing is inferred from a
+filename. These three are the only fields here with no network read behind them;
+every `url`, `fetched_at`, byte count, digest and row count is untouched.
+
 `fetched_at` is deliberately never `null` here: `null` is the script's marker
 for an offline (`-F`) replay, and a manifest that records a real fetch must
 never look like one.

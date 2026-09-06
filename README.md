@@ -147,6 +147,35 @@ bin/q-delete-job           # removes a specific job
 bin/q-truncate             # clears all jobs (requires --yes-i-really-want-to-do-this)
 ```
 
+## External data
+
+The college data is refreshed by three scripts (RFC 172). Run `-h` on any of
+them for the full grammar, the defaults and the selectors:
+
+```sh
+nix develop -c bin/fetch-external-data                       # run the fetchers
+nix develop -c bin/load-external-data institution.csv fields.csv
+nix develop -c bin/reload-external-data institution.csv fields.csv   # both, in order
+```
+
+`institution.csv` and `fields.csv` are the College Scorecard pair, downloaded by
+hand from collegescorecard.ed.gov; there is no fetcher for them. Everything else
+is defaulted — `load-external-data` assembles the whole `bin/ingest-colleges`
+command, reading the IPEDS filenames, the collection year and the SFA aid year
+out of `db/seed/ipeds/PROVENANCE.json` rather than asking you to type them.
+
+- A failed source does not cancel the others; the fetch run ends with a
+  per-source tally and exits 1.
+- `bin/load-external-data -n` prints the command instead of running it — the
+  starting point for a production load through `bin/remote` (adapt it: `db/` is
+  not on the host).
+- A load changes nothing a running service says until `bin/rest-server-bounce`
+  and `bin/queue-worker-bounce`; the run reminds you, and names the database it
+  wrote.
+
+These are laptop tools: they write the working tree and are deliberately not
+deployed.
+
 ## Testing
 
 ### JVM unit tests

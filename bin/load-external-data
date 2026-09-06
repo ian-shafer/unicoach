@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+load-external-data [-n] [-h] <institution.csv> <fields.csv> [aliases.json]
+
+Runs bin/ingest-colleges ONCE, with every path this repo already knows defaulted
+(RFC 172). The maximal ingest command is fourteen flags and paths over
+case-sensitive option pairs (-a/-A, -y/-Y, -f) and year-stamped IPEDS filenames;
+nothing in the tree wrote it down, and the failure that invites is not a crash
+but a green run that loaded less than the operator believed it loaded.
+
+Defaulted for you, with NO flag to override any of them:
+
+  -k db/data/codebooks.json          -m db/seed/cds/merit-aid.csv
+  -s db/data/subjects.json           -a db/seed/cds/admission-factors.csv
+  -v db/data/money-vocabulary.json   -d db/seed/cds/deadlines.csv
+  -H -I -A -C -Y -y -S -f            read from db/seed/ipeds/PROVENANCE.json
+
+bin/ingest-colleges keeps every one of its flags and is still the tool to reach
+for when a path is unusual; this wrapper's entire value is that it has no
+configuration to get wrong.
+
+THE IPEDS FILENAMES, THEIR FLAGS AND BOTH YEARS ARE READ, NEVER TYPED.
+bin/read-ipeds-manifest reads them out of db/seed/ipeds/PROVENANCE.json -- the
+manifest bin/fetch-ipeds writes and the only place those facts are declared -- so
+a new survey year needs no runbook edit and no edit here. Run that script
+directly to see exactly what it found.
+
+EVERY required input is checked BEFORE the JVM starts, and every missing one is
+named in a single message together with the command that produces it. This
+matters because the load is not transactional across its phases: a missing file
+discovered by phase 9 is a re-run, and a missing file discovered by argument
+validation is a corrected command.
+
+The two Scorecard positionals are required and have no fetcher -- download them
+by hand from collegescorecard.ed.gov (RFC 172 deliberately does not add one).
+The optional third argument is the curated aliases JSON, defaulting to
+db/data/college-aliases.json. All three may be s3:// URIs: they are forwarded
+untouched and bin/ingest-colleges' resolve_file_arg does the resolving.
+
+After validation this EXECs bin/ingest-colleges (RFC 80 exec-passthrough): its
+exit code, stdout and stderr pass through untouched and there is no second
+process to misreport the first.
+
+THE TARGET DATABASE comes from the environment bin/common layered (.env plus
+ENV_FILE/ENV_FILES), not from this command line. A real run names it on stderr
+before it starts, because it is the one input that is not visible in the command
+an operator typed.
+
+LOGGING GOES TO STDERR. The one thing this script writes to stdout is what -n
+asks for by name: the exact bin/ingest-colleges command it would run, on one
+line. For a PRODUCTION load, that line is a starting point to ADAPT, not a paste:
+db/data/ and db/seed/ are not bundled to the host (RFC 172 6), so the files this
+command names do not exist there. Send the ones you need with bin/remote's own
+file arguments and refer to them by number:
+
+  bin/remote prod -f 1:institution.csv -f 2:fields.csv -f 3:db/seed/cds/merit-aid.csv \
+    -- ingest-colleges -m @3 ... @1 @2
+
+Run inside the nix dev shell (the JVM lives there):
+  nix develop -c bin/load-external-data institution.csv fields.csv
+  nix develop -c bin/load-external-data -n institution.csv fields.csv
+
+Options:
+  -n: print the bin/ingest-colleges command to stdout and exit, running nothing
+  -h: Help
+EOF
+  exit 0
+}
+
+DRY_RUN=""
+
+parse_args() {
+  local opt
+  while getopts ":nh" opt; do
+    case "$opt" in
+    n) DRY_RUN="yes" ;;
+    h) help ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "load-external-data: unknown option [-$OPTARG]" ;;
+    :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "load-external-data: option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  ARGS_CONSUMED=$((OPTIND - 1))
+}
+
+parse_args "$@"
+shift "$ARGS_CONSUMED"
+
+# The positional grammar -- arity, an option written after a positional (which
+# getopts has already stopped reading and would otherwise take as a file name),
+# and an explicitly EMPTY argument, which is a wrong value rather than an omitted
+# one. Owned by bin/functions so this script and bin/reload-external-data cannot
+# drift apart on it.
+require_ingest_positionals load-external-data "$@"
+
+INSTITUTION_CSV="$1"
+FIELDS_CSV="$2"
+ALIASES_JSON="${3-$PROJECT_ROOT/db/data/college-aliases.json}"
+
+# Every path this wrapper exists to supply, in one place. Nothing below invents a
+# path; they are read from here or from the IPEDS manifest.
+CODEBOOKS_JSON="$PROJECT_ROOT/db/data/codebooks.json"
+SUBJECTS_JSON="$PROJECT_ROOT/db/data/subjects.json"
+MONEY_VOCABULARY_JSON="$PROJECT_ROOT/db/data/money-vocabulary.json"
+CDS_MERIT_AID="$PROJECT_ROOT/db/seed/cds/merit-aid.csv"
+CDS_ADMISSION_FACTORS="$PROJECT_ROOT/db/seed/cds/admission-factors.csv"
+CDS_DEADLINES="$PROJECT_ROOT/db/seed/cds/deadlines.csv"
+IPEDS_DIR="$PROJECT_ROOT/db/seed/ipeds"
+IPEDS_MANIFEST="$IPEDS_DIR/PROVENANCE.json"
+
+IPEDS_HD=""
+IPEDS_IC=""
+IPEDS_ADM=""
+IPEDS_COMPLETIONS=""
+IPEDS_IC_AY=""
+IPEDS_SFA=""
+# The two years are held in two DIFFERENTLY NAMED variables and never in one:
+# IPEDS_SURVEY_YEAR is the collection year behind -y (2023 today) and
+# IPEDS_SFA_AID_YEAR is the aid-year start behind -f (2022 today).
+IPEDS_SURVEY_YEAR=""
+IPEDS_SFA_AID_YEAR=""
+
+# Read the IPEDS half of the command out of the manifest, via the one script that
+# owns that reading. Under -n an option it has no mapping for is a warning and
+# the command is still printed; a REAL load passes -l, which makes it fatal --
+# printing a command is not loading, and a load that quietly omitted a declared
+# survey is the failure this whole RFC is about.
+resolve_ipeds_inputs() {
+  local records status=0 kind flag value
+  local reader=("$PROJECT_ROOT/bin/read-ipeds-manifest" -m "$IPEDS_MANIFEST" -d "$IPEDS_DIR")
+  [ -n "$DRY_RUN" ] || reader+=(-l)
+
+  records="$("${reader[@]}")" || status=$?
+  if [ "$status" -ne 0 ]; then
+    # The reader's own refusals land in the reserved 10-29 band and are reported
+    # as they are. Anything else -- a traceback's 1, or the 127 of a python3 that
+    # is not on PATH outside the nix shell -- is republished as 21: it is this
+    # script missing a required input, and passing on a bare 1 would say
+    # "ingest failed" for a manifest that was never read.
+    if [ "$status" -lt 10 ] || [ "$status" -gt 29 ]; then
+      fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+        "load-external-data: bin/read-ipeds-manifest exited [$status] without a usage-band code; [$IPEDS_MANIFEST] could not be read and nothing was loaded"
+    fi
+    fatal -s "$status" \
+      "load-external-data: bin/read-ipeds-manifest refused [$IPEDS_MANIFEST] with exit [$status] (its own report is above); nothing was loaded"
+  fi
+
+  # Records are KIND-tagged, so a fact the manifest DECLARED (member) and a fact
+  # the reader DERIVED (year) can never share a namespace: an artifact that
+  # recorded the ingest option "-y" cannot bind a path to the survey year.
+  while IFS=$'\t' read -r kind flag value; do
+    [ -n "$kind" ] || continue
+    case "$kind:$flag" in
+    member:-H) IPEDS_HD="$value" ;;
+    member:-I) IPEDS_IC="$value" ;;
+    member:-A) IPEDS_ADM="$value" ;;
+    member:-C) IPEDS_COMPLETIONS="$value" ;;
+    member:-Y) IPEDS_IC_AY="$value" ;;
+    member:-S) IPEDS_SFA="$value" ;;
+    year:-y) IPEDS_SURVEY_YEAR="$value" ;;
+    year:-f) IPEDS_SFA_AID_YEAR="$value" ;;
+    *)
+      fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+        "load-external-data: bin/read-ipeds-manifest emitted the record [$kind $flag $value], which this script has no slot for; the two are out of step and nothing was loaded"
+      ;;
+    esac
+  done <<< "$records"
+}
+
+# Every missing input is collected and reported TOGETHER, each with the command
+# that produces it. Reporting only the first turns one corrected command into as
+# many runs as there are missing files, and a fresh checkout is missing all six
+# IPEDS CSVs at once (they are gitignored; only the manifest is committed).
+UNUSABLE_INPUT_REPORTS=()
+
+require_input() {
+  local path="$1" remedy="$2"
+  if [ -f "$path" ]; then
+    # Present, but is it usable? A file the operator cannot read is a permissions
+    # problem, and reporting it as "missing, run the fetcher" sends them to a
+    # command that will not fix it.
+    [ -r "$path" ] || UNUSABLE_INPUT_REPORTS+=("[$path] is not readable -- check its permissions; $remedy would not fix this")
+    return 0
+  fi
+  if [ -d "$path" ]; then
+    UNUSABLE_INPUT_REPORTS+=("[$path] is a DIRECTORY, not a file -- $remedy")
+    return 0
+  fi
+  if [ -e "$path" ]; then
+    UNUSABLE_INPUT_REPORTS+=("[$path] exists but is not a regular file -- $remedy")
+    return 0
+  fi
+  UNUSABLE_INPUT_REPORTS+=("[$path] does not exist -- $remedy")
+}
+
+# An s3:// argument is not a local file and is resolved by bin/ingest-colleges'
+# resolve_file_arg, so only local paths are checked here.
+require_positional() {
+  local path="$1" remedy="$2"
+  case "$path" in
+  s3://*) return 0 ;;
+  esac
+  require_input "$path" "$remedy"
+}
+
+# The two YEARS go through the same collection as the paths. Nothing downstream
+# would catch an empty or malformed one in time: bin/ingest-colleges would refuse
+# it two processes later, and under -n nothing refuses it at all -- the script
+# would print `-y ` for an operator to paste.
+require_year() {
+  local flag="$1" value="$2" description="$3"
+  if [ -z "$value" ]; then
+    UNUSABLE_INPUT_REPORTS+=("[$flag] has no value -- $description; run bin/fetch-ipeds, which records it in $IPEDS_MANIFEST")
+    return 0
+  fi
+  case "$value" in
+  [12][0-9][0-9][0-9]) ;;
+  *) UNUSABLE_INPUT_REPORTS+=("[$flag] is [$value], which is not a four-digit year -- $description") ;;
+  esac
+}
+
+require_inputs() {
+  require_positional "$INSTITUTION_CSV" "the College Scorecard institution CSV; download it from collegescorecard.ed.gov (RFC 172 adds no fetcher for it)"
+  require_positional "$FIELDS_CSV" "the College Scorecard fields CSV; download it from collegescorecard.ed.gov (RFC 172 adds no fetcher for it)"
+  require_positional "$ALIASES_JSON" "the curated college aliases; it is committed at db/data/college-aliases.json"
+  require_input "$CODEBOOKS_JSON" "the generated published codebook; run bin/fetch-codebooks"
+  require_input "$SUBJECTS_JSON" "the authored subject taxonomy; it is committed at db/data/subjects.json"
+  require_input "$MONEY_VOCABULARY_JSON" "the authored money vocabulary; it is committed at db/data/money-vocabulary.json"
+  require_input "$CDS_MERIT_AID" "the CDS merit-aid seed; run bin/fetch-cds-seed"
+  require_input "$CDS_ADMISSION_FACTORS" "the CDS admission-factors seed; run bin/fetch-cds-seed"
+  require_input "$CDS_DEADLINES" "the CDS deadlines seed; run bin/fetch-cds-seed"
+  require_input "$IPEDS_HD" "the IPEDS HD survey file; run bin/fetch-ipeds"
+  require_input "$IPEDS_IC" "the IPEDS IC survey file; run bin/fetch-ipeds"
+  require_input "$IPEDS_ADM" "the IPEDS ADM survey file; run bin/fetch-ipeds"
+  require_input "$IPEDS_COMPLETIONS" "the IPEDS completions survey file; run bin/fetch-ipeds"
+  require_input "$IPEDS_IC_AY" "the IPEDS IC_AY published-charges survey file; run bin/fetch-ipeds"
+  require_input "$IPEDS_SFA" "the IPEDS SFA student-financial-aid survey file; run bin/fetch-ipeds"
+  require_year -y "$IPEDS_SURVEY_YEAR" "the IPEDS collection year, stamped on every college_ipeds row"
+  require_year -f "$IPEDS_SFA_AID_YEAR" "the SFA aid-year START year, stamped on every college_sfa row"
+
+  if [ "${#UNUSABLE_INPUT_REPORTS[@]}" -gt 0 ]; then
+    local report
+    for report in "${UNUSABLE_INPUT_REPORTS[@]}"; do
+      log-error "load-external-data: unusable input $report"
+    done
+    fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+      "load-external-data: [${#UNUSABLE_INPUT_REPORTS[@]}] required input(s) are missing or unusable (listed above); nothing was loaded"
+  fi
+}
+
+# Options BEFORE the positionals: bin/ingest-colleges' getopts stops at the first
+# operand and refuses anything option-shaped after it, so this order is part of
+# the contract and not a style choice.
+build_ingest_command() {
+  INGEST_COMMAND=(
+    "$PROJECT_ROOT/bin/ingest-colleges"
+    -k "$CODEBOOKS_JSON"
+    -s "$SUBJECTS_JSON"
+    -v "$MONEY_VOCABULARY_JSON"
+    -m "$CDS_MERIT_AID"
+    -a "$CDS_ADMISSION_FACTORS"
+    -d "$CDS_DEADLINES"
+    -H "$IPEDS_HD"
+    -I "$IPEDS_IC"
+    -A "$IPEDS_ADM"
+    -C "$IPEDS_COMPLETIONS"
+    -Y "$IPEDS_IC_AY"
+    -y "$IPEDS_SURVEY_YEAR"
+    -S "$IPEDS_SFA"
+    -f "$IPEDS_SFA_AID_YEAR"
+    "$INSTITUTION_CSV"
+    "$FIELDS_CSV"
+    "$ALIASES_JSON"
+  )
+}
+
+execute_ingest() {
+  if [ -n "$DRY_RUN" ]; then
+    # Restated HERE, immediately before the command, because any warning
+    # bin/read-ipeds-manifest printed is a hundred lines of validation earlier by
+    # the time the operator reads this line -- and it is this line they will
+    # paste.
+    log-info "load-external-data: the command below is what bin/read-ipeds-manifest read from [$IPEDS_MANIFEST] plus these defaults; re-read any [WARNING] above before running it."
+    # ONE line, on stdout, shell-quoted so it can be pasted and re-run verbatim.
+    printf '%q ' "${INGEST_COMMAND[@]}" | sed 's/ $//'
+    printf '\n'
+    exit 0
+  fi
+
+  # WHICH DATABASE this writes is inherited from the environment bin/common
+  # layered (.env -> .env.dev / ENV_FILE / ENV_FILES), not from anything on this
+  # command line -- so it is the one input an operator cannot see by reading the
+  # command they typed. It is named here, before the exec, beside every path.
+  log-info "load-external-data: loading into database [${POSTGRES_DB:-<unset>}] on [${POSTGRES_HOST:-localhost}:${PGPORT:-${POSTGRES_PORT:-<unset>}}] (from the environment bin/common layered, not from this command line)"
+
+  # The served vocabularies are read ONCE, when rest-server and queue-worker
+  # start, so a load changes nothing a running service says until those two
+  # restart. This script prints the two commands and NEVER runs them: a
+  # data-loading tool that restarts services on its own is a tool you cannot run
+  # during business hours.
+  log-info "load-external-data: after this load, restart the two services that read the vocabularies at start:"
+  log-info "  nix develop -c bin/rest-server-bounce"
+  log-info "  nix develop -c bin/queue-worker-bounce"
+
+  exec "${INGEST_COMMAND[@]}"
+}
+
+resolve_ipeds_inputs
+require_inputs
+build_ingest_command
+execute_ingest

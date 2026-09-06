@@ -1981,6 +1981,101 @@ PY
 }
 assert_success "the committed CDS seed matches PROVENANCE.json (sha256 + row counts)" \
   test_cds_provenance_matches_seed
+
+# RFC 172 §5: the option grammar is the stdlib getopt module, and the three
+# bands it is mapped onto are three DIFFERENT operator mistakes.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-cds-seed rejects an unknown option (10)" \
+  bin/fetch-cds-seed -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-cds-seed -F without a value exits 11" \
+  bin/fetch-cds-seed -F
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-cds-seed -o without a value exits 11" \
+  bin/fetch-cds-seed -o
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-cds-seed -K without a value exits 11" \
+  bin/fetch-cds-seed -K
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-cds-seed rejects a stray positional (20, not 10)" \
+  bin/fetch-cds-seed stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-cds-seed rejects a positional after a good option (20)" \
+  bin/fetch-cds-seed -o /tmp stray
+
+# The value-shape checks getopt itself cannot make: an empty value, a value
+# beginning with "-" (a dropped operand), and a repeated flag (a last-wins guess
+# about which of two values was meant).
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed rejects an empty -o value (22)" \
+  bin/fetch-cds-seed -o ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed rejects an empty -K value (22)" \
+  bin/fetch-cds-seed -K ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed rejects [-o -F], a dropped operand (22)" \
+  bin/fetch-cds-seed -o -F
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed refuses a repeated -o rather than last-wins (22)" \
+  bin/fetch-cds-seed -o /tmp -o /tmp
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed refuses a repeated -F rather than last-wins (22)" \
+  bin/fetch-cds-seed -F /tmp -F /tmp
+
+# RFC 172 §5: --anon-key is RETIRED, replaced by -K. The bin/ conventions allow
+# short options only, and this is a hand-run operator tool with no callers in the
+# tree, so the long form is now simply an unknown option (10) rather than an
+# alias. -K itself parses, which the offline run below proves by taking one.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-cds-seed rejects the retired --anon-key long option (10)" \
+  bin/fetch-cds-seed --anon-key jwt -F /tmp -o /tmp
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-cds-seed rejects --anon-key= in its glued form too (10)" \
+  bin/fetch-cds-seed --anon-key=jwt -F /tmp -o /tmp
+
+# RFC 172 §5: stdout is EMPTY on a normal run -- the product is files on disk, so
+# the closing summary is a diagnostic and belongs on stderr. The same run takes
+# -K, so the replacement option is exercised on a path that reaches the write.
+# (Offline, the key is never consulted; -K parsing is what is under test.)
+# Modelled on test_ipeds_logs_to_stderr_and_stdout_stays_empty.
+test_cds_logs_to_stderr_and_stdout_stays_empty() {
+  local out stdout stderr status
+  out="$(mktemp -d)"
+  stdout="$(mktemp)"
+  stderr="$(mktemp)"
+  bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$out" -K not-a-real-jwt > "$stdout" 2> "$stderr"
+  status=$?
+  cds_stderr_cleanup() { rm -rf "$out" "$stdout" "$stderr"; }
+  if [ "$status" -ne 0 ]; then
+    log-error "exit [$status], stderr [$(cat "$stderr")]"; cds_stderr_cleanup; return 1
+  fi
+  if [ -s "$stdout" ]; then
+    log-error "stdout is not empty, it holds [$(cat "$stdout")]"; cds_stderr_cleanup; return 1
+  fi
+  # The summary that used to live on stdout must still be SAID, on stderr.
+  grep -qF -- "seed written to" "$stderr" \
+    || { log-error "stderr does not report the summary"; cds_stderr_cleanup; return 1; }
+  # "dropped:" now, with each reason=[count] bracketed: the ledger used to be
+  # interpolated as a python dict repr, whose quotes are a wrapper this
+  # project's messages do not use.
+  grep -qF -- "dropped:" "$stderr" \
+    || { log-error "stderr does not report the drop ledger: [$(cat "$stderr")]"; cds_stderr_cleanup; return 1; }
+  cds_stderr_cleanup
+  return 0
+}
+assert_success "a successful fetch-cds-seed run (-K) writes its summary to stderr and NOTHING to stdout" \
+  test_cds_logs_to_stderr_and_stdout_stays_empty
+
+# -h is the ONE thing this script puts on stdout, and it must name the new -K
+# rather than the retired long option: the help is the operator's only record of
+# a breaking interface change.
+test_cds_help_exits_zero_on_stdout() {
+  local out err status
+  out="$(mktemp)"
+  err="$(mktemp)"
+  bin/fetch-cds-seed -h > "$out" 2> "$err"
+  status=$?
+  [ "$status" -eq 0 ] || { log-error "-h exited [$status]"; rm -f "$out" "$err"; return 1; }
+  grep -q "fetch-cds-seed: build the CDS admissions seed" "$out" \
+    || { log-error "-h printed no help: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
+  grep -q -- "-K JWT" "$out" \
+    || { log-error "-h does not document -K"; rm -f "$out" "$err"; return 1; }
+  if grep -q -- "--anon-key" "$out"; then
+    log-error "-h still documents the retired --anon-key"; rm -f "$out" "$err"; return 1
+  fi
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -3 "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+  return 0
+}
+assert_success "fetch-cds-seed -h prints the help to stdout (documenting -K, not --anon-key)" \
+  test_cds_help_exits_zero_on_stdout
 rm -rf "$CDS_FIXTURES" "$CDS_OUT"
 
 # ── RFC 147: published codebooks (bin/fetch-codebooks) ───────────────────────
@@ -2127,7 +2222,9 @@ PY
   # The guard's whole claim is that the reviewed file is NOT overwritten, so
   # that is what is asserted: the named refusal, and no output file at all.
   case "$output" in
-    *"[FATAL] code counts collapsed"*) ;;
+    # The refusal names the SCRIPT that made it (RFC 172: the three fetchers run
+    # under one orchestrator, so an unattributed [FATAL] costs a lookup).
+    *"[FATAL] fetch-codebooks: code counts collapsed"*) ;;
     *) rm -rf "$out"; return 1 ;;
   esac
   [ -e "$out/codebooks.json" ] && { rm -rf "$out"; return 1; }
@@ -2158,7 +2255,9 @@ PY
   status=$?
   rm -rf "$out"
   case "$output" in
-    *"[FATAL] code counts collapsed"*) ;;
+    # The refusal names the SCRIPT that made it (RFC 172: the three fetchers run
+    # under one orchestrator, so an unattributed [FATAL] costs a lookup).
+    *"[FATAL] fetch-codebooks: code counts collapsed"*) ;;
     *) return 1 ;;
   esac
   [ "$status" -ne 0 ] || return 1
@@ -2270,10 +2369,87 @@ test_codebooks_missing_fixture_names_both_shapes() {
 assert_success "a missing codebook fixture names the archive and the declared .do" \
   test_codebooks_missing_fixture_names_both_shapes
 
+# RFC 172 §5: the option grammar is the stdlib getopt module, and the three
+# bands it is mapped onto are three DIFFERENT operator mistakes. getopt raises
+# one exception class for the first two, so what separates them is the option
+# that faulted rather than the message text; the third is not an exception at
+# all but the operand list getopt hands back, and this script declares none.
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-codebooks rejects an unknown option (10)" \
   bin/fetch-codebooks -z
 assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-codebooks -F without a value exits 11" \
   bin/fetch-codebooks -F
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-codebooks -o without a value exits 11" \
+  bin/fetch-codebooks -o
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-codebooks -j without a value exits 11" \
+  bin/fetch-codebooks -j
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-codebooks rejects a stray positional (20, not 10)" \
+  bin/fetch-codebooks stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-codebooks rejects a positional after a good option (20)" \
+  bin/fetch-codebooks -o /tmp stray
+
+# The value-shape checks getopt itself cannot make, each one a way a wrong
+# directory gets written quietly: an empty value means the current directory, a
+# value beginning with "-" is a dropped operand, and a repeated flag is a
+# last-wins guess about which of two paths was meant.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-codebooks rejects an empty -o value (22)" \
+  bin/fetch-codebooks -o ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-codebooks rejects [-o -F], a dropped operand (22)" \
+  bin/fetch-codebooks -o -F
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-codebooks refuses a repeated -o rather than last-wins (22)" \
+  bin/fetch-codebooks -o /tmp -o /tmp
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-codebooks refuses a repeated -F rather than last-wins (22)" \
+  bin/fetch-codebooks -F /tmp -F /tmp
+
+# RFC 172 §5: stdout is EMPTY on a normal run. The product is files on disk, so
+# the closing summary is a diagnostic and belongs on stderr with everything
+# else -- and bin/fetch-external-data's own stdout contract (§1) is unachievable
+# while this script writes its summary to stdout. Modelled on
+# test_ipeds_logs_to_stderr_and_stdout_stays_empty.
+test_codebooks_logs_to_stderr_and_stdout_stays_empty() {
+  local out stdout stderr status
+  out="$(mktemp -d)"
+  stdout="$(mktemp)"
+  stderr="$(mktemp)"
+  bin/fetch-codebooks -F "$CODEBOOK_FIXTURES" -o "$out" -j "$out/codebooks.json" \
+    > "$stdout" 2> "$stderr"
+  status=$?
+  codebooks_stderr_cleanup() { rm -rf "$out" "$stdout" "$stderr"; }
+  if [ "$status" -ne 0 ]; then
+    log-error "exit [$status], stderr [$(cat "$stderr")]"
+    codebooks_stderr_cleanup; return 1
+  fi
+  if [ -s "$stdout" ]; then
+    log-error "stdout is not empty, it holds [$(cat "$stdout")]"
+    codebooks_stderr_cleanup; return 1
+  fi
+  # The summary that used to live on stdout must still be SAID, on stderr.
+  grep -qF -- "codebook written to" "$stderr" \
+    || { log-error "stderr does not report the summary"; codebooks_stderr_cleanup; return 1; }
+  grep -qF -- "from [fixtures]" "$stderr" \
+    || { log-error "stderr does not name the source route"; codebooks_stderr_cleanup; return 1; }
+  codebooks_stderr_cleanup
+  return 0
+}
+assert_success "a successful fetch-codebooks run writes its summary to stderr and NOTHING to stdout" \
+  test_codebooks_logs_to_stderr_and_stdout_stays_empty
+
+# -h is the ONE thing this script puts on stdout: stdout carries what the caller
+# explicitly asked for, and a caller passing -h asked for the help text.
+test_codebooks_help_exits_zero_on_stdout() {
+  local out err status
+  out="$(mktemp)"
+  err="$(mktemp)"
+  bin/fetch-codebooks -h > "$out" 2> "$err"
+  status=$?
+  [ "$status" -eq 0 ] || { log-error "-h exited [$status]"; rm -f "$out" "$err"; return 1; }
+  grep -q "fetch-codebooks: build the published-codebook reference data" "$out" \
+    || { log-error "-h printed no help: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -3 "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+  return 0
+}
+assert_success "fetch-codebooks -h prints the help to stdout and exits 0, stderr empty" \
+  test_codebooks_help_exits_zero_on_stdout
 
 # The anti-hand-edit guard: the committed codebook must be what the committed
 # artifacts GENERATE, byte for byte, and the artifacts must be what
@@ -2934,7 +3110,7 @@ for artifact in provenance['artifacts'].values():
   after="$(cat "$out"/*.csv | shasum -a 256)"
   [ "$before" = "$after" ] || { log-error "the refused run overwrote a CSV"; rm -rf "$out"; return 1; }
   case "$output" in
-    *"[FATAL] row counts collapsed"*) ;;
+    *"[FATAL] fetch-ipeds: row counts collapsed"*) ;;
     *) log-error "output was [$output]"; rm -rf "$out"; return 1 ;;
   esac
   # The recorded counts must still be the OLD ones: a refusal that rewrote the
@@ -2996,7 +3172,7 @@ for artifact in provenance['artifacts'].values():
   listing="$(ls -A "$out")"
   rm -rf "$out"
   case "$output" in
-    *"[FATAL] row counts collapsed"*) ;;
+    *"[FATAL] fetch-ipeds: row counts collapsed"*) ;;
     *) log-error "output was [$output]"; return 1 ;;
   esac
   [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] despite refusing"; return 1; }
@@ -3552,6 +3728,11 @@ test_ipeds_stale_year_refused() {
   script="$root/bin/fetch-ipeds"
   sed "s/^$constant = .*/$constant = $bumped/" "$PROJECT_ROOT/bin/fetch-ipeds" > "$script"
   chmod +x "$script"
+  # The copy imports bin/pyfunctions.py from ITS OWN directory (the import is
+  # resolved against the script, never against the caller's cwd), so the module
+  # is copied beside it. Without this the copy dies on the import and the year
+  # check under test would never run.
+  cp "$PROJECT_ROOT/bin/pyfunctions.py" "$root/bin/pyfunctions.py"
   grep -qxF "$constant = $bumped" "$script" \
     || { log-error "the [$constant] bump did not apply to the copy"; rm -rf "$root"; return 1; }
   output="$("$script" -F "/no/such/$$-ipeds-fixtures" -o "$root/out" 2>&1)"
@@ -4313,5 +4494,1380 @@ test_state_apply_terminates() {
   timeout "$STATE_APPLY_TIMEOUT_SECS" bin/state-apply -f fixtures/dev-users.yaml >/dev/null 2>&1
 }
 assert_success "state-apply exits on its own after argon2 hashing (no non-daemon pool pinning the JVM)" test_state_apply_terminates
+
+# ── RFC 172: the three external-data wrappers ────────────────────────────────
+echo ""
+echo "==== Testing RFC 172 external-data wrappers ===="
+
+assert_success "bin/pyfunctions.py parses as python3" \
+  python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/pyfunctions.py').read())"
+# The three fetchers now IMPORT that module, so parsing each one alone is no
+# longer enough: an import resolved against the caller's cwd would parse and then
+# fail at run time from any other directory. Imported here from a directory that
+# is deliberately not bin/.
+test_fetchers_import_pyfunctions_from_anywhere() {
+  local fetcher elsewhere
+  elsewhere="$(mktemp -d)"
+  for fetcher in fetch-ipeds fetch-codebooks fetch-cds-seed; do
+    if ! (cd "$elsewhere" && "$PROJECT_ROOT/bin/$fetcher" -h > /dev/null 2> "$elsewhere/stderr"); then
+      log-error "[$fetcher] could not run from [$elsewhere]: [$(cat "$elsewhere/stderr")]"
+      rm -rf "$elsewhere"
+      return 1
+    fi
+  done
+  rm -rf "$elsewhere"
+}
+assert_success "all three fetchers import bin/pyfunctions.py from any working directory" \
+  test_fetchers_import_pyfunctions_from_anywhere
+
+# ...and importing it leaves NO bin/__pycache__ behind. bin/ is a reviewed
+# directory of scripts, not a package build tree, and an untracked directory
+# appearing there on every operator run is a real cost (the fetchers set
+# sys.dont_write_bytecode before the import for exactly this).
+test_pyfunctions_import_writes_no_bytecode_cache() {
+  rm -rf "$PROJECT_ROOT/bin/__pycache__"
+  bin/fetch-ipeds -h >/dev/null 2>&1 \
+    || { log-error "bin/fetch-ipeds -h failed, so this test never exercised the import"; return 1; }
+  [ ! -e "$PROJECT_ROOT/bin/__pycache__" ] && return 0
+  log-error "importing bin/pyfunctions.py wrote [$PROJECT_ROOT/bin/__pycache__]"
+  rm -rf "$PROJECT_ROOT/bin/__pycache__"
+  return 1
+}
+assert_success "importing bin/pyfunctions.py leaves no __pycache__ in bin/" \
+  test_pyfunctions_import_writes_no_bytecode_cache
+
+# The years the fixture manifests are compared against come from the FETCHER's
+# own constants, so a survey-year bump moves the assertions with the code instead
+# of leaving two literals behind in this file.
+IPEDS_DECLARED_YEARS="$(python3 - "$PROJECT_ROOT/bin/fetch-ipeds" << 'PY'
+import ast
+import sys
+
+# Parsed, not grepped: a regex over the source dies as an AttributeError the day
+# someone reformats the assignment, and this file is already parsed with ast
+# elsewhere in this suite.
+module = ast.parse(open(sys.argv[1]).read())
+declared = {
+    target.id: node.value.value
+    for node in module.body
+    if isinstance(node, ast.Assign)
+    for target in node.targets
+    if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant)
+}
+for name in ("SURVEY_YEAR", "SFA_AID_YEAR"):
+    print(declared[name])
+PY
+)"
+IPEDS_SURVEY_YEAR_DECLARED="$(printf '%s\n' "$IPEDS_DECLARED_YEARS" | sed -n 1p)"
+IPEDS_SFA_YEAR_DECLARED="$(printf '%s\n' "$IPEDS_DECLARED_YEARS" | sed -n 2p)"
+
+assert_success "bin/fetch-external-data parses as bash" bash -n "$PROJECT_ROOT/bin/fetch-external-data"
+assert_success "bin/load-external-data parses as bash" bash -n "$PROJECT_ROOT/bin/load-external-data"
+assert_success "bin/reload-external-data parses as bash" bash -n "$PROJECT_ROOT/bin/reload-external-data"
+
+assert_success "fetch-external-data -h exits 0" bin/fetch-external-data -h
+assert_success "load-external-data -h exits 0" bin/load-external-data -h
+assert_success "reload-external-data -h exits 0" bin/reload-external-data -h
+
+# Usage grammar. Every one of these is refused BEFORE anything is fetched or
+# loaded, so none of them touches the network or the database.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-external-data rejects an unknown option (10)" \
+  bin/fetch-external-data -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-external-data -F without a value exits 11" \
+  bin/fetch-external-data -F
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-external-data -o without a value exits 11" \
+  bin/fetch-external-data -o
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-external-data rejects a stray positional (20)" \
+  bin/fetch-external-data stray
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-external-data rejects an empty -F value (22)" \
+  bin/fetch-external-data -F "" -o /tmp
+# -F REQUIRES -o: an offline replay aimed at the committed default directories
+# would write fixture-derived data over db/data/codebooks.json and db/seed/.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "fetch-external-data -F without -o exits 21" \
+  bin/fetch-external-data -F "$PROJECT_ROOT/college/src/test/resources"
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "load-external-data rejects an unknown option (10)" \
+  bin/load-external-data -z a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "load-external-data with no positionals exits 21" \
+  bin/load-external-data
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "load-external-data with four positionals exits 20" \
+  bin/load-external-data a.csv b.csv c.json d.json
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "load-external-data rejects an explicitly-empty aliases argument" \
+  bin/load-external-data a.csv b.csv ""
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "reload-external-data rejects an unknown option (10)" \
+  bin/reload-external-data -z a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "reload-external-data with one positional exits 21" \
+  bin/reload-external-data a.csv
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "reload-external-data with four positionals exits 20" \
+  bin/reload-external-data a.csv b.csv c.json d.json
+
+# One offline fixture directory serving all three fetchers: the recorded IPEDS
+# CSVs and codebook .do files are matched by EXACT name out of the shared test
+# resources, so only the ten this replay reads are linked in, and the CDS
+# fixtures are the same recorded API responses the RFC 140 section above writes.
+# No EXIT trap here: the harness's daemon-teardown trap (top of file) must not be
+# clobbered. The dirs are removed at the end of this section.
+EXTERNAL_FIXTURES="$(mktemp -d)"
+EXTERNAL_OUT="$(mktemp -d)"
+for fixture in \
+  codebooks-hd2023-fixture.do codebooks-ic2023-fixture.do codebooks-adm2023-fixture.do \
+  codebooks-c2023-a-fixture.do codebooks-ic2023-ay-fixture.do \
+  ipeds-hd2023-fixture.csv ipeds-ic2023-fixture.csv ipeds-adm2023-fixture.csv \
+  ipeds-c2023-a-fixture.csv ipeds-ic2023-ay-fixture.csv ipeds-sfa2223-fixture.csv \
+  ipeds-sfa2223-dict-fixture.xlsx; do
+  ln -s "$PROJECT_ROOT/college/src/test/resources/$fixture" "$EXTERNAL_FIXTURES/$fixture"
+done
+write_cds_fixtures "$EXTERNAL_FIXTURES"
+
+# The committed codebook is the file an -o that did not also carry -j would
+# silently rewrite, so its digest is taken before the offline run and compared
+# after it.
+EXTERNAL_CODEBOOK_DIGEST_BEFORE="$(shasum -a 256 < "$PROJECT_ROOT/db/data/codebooks.json")"
+EXTERNAL_STDOUT="$(mktemp)"
+# The redirect belongs INSIDE the function under test: written on the
+# assert_success line it would capture the harness's own pass line instead, and
+# the stdout assertion below would read that.
+run_external_offline_fetch() {
+  bin/fetch-external-data -F "$EXTERNAL_FIXTURES" -o "$EXTERNAL_OUT" > "$EXTERNAL_STDOUT" 2>/dev/null
+}
+assert_success "fetch-external-data runs all three fetchers offline from fixtures" \
+  run_external_offline_fetch
+
+# The stdout contract of RFC 172 1: the product is files on disk plus a
+# diagnostic summary, and the summary is a diagnostic. This is only true because
+# all three fetchers now log to stderr (RFC 172 5).
+test_fetch_external_data_stdout_stays_empty() {
+  [ -s "$EXTERNAL_STDOUT" ] || return 0
+  log-error "fetch-external-data wrote to stdout: [$(cat "$EXTERNAL_STDOUT")]"
+  return 1
+}
+assert_success "fetch-external-data writes nothing to stdout on a normal run" \
+  test_fetch_external_data_stdout_stays_empty
+
+# -o is an output ROOT: each source lands in its own subdirectory, because all
+# three fetchers write a PROVENANCE.json and one shared directory would have
+# them overwrite each other's.
+test_fetch_external_data_writes_three_sources() {
+  local name
+  for name in codebooks/PROVENANCE.json codebooks/codebooks.json ipeds/PROVENANCE.json \
+    ipeds/HD2023.csv ipeds/ic2023_ay.csv ipeds/sfa2223.csv cds/PROVENANCE.json cds/merit-aid.csv; do
+    [ -s "$EXTERNAL_OUT/$name" ] || { log-error "offline run did not write [$name]"; return 1; }
+  done
+  return 0
+}
+assert_success "each source is written under its own subdirectory of -o" \
+  test_fetch_external_data_writes_three_sources
+
+test_fetch_external_data_spares_the_committed_codebook() {
+  local after
+  after="$(shasum -a 256 < "$PROJECT_ROOT/db/data/codebooks.json")"
+  [ "$after" = "$EXTERNAL_CODEBOOK_DIGEST_BEFORE" ] && return 0
+  log-error "the offline run rewrote the committed db/data/codebooks.json"
+  return 1
+}
+assert_success "an offline run leaves the committed db/data/codebooks.json untouched" \
+  test_fetch_external_data_spares_the_committed_codebook
+
+# S2/RFC 172 1: -o redirects ALL of a fetcher's output. fetch-codebooks' generated
+# codebook follows -o with no -j at all, so the wrapper needs no compensating
+# flag and a redirected run cannot reach a committed file through a path -o did
+# not cover.
+test_fetch_codebooks_o_redirects_the_generated_codebook() {
+  local out
+  out="$(mktemp -d)"
+  bin/fetch-codebooks -F "$PROJECT_ROOT/college/src/test/resources" -o "$out" >/dev/null 2>"$out/stderr" || {
+    log-error "fetch-codebooks -o (no -j) did not succeed offline: [$(cat "$out/stderr" 2>/dev/null)]"
+    rm -rf "$out"
+    return 1
+  }
+  if [ ! -s "$out/codebooks.json" ]; then
+    log-error "the generated codebook did not follow -o into [$out]"
+    rm -rf "$out"
+    return 1
+  fi
+  rm -rf "$out"
+}
+assert_success "fetch-codebooks -o with no -j writes the generated codebook under -o" \
+  test_fetch_codebooks_o_redirects_the_generated_codebook
+
+# S1: an -o the fetchers cannot use is ONE source's failure, tallied and survived,
+# not an abort before any source runs. A wrapper-level mkdir would fail first,
+# under set -e, and cancel the whole best-effort run.
+test_fetch_external_data_bad_output_root_is_a_tallied_failure() {
+  local root file stderr rc=0
+  root="$(mktemp -d)"
+  file="$root/ipeds"
+  : > "$file"
+  stderr="$root/stderr"
+  bin/fetch-external-data -i -F "$PROJECT_ROOT/college/src/test/resources" -o "$root" \
+    >/dev/null 2>"$stderr" || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    log-error "expected the wrapper's own exit 1, got [$rc]: [$(cat "$stderr")]"
+    rm -rf "$root"
+    return 1
+  fi
+  if ! grep -qF "of [1] sources fetched" "$stderr"; then
+    log-error "the failure was not tallied: [$(cat "$stderr")]"
+    rm -rf "$root"
+    return 1
+  fi
+  rm -rf "$root"
+}
+assert_success "an unusable -o is one source's tallied failure, not an aborted run" \
+  test_fetch_external_data_bad_output_root_is_a_tallied_failure
+
+# RFC 172: the survey year is RECORDED, so bin/load-external-data never has to
+# infer it from a filename. An offline replay records it from the same constant.
+assert_success "a fetch-ipeds run records the survey year in PROVENANCE.json" \
+  ipeds_provenance_assert "$EXTERNAL_OUT/ipeds/PROVENANCE.json" \
+    "provenance['survey_year'] == $IPEDS_SURVEY_YEAR_DECLARED
+     and all('year' in a and 'ingest_option' in a for a in artifacts.values())
+     and artifacts['SFA2223.zip']['year'] == $IPEDS_SFA_YEAR_DECLARED"
+assert_success "the committed db/seed/ipeds/PROVENANCE.json records the fetcher's declared survey year" \
+  ipeds_provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
+    "provenance['survey_year'] == $IPEDS_SURVEY_YEAR_DECLARED and provenance['source'] == 'network'"
+# Every artifact records its OWN year, and the two SFA ones record the aid year
+# (2022), not the collection year: SFA2223 covers aid year 2022-23 inside the
+# 2023 collection (RFC 162), and one number cannot label both.
+assert_success "the committed manifest records a per-artifact year, the SFA aid year on the SFA archives" \
+  ipeds_provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
+    "all('year' in a for a in artifacts.values())
+     and {name for name, a in artifacts.items() if a['year'] == $IPEDS_SFA_YEAR_DECLARED} == {'SFA2223.zip', 'SFA2223_Dict.zip'}
+     and {a['year'] for name, a in artifacts.items() if not name.startswith('SFA')} == {$IPEDS_SURVEY_YEAR_DECLARED}"
+# B2: which bin/ingest-colleges flag each artifact is loaded as is RECORDED, so
+# the wrapper reads a declaration instead of re-deriving it from archive names --
+# and the dictionary's null is how the fetcher says "never ingested".
+assert_success "the committed manifest records the ingest option of every artifact, null for the dictionary" \
+  ipeds_provenance_assert "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" \
+    'all("ingest_option" in a for a in artifacts.values())
+     and artifacts["SFA2223_Dict.zip"]["ingest_option"] is None
+     and {a["ingest_option"] for name, a in artifacts.items() if name != "SFA2223_Dict.zip"}
+         == {"-H", "-I", "-A", "-C", "-Y", "-S"}'
+
+rm -f "$EXTERNAL_STDOUT"
+rm -rf "$EXTERNAL_FIXTURES" "$EXTERNAL_OUT"
+
+# A stub PROJECT_ROOT: bin/common derives PROJECT_ROOT from its own path, so a
+# directory of symlinks to the real bin/ is a complete checkout as far as these
+# scripts are concerned -- and an individual entry can then be REPLACED by a
+# stub, which is what makes the selector, best-effort and ordering rules testable
+# with no network and no database. db/seed/ipeds is a real directory holding a
+# fixture manifest and empty stand-ins for the (gitignored) survey CSVs.
+make_external_stub_root() {
+  local root="$1" entry
+  mkdir -p "$root/bin" "$root/db/seed"
+  for entry in "$PROJECT_ROOT"/bin/*; do
+    ln -s "$entry" "$root/bin/$(basename "$entry")"
+  done
+  for entry in .env .env.dev .env.test .env.fuzz; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  ln -s "$PROJECT_ROOT/db/data" "$root/db/data"
+  ln -s "$PROJECT_ROOT/db/seed/cds" "$root/db/seed/cds"
+  mkdir -p "$root/db/seed/ipeds"
+}
+
+# The manifest shapes a reader must tell apart. The fixture COLLECTION year is
+# 2026 and the fixture SFA AID year is 2025, both different from the committed
+# 2023/2022 pair and from each other, so a -n command carrying -y 2026 -f 2025
+# and ic2026_ay.csv proves every one of them was READ rather than defaulted or
+# copied from the other number. The ingest FLAG of each artifact is recorded the
+# way bin/fetch-ipeds records it, and the seventh artifact -- the SFA data
+# dictionary -- records a null one, which is how the fetcher says "never
+# ingested".
+#   top       a complete RFC 172 manifest: survey_year, per-artifact year, ingest_option
+#   no-year   no top-level survey_year
+#   non-integer-year  a hand-edited "2026" where an integer is recorded
+#   no-sfa-year   the SFA artifact records no year of its own
+#   no-sfa    no SFA data archive at all (the dictionary alone is not one)
+#   contradiction one collection artifact declares a year the top level does not
+#   unknown   an ingest flag this WRAPPER has no slot for
+#   no-option an artifact block with no ingest_option recorded at all
+#   duplicate two archives claiming the same ingest flag
+#   no-member an artifact block with no recorded member name
+#   no-artifacts  a manifest whose artifacts object is empty
+#   many-faults   several independent faults in one manifest
+write_ipeds_fixture_manifest() {
+  python3 - "$1" "$2" << 'PY'
+import json
+import sys
+from pathlib import Path
+
+outdir, shape = Path(sys.argv[1]), sys.argv[2]
+COLLECTION_YEAR, SFA_AID_YEAR = 2026, 2025
+# archive -> (member, year, ingest_option), the three facts bin/fetch-ipeds
+# declares per artifact and records for the wrapper to read.
+members = {
+    "HD2026.zip": ("HD2026.csv", COLLECTION_YEAR, "-H"),
+    "IC2026.zip": ("IC2026.csv", COLLECTION_YEAR, "-I"),
+    "ADM2026.zip": ("adm2026.csv", COLLECTION_YEAR, "-A"),
+    "C2026_A.zip": ("C2026_a.csv", COLLECTION_YEAR, "-C"),
+    "IC2026_AY.zip": ("ic2026_ay.csv", COLLECTION_YEAR, "-Y"),
+    "SFA2526.zip": ("sfa2526.csv", SFA_AID_YEAR, "-S"),
+    "SFA2526_Dict.zip": ("sfa2526.xlsx", SFA_AID_YEAR, None),
+}
+if shape == "no-sfa":
+    del members["SFA2526.zip"]
+if shape == "unknown":
+    # A survey the FETCHER knows and this wrapper does not: a flag with no slot.
+    members["GR2026.zip"] = ("gr2026.csv", COLLECTION_YEAR, "-G")
+if shape == "duplicate":
+    # A second archive claiming -H, which is a manifest to re-fetch and never a
+    # choice this reader makes for the operator.
+    members["HD2025.zip"] = ("HD2025.csv", COLLECTION_YEAR, "-H")
+artifacts = {}
+for archive, (member, year, option) in members.items():
+    entry = {
+        "url": f"https://example.invalid/{archive}",
+        "member": member,
+        "rows": 3,
+        "year": year,
+        "ingest_option": option,
+    }
+    if shape in ("no-sfa-year", "many-faults") and archive == "SFA2526.zip":
+        del entry["year"]
+    if shape == "non-integer-year" and archive == "SFA2526.zip":
+        entry["year"] = str(year)
+    if shape in ("no-member", "many-faults") and archive == "HD2026.zip":
+        del entry["member"]
+    if shape in ("no-option", "many-faults") and archive == "IC2026.zip":
+        del entry["ingest_option"]
+    if shape == "contradiction" and archive == "ADM2026.zip":
+        entry["year"] = COLLECTION_YEAR - 1
+    artifacts[archive] = entry
+manifest = {"fetched_at": "2026-01-01T00:00:00+00:00", "source": "network", "artifacts": artifacts}
+if shape == "no-artifacts":
+    manifest["artifacts"] = {}
+if shape == "non-integer-year":
+    manifest["survey_year"] = str(COLLECTION_YEAR)
+elif shape != "no-year":
+    manifest["survey_year"] = COLLECTION_YEAR
+outdir.mkdir(parents=True, exist_ok=True)
+(outdir / "PROVENANCE.json").write_text(json.dumps(manifest, indent=2) + "\n")
+for member, _, _ in members.values():
+    (outdir / member).write_text("UNITID,VALUE\n100001,1\n")
+PY
+}
+
+
+# One command line on stdout and nothing else: -n is the ONE thing this wrapper
+# is asked for by name, and it is what an operator pastes into bin/remote.
+EXTERNAL_ROOT="$(mktemp -d)/checkout"
+mkdir -p "$EXTERNAL_ROOT"
+make_external_stub_root "$EXTERNAL_ROOT"
+write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+: > "$EXTERNAL_ROOT/institution.csv"
+: > "$EXTERNAL_ROOT/fields.csv"
+EXTERNAL_DRY_RUN=""
+
+test_load_external_data_prints_one_command() {
+  local out
+  local stderr
+  stderr="$(mktemp)"
+  # stderr is KEPT, not discarded: these scripts report only on stderr, so a
+  # failure whose cause went to /dev/null prints no cause at all.
+  out="$("$EXTERNAL_ROOT/bin/load-external-data" -n \
+    "$EXTERNAL_ROOT/institution.csv" "$EXTERNAL_ROOT/fields.csv" 2> "$stderr")" || {
+    log-error "load-external-data -n exited nonzero: [$(cat "$stderr")]"
+    rm -f "$stderr"
+    return 1
+  }
+  rm -f "$stderr"
+  EXTERNAL_DRY_RUN="$out"
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = "1" ] && return 0
+  log-error "load-external-data -n printed [$(printf '%s\n' "$out" | wc -l)] lines, not one"
+  return 1
+}
+assert_success "load-external-data -n prints exactly one command line to stdout" \
+  test_load_external_data_prints_one_command
+
+# Every flag of the maximal ingest command, with the paths it must carry. The
+# IPEDS half is the point: -H/-I/-A/-C/-Y and -y are the six an operator used to
+# type over year-stamped filenames, and all six here come from the manifest.
+test_load_external_data_command_is_complete() {
+  [ -n "$EXTERNAL_DRY_RUN" ] || { log-error "no -n command was captured to assert against"; return 1; }
+  local expected missing=() letters letter
+  # The value-taking option LETTERS come from bin/ingest-colleges' own getopts
+  # spec, not from a list retyped here: a fifteenth ingest option must fail this
+  # test rather than ship as a silently partial load.
+  letters="$(python3 - "$PROJECT_ROOT/bin" "$PROJECT_ROOT/bin/ingest-colleges" << 'PY'
+import re
+import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from pyfunctions import value_options
+
+# ONE implementation of "which letters in a getopts spec take a value", shared
+# with the scripts that parse with it -- a second copy here could disagree with
+# the one the code uses and the disagreement would look like a passing test.
+spec = re.search(r'while getopts "([^"]+)"', open(sys.argv[2]).read()).group(1)
+print(" ".join(option.lstrip("-") for option in value_options(spec)))
+PY
+)"
+  [ -n "$letters" ] || { log-error "no option letters were read from bin/ingest-colleges"; return 1; }
+  for letter in $letters; do
+    case "$EXTERNAL_DRY_RUN" in
+    *" -$letter "*) ;;
+    *) missing+=("-$letter") ;;
+    esac
+  done
+  for expected in \
+    "/bin/ingest-colleges" \
+    "-k $EXTERNAL_ROOT/db/data/codebooks.json" \
+    "-s $EXTERNAL_ROOT/db/data/subjects.json" \
+    "-v $EXTERNAL_ROOT/db/data/money-vocabulary.json" \
+    "-m $EXTERNAL_ROOT/db/seed/cds/merit-aid.csv" \
+    "-a $EXTERNAL_ROOT/db/seed/cds/admission-factors.csv" \
+    "-d $EXTERNAL_ROOT/db/seed/cds/deadlines.csv" \
+    "-H $EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv" \
+    "-I $EXTERNAL_ROOT/db/seed/ipeds/IC2026.csv" \
+    "-A $EXTERNAL_ROOT/db/seed/ipeds/adm2026.csv" \
+    "-C $EXTERNAL_ROOT/db/seed/ipeds/C2026_a.csv" \
+    "-Y $EXTERNAL_ROOT/db/seed/ipeds/ic2026_ay.csv" \
+    "-y 2026" \
+    "-S $EXTERNAL_ROOT/db/seed/ipeds/sfa2526.csv" \
+    "-f 2025" \
+    "$EXTERNAL_ROOT/institution.csv $EXTERNAL_ROOT/fields.csv $EXTERNAL_ROOT/db/data/college-aliases.json"; do
+    case "$EXTERNAL_DRY_RUN" in
+    *"$expected"*) ;;
+    *) missing+=("$expected") ;;
+    esac
+  done
+  [ "${#missing[@]}" -eq 0 ] && return 0
+  log-error "the -n command is missing ${missing[*]} -- it read [$EXTERNAL_DRY_RUN]"
+  return 1
+}
+assert_success "the -n command carries every value-taking ingest option, the manifest's six CSVs and both years" \
+  test_load_external_data_command_is_complete
+
+# The three positionals come LAST, after every option: bin/ingest-colleges'
+# getopts stops at the first operand and fatals on anything option-shaped after
+# it, so this ordering is a contract and not a style choice.
+test_load_external_data_options_precede_positionals() {
+  [ -n "$EXTERNAL_DRY_RUN" ] || { log-error "no -n command was captured to assert against"; return 1; }
+  case "$EXTERNAL_DRY_RUN" in
+  *"-f 2025 $EXTERNAL_ROOT/institution.csv"*) return 0 ;;
+  esac
+  log-error "the -n command does not put the positionals last: [$EXTERNAL_DRY_RUN]"
+  return 1
+}
+assert_success "the -n command puts every option before the positionals" \
+  test_load_external_data_options_precede_positionals
+
+# The two years are read from two different recorded fields and must stay two
+# different numbers: -y is the manifest's top-level collection year and -f is the
+# SFA artifact's own recorded aid-year start. Conflating them is the defect
+# bin/ingest-colleges' help warns about twice (RFC 162).
+test_load_external_data_keeps_the_two_years_apart() {
+  # Guarded, because this reads the command the -n test captured: an assertion
+  # over an empty global would pass without seeing a command at all.
+  [ -n "$EXTERNAL_DRY_RUN" ] || { log-error "no -n command was captured to assert against"; return 1; }
+  case "$EXTERNAL_DRY_RUN" in
+  *"-y 2026"*) ;;
+  *) log-error "the -n command carries no collection year: [$EXTERNAL_DRY_RUN]"; return 1 ;;
+  esac
+  case "$EXTERNAL_DRY_RUN" in
+  *"-f 2025"*) return 0 ;;
+  esac
+  log-error "the -n command carries no SFA aid year, or copied the collection year: [$EXTERNAL_DRY_RUN]"
+  return 1
+}
+assert_success "-y carries the collection year and -f the SFA aid year, and they differ" \
+  test_load_external_data_keeps_the_two_years_apart
+
+# The SFA data DICTIONARY is recorded in the same manifest and is never ingested
+# (an .xlsx pinned for its digest and citation, RFC 162). It is skipped BY NAME
+# and in SILENCE: a warning on every load about a file this project has decided
+# never to load is noise that teaches an operator to read past warnings.
+test_load_external_data_skips_the_sfa_dictionary_silently() {
+  local stdout stderr status=0
+  stdout="$(mktemp)"
+  stderr="$(mktemp)"
+  # This test performs its OWN dry run rather than reading a global an earlier
+  # test set: an assertion about what an empty string does not contain passes
+  # hardest exactly when its input is missing.
+  "$EXTERNAL_ROOT/bin/load-external-data" -n \
+    "$EXTERNAL_ROOT/institution.csv" "$EXTERNAL_ROOT/fields.csv" > "$stdout" 2> "$stderr" || status=$?
+  if [ "$status" -ne 0 ]; then
+    log-error "the dry run exited [$status]: [$(cat "$stderr")]"
+    rm -f "$stdout" "$stderr"
+    return 1
+  fi
+  if [ ! -s "$stdout" ]; then
+    log-error "no command was printed to assert against"
+    rm -f "$stdout" "$stderr"
+    return 1
+  fi
+  # The [WARNING] PREFIX at line start, not the word: the -n banner mentions
+  # warnings in prose, and matching that would fail on a run with none.
+  if grep -q "^\[WARNING\]" "$stderr"; then
+    log-error "the dictionary provoked a warning: [$(cat "$stderr")]"
+    rm -f "$stdout" "$stderr"
+    return 1
+  fi
+  if grep -q "sfa2526.xlsx" "$stdout"; then
+    log-error "the dictionary reached the ingest command: [$(cat "$stdout")]"
+    rm -f "$stdout" "$stderr"
+    return 1
+  fi
+  rm -f "$stdout" "$stderr"
+  return 0
+}
+assert_success "the SFA data dictionary is skipped by name, with no warning and no flag" \
+  test_load_external_data_skips_the_sfa_dictionary_silently
+
+# The generic warning is still there for an artifact nothing has decided about:
+# a new survey in the manifest must be REPORTED, and must not make the load
+# refuse before bin/ingest-colleges has grown a flag for it.
+test_load_external_data_warns_about_an_unrecognised_artifact() {
+  local stderr rc=0
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" unknown
+  stderr="$("$EXTERNAL_ROOT/bin/load-external-data" -n \
+    "$EXTERNAL_ROOT/institution.csv" "$EXTERNAL_ROOT/fields.csv" 2>&1 >/dev/null)" || rc=$?
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  [ "$rc" -eq 0 ] || { log-error "an unrecognised ingest option made -n refuse: [$stderr]"; return 1; }
+  case "$stderr" in
+  *"[WARNING]"*"[GR2026.zip]"*"[-G]"*) return 0 ;;
+  esac
+  log-error "an ingest option with no mapping was not reported under -n: [$stderr]"
+  return 1
+}
+assert_success "under -n, an ingest option with no mapping is WARNED about and the command still prints" \
+  test_load_external_data_warns_about_an_unrecognised_artifact
+
+# Each refusal below is EXIT_MISSING_REQUIRED_ARG and names both the missing
+# thing and the command that produces it, and each is discovered BEFORE the JVM
+# starts -- a missing file found by phase 9 is a re-run, one found by argument
+# validation is a corrected command.
+# VARIADIC over expected substrings, because a refusal has two halves the RFC
+# requires together: what is missing, and the command that produces it. Asserting
+# only the leading phrase would let the remedy half be deleted silently.
+external_load_refuses() {
+  local out rc=0 expected
+  out="$("$EXTERNAL_ROOT/bin/load-external-data" -n \
+    "$EXTERNAL_ROOT/institution.csv" "$EXTERNAL_ROOT/fields.csv" 2>&1 >/dev/null)" || rc=$?
+  if [ "$rc" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "expected exit [$EXIT_MISSING_REQUIRED_ARG], got [$rc]: [$out]"
+    return 1
+  fi
+  for expected in "$@"; do
+    case "$out" in
+    *"$expected"*) ;;
+    *) log-error "the refusal does not mention [$expected]: [$out]"; return 1 ;;
+    esac
+  done
+  return 0
+}
+
+test_load_external_data_refuses_a_manifest_with_no_survey_year() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" no-year
+  external_load_refuses "records no [survey_year]" "db/seed/ipeds/PROVENANCE.json" "re-run bin/fetch-ipeds"
+}
+assert_success "a manifest recording no collection year is refused, and names bin/fetch-ipeds" \
+  test_load_external_data_refuses_a_manifest_with_no_survey_year
+
+# The SFA aid year has ONE recorded source and no substitute: borrowing the
+# collection year would stamp every college_sfa row with the year after the one
+# the file reports on.
+test_load_external_data_refuses_an_sfa_artifact_with_no_year() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" no-sfa-year
+  external_load_refuses "[SFA2526.zip] records no [year]" "db/seed/ipeds/PROVENANCE.json" "re-run bin/fetch-ipeds"
+}
+assert_success "an SFA artifact with no recorded year is refused, never given the collection year" \
+  test_load_external_data_refuses_an_sfa_artifact_with_no_year
+
+test_load_external_data_refuses_a_manifest_with_no_sfa_survey() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" no-sfa
+  external_load_refuses "declares no artifact for [-S]" \
+    "db/seed/ipeds/PROVENANCE.json" "re-run bin/fetch-ipeds"
+}
+assert_success "a manifest with no SFA survey artifact is refused (the dictionary is not one)" \
+  test_load_external_data_refuses_a_manifest_with_no_sfa_survey
+
+# The manifest reader's remaining refusals. Each is a fatal 21 whose precondition
+# nothing else in the suite supplies, and an inverted guard here loads one of two
+# archives arbitrarily -- or a manifest with nothing in it -- and reports success.
+test_load_external_data_refuses_an_unparseable_manifest() {
+  printf 'not json at all\n' > "$EXTERNAL_ROOT/db/seed/ipeds/PROVENANCE.json"
+  external_load_refuses "is not readable JSON" "re-run bin/fetch-ipeds"
+}
+assert_success "a manifest that is not JSON is refused, and names bin/fetch-ipeds" \
+  test_load_external_data_refuses_an_unparseable_manifest
+
+test_load_external_data_refuses_an_empty_artifacts_object() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" no-artifacts
+  external_load_refuses "records no [artifacts] object" "re-run bin/fetch-ipeds"
+}
+assert_success "a manifest recording no artifacts is refused, and names bin/fetch-ipeds" \
+  test_load_external_data_refuses_an_empty_artifacts_object
+
+test_load_external_data_refuses_two_artifacts_for_one_flag() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" duplicate
+  external_load_refuses "[HD2025.zip]" "[HD2026.zip]" "both claim [-H]" \
+    "which one to load is not a guess this script makes"
+}
+assert_success "two archives claiming one survey role are refused, not picked between" \
+  test_load_external_data_refuses_two_artifacts_for_one_flag
+
+test_load_external_data_refuses_an_artifact_with_no_member() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" no-member
+  external_load_refuses "[HD2026.zip] records no [member]" "re-run bin/fetch-ipeds"
+}
+assert_success "an artifact recording no member name is refused, and names bin/fetch-ipeds" \
+  test_load_external_data_refuses_an_artifact_with_no_member
+
+# A year is READ, not interpreted: "2025" is what a hand edit produces, and this
+# file tells the operator to re-fetch rather than hand-edit the record. Accepting
+# the string would contradict its own message.
+# A present-but-wrong value is reported as what it IS. "records no year" about a
+# file the operator can see a year in sends them looking for the wrong fault.
+test_load_external_data_refuses_a_hand_typed_string_year() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" non-integer-year
+  external_load_refuses "records [survey_year] as ['2026'], which is not a four-digit year" \
+    "[SFA2526.zip] records [year] as ['2025'], which is not a four-digit year" \
+    "re-run bin/fetch-ipeds"
+}
+assert_success "a string-typed year is reported as non-integer, not as absent" \
+  test_load_external_data_refuses_a_hand_typed_string_year
+
+# B2: the ingest flag is a DECLARED fact. An artifact that records none is a
+# manifest this wrapper cannot assemble a command from, and it says so rather
+# than pattern-matching the name it also has.
+test_load_external_data_refuses_an_artifact_with_no_ingest_option() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" no-option
+  external_load_refuses "[IC2026.zip] records no [ingest_option]" \
+    "never guessed from its name" "re-run bin/fetch-ipeds"
+}
+assert_success "an artifact recording no ingest_option is refused, not name-matched" \
+  test_load_external_data_refuses_an_artifact_with_no_ingest_option
+
+# NOT the consensus rule RFC 162 killed: this is one recorded fact contradicting
+# another, and preferring either would be a guess.
+test_load_external_data_refuses_a_contradicted_survey_year() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" contradiction
+  external_load_refuses "[ADM2026.zip] declares year [2025]" "[survey_year] is [2026]" \
+    "neither is this script's to prefer"
+}
+assert_success "an artifact contradicting the top-level survey year is refused, not preferred against" \
+  test_load_external_data_refuses_a_contradicted_survey_year
+
+# The manifest reader reports like the missing-input collector does: every fault
+# in ONE refusal. Two opposite reporting disciplines in one script is what this
+# rules out.
+test_load_external_data_reports_every_manifest_fault_at_once() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" many-faults
+  external_load_refuses "[HD2026.zip] records no [member]" \
+    "[IC2026.zip] records no [ingest_option]" "[SFA2526.zip] records no [year]" \
+    "fault(s) listed above"
+}
+assert_success "three manifest faults are reported in ONE refusal, with their count" \
+  test_load_external_data_reports_every_manifest_fault_at_once
+
+# bin/read-ipeds-manifest is a bin/ script in its own right, so it is tested
+# directly and not only through the wrapper: its PRODUCT is the KIND-tagged
+# records on stdout, and its grammar and refusals are its own.
+assert_success "bin/read-ipeds-manifest -h exits 0" bin/read-ipeds-manifest -h
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "read-ipeds-manifest rejects an unknown option (10)" \
+  bin/read-ipeds-manifest -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "read-ipeds-manifest -m without a value exits 11" \
+  bin/read-ipeds-manifest -m
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "read-ipeds-manifest rejects a stray positional (20)" \
+  bin/read-ipeds-manifest stray
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "read-ipeds-manifest rejects a repeated option (22)" \
+  bin/read-ipeds-manifest -m /tmp/a -m /tmp/b
+
+# A5: every record is KIND-tagged, so a fact the manifest DECLARED (member) can
+# never share a namespace with one this reader DERIVED (year). Without the kind,
+# an artifact recording ingest_option "-y" would bind a file path to the survey
+# year and the year would silently overwrite it.
+test_read_ipeds_manifest_emits_kind_tagged_records() {
+  local out
+  out="$(bin/read-ipeds-manifest 2>/dev/null)" || { log-error "the committed manifest did not read"; return 1; }
+  # Six members, two years, and every line is one of those two kinds.
+  [ "$(printf '%s\n' "$out" | grep -c '^member	-')" = "6" ] \
+    || { log-error "expected six member records: [$out]"; return 1; }
+  [ "$(printf '%s\n' "$out" | grep -c '^year	-')" = "2" ] \
+    || { log-error "expected two year records: [$out]"; return 1; }
+  printf '%s\n' "$out" | grep -qE '^year	-y	[0-9]{4}$' \
+    || { log-error "no collection-year record: [$out]"; return 1; }
+  printf '%s\n' "$out" | grep -qE '^year	-f	[0-9]{4}$' \
+    || { log-error "no SFA aid-year record: [$out]"; return 1; }
+  printf '%s\n' "$out" | grep -qv '^\(member\|year\)	' && return 0
+  return 0
+}
+assert_success "read-ipeds-manifest emits KIND-tagged records: six members and two years" \
+  test_read_ipeds_manifest_emits_kind_tagged_records
+
+# The refusals of the reader itself, each asserted on the reader and each naming
+# the offending VALUE rather than restating the rule. One shared helper: the
+# manifest is written into a scratch directory, the reader is pointed at it, and
+# the exit code and every expected substring are checked.
+read_manifest_refuses() {
+  local body="$1" expected_status="$2" out rc=0 scratch
+  shift 2
+  scratch="$(mktemp -d)"
+  printf '%s' "$body" > "$scratch/PROVENANCE.json"
+  out="$(bin/read-ipeds-manifest -m "$scratch/PROVENANCE.json" -d "$scratch" 2>&1 >/dev/null)" || rc=$?
+  rm -rf "$scratch"
+  if [ "$rc" -ne "$expected_status" ]; then
+    log-error "expected exit [$expected_status], got [$rc]: [$out]"
+    return 1
+  fi
+  local expected
+  for expected in "$@"; do
+    case "$out" in
+    *"$expected"*) ;;
+    *) log-error "the refusal does not mention [$expected]: [$out]"; return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# A1: a JSON document that parses but is not an object. Each of these used to
+# reach .get() and die as an AttributeError traceback with exit 1 -- outside the
+# reserved band, with no remedy in it.
+test_read_ipeds_manifest_refuses_non_object_json() {
+  local body
+  for body in '[]' 'null' '"2023"' '17'; do
+    read_manifest_refuses "$body" "$EXIT_MISSING_REQUIRED_ARG" \
+      "not an object" "it is not a manifest at all" || return 1
+  done
+}
+assert_success "a JSON document that is not an object is refused in the reserved band, not a traceback" \
+  test_read_ipeds_manifest_refuses_non_object_json
+
+# A2: every ingest FILE option must be declared. Only -S used to be required, so
+# a manifest missing -H read cleanly and became an empty path in the command --
+# reported two layers away as "missing input []", which names nothing.
+test_read_ipeds_manifest_requires_every_file_option() {
+  read_manifest_refuses '{"survey_year": 2026, "artifacts": {
+      "SFA2526.zip": {"member": "sfa2526.csv", "year": 2025, "ingest_option": "-S"}}}' \
+    "$EXIT_MISSING_REQUIRED_ARG" "declares no artifact for" "[-H]" "[-Y]" "re-run bin/fetch-ipeds"
+}
+assert_success "a manifest missing any IPEDS file option is refused, naming every absent one" \
+  test_read_ipeds_manifest_requires_every_file_option
+
+# A3: the year shape check must be the shape it PROMISES. `-y 99` and `-y 20231`
+# both used to pass a check whose message said "four-digit year".
+test_read_ipeds_manifest_refuses_malformed_years() {
+  local year
+  for year in 99 20231 0 3999; do
+    read_manifest_refuses "{\"survey_year\": $year, \"artifacts\": {
+        \"HD2026.zip\": {\"member\": \"HD2026.csv\", \"year\": $year, \"ingest_option\": \"-H\"}}}" \
+      "$EXIT_MISSING_REQUIRED_ARG" "records [survey_year] as [$year]" "not a four-digit year" || return 1
+  done
+}
+assert_success "a year that is not four digits is refused, naming the field and the value" \
+  test_read_ipeds_manifest_refuses_malformed_years
+
+# A4: a `member` is a FILE NAME. A path escapes the directory bin/fetch-ipeds
+# writes, and a tab or newline splits this reader's own TSV channel into records
+# it never emitted -- an extra ingest argument assembled from data.
+test_read_ipeds_manifest_refuses_a_member_that_is_not_a_file_name() {
+  read_manifest_refuses '{"survey_year": 2026, "artifacts": {
+      "HD2026.zip": {"member": "../../etc/passwd", "year": 2026, "ingest_option": "-H"}}}' \
+    "$EXIT_MISSING_REQUIRED_ARG" "records [member] as [../../etc/passwd]" "which is a path rather than a file name" \
+    || return 1
+  read_manifest_refuses '{"survey_year": 2026, "artifacts": {
+      "HD2026.zip": {"member": "HD2026.csv\tsmuggled", "year": 2026, "ingest_option": "-H"}}}' \
+    "$EXIT_MISSING_REQUIRED_ARG" "contains a tab or a line break"
+}
+assert_success "a member that is a path, or carries a tab, is refused" \
+  test_read_ipeds_manifest_refuses_a_member_that_is_not_a_file_name
+
+# A6: an absent ingest_option KEY and a null VALUE are different states. Null is
+# the fetcher saying "deliberately not ingested" (the SFA dictionary); an absent
+# key is nobody having decided, and this script does not decide for them.
+test_read_ipeds_manifest_separates_absent_from_null_ingest_option() {
+  read_manifest_refuses '{"survey_year": 2026, "artifacts": {
+      "HD2026.zip": {"member": "HD2026.csv", "year": 2026}}}' \
+    "$EXIT_MISSING_REQUIRED_ARG" "[HD2026.zip] records no [ingest_option]" "never guessed from its name"
+}
+assert_success "an absent ingest_option is refused while a null one stays the deliberate skip" \
+  test_read_ipeds_manifest_separates_absent_from_null_ingest_option
+
+# The allowlist: a manifest is DATA, and data that names the flag a file is
+# passed as decides part of a command line. "-z", or a long option, must not
+# reach argv because a JSON string happened to start with a dash.
+test_read_ipeds_manifest_allowlists_the_ingest_option() {
+  local out rc=0 scratch
+  scratch="$(mktemp -d)"
+  cat > "$scratch/PROVENANCE.json" << 'JSON'
+{"survey_year": 2026, "artifacts": {
+  "HD2026.zip": {"member": "HD2026.csv", "year": 2026, "ingest_option": "-H"},
+  "IC2026.zip": {"member": "IC2026.csv", "year": 2026, "ingest_option": "-I"},
+  "ADM2026.zip": {"member": "adm2026.csv", "year": 2026, "ingest_option": "-A"},
+  "C2026_A.zip": {"member": "C2026_a.csv", "year": 2026, "ingest_option": "-C"},
+  "IC2026_AY.zip": {"member": "ic2026_ay.csv", "year": 2026, "ingest_option": "-Y"},
+  "SFA2526.zip": {"member": "sfa2526.csv", "year": 2025, "ingest_option": "-S"},
+  "EVIL2026.zip": {"member": "evil.csv", "year": 2026, "ingest_option": "--hd=/etc/passwd"}}}
+JSON
+  out="$(bin/read-ipeds-manifest -l -m "$scratch/PROVENANCE.json" -d "$scratch" 2>&1 >/dev/null)" || rc=$?
+  rm -rf "$scratch"
+  [ "$rc" -eq "$EXIT_MISSING_REQUIRED_ARG" ] || { log-error "expected 21, got [$rc]: [$out]"; return 1; }
+  case "$out" in
+  *"[--hd=/etc/passwd]"*"no mapping for"*) return 0 ;;
+  esac
+  log-error "an out-of-allowlist ingest option was not refused under -l: [$out]"
+  return 1
+}
+assert_success "an ingest option outside the allowlist never reaches argv" \
+  test_read_ipeds_manifest_allowlists_the_ingest_option
+
+# A7: a manifest that cannot be READ -- as opposed to one that parses wrongly.
+# Both used to escape as tracebacks with exit 1.
+test_read_ipeds_manifest_refuses_an_unreadable_manifest() {
+  local scratch out rc=0
+  scratch="$(mktemp -d)"
+  mkdir "$scratch/PROVENANCE.json"
+  out="$(bin/read-ipeds-manifest -m "$scratch/PROVENANCE.json" -d "$scratch" 2>&1 >/dev/null)" || rc=$?
+  rm -rf "$scratch"
+  [ "$rc" -eq "$EXIT_MISSING_REQUIRED_ARG" ] || { log-error "expected 21, got [$rc]: [$out]"; return 1; }
+  case "$out" in
+  *Traceback*) log-error "a raw traceback reached the operator: [$out]"; return 1 ;;
+  *"cannot be read"*"Error]"*) return 0 ;;
+  esac
+  log-error "the refusal does not name the read failure: [$out]"
+  return 1
+}
+assert_success "a directory named where the manifest should be is refused, not a traceback" \
+  test_read_ipeds_manifest_refuses_an_unreadable_manifest
+
+# B1: the reversal. Under -n an unmapped ingest option is a warning, because
+# printing a command is not loading. A REAL load REFUSES: a green run that loaded
+# less than the operator believed it loaded is the failure RFC 172 exists to
+# prevent, and a warning a hundred lines above a zero exit IS that failure.
+test_load_external_data_refuses_an_unmapped_option_on_a_real_load() {
+  local root out rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_ipeds_fixture_manifest "$root/db/seed/ipeds" unknown
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  rm -f "$root/bin/ingest-colleges"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$root/bin/ingest-colleges"
+  chmod +x "$root/bin/ingest-colleges"
+  out="$("$root/bin/load-external-data" "$root/institution.csv" "$root/fields.csv" 2>&1 >/dev/null)" || rc=$?
+  if [ "$rc" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "a real load accepted an unmapped ingest option: exit [$rc], output [$out]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  case "$out" in
+  *"[GR2026.zip]"*"[-G]"*) ;;
+  *) log-error "the refusal does not name the artifact and its option: [$out]"; rm -rf "$(dirname "$root")"; return 1 ;;
+  esac
+  rm -rf "$(dirname "$root")"
+}
+assert_success "a REAL load refuses an ingest option with no mapping (a -n run only warns)" \
+  test_load_external_data_refuses_an_unmapped_option_on_a_real_load
+
+test_load_external_data_refuses_a_missing_manifest() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  rm -f "$EXTERNAL_ROOT/db/seed/ipeds/PROVENANCE.json"
+  external_load_refuses "db/seed/ipeds/PROVENANCE.json] cannot be read" "FileNotFoundError" "run bin/fetch-ipeds"
+}
+assert_success "a missing PROVENANCE.json is refused by path, and names bin/fetch-ipeds" \
+  test_load_external_data_refuses_a_missing_manifest
+
+# The currently-real case: db/seed/ipeds/*.csv are gitignored, so a fresh
+# checkout has the manifest and none of the survey data.
+test_load_external_data_refuses_a_missing_ipeds_csv() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  rm -f "$EXTERNAL_ROOT/db/seed/ipeds/ic2026_ay.csv"
+  external_load_refuses "ic2026_ay.csv] does not exist -- the IPEDS IC_AY published-charges survey file; run bin/fetch-ipeds"
+}
+assert_success "a missing IPEDS CSV is refused by name, and names bin/fetch-ipeds" \
+  test_load_external_data_refuses_a_missing_ipeds_csv
+
+# The SFA CSV is one more gitignored member, and its own missing-input class: it
+# is named by the SAME manifest and produced by the SAME command, but a load that
+# silently dropped it would leave college_sfa and every canonical-money figure
+# built from it unwritten.
+test_load_external_data_refuses_a_missing_sfa_csv() {
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  rm -f "$EXTERNAL_ROOT/db/seed/ipeds/sfa2526.csv"
+  external_load_refuses "sfa2526.csv] does not exist -- the IPEDS SFA student-financial-aid survey file; run bin/fetch-ipeds"
+}
+assert_success "a missing SFA CSV is refused by name, and names bin/fetch-ipeds" \
+  test_load_external_data_refuses_a_missing_sfa_csv
+
+# The aggregation the MISSING array exists for. Every test above removes ONE
+# input, so all of them would pass a loop that reported the first and exited; a
+# fresh checkout is missing every gitignored survey CSV at once, and reporting
+# them one at a time turns one corrected command into as many runs as there are
+# missing files. Three DIFFERENT classes at once, so the count and the per-class
+# remedies are both exercised.
+test_load_external_data_reports_every_missing_input_at_once() {
+  local data seed rc=0
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  rm -f "$EXTERNAL_ROOT/db/seed/ipeds/sfa2526.csv"
+  seed="$(mktemp -d)"
+  cp "$PROJECT_ROOT/db/seed/cds/merit-aid.csv" "$PROJECT_ROOT/db/seed/cds/admission-factors.csv" "$seed/"
+  rm -f "$EXTERNAL_ROOT/db/seed/cds"
+  ln -s "$seed" "$EXTERNAL_ROOT/db/seed/cds"
+  data="$(mktemp -d)"
+  cp "$PROJECT_ROOT/db/data/codebooks.json" "$PROJECT_ROOT/db/data/money-vocabulary.json" \
+    "$PROJECT_ROOT/db/data/college-aliases.json" "$data/"
+  rm -f "$EXTERNAL_ROOT/db/data"
+  ln -s "$data" "$EXTERNAL_ROOT/db/data"
+  external_load_refuses \
+    "sfa2526.csv] does not exist -- the IPEDS SFA student-financial-aid survey file; run bin/fetch-ipeds" \
+    "deadlines.csv] does not exist -- the CDS deadlines seed; run bin/fetch-cds-seed" \
+    "subjects.json] does not exist -- the authored subject taxonomy" \
+    "[3] required input(s) are missing or unusable (listed above); nothing was loaded" || rc=1
+  rm -f "$EXTERNAL_ROOT/db/seed/cds" "$EXTERNAL_ROOT/db/data"
+  ln -s "$PROJECT_ROOT/db/seed/cds" "$EXTERNAL_ROOT/db/seed/cds"
+  ln -s "$PROJECT_ROOT/db/data" "$EXTERNAL_ROOT/db/data"
+  rm -rf "$seed" "$data"
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  return "$rc"
+}
+assert_success "three missing inputs of different classes are reported in ONE refusal, with their count" \
+  test_load_external_data_reports_every_missing_input_at_once
+
+test_load_external_data_refuses_a_missing_cds_seed() {
+  local seed
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  seed="$(mktemp -d)"
+  cp "$PROJECT_ROOT/db/seed/cds/merit-aid.csv" "$PROJECT_ROOT/db/seed/cds/deadlines.csv" "$seed/"
+  rm -f "$EXTERNAL_ROOT/db/seed/cds"
+  ln -s "$seed" "$EXTERNAL_ROOT/db/seed/cds"
+  local rc=0
+  external_load_refuses "admission-factors.csv] does not exist -- the CDS admission-factors seed; run bin/fetch-cds-seed" || rc=1
+  rm -f "$EXTERNAL_ROOT/db/seed/cds"
+  ln -s "$PROJECT_ROOT/db/seed/cds" "$EXTERNAL_ROOT/db/seed/cds"
+  rm -rf "$seed"
+  return "$rc"
+}
+assert_success "a missing CDS seed CSV is refused by name, and names bin/fetch-cds-seed" \
+  test_load_external_data_refuses_a_missing_cds_seed
+
+test_load_external_data_refuses_a_missing_codebook() {
+  local data rc=0
+  data="$(mktemp -d)"
+  cp "$PROJECT_ROOT/db/data/subjects.json" "$PROJECT_ROOT/db/data/money-vocabulary.json" \
+    "$PROJECT_ROOT/db/data/college-aliases.json" "$data/"
+  rm -f "$EXTERNAL_ROOT/db/data"
+  ln -s "$data" "$EXTERNAL_ROOT/db/data"
+  external_load_refuses "codebooks.json] does not exist -- the generated published codebook; run bin/fetch-codebooks" || rc=1
+  rm -f "$EXTERNAL_ROOT/db/data"
+  ln -s "$PROJECT_ROOT/db/data" "$EXTERNAL_ROOT/db/data"
+  return "$rc"
+}
+assert_success "a missing db/data/codebooks.json is refused by name, and names bin/fetch-codebooks" \
+  test_load_external_data_refuses_a_missing_codebook
+
+# The Scorecard pair has no fetcher (RFC 172 says so deliberately), so its
+# remedy names the download instead of a command.
+test_load_external_data_refuses_a_missing_scorecard_csv() {
+  local out rc=0
+  out="$("$EXTERNAL_ROOT/bin/load-external-data" -n \
+    "$EXTERNAL_ROOT/no-such-institution.csv" "$EXTERNAL_ROOT/fields.csv" 2>&1 >/dev/null)" || rc=$?
+  [ "$rc" -eq "$EXIT_MISSING_REQUIRED_ARG" ] || { log-error "expected 21, got [$rc]: [$out]"; return 1; }
+  case "$out" in
+  *"no-such-institution.csv"*collegescorecard.ed.gov*) return 0 ;;
+  esac
+  log-error "the refusal does not name the Scorecard CSV and where it comes from: [$out]"
+  return 1
+}
+assert_success "a missing Scorecard positional is refused by name (no fetcher to name)" \
+  test_load_external_data_refuses_a_missing_scorecard_csv
+
+# S13: an explicitly EMPTY positional is a wrong value, not an omitted one, and
+# "missing input []" is not a diagnosis. Both wrappers refuse it by NAME.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "load-external-data rejects an empty <institution.csv>" \
+  bin/load-external-data -n "" fields.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "load-external-data rejects an empty <fields.csv>" \
+  bin/load-external-data -n institution.csv ""
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "reload-external-data rejects an empty <institution.csv>" \
+  bin/reload-external-data "" fields.csv
+
+# S9: a mistyped Scorecard path must not cost a three-source download first. The
+# fetch half is a real script here and would egress if it ran, so the assertion
+# that it did NOT is the point: this refusal happens before any fetch.
+test_reload_external_data_refuses_a_missing_positional_before_fetching() {
+  local root out rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_fetcher_stub "$root/bin/fetch-external-data" "$root/fetched" 0
+  out="$("$root/bin/reload-external-data" "$root/no-such-institution.csv" "$root/fields.csv" 2>&1)" || rc=$?
+  if [ "$rc" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "expected exit [$EXIT_MISSING_REQUIRED_ARG], got [$rc]: [$out]"
+    rc=1
+  elif [ -f "$root/fetched" ]; then
+    log-error "the fetch half ran before the positional paths were checked"
+    rc=1
+  else
+    rc=0
+  fi
+  case "$out" in
+  *no-such-institution.csv*collegescorecard.ed.gov*) ;;
+  *) log-error "the refusal does not name the file and where it comes from: [$out]"; rc=1 ;;
+  esac
+  rm -rf "$(dirname "$root")"
+  return "$rc"
+}
+assert_success "reload-external-data refuses a nonexistent Scorecard path BEFORE fetching anything" \
+  test_reload_external_data_refuses_a_missing_positional_before_fetching
+
+# S5: the database is the one input that is not on the command line -- it is
+# inherited from the environment bin/common layered -- so a real run names it
+# before handing over to the JVM. Asserted against a STUB ingest-colleges, so no
+# database is touched.
+test_load_external_data_names_the_target_database() {
+  local root stderr rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_ipeds_fixture_manifest "$root/db/seed/ipeds" top
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  rm -f "$root/bin/ingest-colleges"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$root/bin/ingest-colleges"
+  chmod +x "$root/bin/ingest-colleges"
+  stderr="$root/stderr"
+  "$root/bin/load-external-data" "$root/institution.csv" "$root/fields.csv" \
+    >/dev/null 2>"$stderr" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "the load exited [$rc]: [$(cat "$stderr")]"
+  # NOT compared against this harness's own $POSTGRES_DB: the stub root is a
+  # different checkout name, and .env.dev derives the database FROM that name, so
+  # the child legitimately targets a different database. What must be true is
+  # that the run NAMES the one it targets, and never the <unset> placeholder.
+  elif ! grep -qE "loading into database \[[^]<]+\] on \[[^]]+:[0-9]+\]" "$stderr"; then
+    log-error "the run did not name its target database: [$(cat "$stderr")]"
+    rc=1
+  elif ! grep -q "rest-server-bounce" "$stderr"; then
+    log-error "the run did not print the restart reminder: [$(cat "$stderr")]"
+    rc=1
+  fi
+  rm -rf "$(dirname "$root")"
+  return "$rc"
+}
+assert_success "a real load names the database it writes and the two services to restart" \
+  test_load_external_data_names_the_target_database
+
+# The committed manifest itself, read by the shipped reader: the one assertion
+# that the real record -- not a fixture -- yields the year the ingest stamps.
+test_load_external_data_reads_the_committed_manifest() {
+  local out
+  cp "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json" "$EXTERNAL_ROOT/db/seed/ipeds/PROVENANCE.json"
+  rm -f "$EXTERNAL_ROOT"/db/seed/ipeds/*.csv
+  touch "$EXTERNAL_ROOT/db/seed/ipeds/HD2023.csv" "$EXTERNAL_ROOT/db/seed/ipeds/IC2023.csv" \
+    "$EXTERNAL_ROOT/db/seed/ipeds/adm2023.csv" "$EXTERNAL_ROOT/db/seed/ipeds/C2023_a.csv" \
+    "$EXTERNAL_ROOT/db/seed/ipeds/ic2023_ay.csv" "$EXTERNAL_ROOT/db/seed/ipeds/sfa2223.csv"
+  local stderr
+  stderr="$(mktemp)"
+  out="$("$EXTERNAL_ROOT/bin/load-external-data" -n \
+    "$EXTERNAL_ROOT/institution.csv" "$EXTERNAL_ROOT/fields.csv" 2> "$stderr")" || {
+    log-error "the committed manifest did not yield a command: [$(cat "$stderr")]"
+    rm -f "$stderr"
+    return 1
+  }
+  rm -f "$stderr"
+  case "$out" in
+  *"-Y $EXTERNAL_ROOT/db/seed/ipeds/ic2023_ay.csv -y 2023 -S $EXTERNAL_ROOT/db/seed/ipeds/sfa2223.csv -f 2022 "*) return 0 ;;
+  esac
+  log-error "the committed manifest did not yield -y 2023 -f 2022 and the recorded members: [$out]"
+  return 1
+}
+assert_success "the committed IPEDS manifest yields -y 2023, -f 2022 and its six recorded members" \
+  test_load_external_data_reads_the_committed_manifest
+
+# Marker-writing stubs for the three fetchers, so which children ran is a fact on
+# disk rather than a guess from scrollback. `exit $1` is what makes the
+# best-effort and exit-code rules testable with no network.
+write_fetcher_stub() {
+  local path="$1" marker="$2" status="$3"
+  rm -f "$path"
+  printf '#!/usr/bin/env bash\ntouch %q\nexit %s\n' "$marker" "$status" > "$path"
+  chmod +x "$path"
+}
+
+test_fetch_external_data_selector_runs_one_fetcher() {
+  local root markers pair selector expected rc=0
+  # All three mappings, not just -c: the default run executes every fetcher, so
+  # it cannot tell a -i wired to the CDS fetcher from a correct one. -s in
+  # particular is the CDS seed here and `deadlines` in bin/ingest-colleges, the
+  # letter clash RFC 172 1 calls out.
+  for pair in c:codebooks i:ipeds s:cds; do
+    selector="${pair%%:*}"
+    expected="${pair#*:}"
+    root="$(mktemp -d)/checkout"
+    mkdir -p "$root"
+    make_external_stub_root "$root"
+    markers="$root/markers"
+    mkdir -p "$markers"
+    write_fetcher_stub "$root/bin/fetch-codebooks" "$markers/codebooks" 0
+    write_fetcher_stub "$root/bin/fetch-ipeds" "$markers/ipeds" 0
+    write_fetcher_stub "$root/bin/fetch-cds-seed" "$markers/cds" 0
+    if ! "$root/bin/fetch-external-data" "-$selector" > /dev/null 2> "$root/stderr"; then
+      log-error "-$selector did not exit 0: [$(cat "$root/stderr")]"
+      rc=1
+    elif [ "$(ls "$markers")" != "$expected" ]; then
+      log-error "-$selector ran [$(ls "$markers" | tr '\n' ' ')] instead of [$expected] alone"
+      rc=1
+    fi
+    rm -rf "$(dirname "$root")"
+    [ "$rc" -eq 0 ] || return "$rc"
+  done
+  return 0
+}
+assert_success "each of -c, -i and -s runs exactly its own fetcher and no other" \
+  test_fetch_external_data_selector_runs_one_fetcher
+
+# Best-effort with explicit reporting (recipes/BEST_EFFORT_BATCH_INGEST.md): the
+# failed source does not cancel the other two, the tally says how many ran, and
+# the exit code is this script's own 1 -- NEVER the child's 10, which would tell
+# the caller they invoked fetch-external-data wrongly when they did not.
+test_fetch_external_data_is_best_effort() {
+  local root markers stderr rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  markers="$root/markers"
+  mkdir -p "$markers"
+  write_fetcher_stub "$root/bin/fetch-codebooks" "$markers/codebooks" 0
+  write_fetcher_stub "$root/bin/fetch-ipeds" "$markers/ipeds" 10
+  write_fetcher_stub "$root/bin/fetch-cds-seed" "$markers/cds" 0
+  stderr="$root/stderr"
+  "$root/bin/fetch-external-data" >/dev/null 2>"$stderr" || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    log-error "expected exit 1 (never the child's 10), got [$rc]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  if [ ! -f "$markers/codebooks" ] || [ ! -f "$markers/cds" ]; then
+    log-error "a failed source cancelled the others: [$(ls "$markers" | tr '\n' ' ')]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  # -F: the tally is bracketed now, and an unescaped [2] in a regex is a
+  # character class that would match the OLD unbracketed wording.
+  if ! grep -qF "[2] of [3] sources fetched; [1] failed" "$stderr"; then
+    log-error "the summary does not tally 2 of 3: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  rm -rf "$(dirname "$root")"
+}
+assert_success "one failed fetcher still runs the other two, tallies 2 of 3 and exits 1" \
+  test_fetch_external_data_is_best_effort
+
+# Between the halves it is ALL-OR-NOTHING: loading after a partly failed fetch is
+# precisely the partial processing the recipe forbids, so a failed fetch runs no
+# load. The exit code is this script's OWN 1 -- not the child's 7, and not a
+# child's 10-29 grammar code, which would say the caller invoked
+# reload-external-data wrongly when they did not.
+#
+# And the message must be TRUE. The fetch half is best-effort, so a source that
+# succeeded has already rewritten committed files in the working tree; claiming
+# "the data on disk is unchanged" would be false exactly when an operator most
+# needs to know what changed.
+test_reload_external_data_runs_no_load_after_a_failed_fetch() {
+  local root marker stderr rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  marker="$root/loaded"
+  write_fetcher_stub "$root/bin/fetch-external-data" "$root/fetched" 7
+  write_fetcher_stub "$root/bin/load-external-data" "$marker" 0
+  # Real files: the positional PATHS are checked before the fetch (S9), so a
+  # nonexistent one would refuse here for the wrong reason.
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  stderr="$root/stderr"
+  "$root/bin/reload-external-data" "$root/institution.csv" "$root/fields.csv" \
+    >/dev/null 2>"$stderr" || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    log-error "expected this script's own exit [1], got [$rc]: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  if [ -f "$marker" ]; then
+    log-error "the load half ran after a failed fetch: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  if ! grep -q "NO load was attempted" "$stderr"; then
+    log-error "the failure does not say that no load was attempted: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  if grep -q "data on disk is unchanged" "$stderr"; then
+    log-error "the failure claims the working tree is unchanged, which best-effort makes false: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  if ! grep -q "has already rewritten its files" "$stderr"; then
+    log-error "the failure does not say that a source which DID fetch rewrote files: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  rm -rf "$(dirname "$root")"
+}
+assert_success "a failed fetch runs no load, exits 1 (never the child code) and says what it did NOT do" \
+  test_reload_external_data_runs_no_load_after_a_failed_fetch
+
+# The composition itself, which the failure test above never executes: a fetch
+# that succeeded is followed by the load half, carrying -n and the positionals it
+# was given, in that order.
+test_reload_external_data_runs_the_load_after_a_good_fetch() {
+  local root recorded rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  recorded="$root/load-argv"
+  write_fetcher_stub "$root/bin/fetch-external-data" "$root/fetched" 0
+  rm -f "$root/bin/load-external-data"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > %q\n' "$recorded" > "$root/bin/load-external-data"
+  chmod +x "$root/bin/load-external-data"
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  : > "$root/aliases.json"
+  "$root/bin/reload-external-data" -n "$root/institution.csv" "$root/fields.csv" "$root/aliases.json" \
+    >/dev/null 2>"$root/stderr" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "a successful fetch did not yield a successful reload: exit [$rc], stderr [$(cat "$root/stderr")]"
+  elif [ ! -f "$root/fetched" ]; then
+    log-error "the fetch half did not run"
+    rc=1
+  elif [ "$(cat "$recorded" 2>/dev/null)" != "-n $root/institution.csv $root/fields.csv $root/aliases.json" ]; then
+    log-error "the load half was invoked as [$(cat "$recorded" 2>/dev/null)], not [-n <inst> <fields> <aliases>]"
+    rc=1
+  fi
+  rm -rf "$(dirname "$root")"
+  return "$rc"
+}
+assert_success "reload-external-data runs the load half after a good fetch, forwarding -n and all three positionals" \
+  test_reload_external_data_runs_the_load_after_a_good_fetch
+
+# S6/S4: the selectors and the corpus key reach the fetch half. "Refetch IPEDS
+# only, then reload" is an ordinary operation, and a key that can only arrive by
+# inherited env is a key with no path through the composed tool.
+test_reload_external_data_forwards_selectors_and_key() {
+  local root recorded rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  recorded="$root/fetch-argv"
+  rm -f "$root/bin/fetch-external-data" "$root/bin/load-external-data"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > %q\n' "$recorded" > "$root/bin/fetch-external-data"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$root/bin/load-external-data"
+  chmod +x "$root/bin/fetch-external-data" "$root/bin/load-external-data"
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  "$root/bin/reload-external-data" -i -K secret-jwt "$root/institution.csv" "$root/fields.csv" \
+    >/dev/null 2>"$root/stderr" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "the reload exited [$rc]: [$(cat "$root/stderr")]"
+  elif [ "$(cat "$recorded" 2>/dev/null)" != "-i -K secret-jwt" ]; then
+    log-error "the fetch half was invoked as [$(cat "$recorded" 2>/dev/null)], not [-i -K secret-jwt]"
+    rc=1
+  fi
+  rm -rf "$(dirname "$root")"
+  return "$rc"
+}
+assert_success "reload-external-data forwards its selectors and -K to the fetch half" \
+  test_reload_external_data_forwards_selectors_and_key
+
+# S4: and the wrapper forwards -K to the fetcher that has one, and to no other.
+test_fetch_external_data_forwards_the_corpus_key() {
+  local root recorded rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  recorded="$root/cds-argv"
+  rm -f "$root/bin/fetch-cds-seed"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > %q\n' "$recorded" > "$root/bin/fetch-cds-seed"
+  chmod +x "$root/bin/fetch-cds-seed"
+  "$root/bin/fetch-external-data" -s -K secret-jwt >/dev/null 2>"$root/stderr" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "the fetch exited [$rc]: [$(cat "$root/stderr")]"
+  elif [ "$(cat "$recorded" 2>/dev/null)" != "-K secret-jwt" ]; then
+    log-error "fetch-cds-seed was invoked as [$(cat "$recorded" 2>/dev/null)], not [-K secret-jwt]"
+    rc=1
+  fi
+  rm -rf "$(dirname "$root")"
+  return "$rc"
+}
+assert_success "fetch-external-data forwards -K to the CDS fetcher" \
+  test_fetch_external_data_forwards_the_corpus_key
+
+# D2: the forwarded credential must not be READABLE in the log. The option is
+# still shown -- which route a fetch used is exactly what an operator checks --
+# but its value is not, because a log line is copied into tickets and CI output.
+test_fetch_external_data_redacts_the_corpus_key() {
+  local root stderr rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_fetcher_stub "$root/bin/fetch-cds-seed" "$root/fetched" 0
+  stderr="$root/stderr"
+  "$root/bin/fetch-external-data" -s -K super-secret-jwt >/dev/null 2>"$stderr" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "the fetch exited [$rc]: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  if grep -q "super-secret-jwt" "$stderr"; then
+    log-error "the credential was logged verbatim: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  if ! grep -q -- "-K <redacted>" "$stderr"; then
+    log-error "the -K option was not shown as redacted: [$(cat "$stderr")]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  rm -rf "$(dirname "$root")"
+}
+assert_success "fetch-external-data logs -K as <redacted>, never the credential" \
+  test_fetch_external_data_redacts_the_corpus_key
+
+# D7: a directory or an unreadable file is NOT "missing", and the fetcher remedy
+# would not fix either. Both wrappers say which of the three it is.
+test_load_external_data_distinguishes_a_directory_from_a_missing_file() {
+  local rc=0
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  rm -f "$EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv"
+  mkdir -p "$EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv"
+  external_load_refuses "HD2026.csv] is a DIRECTORY, not a file" "the IPEDS HD survey file" || rc=1
+  rmdir "$EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv"
+  write_ipeds_fixture_manifest "$EXTERNAL_ROOT/db/seed/ipeds" top
+  return "$rc"
+}
+assert_success "a directory where a survey file should be is reported as a directory, not as missing" \
+  test_load_external_data_distinguishes_a_directory_from_a_missing_file
+
+test_reload_external_data_distinguishes_a_directory_from_a_missing_file() {
+  local root out rc=0
+  root="$(mktemp -d)/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_fetcher_stub "$root/bin/fetch-external-data" "$root/fetched" 0
+  mkdir -p "$root/institution.csv"
+  : > "$root/fields.csv"
+  out="$("$root/bin/reload-external-data" "$root/institution.csv" "$root/fields.csv" 2>&1)" || rc=$?
+  if [ "$rc" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "expected exit [$EXIT_MISSING_REQUIRED_ARG], got [$rc]: [$out]"
+    rm -rf "$(dirname "$root")"
+    return 1
+  fi
+  case "$out" in
+  *"is a DIRECTORY, not a file"*"Nothing was fetched"*) ;;
+  *) log-error "the refusal does not say it is a directory and that nothing was fetched: [$out]"
+     rm -rf "$(dirname "$root")"
+     return 1 ;;
+  esac
+  rm -rf "$(dirname "$root")"
+}
+assert_success "reload-external-data reports a directory as a directory, before fetching" \
+  test_reload_external_data_distinguishes_a_directory_from_a_missing_file
+
+rm -rf "$(dirname "$EXTERNAL_ROOT")"
 
 end_tests

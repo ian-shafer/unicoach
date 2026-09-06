@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Reads db/seed/ipeds/PROVENANCE.json and prints the bin/ingest-colleges
+arguments it declares (RFC 172).
+
+    read-ipeds-manifest [-m <manifest>] [-d <seed-dir>] [-l] [-h]
+
+    -m PATH   the manifest to read (default: db/seed/ipeds/PROVENANCE.json)
+    -d DIR    the directory the recorded members live in (default: the
+              manifest's own directory)
+    -l        LOADING: an ingest option this reader has no mapping for is fatal
+              rather than a warning. Pass it when the output will actually be
+              loaded; leave it off when the caller only prints a command
+    -h        help
+
+Its PRODUCT is on stdout: one TAB-separated record per line, KIND first, so a
+caller can tell a fact this manifest DECLARED from a fact this reader DERIVED:
+
+    member<TAB><ingest option><TAB><path>
+    year<TAB><ingest option><TAB><YYYY>
+
+The kind matters. Without it, the derived -y and -f lines would share a
+namespace with the options the manifest declares, and an artifact that recorded
+`ingest_option` "-y" would silently bind a file path to the survey year.
+
+Everything else -- warnings, refusals, the fault list -- goes to stderr, and a
+usage or manifest fault exits in the band bin/functions reserves (10 unknown
+option, 11 option without its value, 20 an unexpected positional, 21 a manifest
+that cannot be read, 22 a malformed value).
+
+WHY THIS EXISTS. bin/ingest-colleges takes fourteen flags, six of them
+year-stamped IPEDS paths over case-sensitive letters. Every one of those facts is
+already DECLARED by bin/fetch-ipeds and recorded per artifact in the manifest:
+the member name it wrote, the `ingest_option` that member is loaded as, and the
+`year` the artifact is for. This script reads those declarations. It never infers
+an option from an archive name and never infers a year from a filename -- the
+rule bin/ingest-colleges states and RFC 172 3a repeats.
+
+Every fault it can find is collected and reported TOGETHER, because a manifest
+with three faults should cost one re-fetch rather than three runs.
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+# The shared python half of bin/functions. Resolved against THIS script's own
+# directory rather than the caller's cwd, because bin/ scripts run from anywhere,
+# and with no bytecode cache written beside it (bin/ is a reviewed directory of
+# scripts, not a package build tree).
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    EXIT_MISSING_REQUIRED_ARG,
+    bracketed,
+    fatal,
+    log_error,
+    log_warning,
+    parse_short_options,
+)
+
+SCRIPT_NAME = "read-ipeds-manifest"
+GETOPT_SPEC = "m:d:lh"
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MANIFEST = REPO_ROOT / "db/seed/ipeds/PROVENANCE.json"
+
+# Every bin/ingest-colleges option an IPEDS artifact may declare, and nothing
+# else. An allowlist rather than "any string that starts with -": a manifest is
+# data, and data that names the flag a file is passed as decides part of a
+# command line. `-z` or `--hd=x` reaching argv unchecked is a manifest deciding
+# more than it should.
+INGEST_FILE_OPTIONS = ("-H", "-I", "-A", "-C", "-Y", "-S")
+
+# The YEAR mapping, named rather than special-cased: the collection year comes
+# from the manifest's top-level survey_year, and the SFA aid-year START comes
+# from the -S artifact's own recorded year. Two surveys on two different years,
+# two recorded sources, and one table saying which is which.
+YEAR_FROM_ARTIFACT = {"-S": "-f"}
+COLLECTION_YEAR_OPTION = "-y"
+
+# A four-digit year, and only that. `-y 99` and `-y 20231` are both wrong in ways
+# that reach every stamped row, and a check that accepted them while its message
+# promised four digits would be a lie an operator has no reason to doubt.
+YEAR_RE = re.compile(r"^[12][0-9]{3}$")
+
+# A recorded member is a FILE NAME inside the seed directory, never a path. A
+# "../.." escapes the directory the fetcher writes, and a tab, CR or newline
+# splits this script's own output channel into records it never emitted.
+FORBIDDEN_IN_MEMBER = ("\t", "\r", "\n")
+
+
+class Faults:
+    """Every reason this manifest cannot be read, collected and reported at once
+    -- the same discipline bin/load-external-data applies to missing files."""
+
+    def __init__(self, path):
+        self.path = path
+        self.messages = []
+
+    def add(self, message):
+        self.messages.append(message)
+
+    def any(self):
+        return bool(self.messages)
+
+    def report_and_exit_if_any(self):
+        if not self.messages:
+            return
+        for message in self.messages:
+            log_error(f"{SCRIPT_NAME}: {message}")
+        fatal(
+            f"{SCRIPT_NAME}: [{self.path}] cannot be read ([{len(self.messages)}] "
+            f"fault(s) listed above); re-run bin/fetch-ipeds, which writes it",
+            status=EXIT_MISSING_REQUIRED_ARG,
+        )
+
+
+def load_manifest(path, faults):
+    """The manifest as a JSON OBJECT, or a refusal in the reserved band.
+
+    Every failure mode of reading a file is caught: OSError covers the missing
+    file, the unreadable one, the directory named where a file was meant; a
+    decode fault and a JSON fault are both what a truncated or hand-edited record
+    looks like. None of them may surface as a traceback with exit 1 -- that is
+    outside the band, and it tells the operator nothing they can act on.
+
+    And the parse being SUCCESSFUL is not enough: `[]`, `null` and `"2023"` are
+    valid JSON documents that are not manifests, and reading .get() off them is
+    the AttributeError this guard exists to replace."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except OSError as error:
+        faults.add(f"[{path}] cannot be read: [{type(error).__name__}] [{error}]")
+        faults.report_and_exit_if_any()
+    except (UnicodeDecodeError, ValueError) as error:
+        faults.add(
+            f"[{path}] is not readable JSON ([{type(error).__name__}] [{error}]); re-run "
+            f"bin/fetch-ipeds rather than hand-editing it"
+        )
+        faults.report_and_exit_if_any()
+
+    if not isinstance(document, dict):
+        faults.add(
+            f"[{path}] holds a JSON [{type(document).__name__}], not an object; it is not a "
+            f"manifest at all"
+        )
+        faults.report_and_exit_if_any()
+    return document
+
+
+def declared_year(value):
+    """A year only if bin/fetch-ipeds RECORDED one: a JSON integer in range.
+
+    A bool is an int in Python, so it is excluded first. A string of digits is
+    what a hand edit produces, and this manifest is a fetch record: re-fetching
+    it is the fix, not interpreting it."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    # The SHAPE the message promises, enforced: `99` and `20231` are both wrong
+    # in ways that reach every stamped row, and a check that accepted them while
+    # saying "four-digit year" would be a lie an operator has no reason to doubt.
+    if not YEAR_RE.match(str(value)):
+        return None
+    return value
+
+
+def describe_year_fault(where, key, container):
+    """Why a year could not be read, in the terms the operator can check against
+    the file: absent, or present and wrong -- and if present, what it says."""
+    if key not in container:
+        return f"{where} records no [{key}]"
+    return f"{where} records [{key}] as [{container[key]!r}], which is not a four-digit year"
+
+
+def resolve_artifacts(document, faults):
+    """{ingest option -> (archive, artifact)} for every artifact DECLARED loadable.
+
+    The mapping is read, never re-derived. `ingest_option` is bin/fetch-ipeds'
+    own ARTIFACTS declaration, so a survey added there arrives here with its flag
+    attached instead of falling out of a pattern table kept in a second file.
+
+    null is a declaration too -- "deliberately not ingested", which today is the
+    SFA data dictionary -- and it is silent by design. An artifact with no
+    ingest_option KEY AT ALL is a different state: nobody decided anything about
+    it, and this script does not decide for them."""
+    artifacts = document.get("artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        faults.add(f"[{faults.path}] records no [artifacts] object")
+        faults.report_and_exit_if_any()
+
+    by_option = {}
+    unmapped = []
+    for archive, artifact in artifacts.items():
+        if not isinstance(artifact, dict):
+            faults.add(
+                f"[{archive}] is recorded as a JSON [{type(artifact).__name__}], not an object"
+            )
+            continue
+        if "ingest_option" not in artifact:
+            faults.add(
+                f"[{archive}] records no [ingest_option]; which bin/ingest-colleges flag an "
+                f"artifact is loaded as is declared by the fetcher, never guessed from its name"
+            )
+            continue
+        option = artifact["ingest_option"]
+        if option is None:
+            continue
+        if option in INGEST_FILE_OPTIONS:
+            if option in by_option:
+                faults.add(
+                    f"[{by_option[option][0]}] and [{archive}] both claim [{option}]; which one "
+                    f"to load is not a guess this script makes"
+                )
+                continue
+            by_option[option] = (archive, artifact)
+        else:
+            unmapped.append((archive, option))
+    return by_option, unmapped
+
+
+def resolve_members(by_option, seed_dir, faults):
+    """[(option, path)] for every declared artifact, in the manifest's order."""
+    members = []
+    for option, (archive, artifact) in by_option.items():
+        member = artifact.get("member")
+        if not isinstance(member, str) or not member:
+            faults.add(f"[{archive}] records no [member], so the [{option}] file has no name")
+            continue
+        if any(character in member for character in FORBIDDEN_IN_MEMBER):
+            faults.add(
+                f"[{archive}] records [member] as [{member!r}], which contains a tab or a line "
+                f"break; a member is a file name"
+            )
+            continue
+        if member != Path(member).name or member in (".", ".."):
+            faults.add(
+                f"[{archive}] records [member] as [{member}], which is a path rather than a file "
+                f"name; the members are written into one directory by bin/fetch-ipeds"
+            )
+            continue
+        members.append((option, str(Path(seed_dir) / member)))
+    return members
+
+
+def require_every_file_option(by_option, faults):
+    """Every ingest file option must be declared by some artifact.
+
+    Only -S used to be required, so a manifest missing -H (or any of the other
+    four) read cleanly here and became an EMPTY path in the caller's command --
+    reported two layers away as "missing input []", which names nothing."""
+    absent = [option for option in INGEST_FILE_OPTIONS if option not in by_option]
+    if absent:
+        faults.add(
+            f"[{faults.path}] declares no artifact for {bracketed(absent)}; every "
+            f"bin/ingest-colleges IPEDS file is required, and the SFA data dictionary is not one "
+            f"of them"
+        )
+
+
+def resolve_years(document, by_option, faults):
+    """[(option, year)]: the collection year and every artifact-borne year.
+
+    -y is the manifest's top-level survey_year, stamped on every college_ipeds
+    row. -f is the -S artifact's own recorded year, stamped on every college_sfa
+    row: SFA2223 covers aid year 2022-23 inside the 2023 collection, so one
+    number cannot label both. Neither is inferred, neither is substituted for the
+    other, and neither is agreed by consensus.
+
+    The one comparison made is a CONTRADICTION check: a collection artifact
+    declaring a different year from the top-level field means the record
+    disagrees with itself, and preferring either would be a guess."""
+    years = []
+    survey_year = declared_year(document.get("survey_year"))
+    if survey_year is None:
+        faults.add(
+            describe_year_fault(f"[{faults.path}]", "survey_year", document)
+            + "; the IPEDS collection year is stamped on every college_ipeds row and is never "
+            "inferred from a filename"
+        )
+    else:
+        years.append((COLLECTION_YEAR_OPTION, survey_year))
+
+    for option, year_option in YEAR_FROM_ARTIFACT.items():
+        if option not in by_option:
+            continue
+        archive, artifact = by_option[option]
+        year = declared_year(artifact.get("year"))
+        if year is None:
+            faults.add(
+                describe_year_fault(f"[{archive}]", "year", artifact)
+                + f"; it is what [{year_option}] carries, a DIFFERENT number from the collection "
+                f"year, and it is never borrowed from it"
+            )
+            continue
+        years.append((year_option, year))
+
+    if survey_year is not None:
+        for option, (archive, artifact) in by_option.items():
+            if option in YEAR_FROM_ARTIFACT:
+                continue
+            year = declared_year(artifact.get("year"))
+            if year is not None and year != survey_year:
+                faults.add(
+                    f"[{archive}] declares year [{year}] but the manifest's [survey_year] is "
+                    f"[{survey_year}]; one recorded fact contradicts another and neither is this "
+                    f"script's to prefer"
+                )
+    return years
+
+
+def report_unmapped(unmapped, loading, faults):
+    """An option this reader has no mapping for.
+
+    Under -l (a real load) it is FATAL: the whole point of RFC 172 is that a run
+    must not load less than the operator believed it loaded, and a warning a
+    hundred lines above a green exit is exactly that failure. Without -l nothing
+    is being loaded -- the caller is printing a command for a human to read -- so
+    it is reported and the rest of the command is still printed."""
+    for archive, option in unmapped:
+        message = (
+            f"[{archive}] declares the ingest option [{option}], which {SCRIPT_NAME} has no "
+            f"mapping for; it is NOT in the command. Teach this script the option, or load that "
+            f"file with bin/ingest-colleges directly"
+        )
+        if loading:
+            faults.add(message)
+        else:
+            log_warning(f"{SCRIPT_NAME}: {message}")
+
+
+def parse_args(argv):
+    options = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
+    manifest = Path(options["-m"]) if "-m" in options else DEFAULT_MANIFEST
+    # No emptiness guard on -d: parse_short_options already refuses an empty
+    # value, and Path("") normalises to Path("."), so a guard here would refuse a
+    # perfectly good `-d .` while catching nothing that reaches it.
+    seed_dir = Path(options["-d"]) if "-d" in options else manifest.parent
+    return manifest, seed_dir, "-l" in options
+
+
+def main(argv):
+    manifest_path, seed_dir, loading = parse_args(argv)
+    faults = Faults(manifest_path)
+
+    document = load_manifest(manifest_path, faults)
+    by_option, unmapped = resolve_artifacts(document, faults)
+    require_every_file_option(by_option, faults)
+    members = resolve_members(by_option, seed_dir, faults)
+    years = resolve_years(document, by_option, faults)
+    report_unmapped(unmapped, loading, faults)
+    faults.report_and_exit_if_any()
+
+    for option, path in members:
+        print(f"member\t{option}\t{path}")
+    for option, year in years:
+        print(f"year\t{option}\t{year}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

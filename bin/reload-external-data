@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+reload-external-data [-n] [-c] [-i] [-s] [-K <jwt>] [-h]
+                     <institution.csv> <fields.csv> [aliases.json]
+
+Refreshes the external data and then loads it: bin/fetch-external-data with no
+selectors, and then -- ONLY if that exited 0 -- bin/load-external-data with the
+arguments this script was given (RFC 172). It holds no logic of its own beyond
+that ordering rule, and both halves stay independently runnable: refetching
+without reloading and reloading without refetching are ordinary operations, not
+degraded modes.
+
+The two halves have deliberately different failure rules:
+
+  WITHIN the fetch, best-effort -- three independent sources, and one outage
+  must not cancel two good refreshes (bin/fetch-external-data);
+  BETWEEN fetch and load, all-or-nothing -- the load consumes what the fetch
+  produced, so loading after a partly failed fetch is precisely the partial
+  processing recipes/BEST_EFFORT_BATCH_INGEST.md forbids.
+
+A failed fetch therefore runs no load at all, says so, and exits with the fetch
+half's code; bin/fetch-external-data has already named the source that failed.
+
+The name says "external-data" and not "all" because the College Scorecard pair
+has no fetcher: those two CSVs are still downloaded by hand and passed in as the
+positionals below (RFC 172 says why, and leaves the socket for a fourth fetcher).
+
+LOGGING GOES TO STDERR. Nothing is written to stdout except -h and, under -n,
+the one bin/ingest-colleges command line the load half prints.
+
+Run inside the nix dev shell (python3 and the JVM live there):
+  nix develop -c bin/reload-external-data institution.csv fields.csv
+
+Options:
+  -n: forwarded to the load half -- fetch, then PRINT the bin/ingest-colleges
+      command instead of running it
+  -c, -i, -s: forwarded to the fetch half, selecting the codebooks, the IPEDS
+      survey files or the CDS seed. No selector fetches all three. "Refetch
+      IPEDS only, then reload" is an ordinary operation, not a degraded one.
+  -K JWT: forwarded to the fetch half for bin/fetch-cds-seed. Omit it and that
+      fetcher falls back to $COLLEGEDATA_ANON_KEY and then to scraping the
+      corpus's own API page.
+  -h: Help
+EOF
+  exit 0
+}
+
+DRY_RUN=""
+FETCH_CODEBOOKS=""
+FETCH_IPEDS=""
+FETCH_CDS=""
+ANON_KEY=""
+
+while getopts ":ncisK:h" opt; do
+  case "$opt" in
+  n) DRY_RUN="yes" ;;
+  c) FETCH_CODEBOOKS="yes" ;;
+  i) FETCH_IPEDS="yes" ;;
+  s) FETCH_CDS="yes" ;;
+  K) ANON_KEY="$OPTARG"
+     [ -n "$ANON_KEY" ] ||
+       fatal -s "$EXIT_INVALID_ARG_VALUE" "reload-external-data: [-K] must have a non-empty value; omit it to use \$COLLEGEDATA_ANON_KEY or the API-page scrape"
+     ;;
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "reload-external-data: unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "reload-external-data: option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# The positional grammar is checked HERE as well as in the load half, because the
+# fetch half runs first: a mistyped command must not cost a full three-source
+# download before the load refuses it. It is the SAME check, owned by
+# bin/functions, so the two scripts cannot drift.
+require_ingest_positionals reload-external-data "$@"
+
+# ...and so are the paths themselves. Arity alone still lets a mistyped
+# institution.csv cost the whole fetch, which is the cost this up-front check
+# exists to avoid. Only the SCORECARD arguments are checked: they are the inputs
+# an operator supplies by hand and that no fetcher produces.
+#
+# This is deliberately NOT "run the load half's checks first". Most of what the
+# load half requires -- every IPEDS CSV -- legitimately does NOT exist before the
+# fetch: they are gitignored, so on a fresh checkout a load-side preflight would
+# refuse every reload. The two checks are different questions, and only this one
+# can be asked before fetching.
+require_scorecard_arg() {
+  local path="$1" description="$2"
+  case "$path" in
+  s3://*) return 0 ;;
+  esac
+  if [ -f "$path" ]; then
+    [ -r "$path" ] || fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+      "reload-external-data: [$path] is not readable -- $description; check its permissions. Nothing was fetched."
+    return 0
+  fi
+  # A directory named where a file was meant is a different mistake from a path
+  # that is not there at all, and "does not exist" would send the operator
+  # looking for the wrong thing.
+  [ -d "$path" ] && fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+    "reload-external-data: [$path] is a DIRECTORY, not a file -- $description. Nothing was fetched."
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+    "reload-external-data: [$path] does not exist -- $description. Nothing was fetched."
+}
+
+require_scorecard_inputs() {
+  require_scorecard_arg "$1" "the College Scorecard institution CSV, downloaded by hand from collegescorecard.ed.gov"
+  require_scorecard_arg "$2" "the College Scorecard fields CSV, downloaded by hand from collegescorecard.ed.gov"
+  if [ "$#" -eq "$INGEST_POSITIONAL_COUNT" ]; then
+    require_scorecard_arg "$3" "the curated aliases JSON (db/data/college-aliases.json is the default)"
+  fi
+}
+
+# The fetch half, carrying the selectors and the corpus key this script was
+# given: with no selector it fetches all three, exactly as bin/fetch-external-data
+# does when run directly. "Refetch IPEDS only, then reload" is an ordinary
+# operation and must have a path through the composed tool.
+run_fetch() {
+  FETCH_COMMAND=("$PROJECT_ROOT/bin/fetch-external-data")
+  if [ -n "$FETCH_CODEBOOKS" ]; then FETCH_COMMAND+=(-c); fi
+  if [ -n "$FETCH_IPEDS" ]; then FETCH_COMMAND+=(-i); fi
+  if [ -n "$FETCH_CDS" ]; then FETCH_COMMAND+=(-s); fi
+  if [ -n "$ANON_KEY" ]; then FETCH_COMMAND+=(-K "$ANON_KEY"); fi
+
+  FETCH_STATUS=0
+  "${FETCH_COMMAND[@]}" || FETCH_STATUS=$?
+}
+
+# What is TRUE after a failed fetch, and nothing more. The fetch half is
+# best-effort by design, so a source that succeeded has ALREADY rewritten its
+# committed files -- saying "the data on disk is unchanged" would be false
+# exactly when an operator most needs to know what changed. The per-source lines
+# above this one say which sources were written and which failed; this says what
+# was NOT done, and what to run next.
+#
+# The exit code is this script's own 1, never the child's. bin/fetch-external-data
+# already collapses its children's codes for the same reason, one layer down: its
+# 10-29 band describes ITS grammar, and republishing a 10 here would tell the
+# caller they invoked reload-external-data wrongly when they did not. A 126/127
+# from a child that could not be executed would be even less true.
+report_failed_fetch() {
+  log-error "reload-external-data: the fetch half exited [$FETCH_STATUS]; see the per-source summary above for which sources were written and which failed."
+  log-error "reload-external-data: NO load was attempted, so the database is exactly as it was -- but any source that DID fetch has already rewritten its files in the working tree."
+  fatal -s 1 "reload-external-data: fix the failing source, then re-run this command (or run bin/load-external-data on its own once the fetch is good)."
+}
+
+# NOTE the verb: this REPLACES this process and never returns, which is why it is
+# exec_load and not run_load. Nothing after it in this script would run.
+exec_load() {
+  LOAD_COMMAND=("$PROJECT_ROOT/bin/load-external-data")
+  if [ -n "$DRY_RUN" ]; then LOAD_COMMAND+=(-n); fi
+  LOAD_COMMAND+=("$@")
+
+  exec "${LOAD_COMMAND[@]}"
+}
+
+require_scorecard_inputs "$@"
+run_fetch
+[ "$FETCH_STATUS" -eq 0 ] || report_failed_fetch
+exec_load "$@"

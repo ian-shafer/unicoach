@@ -121,7 +121,6 @@ manifest.
 
 import contextlib
 import csv
-import getopt
 import hashlib
 import http.client
 import io
@@ -136,7 +135,45 @@ import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple, NoReturn
+from typing import NamedTuple
+
+# The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
+# the log-* family, fatal, and the post-getopt guard suite all three fetchers
+# need. Resolved against THIS script's own directory rather than the caller's
+# cwd, because these scripts are run from anywhere.
+# ...and no bytecode cache beside it: importing a module normally writes
+# bin/__pycache__/, and bin/ is a reviewed directory of scripts, not a package
+# build tree. The import cost is microseconds; an untracked directory appearing
+# in the working tree every time an operator runs a fetcher is a real cost.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    EXIT_INVALID_ARG_VALUE,
+    EXIT_OPTION_REQUIRES_VALUE,
+    HTTP_ERROR_BODY_PREVIEW_BYTES,
+    HTTP_MAX_ATTEMPTS,
+    HTTP_RETRY_BACKOFF_SECONDS,
+    HTTP_TIMEOUT_SECONDS,
+    RETRYABLE_STATUS,
+    bracketed,
+    fatal as shared_fatal,
+    log_error,
+    log_info,
+    log_warning,
+    parse_short_options,
+    write_atomically,
+)
+
+
+# Every refusal this script makes names the script. The three fetchers run under
+# one orchestrator (bin/fetch-external-data), so a bare "[FATAL] fixtures
+# directory does not exist" costs the reader a lookup to find out WHICH fetcher
+# said it. pyfunctions' own refusals already carry the name; this gives the
+# script-local ones the same prefix through one wrapper rather than 40 edited
+# f-strings.
+def fatal(message, status=1):
+    shared_fatal(f"{SCRIPT_NAME}: {message}", status=status)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "ipeds"
@@ -252,13 +289,8 @@ ARTIFACTS = (
 # whenever it sorted first.
 REVISED_SUFFIX = "_rv"
 
-# The network bounds, named once each. The timeout is per socket READ, not per
-# download: the largest artifact (C2023_A.zip, ~9 MB) arrives in many reads, so
-# 60s is a bound on a stalled connection rather than on a slow one, and a link
-# that would fail this bound could not finish the fetch anyway.
-HTTP_MAX_ATTEMPTS = 3
-HTTP_TIMEOUT_SECONDS = 60
-HTTP_RETRY_BACKOFF_SECONDS = 2
+# The network bounds and the error-body preview bound come from
+# bin/pyfunctions.py, shared with the other two fetchers.
 # The body is read in CHUNKS rather than in one response.read(), so that a
 # download the operator is waiting on reports as it goes. 64 KiB is a read size,
 # not a progress interval -- how often anything is PRINTED is decided below.
@@ -272,76 +304,11 @@ PROGRESS_TTY_INTERVAL_SECONDS = 0.1
 # plus the final line. A carriage-return update stream there is thousands of
 # lines of noise in a captured log.
 PROGRESS_MILESTONE_PERCENT = 25
-# How much of an error response body is quoted back. A publisher's own
-# explanation lives in the first line or two; the rest is markup.
-HTTP_ERROR_BODY_PREVIEW_BYTES = 200
-# Transient statuses: throttling and server-side faults are worth another
-# attempt. Every other status is the REQUEST being wrong (a renamed or retired
-# survey file) and retrying it only delays the diagnosis.
-RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 # A re-fetched artifact carrying fewer than this fraction of the data rows the
 # manifest recorded is treated as a failed extraction rather than a real survey
 # change: a survey loses institutions in dozens, never in thousands.
 SEED_SHRINK_FLOOR = 0.5
-
-# The usage-error exit codes bin/functions reserves (10-29), kept in step here
-# so a caller that invoked this script wrongly is distinguishable from a fetch
-# that faulted.
-EXIT_UNKNOWN_OPTION = 10
-EXIT_OPTION_REQUIRES_VALUE = 11
-# A positional argument, which this script's grammar has none of. bin/functions
-# reserves 20 for exactly that -- an argument beyond the declared grammar --
-# which is a different operator mistake from a mistyped option (10).
-EXIT_UNEXPECTED_ARG = 20
-EXIT_INVALID_ARG_VALUE = 22
-
-
-def log_info(message):
-    """Anything this script says, on the channel and with the (absent) prefix
-    bin/functions' log-info uses: stderr, no prefix.
-
-    LOGGING GOES TO STDERR, all of it -- the progress, the final summary, and the
-    bin/ingest-colleges command printed to paste next. This script's PRODUCT is
-    files on disk, not a data stream: none of that is what a caller asked for, so
-    none of it belongs on stdout and a normal run leaves stdout EMPTY. (The help
-    answering -h is the one thing a caller does ask for by name; parse_args
-    prints it directly.) Logging on one channel beside the
-    [WARNING]/[ERROR]/[FATAL] family also means a redirect that keeps the log
-    keeps all of it, in order."""
-    print(message, file=sys.stderr)
-
-
-def log_warning(message):
-    """A non-fatal fault, on the channel and with the prefix bin/functions'
-    log-warning uses, so one grep finds them across shell and python."""
-    print(f"[WARNING] {message}", file=sys.stderr)
-
-
-def log_error(message):
-    """A fault the run did not die of but that must not be read past, on the
-    channel and with the prefix bin/functions' log-error uses. Distinct from
-    log_warning: a recovered fallback (cp1252) is a warning, while writing the
-    seed with a baseline guard provably disarmed is an error."""
-    print(f"[ERROR] {message}", file=sys.stderr)
-
-
-def fatal(message, status=1) -> NoReturn:
-    """Reports on the [FATAL] channel and EXITS: this call never returns, which
-    is why the guards below end on a bare fatal() with no fall-through return."""
-    print(f"[FATAL] {message}", file=sys.stderr)
-    sys.exit(status)
-
-
-def bracketed(names):
-    """Names for a message: each one in brackets, in a stable order.
-
-    Interpolating a list directly renders a Python repr, which wraps every
-    element in the single quotes this project's messages use for nothing --
-    brackets are the one wrapper, so a name carrying a space or a quote is still
-    read unambiguously."""
-    return ", ".join(f"[{name}]" for name in sorted(names))
-
 
 def format_bytes(count):
     """A byte count an operator can read: [9.3 MB] rather than [9294160].
@@ -835,6 +802,25 @@ class Source:
         self.fetched_at = fetched_at
 
     def as_json(self):
+        """The recorded fact sheet for one artifact.
+
+        `year` is the artifact's DECLARED expected_year -- SURVEY_YEAR for the
+        five collection files, SFA_AID_YEAR for the two SFA ones -- serialised
+        because bin/load-external-data builds bin/ingest-colleges' -f (the SFA
+        aid-year start) from THIS field, exactly as it builds -y from the
+        manifest's top-level survey_year. Two surveys on two different years
+        cannot share one recorded number, and neither number may be read out of
+        an archive name.
+
+        `ingest_option` is this table's declaration of which bin/ingest-colleges
+        flag the written member is passed as, and it is serialised for the same
+        reason: bin/load-external-data assembles that command, and a reader that
+        re-derived the mapping from archive NAMES would be a second copy of a
+        fact declared here -- one that silently omits any survey added to
+        ARTIFACTS before the copy is updated. null is a declaration too: it means
+        this artifact is deliberately NOT ingested (the SFA dictionary), so the
+        wrapper skips it because the fetcher said to, not because it recognised
+        a filename."""
         return {
             "url": self.url,
             "fetched_at": self.fetched_at,
@@ -844,6 +830,8 @@ class Source:
             "member_bytes": self.member_bytes,
             "member_sha256": self.member_sha256,
             "rows": self.rows,
+            "year": self.artifact.expected_year,
+            "ingest_option": self.artifact.ingest_option,
         }
 
 
@@ -1314,40 +1302,6 @@ def require_offline_outdir(outdir, previous, offline):
 # ---------------------------------------------------------------------------
 
 
-def write_files_atomically(files):
-    """Write every (target, body) pair, or none of them.
-
-    All-or-nothing as a SET, not per file. Writing each member and then the
-    manifest one at a time means an OSError on the largest member (C2023_a is
-    ~62 MB, and ENOSPC is real) leaves new CSVs sitting beside stale ones under
-    the OLD manifest -- and the next run adopts that stale manifest as both its
-    shrink and its member baseline, which is the exact state these guards exist
-    to prevent.
-
-    So every body is staged to a temp file in the SAME directory first, and only
-    once all of them are on disk are they renamed into place: os.replace is
-    atomic within a filesystem. On any fault the staged files are removed, so no
-    orphan ".partial" is left in the operator's output directory, and the
-    refusal comes through this script's channel."""
-    staged = []
-    try:
-        for target, body in files:
-            partial = target.with_name(f".{target.name}.partial")
-            partial.write_bytes(body)
-            staged.append((partial, target))
-        for partial, target in staged:
-            os.replace(partial, target)
-    except OSError as error:
-        for partial, _ in staged:
-            with contextlib.suppress(OSError):
-                partial.unlink()
-        fatal(
-            f"writing [{len(files)}] files failed: [{type(error).__name__}] [{error}]. "
-            f"Nothing partial was left behind; the previous contents of the directory "
-            f"stand as they were."
-        )
-
-
 def build_manifest(sources, offline, fetched_at):
     """The manifest: when and from where each archive came, its size and digest,
     which member was taken out of it, that member's digest as written, and the
@@ -1364,11 +1318,23 @@ def build_manifest(sources, offline, fetched_at):
     decides all three, so no caller can assemble a manifest claiming a fetch that
     did not happen. `fetched_at` is likewise the caller's single timestamp,
     stamped identically at both levels: asking the clock again here would make
-    the top-level field later than every artifact by the whole download."""
+    the top-level field later than every artifact by the whole download.
+
+    The SURVEY YEAR is recorded at the top level because the manifest is what
+    bin/load-external-data reads to build the -y that bin/ingest-colleges stamps
+    on every college_ipeds row (RFC 172). It is the same SURVEY_YEAR constant the
+    five COLLECTION artifacts declare, so the recorded year can never disagree
+    with the members extracted beside it, and no reader has to infer a year from
+    a filename -- which bin/ingest-colleges forbids outright. The SFA artifacts
+    are on a different year (SFA_AID_YEAR) by design, so their number is recorded
+    per artifact instead, in as_json's `year`; the top-level field is the
+    collection year and only that. An offline replay records both identically:
+    the years are properties of the artifacts, not of the route."""
     return {
         "fetched_at": fetched_at,
         "source": ROUTE_FIXTURES if offline else ROUTE_NETWORK,
         "fixture_derived": offline,
+        "survey_year": SURVEY_YEAR,
         "artifacts": {source.archive: source.as_json() for source in sources.values()},
     }
 
@@ -1424,100 +1390,39 @@ def print_ingest_command(outdir, sources):
     log_info("      <institution.csv> <fields.csv>")
 
 
-# The option grammar, in getopt's own notation and declared ONCE: "o:F:h" is
-# what parses argv and VALUE_OPTIONS is what the error handler asks whether a
-# faulted option is one that takes a value. A second hand-written list of the
-# letters is a declaration that can drift from the first, and it would drift into
-# reporting a missing value as an unknown option.
+# The name this script reports itself as; every refusal names it, because the
+# three fetchers run under one wrapper and a message must say which refused.
+SCRIPT_NAME = "fetch-ipeds"
+
+# The option grammar, in getopt's own notation and declared ONCE: this is what
+# pyfunctions.parse_short_options parses argv with, and what it derives the
+# value-taking letters from. A second hand-written list of those letters is a
+# declaration that can drift from the one getopt actually uses.
 GETOPT_SPEC = "o:F:h"
-VALUE_OPTIONS = ("-o", "-F")
 
 
 def parse_args(argv):
     """(outdir, fixtures) from argv, fataling on a malformed option.
 
-    The GRAMMAR is getopt.getopt -- the stdlib's model of the getopts builtin
-    every bash script in bin/ parses with, so this python3 script follows the
-    same house rule rather than hand-rolling a loop that reimplements it
-    slightly differently.
+    The grammar, the -h answer and every value-shape guard getopt cannot make --
+    a repeated option, an empty value, a value that is really the next option --
+    live in bin/pyfunctions.py, shared with the other two fetchers. What is
+    decided HERE is what only this script knows:
 
-    getopt gives the grammar and NOTHING else, so every check the grammar cannot
-    make is made here, after it parses. A value beginning with "-" is a dropped
-    operand -- getopt will happily take "-F" as the value of "-o" and make a
-    directory named "-F" -- an empty value silently means the current directory,
-    and a repeated option is a last-wins guess about which of two directories the
-    operator meant. In the script whose entire purpose is refusing to write the
-    wrong directory, none of those may pass quietly.
+    -F REQUIRES -o. Without it, an offline replay defaults to db/seed/ipeds --
+    the committed record -- and whether it is stopped then depends on what is
+    inside a data file: a missing manifest, or one already marked `fixtures`, and
+    the replay writes over the committed seed. require_offline_outdir stays as
+    the second line of defence for an explicit -o, but the argument shape is
+    decided by the arguments.
 
-    -F REQUIRES -o, and that is enforced here rather than documented. Without it,
-    an offline replay defaults to db/seed/ipeds -- the committed record -- and
-    whether it is stopped then depends on what is inside a data file: a missing
-    manifest, or one already marked `fixtures`, and the replay writes over the
-    committed seed. require_offline_outdir stays as the second line of defence
-    for an explicit -o, but the argument shape is decided by the arguments."""
-    try:
-        options, positional = getopt.getopt(argv[1:], GETOPT_SPEC)
-    except getopt.GetoptError as error:
-        # ONE exception class for two different operator mistakes, so it is the
-        # OFFENDING OPTION that separates them, not the message text: an option
-        # this script declares a value for faulted because the value is missing
-        # (11), and anything else faulted because the option is not one of ours
-        # (10). Matching on error.msg would tie these exit codes to the stdlib's
-        # wording.
-        offender = f"-{error.opt}" if error.opt else ""
-        if offender in VALUE_OPTIONS:
-            fatal(f"option [{offender}] requires a value", status=EXIT_OPTION_REQUIRES_VALUE)
-        fatal(
-            f"unknown option [{offender or error.msg}]", status=EXIT_UNKNOWN_OPTION
-        )
+    And an -o naming something that exists and is not a directory is a usage
+    error, judged as an ARGUMENT before anything reads a disk, rather than the
+    traceback mkdir would raise."""
+    given = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
 
-    # -h is answered BEFORE the rest of the argv is judged: a caller reaching for
-    # the help is a caller who does not yet know the grammar, and refusing them
-    # the text over a stray word in the same command line helps nobody.
-    if any(option == "-h" for option, _ in options):
-        # The help goes to STDOUT, the one thing here that does. stdout carries
-        # what the caller explicitly ASKED FOR, and a caller that passed -h asked
-        # for this text -- it is the product of that invocation, not a diagnostic
-        # printed alongside one. Both sibling fetchers (bin/fetch-codebooks,
-        # bin/fetch-cds-seed) print their help the same way.
-        print(__doc__)
-        sys.exit(0)
-
-    # getopt hands back everything after the options as operands. This script
-    # declares none, so any of them is an argument beyond the grammar -- 20, the
-    # code bin/functions reserves for exactly that, and NOT the 10 an unknown
-    # option gets: a mistyped option and a stray word are different mistakes.
-    if positional:
-        fatal(
-            f"unexpected argument {bracketed(positional)}; this script takes options only "
-            f"({GETOPT_SPEC.replace(':', ' <value>')})",
-            status=EXIT_UNEXPECTED_ARG,
-        )
-
-    given = {}
-    for option, raw in options:
-        if option in given:
-            fatal(
-                f"option [{option}] was given more than once; which directory was meant is "
-                f"not a guess this script makes",
-                status=EXIT_INVALID_ARG_VALUE,
-            )
-        if raw == "":
-            fatal(
-                f"option [{option}] was given an empty value; if the current directory is "
-                f"meant, say so with [.]",
-                status=EXIT_INVALID_ARG_VALUE,
-            )
-        if raw.startswith("-"):
-            fatal(
-                f"option [{option}] was given [{raw}], which is another option: its value "
-                f"was left out",
-                status=EXIT_INVALID_ARG_VALUE,
-            )
-        given[option] = Path(raw)
-
-    outdir = given.get("-o", DEFAULT_OUTDIR)
-    fixtures = given.get("-F")
+    outdir = Path(given["-o"]) if "-o" in given else DEFAULT_OUTDIR
+    fixtures = Path(given["-F"]) if "-F" in given else None
     if fixtures is not None and "-o" not in given:
         fatal(
             f"option [-F] requires an explicit [-o]: an offline replay must not be aimed "
@@ -1525,8 +1430,6 @@ def parse_args(argv):
             f"committed record of the real fetch",
             status=EXIT_OPTION_REQUIRES_VALUE,
         )
-    # Checked as an ARGUMENT, before anything reads a disk: an -o naming an
-    # existing file is a usage error, not the traceback mkdir would raise.
     if outdir.exists() and not outdir.is_dir():
         fatal(
             f"option [-o] names [{outdir}], which exists and is not a directory; the output "
@@ -1584,7 +1487,7 @@ def main(argv):
         f"Writing [{len(files)}] files ([{format_bytes(sum(len(body) for _, body in files))}]) "
         f"to [{outdir}]"
     )
-    write_files_atomically(files)
+    write_atomically(files, SCRIPT_NAME)
 
     print_summary(outdir, sources, offline, rows_armed, member_armed)
     print_ingest_command(outdir, sources)

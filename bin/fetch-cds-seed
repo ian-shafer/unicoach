@@ -23,16 +23,25 @@ of the offending documents so a count is traceable without re-fetching.
 
 Stdlib-only (dev-shell python3), no dependencies. Usage:
 
-    fetch-cds-seed [-o <outdir>] [-F <fixtures-dir>] [--anon-key <jwt>]
+    fetch-cds-seed [-o <outdir>] [-F <fixtures-dir>] [-K <jwt>]
 
-    -o DIR         output directory (default: db/seed/cds under the repo root)
-    -F DIR         offline mode for tests: read <dir>/manifest.json and
-                   <dir>/fields.json (recorded API responses), no network
-    --anon-key JWT the corpus's public read-only Supabase anon key to use.
-                   Falls back to $COLLEGEDATA_ANON_KEY, then to scraping the
-                   corpus's own API page. PROVENANCE.json records which route
-                   a run used, so the credential is auditable.
-    -h             help
+    -o DIR    output directory (default: db/seed/cds under the repo root)
+    -F DIR    offline mode for tests: read <dir>/manifest.json and
+              <dir>/fields.json (recorded API responses), no network
+    -K JWT    the corpus's public read-only Supabase anon key to use.
+              Falls back to $COLLEGEDATA_ANON_KEY, then to scraping the
+              corpus's own API page. PROVENANCE.json records which route
+              a run used, so the credential is auditable.
+    -h        help
+
+Options are parsed by the stdlib getopt module, the same short-option grammar
+every bash script in bin/ uses; there are no long options and no positionals. A
+usage mistake exits in the band bin/functions reserves: 10 unknown option, 11
+option without its value, 20 an unexpected positional, 22 a malformed value.
+
+LOGGING GOES TO STDERR, all of it, including the closing summary: this script's
+product is files on disk, so a normal run writes NOTHING to stdout. The help
+answering -h is the one thing that does.
 
 The run REFUSES to write a seed that is empty or that collapsed against the
 committed PROVENANCE.json row counts: this tool overwrites a reviewed seed, and
@@ -46,6 +55,7 @@ Etiquette per the corpus's docs/api-usage-attribution.md: every request sends
 import csv
 import enum
 import hashlib
+import io
 import json
 import os
 import re
@@ -57,6 +67,40 @@ import urllib.request
 from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
+
+# The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
+# the log-* family, fatal, and the post-getopt guard suite all three fetchers
+# need. Resolved against THIS script's own directory rather than the caller's
+# cwd, because these scripts are run from anywhere.
+# ...and no bytecode cache beside it: importing a module normally writes
+# bin/__pycache__/, and bin/ is a reviewed directory of scripts, not a package
+# build tree. The import cost is microseconds; an untracked directory appearing
+# in the working tree every time an operator runs a fetcher is a real cost.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    fatal as shared_fatal,
+    log_info,
+    HTTP_ERROR_BODY_PREVIEW_BYTES,
+    HTTP_MAX_ATTEMPTS,
+    HTTP_RETRY_BACKOFF_SECONDS,
+    HTTP_TIMEOUT_SECONDS,
+    RETRYABLE_STATUS,
+    log_warning,
+    parse_short_options,
+    write_atomically,
+)
+
+
+# Every refusal this script makes names the script. The three fetchers run under
+# one orchestrator (bin/fetch-external-data), so a bare "[FATAL] fixtures
+# directory does not exist" costs the reader a lookup to find out WHICH fetcher
+# said it. pyfunctions' own refusals already carry the name; this gives the
+# script-local ones the same prefix through one wrapper rather than 40 edited
+# f-strings.
+def fatal(message, status=1):
+    shared_fatal(f"{SCRIPT_NAME}: {message}", status=status)
+
 from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -68,15 +112,11 @@ CLIENT_HEADER = {"X-CollegeData-Client": "unicoach"}
 PAGE_SIZE = 1000
 ANON_KEY_ENV = "COLLEGEDATA_ANON_KEY"
 
-# The network bounds, named once each: the attempt count is derived from
-# HTTP_MAX_ATTEMPTS everywhere it is needed rather than written a second time.
-HTTP_MAX_ATTEMPTS = 3
-HTTP_TIMEOUT_SECONDS = 60
-HTTP_RETRY_BACKOFF_SECONDS = 2
-# Transient statuses: throttling and server-side faults are worth another
-# attempt. Every other 4xx is the REQUEST being wrong (rotated anon key,
-# renamed table) and retrying it only delays the diagnosis.
-RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+# The network bounds (attempts, timeout, backoff), the retryable statuses and the
+# error-body preview bound come from bin/pyfunctions.py, shared with the other
+# two fetchers. A retry covers throttling and server-side faults only; every
+# other 4xx here is the REQUEST being wrong (rotated anon key, renamed table) and
+# retrying it only delays the diagnosis.
 
 # How many offending subjects to keep per drop reason. A count alone forces a
 # re-fetch to find the rows behind it; an unbounded list would make
@@ -184,25 +224,6 @@ STICKY_DROPS = frozenset(
 )
 
 
-# The usage-error exit codes bin/functions reserves (10-29), kept in step here
-# so a caller that invoked this script wrongly is distinguishable from a corpus
-# fetch that faulted -- bin/ingest-colleges exits these same two for these same
-# two conditions.
-EXIT_UNKNOWN_OPTION = 10
-EXIT_OPTION_REQUIRES_VALUE = 11
-
-
-def log_warning(message):
-    """A non-fatal fault, on the channel and with the prefix bin/functions'
-    log-warning uses, so one grep finds them across shell and python."""
-    print(f"[WARNING] {message}", file=sys.stderr)
-
-
-def fatal(message, status=1):
-    print(f"[FATAL] {message}", file=sys.stderr)
-    sys.exit(status)
-
-
 # ---------------------------------------------------------------------------
 # The drop ledger
 # ---------------------------------------------------------------------------
@@ -298,7 +319,7 @@ def http_get(url, headers):
             with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
                 return response.read()
         except urllib.error.HTTPError as error:
-            body = error.read()[:200].decode("utf-8", errors="replace")
+            body = error.read()[:HTTP_ERROR_BODY_PREVIEW_BYTES].decode("utf-8", errors="replace")
             cause = f"HTTP [{error.code}] [{error.reason}] body [{body}]"
             if error.code not in RETRYABLE_STATUS:
                 fatal(f"GET [{url}] failed permanently on attempt [{attempt + 1}]: {cause}")
@@ -315,7 +336,7 @@ def http_get(url, headers):
 
 def resolve_anon_key(argument):
     """(key, source) for the corpus's public read-only Supabase anon key, from
-    the most explicit route available: the --anon-key argument, then
+    the most explicit route available: the -K argument, then
     $COLLEGEDATA_ANON_KEY, then a scrape of the corpus's own API page (where
     the key is published for exactly this use). The source is recorded in
     PROVENANCE.json so an operator can see which credential a run used, and can
@@ -330,7 +351,7 @@ def resolve_anon_key(argument):
     if not match:
         fatal(
             f"no Supabase anon key (JWT) found on [{API_PAGE_URL}]; "
-            f"pass --anon-key or set [${ANON_KEY_ENV}]"
+            f"pass -K or set [${ANON_KEY_ENV}]"
         )
     return match.group(0), "scraped"
 
@@ -359,7 +380,7 @@ def rest_get_all(path, params, anon_key):
         if not isinstance(page, list):
             fatal(
                 f"GET [{url}] returned a JSON [{type(page).__name__}], expected an array: "
-                f"[{str(page)[:200]}]"
+                f"[{str(page)[:HTTP_ERROR_BODY_PREVIEW_BYTES]}]"
             )
         if len(page) > PAGE_SIZE:
             fatal(f"GET [{url}] returned [{len(page)}] rows for a limit of [{PAGE_SIZE}]")
@@ -981,16 +1002,24 @@ def build_seed(manifest, fields):
 # ---------------------------------------------------------------------------
 
 
-def write_csv(path, header, rows):
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=header)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: ("" if v is None else v) for k, v in row.items()})
+def build_csv(header, rows):
+    """One seed CSV as the bytes that will land on disk.
+
+    Rendered rather than written, because every file this run produces is
+    written as ONE set (see main): the digest PROVENANCE.json records is taken
+    from these bytes, not by reading a file back after writing it. newline=""
+    is the csv module's contract, and the buffer is encoded UTF-8 exactly as
+    Path.write_text would."""
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=header)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: ("" if v is None else v) for k, v in row.items()})
+    return buffer.getvalue().encode("utf-8")
 
 
-def sha256_of(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def sha256_of(body):
+    return hashlib.sha256(body).hexdigest()
 
 
 def require_plausible_seed(outdir, seed, manifest, fields):
@@ -1027,17 +1056,16 @@ def require_plausible_seed(outdir, seed, manifest, fields):
         )
 
 
-def write_seed(outdir, seed):
-    """Writes one CSV per fact group; returns {filename -> path}."""
-    paths = {}
-    for group, name, header, _ in FACT_GROUPS:
-        paths[name] = outdir / name
-        write_csv(paths[name], header, seed[group])
-    return paths
+def build_seed_files(outdir, seed):
+    """[(path, bytes)] for one CSV per fact group, in FACT_GROUPS order."""
+    return [
+        (outdir / name, build_csv(header, seed[group]))
+        for group, name, header, _ in FACT_GROUPS
+    ]
 
 
-def write_provenance(outdir, paths, seed, drops, manifest, fields, source, anon_key_source):
-    """The regenerable-seed manifest: when and from where the seed was built,
+def build_provenance(outdir, bodies, seed, drops, manifest, fields, source, anon_key_source):
+    """The regenerable-seed manifest AS BYTES: when and from where the seed was built,
     the corpus it was built from, every value dropped as unreported (with a
     bounded sample of the offending documents, and the per-fact-group counters
     nested under their group), and each CSV's row count and digest."""
@@ -1054,37 +1082,40 @@ def write_provenance(outdir, paths, seed, drops, manifest, fields, source, anon_
             "dropped": drops.as_json(),
         },
         "rows": {name: len(seed[group]) for group, name, _, _ in FACT_GROUPS},
-        "sha256": {name: sha256_of(path) for name, path in paths.items()},
+        "sha256": {name: sha256_of(body) for name, body in bodies.items()},
     }
-    (outdir / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    return (json.dumps(provenance, indent=2) + "\n").encode("utf-8")
+
+
+# The name this script reports itself as; every refusal names it, because the
+# three fetchers run under one wrapper and a message must say which refused.
+SCRIPT_NAME = "fetch-cds-seed"
+
+# The option grammar, in getopt's own notation and declared ONCE: this is what
+# pyfunctions.parse_short_options parses argv with, and what it derives the
+# value-taking letters from.
+#
+# -K, not --anon-key: the bin/ conventions allow SHORT options only, and this is
+# a hand-run operator tool with no callers in the tree, so the long option is
+# replaced rather than aliased. $COLLEGEDATA_ANON_KEY and the API-page scrape are
+# the two fallbacks and are unchanged.
+GETOPT_SPEC = "o:F:K:h"
 
 
 def parse_args(argv):
-    """(outdir, fixtures, anon_key) from argv, fataling on a malformed
-    option."""
-    outdir = None
-    fixtures = None
-    anon_key = None
-    args = list(argv[1:])
-    while args:
-        arg = args.pop(0)
-        if arg == "-h":
-            print(__doc__)
-            sys.exit(0)
-        if arg in ("-o", "-F", "--anon-key"):
-            if not args:
-                fatal(f"option [{arg}] requires a value", status=EXIT_OPTION_REQUIRES_VALUE)
-            value = args.pop(0)
-            if arg == "-o":
-                outdir = Path(value)
-            elif arg == "-F":
-                fixtures = Path(value)
-            else:
-                anon_key = value
-        else:
-            fatal(f"unknown argument [{arg}]", status=EXIT_UNKNOWN_OPTION)
-    if outdir is None:
-        outdir = DEFAULT_OUTDIR
+    """(outdir, fixtures, anon_key) from argv, fataling on a malformed option.
+
+    The grammar, the -h answer and every value-shape guard getopt cannot make --
+    a repeated option, an empty value (which for -K is an unusable credential the
+    fallbacks would then never be consulted for), a value that is really the next
+    option -- live in bin/pyfunctions.py, shared with the other two fetchers. All
+    this adds is the typing of the three values."""
+    given = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
+
+    outdir = Path(given["-o"]) if "-o" in given else DEFAULT_OUTDIR
+    fixtures = Path(given["-F"]) if "-F" in given else None
+    # The key stays a STRING, never a Path: it is a credential, not a location.
+    anon_key = given.get("-K")
     return outdir, fixtures, anon_key
 
 
@@ -1095,12 +1126,28 @@ def main(argv):
     manifest, fields, anon_key_source = load_corpus(fixtures, anon_key)
     seed, drops = build_seed(manifest, fields)
     require_plausible_seed(outdir, seed, manifest, fields)
-    paths = write_seed(outdir, seed)
-    source = "fixtures" if fixtures is not None else "network"
-    write_provenance(outdir, paths, seed, drops, manifest, fields, source, anon_key_source)
 
-    counts = " ".join(f"{name}={len(seed[group])}" for group, name, _, _ in FACT_GROUPS)
-    print(f"seed written to [{outdir}]: {counts} dropped={drops.summary()}")
+    # EVERY file this run produces is written as one set, or none of it is
+    # (RFC 172, bin/pyfunctions.write_atomically). These three CSVs are
+    # COMMITTED, REVIEWED files: writing them one at a time means a fault partway
+    # through leaves new rows under a STALE PROVENANCE.json, whose digests and
+    # row counts then describe files that no longer exist -- and the next run
+    # measures its shrink guard against exactly those numbers.
+    source = "fixtures" if fixtures is not None else "network"
+    files = build_seed_files(outdir, seed)
+    bodies = {path.name: body for path, body in files}
+    files.append((
+        outdir / "PROVENANCE.json",
+        build_provenance(outdir, bodies, seed, drops, manifest, fields, source, anon_key_source),
+    ))
+    write_atomically(files, SCRIPT_NAME)
+
+    # Every value in brackets, and the drop ledger rendered rather than
+    # interpolated: a dict interpolates as a Python repr, whose quotes are a
+    # second wrapper this project's messages do not use.
+    counts = " ".join(f"{name}=[{len(seed[group])}]" for group, name, _, _ in FACT_GROUPS)
+    dropped = " ".join(f"{reason}=[{count}]" for reason, count in drops.summary().items())
+    log_info(f"seed written to [{outdir}]: {counts} dropped: {dropped or '[none]'}")
     return 0
 
 

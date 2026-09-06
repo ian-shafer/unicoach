@@ -444,6 +444,67 @@ require_cloud_domain() {
 # drift on the path.
 COLLEGE_DIST="college/build/install/college"
 
+# The <institution.csv> <fields.csv> [aliases.json] grammar, checked once for
+# every wrapper that forwards it to bin/ingest-colleges (RFC 172).
+# bin/load-external-data and bin/reload-external-data both take exactly these
+# three positionals, and two independent copies of "two or three arguments" is
+# two copies that can drift. bin/ingest-colleges keeps its own copy: it is
+# reachable without either wrapper, and its grammar is not this function's to
+# own.
+#
+# The names are the ONE declaration. The arity, the messages and the per-argument
+# refusals are all derived from this list, so adding or removing a positional is
+# one edit rather than five that must agree -- and the count in a message can
+# never disagree with the count that is enforced. The optional tail is declared
+# the same way: everything from INGEST_POSITIONAL_REQUIRED on is optional.
+INGEST_POSITIONAL_NAMES=("<institution.csv>" "<fields.csv>" "[aliases.json]")
+INGEST_POSITIONAL_REQUIRED=2
+INGEST_POSITIONAL_COUNT="${#INGEST_POSITIONAL_NAMES[@]}"
+
+# The grammar as an operator reads it: "<institution.csv> <fields.csv>
+# [aliases.json]", spelled from the same list that enforces it.
+ingest_positional_usage() {
+  printf '%s' "${INGEST_POSITIONAL_NAMES[*]}"
+}
+
+# The caller passes its own name first, so a refusal names the script the
+# operator actually ran. Every rule here is a rule about the ARGUMENTS, and every
+# refusal quotes what was RECEIVED -- a message that restates the rule without
+# the arguments makes the operator diff the rule against their own command line
+# by eye.
+require_ingest_positionals() {
+  local script="$1"
+  shift
+  local candidate index=0
+
+  for candidate in "$@"; do
+    case "$candidate" in
+    -*) fatal -s "$EXIT_UNKNOWN_OPTION" \
+      "$script: unknown option [$candidate]; options come before [$(ingest_positional_usage)]" ;;
+    esac
+  done
+
+  if [ "$#" -lt "$INGEST_POSITIONAL_REQUIRED" ] || [ "$#" -gt "$INGEST_POSITIONAL_COUNT" ]; then
+    local received="none"
+    [ "$#" -gt 0 ] && received="$(printf '[%s] ' "$@")"
+    local status_code="$EXIT_MISSING_REQUIRED_ARG"
+    [ "$#" -gt "$INGEST_POSITIONAL_COUNT" ] && status_code="$EXIT_UNEXPECTED_ARG"
+    fatal -s "$status_code" \
+      "$script takes [$INGEST_POSITIONAL_REQUIRED] to [$INGEST_POSITIONAL_COUNT] arguments [$(ingest_positional_usage)]; it received [$#]: ${received% }"
+  fi
+
+  # An EMPTY value is a wrong value, not an omitted one -- refused rather than
+  # silently replaced by a default (the `${3-...}` vs `${3:-...}` distinction
+  # bin/ingest-colleges already states for the aliases argument).
+  for candidate in "$@"; do
+    if [ -z "$candidate" ]; then
+      fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+        "$script: argument [$((index + 1))], ${INGEST_POSITIONAL_NAMES[$index]}, was given as an empty value; it must name a file"
+    fi
+    index=$((index + 1))
+  done
+}
+
 resolve_file_arg() {
   local arg="$1" scratch_dir="${2:-}"
   if [ -z "$arg" ]; then

@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+fetch-external-data [-c] [-i] [-s] [-K <jwt>] [-F <fixtures-dir> -o <outdir>] [-h]
+
+Runs the three external-data fetchers -- the published codebooks, the IPEDS
+survey files and the collegedata.fyi Common Data Set seed -- in the order the
+load consumes them (RFC 172). It holds no fetching logic of its own: each
+source's rules, guards and provenance stay in its own script.
+
+  bin/fetch-codebooks   ->  db/data/codebooks.json + db/seed/codebooks/
+  bin/fetch-ipeds       ->  db/seed/ipeds/
+  bin/fetch-cds-seed    ->  db/seed/cds/
+
+Selecting no source runs all three. The selectors exist so one failed or one
+changed source can be re-fetched without re-downloading the other two.
+
+This is BEST-EFFORT with explicit reporting (recipes/BEST_EFFORT_BATCH_INGEST.md):
+every selected source runs even after an earlier one fails, and the run ends with
+one line per source plus a tally. Stopping at the first failure would let a
+collegedata.fyi outage silently cancel an IPEDS refresh that would have
+succeeded. Each fetcher is internally all-or-nothing over its own outputs, so a
+failed source leaves ITS files exactly as they were.
+
+EXIT CODE: 1 if any selected source failed. The child's own exit code is NOT
+forwarded -- the 10-29 band describes THIS script's grammar, and reporting a
+child's 10 would tell the caller they invoked fetch-external-data wrongly when
+they did not. The failing source is named in the summary, which is where that
+belongs.
+
+LOGGING GOES TO STDERR, all of it, including the per-source summary: this
+script's product is files on disk, so a normal run writes NOTHING to stdout. The
+help answering -h is the one thing that does.
+
+It is OPERATOR-RUN and LAPTOP-ONLY (RFC 172 6): it egresses to nces.ed.gov and
+collegedata.fyi and writes committed, reviewed files in the working tree, so it
+is deliberately absent from bin/remote's ops-tool allowlist and bin/deploy's
+bundle.
+
+Run inside the nix dev shell (python3 lives there):
+  nix develop -c bin/fetch-external-data
+  nix develop -c bin/fetch-external-data -i
+
+Options:
+  -c: fetch the published codebooks (bin/fetch-codebooks)
+  -i: fetch the IPEDS survey files (bin/fetch-ipeds)
+  -s: fetch the CDS seed (bin/fetch-cds-seed). -s, not -d: -d is `deadlines` in
+      bin/ingest-colleges and these two scripts sit side by side in every
+      runbook, so a letter reused across them for a different meaning is the
+      same hazard as ingest-colleges' -a/-A pair.
+  -F DIR: offline fixture replay, forwarded to each selected fetcher. REQUIRES
+      -o. This is what lets bin/scripts-tests exercise the orchestrator with no
+      network and no writes under db/; it is not a production path.
+  -K JWT: the collegedata.fyi public read-only Supabase anon key, forwarded to
+      bin/fetch-cds-seed. Omit it and that fetcher falls back to
+      $COLLEGEDATA_ANON_KEY and then to scraping the corpus's own API page, and
+      records in PROVENANCE.json which route the run used.
+  -o DIR: output ROOT. Each source is written into its own subdirectory --
+      <root>/codebooks, <root>/ipeds, <root>/cds -- because all three fetchers
+      write a PROVENANCE.json and one shared directory would have them overwrite
+      each other's. Each fetcher creates its own directory and each honours -o
+      for ALL of its output -- bin/fetch-codebooks' generated codebook included --
+      so a redirected run rewrites nothing committed.
+  -h: Help
+EOF
+  exit 0
+}
+
+FETCH_CODEBOOKS=""
+FETCH_IPEDS=""
+FETCH_CDS=""
+FIXTURES_DIR=""
+OUTPUT_ROOT=""
+ANON_KEY=""
+
+# One getopts loop parses the whole grammar (bin/ conventions: short options
+# only, no hand-rolled argument loop). An explicitly-empty -F/-o value is a wrong
+# value, refused rather than read as "the current directory" -- the same rule
+# bin/fetch-ipeds states for its own -F/-o.
+while getopts ":cisF:o:K:h" opt; do
+  case "$opt" in
+  c) FETCH_CODEBOOKS="yes" ;;
+  i) FETCH_IPEDS="yes" ;;
+  s) FETCH_CDS="yes" ;;
+  F) FIXTURES_DIR="$OPTARG"
+     [ -n "$FIXTURES_DIR" ] ||
+       fatal -s "$EXIT_INVALID_ARG_VALUE" "fetch-external-data: [-F] must have a non-empty value; if the current directory is meant, say so with [.]"
+     ;;
+  o) OUTPUT_ROOT="$OPTARG"
+     [ -n "$OUTPUT_ROOT" ] ||
+       fatal -s "$EXIT_INVALID_ARG_VALUE" "fetch-external-data: [-o] must have a non-empty value; if the current directory is meant, say so with [.]"
+     ;;
+  K) ANON_KEY="$OPTARG"
+     [ -n "$ANON_KEY" ] ||
+       fatal -s "$EXIT_INVALID_ARG_VALUE" "fetch-external-data: [-K] must have a non-empty value; omit it to use \$COLLEGEDATA_ANON_KEY or the API-page scrape"
+     ;;
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "fetch-external-data: unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "fetch-external-data: option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# getopts stops at the first operand, so an option written after one is left in
+# "$@". This script takes NO positionals at all, so anything left is a usage
+# error -- and a leftover that begins with "-" is a mistyped or misplaced option
+# rather than a stray argument, which is a different mistake with a different
+# code.
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+  -*) fatal -s "$EXIT_UNKNOWN_OPTION" "fetch-external-data: unknown option [$1]; this script takes options only" ;;
+  *) fatal -s "$EXIT_UNEXPECTED_ARG" "fetch-external-data: unexpected argument [$1]; this script takes options only" ;;
+  esac
+fi
+
+# -F REQUIRES -o, mirroring the rule bin/fetch-ipeds already enforces: an offline
+# replay aimed at the default output directories would write fixture-derived data
+# over db/data/codebooks.json and the committed db/seed/ records.
+if [ -n "$FIXTURES_DIR" ] && [ -z "$OUTPUT_ROOT" ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+    "fetch-external-data: [-F] requires an explicit [-o]; an offline replay must not be aimed at the committed default output directories"
+fi
+
+# No selector means all three. Selection is judged on the FLAGS, once, so the
+# "which sources" question is answered in one place.
+if [ -z "$FETCH_CODEBOOKS" ] && [ -z "$FETCH_IPEDS" ] && [ -z "$FETCH_CDS" ]; then
+  FETCH_CODEBOOKS="yes"
+  FETCH_IPEDS="yes"
+  FETCH_CDS="yes"
+fi
+
+# The per-source outcome, recorded rather than reacted to: nothing is decided
+# until every selected source has run.
+SOURCE_NAMES=()
+SOURCE_RESULTS=()
+FAILED_COUNT=0
+OK_COUNT=0
+
+# One builder per source, each answering only "what is this fetcher's command".
+# No directory is created by any of them: each fetcher creates its own output
+# directory, and a `mkdir -p` here would abort the entire best-effort run (under
+# `set -euo pipefail`) before any source was fetched -- and would pre-empt
+# bin/fetch-ipeds' own usage error for an -o that names a file. A bad -o belongs
+# in the per-source tally like any other failure.
+build_codebooks_command() {
+  COMMAND=("$PROJECT_ROOT/bin/fetch-codebooks")
+  if [ -n "$OUTPUT_ROOT" ]; then COMMAND+=(-o "$OUTPUT_ROOT/codebooks"); fi
+}
+
+build_ipeds_command() {
+  COMMAND=("$PROJECT_ROOT/bin/fetch-ipeds")
+  if [ -n "$OUTPUT_ROOT" ]; then COMMAND+=(-o "$OUTPUT_ROOT/ipeds"); fi
+}
+
+build_cds_command() {
+  COMMAND=("$PROJECT_ROOT/bin/fetch-cds-seed")
+  if [ -n "$OUTPUT_ROOT" ]; then COMMAND+=(-o "$OUTPUT_ROOT/cds"); fi
+  # The corpus credential, forwarded only when it was given: with no -K the
+  # fetcher's own fallbacks ($COLLEGEDATA_ANON_KEY, then the API page) are what
+  # decide, and an empty -K here would pre-empt both.
+  if [ -n "$ANON_KEY" ]; then COMMAND+=(-K "$ANON_KEY"); fi
+}
+
+# The command as it may be SAID OUT LOUD. -K carries a credential, and a log line
+# is copied into tickets, scrollback and CI output; the option is still shown,
+# because which route a fetch used is exactly what an operator is checking.
+redacted_command() {
+  local part redacted=() hide=""
+  for part in "$@"; do
+    if [ -n "$hide" ]; then
+      redacted+=("<redacted>")
+      hide=""
+      continue
+    fi
+    [ "$part" = "-K" ] && hide="yes"
+    redacted+=("$part")
+  done
+  printf '%s' "${redacted[*]}"
+}
+
+record_outcome() {
+  local name="$1" rc="$2"
+  SOURCE_NAMES+=("$name")
+  if [ "$rc" -eq 0 ]; then
+    SOURCE_RESULTS+=("ok")
+    OK_COUNT=$((OK_COUNT + 1))
+  else
+    SOURCE_RESULTS+=("FAILED  (exit [$rc])")
+    FAILED_COUNT=$((FAILED_COUNT + 1))
+    log-error "fetch-external-data: [$name] failed with exit [$rc]; continuing with the remaining sources"
+  fi
+}
+
+# ROUTE only: which builder belongs to this name, then run it and record what
+# happened. `|| rc=$?` is what keeps `set -e` from turning a failed source into
+# an aborted run -- the whole point of RFC 172 2.
+run_fetcher() {
+  local name="$1" rc=0
+  COMMAND=()
+  case "$name" in
+  codebooks) build_codebooks_command ;;
+  ipeds) build_ipeds_command ;;
+  cds) build_cds_command ;;
+  *) fatal "fetch-external-data: no fetcher is defined for the source [$name]" ;;
+  esac
+  if [ -n "$FIXTURES_DIR" ]; then COMMAND+=(-F "$FIXTURES_DIR"); fi
+
+  log-info "fetch-external-data: fetching [$name] with [$(redacted_command "${COMMAND[@]}")]"
+  "${COMMAND[@]}" || rc=$?
+  record_outcome "$name" "$rc"
+}
+
+report_summary() {
+  local index line
+  log-info ""
+  for index in "${!SOURCE_NAMES[@]}"; do
+    # Formatted, then LOGGED: every diagnostic in this script goes through the
+    # log-* family, so a raw `printf >&2` here would be the one line that does
+    # not (and the one that stops obeying a future change to the channel).
+    line="$(printf '%-12s %s' "[${SOURCE_NAMES[$index]}]" "${SOURCE_RESULTS[$index]}")"
+    log-info "fetch-external-data: $line"
+  done
+  log-info "fetch-external-data: [$OK_COUNT] of [${#SOURCE_NAMES[@]}] sources fetched; [$FAILED_COUNT] failed"
+}
+
+# Codebooks, then IPEDS, then CDS. The three fetches are independent -- no
+# fetcher reads another's output -- so this order is a presentation choice: it is
+# the order bin/load-external-data consumes them in, so a reader who learns one
+# has learned both.
+if [ -n "$FETCH_CODEBOOKS" ]; then run_fetcher codebooks; fi
+if [ -n "$FETCH_IPEDS" ]; then run_fetcher ipeds; fi
+if [ -n "$FETCH_CDS" ]; then run_fetcher cds; fi
+
+report_summary
+
+# A run that faulted, reported as 1 and never as a child's code: the reserved
+# 10-29 band describes THIS script's grammar, and a child's 10 would tell the
+# caller they invoked fetch-external-data wrongly when they did not. The refusal
+# says which sources failed rather than leaving the exit code to speak for
+# itself -- the summary above scrolls, and this is the last line.
+if [ "$FAILED_COUNT" -ne 0 ]; then
+  fatal -s 1 "fetch-external-data: [$FAILED_COUNT] of [${#SOURCE_NAMES[@]}] selected sources failed (see the per-source summary above); their files are unchanged, and the sources that succeeded have been rewritten"
+fi
