@@ -1349,7 +1349,7 @@ test_build_does_not_export_the_dev_environment_into_xcodebuild() {
   {
     echo 'APP_DOMAIN=mymac.example.ts.net'
     echo 'SERVER_PORT=18010'
-    echo 'POSTGRES_DB=unicoach-dev-fixture'
+    echo 'POSTGRES_DB=fixture-db'
     echo 'DATABASE_PASSWORD=fixture-secret'
     echo 'DATABASE_USER=fixture-user'
     echo 'PGHOST=127.0.0.1'

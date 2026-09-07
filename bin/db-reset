@@ -6,11 +6,14 @@ help() {
 db-reset [options]
 
 Returns POSTGRES_DB to a clean, fully-migrated state by dropping and recreating
-it. This is the frequent per-run operation (e.g. bin/test); it does no cluster or
-role work, so it assumes db-bootstrap was already run once by hand. Performs:
+it. This is the frequent per-run operation (e.g. bin/test); it does no CLUSTER
+work, so it assumes db-bootstrap was already run once by hand on this machine.
+It does ensure this checkout's own roles, so a brand-new worktree needs no extra
+step (RFC 174). Performs:
 
   1. db-drop   — DROP DATABASE IF EXISTS (idempotent)
-  2. db-create — recreate the database, grants, and schema_migrations
+  2. db-create — ensure this checkout's roles, recreate the database (owned by
+                 POSTGRES_USER), grants, and schema_migrations
   3. db-migrate — apply all pending migrations
 
 Options:

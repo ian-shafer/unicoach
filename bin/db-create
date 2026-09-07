@@ -6,13 +6,18 @@ help() {
 db-create [options]
 
 Creates and provisions the application database (POSTGRES_DB). Idempotent.
-Assumes a running cluster reachable at PGHOST:PGPORT and that the application
-role already exists; crashes hard otherwise. Performs:
+Assumes a running cluster reachable at PGHOST:PGPORT; crashes hard otherwise.
+Performs:
 
-  1. Creates the database (POSTGRES_DB) if it does not exist.
-  2. Grants the application role CONNECT on the database and full access to the
+  1. Ensures this checkout OWNS what it provisions (RFC 174): its own roles
+     (db-create-role), and — when the database already exists — the database and
+     every object in it (db-adopt). A no-op when POSTGRES_USER is the cluster
+     admin, which is every cloud environment.
+  2. Creates the database (POSTGRES_DB) if it does not exist — as POSTGRES_USER,
+     which therefore OWNS it.
+  3. Grants the application role CONNECT on the database and full access to the
      public schema, including default privileges for future objects.
-  3. Creates the schema_migrations table if it does not exist.
+  4. Creates the schema_migrations table if it does not exist.
 
 It does not apply migrations — run db-migrate for that (or db-reset for a clean,
 migrated database).
@@ -36,29 +41,53 @@ if [ "$#" -gt 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "db-create does not accept positional arguments: $*"
 fi
 
-# ── 1. Create application database if it does not exist ────────────────────────
-if ! echo "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" \
-    | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -r \
-    | grep -q 1; then
+# ── 1. Ensure this checkout owns what it is about to provision ────────────────
+# One helper (bin/functions) for the one idea: the checkout's own role exists, and
+# an ALREADY-EXISTING database and every object in it belongs to it. It is a no-op
+# in every cloud environment, where POSTGRES_SUPERUSER is unset and POSTGRES_USER
+# IS the cluster admin: deploy-on-instance.sh already calls db-create-role itself,
+# and the deployed path stays exactly as it was. Locally this is what makes a
+# brand-new checkout zero-step, and a pre-RFC-174 database usable in place.
+# Diagnostics go to stderr (db-status already treats db-create's chatter that
+# way); this script's product is side effects, not stdout.
+set_checkout_database_ownership
+
+# ── 2. Create the application database if it does not exist ──────────────────
+# EXISTENCE only: ownership was settled above, unconditionally, because owning the
+# database is not owning the tables in it and an owner-equality guard would never
+# look again at a half-adopted one. CREATE DATABASE runs as POSTGRES_USER
+# (db-write's default), so a new database is owned by this checkout with no extra
+# step.
+DB_EXISTS="$(echo "SELECT 1 FROM pg_database WHERE datname = '$(sql_literal "$POSTGRES_DB")'" \
+  | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -r | tr -d '[:space:]')"
+
+if [ -z "$DB_EXISTS" ]; then
   log-info "Creating database [$POSTGRES_DB]..."
-  printf "CREATE DATABASE \"%s\";" "$POSTGRES_DB" \
+  printf 'CREATE DATABASE "%s";' "$(sql_ident "$POSTGRES_DB")" \
     | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
 else
   log-info "Database [$POSTGRES_DB] already exists."
 fi
 
-# ── 2. Grant database-level connect privilege (admin DB context) ──────────────
-printf "GRANT CONNECT ON DATABASE \"%s\" TO \"%s\";" \
-  "$POSTGRES_DB" "$DATABASE_USER" \
+# ── 3a. Grant database-level connect privilege (admin DB context) ──────────────
+printf 'GRANT CONNECT ON DATABASE "%s" TO "%s";' \
+  "$(sql_ident "$POSTGRES_DB")" "$(sql_ident "$DATABASE_USER")" \
   | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
 
-# ── 3. Grant schema access and default object privileges (target DB) ──────────
+# ── 3b. Grant schema access and default object privileges (target DB) ──────────
 # ALTER DEFAULT PRIVILEGES covers all future tables/sequences created by the
-# admin role (POSTGRES_USER) in the public schema.
+# connecting role (POSTGRES_USER — this checkout's database owner) in the public
+# schema. On PostgreSQL 18 `schema public` is owned by pg_database_owner, so a
+# non-superuser owner may run both statements in its own database.
+#
+# sql_ident at EVERY site that names the role, not just step 3a's: one value with
+# two treatments is the per-caller drift the helper exists to end. Plain
+# statements, no dollar quoting, so sql_ident is complete here.
+APP_USER_IDENT="$(sql_ident "$DATABASE_USER")"
 cat << SQL | "$PROJECT_ROOT/bin/db-write"
-GRANT ALL ON SCHEMA public TO "$DATABASE_USER";
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES     TO "$DATABASE_USER";
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES  TO "$DATABASE_USER";
+GRANT ALL ON SCHEMA public TO "$APP_USER_IDENT";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES     TO "$APP_USER_IDENT";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES  TO "$APP_USER_IDENT";
 SQL
 
 # ── 4. Create schema_migrations and grant access ──────────────────────────────

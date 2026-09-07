@@ -9,6 +9,11 @@ Drops the application database (DROP DATABASE IF EXISTS ... WITH FORCE).
 Idempotent. The postgres cluster and its data directory are left intact;
 only the single database named by POSTGRES_DB is removed.
 
+DROP DATABASE is checked against the OWNER, so this first ensures this checkout
+owns its target (RFC 174): its own role, and — for a database that predates the
+change and is still owned by the cluster admin — the database itself. A no-op
+when POSTGRES_USER already IS the cluster admin.
+
 Options:
   -y: Disable confirmation prompt
   -h: Help
@@ -37,5 +42,25 @@ fi
 
 log-info "Dropping database [$POSTGRES_DB]..."
 "$PROJECT_ROOT/bin/postgres-up" >/dev/null
-echo "DROP DATABASE IF EXISTS \"$POSTGRES_DB\" WITH (FORCE);" | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
+
+# The same one idea db-create opens with, and for the same reason: db-drop
+# connects as POSTGRES_USER, which since RFC 174 is this checkout's own owner
+# role, and BOTH halves of that can be missing here.
+#
+#   * The ROLE does not exist yet in a brand-new worktree, so the connection is
+#     refused before anything is dropped — and db-reset's step 1 is this script.
+#   * The DATABASE may still be owned by `postgres` (every database predating
+#     RFC 174 is), and DROP DATABASE is checked against the OWNER. `IF EXISTS`
+#     does not help: the database exists. Without the adoption, bin/db-reset,
+#     bin/test and bin/db-restore all die here in every pre-existing checkout.
+#
+# It is not db-drop's job to decide either of those things, which is why it asks
+# for the named outcome rather than restating the policy: ownership of the target
+# is a PRECONDITION of dropping it, not a second responsibility. A no-op when
+# POSTGRES_USER already IS the cluster admin (the cloud case; db-drop is not
+# shipped to an instance anyway). Diagnostics to stderr: this script's product is
+# a side effect.
+set_checkout_database_ownership
+printf 'DROP DATABASE IF EXISTS "%s" WITH (FORCE);' "$(sql_ident "$POSTGRES_DB")" \
+  | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
 log-info "Database [$POSTGRES_DB] successfully dropped."

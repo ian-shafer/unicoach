@@ -8,9 +8,11 @@ db-bootstrap [options]
 One-time, per-machine setup of the shared PostgreSQL cluster. Run this once by
 hand after cloning (or after changing POSTGRES_DATA_DIR). Idempotent. Performs:
 
-  1. Initialises the cluster (initdb) if POSTGRES_DATA_DIR is empty.
+  1. Initialises the cluster (initdb) as the cluster admin (POSTGRES_SUPERUSER,
+     falling back to POSTGRES_USER) if POSTGRES_DATA_DIR is empty.
   2. Ensures the cluster is running (postgres-up).
-  3. Creates the application role (DATABASE_USER) if it does not exist.
+  3. Creates this environment's roles (db-create-role): the per-checkout owner
+     role, and the application role (DATABASE_USER).
 
 It does NOT create any database — that is db-create's job. Because the cluster is
 shared by every git worktree, role creation is race-tolerant: two worktrees may
@@ -45,15 +47,20 @@ fi
 if [ ! -f "$DATA_DIR/PG_VERSION" ]; then
   log-info "Initialising PostgreSQL data directory [$DATA_DIR]..."
   mkdir -p "$DATA_DIR"
-  initdb -D "$DATA_DIR" -U "$POSTGRES_USER" --auth="${POSTGRES_HOST_AUTH_METHOD:-trust}"
+  # The cluster superuser is the ADMIN identity, never this checkout's owner role
+  # (RFC 174): POSTGRES_USER is per-checkout in dev, so initdb -U POSTGRES_USER
+  # would make whichever checkout happened to bootstrap the machine the one
+  # superuser. POSTGRES_SUPERUSER is unset in every cloud env — where initdb is
+  # impossible anyway — so the fallback keeps the old value.
+  initdb -D "$DATA_DIR" -U "$(cluster_superuser)" --auth="${POSTGRES_HOST_AUTH_METHOD:-trust}"
 fi
 
 # ── 2. Ensure postgres is running ─────────────────────────────────────────────
 "$PROJECT_ROOT/bin/postgres-up"
 
-# ── 3. Create the application role (idempotent + race-tolerant) ───────────────
+# ── 3. Create this environment's roles (idempotent + race-tolerant) ───────────
 # Delegated to db-create-role, the single source of truth for role creation. It
-# runs the duplicate-swallowing DO block, so concurrent bootstraps stay safe.
+# runs the duplicate-swallowing DO blocks, so concurrent bootstraps stay safe.
 "$PROJECT_ROOT/bin/db-create-role"
 
-log-info "db-bootstrap complete (cluster + role [$DATABASE_USER])."
+log-info "db-bootstrap complete (cluster + roles [$POSTGRES_USER] and [$DATABASE_USER])."

@@ -42,6 +42,32 @@ PORT_POLL_INTERVAL=0.1
 # would trip this and surface as exit 124 instead of wedging the suite.
 BOUNDED_PROBE_GUARD_SECS=8
 
+# ── The bin/ sweep guards, driven from one place ──────────────────────────────
+# Three sections assert the same SHAPE of property: no bin/ script may contain a
+# line matching <pattern>, past a named allowlist. They used to be three verbatim
+# copies of the membership loop and two of the sweep, so each carried its own
+# chance of a subtly different scan (RFC 174). Membership itself is
+# tests-common's list_contains, shared with bin/db-scripts-tests.
+#
+# COMMENTS ARE STRIPPED FIRST: every one of these guards explains its rule by
+# quoting the very text it forbids. Capture-and-test for empty rather than piping
+# into `grep -q`, which under `set -o pipefail` SIGPIPEs the upstream grep.
+bin_script_free_of_pattern() {
+  [ -z "$(grep -vE '^[[:space:]]*#' "$PROJECT_ROOT/bin/$2" | grep -E "$1")" ]
+}
+# One assertion PER SCRIPT, so a failure names the offending file rather than
+# reporting "some script in bin/ does this".
+assert_every_bin_script_free_of() {
+  local description="$1" pattern="$2" script_path script
+  shift 2
+  for script_path in "$PROJECT_ROOT"/bin/*; do
+    [ -f "$script_path" ] || continue
+    script="$(basename "$script_path")"
+    list_contains "$script" "$@" && continue
+    assert_success "bin/$script $description" bin_script_free_of_pattern "$pattern" "$script"
+  done
+}
+
 # Poll until <port> is free (check-port reports not-in-use), bounded. Returns 0
 # once free, 1 on timeout. Replaces the inline `for i in {1..50}` free-polls.
 wait_for_port_free() {
@@ -228,16 +254,27 @@ stop_foreign_listener() {
   wait "$listener_pid" 2>/dev/null || true
 }
 
-# Ensures postgres is up and the test database exists before starting any JVM daemon.
+# Ensures postgres is up and the test database exists before starting any JVM
+# daemon. Provisioning goes through bin/db-create, never a raw `psql -U postgres`:
+# since RFC 174 the database must be OWNED by this checkout's role, and a
+# superuser-created one could not be dropped by this harness's own db-reset test
+# below — the harness would manufacture exactly the state the change forbids.
+#
+# db-create's status AND its diagnostics are BOTH kept. This harness sets no
+# `set -e`, and RFC 174 gave db-create two new ways to fail (the role bootstrap
+# and the adoption), so a discarded refusal used to resurface fifty lines later as
+# an unrelated "the daemon did not boot". The fault is reported where it happens,
+# naming the database, the role and what the server said.
 ensure_postgres_for_jvm() {
+  local create_log
   bin/postgres-up >/dev/null
   for i in {1..15}; do
-    if psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then break; fi
+    if bin/db-query -r -d "${POSTGRES_ADMIN_DB:-postgres}" 'SELECT 1' >/dev/null 2>&1; then break; fi
     sleep 1
   done
-  psql -U postgres -d postgres -tA \
-    -c "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" \
-    | grep -q 1 || psql -U postgres -d postgres -c "CREATE DATABASE \"$POSTGRES_DB\";" >/dev/null
+  if ! create_log="$(bin/db-create 2>&1)"; then
+    fail_test "could not provision database [$POSTGRES_DB] as role [$POSTGRES_USER] before starting a JVM daemon: $create_log"
+  fi
 }
 
 test_daemon_wrapper() {
@@ -725,13 +762,50 @@ test_checkout_derivations_refuse_an_empty_root() {
   return 0
 }
 
-# PostgreSQL truncates a `name` at 63 bytes and .env.dev's database is
-# `unicoach-dev-<checkout name>` (13 bytes of prefix), so two checkouts agreeing
-# in their first 50 bytes would SHARE one dev database while cksum — which sees
+# PostgreSQL truncates a `name` at 63 bytes and the per-worktree databases are
+# `unicoach-{dev,test,fuzz}-<checkout name>` — the LONGEST prefix being the
+# 14-byte `unicoach-test-` — so two checkouts agreeing in their first
+# CHECKOUT_NAME_MAX_BYTES bytes would SHARE one database while cksum — which sees
 # the whole name — gave them different port blocks. Nothing would fail to bind,
 # and the documented remedy ("rename a worktree") does not apply because the
 # names already differ. The derivation must refuse the input instead. Subshells
 # again: the refusal is a fatal.
+#
+# The budget is DERIVED here, not restated. The prefixes are OWNED by the dotenv
+# derivation lines (.env.test's `unicoach-test-`, .env.dev's `owner-`), so they are
+# read from there: a hand-copied `unicoach-test-` would keep passing at 49 after
+# someone lengthened the real prefix, and silent truncation — the data-loss bug
+# RFC 174 corrected the constant for — would be back with nothing failing.
+# POSTGRES_DB and POSTGRES_USER are the only keys that prepend a prefix to
+# checkout_name, so the budget is 63 minus the LONGEST of them, the role prefix
+# included: RFC 174 asserts that `owner-` is short enough never to bind, and this
+# is the only thing that checks it. RFC 174 corrected the constant from 50 (which
+# counted only the 13-byte `unicoach-dev-`) to 49.
+test_checkout_name_budget_matches_the_longest_prefix() {
+  local file key prefix longest="" expected
+  # The dotenv line shape is parsed by ONE named extractor (bin/tests-common's
+  # checkout_derivation_prefix), shared with the literal-name sweep below: a
+  # second, differently-spelled parser for the same format is how one guard goes
+  # on measuring while the other silently measures nothing.
+  for file in .env.dev .env.test .env.fuzz; do
+    for key in POSTGRES_DB POSTGRES_USER; do
+      prefix="$(checkout_derivation_prefix "$PROJECT_ROOT/$file" "$key")"
+      if [ "${#prefix}" -gt "${#longest}" ]; then longest="$prefix"; fi
+    done
+  done
+  if [ -z "$longest" ]; then
+    fail_test "found no <prefix>\$(checkout_name \"\$PROJECT_ROOT\") derivation in .env.dev/.env.test/.env.fuzz; the budget check would be vacuous"
+  fi
+  # The SAME constant bin/functions budgets against, not a second copy of 63: a
+  # re-typed server limit is a second thing to keep in step, and the whole point
+  # of naming it was that the arithmetic already shipped wrong once.
+  expected=$(( POSTGRES_NAME_MAX_BYTES - ${#longest} ))
+  if [ "$CHECKOUT_NAME_MAX_BYTES" -ne "$expected" ]; then
+    fail_test "CHECKOUT_NAME_MAX_BYTES is [$CHECKOUT_NAME_MAX_BYTES]; PostgreSQL truncates at [$POSTGRES_NAME_MAX_BYTES] bytes and the longest derived prefix [$longest] is ${#longest} bytes, so it must be [$expected]"
+  fi
+  return 0
+}
+
 test_checkout_name_refuses_a_truncating_name() {
   local at_limit over_limit
   at_limit="$(printf 'a%.0s' $(seq 1 "$CHECKOUT_NAME_MAX_BYTES"))"
@@ -831,38 +905,61 @@ test_env_template_restates_the_dev_derivations() {
 
 assert_success "checkout_block_base is deterministic and consistent with bin/checkout-port" test_checkout_block_base_is_the_pure_derivation
 assert_success "checkout_block_base / checkout_name refuse an empty checkout root" test_checkout_derivations_refuse_an_empty_root
+assert_success "CHECKOUT_NAME_MAX_BYTES is 63 minus the longest prefix the dotenvs derive with" test_checkout_name_budget_matches_the_longest_prefix
 assert_success "checkout_name refuses a name PostgreSQL would truncate" test_checkout_name_refuses_a_truncating_name
 assert_success "a listener on the dev half (+10) does not advance checkout-port" test_dev_half_listener_does_not_advance_checkout_port
 assert_success "two different checkout names derive disjoint dev port triples" test_two_checkouts_derive_disjoint_dev_port_triples
 assert_success "sourcing .env.dev yields SERVER_PORT == PORT == checkout_block_base + 10" test_env_dev_derives_port_and_server_port_from_the_block
-# POSTGRES_DUMP_DIR is where bin/db-dump keeps its artifact and where
-# bin/db-restore looks with no argument. It is a dev-only key -- a shared
-# absolute $HOME path, like POSTGRES_DATA_DIR beside it -- so it belongs in
-# .env.dev and in .env.template's .env.dev block, and in NEITHER the base .env
-# (the value is env-specific) nor a cloud .env.<env>. The same rot the
-# derivation check above guards against applies here: a template that lost the
-# key hands the next role a db-restore that cannot find anything.
-test_env_dump_dir_is_set_in_dev_and_template() {
-  local dev_line tpl_line
-  dev_line="$(grep -E '^POSTGRES_DUMP_DIR=' .env.dev | sort -u)"
-  tpl_line="$(grep -E '^POSTGRES_DUMP_DIR=' .env.template | sort -u)"
-  if [ -z "$dev_line" ]; then
-    fail_test ".env.dev does not set POSTGRES_DUMP_DIR"
-  fi
-  if [ -z "$tpl_line" ]; then
-    fail_test ".env.template does not set POSTGRES_DUMP_DIR"
-  fi
-  if [ "$dev_line" != "$tpl_line" ]; then
-    fail_test ".env.template's POSTGRES_DUMP_DIR [$tpl_line] differs from .env.dev's [$dev_line]"
-  fi
-  if grep -qE '^POSTGRES_DUMP_DIR=' .env; then
-    fail_test "POSTGRES_DUMP_DIR is set in the base .env; it is a dev-only absolute \$HOME path"
-  fi
+# DEV-ONLY KEYS, table-driven: each belongs in .env.dev AND in .env.template's
+# .env.dev block with the SAME value, and in NEITHER the base .env (the value is
+# env-specific) nor a cloud .env.<env>. Nothing sources .env.template at runtime,
+# so without this its copies rot in silence — a template that lost a key hands
+# whoever copies it a broken environment. A list rather than one copy of the same
+# four assertions per key: POSTGRES_SUPERUSER got the template copy and NOT the
+# test, which is exactly the omission this shape removes.
+#
+#   POSTGRES_DUMP_DIR  -- bin/db-dump's artifact directory and bin/db-restore's
+#                         no-argument default; a shared absolute $HOME path, like
+#                         POSTGRES_DATA_DIR beside it.
+#   POSTGRES_SUPERUSER -- the cluster admin (RFC 174). Every reader spells it
+#                         ${POSTGRES_SUPERUSER:-$POSTGRES_USER} (bin/functions'
+#                         cluster_superuser), so a base-.env copy would stop a
+#                         cloud env collapsing onto its RDS master — and the
+#                         instance would grow an owner-<release-dir> role.
+DEV_ONLY_KEYS=(POSTGRES_DUMP_DIR POSTGRES_SUPERUSER)
+# The two files a dev-only key MAY live in, named positively, with every OTHER
+# dotenv in the repo root swept. Checking only the base `.env` left `.env.prod`
+# and `.env.deploy.prod` -- the exact files that would stop a cloud environment
+# collapsing onto its RDS master -- free to set POSTGRES_SUPERUSER, which is the
+# "the instance grows an owner-<release-dir> role" case the comment above warns
+# about.
+DEV_ONLY_KEY_FILES=(.env.dev .env.template)
+test_dev_only_keys_are_set_in_dev_and_template() {
+  local key dev_line tpl_line env_file
+  for key in "${DEV_ONLY_KEYS[@]}"; do
+    dev_line="$(grep -E "^$key=" .env.dev | sort -u)"
+    tpl_line="$(grep -E "^$key=" .env.template | sort -u)"
+    if [ -z "$dev_line" ]; then
+      fail_test ".env.dev does not set $key"
+    fi
+    if [ -z "$tpl_line" ]; then
+      fail_test ".env.template does not set $key"
+    fi
+    if [ "$dev_line" != "$tpl_line" ]; then
+      fail_test ".env.template's $key [$tpl_line] differs from .env.dev's [$dev_line]"
+    fi
+    for env_file in "$PROJECT_ROOT"/.env*; do
+      list_contains "$(basename "$env_file")" "${DEV_ONLY_KEY_FILES[@]}" && continue
+      if grep -qE "^$key=" "$env_file"; then
+        fail_test "$(basename "$env_file") sets $key; it is a dev-only key, owned by .env.dev and .env.template alone"
+      fi
+    done
+  done
   return 0
 }
 
 assert_success ".env.template restates .env.dev's per-worktree derivations exactly" test_env_template_restates_the_dev_derivations
-assert_success ".env.dev and .env.template both set POSTGRES_DUMP_DIR (and .env does not)" test_env_dump_dir_is_set_in_dev_and_template
+assert_success ".env.dev and .env.template agree on every dev-only key (and .env sets none)" test_dev_only_keys_are_set_in_dev_and_template
 
 # RFC 131 regression, and it MUST cross a process boundary: `.env` assigns PORT
 # unconditionally, so a PORT exported by this harness is clobbered in every child
@@ -1304,7 +1401,7 @@ CKP_FAKE_PARENT="$(mktemp -d)"
 iso_name_a="unicoach-isotest-a-$CKP_CHECKOUT_TAG"
 iso_name_b="unicoach-isotest-b-$CKP_CHECKOUT_TAG"
 # A tripwire, not a live risk: the names are at most 29 bytes today (a 19-byte
-# prefix plus cksum's 10-digit ceiling) against a 50-byte bound, so this cannot
+# prefix plus cksum's 10-digit ceiling) against a 49-byte bound, so this cannot
 # fire until someone lengthens the prefix. Checked HERE anyway, before any
 # database exists: checkout_name refuses an over-long name with a fatal inside a
 # CHILD process, which would surface two steps later as an empty derived name and
@@ -1330,11 +1427,84 @@ iso_dev() {
 iso_db_name() {
   env -u ENV_FILES -u ENV_FILE bash -c 'source "$1/bin/common"; echo "$POSTGRES_DB"' _ "$1"
 }
+# The checkout's OWNER role (RFC 174), read the same way: whatever .env.dev
+# derives POSTGRES_USER to inside that root.
+iso_role_name() {
+  env -u ENV_FILES -u ENV_FILE bash -c 'source "$1/bin/common"; echo "$POSTGRES_USER"' _ "$1"
+}
+# One role's attributes, LABELLED by SQL so the value is self-describing in the
+# assertion and in the failure message.
+iso_role_attrs() {
+  iso_dev "$iso_root_a" db-run -r -d "${POSTGRES_ADMIN_DB:-postgres}" ro \
+    "SELECT format('superuser=%s createdb=%s login=%s', rolsuper::text, rolcreatedb::text, rolcanlogin::text) FROM pg_roles WHERE rolname = '$1'" 2>&1 | tr -d '\n'
+}
+
+# How the held session below is recognised from any other connection: set by the
+# holder, matched by both pg_stat_activity reads. ONE name, so a typo cannot make
+# the survival assertion pass against zero rows.
+ISO_HOLD_TAG=rfc174-iso-hold
+# The held session must outlive the wait for it to APPEAR plus the refused DROP
+# and both pg_stat_activity reads, so its lifetime is set well above
+# ISO_HOLD_POLL_ATTEMPTS * ISO_HOLD_POLL_INTERVAL. The interval is coarser than
+# PORT_POLL_INTERVAL because each attempt pays a full bin/common load.
+ISO_HOLD_SESSION_SECS=60
+ISO_HOLD_POLL_ATTEMPTS=30
+ISO_HOLD_POLL_INTERVAL=0.2
+# The backend pids of the held session on B, read from any connection. stderr is
+# NOT suppressed: a failed read and "no such session" must stay distinguishable,
+# and the polling caller already treats an empty answer as "not yet".
+iso_hold_session_pids() {
+  iso_dev "$iso_root_b" db-run -r -d "${POSTGRES_ADMIN_DB:-postgres}" ro \
+    "SELECT pid FROM pg_stat_activity WHERE application_name = '$ISO_HOLD_TAG' AND datname = '$iso_db_b'" | tr -d '[:space:]'
+}
+# The tag travels in the SQL db-run already takes as an explicit argument, NOT in
+# an inherited PGAPPNAME: that would have to survive iso_dev's `env -u`,
+# bin/common and db-run before libpq ever saw it, an inheritance chain the db-run
+# interface neither declares nor documents. psql -c accepts several statements, so
+# the SET is ordered before the sleep, and SET application_name is legal under
+# db-run ro's default_transaction_read_only=on.
+#
+# NOT run in a subshell, so the EXIT trap still sees the pid it assigns.
+iso_start_held_session_on_b() {
+  iso_dev "$iso_root_b" db-run ro \
+    "SET application_name = '$ISO_HOLD_TAG'; SELECT pg_sleep($ISO_HOLD_SESSION_SECS);" >/dev/null 2>&1 &
+  iso_hold_pid=$!
+}
+# Bounded: echoes the pids once the backend appears, and nothing on timeout.
+# `seq`, not `{1..N}` — brace expansion does not expand a variable.
+iso_await_held_session_pids() {
+  local pids= _
+  for _ in $(seq "$ISO_HOLD_POLL_ATTEMPTS"); do
+    pids="$(iso_hold_session_pids)"
+    [ -n "$pids" ] && break
+    sleep "$ISO_HOLD_POLL_INTERVAL"
+  done
+  printf '%s' "$pids"
+}
+iso_hold_pid=
 # Idempotent, and clears ISO_DATABASES_LIVE last so the EXIT trap does not repeat a
 # cleanup the section already ran.
 iso_cleanup() {
+  [ -n "$iso_hold_pid" ] && kill "$iso_hold_pid" >/dev/null 2>&1
   iso_dev "$iso_root_a" db-drop -y >/dev/null 2>&1 || true
   iso_dev "$iso_root_b" db-drop -y >/dev/null 2>&1 || true
+  # The two roles are real cluster objects, so the section drops them as well —
+  # a fake checkout that leaked a role would leave the NEXT run adopting a
+  # database it already owned and asserting nothing. Databases first: a role that
+  # still owns one cannot be dropped.
+  #
+  # ONE STATEMENT PER ROLE, in its own db-write. db-run passes SQL as `psql -c`,
+  # which runs a multi-statement string in a SINGLE transaction, so a role A that
+  # still owned something rolled back the INDEPENDENT drop of role B — and the
+  # `|| true` then hid that the cleanup had done nothing. Best-effort, but each
+  # failure is WARNED rather than swallowed: a silently leaked role is a later run
+  # that asserts nothing.
+  local iso_root
+  for iso_root in "$iso_root_a" "$iso_root_b"; do
+    bin/db-write -U "$(cluster_superuser)" -d "${POSTGRES_ADMIN_DB:-postgres}" \
+      "DROP ROLE IF EXISTS \"$(iso_role_name "$iso_root")\";" >/dev/null 2>&1 \
+      || log-warning "could not drop the owner role of [$iso_root]; the next run of this section will not start role-less"
+  done
   rm -rf "$CKP_FAKE_PARENT"
   ISO_DATABASES_LIVE=""
 }
@@ -1368,10 +1538,44 @@ test_iso_derives_distinct_dev_databases() {
   if [ "$iso_db_a" = "$iso_db_b" ]; then
     iso_fail "the two fake checkouts derived the SAME dev database [$iso_db_a]; per-worktree derivation is gone"
   fi
+  # Built from the names we ASKED for, never from a spelled-out database name: a
+  # literal here would be exactly the hardcoded-name defect the guard below
+  # (RFC 174) forbids, in the file that hosts the guard.
   want_a="unicoach-dev-$iso_name_a"
   want_b="unicoach-dev-$iso_name_b"
   if [ "$iso_db_a" != "$want_a" ] || [ "$iso_db_b" != "$want_b" ]; then
     iso_fail ".env.dev did not derive a per-worktree dev database (got [$iso_db_a] and [$iso_db_b], expected [$want_a] and [$want_b])"
+  fi
+  return 0
+}
+
+# RFC 174, and the path a brand-new worktree actually takes: its first command is
+# usually bin/db-reset (bin/test runs it), and db-reset's step 1 is db-drop —
+# which since RFC 174 connects as an owner role that does not exist yet, so the
+# connection would be refused before anything is dropped. db-drop therefore
+# bootstraps the role itself.
+#
+# Placed BEFORE every db-create in this section, and registered before them too:
+# that ordering is the whole test. Once any db-create has run, the role exists and
+# the bootstrap inside db-drop is a no-op on every later run, which is exactly why
+# the branch was uncovered.
+test_iso_db_reset_bootstraps_a_brand_new_checkout() {
+  local out role_a exists
+  role_a="$(iso_role_name "$iso_root_a")"
+  # `2>/dev/null` here used to collapse "the query FAILED" and "the count is not
+  # 0" onto one empty string, and the branch below then reported the second as
+  # fact. errexit is OFF inside these functions (assert_success runs them under
+  # `if !`), so the masked value really did flow. The substitution's own status
+  # separates the two, and psql's message reaches the harness log.
+  if ! exists="$(bin/db-run -r -d "${POSTGRES_ADMIN_DB:-postgres}" ro \
+    "SELECT count(*) FROM pg_roles WHERE rolname = '$role_a'" | tr -d '[:space:]')"; then
+    iso_fail "could not read pg_roles for [$role_a]; this test's precondition is UNKNOWN, not satisfied (psql's error is above)"
+  fi
+  if [ "$exists" != "0" ]; then
+    iso_fail "the owner role [$role_a] already exists before any provisioning; this test's precondition (a role-less checkout) is gone and it would assert nothing"
+  fi
+  if ! out="$(iso_dev "$iso_root_a" db-reset 2>&1)"; then
+    iso_fail "bin/db-reset failed in a fresh checkout whose owner role [$role_a] does not exist yet: $out"
   fi
   return 0
 }
@@ -1394,20 +1598,279 @@ test_iso_db_reset_spares_the_other_checkout() {
   if ! out="$(iso_dev "$iso_root_a" db-reset 2>&1)"; then
     iso_fail "bin/db-reset failed in the fake checkout [$iso_root_a]: $out"
   fi
-  a_gone="$(iso_dev "$iso_root_a" db-run -r ro "SELECT to_regclass('public.rfc156_marker') IS NULL" 2>/dev/null | tr -d '[:space:]')"
+  if ! a_gone="$(iso_dev "$iso_root_a" db-run -r ro "SELECT to_regclass('public.rfc156_marker') IS NULL" | tr -d '[:space:]')"; then
+    iso_fail "could not read [$iso_db_a] after its db-reset; whether the marker table was dropped is UNKNOWN (psql's error is above)"
+  fi
   if [ "$a_gone" != "t" ]; then
     iso_fail "db-reset in [$iso_db_a] did not drop its own marker table (to_regclass IS NULL returned [$a_gone])"
   fi
-  b_rows="$(iso_dev "$iso_root_b" db-run -r ro "SELECT count(*) FROM rfc156_marker" 2>/dev/null | tr -d '[:space:]')"
+  # A failed READ is not data destruction. Reporting it as such would send the
+  # reader after the one bug this section exists to catch when the real fault is
+  # an unreachable cluster.
+  if ! b_rows="$(iso_dev "$iso_root_b" db-run -r ro "SELECT count(*) FROM rfc156_marker" | tr -d '[:space:]')"; then
+    iso_fail "could not read the marker table in [$iso_db_b]; whether db-reset in [$iso_db_a] spared it is UNKNOWN, not answered (psql's error is above)"
+  fi
   if [ "$b_rows" != "1" ]; then
     iso_fail "db-reset in [$iso_db_a] destroyed the other checkout's data: [$iso_db_b] reports [$b_rows] marker rows, expected 1"
   fi
   return 0
 }
 
+# RFC 174. The positive test above proves the two NAMES differ; it cannot prove
+# that anything would stop a checkout which derived the WRONG name. Until now
+# nothing would: every bin/ command connected as the cluster SUPERUSER, and a
+# superuser is never asked for permission — which is how, on 2026-09-05, one
+# harness run force-dropped another checkout's live connections. Ownership is the
+# thing that IS asked. So: each fake checkout now derives its own non-superuser
+# role, owns its own database, and the drop across the boundary is REFUSED.
+test_iso_derives_distinct_non_superuser_roles() {
+  local role_a role_b role attrs
+  role_a="$(iso_role_name "$iso_root_a")"
+  role_b="$(iso_role_name "$iso_root_b")"
+  if [ "$role_a" = "$role_b" ] || [ -z "$role_a" ] || [ -z "$role_b" ]; then
+    iso_fail ".env.dev did not derive a per-worktree owner role (got [$role_a] and [$role_b])"
+  fi
+  # A superuser bypasses every ownership check, so a role that is one would make
+  # the refusal test below vacuous. CREATEDB and LOGIN are what db-create needs.
+  #
+  # ONE ROLE PER CHECK, with SQL labelling each attribute. The old form packed
+  # three booleans into a positional `011` token AND concatenated two rows with no
+  # separator, so the expected value only held because role names happen not to
+  # end in digits — and a failure printed something no reader could decode.
+  for role in "$role_a" "$role_b"; do
+    attrs="$(iso_role_attrs "$role")"
+    if [ "$attrs" != "superuser=false createdb=true login=true" ]; then
+      iso_fail "checkout role [$role] is not LOGIN CREATEDB NOSUPERUSER (pg_roles reports [$attrs])"
+    fi
+  done
+  return 0
+}
+
+# The negative test, and the point of RFC 174: checkout A trying to drop checkout
+# B's database must FAIL, and B's live session must SURVIVE the attempt. Both
+# halves matter — `DROP DATABASE ... WITH (FORCE)` terminates every other session
+# on the target, so a refusal that still killed the connections would be no
+# better than the bug. The privilege check runs BEFORE the termination step.
+#
+# Driven through the bounded interface (db-write -d postgres), not a raw psql:
+# the identity under test is the one an operator's real command would use.
+test_iso_cannot_drop_another_checkouts_database() {
+  local out pids_before pids_after b_rows
+  # B must exist and hold a row; A's own database was just recreated by the
+  # db-reset test above, so it exists and is owned by A.
+  if ! out="$(iso_dev "$iso_root_b" db-create 2>&1)"; then
+    iso_fail "could not re-provision [$iso_db_b]: $out"
+  fi
+  # A held session on B, tagged so it can be counted from any other connection.
+  iso_start_held_session_on_b
+  pids_before="$(iso_await_held_session_pids)"
+  if [ -z "$pids_before" ]; then
+    iso_fail "could not open a held session on [$iso_db_b]; the survival half of the test would be vacuous"
+  fi
+
+  if out="$(iso_dev "$iso_root_a" db-write -d "${POSTGRES_ADMIN_DB:-postgres}" "DROP DATABASE \"$iso_db_b\" WITH (FORCE);" 2>&1)"; then
+    iso_fail "checkout [$iso_root_a] DROPPED another checkout's database [$iso_db_b] — ownership is not enforced"
+  fi
+  if ! printf '%s' "$out" | grep -q 'must be owner of database'; then
+    iso_fail "the cross-checkout DROP failed, but not with a privilege error: $out"
+  fi
+
+  # The owner's live connection survived: same backend pid, still there. The
+  # READ's own status is checked first — a failed query and "the pids changed"
+  # are different facts, and announcing the second when the first happened points
+  # the reader at a data-destruction bug that did not occur.
+  if ! pids_after="$(iso_hold_session_pids)"; then
+    iso_fail "could not read pg_stat_activity for [$iso_db_b] after the refused DROP; whether the live session survived is UNKNOWN (psql's error is above)"
+  fi
+  if [ "$pids_after" != "$pids_before" ]; then
+    iso_fail "the refused DROP still disturbed [$iso_db_b]'s live session (pids before [$pids_before], after [$pids_after])"
+  fi
+  kill "$iso_hold_pid" >/dev/null 2>&1 || true
+  iso_hold_pid=
+
+  if ! b_rows="$(iso_dev "$iso_root_b" db-run -r ro "SELECT count(*) FROM rfc156_marker" | tr -d '[:space:]')"; then
+    iso_fail "could not read the marker table in [$iso_db_b] after the refused DROP; whether its data survived is UNKNOWN (psql's error is above)"
+  fi
+  if [ "$b_rows" != "1" ]; then
+    iso_fail "the refused DROP destroyed data in [$iso_db_b]: it reports [$b_rows] marker rows, expected 1"
+  fi
+  return 0
+}
+
 assert_success "two checkouts derive distinct dev databases" test_iso_derives_distinct_dev_databases
+assert_success "bin/db-reset provisions a checkout whose owner role does not exist yet" test_iso_db_reset_bootstraps_a_brand_new_checkout
 assert_success "bin/db-reset in one checkout leaves another checkout's dev data untouched" test_iso_db_reset_spares_the_other_checkout
+assert_success "two checkouts derive distinct non-superuser owner roles" test_iso_derives_distinct_non_superuser_roles
+assert_success "a checkout cannot drop another checkout's database, and the owner's session survives" test_iso_cannot_drop_another_checkouts_database
 iso_cleanup
+
+echo ""
+echo "==== Testing no bin/ script names a per-checkout database literally ===="
+# RFC 174, and the defect it is the second half of. Every per-checkout database
+# name is DERIVED, in exactly three dotenv lines, from checkout_name
+# "$PROJECT_ROOT". A literal `unicoach-dev-<something>` written into a script or a
+# fixture is a name that belongs to whichever checkout is called <something>, and
+# a shared cluster does not care that the writer meant it as a stand-in: the
+# cross-checkout isolation section used to hardcode its two fake checkout names,
+# so two real checkouts running this harness at once derived the SAME databases
+# and one force-dropped the other's live connections.
+#
+# Comment lines are stripped first: the prose above and below explains the rule by
+# quoting the very prefixes it forbids.
+#
+# The exclusion list is ONE name, carried the way HARNESS_EXCLUSIONS carries its
+# own: bin/db-scripts-tests is the single bin/ file allowed to name a database
+# literally, because its POSTGRES_DB=unicoach-db-scripts-test lives on a PRIVATE
+# throwaway cluster with its own data directory and its own PID-derived port
+# (bin/db-scripts-tests:1-31), which no other checkout can reach and which is
+# deleted on exit. Carved out by NAME, so that harness renaming its database into
+# the shape below would be a deliberate, visible decision rather than a silent
+# pass.
+DB_LITERAL_EXCLUSIONS=(db-scripts-tests)
+# The prefixes come from the dotenv lines that OWN them, never a copy: a renamed
+# prefix keeps being guarded instead of silently matching nothing and passing on
+# every file.
+DB_NAME_PREFIXES="$( { checkout_derivation_prefix "$PROJECT_ROOT/.env.dev" POSTGRES_DB
+  checkout_derivation_prefix "$PROJECT_ROOT/.env.test" POSTGRES_DB
+  checkout_derivation_prefix "$PROJECT_ROOT/.env.fuzz" POSTGRES_DB; } | paste -sd'|' -)"
+# A prefix followed by a LITERAL, i.e. an alphanumeric — `unicoach-dev-$(...)`
+# is the derivation and passes. Capture-and-test for non-empty rather than
+# piping into `grep -q`, which under `set -o pipefail` SIGPIPEs the upstream grep.
+assert_every_bin_script_free_of "names no per-checkout database literally" \
+  "($DB_NAME_PREFIXES)[A-Za-z0-9]" "${DB_LITERAL_EXCLUSIONS[@]}"
+
+# The positive half: the guard above only proves nobody SPELLED a name out. These
+# three lines are where the names actually come from, and checkout_name — not a
+# bare `basename` — is what carries the 63-byte truncation guard. .env.test and
+# .env.fuzz used a bare basename until RFC 174, which is how a 64-byte test
+# database name reached the server and was silently shortened.
+test_dotenvs_derive_their_databases_from_checkout_name() {
+  local file
+  for file in .env.dev .env.test .env.fuzz; do
+    if ! grep -qE '^POSTGRES_DB=unicoach-(dev|test|fuzz)-\$\(checkout_name "\$PROJECT_ROOT"\)$' "$PROJECT_ROOT/$file"; then
+      fail_test "$file does not derive POSTGRES_DB with checkout_name \"\$PROJECT_ROOT\": [$(grep -E '^POSTGRES_DB=' "$PROJECT_ROOT/$file" || echo 'no POSTGRES_DB line at all')]"
+    fi
+  done
+  return 0
+}
+
+# The DEPLOY-SAFETY half, and its own named test rather than a third `if` inside
+# the one above: this is the check whose failure means a ROLE NAME could be
+# derived from the release directory on RDS, and it must not be reported under a
+# heading about dotenv database names, after two earlier fail_test calls that
+# would hide it.
+#
+# The owner role's derivation must live in .env.dev and NOWHERE else. bin/deploy
+# ships much of bin/ to the instance (its REPO_PATHS array, which is bin/deploy's
+# to change), so a default computed inside a shipped script would compute a role
+# name from the release directory. .env.dev is never layered by the deploy path
+# (it pins ENV_FILE=.env.<env>), which is the barrier that keeps this local. The
+# grep is over ALL of bin/, so it needs no list of which scripts are shipped.
+test_only_env_dev_derives_the_owner_role() {
+  local owner_derivations
+  # The offending LINE is printed, exactly as the POSTGRES_DB sibling above does,
+  # with the same "no line at all" fallback: "not what was expected" without the
+  # actual value is a manual grep the reader should not have to run.
+  if ! grep -qE '^POSTGRES_USER=owner-\$\(checkout_name "\$PROJECT_ROOT"\)$' "$PROJECT_ROOT/.env.dev"; then
+    fail_test ".env.dev does not derive POSTGRES_USER as owner-\$(checkout_name \"\$PROJECT_ROOT\"): [$(grep -E '^POSTGRES_USER=' "$PROJECT_ROOT/.env.dev" || echo 'no POSTGRES_USER line at all')]"
+  fi
+  # -rn, not -rl: this is the guard whose failure means an owner-<release-dir>
+  # role could be created on RDS, and the exact file:line was already in hand.
+  owner_derivations="$(grep -rnE 'owner-\$\(checkout_name' "$PROJECT_ROOT/bin" 2>/dev/null)"
+  if [ -n "$owner_derivations" ]; then
+    fail_test "these bin/ scripts derive the owner role name; the derivation belongs to .env.dev alone, because bin/ is shipped to the instance by bin/deploy: [$owner_derivations]"
+  fi
+  return 0
+}
+assert_success ".env.dev/.env.test/.env.fuzz derive their databases with checkout_name" test_dotenvs_derive_their_databases_from_checkout_name
+assert_success "only .env.dev derives the owner role name, never a bin/ script" test_only_env_dev_derives_the_owner_role
+
+echo ""
+echo "==== Testing no bin/ script stops or restarts the shared PostgreSQL server ===="
+# RFC 174's other guard. ONE cluster serves every worktree on this machine
+# (POSTGRES_DATA_DIR is a shared absolute path by design), so stopping it is a
+# cross-checkout outage: every other worktree's dev server, test run and psql dies
+# at once, and the failure surfaces in the innocent checkout as an unrelated
+# connection error. The repo satisfies this rule TODAY -- `pg_ctl stop`,
+# `pg_ctl restart` and `brew services` have zero hits -- so this pins a property
+# rather than fixing a defect, which is exactly when a guard is cheapest to add.
+#
+# Each allowlist entry has its reason:
+#   postgres-down    -- IS the stop; an operator asking for it explicitly.
+#   postgres-bounce  -- its only caller, and equally deliberate.
+#   db-scripts-tests -- stops its OWN private throwaway cluster (own data dir,
+#                       own PID-derived port), from a trap on exit.
+#   scripts-tests    -- names bin/postgres-bounce inside an argument-rejection
+#                       assertion (`bin/postgres-bounce stray`) that exits on the
+#                       grammar before anything is started or stopped.
+#   postgres-up      -- the one script entitled to `pg_ctl start`.
+#
+# The pattern names the COMMANDS, not the stop SPELLINGS. `pg_ctl <space> stop`
+# missed `pg_ctl -D "$DATA_DIR" stop` -- the repo's OWN flag style, in
+# bin/postgres-up -- and `systemctl stop postgresql` entirely. A script outside
+# the allowlist has no business NAMING pg_ctl or systemctl at all, so that is what
+# is forbidden and the entitled scripts are named instead.
+#
+# EXECUTABLES only: bin/INVARIANTS.md discusses pg_ctl in prose.
+PG_LIFECYCLE_ALLOWLIST=(postgres-up postgres-down postgres-bounce db-scripts-tests scripts-tests)
+PG_LIFECYCLE_PATTERN='pg_ctl|systemctl[^|;&]*postgres|brew[[:space:]]+services|(pkill|killall)[^|;&]*postgres|bin/postgres-(down|bounce)'
+for script_path in "$PROJECT_ROOT"/bin/*; do
+  [ -f "$script_path" ] && [ -x "$script_path" ] || continue
+  script="$(basename "$script_path")"
+  list_contains "$script" "${PG_LIFECYCLE_ALLOWLIST[@]}" && continue
+  assert_success "bin/$script neither stops nor restarts the shared cluster" \
+    bin_script_free_of_pattern "$PG_LIFECYCLE_PATTERN" "$script"
+done
+
+echo ""
+echo "==== Testing no bin/ script connects as the cluster superuser ===="
+# RFC 174 D4 claims exactly TWO superuser touchpoints, both bootstraps —
+# db-create-role (creating this checkout's owner role) and db-adopt (moving a
+# pre-RFC-174 database's ownership onto it). Everything else connects as
+# POSTGRES_USER and is refused by the SERVER when it reaches for another
+# checkout's data. That count is the whole guarantee, and until this guard nothing
+# measured it: bin/db-run's -U makes a third touchpoint a single, review-invisible
+# line, and a superuser bypasses every ownership check — so that one line would
+# void the isolation with every other test in this suite still green.
+#
+# The permitted connect identity is stated POSITIVELY: outside the five
+# bootstraps below, a bin/ script may name only its OWN checkout role --
+# $POSTGRES_USER, or db-run's $CONNECT_USER which defaults to it -- plus the
+# `<user>` placeholder a help text prints. EVERY other -U value is a superuser
+# touchpoint, whatever it is spelled as: a variable, a helper call, or the bare
+# literal `postgres`. The guard used to list three forbidden SPELLINGS, so a
+# literal `psql -U postgres` -- a shape that really exists in this tree, at
+# bin/db-scripts-tests -- passed it green.
+#
+# Each allowlist entry has its reason:
+#   db-create-role   -- touchpoint 1; creates this checkout's owner role.
+#   db-adopt         -- touchpoint 2; moves ownership onto it.
+#   db-bootstrap     -- initdb CREATES the superuser account; that is not a
+#                       connection as one.
+#   db-scripts-tests -- seeds and drops superuser-owned fixtures on its own
+#                       PRIVATE throwaway cluster to test the adoption path.
+#   scripts-tests    -- drops the two fake checkouts' roles in its own cleanup.
+SUPERUSER_CONNECT_ALLOWLIST=(db-create-role db-adopt db-bootstrap db-scripts-tests scripts-tests)
+# The placeholder alternative is `<user>` followed by ONE of `]` or `:` -- the two
+# shapes a help text prints, `[-U <user>]` in a synopsis and `-U <user>:` in an
+# option list -- and nothing else, so a real connection cannot hide behind the
+# placeholder by spelling itself `-U <user>foo`. Inside the bracket expression the
+# LEADING `]` is a LITERAL `]`, not the closing bracket: first position is the only
+# place a `]` can be matched, so moving or "tidying" it breaks the pattern and the
+# guard stops matching the help texts it was written to allow.
+ALLOWED_CONNECT_USER='^-U[[:space:]]+"?(\$\{?(POSTGRES_USER|CONNECT_USER)\}?|<user>[]:])$'
+bin_script_connects_only_as_its_own_role() {
+  [ -z "$(grep -vE '^[[:space:]]*#' "$PROJECT_ROOT/bin/$1" \
+        | grep -oE '\-U[[:space:]]+"?[^[:space:]"]+' \
+        | grep -vE "$ALLOWED_CONNECT_USER")" ]
+}
+for script_path in "$PROJECT_ROOT"/bin/*; do
+  [ -f "$script_path" ] || continue
+  script="$(basename "$script_path")"
+  list_contains "$script" "${SUPERUSER_CONNECT_ALLOWLIST[@]}" && continue
+  assert_success "bin/$script connects only as its own checkout role" \
+    bin_script_connects_only_as_its_own_role "$script"
+done
 
 # 13. Unexpected-argument rejection across the guard set. Each guard fires before
 #     any real work, so no live cluster/daemon is needed: the stray argument is
@@ -1520,17 +1983,10 @@ echo "==== Testing every shell test harness is run by bin/shell-tests ===="
 # sketched it) silently misses `bin/scripts-tests` itself — the most expensive
 # harness and the one this guard most needs to keep wired up.
 HARNESS_EXCLUSIONS=(ios-scripts-tests)
-harness_excluded() {
-  local candidate="$1" excluded
-  for excluded in "${HARNESS_EXCLUSIONS[@]}"; do
-    [ "$excluded" = "$candidate" ] && return 0
-  done
-  return 1
-}
 harness_in_shell_tests() { grep -qF "bin/$1" "$PROJECT_ROOT/bin/shell-tests"; }
 for harness_path in "$PROJECT_ROOT"/bin/*scripts-tests; do
   harness="$(basename "$harness_path")"
-  harness_excluded "$harness" && continue
+  list_contains "$harness" "${HARNESS_EXCLUSIONS[@]}" && continue
   assert_success "bin/shell-tests runs $harness" harness_in_shell_tests "$harness"
 done
 

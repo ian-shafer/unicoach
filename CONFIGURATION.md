@@ -37,6 +37,21 @@ rests on. Full design:
     (SecureStrings) and RDS identity (`PGHOST`/`DATABASE_HOST`/`POSTGRES_USER`/
     `DATABASE_USER`).
 
+  `POSTGRES_SUPERUSER` (RFC 174) is a **`.env.dev`-only** key, and deliberately
+  so. Locally it names the cluster admin (`postgres`), which is used for exactly
+  two bootstraps — creating this checkout's owner role (`bin/db-create-role`)
+  and moving ownership of a pre-existing database onto it (`bin/db-adopt`) —
+  while `POSTGRES_USER` becomes the per-checkout, non-superuser owner role
+  `owner-$(checkout_name "$PROJECT_ROOT")` that every other `bin/` command
+  connects as. Every reader spells it `${POSTGRES_SUPERUSER:-$POSTGRES_USER}`,
+  so a cloud env — which omits the key — collapses to the SSM-supplied RDS
+  master, the identity that creates roles on the instance today, and deployed
+  behaviour is unchanged. The role-name **derivation** must stay in `.env.dev`
+  and nowhere else: `bin/deploy` ships much of `bin/` to the instance — its
+  `REPO_PATHS` array is the list, and it is `bin/deploy`'s to change — so a
+  default inside a shipped script would derive a role name from the release
+  directory on RDS.
+
   A worked example of the split, across three of these roles — the Family Cost
   Report's share link (RFC 155):
 

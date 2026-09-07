@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+db-adopt [options]
+
+Makes this checkout's role (POSTGRES_USER) the OWNER of POSTGRES_DB and of every
+object inside it. Zero-argument, idempotent, and safe to re-run: a second run
+executes no statements at all. Performs, as the cluster admin
+(POSTGRES_SUPERUSER, falling back to POSTGRES_USER):
+
+  1. ALTER DATABASE <POSTGRES_DB> OWNER TO <POSTGRES_USER>.
+  2. Re-owns every schema, table, view, materialized view, foreign table,
+     standalone sequence, routine and type inside it.
+
+This is the transition for a database that already exists under another owner
+(RFC 174) — nothing is dropped and no data is touched. bin/db-create calls it
+when it finds POSTGRES_DB owned by someone else, so an operator never runs it by
+hand.
+
+It is a NO-OP when POSTGRES_USER is already the cluster admin, which is every
+cloud environment.
+
+Writes NOTHING to stdout: this script's product is ownership, so psql's command
+tags and the "re-owned N object(s)" NOTICE are diagnostics and go to stderr with
+every other log line.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -gt 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-adopt does not accept positional arguments: $*"
+fi
+
+SUPERUSER="$(cluster_superuser)"
+
+if ! checkout_owns_its_databases; then
+  log-info "POSTGRES_USER [$POSTGRES_USER] is the cluster admin; nothing to adopt."
+  exit 0
+fi
+
+# Role names reach SQL as single-quoted literals, and sql_literal doubling `'` is
+# the COMPLETE rule for one — but only for an ORDINARY literal. Inside a
+# `DO $$ ... $$` body a `$$` in the value ENDS the block, so the name is set as a
+# SESSION GUC in a plain statement and read back inside the block with
+# current_setting: the value is then data, never statement text, and format('%I')
+# does the identifier quoting server-side. sql_literal and sql_ident are
+# bin/functions' (RFC 174): an escaping rule copied per script is one that drifts
+# silently.
+OWNER_LITERAL="$(sql_literal "$POSTGRES_USER")"
+
+# Idempotent by construction: PostgreSQL does not error when the new owner is
+# already the owner. Run from the admin database — ALTER DATABASE ... OWNER TO
+# does not require a connection to its target.
+#
+# stdout is CLOSED to the caller: psql prints a command tag (`ALTER DATABASE`) and
+# this script's product is ownership, not output, so the tag is a diagnostic and
+# goes to stderr with every other bin/ log line. Owned HERE rather than at each
+# caller, which is where the rule used to live in three separate redirects.
+set_database_owner() {
+  printf 'ALTER DATABASE "%s" OWNER TO "%s";' \
+    "$(sql_ident "$POSTGRES_DB")" "$(sql_ident "$POSTGRES_USER")" \
+    | "$PROJECT_ROOT/bin/db-write" -U "$SUPERUSER" -d "${POSTGRES_ADMIN_DB:-postgres}" 1>&2
+}
+
+# Owning the DATABASE is not enough: measured on PostgreSQL 18.3, the new owner
+# can DROP the database and CREATE new tables, but `ALTER TABLE <pre-existing>`
+# is still refused with `42501: must be owner of table`, so bin/db-migrate would
+# fail on the first migration touching an old table.
+#
+# REASSIGN OWNED BY is NOT usable here: `REASSIGN OWNED BY postgres` is refused
+# outright with `2BP01: cannot reassign ownership of objects owned by role
+# postgres because they are required by the database system`, and the whole
+# statement aborts having reassigned nothing.
+#
+# ONE (kind, ident) query and ONE EXECUTE, per RFC 174 D5: the object-kind
+# knowledge stays in the query (data) and the action is written once, so the
+# system-schema rule and the re-owning statement each have a single home. Every
+# branch filters on `<owner> <> r`, so a second run selects nothing, executes ZERO
+# statements, and the whole script is a successful no-op.
+set_object_owners() {
+  cat << SQL | "$PROJECT_ROOT/bin/db-write" -U "$SUPERUSER" 1>&2
+SET unicoach.owner_role TO '$OWNER_LITERAL';
+DO \$\$
+DECLARE
+  r CONSTANT text := current_setting('unicoach.owner_role');
+  obj record;
+  reowned integer := 0;
+BEGIN
+  FOR obj IN
+    -- An EXTENSION MEMBER belongs to its extension, not to this checkout: it was
+    -- created by CREATE EXTENSION as the superuser, and a migration re-creating
+    -- the extension re-creates it superuser-owned, so re-owning one is a
+    -- permanent non-no-op AND wrong on its own terms -- an extension's members
+    -- must follow their extension for DROP EXTENSION and dump/restore to stay
+    -- faithful. Same class as the two carve-outs below (a serial sequence
+    -- following its column, an index following its table). The test is
+    -- pg_depend deptype 'e', stated ONCE here and applied to every branch:
+    -- fuzzystrmatch brings only functions, but a postgis-shaped extension
+    -- brings tables and types too, and the rule belongs to the SWEEP.
+    WITH extension_member AS (
+      SELECT classid, objid FROM pg_depend WHERE deptype = 'e'
+    ),
+    -- The "which schemas count" rule, stated ONCE (RFC 174 D5): pg_* and
+    -- information_schema are the system's, never this checkout's. The backslash
+    -- in 'pg\_%' is a LIKE ESCAPE and is load-bearing: unescaped, _ is LIKE's
+    -- single-character wildcard, so the filter would also skip a USER schema
+    -- named pgx. It survives this unquoted heredoc, which strips a backslash
+    -- only before a dollar, a backtick, another backslash or a newline.
+    target_schema AS (
+      SELECT oid, nspname, nspowner FROM pg_namespace
+       WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
+    )
+    -- schema public is owned by pg_database_owner, which the ALTER DATABASE
+    -- above already made this role, so it is deliberately left alone.
+    SELECT 'SCHEMA' AS kind, quote_ident(n.nspname) AS ident
+      FROM target_schema n
+     WHERE n.nspname <> 'public' AND pg_get_userbyid(n.nspowner) <> r
+       AND NOT EXISTS (SELECT 1 FROM extension_member e
+                        WHERE e.classid = 'pg_namespace'::regclass AND e.objid = n.oid)
+    UNION ALL
+    -- never 'i' (index) or 't' (TOAST): both follow their table, and targeting
+    -- them directly is refused. A serial/identity sequence is OWNED BY its
+    -- column (pg_depend deptype 'a'); ALTER SEQUENCE ... OWNER TO on it is
+    -- refused with \`0A000: cannot change owner of sequence ... is linked to
+    -- table\`, and its owner follows the table's, so it is skipped.
+    --
+    -- Every relkind the WHERE clause admits is NAMED here, and there is no ELSE:
+    -- a kind added to the filter without a keyword yields NULL, which EXECUTE
+    -- refuses loudly, rather than being silently re-owned AS A TABLE.
+    SELECT CASE c.relkind WHEN 'r' THEN 'TABLE'
+                          WHEN 'p' THEN 'TABLE'
+                          WHEN 'S' THEN 'SEQUENCE'
+                          WHEN 'v' THEN 'VIEW'
+                          WHEN 'm' THEN 'MATERIALIZED VIEW'
+                          WHEN 'f' THEN 'FOREIGN TABLE' END,
+           c.oid::regclass::text
+      FROM pg_class c JOIN target_schema n ON n.oid = c.relnamespace
+     WHERE c.relkind IN ('r','p','v','m','S','f')
+       AND pg_get_userbyid(c.relowner) <> r
+       AND NOT (c.relkind = 'S' AND EXISTS (
+             SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                AND d.deptype = 'a'))
+       AND NOT EXISTS (SELECT 1 FROM extension_member e
+                        WHERE e.classid = 'pg_class'::regclass AND e.objid = c.oid)
+    UNION ALL
+    SELECT 'ROUTINE', p.oid::regprocedure::text
+      FROM pg_proc p JOIN target_schema n ON n.oid = p.pronamespace
+     WHERE pg_get_userbyid(p.proowner) <> r
+       AND NOT EXISTS (SELECT 1 FROM extension_member e
+                        WHERE e.classid = 'pg_proc'::regclass AND e.objid = p.oid)
+    UNION ALL
+    -- The re-ownable type kinds, NAMED: 'c' composite, 'd' domain, 'e' enum,
+    -- 'r' range. Excluded on purpose: 'b' base and 'p' pseudo types are the
+    -- system's, and a multirange ('m') is created BY its range type and follows
+    -- that type's owner -- ALTER TYPE on one directly is refused, which would
+    -- abort the loop mid-way. The typrelid clause below then keeps only
+    -- STANDALONE composites: one belonging to a table follows that table.
+    SELECT 'TYPE', t.oid::regtype::text
+      FROM pg_type t JOIN target_schema n ON n.oid = t.typnamespace
+     WHERE t.typtype IN ('c','d','e','r')
+       AND (t.typrelid = 0
+            OR (SELECT c.relkind FROM pg_class c WHERE c.oid = t.typrelid) = 'c')
+       AND pg_get_userbyid(t.typowner) <> r
+       AND NOT EXISTS (SELECT 1 FROM extension_member e
+                        WHERE e.classid = 'pg_type'::regclass AND e.objid = t.oid)
+  LOOP
+    EXECUTE format('ALTER %s %s OWNER TO %I', obj.kind, obj.ident, r);
+    reowned := reowned + 1;
+  END LOOP;
+  -- The OUTCOME, not the intent: this is the one line that tells a steady-state
+  -- no-op apart from a transition that moved a whole schema. NOTICE goes to
+  -- stderr, where every bin/ diagnostic belongs.
+  RAISE NOTICE 're-owned % object(s) onto %', reowned, r;
+END
+\$\$;
+SQL
+}
+
+# Only a real TRANSITION is announced, and a transition is exactly "the database
+# is owned by somebody else". This script runs on every bin/db-create and every
+# bin/db-drop, so an unconditional opener would print on every bin/test run while
+# saying nothing. The gate lives HERE and not at the caller, because this is the
+# script that logs: a caller-side gate silenced one line while this one printed a
+# near-identical second, so an operator read two "Adopting ..." phrasings for one
+# adoption. Nothing is lost by suppressing the opener -- the RAISE NOTICE above
+# reports the OUTCOME ("re-owned N object(s)") on both paths, which is the line
+# that tells a no-op apart from a real re-own.
+CURRENT_OWNER="$(database_owner)"
+if [ "$CURRENT_OWNER" != "$POSTGRES_USER" ]; then
+  log-info "Adopting database [$POSTGRES_DB] for [$POSTGRES_USER] (currently owned by [$CURRENT_OWNER])..."
+fi
+set_database_owner
+set_object_owners

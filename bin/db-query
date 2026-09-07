@@ -3,28 +3,33 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-db-query [-d <db>] [-r | -x] [sql]
+db-query [-d <db>] [-U <user>] [-r | -x] [sql]
 
 Arguments:
   sql: Optional SQL statement; when omitted, psql reads stdin
 
 Options:
-  -d <db>: Override the target database
-  -r:      Raw output      -> psql -t -A
-  -x:      Expanded output -> psql -x -P border=0
-  -h:      Help
+  -d <db>:   Override the target database
+  -U <user>: Override the connecting role (default POSTGRES_USER)
+  -r:        Raw output      -> psql -t -A
+  -x:        Expanded output -> psql -x -P border=0
+  -h:        Help
 EOF
   exit 0
 }
 
 DB_FLAGS=()
+# Forwarded to db-run exactly as -d is: an array appended to its argv, empty when
+# the caller did not ask, so db-run keeps its POSTGRES_USER default (RFC 174).
+USER_FLAGS=()
 OUTPUT_FLAGS=()
 RAW=
 EXPANDED=
 
-while getopts ":d:rxh" opt; do
+while getopts ":d:U:rxh" opt; do
   case "$opt" in
   d) DB_FLAGS=("-d" "$OPTARG") ;;
+  U) USER_FLAGS=("-U" "$OPTARG") ;;
   r) RAW=1 ;;
   x) EXPANDED=1 ;;
   h) help ;;
@@ -52,4 +57,4 @@ if [ "$#" -eq 1 ]; then
   SQL_ARG=("$1")
 fi
 
-"$PROJECT_ROOT/bin/db-run" "${DB_FLAGS[@]}" "${OUTPUT_FLAGS[@]}" ro "${SQL_ARG[@]}"
+"$PROJECT_ROOT/bin/db-run" "${DB_FLAGS[@]}" "${USER_FLAGS[@]}" "${OUTPUT_FLAGS[@]}" ro "${SQL_ARG[@]}"

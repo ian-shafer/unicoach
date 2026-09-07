@@ -3,22 +3,28 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-db-run [-d <db>] [-r | -x] <ro|rw> [sql]
+db-run [-d <db>] [-U <user>] [-r | -x] <ro|rw> [sql]
 
 Arguments:
   ro|rw: Access mode (required); ro sets default_transaction_read_only=on
   sql:   Optional SQL statement; when omitted, psql reads stdin
 
 Options:
-  -d <db>: Override the target database
-  -r:      Raw output      -> psql -t -A   (tuples-only, unaligned)
-  -x:      Expanded output -> psql -x -P border=0
-  -h:      Help
+  -d <db>:   Override the target database
+  -U <user>: Override the connecting role (default POSTGRES_USER)
+  -r:        Raw output      -> psql -t -A   (tuples-only, unaligned)
+  -x:        Expanded output -> psql -x -P border=0
+  -h:        Help
 EOF
   exit 0
 }
 
 TARGET_DB="$POSTGRES_DB"
+# The connecting role. POSTGRES_USER is the identity this checkout owns its
+# databases as (RFC 174: `owner-<checkout>` in dev); -U exists so a caller can
+# connect as ANOTHER role, which is what makes a privilege refusal assertable
+# through this bounded interface instead of a raw psql that bypasses it.
+CONNECT_USER="$POSTGRES_USER"
 RAW=
 EXPANDED=
 
@@ -26,9 +32,10 @@ EXPANDED=
 # mandatory <ro|rw> mode). Every option is named: an unrecognized one is rejected
 # (it no longer begins a verbatim psql passthrough), and -r/-x are mutually
 # exclusive output modes.
-while getopts ":d:rxh" opt; do
+while getopts ":d:U:rxh" opt; do
   case "$opt" in
   d) TARGET_DB="$OPTARG" ;;
+  U) CONNECT_USER="$OPTARG" ;;
   r) RAW=1 ;;
   x) EXPANDED=1 ;;
   h) help ;;
@@ -82,9 +89,9 @@ fi
 
 if [ "$MODE" = "ro" ]; then
   env PGOPTIONS="-c default_transaction_read_only=on" \
-    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" \
+    psql -v ON_ERROR_STOP=1 -U "$CONNECT_USER" -d "$TARGET_DB" \
     "${OUTPUT_OPTS[@]}" "${QUERY_OPTS[@]}"
 else
-  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" \
+  psql -v ON_ERROR_STOP=1 -U "$CONNECT_USER" -d "$TARGET_DB" \
     "${OUTPUT_OPTS[@]}" "${QUERY_OPTS[@]}"
 fi

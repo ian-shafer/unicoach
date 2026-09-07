@@ -16,8 +16,14 @@ TMP_BASE="${TMPDIR:-/tmp}"
 mkdir -p "$TMP_BASE"
 PRIVATE_ROOT="$(mktemp -d "$TMP_BASE/unicoach-db-scripts-tests.XXXXXX")"
 PRIVATE_ENV="$PRIVATE_ROOT/env"
+# POSTGRES_SUPERUSER is the cluster admin (initdb, and the two role/ownership
+# bootstraps); POSTGRES_USER is a NON-superuser owner role, exactly as a real
+# checkout has since RFC 174 — so this harness exercises the ownership path
+# rather than the superuser shortcut every bin/ command used to take. The name is
+# a fixed literal because this cluster is private: no other checkout can reach it.
 cat > "$PRIVATE_ENV" <<EOF
-POSTGRES_USER=postgres
+POSTGRES_SUPERUSER=postgres
+POSTGRES_USER=owner-db-scripts-test
 POSTGRES_DB=unicoach-db-scripts-test
 POSTGRES_HOST_AUTH_METHOD=trust
 PGHOST=localhost
@@ -173,9 +179,17 @@ assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-run bogus mode exits 22" bin/db-r
 assert_exit_code "$EXIT_EXCLUSIVE_OPTIONS" "db-run -r -x ro exits 23" bin/db-run -r -x ro
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "db-run -z ro exits 10" bin/db-run -z ro
 assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "db-run -d (no value) exits 11" bin/db-run -d
+# -U is the option RFC 174 adds, and it takes a value exactly as -d does: a
+# valueless -U must land in the same band, not silently connect as POSTGRES_USER.
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "db-run -U (no value) exits 11" bin/db-run -U
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-query rw extra exits 20" bin/db-query rw extra
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-repl rejects an unexpected argument" bin/db-repl stray
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-drop rejects a stray positional" bin/db-drop stray
+# db-adopt is the script RFC 174 adds, and it is zero-argument like every other
+# operator command: the same three refusals its siblings above are pinned to.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "db-adopt -z exits 10" bin/db-adopt -z
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-adopt rejects a stray positional" bin/db-adopt stray
+assert_success "db-adopt -h exits 0" bin/db-adopt -h
 
 echo "==== Testing Error Handling Validation ===="
 
@@ -1147,5 +1161,296 @@ assert_success "migration engine forward migration" test_db_migrate_forward
 assert_success "migration engine restricts idempotency" test_db_migrate_idempotent
 assert_success "migration engine rolls back failed transactions" test_db_migrate_transaction_rollback
 assert_success "migration engine halts on error" test_db_migrate_halts_on_error
+
+echo ""
+echo "==== Testing roles and database ownership (RFC 174) ===="
+# The first role coverage in the tree. Until RFC 174 every bin/ command connected
+# as the cluster superuser, so ownership bought nothing and nothing asserted a
+# privilege — there was no way to even express one, because bin/db-run had no -U.
+
+# What the bootstrap above must already have produced: a LOGIN CREATEDB role that
+# is NOT a superuser. NOSUPERUSER is the whole guarantee; a superuser bypasses
+# every ownership check, so a role that quietly gained it would void the
+# isolation while every test still passed.
+test_owner_role_is_login_createdb_nosuperuser() {
+  local attrs
+  # SQL labels the attributes. They used to be concatenated into a positional
+  # `011` digit token, so a failure printed `[001]` and told the reader nothing
+  # until they re-derived which column was which.
+  attrs="$(bin/db-run -r -d "$POSTGRES_ADMIN_DB" ro \
+    "SELECT format('superuser=%s createdb=%s login=%s', rolsuper::text, rolcreatedb::text, rolcanlogin::text) FROM pg_roles WHERE rolname = '$POSTGRES_USER'" | tr -d '\n')"
+  if [ "$attrs" != "superuser=false createdb=true login=true" ]; then
+    fail_test "role [$POSTGRES_USER] is not LOGIN CREATEDB NOSUPERUSER (pg_roles reports [$attrs])"
+  fi
+  return 0
+}
+
+# And that it OWNS its database and the objects in it — ownership of the database
+# alone is not enough, since ALTER TABLE on a pre-existing table is checked
+# against the TABLE's owner (which is what breaks db-migrate).
+test_owner_role_owns_its_database_and_objects() {
+  local db_owner tbl_owner
+  db_owner="$(database_owner_of "$POSTGRES_DB")"
+  if [ "$db_owner" != "$POSTGRES_USER" ]; then
+    fail_test "database [$POSTGRES_DB] is owned by [$db_owner], not [$POSTGRES_USER]"
+  fi
+  tbl_owner="$(bin/db-run -r ro \
+    "SELECT tableowner FROM pg_tables WHERE tablename = 'schema_migrations'" | tr -d '[:space:]')"
+  if [ "$tbl_owner" != "$POSTGRES_USER" ]; then
+    fail_test "schema_migrations is owned by [$tbl_owner], not [$POSTGRES_USER]"
+  fi
+  return 0
+}
+
+# Idempotent AND repairing: the unconditional ALTER inside db-create-role's DO
+# block exists so a role that already exists but lost LOGIN or CREATEDB is healed
+# on the next run rather than diagnosed three scripts later.
+test_db_create_role_repairs_a_deficient_role() {
+  local out
+  bin/db-write -U "$POSTGRES_SUPERUSER" -d "$POSTGRES_ADMIN_DB" \
+    "ALTER ROLE \"$POSTGRES_USER\" NOLOGIN NOCREATEDB;" >/dev/null
+  # The server's message is CARRIED, not muted: fail_test exits, the EXIT trap
+  # rm -rf's this private cluster, and the SQLSTATE is then gone together with the
+  # state that produced it. It is the answer to every question an ownership test
+  # raises.
+  if ! out="$(bin/db-create-role 2>&1)"; then
+    # Put it back before failing: every later test connects as this role.
+    bin/db-write -U "$POSTGRES_SUPERUSER" -d "$POSTGRES_ADMIN_DB" \
+      "ALTER ROLE \"$POSTGRES_USER\" LOGIN CREATEDB;" >/dev/null 2>&1 || true
+    fail_test "db-create-role failed against an existing deficient role [$POSTGRES_USER]: $out"
+  fi
+  test_owner_role_is_login_createdb_nosuperuser
+  # And again, on a role that now needs nothing: a plain no-op.
+  if ! out="$(bin/db-create-role 2>&1)"; then
+    fail_test "db-create-role is not idempotent (second run failed) for role [$POSTGRES_USER]: $out"
+  fi
+  return 0
+}
+
+# db-adopt carries no state and no flag, so re-running it must be free. Every loop
+# in its DO block filters on `owner <> role`, which matches nothing the second
+# time; the ALTER DATABASE is a successful no-op when the owner is unchanged.
+test_db_adopt_is_idempotent() {
+  local out
+  if ! out="$(bin/db-adopt 2>&1)"; then
+    fail_test "db-adopt failed on the already-adopted database [$POSTGRES_DB] as role [$POSTGRES_USER]: $out"
+  fi
+  if ! out="$(bin/db-adopt 2>&1)"; then
+    fail_test "db-adopt is not idempotent (second run failed) on [$POSTGRES_DB] as role [$POSTGRES_USER]: $out"
+  fi
+  test_owner_role_owns_its_database_and_objects
+  return 0
+}
+
+# The steady state a MIGRATED checkout is actually in: a migration creates an
+# EXTENSION as the superuser, so every member function/table/type it brings is
+# owned by the superuser and re-created that way on the next db-migrate. Before
+# the pg_depend deptype 'e' carve-out, db-adopt re-owned fuzzystrmatch's eleven
+# functions on EVERY bin/db-reset -- a permanent non-no-op contradicting RFC 174
+# D5's "a second run executes no statements at all", and wrong on its own terms:
+# an extension's members must follow their extension for DROP EXTENSION and
+# dump/restore to stay faithful. Asserted as OWNERSHIP (the members are STILL the
+# superuser's) AND as the reported count (zero), because either alone passes for
+# the wrong reason: a count of 0 is what a broken sweep prints on its SECOND run,
+# and the ownership check alone would pass on a db-adopt that never ran.
+test_db_adopt_leaves_extension_members_alone() {
+  local out reowned member_owners
+  bin/db-write -U "$POSTGRES_SUPERUSER" "CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;" >/dev/null
+  if ! out="$(bin/db-adopt 2>&1)"; then
+    fail_test "db-adopt failed on [$POSTGRES_DB] after CREATE EXTENSION fuzzystrmatch: $out"
+  fi
+  reowned="$(printf '%s' "$out" | sed -n 's/.*re-owned \([0-9]*\) object(s).*/\1/p')"
+  if [ "$reowned" != "0" ]; then
+    fail_test "db-adopt re-owned [$reowned] object(s) on an adopted database whose only superuser-owned objects are extension members; expected 0: $out"
+  fi
+  member_owners="$(bin/db-run -r ro "SELECT string_agg(DISTINCT pg_get_userbyid(p.proowner), ',') FROM pg_depend d JOIN pg_proc p ON p.oid = d.objid JOIN pg_extension e ON e.oid = d.refobjid WHERE d.deptype = 'e' AND d.classid = 'pg_proc'::regclass AND e.extname = 'fuzzystrmatch'" | tr -d '[:space:]')"
+  if [ "$member_owners" != "$POSTGRES_SUPERUSER" ]; then
+    fail_test "fuzzystrmatch's members are owned by [$member_owners], not [$POSTGRES_SUPERUSER]; db-adopt must leave an extension's members to their extension"
+  fi
+  bin/db-write -U "$POSTGRES_SUPERUSER" "DROP EXTENSION fuzzystrmatch;" >/dev/null
+  return 0
+}
+
+# The pre-RFC-174 fixture, NAMED — the way create_cloud_shape_env next door names its
+# own. Both tests below open on the same five lines of superuser DDL plus a sed of
+# the private dotenv, which is the subject of neither of them.
+#
+# A database as it existed BEFORE RFC 174: owned by the SUPERUSER, with a
+# superuser-owned table and a row in it. Echoes the private ENV_FILE that points a
+# bin/ command at it — a FILE, not an exported POSTGRES_DB, because bin/common
+# sources the env file under `set -a`, so an inherited value for a key the file
+# sets is clobbered before any script reads it.
+seed_legacy_database() {
+  local legacy="$1" legacy_env="$PRIVATE_ROOT/env.$1"
+  drop_legacy_database "$legacy"
+  bin/db-write -U "$POSTGRES_SUPERUSER" -d "$POSTGRES_ADMIN_DB" "CREATE DATABASE \"$legacy\";" >/dev/null
+  bin/db-write -U "$POSTGRES_SUPERUSER" -d "$legacy" \
+    "CREATE TABLE legacy_t (id serial PRIMARY KEY, v text); INSERT INTO legacy_t (v) VALUES ('kept');" >/dev/null
+  sed "s|^POSTGRES_DB=.*|POSTGRES_DB=$legacy|" "$PRIVATE_ENV" > "$legacy_env"
+  printf '%s\n' "$legacy_env"
+}
+
+drop_legacy_database() {
+  bin/db-write -U "$POSTGRES_SUPERUSER" -d "$POSTGRES_ADMIN_DB" \
+    "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE);" >/dev/null 2>&1 || true
+}
+
+# Who owns a database, by name. Inlined at four sites before this.
+database_owner_of() {
+  bin/db-run -r -d "$POSTGRES_ADMIN_DB" ro \
+    "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$1'" | tr -d '[:space:]'
+}
+
+# The transition RFC 174 exists to make: a database that predates it exists and is
+# owned by the SUPERUSER, with superuser-owned tables inside. db-create must adopt
+# it in place — nothing dropped, the data still there — and the owner role must
+# then be able to run the ALTER that db-migrate would.
+test_db_create_adopts_a_legacy_database() {
+  local legacy="unicoach-db-scripts-legacy" legacy_env rows owner out
+  legacy_env="$(seed_legacy_database "$legacy")"
+  if ! out="$(ENV_FILE="$legacy_env" bin/db-create 2>&1)"; then
+    fail_test "db-create failed to adopt superuser-owned [$legacy] as role [$POSTGRES_USER]: $out"
+  fi
+  owner="$(database_owner_of "$legacy")"
+  if [ "$owner" != "$POSTGRES_USER" ]; then
+    fail_test "db-create did not adopt [$legacy]: still owned by [$owner]"
+  fi
+  rows="$(bin/db-run -r -d "$legacy" ro "SELECT count(*) FROM legacy_t" | tr -d '[:space:]')"
+  if [ "$rows" != "1" ]; then
+    fail_test "adopting [$legacy] lost its data: [$rows] rows, expected 1"
+  fi
+  # The half that ALTER DATABASE alone does not buy: a db-migrate-shaped statement
+  # against a table created before the transition.
+  if ! out="$(bin/db-write -d "$legacy" "ALTER TABLE legacy_t ADD COLUMN added int;" 2>&1)"; then
+    fail_test "role [$POSTGRES_USER] still cannot ALTER a pre-existing table in [$legacy] after db-adopt; the server said: $out"
+  fi
+  drop_legacy_database "$legacy"
+  return 0
+}
+
+# The SAME legacy database, met through bin/db-reset instead of bin/db-create —
+# and this is the path that matters, because db-reset's FIRST step is db-drop and
+# DROP DATABASE is checked against the OWNER. The db-create test above passed
+# while every existing checkout's bin/test, bin/db-reset and bin/db-restore died
+# with `must be owner of database`: the adoption was wired into step 2 and step 1
+# never reached it. Driving db-create here would re-test what is already covered
+# and re-hide the gap.
+test_db_reset_adopts_and_recreates_a_legacy_database() {
+  local legacy="unicoach-db-scripts-legacy-reset" legacy_env owner out
+  legacy_env="$(seed_legacy_database "$legacy")"
+  if ! out="$(ENV_FILE="$legacy_env" bin/db-reset 2>&1)"; then
+    fail_test "db-reset failed against superuser-owned [$legacy] as role [$POSTGRES_USER]: $out"
+  fi
+  owner="$(database_owner_of "$legacy")"
+  if [ "$owner" != "$POSTGRES_USER" ]; then
+    fail_test "db-reset left [$legacy] owned by [$owner], not [$POSTGRES_USER]"
+  fi
+  drop_legacy_database "$legacy"
+  return 0
+}
+
+
+# -U has to REACH psql, not merely parse: session_user IS the role the connection
+# was made as. db-query is the one of the three scripts whose -U appears nowhere
+# else in the tree, so dropping "${USER_FLAGS[@]}" from its db-run argv — a silent
+# fallback to POSTGRES_USER — would otherwise pass the whole suite.
+test_db_query_forwards_the_connecting_role() {
+  local session_role
+  session_role="$(bin/db-query -r -U "$POSTGRES_SUPERUSER" "SELECT session_user" | tr -d '[:space:]')"
+  if [ "$session_role" != "$POSTGRES_SUPERUSER" ]; then
+    fail_test "db-query -U [$POSTGRES_SUPERUSER] connected as [$session_role]; the option is not forwarded to db-run"
+  fi
+  return 0
+}
+
+# The CLOUD shape of the environment, and the one claim RFC 174 makes about
+# DEPLOYED behaviour: with POSTGRES_SUPERUSER unset the cluster admin collapses
+# onto POSTGRES_USER, so db-create-role must create NO checkout owner role and
+# db-adopt must do nothing at all. That precondition (the two roles EQUAL) occurs
+# nowhere else in the suite — every other test runs the unequal, per-checkout
+# shape — so both guards are silent on every run without it. Inverted, they would
+# create an owner-<release-dir> role on RDS and re-own the instance's database.
+# Safe here and nowhere else: this harness owns its private throwaway cluster.
+#
+# The FIXTURE is what the three cases share, not an assertion, so it is what gets
+# extracted; each command then gets its own pass/fail line, and a db-adopt
+# regression can no longer report as a db-create-role failure. It is a FILE, not
+# an exported variable: bin/common sources the env file under `set -a`, so an
+# inherited value is clobbered before any script reads it.
+create_cloud_shape_env() {
+  local cloud_env="$PRIVATE_ROOT/env.cloud"
+  grep -v '^POSTGRES_SUPERUSER=' "$PRIVATE_ENV" \
+    | sed 's|^POSTGRES_USER=.*|POSTGRES_USER=postgres|' > "$cloud_env"
+  printf '%s\n' "$cloud_env"
+}
+
+# db-create is the command the deploy path actually calls, so it must still
+# succeed unchanged in this shape.
+test_db_create_succeeds_in_the_cloud_shape() {
+  local cloud_env out
+  cloud_env="$(create_cloud_shape_env)"
+  if ! out="$(ENV_FILE="$cloud_env" bin/db-create 2>&1)"; then
+    fail_test "db-create failed on [$POSTGRES_DB] when POSTGRES_USER is the cluster admin (the cloud shape): $out"
+  fi
+  return 0
+}
+
+# Which BRANCH the guard took, read from its own diagnostics (all bin/ logging is
+# stderr), AND the resulting state. The state check cannot stand alone: on a
+# cluster whose admin role already exists, a db-create-role that wrongly ran its
+# block would ALTER the master role and leave no trace in pg_roles. The whole
+# WHOLE role SET is compared, before and after — not a count, and not a
+# `rolname LIKE 'owner-%'` pattern. RFC 174's rule is "the cloud shape creates NO
+# role", so the whole set is both the stronger check and the one that needs no
+# naming convention: matching a prefix would encode .env.dev's `owner-` here and
+# go SILENTLY vacuous the day it changed, since a pattern matching nothing still
+# compares equal before and after.
+test_db_create_role_skips_the_owner_role_in_the_cloud_shape() {
+  local cloud_env role_log roles_before roles_after
+  local roles_sql="SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles"
+  cloud_env="$(create_cloud_shape_env)"
+  roles_before="$(bin/db-run -r -d "$POSTGRES_ADMIN_DB" ro "$roles_sql" | tr -d '[:space:]')"
+  role_log="$(ENV_FILE="$cloud_env" bin/db-create-role 2>&1)"
+  if ! printf '%s' "$role_log" | grep -q 'is the cluster admin'; then
+    fail_test "db-create-role did not skip the checkout owner role when POSTGRES_USER is the cluster admin: $role_log"
+  fi
+  if printf '%s' "$role_log" | grep -q 'Ensuring checkout owner role'; then
+    fail_test "db-create-role ran the checkout owner-role block in the cloud shape; on RDS that is a role the instance must never grow: $role_log"
+  fi
+  roles_after="$(bin/db-run -r -d "$POSTGRES_ADMIN_DB" ro "$roles_sql" | tr -d '[:space:]')"
+  if [ "$roles_after" != "$roles_before" ]; then
+    fail_test "the cloud shape changed the cluster's roles (before [$roles_before], after [$roles_after]); the checkout-role block must be skipped when POSTGRES_USER is the cluster admin"
+  fi
+  return 0
+}
+
+# And nothing is re-owned. The state half is this harness's own database still
+# belonging to its own owner role, which db-adopt would have taken away had it not
+# returned early.
+test_db_adopt_re_owns_nothing_in_the_cloud_shape() {
+  local cloud_env adopt_log
+  cloud_env="$(create_cloud_shape_env)"
+  adopt_log="$(ENV_FILE="$cloud_env" bin/db-adopt 2>&1)"
+  if ! printf '%s' "$adopt_log" | grep -q 'nothing to adopt'; then
+    fail_test "db-adopt did not skip when POSTGRES_USER is the cluster admin: $adopt_log"
+  fi
+  if printf '%s' "$adopt_log" | grep -q 'Adopting database'; then
+    fail_test "db-adopt re-owned the database in the cloud shape; the deployed behaviour must be unchanged: $adopt_log"
+  fi
+  test_owner_role_owns_its_database_and_objects
+  return 0
+}
+
+assert_success "the checkout owner role is LOGIN CREATEDB NOSUPERUSER" test_owner_role_is_login_createdb_nosuperuser
+assert_success "the checkout owner role owns its database and its objects" test_owner_role_owns_its_database_and_objects
+assert_success "db-create-role is idempotent and repairs a deficient role" test_db_create_role_repairs_a_deficient_role
+assert_success "db-adopt run twice is a no-op" test_db_adopt_is_idempotent
+assert_success "db-adopt leaves an extension's members owned by their extension" test_db_adopt_leaves_extension_members_alone
+assert_success "db-create adopts a pre-existing superuser-owned database in place" test_db_create_adopts_a_legacy_database
+assert_success "db-reset drops, recreates and adopts a pre-existing superuser-owned database" test_db_reset_adopts_and_recreates_a_legacy_database
+assert_success "db-query -U forwards the connecting role to db-run" test_db_query_forwards_the_connecting_role
+assert_success "db-create succeeds when POSTGRES_USER is the cluster admin (the cloud shape)" test_db_create_succeeds_in_the_cloud_shape
+assert_success "db-create-role creates no owner role in the cloud shape" test_db_create_role_skips_the_owner_role_in_the_cloud_shape
+assert_success "db-adopt re-owns nothing in the cloud shape" test_db_adopt_re_owns_nothing_in_the_cloud_shape
 
 end_tests

@@ -169,16 +169,33 @@ CHECKOUT_DEV_OFFSET_REST_SERVER=10
 CHECKOUT_DEV_OFFSET_ADMIN_WEB=11
 CHECKOUT_DEV_OFFSET_PUBLIC_WEB=12
 
-# The longest checkout basename .env.dev's `unicoach-dev-<name>` can carry.
-# PostgreSQL's `name` type truncates SILENTLY at 63 bytes (NAMEDATALEN-1), and
-# the prefix is 13 of them. Two worktrees agreeing in their first 50 characters
-# would therefore land on ONE dev database while cksum -- which sees the full
-# name -- hands them DIFFERENT port blocks: nothing fails to bind, nothing
-# reveals it, and the documented "rename a worktree" remedy does not apply
-# because the names ALREADY DIFFER. That is the exact data-loss bug RFC 156
-# exists to remove, re-entering through truncation, so the derivation refuses the
-# input instead of producing a name the server will quietly shorten.
-CHECKOUT_NAME_MAX_BYTES=50
+# PostgreSQL's `name` type truncates SILENTLY at 63 bytes (NAMEDATALEN-1). Every
+# derived name is budgeted against this, never against a re-typed literal --
+# bin/scripts-tests spends this same constant rather than a second copy.
+POSTGRES_NAME_MAX_BYTES=63
+
+# The longest prefix any dotenv prepends to checkout_name: `unicoach-test-` and
+# `unicoach-fuzz-` at 14 bytes (`unicoach-dev-` is 13, and RFC 174's `owner-` is
+# 6, deliberately short enough never to bind). bin/scripts-tests re-derives this
+# from the dotenv derivation lines themselves and fails if it drifts.
+CHECKOUT_NAME_PREFIX_MAX_BYTES=14
+
+# The longest checkout basename the per-worktree names can carry. COMPUTED from
+# the two constants above, because the same arithmetic done by hand shipped wrong
+# once: 50 counted only the 13-byte dev prefix, so a 50-byte basename already
+# yielded a 64-byte TEST database name that the server silently shortened -- and
+# one really shipped (`unicoach-ship-test-port-fallback-below-block-floor`,
+# exactly 50 bytes).
+#
+# Truncation is a DATA-LOSS bug, not a cosmetic one: two worktrees agreeing in
+# their first CHECKOUT_NAME_MAX_BYTES bytes would land on ONE database while
+# cksum -- which sees the full name -- hands them DIFFERENT port blocks, so
+# nothing fails to bind and nothing reveals it, and the documented "rename a
+# worktree" remedy does not apply because the names ALREADY DIFFER. That is
+# exactly what RFC 156 exists to remove, re-entering through truncation, so
+# checkout_name REFUSES such a basename instead of producing a name the server
+# will quietly shorten.
+CHECKOUT_NAME_MAX_BYTES=$(( POSTGRES_NAME_MAX_BYTES - CHECKOUT_NAME_PREFIX_MAX_BYTES ))
 
 # Echoes the checkout's IDENTITY -- the basename of its root -- which is the sole
 # input to both per-worktree derivations: the port block below, and .env.dev's
@@ -192,13 +209,24 @@ checkout_name() {
   local project_root="${1-${PROJECT_ROOT:-}}" name
   [ -n "$project_root" ] || fatal "checkout_name requires a checkout root (PROJECT_ROOT unset)"
   name="$(basename "$project_root")"
+  # The permitted SHAPE, not only the permitted length. This basename becomes a
+  # PostgreSQL ROLE name, three database names, and text inside SQL statements, so
+  # the safe set is stated once here and everything else is REFUSED -- refused,
+  # never rewritten: sanitising would collapse `unicoach-rfc-174` and
+  # `unicoach_rfc_174` onto one role, the very collision the derivation exists to
+  # stop. Defence in depth BEHIND the escaping at each SQL site (sql_literal,
+  # sql_ident and the session-GUC shape in db-adopt/db-create-role), not instead
+  # of it (RFC 174).
+  if ! printf '%s' "$name" | LC_ALL=C grep -qE '^[A-Za-z0-9._-]+$'; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "checkout directory name [$name] contains characters outside [A-Za-z0-9._-]; it becomes this checkout's PostgreSQL role and its dev/test/fuzz database names. Rename this worktree directory (RFC 174)."
+  fi
   # Counted in BYTES, not characters: the 63 the server truncates at are bytes,
   # and `${#name}` counts characters in a UTF-8 locale, which would let a
   # multi-byte name through.
   local name_bytes
   name_bytes="$(printf '%s' "$name" | LC_ALL=C wc -c | tr -d '[:space:]')"
   if [ "$name_bytes" -gt "$CHECKOUT_NAME_MAX_BYTES" ]; then
-    fatal "checkout directory name [$name] is [$name_bytes] bytes; the per-worktree dev database is unicoach-dev-<name> and PostgreSQL truncates a name at 63 bytes, so two checkouts agreeing in their first [$CHECKOUT_NAME_MAX_BYTES] bytes would SHARE one dev database while getting different port blocks. Rename this worktree directory to at most [$CHECKOUT_NAME_MAX_BYTES] bytes (RFC 156)."
+    fatal "checkout directory name [$name] is [$name_bytes] bytes; the per-worktree databases are unicoach-{dev,test,fuzz}-<name> and PostgreSQL truncates a name at 63 bytes, so two checkouts agreeing in their first [$CHECKOUT_NAME_MAX_BYTES] bytes would SHARE one database while getting different port blocks. Rename this worktree directory to at most [$CHECKOUT_NAME_MAX_BYTES] bytes (RFC 156, budget corrected in RFC 174)."
   fi
   printf '%s\n' "$name"
 }
@@ -280,6 +308,98 @@ checkout_block_base() {
 if [ -n "${PROJECT_ROOT:-}" ]; then
   CHECKOUT_BLOCK_BASE="$(checkout_block_base "$PROJECT_ROOT")" || exit $?
 fi
+
+# ── The cluster-admin rule, named ONCE (RFC 174) ──────────────────────────────
+# Who the cluster ADMIN is, and the one question every role-aware db script asks
+# of it. POSTGRES_SUPERUSER is a DEV-ONLY key (.env.dev); every cloud .env.<env>
+# leaves it unset, so this collapses to POSTGRES_USER -- the RDS master, the
+# identity that creates roles on the instance today -- and the deployed behaviour
+# is unchanged. That collapse IS RFC 174's "nothing changes on the instance"
+# claim, so it is ONE definition rather than one spelling per script: the site
+# that dropped the `:-` fallback would grow an `owner-<release-dir>` role on RDS.
+#
+# FUNCTIONS and not variables: bin/common sources this file BEFORE the dotenv
+# layers, so a variable assigned here would capture nothing.
+#
+# Nothing here derives a NAME. bin/deploy ships this file, so the `owner-`
+# derivation stays in .env.dev; these only compare values the environment already
+# supplied.
+cluster_superuser() { printf '%s\n' "${POSTGRES_SUPERUSER:-$POSTGRES_USER}"; }
+
+# True when POSTGRES_USER is this checkout's OWN non-superuser owner role rather
+# than the cluster admin -- the local shape of RFC 174, and the single condition
+# under which any bin/ script does role or ownership work. FALSE in every cloud
+# environment, where the two identities collapse onto the RDS master.
+checkout_owns_its_databases() { [ "$POSTGRES_USER" != "$(cluster_superuser)" ]; }
+
+# Echoes the current owner of POSTGRES_DB, or NOTHING when the database does not
+# exist. The database name reaches SQL as a string LITERAL, so it is quote-doubled
+# (sql_literal), not identifier-quoted.
+database_owner() {
+  echo "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$(sql_literal "$POSTGRES_DB")'" \
+    | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -r | tr -d '[:space:]'
+}
+
+# "Make sure this checkout owns what it is about to operate on." ONE idea with one
+# name, called by bin/db-create before it provisions and by bin/db-drop before it
+# destroys -- because both are refused without it, for the same reason:
+#
+#   * the ROLE may not exist at all (a brand-new worktree; db-reset's first step
+#     is db-drop, which connects AS that role), and
+#   * an EXISTING database may still be owned by someone else (every database
+#     predating RFC 174 is owned by `postgres`), and DROP DATABASE, ALTER
+#     DATABASE and every ALTER inside it are checked against the OWNER. `IF
+#     EXISTS` does not soften that: the database exists.
+#
+# db-adopt is run whenever the database exists, NOT only when its `datdba`
+# differs. Owning the database is not owning the tables in it, and db-adopt is two
+# statements rather than one transaction, so a run interrupted between them leaves
+# a database this checkout owns full of objects it does not -- and an owner-
+# equality guard would never look again. db-adopt executes ZERO statements when
+# there is nothing to re-own, so the unconditional call costs one connection.
+#
+# The CLOUD GUARD IS FIRST, and that ordering is load-bearing: this file is in
+# bin/deploy's REPO_PATHS and bin/db-adopt / bin/db-create-role are NOT, so on an
+# instance the reference below must be unreachable. checkout_owns_its_databases is
+# false there (POSTGRES_SUPERUSER unset), so the function returns before naming
+# either script.
+#
+# Diagnostics to stderr, like every other bin/ command: the caller's stdout stays
+# its own product.
+#
+# db-create-role and db-adopt own their own stdout contract (both write only to
+# stderr), so this function adds no redirect of its own: the rule lives in the
+# adapter, not in each caller.
+set_checkout_database_ownership() {
+  checkout_owns_its_databases || return 0
+  "$PROJECT_ROOT/bin/db-create-role"
+  local current_owner
+  current_owner="$(database_owner)"
+  # `psql -t -A` prints one row per matching database, so NO output means the
+  # database DOES NOT EXIST YET. db-create then creates it AS this role, which
+  # owns it from birth, and there is nothing to adopt.
+  if [ -z "$current_owner" ]; then
+    return 0
+  fi
+  # The database EXISTS, so it is handed to db-adopt unconditionally: owning the
+  # database is not owning the objects in it, and an interrupted adoption leaves a
+  # database this role owns full of objects it does not. db-adopt owns its own
+  # ANNOUNCEMENT — it re-reads the owner and gates the "Adopting database ..."
+  # line on it, so a steady-state db-reset prints no adoption line at all — and it
+  # reports the outcome ("re-owned N object(s)"). This function therefore logs
+  # nothing here: a gate on this side silenced its own line while db-adopt printed
+  # a near-identical second one.
+  "$PROJECT_ROOT/bin/db-adopt"
+}
+
+# ── SQL escaping, owned here rather than per script (RFC 174) ─────────────────
+# A derived name reaching SQL takes one of two escapes, and they are DIFFERENT.
+# checkout_name guards byte LENGTH only and filters no characters, so an
+# operator-chosen directory name reaches both paths unaltered and neither may be
+# skipped on the grounds that the input "looks safe". Defined once because an
+# escaping rule copied per caller is one that drifts silently.
+sql_literal() { printf '%s' "${1//\'/\'\'}"; }   # inside a '...' string literal
+sql_ident() { printf '%s' "${1//\"/\"\"}"; }     # inside a "..." identifier
 
 # Exits EXIT_POSTGRES_UNREACHABLE unless the cluster answers. For scripts that
 # ATTACH to a running cluster and never provision one (bin/INVARIANTS.md: DDL

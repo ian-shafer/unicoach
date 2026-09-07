@@ -14,6 +14,34 @@ fail_test() {
   exit 1
 }
 
+# Exact membership of a NAME in a list, e.g. `list_contains "$script"
+# "${ALLOWLIST[@]}"`. Every bin/* guard carries an exclusion or allowlist, and a
+# hand-rolled loop per guard is one more loop per guard to get subtly wrong — the
+# three verbatim copies this replaced were written that way (RFC 174).
+list_contains() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+# Echoes the literal PREFIX a dotenv key prepends to checkout_name -- e.g.
+# `unicoach-test-` for .env.test's POSTGRES_DB, `owner-` for .env.dev's
+# POSTGRES_USER -- and nothing when the line is absent or differently shaped.
+#
+# `<KEY>=<prefix>$(checkout_name "$PROJECT_ROOT")` is a FORMAT CONTRACT that
+# several guards read as structured data (the byte budget, the literal-name
+# sweep), yet nothing at the dotenv line says so. It is parsed in ONE place: two
+# spellings of one format are two things to keep in step, and a line reformatted
+# under a second parser makes its guard measure nothing while still passing
+# (RFC 174).
+checkout_derivation_prefix() {
+  local file="$1" key="$2"
+  sed -nE 's/^'"$key"'=(.*)\$\(checkout_name "\$PROJECT_ROOT"\)$/\1/p' "$file"
+}
+
 assert_success() {
   local msg="$1"
   shift

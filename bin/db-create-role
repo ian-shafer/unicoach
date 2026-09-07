@@ -5,13 +5,22 @@ help() {
   cat << 'EOF'
 db-create-role [options]
 
-Creates the application login role (DATABASE_USER with DATABASE_PASSWORD) against
-whatever cluster PGHOST points at. Idempotent and race-tolerant: a duplicate role
-is swallowed, so concurrent runs (and re-runs) are safe.
+Creates the login roles this environment needs, against whatever cluster PGHOST
+points at. Idempotent and race-tolerant: a duplicate role is swallowed, so
+concurrent runs (and re-runs) are safe.
+
+  1. The CHECKOUT OWNER role (POSTGRES_USER), LOGIN CREATEDB NOSUPERUSER
+     NOCREATEROLE — the identity every bin/ db command connects as, and the owner
+     of this checkout's databases (RFC 174). Skipped when POSTGRES_USER already
+     IS the cluster admin, which is every cloud environment.
+  2. The application login role (DATABASE_USER with DATABASE_PASSWORD) the JVM
+     pool connects as.
 
 Unlike db-bootstrap, this performs no initdb, so it is safe against a managed
-cluster (e.g. RDS) where initdb is impossible. It connects as the master role
-(POSTGRES_USER) against the admin database (POSTGRES_ADMIN_DB, default postgres).
+cluster (e.g. RDS) where initdb is impossible. It connects as the cluster admin
+(POSTGRES_SUPERUSER, falling back to POSTGRES_USER when unset — which is the
+cloud case, where the RDS master is the only admin) against the admin database
+(POSTGRES_ADMIN_DB, default postgres).
 
 Options:
   -h: Help
@@ -32,16 +41,75 @@ if [ "$#" -gt 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "db-create-role does not accept positional arguments: $*"
 fi
 
+# The cluster admin, and the "am I it?" predicate, both named once in
+# bin/functions (RFC 174). POSTGRES_SUPERUSER is a DEV-ONLY key set in .env.dev;
+# every cloud .env.<env> leaves it unset, so this collapses to POSTGRES_USER — the
+# RDS master, which is exactly the identity that creates roles on the instance
+# today. The deployed behaviour is unchanged.
+SUPERUSER="$(cluster_superuser)"
+
+# ── 1. The checkout owner role (RFC 174) ───────────────────────────────────────
+# Skipped when POSTGRES_USER already IS the cluster admin: that is the cloud
+# case, where the master role needs no creating and NOSUPERUSER would be wrong.
+if ! checkout_owns_its_databases; then
+  log-info "POSTGRES_USER [$POSTGRES_USER] is the cluster admin; no checkout owner role to create."
+else
+  log-info "Ensuring checkout owner role [$POSTGRES_USER] exists..."
+  # NOSUPERUSER is the whole guarantee: a superuser bypasses every ownership
+  # check, so the per-checkout isolation would be void. NOCREATEROLE is not
+  # required but blocks the lateral move back to one.
+  #
+  # The ALTER sits OUTSIDE the IF on purpose: it repairs a role that exists but
+  # lacks LOGIN or CREATEDB, so a half-made role is healed rather than diagnosed.
+  # The EXCEPTION handler covers the TOCTOU race between two checkouts running
+  # this against the shared cluster at the same moment.
+  #
+  # The role name reaches the server as a SESSION GUC, never as text inside the
+  # dollar-quoted body. sql_literal doubles `'` and that is the COMPLETE rule for
+  # an ordinary string literal — but a `$$` inside a `DO $$ ... $$` body ENDS the
+  # block, so a checkout directory named `a$$b` used to yield a syntax error
+  # (verified on PostgreSQL 18.3). current_setting reads the value back as data,
+  # where no character of it can be parsed as SQL, and format('%I') still does the
+  # identifier quoting server-side (RFC 174).
+  cat << SQL | "$PROJECT_ROOT/bin/db-write" -U "$SUPERUSER" -d "${POSTGRES_ADMIN_DB:-postgres}" 1>&2
+SET unicoach.owner_role TO '$(sql_literal "$POSTGRES_USER")';
+DO \$\$
+DECLARE r CONSTANT text := current_setting('unicoach.owner_role');
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+    EXECUTE format('CREATE ROLE %I LOGIN CREATEDB NOSUPERUSER NOCREATEROLE', r);
+  END IF;
+  EXECUTE format('ALTER ROLE %I LOGIN CREATEDB', r);
+EXCEPTION WHEN duplicate_object OR unique_violation THEN
+  RAISE NOTICE 'role % already exists, skipping', r;
+END
+\$\$;
+SQL
+  log-info "Checkout owner role [$POSTGRES_USER] ensured."
+fi
+
+# ── 2. The application login role the JVM pool connects as ─────────────────────
 # A plain SELECT-then-CREATE has a TOCTOU race when two callers create the role on
 # a shared cluster at once. Creating inside a DO block that swallows the duplicate
 # makes concurrent runs (and re-runs) safe.
+#
+# NEITHER value is interpolated into the statement text. DATABASE_PASSWORD is a
+# real secret — on a deployed instance it comes from SSM — and it used to be
+# dropped RAW into a SQL string literal inside a dollar-quoted body, so a `'` or a
+# `$$` in it broke role creation or injected. Both values now travel as session
+# GUCs and are quoted SERVER-side: format('%I') for the identifier, format('%L')
+# — PostgreSQL's own literal quoter — for the password, so no character of either
+# can reach the parser as syntax (RFC 174).
 log-info "Ensuring role [$DATABASE_USER] exists..."
-cat << SQL | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
+cat << SQL | "$PROJECT_ROOT/bin/db-write" -U "$SUPERUSER" -d "${POSTGRES_ADMIN_DB:-postgres}" 1>&2
+SET unicoach.app_role TO '$(sql_literal "$DATABASE_USER")';
+SET unicoach.app_password TO '$(sql_literal "$DATABASE_PASSWORD")';
 DO \$\$
+DECLARE u CONSTANT text := current_setting('unicoach.app_role');
 BEGIN
-  CREATE ROLE "$DATABASE_USER" WITH LOGIN PASSWORD '$DATABASE_PASSWORD';
+  EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L', u, current_setting('unicoach.app_password'));
 EXCEPTION WHEN duplicate_object OR unique_violation THEN
-  RAISE NOTICE 'role "%" already exists, skipping', '$DATABASE_USER';
+  RAISE NOTICE 'role % already exists, skipping', u;
 END
 \$\$;
 SQL

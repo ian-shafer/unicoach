@@ -37,8 +37,11 @@ The shell hook prints the active tool versions on entry:
 
 Copy the environment template and bootstrap the shared PostgreSQL cluster.
 `bin/db-bootstrap` is a **one-time, per-machine** step: it initialises the
-cluster (at `POSTGRES_DATA_DIR`, shared by every worktree) and creates the
-application role. Database creation and migration are cheap, repeatable steps.
+cluster (at `POSTGRES_DATA_DIR`, shared by every worktree, with
+`initdb -U
+$POSTGRES_SUPERUSER`) and creates this checkout's roles — its own
+owner role and the shared application role. Database creation and migration are
+cheap, repeatable steps.
 
 ```sh
 cp .env.template .env      # fill in any local overrides (safe defaults are provided)
@@ -390,17 +393,18 @@ shared by every worktree.
 
 Copy `.env.template` to `.env`. Key variables:
 
-| Variable            | Description                                             | Default                       |
-| ------------------- | ------------------------------------------------------- | ----------------------------- |
-| `PORT`              | REST server listen port (dev derives it per worktree)   | block base `+10`              |
-| `SERVER_PORT`       | Derived from `PORT` (used by rest-server.conf)          | `$PORT`                       |
-| `POSTGRES_DATA_DIR` | PostgreSQL cluster directory (shared by all worktrees)  | `$HOME/var/unicoach/postgres` |
-| `POSTGRES_PORT`     | PostgreSQL listen port (required; no in-code default)   | `5432`                        |
-| `POSTGRES_DB`       | Application database name (derived per worktree in dev) | `unicoach-dev-<checkout-dir>` |
-| `POSTGRES_USER`     | PostgreSQL superuser                                    | `postgres`                    |
-| `PGHOST`            | libpq host (all psql/pg_isready calls)                  | `localhost`                   |
-| `DATABASE_USER`     | Application role                                        | `unicoach`                    |
-| `DATABASE_PASSWORD` | Application role password                               | `password`                    |
+| Variable             | Description                                                                                                                               | Default                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `PORT`               | REST server listen port (dev derives it per worktree)                                                                                     | block base `+10`              |
+| `SERVER_PORT`        | Derived from `PORT` (used by rest-server.conf)                                                                                            | `$PORT`                       |
+| `POSTGRES_DATA_DIR`  | PostgreSQL cluster directory (shared by all worktrees)                                                                                    | `$HOME/var/unicoach/postgres` |
+| `POSTGRES_PORT`      | PostgreSQL listen port (required; no in-code default)                                                                                     | `5432`                        |
+| `POSTGRES_DB`        | Application database name (derived per worktree in dev)                                                                                   | `unicoach-dev-<checkout-dir>` |
+| `POSTGRES_SUPERUSER` | Cluster admin; `initdb` and the role/ownership bootstrap only. Dev-only: unset in every cloud env, where it falls back to `POSTGRES_USER` | `postgres`                    |
+| `POSTGRES_USER`      | The role every `bin/` command connects as, and the OWNER of this checkout's databases (derived per worktree in dev)                       | `owner-<checkout-dir>`        |
+| `PGHOST`             | libpq host (all psql/pg_isready calls)                                                                                                    | `localhost`                   |
+| `DATABASE_USER`      | Application role                                                                                                                          | `unicoach`                    |
+| `DATABASE_PASSWORD`  | Application role password                                                                                                                 | `password`                    |
 
 `POSTGRES_PORT` is **required** and must be set in the env file — scripts and
 the JVM crash hard if it is missing rather than silently defaulting. The same is
@@ -574,7 +578,17 @@ nix develop -c bin/test        # uses its own DB: unicoach-test-unicoach-my-feat
 ```
 
 - **`bin/db-bootstrap` is run once per machine**, not per worktree — the cluster
-  and role are shared.
+  and the shared application role are shared.
+- **Each worktree owns its databases.** `POSTGRES_USER` is derived per worktree
+  as `owner-<checkout-dir>` (`.env.dev`), and that role — a **non-superuser**
+  with `CREATEDB` — owns this checkout's dev, test and fuzz databases. A
+  checkout that derives a wrong or colliding database name is therefore refused
+  by the server (`must be owner of database`) instead of dropping another
+  checkout's data. Before this, every command was the cluster superuser, so the
+  only thing between two checkouts was that their names differed (RFC 174). The
+  role is created on demand: a new worktree's first `bin/db-create` or
+  `bin/db-reset` makes it, and adopts a dev database that predates the change
+  without dropping anything. There is no manual step and no new argument.
 - Each worktree's `bin/test` resets only its own per-worktree test database, so
   test runs are safe to execute concurrently across worktrees.
 - **Caution:** `bin/postgres-down` stops the shared cluster for _every_
