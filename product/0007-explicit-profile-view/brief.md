@@ -3,10 +3,16 @@
 **Slice ID handle:** `profile`
 
     Status:
-      Phase:   EXECUTE — both gates approved; slices dispatched one per session;
-               D9's fix shipped as RFC 164. Two of the three slices are done
-               (see the ledger); only your-details-screen remains, and it is
-               the slice where the value becomes visible.
+      Phase:   COMPLETE — both gates approved; all three slices have landed
+               (see the ledger), plus D9's fix as RFC 164. The brief set out
+               to make the money profile doable explicitly, and it did: the
+               server publishes the income-band and residency vocabularies it
+               actually accepts (RFC 165), the "Your details" screen lets a
+               family read and correct those two facts on its own, decline a
+               field or take the decline back (RFC 171), and a Save from the
+               college-list screen can no longer destroy a chat-set living
+               plan (RFCs 164 + 168). Nothing here is startable; the ledger's
+               open items and backlog lines B1-B9 are for /chart.
       Gate 1:  APPROVED by Ian 2026-09-04 — all 12 defaults, with D5 and D9
                amended by Ian before approval (both amendments are IN the
                decision text below, not appended after it)
@@ -32,8 +38,42 @@
           student-profile gate. No table, no migration. Gate: 2686 JVM tests, 0
           failures; 39 review lenses, 19 findings, 18 applied. Substrate — no
           user-visible change until profile/02.
-        profile/02/your-details-screen — nothing landed; a live run stamped
-          to it (pipeline/rfc-171) was in flight on 2026-09-05
+        profile/02/your-details-screen LANDED as RFC 171 (main@34471e2f +
+          2184cb67, 2026-09-05) — the brief's aha, on a screen: a new
+          slide-over menu row "Your details" (above "My colleges") pushes a
+          screen where the family sets its household income band and state or
+          territory of residence without talking to the coach. Each field is
+          legible in one of three states — not answered, the value, or "you
+          chose not to say" — and carries two controls: "Prefer not to say",
+          which names its cost (the coach stops asking), and "Remove my
+          answer", which clears back to not-answered and re-arms the coach's
+          invitation. A declined field keeps a LIVE picker, so it is never a
+          one-way door. Each field saves on its own, immediately, with a terse
+          per-field "Saved" receipt announced to VoiceOver; nothing is ever
+          said in chat. Both pickers render RFC 165's GET
+          /api/v1/vocabularies — server labels, server order, all 59
+          jurisdictions the server accepts, which is why the field is "state
+          or territory" — and RFC 163's shipped Swift lists survive ONLY as
+          the offline fallback, pinned to the server by tests. Degradation: a
+          vocabulary that is absent, empty, or carries one unrenderable entry
+          falls back to the shipped list WHOLE, per vocabulary, and the screen
+          says the list may be incomplete; a failed save keeps the family's
+          answer on screen and offers retry; a 404 reads as "nothing answered
+          yet"; a 409 student_profile_required routes rather than showing.
+          Client-only — no server change, no migration, no new table (G4
+          held) — and therefore NO rollback knob: no flag and no prompt
+          version. Gate: iOS bin/test-ios 625 tests 0 failures (31 new); JVM
+          2865 tests 0 failures; 594 shell assertions. 38 review lenses run, 1
+          skipped (shell-only), 61 findings, 56 applied, 5 rejected. Open
+          items, unfixed and reported: TWO residency menus now exist in one
+          app — this screen offers the 59 served jurisdictions while
+          onboarding keeps RFC 163's deliberate 51-item menu, and changing
+          onboarding is a /chart product decision, not this slice's;
+          `dependency` is still chat-only, the money profile's fourth
+          tri-state being on neither REST verb, so no screen can reach it
+          (D10's drift); and `VocabulariesResponse.version` is decoded but
+          unused — a content hash, not an ETag, on an endpoint that sets no
+          cache headers, so whoever adds vocabulary caching starts there.
         profile/03/list-screen-parity LANDED as RFC 168 (main@a3d851e7 +
           9f7e7809, 2026-09-05) — the iOS client now STATES the living-plan
           write contract instead of satisfying it by accident.
