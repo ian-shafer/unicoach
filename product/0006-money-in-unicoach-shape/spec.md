@@ -389,14 +389,10 @@ delivered as two slices, so both carry permanent IDs:
   forms it requires), the door, and the canonical shapes they land in. **LANDED
   as RFC 170.** Needs: BLOCKS `shape/01/canonical-store` — the facts land in the
   canonical tables that slice created.
-- **`shape/07b/borrowing`** — CDS H4/H5 borrowing, including private loans. It
-  is a per-loan-type COHORT STATISTIC, not a policy: it needs a loan-type
-  dimension `cohort_money_stats` does not have, and the corpus's published
-  percent cells are typed `text` with mixed 0..1 and 0..100 values, so the
-  honest route derives them from the counts against the H.401 graduating cohort.
-  **NOT YET SPECCED — /chart owes this slice its text**; the paragraph above is
-  the design note, not a spec. Needs: BLOCKS `shape/01/canonical-store` — the
-  borrowing statistics land in `cohort_money_stats`, which that slice created.
+- **`shape/07b/borrowing`** — CDS H4/H5 borrowing, including private loans.
+  **SPECCED BELOW** at `## shape/07b/borrowing`, which is its one home: the
+  section carries the What, the Needs edges, the acceptance criteria and the
+  first-session test. Nothing here restates them.
 
 **First-session test (07a only):** "does Amherst meet full financial need?" →
 cited CDS answer with year, naming the cohort it is reported over; "does it
@@ -404,6 +400,133 @@ require the CSS Profile?" → the forms this school's CDS lists, with citation. 
 bare "no" is NOT available: the corpus carries required checkboxes and no
 unrequired ones (RFC 170 D5), so an unlisted form reads "not listed in this
 school's CDS".
+
+---
+
+## shape/07b/borrowing
+
+_Specced 2026-09-05, after `shape/07a/need-and-forms` landed as RFC 170 and the
+split gave this half a permanent ID. The ID is older than the text; that is
+normal (IDs are assigned once and never renumbered)._
+
+**APPROVED (Ian, 2026-09-05).** Verbatim: "approve" — given after the
+loan-type-as-measure choice (decision 1 below) was argued in full and its
+weakest point named. No amendments. This is a slice-text approval under the
+already-approved gate 2, not a third gate._Recorded because a decision made in
+conversation and not written down is a decision nobody can check later._
+
+**Needs:**
+
+- BLOCKS shape/01/canonical-store — the borrowing figures land in
+  `cohort_money_stats` and `cohort_population_counts`, which that slice created.
+- BLOCKS shape/07a/need-and-forms — reuses that slice's CDS machinery whole: the
+  `source_documents` row per filing that every fact cites, the extraction phase
+  in `bin/fetch-cds-seed`, the `academic_year` domain, and the decimal reader it
+  added (`get_int` refuses a fractional value, and the average-borrowed cells
+  are fractional).
+
+**What:** The CDS H4/H5 block answers a question no federal source answers well:
+**what do students who finish a degree here actually borrow, and how much of it
+is private?** The Scorecard's `median_debt_at_completion` covers federal loans
+only, so a family reading unicoach today sees the tidier half of the debt and
+never the part that hurts most — private loans, which carry no federal
+protections and no income-driven repayment. This slice makes the private column
+speakable.
+
+The source publishes, per school per filing year, three rows for each of five
+loan types (any / federal / institutional / state / **private**):
+
+- `H.401` — the graduating class, the cohort every H4/H5 figure is reported over
+  (312 of the 417 seeded colleges);
+- `H.501-H.505` — the COUNT who borrowed, by loan type (any 338, private 326);
+- `H.506-H.510` — the school's own PERCENT who borrowed, by loan type;
+- `H.511-H.515` — the AVERAGE cumulative principal borrowed, by loan type
+  (private 327).
+
+Field ids are stable across the corpus's two schema versions (2024-25, 2025-26),
+so the ingest keys on ids, not on labels.
+
+**Decided here (product shape), physical layout to /ship's RFC (D13):**
+
+1. **Loan type is part of the MEASURE, not a new dimension and not a new
+   relation.** `cohort_money_stats`' dimensions describe the POPULATION a number
+   is about — who they are, where they live, what aid they receive. Loan type
+   describes the THING MEASURED, and this spec has already answered that
+   question once: `shape/03` landed the grant mix as one measure per source
+   (`federal_grant_share`, `state_local_grant_average_award`,
+   `institutional_grant_share`), not as a `grant_sources` dimension. Borrowing
+   is the same shape and takes the same answer, so there is one rule in the
+   money layer rather than one per aid type. A sixth axis would also force every
+   price and every existing statistic to answer a loan-type question it is not
+   about, and a separate relation would fork the canonical store two slices
+   after `shape/01` unified it. **No `loan_types` vocabulary is added to
+   `money-vocabulary.json`.** The same rule applies to the borrower headcounts:
+   a per-loan-type borrower cohort is a `population` value in
+   `cohort_population_counts`, named the way the source names it.
+2. **The published percent cells (H.506-H.510) are NOT ingested.** They are
+   corpus-typed `text` with NULL `value_num` and mixed 0..1 and 0..100 raw
+   values, so a stored share would be a coin flip on whose scale a school used.
+   The share is DERIVED at read time from the borrower count over the H.401
+   graduating class, and only when both exist — the `avg_need_met_share` pattern
+   RFC 170 landed. This also keeps the gate-1 never-store rule: a figure
+   computable from stored counts is computed, never stored.
+3. **A loan type is never summed with another, and never dropped into a nameless
+   total.** Reporting is genuinely partial — a school may file federal and leave
+   private blank. "Borrowed" with no named loan type is a different fact from
+   "borrowed federally", so every stored row and every spoken sentence carries
+   its loan type, and the `any` figure is the school's own H.501/H.511, never
+   our addition of the four others.
+4. **What a family is told.** The coach answers "what do students here borrow?"
+   by naming the cohort out loud — **the students who graduated from this school
+   in year Y**, not all undergraduates, not this year's freshmen — and gives the
+   average cumulative amount at graduation plus the share who borrowed at all,
+   split federal vs. private where the school filed both. Brief 0003 binds
+   without exception: **a loan is never subtracted from any price, and a debt
+   figure is never presented as a price.** Debt sits beside the price
+   conversation as an outcome of it, in its own sentence.
+
+**Acceptance criteria:**
+
+- **Every measure names its own denominator in data, and a test pins measure to
+  population.** This brief has hit the denominator defect three times (RFC 148,
+  162, 170); assume a fourth unless the slice is built to refuse it. A share is
+  over the H.401 graduating class (`aid_scope` `all`); an average cumulative
+  principal is over the BORROWERS OF THAT LOAN TYPE and carries its own
+  receiving scope, exactly as the 0085 rule already says for the grant averages.
+- Loan type is legible in every row without a join, and no `cohort_money_stats`
+  row outside this slice changes shape. DDL at the /ship gate for any new table
+  (0001 D10); a CHECK-list extension is shown too, since it is the vocabulary.
+- **Partial reporting is pinned by test:** a fixture school with a federal
+  figure and no private figure yields the federal fact, no private row (or a
+  non-value-bearing status), no sum, and a spoken answer that says the private
+  figure is not in this school's filing. A test asserts that no code path adds
+  two loan types together.
+- The published-percent cells are proven unread (a test naming H.506-H.510), and
+  every average is read with RFC 170's decimal reader — an integer reader that
+  silently rejects `28,193.50` is the same silent gap in a different costume.
+- **Statuses keep RFC 170's discipline:** a value exists exactly when the status
+  bears one; a cell no source carries gets NO row; OUR failure to read a cell is
+  `not_collected_by_us` and is never spoken as the school's silence.
+- **Coverage honesty, three ways.** (a) The ~90 seeded colleges with no filing
+  read "we don't hold a Common Data Set for this school", never "students here
+  don't borrow". (b) A school with a filing but no borrowing block reads "this
+  school's CDS doesn't report borrowing". (c) A borrower count with no `H.401`
+  cohort yields no share — the average amount is still said, the share is
+  withheld rather than computed against a guessed denominator.
+- **The door is the existing `college_cost_profile` tool** — the same door
+  `shape/07a` opened, no new tool, no profile required, nothing gated. Coach
+  prompt bump; rollback = previous prompt version. Every figure cites the
+  school's own filing (`source_documents`) with the year on it.
+- Value-before-ask (0001 D12): borrowing is told unasked when a family is
+  looking at a school's costs, and nothing about it is gated behind a profile
+  step. The answer degrades to whatever the filing carries.
+- Full `bin/test check` is the gate, as ever.
+
+**First-session test:** session one, no profile, no college list — "do students
+at Amherst take out loans?" returns the graduating class's borrowing, cited,
+with the year and the cohort named in words, federal and private separately, and
+a plain statement where the private figure is not filed. Asked next "so what
+will that cost us?", the answer never subtracts the loan from a price.
 
 ---
 
