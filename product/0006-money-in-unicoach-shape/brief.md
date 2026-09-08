@@ -479,6 +479,46 @@ answer for every other college in a family's list. Gate: 2932 JUnit tests and
 was proven upstream by experiment (the pre-change fetcher run today reproduces
 it), so it landed with a sign-off paragraph in the RFC rather than a revert.
 
+shape/05/search-on-your-price LANDED as RFC 169 (main@8aaaa49b + d5610753,
+2026-09-08) — search now runs on exactly ONE price ruler, and it is the ruler
+the family would actually be billed on. Every ranking, filter and cheapest-first
+sort used to read the Scorecard net price, which at a public school is the
+IN-STATE figure after federal aid, so a family in Washington asking for cheap
+California publics was ordered on a price it would never pay; over 2,971
+operating four-year schools that ladder and an out-of-state published-total
+ladder order about 22% of school pairs the opposite way (Kendall tau 0.561,
+product/0005 research, carried in under D11). With the family's state on file
+the whole query ranks and filters on each school's PUBLISHED on-campus total at
+that family's own tuition tier, and the tool result says in ONE SENTENCE that
+aid is not in that ruler — there is no out-of-state net price and there never
+can be, because subtracting an in-state average grant from an out-of-state total
+is the arithmetic RFC 149 forbids. With no state on file the ruler is the net
+price exactly as before and the basis is in the metric NAME on the wire, not a
+footnote. The two rulers can NEVER mix: `PriceRuler` is a value resolved once
+before any SQL is built, the anchor carries the ruler it was read on, and a
+mixed pairing is refused rather than quietly averaged. Search also now ASKS for
+the state — an offer that never gates a result. **D19 landed with this slice at
+zero DDL cost**: a school whose publisher does not separate an in-district price
+is ranked AND labelled with the sentence the cost tools already use, never
+silently treated as in-state (641 of 3,264 schools in the default universe carry
+that label; 354 correctly stay silent because the publisher answered). The door
+is the chat coach — "small schools in Oregon under $30k", "like Bowdoin but
+cheaper" — plus every fit-lens sweep. Degrades two ways, both named: no
+residency → the net-price ruler with its basis said out loud; no published total
+→ the school is DROPPED, counted and named under `excluded_unknown`, never
+substituted. Migration 0091 adds four nullable columns to `college_search_index`
+(two tier values, two positions on the ONE out-of-state ladder) and replaces the
+named percentile CHECK, 4 clauses → 6, keeping its name; it adds **no index** —
+the btree drafted for the price bound was dropped at review because every
+published-price read is a `CASE` over TWO tier columns, which no single-column
+btree serves, so the index was write cost paid by no reader. Coach prompt
+**v22** (rollback `COACHING_SYSTEM_PROMPT_VERSION=v21`); the columns are
+additive and a query with no residency on file resolves to the net-price ruler,
+which is the pre-RFC-169 behaviour column for column. Gate: **2990 tests, 0
+failures**, 1126 shell assertions. Both readers of the publisher-shaped money
+columns are now landed, so the cutover slice's two BLOCKS edges are satisfied;
+its spec text predates this RFC and wants a /chart pass first.
+
 ## Gate 1 outcome (2026-09-02)
 
 Ian, verbatim: **"I approve the gate"** — D1-D11 approved as defaulted, no
