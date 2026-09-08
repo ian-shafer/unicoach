@@ -16,6 +16,7 @@ import ed.unicoach.coaching.costs.canonical.residencyTiersOf
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AidPolicyDao
+import ed.unicoach.db.dao.BorrowingDao
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
@@ -23,8 +24,10 @@ import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeAidPolicy
+import ed.unicoach.db.models.CollegeBorrowing
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
@@ -355,6 +358,22 @@ data class CollegeCost(
    * of [notReported]: this is a second source with its own silences.
    */
   val aidPolicy: AidPolicyPractice?,
+  /**
+   * What the students who GRADUATED from this school in one named year
+   * borrowed, as the school reports it (RFC 175) -- or WHICH silence stands in
+   * its place. Purely additive, and kept out of [notReported] for the
+   * [aidPolicy] reason: a second source with its own silences.
+   *
+   * NOT nullable, unlike [aidPolicy]: there are four states here, not two, and
+   * three of them are silences whose owner differs (D7). A null plus two
+   * booleans made them a `when` ladder whose ARM ORDER decided whether our own
+   * gap was spoken as the school's, so the four are a sealed type and every
+   * consumer answers all of them.
+   *
+   * It sits BESIDE the price conversation and is never part of one. No figure
+   * in it is a price, and nothing in this class subtracts it from one.
+   */
+  val borrowing: BorrowingCoverage,
   /**
    * The way of living this answer LEADS with, resolved once here from the
    * school's own override and the family's usual plan (RFC 152 D2a), rather
@@ -1018,6 +1037,16 @@ class CollegeCostService(
         .getOrThrow()
         .associateBy { it.collegeId }
 
+    // The RFC 175 borrowing read, batched the same way and on the same
+    // connection. A sibling read rather than a widening of the aid-policy one:
+    // that query is narrowed to the single aid scope its two averages share,
+    // and borrowing has five -- one denominator per loan type.
+    val borrowingById =
+      BorrowingDao
+        .listLatest(session, selection.selected)
+        .getOrThrow()
+        .associateBy { it.collegeId }
+
     // The no-dorms fact (RFC 149 D-B), on the SAME connection and batched over
     // the units already selected -- one IPEDS read for the whole answer, so a
     // fifty-school list still costs one statement here and not fifty. Joined by
@@ -1042,6 +1071,7 @@ class CollegeCostService(
           moneyProfile,
           meritById[college.id],
           aidPolicyById[college.id],
+          borrowingById[college.id],
           offersHousingByUnitId[college.ipedsUnitId],
           // `getValue`, never a fabricated empty `CollegeFigures`: the reader's
           // contract is that every selected id gets an entry, empty or not
@@ -1183,6 +1213,7 @@ class CollegeCostService(
     moneyProfile: MoneyProfileStatuses,
     merit: CollegeMeritAid?,
     aidPolicyRow: CollegeAidPolicy?,
+    borrowingRow: CollegeBorrowing?,
     offersOnCampusHousing: Boolean?,
     figures: CollegeFigures,
   ): CollegeCost {
@@ -1200,6 +1231,7 @@ class CollegeCostService(
     // read path by construction rather than by luck.
     val served = CostBreakdown.servedFiguresOf(figures, applicableTuitionFor(control))
     warnOnHousingContradiction(college, served, offersOnCampusHousing)
+    warnOnBorrowingContradiction(college, borrowingRow)
     val breakdown = CostBreakdown.of(served, tuitionLineOf(served, control), offersOnCampusHousing)
     return CollegeCost(
       collegeId = college.id,
@@ -1244,6 +1276,11 @@ class CollegeCostService(
       // cite: [AidPolicyPractice.from] returns null and the section is absent,
       // exactly as a school with no filing at all is.
       aidPolicy = aidPolicyRow?.let { AidPolicyPractice.from(college.name, it) },
+      // The same rule for the same reason, in a type that carries the answer:
+      // a filing whose borrowing block is empty is still a filing, and one
+      // whose cells we could not read is our gap and not its silence.
+      // [BorrowingCoverage.of] decides which of the four, once.
+      borrowing = BorrowingCoverage.of(college.name, borrowingRow),
       // Two rules, two helpers, orchestrated here: WHICH plan applies (the
       // entry and the profile) is a different question from whether THIS
       // school prices it (the breakdown and the housing flag).
@@ -1421,6 +1458,34 @@ class CollegeCostService(
       college.ipedsUnitId,
       publishedOnCampusFieldNames(served),
     )
+  }
+
+  /**
+   * Says a filing's own borrowing contradiction out loud (RFC 175 D6), on the
+   * [warnOnHousingContradiction] rule: the pair is withheld from the FAMILY --
+   * that decision stands -- and never from the operator.
+   *
+   * `bin/fetch-cds-seed` drops such a block at ingest, so a pair that reaches
+   * this read means that guard did not hold; a state nothing records is a state
+   * nobody fixes.
+   */
+  private fun warnOnBorrowingContradiction(
+    college: College,
+    borrowingRow: CollegeBorrowing?,
+  ) {
+    val row = borrowingRow ?: return
+    row.byLoanType.forEach { (loanType, figures) ->
+      val contradiction = figures.borrowers as? BorrowerCounts.ContradictsGraduatingClass ?: return@forEach
+      logger.warn(
+        "college=[{}] cds_year=[{}] loan_type=[{}] the filing reports borrowers=[{}] against a graduating " +
+          "class of [{}]; withholding the pair and rendering this loan type's average alone",
+        college.id.value,
+        row.academicYear.firstCalendarYear,
+        loanType.slug,
+        contradiction.borrowers,
+        contradiction.graduatingClass,
+      )
+    }
   }
 
   /** The on-campus components this college publishes in spite of the flag -- the warning's evidence. */

@@ -28,6 +28,7 @@ import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewAidFormRequirement
@@ -116,6 +117,17 @@ object CostsTestDb {
 
   /** [BLENDED_YEAR] as words, derived for the reason [PRICE_ACADEMIC_YEAR] is. */
   val BLENDED_ACADEMIC_YEAR = BLENDED_YEAR.label
+
+  /**
+   * The published cell ids the borrowing fixture records on its rows.
+   *
+   * A source variable is per FIELD in the real seed (H.511 for the any-loan
+   * average, H.512 for the federal one). The fixture writes one id per KIND
+   * because nothing this suite asserts reads it, and a per-loan-type table here
+   * would be a second, drifting copy of [LoanType]'s own KDoc.
+   */
+  private const val BORROWING_AVERAGE_VARIABLE: String = "H.511"
+  private const val BORROWING_COUNT_VARIABLE: String = "H.501"
 
   const val SOURCE_URL: String = "https://example.edu/cds-2024-25.pdf"
   const val ARCHIVE_URL: String = "https://www.collegedata.fyi/schools/example/2024-25"
@@ -268,6 +280,108 @@ object CostsTestDb {
     CanonicalMoneyDao.insertCohortMoneyStats(sqlSession, stats).getOrThrow()
     CanonicalMoneyDao.insertCohortPopulationCounts(sqlSession, counts).getOrThrow()
     CanonicalMoneyDao.insertAidFormRequirements(sqlSession, forms).getOrThrow()
+  }
+
+  /**
+   * One school's Common Data Set borrowing block (RFC 175), written as the
+   * ingest writes it: an average per loan type as a cohort statistic AT THAT
+   * LOAN TYPE'S OWN AID SCOPE, a borrower headcount per loan type as a
+   * population count, and the graduating class they are all reported over.
+   *
+   * Every figure is nullable because the interesting cases are the partial
+   * ones: a school that filed federal and no private figure, a borrower count
+   * with no graduating class (so an average and no share), and a school with no
+   * filing at all (which seeds nothing).
+   *
+   * The scope is read from [LoanType], not passed in: the fixture must write
+   * what the ingest writes, and a test that could choose its own scope would
+   * pass while the store held an average over the wrong population.
+   */
+  fun seedBorrowing(
+    collegeId: CollegeId,
+    sourceYear: Int = 2024,
+    graduatingClass: Int? = 1000,
+    averageDebtUsdByLoanType: Map<LoanType, Int> = mapOf(LoanType.ANY to 27202, LoanType.FEDERAL to 20747),
+    borrowersByLoanType: Map<LoanType, Int> = mapOf(LoanType.ANY to 396, LoanType.FEDERAL to 394),
+    /**
+     * The loan types this filing ANSWERS and we could not read: a value-less
+     * `not_collected_by_us` average and borrower count each, exactly as the
+     * ingest writes an unreadable cell (RFC 175 D7).
+     *
+     * A fixture that wrote NO row instead would be the no-block case wearing
+     * this name, and the guard it is meant to exercise would never fire.
+     */
+    unreadLoanTypes: Set<LoanType> = emptySet(),
+    /**
+     * The loan types this filing ANSWERS and the PUBLISHER withheld: a
+     * value-less `suppressed_by_publisher` average and borrower count each.
+     *
+     * Not the school's silence and not ours, which is the whole reason the read
+     * carries a STATUS and not a boolean -- told as either of the other two, it
+     * says something about this school that its filing does not say.
+     */
+    withheldLoanTypes: Set<LoanType> = emptySet(),
+    sourceUrl: String = SOURCE_URL,
+    archiveUrl: String? = ARCHIVE_URL,
+  ) {
+    val year = AcademicYear(sourceYear)
+    val document = CoachingTestDb.seedSourceDocument(collegeId, sourceYear, sourceUrl, archiveUrl)
+
+    fun average(
+      loanType: LoanType,
+      reading: FigureReading<Double>,
+    ) = NewCohortMoneyStat(
+      collegeId = collegeId.value,
+      measure = loanType.debtAverage,
+      // Reported over the graduating class, averaged over that loan type's
+      // own borrowers -- the two columns say two different things and the
+      // fixture states both.
+      population = CohortPopulation.GRADUATING_CLASS,
+      residencyScope = CohortResidencyScope.ALL,
+      aidScope = loanType.aidScope,
+      incomeBand = null,
+      vintage = year,
+      reading = reading,
+      source = MoneySource.COMMON_DATA_SET,
+      sourceVariable = BORROWING_AVERAGE_VARIABLE,
+      sourceDocumentId = document,
+    )
+
+    fun count(
+      population: CohortPopulation,
+      reading: FigureReading<Int>,
+    ) = NewCohortPopulationCount(
+      collegeId = collegeId.value,
+      population = population,
+      residencyBasis = ResidencyBasis.NOT_APPLICABLE,
+      arrangement = FigureArrangement.NOT_APPLICABLE,
+      vintage = year,
+      reading = reading,
+      source = MoneySource.COMMON_DATA_SET,
+      sourceVariable = BORROWING_COUNT_VARIABLE,
+      sourceDocumentId = document,
+    )
+
+    // OUR gap: the row is there, under the same document, carrying no value.
+    val unread = FigureReading.Absent(AbsenceStatus.NOT_COLLECTED_BY_US)
+    // THE PUBLISHER's: the row is there under the same document and carries no
+    // value either, and only the status tells the two apart.
+    val withheld = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER)
+    val stats =
+      averageDebtUsdByLoanType.map { (loanType, amountUsd) ->
+        average(loanType, FigureReading.Present(amountUsd.toDouble(), ValueBearingStatus.REPORTED))
+      } + unreadLoanTypes.map { average(it, unread) } + withheldLoanTypes.map { average(it, withheld) }
+    val counts =
+      (
+        listOfNotNull(graduatingClass?.let { CohortPopulation.GRADUATING_CLASS to it }) +
+          borrowersByLoanType.map { (loanType, headcount) -> loanType.borrowers to headcount }
+      ).map { (population, headcount) ->
+        count(population, FigureReading.Present(headcount, ValueBearingStatus.REPORTED))
+      } + unreadLoanTypes.map { count(it.borrowers, unread) } +
+        withheldLoanTypes.map { count(it.borrowers, withheld) }
+
+    CanonicalMoneyDao.insertCohortMoneyStats(sqlSession, stats).getOrThrow()
+    CanonicalMoneyDao.insertCohortPopulationCounts(sqlSession, counts).getOrThrow()
   }
 
   /**

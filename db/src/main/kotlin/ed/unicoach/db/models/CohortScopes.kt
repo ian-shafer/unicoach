@@ -81,6 +81,45 @@ enum class CohortPopulation(
    * met the full need of more students than it aided at all.
    */
   FIRST_TIME_FULL_TIME_FRESHMEN_NEED_FULLY_MET("first_time_full_time_freshmen_need_fully_met"),
+
+  /**
+   * CDS **H.401**: the students who were awarded a bachelor's degree by this
+   * school in the named year -- the graduating class every H4/H5 borrowing
+   * figure is reported over (RFC 175).
+   *
+   * It is the DENOMINATOR of the derived borrowing share, and of nothing else
+   * here. Not "undergraduates" and not an entering cohort: the borrowing
+   * figures are about people who finished, in one named year, which is why the
+   * read layer says the year out loud.
+   */
+  GRADUATING_CLASS("graduating_class"),
+
+  /**
+   * CDS **H.501**: members of the graduating class who borrowed a loan of ANY
+   * kind -- federal, institutional, state or private (RFC 175).
+   *
+   * The shared rule for the five borrower cohorts is stated once here. The
+   * loan type rides in the SLUG because `cohort_population_counts`' natural
+   * key is (college, population, residency basis, arrangement, vintage) with
+   * no measure column, so five borrower counts for one school-year would
+   * collide under one slug (D1). This any-loan count is always the school's
+   * own H.501 and never our sum of the four typed counts (D3); the four are
+   * not disjoint, so summing them would double-count every student who
+   * borrowed twice.
+   */
+  GRADUATING_CLASS_BORROWERS_ANY_LOAN("graduating_class_borrowers_any_loan"),
+
+  /** CDS **H.502**: members of the graduating class who borrowed federal loans (RFC 175). */
+  GRADUATING_CLASS_BORROWERS_FEDERAL_LOAN("graduating_class_borrowers_federal_loan"),
+
+  /** CDS **H.503**: members of the graduating class who took an institutional loan (RFC 175). */
+  GRADUATING_CLASS_BORROWERS_INSTITUTIONAL_LOAN("graduating_class_borrowers_institutional_loan"),
+
+  /** CDS **H.504**: members of the graduating class who took a state loan (RFC 175). */
+  GRADUATING_CLASS_BORROWERS_STATE_LOAN("graduating_class_borrowers_state_loan"),
+
+  /** CDS **H.505**: members of the graduating class who took a private loan (RFC 175). */
+  GRADUATING_CLASS_BORROWERS_PRIVATE_LOAN("graduating_class_borrowers_private_loan"),
   ;
 
   companion object {
@@ -161,6 +200,26 @@ enum class CohortAidScope(
    * [ALL] would read as a claim about every freshman.
    */
   NEED_BASED_AID_RECEIVING("need_based_aid_receiving"),
+
+  /**
+   * Took an institutional loan by graduation (CDS **H.503**, the denominator
+   * of [MoneyMeasure.INSTITUTIONAL_LOAN_DEBT_AVERAGE], RFC 175).
+   *
+   * The rule for the three new borrowing scopes is the DENOMINATOR rule again:
+   * an average cumulative principal is an average over the borrowers OF THAT
+   * LOAN TYPE, so it carries that type's own receiving scope. The other two of
+   * the five already exist and mean exactly the right set --
+   * [LOAN_RECEIVING] is H.501's "borrowed a loan of any kind" and
+   * [FEDERAL_LOAN_BORROWING] is H.502's "borrowed federal loans" -- so they
+   * are reused rather than twinned under a publisher-shaped name (D4).
+   */
+  INSTITUTIONAL_LOAN_BORROWING("institutional_loan_borrowing"),
+
+  /** Took a state loan by graduation (CDS **H.504**, RFC 175); the [INSTITUTIONAL_LOAN_BORROWING] rule. */
+  STATE_LOAN_BORROWING("state_loan_borrowing"),
+
+  /** Took a private loan by graduation (CDS **H.505**, RFC 175); the [INSTITUTIONAL_LOAN_BORROWING] rule. */
+  PRIVATE_LOAN_BORROWING("private_loan_borrowing"),
   ;
 
   companion object {

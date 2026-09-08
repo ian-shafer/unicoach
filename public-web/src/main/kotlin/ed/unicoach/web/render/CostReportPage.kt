@@ -2,6 +2,8 @@ package ed.unicoach.web.render
 
 import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.costs.ArrangementCost
+import ed.unicoach.coaching.costs.BorrowingCoverage
+import ed.unicoach.coaching.costs.BorrowingWire
 import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
@@ -933,7 +935,26 @@ private fun FlowContent.meritBlock(cost: CollegeCost) {
   }
 }
 
-/** Debt context, undated: no source we hold dates this figure, so no year is said. */
+/**
+ * Debt context: TWO publishers with two vintages in one section (RFC 175, D9).
+ *
+ * The parent-facing artifact is where a federal-only debt figure misleads most,
+ * so the school's own Common Data Set half sits beside it. Four rules keep that
+ * honest, and they are stated here because they are the whole reason the two
+ * paragraphs are allowed to share a section:
+ *
+ * - The Scorecard sentence keeps saying "federal loans" and keeps saying that
+ *   the source publishes no year for it.
+ * - The CDS sentences name the SCHOOL as the claimant and carry its filing
+ *   year, because these are self-reported survey answers (D10).
+ * - The two are never summed, never differenced and never presented as one debt
+ *   number. Nothing here adds them, and nothing may.
+ * - Where the school filed no private figure, this says so, rather than leaving
+ *   a family with the impression that federal is the whole of it.
+ *
+ * No figure in this section is a price, and none of it is ever subtracted from
+ * one (brief 0003).
+ */
 private fun FlowContent.debtBlock(cost: CollegeCost) {
   val debt = cost.medianDebtAtCompletionUsd
   section("report-debt") {
@@ -956,7 +977,40 @@ private fun FlowContent.debtBlock(cost: CollegeCost) {
         )
       }
     }
+    borrowingParagraphs(cost)
   }
+}
+
+/**
+ * What this school says its own graduates borrowed, by loan type.
+ *
+ * Every sentence comes from [BorrowingWire], the one home of this copy, so the
+ * page and the coach say a borrowing figure with the same words, the same
+ * cohort and the same attribution -- and a change to either lands in both.
+ * Nothing is rendered for a school with no filing: the page is not the place to
+ * explain our own corpus coverage.
+ */
+private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
+  // Exhaustive over the four states, not a pair of early returns: the page
+  // says nothing about our own corpus coverage, and an arm that fell through
+  // by accident would print a school's section under another school's rule.
+  val coverage =
+    when (val reported = cost.borrowing) {
+      // Three silences, all of them about which filing WE hold. The parent
+      // artifact is not the place to explain our corpus, so the section is
+      // simply absent -- the coach payload is where each silence is spoken.
+      BorrowingCoverage.NoFiling, is BorrowingCoverage.NoBlock, BorrowingCoverage.NotReadByUs -> return
+
+      is BorrowingCoverage.Reported -> reported
+    }
+  val borrowing = coverage.figures
+  p { +"${BorrowingWire.cohortLabel(borrowing.source)}." }
+  // WHICH loan types are spoken, in what order, and when an absence is said
+  // out loud, all come from [BorrowingWire.listSentences] -- the one home of this
+  // policy. A second list here is how the page and the coach came to narrate
+  // the same filing in two different orders.
+  BorrowingWire.listSentences(coverage).forEach { sentence -> p { +"$sentence." } }
+  p("report-source") { +"Source: ${borrowing.source.citedAs}." }
 }
 
 /** Where every figure came from, and the sentence the whole page exists to keep honest. */
@@ -965,8 +1019,11 @@ private fun FlowContent.sourcesSection() {
     h2 { +"Sources and what this is not" }
     p {
       +(
-        "The cost and price figures come from the ${CostSources.SCORECARD_ATTRIBUTION}. The merit figures " +
-          "come from each school's own Common Data Set, cited beside them."
+        "The cost and price figures come from the ${CostSources.SCORECARD_ATTRIBUTION}. The merit and " +
+          "borrowing figures come from each school's own Common Data Set, cited beside them. The federal " +
+          "debt figure and the school's own borrowing figures are different measures from different " +
+          "publishers over different groups of students, so they are never added together and never " +
+          "compared with each other."
       )
     }
     p {

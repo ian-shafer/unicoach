@@ -12,6 +12,7 @@ import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.IpedsImputationFlag
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
@@ -410,6 +411,76 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
     // The publisher axis is a DOMAIN now (RFC 170), not a CHECK per table, so
     // there is ONE constraint to pin -- which is the point of making it one.
     assertEquals(MoneySource.entries.map { it.value }.toSet(), listed("money_source_check"))
+  }
+
+  @Test
+  fun `every borrowing measure is pinned to its own loan type's denominator, and every count to its own cohort`() {
+    // The FOURTH guard against the defect RFC 148, 162 and 170 each hit: the
+    // aid scope must follow the DENOMINATOR of the measure. The CHECK/enum pin
+    // above proves the vocabulary agrees with the schema; it cannot prove that
+    // a borrowing average is WRITTEN over the borrowers it was averaged over,
+    // which is what actually goes wrong.
+    //
+    // Asserted through the two vocabularies TOGETHER -- the loan type's
+    // measure and its scope, and the loan type's borrower population -- so a
+    // member added with a copied scope fails here rather than in a family's
+    // answer.
+    assertEquals(
+      mapOf(
+        MoneyMeasure.ANY_LOAN_DEBT_AVERAGE to CohortAidScope.LOAN_RECEIVING,
+        MoneyMeasure.FEDERAL_LOAN_DEBT_AVERAGE to CohortAidScope.FEDERAL_LOAN_BORROWING,
+        MoneyMeasure.INSTITUTIONAL_LOAN_DEBT_AVERAGE to CohortAidScope.INSTITUTIONAL_LOAN_BORROWING,
+        MoneyMeasure.STATE_LOAN_DEBT_AVERAGE to CohortAidScope.STATE_LOAN_BORROWING,
+        MoneyMeasure.PRIVATE_LOAN_DEBT_AVERAGE to CohortAidScope.PRIVATE_LOAN_BORROWING,
+      ),
+      LoanType.entries.associate { it.debtAverage to it.aidScope },
+      "a borrowing average must be averaged over the borrowers of its OWN loan type",
+    )
+    assertEquals(
+      mapOf(
+        LoanType.ANY to CohortPopulation.GRADUATING_CLASS_BORROWERS_ANY_LOAN,
+        LoanType.FEDERAL to CohortPopulation.GRADUATING_CLASS_BORROWERS_FEDERAL_LOAN,
+        LoanType.INSTITUTIONAL to CohortPopulation.GRADUATING_CLASS_BORROWERS_INSTITUTIONAL_LOAN,
+        LoanType.STATE to CohortPopulation.GRADUATING_CLASS_BORROWERS_STATE_LOAN,
+        LoanType.PRIVATE to CohortPopulation.GRADUATING_CLASS_BORROWERS_PRIVATE_LOAN,
+      ),
+      LoanType.entries.associateWith { it.borrowers },
+      "a borrower headcount must be filed under its OWN loan type's cohort",
+    )
+    // No two loan types share a measure, a scope or a population: sharing one
+    // is exactly how one loan type's number gets served as another's.
+    assertEquals(
+      LoanType.entries.size,
+      LoanType.entries
+        .map { it.debtAverage }
+        .toSet()
+        .size,
+    )
+    assertEquals(
+      LoanType.entries.size,
+      LoanType.entries
+        .map { it.aidScope }
+        .toSet()
+        .size,
+    )
+    assertEquals(
+      LoanType.entries.size,
+      LoanType.entries
+        .map { it.borrowers }
+        .toSet()
+        .size,
+    )
+    // And every one of those slugs is in the CHECK lists the pin above reads,
+    // so this test cannot pass on a vocabulary the database would refuse.
+    val measures = MoneyMeasure.entries.map { it.value }.toSet()
+    val scopes = CohortAidScope.entries.map { it.value }.toSet()
+    val populations = CohortPopulation.entries.map { it.value }.toSet()
+    LoanType.entries.forEach {
+      assertTrue(it.debtAverage.value in measures, "[${it.debtAverage.value}] is not a stored measure")
+      assertTrue(it.aidScope.value in scopes, "[${it.aidScope.value}] is not a stored aid scope")
+      assertTrue(it.borrowers.value in populations, "[${it.borrowers.value}] is not a stored population")
+    }
+    assertTrue(CohortPopulation.GRADUATING_CLASS.value in populations)
   }
 
   @Test

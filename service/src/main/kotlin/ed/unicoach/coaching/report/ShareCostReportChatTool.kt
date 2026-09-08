@@ -146,7 +146,7 @@ class ShareCostReportChatTool(
     const val DESCRIPTION =
       "Create a link to the student's Family Cost Report - a web page a parent can open with no login, " +
         "showing the student's college list with tuition and fees, housing and food, the published price, " +
-        "the likely price after a financial aid offer, merit practice and debt context. " +
+        "the likely price after a financial aid offer, merit practice, and what its graduates borrowed. " +
         "Only call this when the student asks to share their costs with a parent or family member, " +
         "or accepts an offer to. Offer it only after a cost comparison has actually happened in the " +
         "conversation - never open with it, and never call it without the student asking or agreeing. " +

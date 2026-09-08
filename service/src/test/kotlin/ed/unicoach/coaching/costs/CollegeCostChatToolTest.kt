@@ -24,6 +24,7 @@ import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.StudentId
@@ -43,6 +44,7 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -1197,6 +1199,411 @@ class CollegeCostChatToolTest {
     // Nothing is claimed as required, and no figure is invented.
     assertNull(policy[AidPolicyWire.FORMS_KEY])
     assertNull(policy[AidPolicyWire.NEED_MET_SHARE_KEY])
+  }
+
+  // ---------------------------------------------------------------------------
+  // The borrowing section (RFC 175)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the borrowing section names its cohort, its year and the school claiming it`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Borrower U")
+    CostsTestDb.seedBorrowing(college)
+
+    val borrowing =
+      collegesOf(execute(student))
+        .single()[BorrowingWire.KEY]!!
+        .jsonObject
+    assertEquals(
+      20747,
+      borrowing
+        .getValue(BorrowingWire.averageDebtKey(LoanType.FEDERAL))
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    // 394 of 1000, derived at read time from two stored counts and said with
+    // both of them inside the sentence.
+    assertEquals(
+      39.4,
+      borrowing
+        .getValue(BorrowingWire.shareKey(LoanType.FEDERAL))
+        .jsonPrimitive.content
+        .toDouble(),
+    )
+    assertEquals(
+      "Borrower U reports that 394 of the 1000 students who graduated in 2024-25 borrowed federal loans " +
+        "-- 39.4%",
+      borrowing.getValue(BorrowingWire.shareLabelKey(LoanType.FEDERAL)).jsonPrimitive.content,
+    )
+    assertEquals(
+      "Borrower U reports that the students who graduated in 2024-25 and borrowed federal loans owed " +
+        "\$20,747 on average by the time they graduated",
+      borrowing.getValue(BorrowingWire.averageDebtLabelKey(LoanType.FEDERAL)).jsonPrimitive.content,
+    )
+    // D8: the cohort is named in words, with its year, and it is neither this
+    // year's freshmen nor every undergraduate.
+    val cohort = borrowing.getValue(BorrowingWire.COHORT_LABEL_KEY).jsonPrimitive.content
+    assertTrue(cohort.contains("graduated from it in 2024-25"), cohort)
+    assertEquals(
+      "Borrower U's 2024-25 Common Data Set",
+      borrowing
+        .getValue("source")
+        .jsonObject
+        .getValue("cited_as")
+        .jsonPrimitive.content,
+    )
+  }
+
+  @Test
+  fun `every borrowing sentence names the school as the one claiming the figure`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Self Reported U")
+    CostsTestDb.seedBorrowing(
+      college,
+      averageDebtUsdByLoanType = LoanType.entries.associateWith { 20000 },
+      borrowersByLoanType = LoanType.entries.associateWith { 400 },
+    )
+
+    val borrowing =
+      collegesOf(execute(student))
+        .single()[BorrowingWire.KEY]!!
+        .jsonObject
+    // D10: these are self-reported survey answers with no audit, so no
+    // sentence carrying a figure may be said in the flat voice an
+    // administrative figure is said in. Asserted over EVERY string the section
+    // can emit, not over the ones this test happened to think of.
+    val spoken =
+      borrowing
+        .filterValues { it is JsonPrimitive && it.isString }
+        .filterKeys { it != BorrowingWire.NOTE_KEY }
+        .mapValues { (_, value) -> value.jsonPrimitive.content }
+    assertTrue(spoken.size >= LoanType.entries.size, "expected a sentence per loan type: $spoken")
+    val unattributed = spoken.filterValues { it.contains(Regex("""\d""")) && !it.contains("Self Reported U") }
+    assertEquals(emptyMap(), unattributed, "a CDS figure stated without naming the school as the claimant")
+  }
+
+  @Test
+  fun `the any-loan figure is the school's own, never a sum of the loan types`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "No Sums U")
+    // D3: the four typed sets OVERLAP -- a student may borrow federally and
+    // privately -- so the school's own any-loan figure is deliberately smaller
+    // than the sum of the others, and a payload that added them would show it.
+    CostsTestDb.seedBorrowing(
+      college,
+      averageDebtUsdByLoanType =
+        mapOf(LoanType.ANY to 30000, LoanType.FEDERAL to 20000, LoanType.PRIVATE to 40000),
+      borrowersByLoanType = mapOf(LoanType.ANY to 500, LoanType.FEDERAL to 450, LoanType.PRIVATE to 200),
+    )
+
+    val borrowing =
+      collegesOf(execute(student))
+        .single()[BorrowingWire.KEY]!!
+        .jsonObject
+    assertEquals(
+      30000,
+      borrowing
+        .getValue(BorrowingWire.averageDebtKey(LoanType.ANY))
+        .jsonPrimitive.content
+        .toInt(),
+      "the any-loan average is the school's own figure",
+    )
+    assertEquals(
+      500,
+      borrowing
+        .getValue(BorrowingWire.borrowerCountKey(LoanType.ANY))
+        .jsonPrimitive.content
+        .toInt(),
+      "the any-loan count is the school's own figure",
+    )
+    // No key anywhere holds a sum or a difference of two loan types, and the
+    // note tells the model not to make one.
+    val numbers =
+      borrowing
+        .filterValues { it is JsonPrimitive && !it.isString }
+        .mapValues { (_, value) -> value.jsonPrimitive.content.toDouble() }
+        .values
+        .toSet()
+    listOf(60000.0, 70000.0, 90000.0, 650.0, 950.0, 1150.0).forEach {
+      assertFalse(it in numbers, "a summed loan figure reached the payload: $numbers")
+    }
+    assertTrue(
+      borrowing
+        .getValue(BorrowingWire.NOTE_KEY)
+        .jsonPrimitive.content
+        .contains("never add two of them"),
+    )
+  }
+
+  @Test
+  fun `a school that filed a federal figure and no private one says so`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Federal Only U")
+    CostsTestDb.seedBorrowing(
+      college,
+      averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+      borrowersByLoanType = mapOf(LoanType.FEDERAL to 394),
+    )
+
+    val borrowing =
+      collegesOf(execute(student))
+        .single()[BorrowingWire.KEY]!!
+        .jsonObject
+    assertEquals(
+      20747,
+      borrowing
+        .getValue(BorrowingWire.averageDebtKey(LoanType.FEDERAL))
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    // No private key at all -- absence is silence, never a zero.
+    assertNull(borrowing[BorrowingWire.averageDebtKey(LoanType.PRIVATE)])
+    assertNull(borrowing[BorrowingWire.borrowerCountKey(LoanType.PRIVATE)])
+    assertNull(borrowing[BorrowingWire.shareKey(LoanType.PRIVATE)])
+    // And the silence is said in words, so the federal figure is not left
+    // standing as the whole of what this school's graduates borrowed.
+    val line = borrowing.getValue(BorrowingWire.PRIVATE_NOT_FILED_KEY).jsonPrimitive.content
+    assertTrue(line.contains("reports no average for private loans"), line)
+    assertTrue(line.contains("Federal Only U"), line)
+  }
+
+  @Test
+  fun `a readable federal average beside an unread private cell says OUR gap for private`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Half Read U")
+    // The mixed filing: federal read, private ANSWERED by the school and
+    // unreadable by us. The old filing-wide boolean was consulted only when
+    // nothing was readable, so this school said "reports no average for
+    // private loans" -- our failure in the school's mouth (D7).
+    CostsTestDb.seedBorrowing(
+      college,
+      averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+      borrowersByLoanType = mapOf(LoanType.FEDERAL to 394),
+      unreadLoanTypes = setOf(LoanType.PRIVATE),
+    )
+
+    val result = collegesOf(execute(student)).single()
+    val borrowing = result[BorrowingWire.KEY]!!.jsonObject
+    // The readable half still renders: a partly unread filing is a filing with
+    // figures, and a family is owed the ones we hold.
+    assertEquals(
+      20747,
+      borrowing
+        .getValue(BorrowingWire.averageDebtKey(LoanType.FEDERAL))
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    // And the unread half is said as OURS, per loan type.
+    val ours = borrowing.getValue(BorrowingWire.notReadKey(LoanType.PRIVATE)).jsonPrimitive.content
+    assertTrue(ours.contains("WE could not read"), ours)
+    assertTrue(ours.contains("Half Read U"), ours)
+    assertTrue(ours.contains("never that this school does not report it"), ours)
+    // The claim about the SCHOOL's filing is withheld: it is not true here.
+    assertNull(
+      borrowing[BorrowingWire.PRIVATE_NOT_FILED_KEY],
+      "a cell we could not read must never be spoken as a cell the school did not file",
+    )
+    // No private FIGURE is invented, and no unread key is emitted for the
+    // loan type we did read.
+    assertNull(borrowing[BorrowingWire.averageDebtKey(LoanType.PRIVATE)])
+    assertNull(borrowing[BorrowingWire.notReadKey(LoanType.FEDERAL)])
+    // The section is present, so the whole-filing silences do not apply.
+    assertNull(result[CollegeCostChatTool.BORROWING_AVAILABILITY_KEY])
+  }
+
+  @Test
+  fun `a borrower count with no graduating class yields the average and no share`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "No Denominator U")
+    CostsTestDb.seedBorrowing(college, graduatingClass = null)
+
+    val borrowing =
+      collegesOf(execute(student))
+        .single()[BorrowingWire.KEY]!!
+        .jsonObject
+    // Acceptance criterion (c): the average is an independent fact and still
+    // stands.
+    assertEquals(
+      20747,
+      borrowing
+        .getValue(BorrowingWire.averageDebtKey(LoanType.FEDERAL))
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    // The share and both of its counts go together or not at all: a share
+    // without its denominator is the figure this codebase refuses to publish.
+    assertNull(borrowing[BorrowingWire.shareKey(LoanType.FEDERAL)])
+    assertNull(borrowing[BorrowingWire.shareLabelKey(LoanType.FEDERAL)])
+    assertNull(borrowing[BorrowingWire.borrowerCountKey(LoanType.FEDERAL)])
+    assertNull(borrowing[BorrowingWire.GRADUATING_CLASS_KEY])
+  }
+
+  @Test
+  fun `the four borrowing silences are four sentences, and none of them is a cost field`() {
+    val student = createStudent()
+    val noFiling = seedListedCollege(student, "No Filing U")
+    val noBorrowing = seedListedCollege(student, "Need Only U")
+    val unread = seedListedCollege(student, "Unread Cell U")
+    val withheld = seedListedCollege(student, "Withheld Cell U")
+    // A filing we hold that reports need figures and no borrowing block.
+    CostsTestDb.seedAidPolicy(noBorrowing)
+    // A filing whose borrowing cells we could not read: the rows ARE there,
+    // under this school's document, carrying no value (`not_collected_by_us`).
+    // Seeding no row at all would make this the no-block case under a
+    // different name, and D7's guard would never fire.
+    CostsTestDb.seedBorrowing(
+      unread,
+      graduatingClass = null,
+      averageDebtUsdByLoanType = emptyMap(),
+      borrowersByLoanType = emptyMap(),
+      unreadLoanTypes = setOf(LoanType.FEDERAL, LoanType.PRIVATE),
+    )
+    CostsTestDb.seedAidPolicy(unread)
+    // A filing whose borrowing cells the PUBLISHER withheld: value-less rows
+    // again, and only the STATUS tells them from the unread ones above.
+    CostsTestDb.seedBorrowing(
+      withheld,
+      graduatingClass = null,
+      averageDebtUsdByLoanType = emptyMap(),
+      borrowersByLoanType = emptyMap(),
+      withheldLoanTypes = setOf(LoanType.FEDERAL, LoanType.PRIVATE),
+    )
+    CostsTestDb.seedAidPolicy(withheld)
+
+    val byName = collegesOf(execute(student)).associateBy { it.getValue("name").jsonPrimitive.content }
+
+    // A CODE beside the sentence, not the sentence alone: whose silence a
+    // school's is (D7) is the fact this surface turns on, and read out of
+    // English copy it is not a fact anyone can act on.
+    fun availabilityOf(name: String): Pair<String, String> {
+      val availability = byName.getValue(name).getValue(CollegeCostChatTool.BORROWING_AVAILABILITY_KEY).jsonObject
+      return availability.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content to
+        availability.getValue(CollegeCostChatTool.STATEMENT_KEY).jsonPrimitive.content
+    }
+    assertEquals(
+      CollegeCostChatTool.BORROWING_NO_FILING_BASIS to CollegeCostChatTool.BORROWING_NO_FILING,
+      availabilityOf("No Filing U"),
+    )
+    assertEquals(
+      CollegeCostChatTool.BORROWING_NO_FACT_IN_FILING_BASIS to CollegeCostChatTool.BORROWING_NO_FACT_IN_FILING,
+      availabilityOf("Need Only U"),
+    )
+    assertEquals(
+      CollegeCostChatTool.BORROWING_NOT_READ_BY_US_BASIS to CollegeCostChatTool.BORROWING_NOT_READ_BY_US,
+      availabilityOf("Unread Cell U"),
+      "an unread cell is OUR gap and is never spoken as the school's silence (RFC 175 D7)",
+    )
+    // A filing whose borrowing cells the PUBLISHER withheld is neither of the
+    // first two: told as the school's silence it says this school does not
+    // report a figure it does report, and told as ours it blames us for a
+    // suppression that is not our doing.
+    assertEquals(
+      CollegeCostChatTool.BORROWING_WITHHELD_BASIS to CollegeCostChatTool.BORROWING_WITHHELD_BY_PUBLISHER,
+      availabilityOf("Withheld Cell U"),
+    )
+    // The sentences are as many as the silences, not one constant used four
+    // times: a second silence wearing the first's words is the D7 defect
+    // itself. The same for the codes.
+    assertEquals(
+      4,
+      setOf(
+        CollegeCostChatTool.BORROWING_NO_FILING,
+        CollegeCostChatTool.BORROWING_NO_FACT_IN_FILING,
+        CollegeCostChatTool.BORROWING_NOT_READ_BY_US,
+        CollegeCostChatTool.BORROWING_WITHHELD_BY_PUBLISHER,
+      ).size,
+    )
+    assertEquals(
+      5,
+      setOf(
+        CollegeCostChatTool.BORROWING_NO_FILING_BASIS,
+        CollegeCostChatTool.BORROWING_NO_FACT_IN_FILING_BASIS,
+        CollegeCostChatTool.BORROWING_NOT_READ_BY_US_BASIS,
+        CollegeCostChatTool.BORROWING_WITHHELD_BASIS,
+        CollegeCostChatTool.BORROWING_NOT_APPLICABLE_BASIS,
+      ).size,
+    )
+    // None of the three enters data_availability: that list speaks the
+    // Scorecard-shaped CostField vocabulary, and folding a CDS silence into it
+    // misattributes whose silence it is.
+    byName.values.forEach { college ->
+      assertFalse(
+        dataAvailabilityOf(college).any { it.contains("borrow") || it.contains("loan") || it.contains("graduating") },
+        "a CDS borrowing silence reached data_availability: ${dataAvailabilityOf(college)}",
+      )
+      assertNull(college[BorrowingWire.KEY])
+    }
+  }
+
+  @Test
+  fun `a filing whose only borrowing cells contradict each other is OUR withholding, not the school's silence`() {
+    val student = createStudent()
+    val contradicted = seedListedCollege(student, "Contradicted Count U")
+    // The live shape D6 names: ipeds 166629 reports 39 graduates and 2588
+    // federal borrowers. The pair is held and never spoken -- but the filing
+    // ANSWERED two borrowing cells, so "it reports none of the borrowing
+    // figures" is false about it.
+    CostsTestDb.seedBorrowing(
+      contradicted,
+      graduatingClass = 39,
+      averageDebtUsdByLoanType = emptyMap(),
+      borrowersByLoanType = mapOf(LoanType.FEDERAL to 2588),
+    )
+
+    val college =
+      collegesOf(execute(student)).single { it.getValue("name").jsonPrimitive.content == "Contradicted Count U" }
+    val availability = college.getValue(CollegeCostChatTool.BORROWING_AVAILABILITY_KEY).jsonObject
+    assertEquals(
+      CollegeCostChatTool.BORROWING_NOT_RECONCILED_BY_US_BASIS,
+      availability.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
+      "a contradicted pair is OURS to withhold (D6), and it has its own basis",
+    )
+    assertEquals(
+      CollegeCostChatTool.BORROWING_NOT_RECONCILED_BY_US,
+      availability.getValue(CollegeCostChatTool.STATEMENT_KEY).jsonPrimitive.content,
+    )
+    // The defect this arm exists to prevent: the plain sentence tells a family
+    // this school reports none of the borrowing figures, about a school that
+    // reported two of them.
+    assertNotEquals(
+      CollegeCostChatTool.BORROWING_NO_FACT_IN_FILING,
+      availability.getValue(CollegeCostChatTool.STATEMENT_KEY).jsonPrimitive.content,
+    )
+    // Six silences, six codes: a sixth wearing a fifth's words is the D7
+    // defect with the reasons reversed.
+    assertEquals(
+      6,
+      setOf(
+        CollegeCostChatTool.BORROWING_NO_FILING_BASIS,
+        CollegeCostChatTool.BORROWING_NO_FACT_IN_FILING_BASIS,
+        CollegeCostChatTool.BORROWING_NOT_READ_BY_US_BASIS,
+        CollegeCostChatTool.BORROWING_WITHHELD_BASIS,
+        CollegeCostChatTool.BORROWING_NOT_APPLICABLE_BASIS,
+        CollegeCostChatTool.BORROWING_NOT_RECONCILED_BY_US_BASIS,
+      ).size,
+    )
+    // And neither cell of the pair is spoken: no section, and no count.
+    assertNull(college[BorrowingWire.KEY])
+    assertFalse(college.toString().contains("2588"), "a contradicted borrower count reached the payload")
+  }
+
+  @Test
+  fun `the borrowing feed carries no bare source code into the cost result`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Guarded Borrowing U")
+    CostsTestDb.seedBorrowing(college)
+
+    val payload = execute(student)
+    // The CDS field ids (H.401, H.511, ...) live in source_variable and must
+    // never reach a tool result, and neither may a publisher's own measure slug.
+    assertEquals(emptyList(), listViolations(payload))
+    assertFalse(payload.toString().contains("H.4"), "a CDS field id reached the result: $payload")
+    assertFalse(payload.toString().contains("H.5"), "a CDS field id reached the result: $payload")
+    assertFalse(
+      payload.toString().contains("GRAD_DEBT_MDN"),
+      "a publisher's own variable name reached the result: $payload",
+    )
   }
 
   @Test
@@ -3379,6 +3786,9 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
     // case these "unchanged" assertions describe -- a school with no CDS
     // filing must not be silent about being silent.
     CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY,
+    // RFC 175: the same, for the borrowing section. A school with no filing
+    // carries no borrowing figures and says why, in one sentence.
+    CollegeCostChatTool.BORROWING_AVAILABILITY_KEY,
   ) + CostField.entries.map { it.wireName } + FigureGroup.entries.map { it.wireName }
 
 // ---------------------------------------------------------------------------

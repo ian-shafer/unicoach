@@ -12,7 +12,9 @@ writes the reviewable, diffable seed:
     db/seed/cds/admission-factors.csv
     db/seed/cds/deadlines.csv
     db/seed/cds/aid_policy.csv    (RFC 170: the H2 need figures and the H8
-                                   forms, each row carrying its own status)
+                                   forms, each row carrying its own status;
+                                   RFC 175: the H4/H5 borrowing block, one fact
+                                   per loan type)
     db/seed/cds/PROVENANCE.json   (fetched_at, corpus row counts, sha256 per csv)
 
 ALL interpretation lives here (the Kotlin loader is a dumb typed CSV reader
@@ -137,6 +139,24 @@ SEED_SHRINK_FLOOR = 0.5
 # extraction junk.
 CALENDAR_VALIDATION_YEAR = 2024
 
+# The H4/H5 borrowing ids, spelled ONCE: this tuple is what the fetch asks for
+# AND the set AID_POLICY_BORROWING_FIGURES reads, tied together by the guard
+# beside that table -- the graduating class (H.401), the borrower headcount per
+# loan type (H.501-H.505: any / federal / institutional / state / private) and
+# the average cumulative principal borrowed per loan type (H.511-H.515).
+#
+# H.506-H.510 -- the published "percent who borrowed" cells -- are absent by NOT
+# BEING LISTED, never by a loop bound that stops short of them (RFC 175 D2): the
+# corpus publishes them text-typed, 0..100 for most documents and 0..1 for
+# dozens of others, so a stored share would be a coin flip on whose scale a
+# school used. The share is derived at read time from the borrower count over
+# H.401, and only when both exist.
+BORROWING_FIELD_IDS = (
+    "H.401",
+    "H.501", "H.502", "H.503", "H.504", "H.505",
+    "H.511", "H.512", "H.513", "H.514", "H.515",
+)
+
 # Every cds_fields field_id we interpret. The 2024-25-schema-only ED count
 # fields (C.2106/C.2107 there) are fetched by these same ids but ignored by the
 # free-text mapping below.
@@ -150,6 +170,8 @@ FIELD_IDS = (
     # none of them; block 1 is the one H.201 above already reads, so the whole
     # seed stays on one cohort.
     + ["H.204", "H.208", "H.209", "H.211"]
+    # The H4/H5 borrowing block, spelled once in BORROWING_FIELD_IDS above.
+    + list(BORROWING_FIELD_IDS)
     # The H8 forms block: required of DOMESTIC first-year aid applicants. The
     # H7 block (nonresident applicants) is the other applicant group the
     # schema admits and is not read yet.
@@ -266,12 +288,93 @@ def read_money_cell(row):
 # is never trusted. The seed carries the PUBLISHED percent; the canonical store
 # holds the 0-1 share, and that conversion belongs to the loader that knows the
 # measure's unit.
-AID_POLICY_FIGURES = [
+AID_POLICY_NEED_FIGURES = [
     ("aid_awarded_freshmen_count", "H.204", read_int_cell),
     ("need_fully_met_count", "H.208", read_int_cell),
     ("avg_need_met_percent", "H.209", read_percent_cell),
     ("avg_need_based_grant_usd", "H.211", read_money_cell),
 ]
+
+# The H4/H5 borrowing block (RFC 175): a graduating class, five borrower
+# headcounts and five average cumulative principals, one per loan type. A loan
+# type is never summed with another and never dropped into a nameless total
+# (D3), so each type keeps its own fact name all the way through the seed.
+#
+# The averages read through read_money_cell (get_decimal), never read_int_cell:
+# the corpus publishes them as text like '38217.2331', and get_int's
+# `\d+(\.0+)?` would silently reject every fractional one -- an integer reader
+# that rejects 28,193.50 is the same silent gap in a different costume.
+AID_POLICY_BORROWING_FIGURES = [
+    ("graduating_class_count", "H.401", read_int_cell),
+    ("any_loan_borrower_count", "H.501", read_int_cell),
+    ("federal_loan_borrower_count", "H.502", read_int_cell),
+    ("institutional_loan_borrower_count", "H.503", read_int_cell),
+    ("state_loan_borrower_count", "H.504", read_int_cell),
+    ("private_loan_borrower_count", "H.505", read_int_cell),
+    ("any_loan_debt_avg_usd", "H.511", read_money_cell),
+    ("federal_loan_debt_avg_usd", "H.512", read_money_cell),
+    ("institutional_loan_debt_avg_usd", "H.513", read_money_cell),
+    ("state_loan_debt_avg_usd", "H.514", read_money_cell),
+    ("private_loan_debt_avg_usd", "H.515", read_money_cell),
+]
+
+# The read table and the fetch list are the same eleven ids. Checked at import,
+# because the failure it prevents is invisible at run time: an id read but never
+# fetched yields an empty cell at every document, which is indistinguishable
+# from a school that did not report it.
+if {field_id for _, field_id, _ in AID_POLICY_BORROWING_FIGURES} != set(BORROWING_FIELD_IDS):
+    fatal(
+        "the borrowing figures and BORROWING_FIELD_IDS name different fields: "
+        f"figures=[{sorted(field_id for _, field_id, _ in AID_POLICY_BORROWING_FIGURES)}] "
+        f"fetched=[{sorted(BORROWING_FIELD_IDS)}]"
+    )
+
+# One table for every reader of "the figures" -- the row builder, the fact list
+# the coverage guard is derived from, the CSV. The two halves are named
+# separately only because the borrowing block is dropped as a BLOCK (see
+# h5_is_contradictory) while the rest of the filing's aid-policy facts stand.
+AID_POLICY_FIGURES = AID_POLICY_NEED_FIGURES + AID_POLICY_BORROWING_FIGURES
+
+# The facts h5_is_contradictory takes away when it fires: the borrowing block
+# and nothing else.
+AID_POLICY_BORROWING_FACTS = frozenset(fact for fact, _, _ in AID_POLICY_BORROWING_FIGURES)
+
+# Each per-borrower average against the headcount it is an average OVER. A mean
+# is a mean over a population, so the two cells of one loan type are read
+# together (see drop_averages_over_no_borrowers below) and never as two
+# unrelated numbers.
+AID_POLICY_AVERAGE_BORROWER_COUNTS = {
+    fact: fact.replace("_debt_avg_usd", "_borrower_count")
+    for fact, _, _ in AID_POLICY_BORROWING_FIGURES
+    if fact.endswith("_debt_avg_usd")
+}
+
+# The pairing above is derived from the fact NAMES, so it is checked at import
+# rather than trusted: a renamed average or a sixth loan type whose two facts
+# do not follow the convention would otherwise pair with nothing and silently
+# stop being guarded.
+if not AID_POLICY_AVERAGE_BORROWER_COUNTS or not set(
+    AID_POLICY_AVERAGE_BORROWER_COUNTS.values()
+) <= set(AID_POLICY_BORROWING_FACTS):
+    fatal(
+        "a per-borrower average does not pair with a borrower count: "
+        f"pairs=[{sorted(AID_POLICY_AVERAGE_BORROWER_COUNTS.items())}] "
+        f"borrowing_facts=[{sorted(AID_POLICY_BORROWING_FACTS)}]"
+    )
+
+# The H4/H5 headcount facts the self-consistency rule compares, named once.
+GRADUATING_CLASS_FACT = "graduating_class_count"
+ANY_LOAN_BORROWER_FACT = "any_loan_borrower_count"
+PER_TYPE_BORROWER_FACTS = (
+    "federal_loan_borrower_count",
+    "institutional_loan_borrower_count",
+    "state_loan_borrower_count",
+    "private_loan_borrower_count",
+)
+# The six headcounts, i.e. the whole-number facts the rule may compare. The
+# averages are not in it: a dollar figure is never a count of people, and
+# comparing one with a headcount is the confusion this seed exists to prevent.
+BORROWER_COUNT_FACTS = (GRADUATING_CLASS_FACT, ANY_LOAN_BORROWER_FACT) + PER_TYPE_BORROWER_FACTS
 
 # The H8 forms, named as a family names them rather than as the CDS numbers
 # them. The slugs are the aid_forms vocabulary's (db/data/money-vocabulary.json).
@@ -309,6 +412,30 @@ AID_POLICY_COVERAGE_FLOOR = {
     "noncustodial_css_profile_required": 30,
     "business_farm_supplement_required": 8,
     "other_institutional_form_required": 25,
+    # RFC 175's H4/H5 block. Measured against our seeded college set: class 283,
+    # any 213, federal 210, institutional 149, state 142, private 207 for the
+    # counts and 212/211/65/46/208 for the averages. The floors sit below those,
+    # and differ per loan type because reporting genuinely does: institutional
+    # and state loans are reported by far fewer schools than federal ones, and a
+    # single floor would either be useless or false.
+    #
+    # The two average floors are an order of magnitude below their counts
+    # because most of what used to be "coverage" was placeholder: 91 of the 138
+    # state-loan averages and 81 of the 148 institutional ones were a zero
+    # standing beside a zero borrower count, and
+    # drop_averages_over_no_borrowers now refuses them. A floor measuring
+    # placeholders guards nothing.
+    "graduating_class_count": 250,
+    "any_loan_borrower_count": 190,
+    "federal_loan_borrower_count": 190,
+    "institutional_loan_borrower_count": 130,
+    "state_loan_borrower_count": 120,
+    "private_loan_borrower_count": 190,
+    "any_loan_debt_avg_usd": 190,
+    "federal_loan_debt_avg_usd": 190,
+    "institutional_loan_debt_avg_usd": 50,
+    "state_loan_debt_avg_usd": 35,
+    "private_loan_debt_avg_usd": 190,
 }
 
 MONTH_NAMES = {
@@ -349,6 +476,10 @@ STICKY_DROPS = frozenset(
         "deadline_schema_inconsistent",
         "merit_h2a_contradictory",
         "aid_policy_h2_contradictory",
+        # RFC 175 D6: a filing whose H4/H5 borrowing block contradicts itself.
+        # Sticky for the same reason as its H2 sibling -- it describes the
+        # DOCUMENT, so it stays visible even when an older filing covered for it.
+        "aid_policy_h5_contradictory",
         # The CORPUS's own status vocabulary drifting -- the same kind of fact
         # deadline_schema_unmapped is sticky for. Without this, a document that
         # yields no aid-policy rows takes the count and the sample with it, and
@@ -1285,10 +1416,113 @@ def h2_is_contradictory(rows, drops):
     return True
 
 
+def get_borrowing_headcounts(rows):
+    """The H4/H5 headcounts this document REPORTS, as whole numbers.
+
+    Headcounts only: a dollar average is never a count of people, and comparing
+    one with a headcount is the confusion this seed exists to prevent."""
+    return {
+        row["fact"]: int(row["value"])
+        for row in rows
+        if row["status"] == STATUS_REPORTED and row["fact"] in BORROWER_COUNT_FACTS
+    }
+
+
+def borrower_count_is_contradictory(fact, counts, drops):
+    """True when this borrower count cannot be true beside the sets that contain
+    it: the H.401 graduating class, and -- for a typed loan -- the any-loan
+    count. The offending pair is recorded as it is judged, so the ledger names
+    the two cells that disagreed rather than the block they were in."""
+    borrowers = counts.get(fact)
+    if borrowers is None:
+        return False
+    graduating_class = counts.get(GRADUATING_CLASS_FACT)
+    if graduating_class is not None and borrowers > graduating_class:
+        drops.record(
+            "aid_policy_h5_contradictory",
+            f"fact=[{fact}] borrowers=[{borrowers}] "
+            f"graduating_class=[{graduating_class}]",
+        )
+        return True
+    any_loan = counts.get(ANY_LOAN_BORROWER_FACT)
+    if fact != ANY_LOAN_BORROWER_FACT and any_loan is not None and borrowers > any_loan:
+        drops.record(
+            "aid_policy_h5_contradictory",
+            f"fact=[{fact}] borrowers=[{borrowers}] any_loan_borrowers=[{any_loan}]",
+        )
+        return True
+    return False
+
+
+def h5_is_contradictory(rows, drops):
+    """True when this document's H4/H5 borrowing block contradicts itself.
+
+    Two ways it can, both seen in the live corpus: a borrower headcount above
+    the H.401 graduating class it is reported over (ipeds 166629 files a class
+    of 39 and 2,588 borrowers), and a per-type count above the any-loan count
+    that contains it (ipeds 145637 carries a dollar amount in H.503, a count
+    cell). Either says at least one of the two cells was mis-extracted, so the
+    WHOLE borrowing block goes -- a share derived at read time must never divide
+    by a mis-extracted denominator (RFC 175 D6).
+
+    The borrowing block, and only it. h2_is_contradictory refuses the whole
+    group because its subject IS the denominator the other H2 figures are
+    reported against; this rule says nothing about the filing's forms or need
+    figures, so those stand. A judgement, separate from the collection above it:
+    what the document says, then whether we believe it.
+
+    `any()` short-circuits, so the first count that cannot be true ends the
+    document: one drop is recorded, naming the pair that decided it."""
+    counts = get_borrowing_headcounts(rows)
+    return any(
+        borrower_count_is_contradictory(fact, counts, drops)
+        for fact in (ANY_LOAN_BORROWER_FACT,) + PER_TYPE_BORROWER_FACTS
+    )
+
+
+def drop_averages_over_no_borrowers(rows, drops):
+    """This document's rows minus every per-borrower average whose own loan type
+    reports NOBODY borrowing (RFC 175 D6).
+
+    A `0` in an average cell is the source's placeholder, not a figure: an
+    average cumulative principal is a mean over the borrowers of ITS OWN loan
+    type, and a mean over nobody does not exist. Seeded as a number it is spoken
+    to a family as "owed $0 on average by the time they graduated", which is a
+    claim this corpus never made.
+
+    Conditioned on the PAIR, per cell: a zero average is refused only where that
+    loan type's borrower count is zero or missing entirely, so a school that
+    genuinely rounded a tiny average to zero against real borrowers keeps it,
+    and a zero state-loan average says nothing about the federal average beside
+    it. The COUNT's own zero stands -- "no student here borrowed a state loan"
+    is the school's own fact and worth saying."""
+    counts = get_borrowing_headcounts(rows)
+    kept = []
+    for row in rows:
+        count_fact = AID_POLICY_AVERAGE_BORROWER_COUNTS.get(row["fact"])
+        if (
+            count_fact is not None
+            and row["status"] == STATUS_REPORTED
+            and float(row["value"]) == 0
+            and not counts.get(count_fact)
+        ):
+            drops.record(
+                "aid_policy_h5_average_over_no_borrowers",
+                f"fact=[{row['fact']}] source_variable=[{row['source_variable']}] "
+                f"count_fact=[{count_fact}] borrowers=[{counts.get(count_fact)}]",
+            )
+            continue
+        kept.append(row)
+    return kept
+
+
 def map_aid_policy_rows(unit_id, doc, doc_fields, unreported, drops):
-    """Every H2 need figure and H8 form this document carries, one row each --
-    unless the H2 block contradicts itself, in which case the document reports
-    nothing for this group."""
+    """Every H2 need figure, H4/H5 borrowing figure and H8 form this document
+    carries, one row each -- unless the H2 block contradicts itself, in which
+    case the document reports nothing for this group, or the borrowing block
+    does, in which case that block alone is withheld (RFC 175 D6). Whatever
+    survives that, one last per-CELL refusal: an average over a loan type
+    nobody borrowed is a placeholder, not a figure."""
     rows = []
     for fact, field_id, read_cell in AID_POLICY_FIGURES:
         rows.extend(
@@ -1296,7 +1530,11 @@ def map_aid_policy_rows(unit_id, doc, doc_fields, unreported, drops):
         )
     for fact, field_id in AID_POLICY_FORMS:
         rows.extend(map_aid_policy_form(unit_id, doc, doc_fields, unreported, drops, fact, field_id))
-    return [] if h2_is_contradictory(rows, drops) else rows
+    if h2_is_contradictory(rows, drops):
+        return []
+    if h5_is_contradictory(rows, drops):
+        return [row for row in rows if row["fact"] not in AID_POLICY_BORROWING_FACTS]
+    return drop_averages_over_no_borrowers(rows, drops)
 
 
 # The four fact groups, in output order: (name, seed filename, CSV header, row

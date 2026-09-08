@@ -6,6 +6,7 @@ import ed.unicoach.coaching.aid.FederalAidPolicyChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
 import ed.unicoach.coaching.costs.AidPolicyWire
+import ed.unicoach.coaching.costs.BorrowingWire
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.costs.PrecisionOffer
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
@@ -991,7 +992,9 @@ class SystemPromptCatalogTest {
     val v14 =
       SystemPromptsDao
         .findByNameAndVersion(session, "coach", "v14")
-        .getOrElse { fail("the v14 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v14 is not a rollback") }
+        .getOrElse { cause ->
+          fail("the v14 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v14 is not a rollback", cause)
+        }
     val v15 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v15").getOrThrow().body
 
     assertTrue(v14.body.isNotEmpty(), "the v14 body must be the copy it was seeded with, not an empty row")
@@ -1107,7 +1110,9 @@ class SystemPromptCatalogTest {
     val v15 =
       SystemPromptsDao
         .findByNameAndVersion(session, "coach", "v15")
-        .getOrElse { fail("the v15 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v15 is not a rollback") }
+        .getOrElse { cause ->
+          fail("the v15 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v15 is not a rollback", cause)
+        }
     val v16 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v16").getOrThrow().body
 
     assertTrue(v15.body.isNotEmpty(), "the v15 body must be the copy it was seeded with, not an empty row")
@@ -1342,7 +1347,9 @@ class SystemPromptCatalogTest {
     val v16 =
       SystemPromptsDao
         .findByNameAndVersion(session, "coach", "v16")
-        .getOrElse { fail("the v16 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v16 is not a rollback") }
+        .getOrElse { cause ->
+          fail("the v16 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v16 is not a rollback", cause)
+        }
     val v17 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v17").getOrThrow().body
 
     assertTrue(v16.body.isNotEmpty(), "the v16 body must be the copy it was seeded with, not an empty row")
@@ -1472,6 +1479,110 @@ class SystemPromptCatalogTest {
 
   /** The v20 need-and-forms paragraph: everything v20 appends to the v19 body. The guards are [appendedParagraph]'s. */
   private fun needAndFormsParagraph(): String = appendedParagraph(base = "v19", revised = "v20")
+
+  /**
+   * The 0090 seed's structural contract (RFC 175). v21 is ADDITIVE like every
+   * coach seed since 0047 except v19: the whole v20 body byte-identical as a
+   * prefix, joined by a single space to exactly one appended paragraph -- the
+   * borrowing instruction. The paragraph's markers are asserted, not its full
+   * copy: the seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v21 is v20 plus one appended borrowing paragraph`() {
+    val appended = borrowingParagraph()
+
+    assertTrue(
+      appended.startsWith(" Borrowing is a different question from price"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(appended.contains(BorrowingWire.KEY), "the paragraph must name the section it routes to")
+    assertTrue(
+      appended.contains(CollegeCostChatTool.BORROWING_AVAILABILITY_KEY),
+      "the paragraph must name the key that says why a school has no section",
+    )
+    // D8: the cohort is a named graduating class, said with its year.
+    assertTrue(
+      appended.contains("GRADUATED from that school in the year the section names"),
+      "the cohort must be named, not left to be inferred",
+    )
+    assertTrue(
+      appended.contains("not this year's freshmen"),
+      "and it must be told apart from the two cohorts it is most often confused with",
+    )
+    // D10: a Common Data Set figure is the school's own claim.
+    assertTrue(
+      appended.contains("so name the school as the one saying it"),
+      "RFC 175 D10: a self-reported figure is attributed, never said in the flat voice",
+    )
+    // D3: loan types are never summed and none of them is a total.
+    assertTrue(
+      appended.contains("Never add two kinds of loan together"),
+      "RFC 175 D3: the loan types overlap and may not be added",
+    )
+    assertTrue(
+      appended.contains("say plainly when the private figure is not in that school's filing"),
+      "a missing private figure is said, not left as federal standing for everything",
+    )
+    // Brief 0003, without exception: a debt is never a price.
+    assertTrue(
+      appended.contains("never present a debt figure as a cost"),
+      "a debt figure is never presented as a price",
+    )
+    // The standing money guards still sweep the appended span, so a relaxation
+    // is reported as v21's own rather than as the catalog's.
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(appended),
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    // No bare CDS field id may reach the model, and the prompt is context too.
+    assertFalse(Regex("H\\.\\d").containsMatchIn(appended), "a CDS field id must never appear in the prompt")
+  }
+
+  /**
+   * Every word of v20 must survive RFC 175's append, asserted as ONE equality
+   * for the reason the v20 test states: it is strictly stronger than any list
+   * of `contains` checks, so every ban and every citation rule v20 carried
+   * survives by construction or this fails.
+   */
+  @Test
+  fun `coach v21 keeps the whole v20 body, byte for byte, as its prefix`() {
+    val v20 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v20").getOrThrow().body
+    val v21 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v21").getOrThrow().body
+
+    assertTrue(v21.startsWith(v20), "v21 must carry the whole v20 body unchanged before what it appends")
+    assertEquals(v20 + borrowingParagraph(), v21, "v21 is v20 and exactly one appended paragraph, nothing else")
+  }
+
+  /**
+   * The v21 pin's documented rollback is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v20`), which is only real if the v20 row
+   * is still selectable and still carries the copy it was seeded with.
+   */
+  @Test
+  fun `coach v20 stays selectable so the v21 rollback is real`() {
+    val v20 =
+      SystemPromptsDao
+        .findByNameAndVersion(session, "coach", "v20")
+        .getOrElse { cause ->
+          fail("the v20 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v20 is not a rollback", cause)
+        }
+
+    assertTrue(v20.body.isNotEmpty(), "the v20 body must be the copy it was seeded with, not an empty row")
+    assertTrue(v20.body.contains(AidPolicyWire.KEY), "v20 must still carry its own aid-policy paragraph")
+    assertFalse(
+      v20.body.contains(BorrowingWire.KEY),
+      "the rollback target must not already name the v21 borrowing section",
+    )
+  }
+
+  /** The v21 borrowing paragraph: everything v21 appends to the v20 body. The guards are [appendedParagraph]'s. */
+  private fun borrowingParagraph(): String = appendedParagraph(base = "v20", revised = "v21")
 
   /** The v18 share-nudge paragraph: everything v18 appends to the v17 body. The guards are [appendedParagraph]'s. */
   private fun shareNudgeParagraph(): String = appendedParagraph(base = "v17", revised = "v18")
@@ -1655,7 +1766,9 @@ class SystemPromptCatalogTest {
     val v18 =
       SystemPromptsDao
         .findByNameAndVersion(session, "coach", "v18")
-        .getOrElse { fail("the v18 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v18 is not a rollback") }
+        .getOrElse { cause ->
+          fail("the v18 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v18 is not a rollback", cause)
+        }
     val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow().body
 
     assertTrue(v18.body.isNotEmpty(), "the v18 body must be the copy it was seeded with, not an empty row")

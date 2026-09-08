@@ -4,8 +4,10 @@ import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
+import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FactorRating
+import ed.unicoach.db.models.LoanType
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
@@ -219,6 +221,93 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
         query(
           "SELECT DISTINCT population FROM cohort_population_counts WHERE source = 'common_data_set' " +
             "ORDER BY population",
+        ) { it.getString(1) },
+      )
+    }
+
+  @Test
+  fun `every borrowing average lands under its own loan type's denominator, and every count under its own cohort`() =
+    runBlocking {
+      seedColleges()
+      loader.load(meritCsv, factorsCsv, deadlinesCsv, fixture("cds-aid-policy-borrowing-fixture.csv"))
+
+      // The pin, both columns at once. The aid scope follows the DENOMINATOR
+      // (RFC 175 D4): an average cumulative principal is an average over the
+      // borrowers OF THAT LOAN TYPE, while the population is the graduating
+      // class the school reports every H4/H5 figure against. Both slugs are
+      // legal in either column, so no CHECK can catch a swap -- this is the
+      // fourth guard against the defect RFC 148, 162 and 170 each hit.
+      assertEquals(
+        listOf(
+          Triple("any_loan_debt_average", "graduating_class", "loan_receiving"),
+          Triple("federal_loan_debt_average", "graduating_class", "federal_loan_borrowing"),
+          Triple("private_loan_debt_average", "graduating_class", "private_loan_borrowing"),
+        ),
+        query(
+          "SELECT measure, population, aid_scope FROM cohort_money_stats WHERE source = 'common_data_set' " +
+            "ORDER BY measure",
+        ) { rs -> Triple(rs.getString(1), rs.getString(2), rs.getString(3)) },
+      )
+      // The loan type rides in the POPULATION for a headcount, because
+      // cohort_population_counts' natural key carries no measure column: five
+      // borrower counts for one school-year would otherwise collide.
+      assertEquals(
+        listOf(
+          listOf("graduating_class", "1000", "reported"),
+          listOf("graduating_class_borrowers_any_loan", "600", "reported"),
+          listOf("graduating_class_borrowers_federal_loan", "550", "reported"),
+          listOf("graduating_class_borrowers_private_loan", "120", "reported"),
+          // D7: the corpus HAS the cell and we could not read it. OUR gap is a
+          // valueless ROW; a loan type no source carries gets no row at all.
+          listOf("graduating_class_borrowers_state_loan", null, "not_collected_by_us"),
+        ),
+        query(
+          "SELECT population, headcount, status FROM cohort_population_counts WHERE source = 'common_data_set' " +
+            "ORDER BY population",
+        ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3)) },
+      )
+      // Institutional loans are in no row at all: this filing does not report
+      // them, which is the school's silence and not a zero.
+      assertEquals(
+        emptyList(),
+        query(
+          "SELECT measure FROM cohort_money_stats WHERE measure = 'institutional_loan_debt_average'",
+        ) { it.getString(1) },
+      )
+    }
+
+  @Test
+  fun `a fractional average survives ingest, and no loan type is ever summed with another`() =
+    runBlocking {
+      seedColleges()
+      loader.load(meritCsv, factorsCsv, deadlinesCsv, fixture("cds-aid-policy-borrowing-fixture.csv"))
+
+      // The decimal reader, end to end: '38217.2331' is what the corpus
+      // publishes and an integer reader would have dropped every one of them.
+      assertEquals(
+        listOf("38217.2331", "30000.5", "56129.9072"),
+        query(
+          "SELECT value FROM cohort_money_stats WHERE source = 'common_data_set' ORDER BY measure",
+        ) { it.getBigDecimal(1).stripTrailingZeros().toPlainString() },
+      )
+      // D3: the any-loan figures are the school's OWN H.501/H.511, never our
+      // addition of the others. The four typed sets overlap, so a sum would
+      // double-count every student who borrowed twice -- and here it would
+      // also exceed the graduating class.
+      assertEquals(
+        listOf("600"),
+        query(
+          "SELECT headcount FROM cohort_population_counts " +
+            "WHERE population = 'graduating_class_borrowers_any_loan'",
+        ) { it.getString(1) },
+      )
+      assertEquals(
+        emptyList(),
+        query(
+          // 550 + 120, and 38217.2331 + 30000.50 + 56129.9072: neither sum is
+          // anywhere in the store.
+          "SELECT headcount::text FROM cohort_population_counts WHERE headcount = 670 " +
+            "UNION ALL SELECT value::text FROM cohort_money_stats WHERE value = 124347.6403",
         ) { it.getString(1) },
       )
     }
@@ -721,6 +810,30 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
         }
       val header = File(committedSeedDir, name).useLines { it.first() }.split(",")
       assertEquals(expected, header, "db/seed/cds/$name header drifted from CdsSeedLoader")
+    }
+  }
+
+  @Test
+  fun `every loan type's seed columns route to that loan type's own address, all five of them`() {
+    // The routing table is DERIVED from LoanType, so a swapped constant cannot
+    // be written -- and this pins the derivation itself over all five members,
+    // not the three a CSV fixture happens to carry. An institutional/state
+    // swap was green locally and a production corrupt-value fault at read time.
+    LoanType.entries.forEach { loanType ->
+      assertEquals(
+        CdsSeedLoader.AidPolicyFact.Count(loanType.borrowers),
+        CdsSeedLoader.AID_POLICY_FACTS["${loanType.slug}_borrower_count"],
+        "the borrower headcount of [${loanType.slug}] is filed under another cohort",
+      )
+      assertEquals(
+        CdsSeedLoader.AidPolicyFact.Stat(
+          loanType.debtAverage,
+          CohortPopulation.GRADUATING_CLASS,
+          loanType.aidScope,
+        ),
+        CdsSeedLoader.AID_POLICY_FACTS["${loanType.slug}_debt_avg_usd"],
+        "the average of [${loanType.slug}] is stored at a denominator that is not its own",
+      )
     }
   }
 

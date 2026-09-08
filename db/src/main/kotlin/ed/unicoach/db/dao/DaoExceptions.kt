@@ -127,6 +127,24 @@ class CorruptPersistedValueException(
 ) : DaoException("Persisted value [$value] failed reconstruction: $error" + (location?.let { " at $it" } ?: "")),
   PermanentError
 
+/**
+ * A persisted value no domain type reads, as the house's LOCATED exception --
+ * declared once because every read raises it the same way, and the two copies
+ * this replaced had already drifted apart in their own KDoc.
+ *
+ * [location] names the column and the row's natural key, so the offending cell
+ * can be found from the log without re-deriving the query.
+ */
+internal fun corruptValue(
+  raw: String,
+  domain: String,
+  location: String,
+) = CorruptPersistedValueException(
+  raw,
+  ValidationError.InvalidFormat(expected = "a known [$domain] value"),
+  location = location,
+)
+
 class LockAcquisitionFailureException(
   message: String = "Lock acquisition failure",
 ) : DaoException(message),

@@ -113,6 +113,62 @@ enum class MoneyMeasure(
    * its denominator, both cited, both naming their cohort.
    */
   AVG_NEED_MET_SHARE("avg_need_met_share", MeasureUnit.SHARE),
+
+  /**
+   * Average cumulative principal borrowed, over the graduating class members
+   * who took a loan of ANY kind -- federal, institutional, state or private
+   * (CDS H.511, RFC 175). Its denominator is the school's own H.501 borrower
+   * count, so the row carries [CohortAidScope.LOAN_RECEIVING].
+   *
+   * The shared naming rule for the five borrowing measures is stated once
+   * here. Loan type is part of the MEASURE, not an axis (D1): the grant-mix
+   * precedent, applied to borrowing. Each is an average PER BORROWER OF ITS
+   * OWN LOAN TYPE, so its aid scope is that type's receiving scope and never
+   * `all`. `debt` is the CUMULATIVE principal a student had borrowed by
+   * graduation -- not the annual [STUDENT_LOAN_AVERAGE_AMOUNT], and not the
+   * Scorecard's [MEDIAN_DEBT_AT_COMPLETION] (a median, federal only, over
+   * completers rather than a graduating class). [MeasureUnit.USD_PER_YEAR] is
+   * nonetheless the unit of all five, as it already is of
+   * [MEDIAN_DEBT_AT_COMPLETION]: that enum distinguishes DOLLARS from shares
+   * and names no period, so it reads "whole dollars" here. Changing it is not a
+   * rename -- `BorrowingDao.wholeDollars` refuses any borrowing average stored
+   * under another unit, so the "fix" is a production corrupt-value fault.
+   * Two loan types are never summed: this any-loan figure is always the school's own H.511, never our
+   * addition of the other four (D3).
+   */
+  ANY_LOAN_DEBT_AVERAGE("any_loan_debt_average", MeasureUnit.USD_PER_YEAR),
+
+  /**
+   * Average cumulative federal loan principal borrowed, over the graduating
+   * class members who borrowed federally (CDS H.512, denominator H.502, RFC
+   * 175). Carries [CohortAidScope.FEDERAL_LOAN_BORROWING] -- the same
+   * denominator the Scorecard's completer debt is drawn over, a different
+   * measure over a different cohort (D4).
+   */
+  FEDERAL_LOAN_DEBT_AVERAGE("federal_loan_debt_average", MeasureUnit.USD_PER_YEAR),
+
+  /**
+   * Average cumulative institutional loan principal borrowed, over the
+   * graduating class members who took an institutional loan (CDS H.513,
+   * denominator H.503, RFC 175). Carries
+   * [CohortAidScope.INSTITUTIONAL_LOAN_BORROWING].
+   */
+  INSTITUTIONAL_LOAN_DEBT_AVERAGE("institutional_loan_debt_average", MeasureUnit.USD_PER_YEAR),
+
+  /**
+   * Average cumulative state loan principal borrowed, over the graduating
+   * class members who took a state loan (CDS H.514, denominator H.504, RFC
+   * 175). Carries [CohortAidScope.STATE_LOAN_BORROWING].
+   */
+  STATE_LOAN_DEBT_AVERAGE("state_loan_debt_average", MeasureUnit.USD_PER_YEAR),
+
+  /**
+   * Average cumulative private loan principal borrowed, over the graduating
+   * class members who took a private loan (CDS H.515, denominator H.505, RFC
+   * 175). Carries [CohortAidScope.PRIVATE_LOAN_BORROWING]. This is the half of
+   * the debt picture the Scorecard's federal-only median cannot see.
+   */
+  PRIVATE_LOAN_DEBT_AVERAGE("private_loan_debt_average", MeasureUnit.USD_PER_YEAR),
   ;
 
   companion object {

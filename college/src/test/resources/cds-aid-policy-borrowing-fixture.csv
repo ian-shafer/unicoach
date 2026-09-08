@@ -1,0 +1,9 @@
+unit_id,source_year,fact,value,status,source_variable,source_url,archive_url
+110100,2024,graduating_class_count,1000,reported,H.401,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,any_loan_borrower_count,600,reported,H.501,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,federal_loan_borrower_count,550,reported,H.502,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,private_loan_borrower_count,120,reported,H.505,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,state_loan_borrower_count,,not_collected_by_us,H.504,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,any_loan_debt_avg_usd,38217.2331,reported,H.511,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,federal_loan_debt_avg_usd,30000.50,reported,H.512,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,private_loan_debt_avg_usd,56129.9072,reported,H.515,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25

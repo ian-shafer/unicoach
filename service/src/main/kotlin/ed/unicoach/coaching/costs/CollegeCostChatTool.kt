@@ -4,6 +4,8 @@ import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
+import ed.unicoach.coaching.costs.canonical.FigureGapOwner
+import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.coaching.putCollegeIdsSchema
@@ -465,6 +467,7 @@ class CollegeCostChatTool(
       // this school: silence about a school's aid policy is a fact about OUR
       // corpus, and leaving it unsaid invites the model to fill it.
       putAidPolicy(cost)
+      putBorrowing(cost)
       putFieldsWithNoAmount(cost)
       putWithheldFigures(cost)
       putFigureStatuses(cost)
@@ -582,6 +585,93 @@ class CollegeCostChatTool(
       !policy.hasFact -> put(AID_POLICY_AVAILABILITY_KEY, AID_POLICY_NO_FACT_IN_FILING)
 
       else -> put(AidPolicyWire.KEY, AidPolicyWire.objectOf(policy))
+    }
+  }
+
+  /**
+   * The borrowing section, or the one sentence saying why there is none (RFC
+   * 175) -- [putAidPolicy]'s arms plus a fourth, because there are THREE
+   * silences here and D7 turns on whose each one is: no filing, a filing with
+   * no borrowing block (the school's silence), and a filing whose borrowing
+   * cells we could not read (OURS). Speaking the third as the second tells a
+   * family this school does not report a figure it does report.
+   *
+   * The four states arrive already told apart, as [BorrowingCoverage], so this
+   * `when` is exhaustive over a sealed type rather than a ladder whose ARM
+   * ORDER decided whose silence a filing's was. A partly unread filing is
+   * [BorrowingCoverage.Reported] and says both things.
+   *
+   * None of the three silences is a [DATA_AVAILABILITY_KEY] entry: that list
+   * speaks the [CostField] vocabulary and means "this college does not report
+   * this SCORECARD cost field". The federal-only median debt figure elsewhere
+   * in this result belongs to that list; these sentences are about a different
+   * publisher's silence, and folding them together would misattribute it.
+   */
+  private fun JsonObjectBuilder.putBorrowing(cost: CollegeCost) {
+    when (val borrowing = cost.borrowing) {
+      BorrowingCoverage.NoFiling -> {
+        putBorrowingAvailability(BORROWING_NO_FILING_BASIS, BORROWING_NO_FILING)
+      }
+
+      is BorrowingCoverage.NoBlock -> {
+        // WHICH silence this filing's empty block is. A publisher that withheld
+        // the cells, or a source that says the question does not apply, is not
+        // the school declining to report -- and the plain sentence would say it
+        // was.
+        val withheld = borrowing.gapStatuses.any { FigureStatusCopy.ownerOf(it) == FigureGapOwner.PUBLISHER }
+        val notApplicable = borrowing.gapStatuses.contains(FigureStatus.NOT_APPLICABLE)
+        when {
+          // OURS first, as [BorrowingCoverage.of] already puts OUR unread cells
+          // ahead of the other silences: a filing whose cells we hold and could
+          // not reconcile (D6) has ANSWERED, so every sentence below would say
+          // someone else's silence about a school that reported two figures.
+          borrowing.contradicted.isNotEmpty() -> {
+            putBorrowingAvailability(BORROWING_NOT_RECONCILED_BY_US_BASIS, BORROWING_NOT_RECONCILED_BY_US)
+          }
+
+          withheld -> {
+            putBorrowingAvailability(BORROWING_WITHHELD_BASIS, BORROWING_WITHHELD_BY_PUBLISHER)
+          }
+
+          notApplicable -> {
+            putBorrowingAvailability(BORROWING_NOT_APPLICABLE_BASIS, BORROWING_NOT_APPLICABLE_IN_FILING)
+          }
+
+          else -> {
+            putBorrowingAvailability(BORROWING_NO_FACT_IN_FILING_BASIS, BORROWING_NO_FACT_IN_FILING)
+          }
+        }
+      }
+
+      BorrowingCoverage.NotReadByUs -> {
+        putBorrowingAvailability(BORROWING_NOT_READ_BY_US_BASIS, BORROWING_NOT_READ_BY_US)
+      }
+
+      // The section, WITH the value-less columns of the same filing said inside
+      // it per loan type ([BorrowingWire.gapKey]). A partly readable filing is
+      // a filing with figures, so it renders them and explains its own gaps.
+      is BorrowingCoverage.Reported -> {
+        put(BorrowingWire.KEY, BorrowingWire.objectOf(borrowing))
+      }
+    }
+  }
+
+  /**
+   * WHY there is no borrowing section, as a CODE and the sentence to say it in
+   * -- the [RESIDENCY_TIERS_KEY] convention this file already follows
+   * everywhere else.
+   *
+   * The code is the load-bearing half: whose silence this is (D7) is the fact
+   * the whole borrowing surface turns on, and emitted as a bare sentence it was
+   * readable only by matching English copy.
+   */
+  private fun JsonObjectBuilder.putBorrowingAvailability(
+    basis: String,
+    statement: String,
+  ) {
+    putJsonObject(BORROWING_AVAILABILITY_KEY) {
+      put(BASIS_KEY, basis)
+      put(STATEMENT_KEY, statement)
     }
   }
 
@@ -1259,6 +1349,14 @@ class CollegeCostChatTool(
     const val AID_POLICY_AVAILABILITY_KEY = "aid_policy_availability"
 
     /**
+     * Why a college result carries no [BorrowingWire.KEY] section (RFC 175):
+     * present exactly when that section is absent, on the
+     * [AID_POLICY_AVAILABILITY_KEY] rule, so the model never has to infer a
+     * school's borrowing from a missing key.
+     */
+    const val BORROWING_AVAILABILITY_KEY = "borrowing_availability"
+
+    /**
      * The keys whose value is a NUMBER by contract -- the RFC 143 guard's
      * allowlist for this tool's payload.
      *
@@ -1272,7 +1370,8 @@ class CollegeCostChatTool(
       CostField.entries.map { it.wireName }.toSet() +
         setOf("count", "amount_usd", TOTAL_KEY) +
         MeritAidWire.NUMERIC_KEYS +
-        AidPolicyWire.NUMERIC_KEYS
+        AidPolicyWire.NUMERIC_KEYS +
+        BorrowingWire.NUMERIC_KEYS
 
     /** OUR coverage: the corpus carries no filing for this school at all. */
     const val AID_POLICY_NO_FILING: String =
@@ -1290,6 +1389,96 @@ class CollegeCostChatTool(
       "We hold this school's Common Data Set filing, but it reports none of the need figures or aid forms we " +
         "read out of it. Say that we have nothing on this school's aid policy rather than that the school " +
         "requires nothing, and point the family at its financial aid office."
+
+    /** OUR coverage again: no filing at all, so nothing to say about borrowing (RFC 175). */
+    const val BORROWING_NO_FILING: String =
+      "We hold no Common Data Set filing for this school, so we have nothing to say about what its graduates " +
+        "borrowed. Say that plainly; never estimate it from another school, and never treat the federal-loan " +
+        "figure elsewhere in this result as the whole of what students here borrow."
+
+    /**
+     * THEIR filing, with no borrowing block in it -- a different fact from
+     * having no filing, and it must not be spoken as one. It is also not the
+     * school saying its graduates borrowed nothing.
+     */
+    const val BORROWING_NO_FACT_IN_FILING: String =
+      "We hold this school's Common Data Set filing, but it reports none of the borrowing figures we read out " +
+        "of it. Say that this school does not report them rather than that its graduates borrow nothing, and " +
+        "point the family at its financial aid office."
+
+    /**
+     * THEIR filing ANSWERS the borrowing questions and WE could not read the
+     * answers out of it -- OUR gap (D7), and the one silence of the three that
+     * is not the school's.
+     *
+     * Its own constant because it is its own fact: told as
+     * [BORROWING_NO_FACT_IN_FILING], it would put our failure in the school's
+     * mouth and tell a family this school does not report a figure it does.
+     */
+    const val BORROWING_NOT_READ_BY_US: String =
+      "We hold this school's Common Data Set filing and it answers the borrowing questions, but we could not " +
+        "read those answers out of it. Say that WE could not read them, never that this school does not " +
+        "report them, and point the family at its financial aid office."
+
+    /**
+     * THE PUBLISHER's own withholding: the filing answers the borrowing
+     * questions and the figures are suppressed. Neither ours nor the school's
+     * plain silence, so it is neither of the two sentences above.
+     */
+    const val BORROWING_WITHHELD_BY_PUBLISHER: String =
+      "We hold this school's Common Data Set filing and its borrowing figures are withheld by the publisher. " +
+        "Say that they are withheld, never that this school does not report them and never that its graduates " +
+        "borrow nothing, and point the family at its financial aid office."
+
+    /**
+     * THE SOURCE itself says the question does not apply here -- a stated fact
+     * about this school, and not a silence of anyone's.
+     */
+    const val BORROWING_NOT_APPLICABLE_IN_FILING: String =
+      "We hold this school's Common Data Set filing and it marks the borrowing questions as not applicable to " +
+        "this school. Say that the source says they do not apply here, never that the school declined to " +
+        "report them, and point the family at its financial aid office."
+
+    /**
+     * OURS (D6): this filing DOES report borrowing figures, and the only ones
+     * it reports are a borrower count and a graduating class that cannot both
+     * be true. We hold the pair, we could not reconcile it, and so we are not
+     * showing it.
+     *
+     * Its own constant because the withholding is OURS. Told as
+     * [BORROWING_NO_FACT_IN_FILING] -- which is what a state that dropped the
+     * contradiction said -- it reports a school that answered two borrowing
+     * cells as reporting none of them, which is the same inversion D7 forbids
+     * with the reasons reversed.
+     */
+    const val BORROWING_NOT_RECONCILED_BY_US: String =
+      "We hold this school's Common Data Set filing and it does report borrowing figures, but the ones it " +
+        "reports cannot be reconciled with the graduating class in the same filing, so WE are not showing " +
+        "them. Say that we hold figures we could not check and are withholding them, never that this school " +
+        "does not report them and never that its graduates borrow nothing, and point the family at its " +
+        "financial aid office."
+
+    /**
+     * The CODE beside each sentence above, so whose silence a school's is can
+     * be read as a fact rather than matched out of copy (the
+     * [RESIDENCY_TIERS_KEY] convention).
+     */
+    const val BORROWING_NO_FILING_BASIS: String = "no_filing"
+
+    /** THEIR silence: a filing with no borrowing figure in it. */
+    const val BORROWING_NO_FACT_IN_FILING_BASIS: String = "no_fact_in_filing"
+
+    /** OURS (D7): the filing answers the borrowing questions and we could not read the answers. */
+    const val BORROWING_NOT_READ_BY_US_BASIS: String = "not_read_by_us"
+
+    /** THE PUBLISHER's: the figures are suppressed. */
+    const val BORROWING_WITHHELD_BASIS: String = "withheld_by_publisher"
+
+    /** THE SOURCE's own statement that the questions do not apply to this school. */
+    const val BORROWING_NOT_APPLICABLE_BASIS: String = "not_applicable"
+
+    /** OURS again (D6): the filing's only borrowing cells are a pair we could not reconcile, so WE withhold them. */
+    const val BORROWING_NOT_RECONCILED_BY_US_BASIS: String = "not_reconciled_by_us"
 
     /**
      * WHICH of the three blended-figure outcomes applies at one school
@@ -1537,6 +1726,19 @@ class CollegeCostChatTool(
         "again: that school's filing answers those forms and WE could not read the answer, so say we could not " +
         "read it and never that the school does not require them. When the section is absent, " +
         "${AID_POLICY_AVAILABILITY_KEY} says why. " +
+        "A college result may also carry ${BorrowingWire.KEY}, from the same filing and cited there: what the " +
+        "students who GRADUATED from that school in the year ${BorrowingWire.COHORT_LABEL_KEY} names actually " +
+        "borrowed. Say that cohort out loud - those graduates, in that year, never this year's freshmen and " +
+        "never all its undergraduates - and name the school as the one reporting it, because these are the " +
+        "school's own answers about itself and not an audited record. Each loan type is a separate figure: " +
+        "keep federal and private apart, never add two loan types together and never present one as a total, " +
+        "and where the school filed no private figure say so rather than leaving federal as the whole story. " +
+        "Every figure here is money owed after graduating, never a price: never subtract any of it from a " +
+        "published price, a net price or a total, and never present it as a cost. It is also a different " +
+        "figure from ${CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName} above, which is a federal-only " +
+        "median over a different cohort with no year - say the two separately, and never add or compare them " +
+        "as though they measured one thing. When the section is absent, $BORROWING_AVAILABILITY_KEY says why, as a " +
+        "$BASIS_KEY code with the $STATEMENT_KEY to say it in. " +
         "A college result may also carry $BREAKDOWN_KEY, the published price split into the parts a family can " +
         "actually influence, keyed by where the student would live: " +
         "${LivingArrangement.ON_CAMPUS.value}, ${LivingArrangement.OFF_CAMPUS.value}, " +

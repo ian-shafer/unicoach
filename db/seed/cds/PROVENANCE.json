@@ -1,25 +1,26 @@
 {
-  "fetched_at": "2026-09-06T02:23:40+00:00",
+  "fetched_at": "2026-09-08T06:08:28+00:00",
   "source": "network",
   "anon_key_source": "scraped",
   "corpus": {
-    "manifest_rows": 4810,
-    "cds_fields_rows": 16767,
-    "documents_selected": 454,
+    "manifest_rows": 4799,
+    "cds_fields_rows": 19086,
+    "documents_selected": 448,
     "dropped": {
       "by_reason": {
-        "aid_policy_flag_junk": 31,
-        "aid_policy_h2_contradictory": 2,
-        "aid_policy_value_junk": 3,
+        "aid_policy_flag_junk": 32,
+        "aid_policy_h2_contradictory": 1,
+        "aid_policy_h5_average_over_no_borrowers": 169,
+        "aid_policy_h5_contradictory": 16,
+        "aid_policy_value_junk": 12,
         "deadline_date_unparseable": 36,
-        "deadline_flag_junk": 26,
+        "deadline_flag_junk": 25,
         "factor_rating_junk": 16,
-        "field_status_not_applicable": 13,
-        "field_status_parse_error": 37,
+        "field_status_not_applicable": 17,
+        "field_status_parse_error": 50,
         "manifest_docs_unusable_no_canonical_year": 35,
         "manifest_docs_unusable_no_ipeds_id": 149,
         "manifest_docs_unusable_sub_institutional": 3,
-        "merit_h2a_contradictory": 1,
         "merit_int_junk": 22
       },
       "samples": {
@@ -46,13 +47,61 @@
           "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[noncustodial_css_profile_required] field_id=[H.805] kind=[text] num=[None] bool=[None] text=[Not Selected]"
         ],
         "aid_policy_h2_contradictory": [
-          "unit_id=[100663] document_id=[8b6b1b66-9440-40c0-983e-f683375e3304] need_fully_met=[348123] aid_awarded=[5196]",
           "unit_id=[166027] document_id=[9030eb3f-36ed-49ca-946a-d4a91e9f8da2] need_fully_met=[936] aid_awarded=[932]"
         ],
+        "aid_policy_h5_average_over_no_borrowers": [
+          "unit_id=[105330] document_id=[414cc632-a33e-4338-9178-0b1279f24a0e] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[105330] document_id=[414cc632-a33e-4338-9178-0b1279f24a0e] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[110361] document_id=[ba31e6aa-b457-4f37-9ff3-27a5296072d0] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[110361] document_id=[ba31e6aa-b457-4f37-9ff3-27a5296072d0] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[110404] document_id=[e3a03667-8e1c-4a4d-8920-b01b5dffe465] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[110592] document_id=[ba8b9dee-2927-47d3-b955-bf074311eeab] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[111948] document_id=[22c8aab8-4fad-48e2-a5f2-d2d4384768c7] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[112260] document_id=[4b7c4222-6ac5-44d6-abcf-e67370d1a2f7] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[115409] document_id=[838ae3ae-34fd-48fb-ab9b-e8733ea924fb] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[122931] document_id=[cf47c0a3-55cd-40c7-8255-b98e36864ceb] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[122931] document_id=[cf47c0a3-55cd-40c7-8255-b98e36864ceb] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[125727] document_id=[a889cc8d-9968-4c24-8288-f3e701a5c2a0] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[128771] document_id=[df79729b-36e6-47fe-a68a-4a72c7fe456a] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[128771] document_id=[df79729b-36e6-47fe-a68a-4a72c7fe456a] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[128902] document_id=[5c9cc96e-dc1a-43dc-871d-99bf7716f07a] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[128902] document_id=[5c9cc96e-dc1a-43dc-871d-99bf7716f07a] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[130314] document_id=[18c308a8-9c6f-4976-ae24-6f0ddf0f7052] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[130314] document_id=[18c308a8-9c6f-4976-ae24-6f0ddf0f7052] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
+          "unit_id=[137546] document_id=[54a326f5-d136-4877-8403-3ca4c5252226] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
+          "unit_id=[137546] document_id=[54a326f5-d136-4877-8403-3ca4c5252226] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]"
+        ],
+        "aid_policy_h5_contradictory": [
+          "unit_id=[100751] document_id=[26375a50-83f9-4f72-9738-e7ee237eb687] fact=[any_loan_borrower_count] borrowers=[2334] graduating_class=[2025]",
+          "unit_id=[123961] document_id=[95989e1b-b46f-4abb-a969-72cb65b148c5] fact=[federal_loan_borrower_count] borrowers=[1386] any_loan_borrowers=[1334]",
+          "unit_id=[134130] document_id=[32052985-7c91-4e85-832b-8661aa05dbef] fact=[any_loan_borrower_count] borrowers=[1056] graduating_class=[29]",
+          "unit_id=[139755] document_id=[afafadc6-324d-464e-9542-f34a35b7764b] fact=[any_loan_borrower_count] borrowers=[1186] graduating_class=[25]",
+          "unit_id=[145637] document_id=[9d28b4a1-6012-465e-a461-fc4d440ef562] fact=[any_loan_borrower_count] borrowers=[2923] graduating_class=[356]",
+          "unit_id=[148131] document_id=[18cedfdf-7f88-47b3-b9cb-97af00c678b1] fact=[any_loan_borrower_count] borrowers=[121] graduating_class=[111]",
+          "unit_id=[162928] document_id=[4a844d1d-241a-475a-b0d9-0b14374c0640] fact=[any_loan_borrower_count] borrowers=[263] graduating_class=[28]",
+          "unit_id=[165015] document_id=[88e42711-54ec-46ce-ade2-4366ac428e6d] fact=[private_loan_borrower_count] borrowers=[50] any_loan_borrowers=[33]",
+          "unit_id=[166629] document_id=[1fb392b0-bd69-4540-97cf-b7a1ff02e0ec] fact=[any_loan_borrower_count] borrowers=[2588] graduating_class=[39]",
+          "unit_id=[186131] document_id=[c23c8661-c4c3-44ea-b5bc-88047b0c76ea] fact=[any_loan_borrower_count] borrowers=[144] graduating_class=[24]",
+          "unit_id=[192703] document_id=[3c34a872-b17a-4f8e-8c54-dea5433e23a6] fact=[any_loan_borrower_count] borrowers=[312] graduating_class=[27]",
+          "unit_id=[195720] document_id=[4c09bc8c-7ec0-42ef-9c37-b5bc606ac634] fact=[any_loan_borrower_count] borrowers=[349] graduating_class=[87]",
+          "unit_id=[213996] document_id=[07fff2fd-54b0-4091-9222-83a14ac49636] fact=[any_loan_borrower_count] borrowers=[321] graduating_class=[27]",
+          "unit_id=[215293] document_id=[acae20b4-cec9-4bef-8a7c-28d5375b27c5] fact=[any_loan_borrower_count] borrowers=[2058] graduating_class=[2024]",
+          "unit_id=[220613] document_id=[e1225e15-3cba-4f97-b608-34a6a6902325] fact=[private_loan_borrower_count] borrowers=[24745] graduating_class=[447]",
+          "unit_id=[221847] document_id=[0c376b16-dc96-4233-9aab-44315ba086a7] fact=[private_loan_borrower_count] borrowers=[32036] graduating_class=[1242]"
+        ],
         "aid_policy_value_junk": [
+          "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] fact=[any_loan_debt_avg_usd] field_id=[H.511] kind=[text] num=[None] bool=[None] text=[Average in $]",
           "unit_id=[168430] document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] fact=[aid_awarded_freshmen_count] field_id=[H.204] kind=[number] num=[3126429.42] bool=[None] text=[3126429.42]",
+          "unit_id=[168430] document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] fact=[private_loan_debt_avg_usd] field_id=[H.515] kind=[text] num=[None] bool=[None] text=[Less Than Full-time Undergrad]",
           "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[avg_need_based_grant_usd] field_id=[H.211] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
-          "unit_id=[228705] document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7] fact=[avg_need_based_grant_usd] field_id=[H.211] kind=[text] num=[None] bool=[None] text=[Nearest $1]"
+          "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[any_loan_debt_avg_usd] field_id=[H.511] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
+          "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[federal_loan_debt_avg_usd] field_id=[H.512] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
+          "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[institutional_loan_debt_avg_usd] field_id=[H.513] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
+          "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[state_loan_debt_avg_usd] field_id=[H.514] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
+          "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[private_loan_debt_avg_usd] field_id=[H.515] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
+          "unit_id=[228705] document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7] fact=[avg_need_based_grant_usd] field_id=[H.211] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
+          "unit_id=[243780] document_id=[f2b9b618-6522-480a-97bd-b2c72b0f3eef] fact=[graduating_class_count] field_id=[H.401] kind=[number] num=[2885.60112280702] bool=[None] text=[2885.60112280702]",
+          "unit_id=[243780] document_id=[f2b9b618-6522-480a-97bd-b2c72b0f3eef] fact=[state_loan_debt_avg_usd] field_id=[H.514] kind=[text] num=[None] bool=[None] text=[Less Than Full-time Undergrad]"
         ],
         "deadline_date_unparseable": [
           "unit_id=[122755] document_id=[5d06b1fb-8045-4b7a-827b-84d4243c27c9] field_id=[C.2104] value=[15-week]",
@@ -129,9 +178,14 @@
           "document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[C.2203]",
           "document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[C.2204]",
           "document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[C.2205]",
+          "document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[H.503]",
+          "document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[H.504]",
+          "document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[H.513]",
+          "document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[H.514]",
           "document_id=[c10f4b42-f127-4b7a-a990-c0bbac571835] field_id=[C.711]"
         ],
         "field_status_parse_error": [
+          "document_id=[017815da-30a8-4b0c-9c39-5ba30ed1d7e1] field_id=[H.503]",
           "document_id=[04c1a634-5f17-4722-83d7-f1662f5bc04e] field_id=[H.209]",
           "document_id=[09f974b1-0f0e-46ab-8765-2a035c7d2c7c] field_id=[H.209]",
           "document_id=[14592f56-94e8-4593-9210-f243e9f21f78] field_id=[H.201]",
@@ -144,14 +198,13 @@
           "document_id=[2866e167-6ad1-4231-96cb-7778fd05a21e] field_id=[H.204]",
           "document_id=[2866e167-6ad1-4231-96cb-7778fd05a21e] field_id=[H.208]",
           "document_id=[2866e167-6ad1-4231-96cb-7778fd05a21e] field_id=[H.209]",
+          "document_id=[2efb875c-b6f8-400b-831c-1b1b282c113c] field_id=[H.502]",
+          "document_id=[2efb875c-b6f8-400b-831c-1b1b282c113c] field_id=[H.503]",
+          "document_id=[2efb875c-b6f8-400b-831c-1b1b282c113c] field_id=[H.504]",
+          "document_id=[2efb875c-b6f8-400b-831c-1b1b282c113c] field_id=[H.505]",
+          "document_id=[30bcb610-7e0b-4c33-8d25-0adcc4b03f14] field_id=[H.513]",
           "document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] field_id=[H.209]",
-          "document_id=[4e6b2a24-f143-4dd4-8640-8cbeae48bdcd] field_id=[H.209]",
-          "document_id=[636cbd35-731f-4769-ade9-4f4235509a89] field_id=[H.209]",
-          "document_id=[738de6c4-200a-4253-9204-0400d863cab9] field_id=[H.208]",
-          "document_id=[79fe97fc-0b95-4443-adb4-48156ec752d2] field_id=[H.209]",
-          "document_id=[812505fd-f7fb-4934-b24e-b0528635de7b] field_id=[H.209]",
-          "document_id=[83625ee3-be46-423d-9ed0-39982b37306f] field_id=[H.201]",
-          "document_id=[83625ee3-be46-423d-9ed0-39982b37306f] field_id=[H.204]"
+          "document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] field_id=[H.505]"
         ],
         "manifest_docs_unusable_no_canonical_year": [
           "document_id=[06541549-da8d-496c-9965-7e3f524a8c1b]",
@@ -202,9 +255,6 @@
           "document_id=[6456e48a-e6b3-44ff-b62a-3f9cd74f9e36]",
           "document_id=[9dc325ce-eeba-47ba-874a-f31c414d65a5]"
         ],
-        "merit_h2a_contradictory": [
-          "unit_id=[212009] document_id=[9b736e6f-89d6-4a7a-b216-b1e59ef931d2] freshmen=[646] merit_count=[675]"
-        ],
         "merit_int_junk": [
           "unit_id=[107558] document_id=[d529dd95-5e84-4236-937e-209dee6c0f6f] field_id=[H.2A02] value=[12758.62]",
           "unit_id=[110538] document_id=[ca78ae9f-6758-4aa0-b41f-aa0e2574a553] field_id=[H.201] value=[2.151]",
@@ -233,8 +283,8 @@
           "by_reason": {
             "documents_skipped": 17,
             "fell_back_to_older_doc": 17,
-            "passed_over": 101,
-            "unreported_in_every_doc": 63
+            "passed_over": 100,
+            "unreported_in_every_doc": 65
           },
           "samples": {
             "fell_back_to_older_doc": [
@@ -259,13 +309,14 @@
             "passed_over": [
               "unit_id=[109651] document_id=[239bc884-621d-4eb1-8969-5284d25f6eec] reasons=[nothing_reported]",
               "unit_id=[110565] document_id=[4981c7b4-6b98-4e6f-b8cc-ea05e098b9a9] reasons=[factor_rating_junk]",
+              "unit_id=[110583] document_id=[ce35c5d3-cc4d-4651-a5d1-dfd1597414ee] reasons=[nothing_reported]",
               "unit_id=[110635] document_id=[74a1d1a8-cf76-4061-a6db-ec409a11bef5] reasons=[factor_rating_junk]",
-              "unit_id=[120254] document_id=[22d6eb11-8ef2-49af-885c-7d05bf1851f3] reasons=[nothing_reported]",
               "unit_id=[120254] document_id=[1ade1c4f-7a65-4ddf-a5b5-46719d8d9324] reasons=[nothing_reported]",
               "unit_id=[120403] document_id=[46ddd02f-6dd6-42d2-b478-3d12d1002d34] reasons=[nothing_reported]",
               "unit_id=[121345] document_id=[7da3f8d7-7cf0-47a3-8761-5724a1ccaedf] reasons=[nothing_reported]",
               "unit_id=[122409] document_id=[24b75759-ca04-45c5-bb76-aba91bdf1399] reasons=[nothing_reported]",
               "unit_id=[122409] document_id=[a710563a-41a9-4b68-8d20-5fd19353bb55] reasons=[nothing_reported]",
+              "unit_id=[127741] document_id=[8a832c58-29c8-4ffa-bc6f-1511a71ba8cf] reasons=[nothing_reported]",
               "unit_id=[128771] document_id=[df79729b-36e6-47fe-a68a-4a72c7fe456a] reasons=[factor_rating_junk]",
               "unit_id=[128771] document_id=[b3761ef4-e7b2-45e8-8c0d-2029472e079a] reasons=[factor_rating_junk]",
               "unit_id=[130493] document_id=[37e02d49-9323-4ff5-83c5-8017adcd9d09] reasons=[factor_rating_junk]",
@@ -275,16 +326,17 @@
               "unit_id=[140252] document_id=[0b1183e9-272e-4cdd-acbc-40449e1ff314] reasons=[factor_rating_junk]",
               "unit_id=[141334] document_id=[911aabc6-52f7-45af-bdbb-f29cdaa820c9] reasons=[nothing_reported]",
               "unit_id=[152318] document_id=[b631d032-74cc-4836-9bf8-d3e0aba142ff] reasons=[nothing_reported]",
-              "unit_id=[152673] document_id=[e4ad9982-8255-4d42-8b3f-0359a3c7a8fb] reasons=[factor_rating_junk]",
-              "unit_id=[152673] document_id=[a3bcb7e0-f643-4c8f-965f-9ce5450f9f67] reasons=[factor_rating_junk]"
+              "unit_id=[152390] document_id=[87d0709c-a0ec-4e53-9239-c81409d3406d] reasons=[nothing_reported]"
             ],
             "unreported_in_every_doc": [
               "unit_id=[109651]",
               "unit_id=[110565]",
+              "unit_id=[110583]",
               "unit_id=[120254]",
               "unit_id=[120403]",
               "unit_id=[121345]",
               "unit_id=[122409]",
+              "unit_id=[127741]",
               "unit_id=[128771]",
               "unit_id=[130493]",
               "unit_id=[130590]",
@@ -292,88 +344,76 @@
               "unit_id=[140252]",
               "unit_id=[141334]",
               "unit_id=[152318]",
+              "unit_id=[152390]",
               "unit_id=[152673]",
               "unit_id=[155317]",
               "unit_id=[155511]",
-              "unit_id=[156125]",
-              "unit_id=[162584]",
-              "unit_id=[163286]",
-              "unit_id=[164076]"
+              "unit_id=[156125]"
             ]
           }
         },
         "aid_policy": {
           "by_reason": {
-            "documents_skipped": 14,
-            "fell_back_to_older_doc": 14,
-            "no_value_reported": 2,
-            "passed_over": 135,
-            "unreported_in_every_doc": 102
+            "documents_skipped": 9,
+            "fell_back_to_older_doc": 9,
+            "passed_over": 76,
+            "unreported_in_every_doc": 61
           },
           "samples": {
             "fell_back_to_older_doc": [
               "unit_id=[102094] document_id=[67d81846-92cd-4e33-ac8e-c94147962cf0]",
               "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce]",
+              "unit_id=[126614] document_id=[bc92eac7-99e9-4770-a4b2-8c83394be23d]",
               "unit_id=[142115] document_id=[aa506b16-209a-4837-9766-c1c80997acd1]",
               "unit_id=[143084] document_id=[b4bf4751-c54d-4e6b-983b-5d540acc5d4d]",
-              "unit_id=[143118] document_id=[e2384bc0-57c3-4aa4-a618-9c9fd9aeed96]",
-              "unit_id=[157085] document_id=[55b6480e-cf62-43cb-beea-67dcf2ed0279]",
+              "unit_id=[165015] document_id=[c7dfe2c1-244d-4b90-9f3d-33bb97a9673e]",
               "unit_id=[166027] document_id=[0e482995-83a3-4dcf-92f1-296ca4e8cf94]",
-              "unit_id=[168148] document_id=[7a5bb196-7973-4f7f-87c1-adc699248073]",
-              "unit_id=[168342] document_id=[5d262e0c-6d68-46b4-94a2-67de77259e92]",
-              "unit_id=[196015] document_id=[5afb8acc-d3dc-49a8-b91f-70b972da4b75]",
-              "unit_id=[211440] document_id=[4fea1316-20cf-4875-ab27-ee557b1239cd]",
               "unit_id=[217420] document_id=[6bca036d-98a7-4592-b9c7-b68c48566e6d]",
-              "unit_id=[218964] document_id=[fb88632c-db75-405a-aaff-a61425951fa7]",
               "unit_id=[219602] document_id=[1d3f9717-72a2-4137-a9ca-d74c1b10b76a]"
             ],
-            "no_value_reported": [
-              "unit_id=[228705] document_id=[191a6138-581c-49bc-b6d2-225cdd63a4b7]",
-              "unit_id=[243780] document_id=[f2b9b618-6522-480a-97bd-b2c72b0f3eef]"
-            ],
             "passed_over": [
-              "unit_id=[100663] document_id=[8b6b1b66-9440-40c0-983e-f683375e3304] reasons=[aid_policy_h2_contradictory]",
               "unit_id=[102094] document_id=[cd34785d-8734-4b24-8401-1906fdc2e4bb] reasons=[nothing_reported]",
-              "unit_id=[106397] document_id=[9284e69c-4522-4f55-ba4d-a4f096bede9d] reasons=[nothing_reported]",
               "unit_id=[109651] document_id=[239bc884-621d-4eb1-8969-5284d25f6eec] reasons=[nothing_reported]",
-              "unit_id=[110404] document_id=[e3a03667-8e1c-4a4d-8920-b01b5dffe465] reasons=[nothing_reported]",
-              "unit_id=[110404] document_id=[c330608c-e3bf-439e-b9e9-0f52df09aa6c] reasons=[nothing_reported]",
-              "unit_id=[110422] document_id=[6115c693-b459-4ae6-af0a-995d97a5361e] reasons=[nothing_reported]",
               "unit_id=[110565] document_id=[4981c7b4-6b98-4e6f-b8cc-ea05e098b9a9] reasons=[nothing_reported]",
               "unit_id=[110617] document_id=[76174b8a-31fd-410c-ac76-ec76a8373ff5] reasons=[nothing_reported]",
               "unit_id=[110635] document_id=[74a1d1a8-cf76-4061-a6db-ec409a11bef5] reasons=[nothing_reported]",
               "unit_id=[110662] document_id=[822fe1f7-d348-42b6-8b98-a1a42c3933e6] reasons=[nothing_reported]",
               "unit_id=[110714] document_id=[5d7b1ca8-80ce-4f40-8d60-ad06257befdc] reasons=[nothing_reported]",
-              "unit_id=[111948] document_id=[22c8aab8-4fad-48e2-a5f2-d2d4384768c7] reasons=[nothing_reported]",
               "unit_id=[117946] document_id=[c0f11f94-5e90-47f6-83cb-288bc7122b66] reasons=[nothing_reported]",
               "unit_id=[121345] document_id=[7da3f8d7-7cf0-47a3-8761-5724a1ccaedf] reasons=[nothing_reported]",
-              "unit_id=[122409] document_id=[24b75759-ca04-45c5-bb76-aba91bdf1399] reasons=[nothing_reported]",
-              "unit_id=[122409] document_id=[a710563a-41a9-4b68-8d20-5fd19353bb55] reasons=[nothing_reported]",
+              "unit_id=[122612] document_id=[c3c80024-76e2-4c6b-82c2-db04a4da46bf] reasons=[nothing_reported]",
               "unit_id=[126614] document_id=[3307988e-e14c-4f4a-aaf3-879e02c5e962] reasons=[nothing_reported]",
-              "unit_id=[126614] document_id=[bc92eac7-99e9-4770-a4b2-8c83394be23d] reasons=[nothing_reported]",
-              "unit_id=[127200] document_id=[d57ecc9e-4b6f-4e78-9f81-5d7df94baafc] reasons=[nothing_reported]"
+              "unit_id=[127200] document_id=[d57ecc9e-4b6f-4e78-9f81-5d7df94baafc] reasons=[nothing_reported]",
+              "unit_id=[128498] document_id=[82dcae6b-9f2e-4f19-8a53-ff68e2d4c199] reasons=[nothing_reported]",
+              "unit_id=[130590] document_id=[2e246db1-9db5-4c26-b17b-1939c8692ec2] reasons=[nothing_reported]",
+              "unit_id=[131159] document_id=[14e284c0-d5a4-4a0d-8182-2d78a9046b4f] reasons=[nothing_reported]",
+              "unit_id=[133881] document_id=[bc073508-c771-4c11-bf23-09ea9426e0c4] reasons=[nothing_reported]",
+              "unit_id=[133951] document_id=[5547814b-7b28-4383-a345-db8de786da76] reasons=[nothing_reported]",
+              "unit_id=[137078] document_id=[4f964bc3-874f-40be-92f0-d28987e6ef79] reasons=[nothing_reported]",
+              "unit_id=[139940] document_id=[1f914464-1f2c-4668-8717-61dcd8a808d0] reasons=[nothing_reported]",
+              "unit_id=[140252] document_id=[0b1183e9-272e-4cdd-acbc-40449e1ff314] reasons=[nothing_reported]"
             ],
             "unreported_in_every_doc": [
-              "unit_id=[100663]",
-              "unit_id=[106397]",
               "unit_id=[109651]",
-              "unit_id=[110404]",
-              "unit_id=[110422]",
               "unit_id=[110565]",
               "unit_id=[110617]",
               "unit_id=[110662]",
               "unit_id=[110714]",
-              "unit_id=[111948]",
               "unit_id=[117946]",
               "unit_id=[121345]",
-              "unit_id=[122409]",
-              "unit_id=[126614]",
+              "unit_id=[122612]",
               "unit_id=[127200]",
               "unit_id=[128498]",
               "unit_id=[130590]",
-              "unit_id=[130943]",
               "unit_id=[131159]",
-              "unit_id=[133669]"
+              "unit_id=[133881]",
+              "unit_id=[133951]",
+              "unit_id=[137078]",
+              "unit_id=[139940]",
+              "unit_id=[140252]",
+              "unit_id=[141334]",
+              "unit_id=[145600]",
+              "unit_id=[162584]"
             ]
           }
         },
@@ -381,8 +421,8 @@
           "by_reason": {
             "documents_skipped": 2,
             "fell_back_to_older_doc": 2,
-            "passed_over": 135,
-            "unreported_in_every_doc": 120
+            "passed_over": 143,
+            "unreported_in_every_doc": 128
           },
           "samples": {
             "fell_back_to_older_doc": [
@@ -395,6 +435,7 @@
               "unit_id=[101879] document_id=[2ae04793-a888-4499-a150-a5353cd2785b] reasons=[nothing_reported]",
               "unit_id=[107558] document_id=[d529dd95-5e84-4236-937e-209dee6c0f6f] reasons=[nothing_reported]",
               "unit_id=[110565] document_id=[4981c7b4-6b98-4e6f-b8cc-ea05e098b9a9] reasons=[nothing_reported]",
+              "unit_id=[110583] document_id=[ce35c5d3-cc4d-4651-a5d1-dfd1597414ee] reasons=[nothing_reported]",
               "unit_id=[110592] document_id=[ba8b9dee-2927-47d3-b955-bf074311eeab] reasons=[nothing_reported]",
               "unit_id=[110617] document_id=[76174b8a-31fd-410c-ac76-ec76a8373ff5] reasons=[nothing_reported]",
               "unit_id=[110714] document_id=[5d7b1ca8-80ce-4f40-8d60-ad06257befdc] reasons=[nothing_reported]",
@@ -402,20 +443,20 @@
               "unit_id=[115755] document_id=[3d37b286-213c-4320-bb1d-e407eb82aa56] reasons=[nothing_reported]",
               "unit_id=[122931] document_id=[cf47c0a3-55cd-40c7-8255-b98e36864ceb] reasons=[deadline_date_unparseable]",
               "unit_id=[127200] document_id=[d57ecc9e-4b6f-4e78-9f81-5d7df94baafc] reasons=[nothing_reported]",
+              "unit_id=[127741] document_id=[8a832c58-29c8-4ffa-bc6f-1511a71ba8cf] reasons=[nothing_reported]",
               "unit_id=[128498] document_id=[82dcae6b-9f2e-4f19-8a53-ff68e2d4c199] reasons=[nothing_reported]",
               "unit_id=[130314] document_id=[18c308a8-9c6f-4976-ae24-6f0ddf0f7052] reasons=[deadline_flag_junk]",
               "unit_id=[130943] document_id=[dce1d6c8-c0d8-4ad6-bfc9-e4b5e129b73e] reasons=[nothing_reported]",
               "unit_id=[131159] document_id=[14e284c0-d5a4-4a0d-8182-2d78a9046b4f] reasons=[nothing_reported]",
               "unit_id=[133492] document_id=[2368b6f1-5318-4f4b-bfd2-9b4213a2c6b1] reasons=[deadline_flag_junk]",
-              "unit_id=[133669] document_id=[c3d5df48-f829-45ad-ba03-102e5dfa76d3] reasons=[nothing_reported]",
-              "unit_id=[133881] document_id=[bc073508-c771-4c11-bf23-09ea9426e0c4] reasons=[nothing_reported]",
-              "unit_id=[133951] document_id=[5547814b-7b28-4383-a345-db8de786da76] reasons=[nothing_reported]"
+              "unit_id=[133669] document_id=[c3d5df48-f829-45ad-ba03-102e5dfa76d3] reasons=[nothing_reported]"
             ],
             "unreported_in_every_doc": [
               "unit_id=[100830]",
               "unit_id=[101879]",
               "unit_id=[107558]",
               "unit_id=[110565]",
+              "unit_id=[110583]",
               "unit_id=[110592]",
               "unit_id=[110617]",
               "unit_id=[110714]",
@@ -423,15 +464,14 @@
               "unit_id=[115755]",
               "unit_id=[122931]",
               "unit_id=[127200]",
+              "unit_id=[127741]",
               "unit_id=[128498]",
               "unit_id=[130314]",
               "unit_id=[130943]",
               "unit_id=[131159]",
               "unit_id=[133492]",
               "unit_id=[133669]",
-              "unit_id=[133881]",
-              "unit_id=[133951]",
-              "unit_id=[137078]"
+              "unit_id=[133881]"
             ]
           }
         },
@@ -439,8 +479,8 @@
           "by_reason": {
             "documents_skipped": 8,
             "fell_back_to_older_doc": 8,
-            "passed_over": 86,
-            "unreported_in_every_doc": 69
+            "passed_over": 87,
+            "unreported_in_every_doc": 70
           },
           "samples": {
             "fell_back_to_older_doc": [
@@ -456,6 +496,7 @@
             "passed_over": [
               "unit_id=[109651] document_id=[239bc884-621d-4eb1-8969-5284d25f6eec] reasons=[nothing_reported]",
               "unit_id=[110565] document_id=[4981c7b4-6b98-4e6f-b8cc-ea05e098b9a9] reasons=[nothing_reported]",
+              "unit_id=[110583] document_id=[ce35c5d3-cc4d-4651-a5d1-dfd1597414ee] reasons=[nothing_reported]",
               "unit_id=[110617] document_id=[76174b8a-31fd-410c-ac76-ec76a8373ff5] reasons=[nothing_reported]",
               "unit_id=[110635] document_id=[74a1d1a8-cf76-4061-a6db-ec409a11bef5] reasons=[nothing_reported]",
               "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] reasons=[nothing_reported]",
@@ -464,6 +505,7 @@
               "unit_id=[117946] document_id=[c0f11f94-5e90-47f6-83cb-288bc7122b66] reasons=[nothing_reported]",
               "unit_id=[121345] document_id=[7da3f8d7-7cf0-47a3-8761-5724a1ccaedf] reasons=[nothing_reported]",
               "unit_id=[127200] document_id=[d57ecc9e-4b6f-4e78-9f81-5d7df94baafc] reasons=[nothing_reported]",
+              "unit_id=[127741] document_id=[8a832c58-29c8-4ffa-bc6f-1511a71ba8cf] reasons=[nothing_reported]",
               "unit_id=[133881] document_id=[bc073508-c771-4c11-bf23-09ea9426e0c4] reasons=[nothing_reported]",
               "unit_id=[133951] document_id=[5547814b-7b28-4383-a345-db8de786da76] reasons=[nothing_reported]",
               "unit_id=[137078] document_id=[4f964bc3-874f-40be-92f0-d28987e6ef79] reasons=[nothing_reported]",
@@ -471,13 +513,12 @@
               "unit_id=[140252] document_id=[0b1183e9-272e-4cdd-acbc-40449e1ff314] reasons=[nothing_reported]",
               "unit_id=[142115] document_id=[d2981bd1-078d-4230-b1e3-78be4987d5b7] reasons=[nothing_reported]",
               "unit_id=[143084] document_id=[33d77798-ea16-4f89-ad7d-832eac59fa8d] reasons=[nothing_reported]",
-              "unit_id=[145600] document_id=[db73b984-fe13-4508-bfa9-f931635561e1] reasons=[nothing_reported]",
-              "unit_id=[152318] document_id=[b631d032-74cc-4836-9bf8-d3e0aba142ff] reasons=[nothing_reported]",
-              "unit_id=[155511] document_id=[f102b8e0-ef88-4324-b836-9ae665d03ad1] reasons=[nothing_reported]"
+              "unit_id=[145600] document_id=[db73b984-fe13-4508-bfa9-f931635561e1] reasons=[nothing_reported]"
             ],
             "unreported_in_every_doc": [
               "unit_id=[109651]",
               "unit_id=[110565]",
+              "unit_id=[110583]",
               "unit_id=[110617]",
               "unit_id=[110635]",
               "unit_id=[110662]",
@@ -485,6 +526,7 @@
               "unit_id=[117946]",
               "unit_id=[121345]",
               "unit_id=[127200]",
+              "unit_id=[127741]",
               "unit_id=[133881]",
               "unit_id=[133951]",
               "unit_id=[137078]",
@@ -492,10 +534,8 @@
               "unit_id=[140252]",
               "unit_id=[145600]",
               "unit_id=[152318]",
-              "unit_id=[155511]",
-              "unit_id=[164076]",
-              "unit_id=[164216]",
-              "unit_id=[165015]"
+              "unit_id=[152390]",
+              "unit_id=[155511]"
             ]
           }
         }
@@ -503,15 +543,15 @@
     }
   },
   "rows": {
-    "merit-aid.csv": 371,
-    "admission-factors.csv": 377,
-    "deadlines.csv": 1033,
-    "aid_policy.csv": 1807
+    "merit-aid.csv": 368,
+    "admission-factors.csv": 373,
+    "deadlines.csv": 846,
+    "aid_policy.csv": 3568
   },
   "sha256": {
-    "merit-aid.csv": "b785d368cc9b8ce6dd6b432f00ffdc1f7467b635cdda0d95ee03c29f425861c7",
-    "admission-factors.csv": "9fb7858067375d4a477d8f37eb4b1f3c074932f5513bcd127d01616abea6fda9",
-    "deadlines.csv": "4fa4691848e0b307d2bc9b70931ddce5a4b9bb9c5d8f9d383bfde020f4601736",
-    "aid_policy.csv": "5ab97ef8c87c82d394f31306d7ffdda37ef635f825b357ec04d1a87cc7af42fe"
+    "merit-aid.csv": "b551a82ed25dd7911c166ca78c1ef420b7771805fe5ff4e949b294a8ca1832dc",
+    "admission-factors.csv": "98811ebcab2d1bae3628cc5db21bc6068e070b33705d3b1aba90affa34ec1525",
+    "deadlines.csv": "6d32f9c9d952d0bd29429d5d39c54b0b1301b1eea025f4d22ac1cce05c4e4618",
+    "aid_policy.csv": "fa8bdb3958a507d8d540a43c3427df308116aa624a3efac13f168e9e562097da"
   }
 }

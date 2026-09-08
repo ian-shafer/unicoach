@@ -158,6 +158,7 @@ class ComparisonBasisTest {
       offersOnCampusHousing = null,
       meritAid = null,
       aidPolicy = null,
+      borrowing = BorrowingCoverage.NoFiling,
       chosen = chosen,
     )
 

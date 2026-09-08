@@ -1,6 +1,8 @@
 package ed.unicoach.web
 
 import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
+import ed.unicoach.coaching.costs.BorrowingCoverage
+import ed.unicoach.coaching.costs.BorrowingWire
 import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
@@ -10,16 +12,24 @@ import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
+import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.BorrowerCounts
+import ed.unicoach.db.models.CollegeBorrowing
+import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LoanType
 import ed.unicoach.web.render.NOT_REPORTED
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.server.testing.testApplication
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -711,6 +721,291 @@ class CostReportPageTest {
 
     assertTrue(body.contains(NOT_REPORTED), "a genuinely unreported figure is still labelled as one")
   }
+
+  // ---------------------------------------------------------------------------
+  // Borrowing at graduation (RFC 175, D9): two publishers, two vintages, one
+  // section -- and the rules that keeps honest.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the report says the federal debt figure undated and the school's own borrowing with its year`() {
+    val body =
+      render(
+        costProfile(
+          listOf(
+            costFixtureWithBorrowing(),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    // The Scorecard half is unchanged: federal loans, and no year, because no
+    // source we hold dates it.
+    assertTrue(body.contains("carried a median of \$21,000 in federal loans"), body)
+    assertTrue(body.contains("The source publishes no year for this figure."), body)
+    // The CDS half names the school as the claimant and carries its filing
+    // year -- these are self-reported answers, not administrative records.
+    assertTrue(body.contains("Borrowing College reports that the students who graduated in 2024-25"), body)
+    assertTrue(body.contains("Borrowing College's 2024-25 Common Data Set"), body)
+    // The two are never summed and never differenced. Neither the total nor
+    // the difference of the two debt figures appears anywhere on the page.
+    listOf("41,747", "64,865", "64,612", "22,865", "\$253").forEach {
+      assertFalse(body.contains(it), "the two debt figures were combined: [$it]")
+    }
+    assertTrue(
+      body.contains("never added together and never compared with each other"),
+      "the sources section says the two may not be combined: [$body]",
+    )
+  }
+
+  @Test
+  fun `a school that filed no private figure is said to have filed none`() {
+    val body =
+      render(
+        costProfile(
+          listOf(
+            costFixtureWithBorrowing(
+              borrowing =
+                borrowingFixture(
+                  "Borrowing College",
+                  averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+                  borrowersByLoanType = mapOf(LoanType.FEDERAL to 394),
+                ),
+            ),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    assertTrue(body.contains("reports no average for private loans"), body)
+    // The page says the CLAIM D9 mandates and stops there: the words are
+    // BorrowingWire's, so the page and the coach cannot describe this silence
+    // differently, and the page adds no advice of its own.
+    assertTrue(
+      body.contains(BorrowingWire.privateNotFiledLabel(borrowingFixture("Borrowing College").figures.source)),
+      "the absence sentence is the wire's, said whole: [$body]",
+    )
+    assertFalse(body.contains("\$43,865"), "no private figure is invented for a school that filed none")
+  }
+
+  @Test
+  fun `a private cell we could not read is said as OUR gap, beside the federal figure we did read`() {
+    val body =
+      render(
+        costProfile(
+          listOf(
+            costFixtureWithBorrowing(
+              borrowing =
+                borrowingFixture(
+                  "Borrowing College",
+                  averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+                  borrowersByLoanType = mapOf(LoanType.FEDERAL to 394),
+                  notReadLoanTypes = setOf(LoanType.PRIVATE),
+                ),
+            ),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    // The half we read is rendered.
+    assertTrue(body.contains("\$20,747"), "the federal average we did read must still render: [$body]")
+    // The half we did not is OUR gap, in the wire's own words.
+    val citation = borrowingFixture("Borrowing College").figures.source
+    assertTrue(
+      body.contains(BorrowingWire.notReadByUsLabel(LoanType.PRIVATE, citation)),
+      "the unread private cell is said as ours, said whole: [$body]",
+    )
+    // And never as the school having filed nothing: that claim is false here.
+    assertFalse(
+      body.contains("reports no average for private loans"),
+      "our own unread cell was spoken as the school's silence (RFC 175 D7): [$body]",
+    )
+  }
+
+  @Test
+  fun `no borrowing sentence on the page states a school's figure without naming the school`() {
+    // The FEDERAL-ONLY school, so the private-absence sentence is on the page
+    // as well: it is the one borrowing sentence that never says "graduated",
+    // and a sweep keyed on that word would have exempted it silently.
+    val body =
+      render(
+        costProfile(
+          listOf(
+            costFixtureWithBorrowing(
+              borrowing =
+                borrowingFixture(
+                  "Borrowing College",
+                  averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+                  borrowersByLoanType = mapOf(LoanType.FEDERAL to 394),
+                ),
+            ),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    // D10: every borrowing sentence is the school's own claim. The page is
+    // read without a coach beside it, so an unattributed figure here reads as
+    // an administrative fact about the school. Swept by the markers of the
+    // sentences BorrowingWire can emit, never by a word one of them happens to
+    // contain -- the next sentence must join the sweep by being written, not
+    // by being remembered.
+    // The markers are pinned to the wire's own sentences FIRST: a marker that
+    // no longer appears in the sentence it stands for is one the sweep would
+    // skip in silence, which is the failure this test exists to prevent.
+    // The PAGE's own school, because these same strings are now the sweep's
+    // subject below: the sentences the wire builds for this citation are
+    // exactly the sentences the page was given to render.
+    val citation = borrowingFixture("Borrowing College").figures.source
+    val wireSentences =
+      listOf(
+        BorrowingWire.cohortLabel(citation),
+        BorrowingWire.averageDebtLabel(LoanType.FEDERAL, 20747, citation),
+        BorrowingWire.shareLabel(
+          LoanType.FEDERAL,
+          BorrowerCounts.Counted(borrowers = 394, graduatingClass = 1000),
+          Share.ofOrNull(part = 394, whole = 1000)!!,
+          citation,
+        ),
+        BorrowingWire.privateNotFiledLabel(citation),
+        "Source: ${citation.citedAs}.",
+      )
+    assertEquals(
+      emptyList(),
+      borrowingMarkers.filterNot { marker -> wireSentences.any { it.contains(marker) } },
+      "a marker no longer matches the BorrowingWire sentence it stands for",
+    )
+
+    // Swept over the WIRE's own sentences -- the unescaped strings the page is
+    // given -- and not over text scraped back out of the markup. A hand-rolled
+    // `<[^>]+>` tag-strip is not an HTML parser and decodes no entity, so the
+    // first school name carrying `&` ("Texas A&M" renders as "Texas A&amp;M")
+    // would fail this guard for a reason that has nothing to do with
+    // attribution. The marker pin above already proves this list is the whole
+    // list.
+    val spoken = wireSentences.filter { body.contains(it) }
+    assertEquals(
+      wireSentences,
+      spoken,
+      "every borrowing sentence this school's filing supports must render: [$body]",
+    )
+    assertEquals(
+      emptyList(),
+      spoken.filterNot { it.contains("Borrowing College") || it.startsWith("Source:") },
+      "a Common Data Set borrowing figure was stated without naming the school as the claimant",
+    )
+  }
+
+  @Test
+  fun `the page and the coach speak the loan types in ONE order, federal first`() {
+    val borrowing =
+      borrowingFixture(
+        "Borrowing College",
+        averageDebtUsdByLoanType = mapOf(LoanType.ANY to 27202, LoanType.FEDERAL to 20747),
+        borrowersByLoanType = emptyMap(),
+      )
+    val body = render(costProfile(listOf(costFixtureWithBorrowing(borrowing = borrowing)), answeredMoney()))
+
+    // Every type is spoken, and no type is spoken twice: the order is DERIVED
+    // from the vocabulary, so a sixth loan type joins both surfaces by being
+    // declared rather than by each list remembering it.
+    assertEquals(LoanType.entries.toSet(), LoanType.SPOKEN_ORDER.toSet())
+    assertEquals(LoanType.entries.size, LoanType.SPOKEN_ORDER.size)
+    assertEquals(listOf(LoanType.FEDERAL, LoanType.PRIVATE), LoanType.SPOKEN_ORDER.take(2))
+
+    // And the page renders exactly the wire's list, in the wire's order: the
+    // two surfaces used to hold two hand-written lists that disagreed, so the
+    // same filing was narrated federal-first on the page and any-loan-first in
+    // the payload.
+    val sentences = BorrowingWire.listSentences(borrowing)
+    assertEquals(
+      sentences,
+      sentences.sortedBy { body.indexOf(it) },
+      "the page renders the wire's sentences out of the wire's order: [$body]",
+    )
+    assertTrue(
+      body.indexOf("borrowed federal loans") < body.indexOf("borrowed a loan of any kind"),
+      "the federal figure is said first, because the point of the section is that it is half the picture",
+    )
+  }
+
+  @Test
+  fun `a filing whose only borrowing cells contradict each other renders no borrowing section`() {
+    // The state built by [BorrowingCoverage.of] itself, not a hand-made
+    // Reported: this is the live D6 shape (ipeds 166629 -- 39 graduates, 2588
+    // federal borrowers), and the page must be given exactly what the read
+    // produces from it.
+    val coverage =
+      BorrowingCoverage.of(
+        "Borrowing College",
+        CollegeBorrowing(
+          collegeId = CollegeId(UUID.randomUUID()),
+          academicYear = AcademicYear(2024),
+          sourceUrl = "https://example.test/cds.pdf",
+          archiveUrl = null,
+          graduatingClass = 39,
+          averageDebtUsdByLoanType = emptyMap(),
+          borrowersByLoanType = mapOf(LoanType.FEDERAL to 2588),
+          gapStatusByLoanType = emptyMap(),
+        ),
+      )
+    val block = assertIs<BorrowingCoverage.NoBlock>(coverage)
+    assertEquals(setOf(LoanType.FEDERAL), block.contradicted)
+
+    val body = render(costProfile(listOf(costFixtureWithBorrowing(borrowing = coverage)), answeredMoney()))
+
+    // Neither cell of the pair is spoken, and no share is derived from it.
+    listOf("2,588", "2588", "39 students", "6,636%").forEach {
+      assertFalse(body.contains(it), "a contradicted borrowing figure reached the page: [$it] in [$body]")
+    }
+    // And the section is absent whole: the page explains no coverage of ours,
+    // so it says nothing here rather than saying it in the school's voice.
+    assertEquals(
+      emptyList(),
+      borrowingMarkers.filter { body.contains(it) && it != "Source:" },
+      "a borrowing sentence was rendered for a filing with nothing speakable in it: [$body]",
+    )
+  }
+
+  /**
+   * One marker per sentence [BorrowingWire] can put on the report page, in
+   * render order: the cohort line, an average, a share, the private-absence
+   * claim, and the citation.
+   *
+   * A LIST of markers rather than a substring guess: the sweep above keyed on
+   * the word "graduated" once, which exempted the private-absence sentence
+   * ("its graduates") without anyone noticing. The test that consumes this
+   * pins every marker to the wire sentence it stands for, so a change to the
+   * copy fails here rather than quietly narrowing the sweep.
+   */
+  private val borrowingMarkers =
+    listOf(
+      "reports these borrowing figures",
+      "on average by the time they graduated",
+      "borrowed federal loans",
+      "reports no average for private loans",
+      "Source:",
+    )
+
+  /**
+   * The one-blank school with a borrowing block, so the debt section carries
+   * BOTH publishers' figures and an assertion about one cannot pass on the
+   * other's words.
+   */
+  private fun costFixtureWithBorrowing(borrowing: BorrowingCoverage = borrowingFixture("Borrowing College")): CollegeCost =
+    costFixture(
+      name = "Borrowing College",
+      tuitionInState = 30000,
+      publishedPrice = 52000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+      housingAndFoodOnCampus = 10000,
+      booksAndSupplies = 1000,
+      otherExpensesOnCampus = 2000,
+      medianDebt = 21000,
+      offersOnCampusHousing = true,
+      borrowing = borrowing,
+    )
 
   @Test
   fun `a median debt the publisher suppressed is not read as a school that does not report it`() {

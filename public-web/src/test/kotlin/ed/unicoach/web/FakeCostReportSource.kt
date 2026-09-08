@@ -2,6 +2,8 @@ package ed.unicoach.web
 
 import ed.unicoach.coaching.admissions.CdsCitation
 import ed.unicoach.coaching.admissions.MeritPractice
+import ed.unicoach.coaching.costs.BorrowingAtGraduation
+import ed.unicoach.coaching.costs.BorrowingCoverage
 import ed.unicoach.coaching.costs.ChosenLivingPlan
 import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
@@ -24,12 +26,16 @@ import ed.unicoach.coaching.costs.tuitionLineOf
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.CohortMoneyStat
 import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.FigureReading
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LoanType
+import ed.unicoach.db.models.LoanTypeBorrowing
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
 import ed.unicoach.db.models.ValueBearingStatus
@@ -207,6 +213,17 @@ fun costFixture(
   medianDebt: Int? = null,
   offersOnCampusHousing: Boolean? = null,
   meritAid: MeritPractice? = null,
+  /**
+   * What this school says its own graduates borrowed (RFC 175), or which
+   * silence stands in its place -- [BorrowingCoverage.NoFiling] for a school
+   * whose Common Data Set we do not hold.
+   *
+   * The fixture takes the assembled section rather than loose figures because
+   * the page renders it through [ed.unicoach.coaching.costs.BorrowingWire], the
+   * one home of that copy: a fixture that built its own sentences would let the
+   * page's tests pass over words the coach never says.
+   */
+  borrowing: BorrowingCoverage = BorrowingCoverage.NoFiling,
   listStatus: CollegeListEntryStatus = CollegeListEntryStatus.CONSIDERING,
   /**
    * WHY a field carries no amount, where the fixture wants a status other than
@@ -289,6 +306,9 @@ fun costFixture(
     // so explicitly rather than leaving the field to a default that would
     // quietly start rendering one.
     aidPolicy = null,
+    // The cost REPORT does render borrowing (RFC 175, D9): the parent-facing
+    // artifact is where a federal-only debt figure misleads most.
+    borrowing = borrowing,
     chosen = ChosenLivingPlan.NotChosen,
   )
 }
@@ -488,4 +508,58 @@ fun meritFixture(
         url = "https://example.test/cds.pdf",
         archiveUrl = null,
       ),
+  )
+
+/**
+ * A borrowing section with its own CDS citation (RFC 175) -- the school's own
+ * claim about its own graduating class, cited separately from the Scorecard.
+ *
+ * [averageDebtUsdByLoanType] and [borrowersByLoanType] are given per loan type
+ * because the partial cases are the interesting ones: a school that filed a
+ * federal figure and no private one is the case the whole slice exists for.
+ */
+fun borrowingFixture(
+  collegeName: String,
+  graduatingClass: Int? = 1000,
+  averageDebtUsdByLoanType: Map<LoanType, Int> = mapOf(LoanType.FEDERAL to 20747, LoanType.PRIVATE to 43865),
+  borrowersByLoanType: Map<LoanType, Int> = mapOf(LoanType.FEDERAL to 394, LoanType.PRIVATE to 83),
+  sourceYear: Int = 2024,
+  /**
+   * The loan types this filing ANSWERS and we could not read (D7): OUR gap,
+   * which the page says per loan type and never as the school's silence.
+   */
+  notReadLoanTypes: Set<LoanType> = emptySet(),
+  /**
+   * The same question for a cell that is value-less for someone ELSE's reason
+   * -- the publisher withheld it, or the source says it does not apply.
+   */
+  gapStatusByLoanType: Map<LoanType, FigureStatus> = emptyMap(),
+  /** OUR gap at CDS H.401, the denominator every share divides by. */
+  graduatingClassGapStatus: FigureStatus? = null,
+): BorrowingCoverage.Reported =
+  BorrowingCoverage.Reported(
+    figures =
+      BorrowingAtGraduation(
+        graduatingClass = graduatingClass,
+        byLoanType =
+          (averageDebtUsdByLoanType.keys + borrowersByLoanType.keys).associateWith { loanType ->
+            LoanTypeBorrowing(
+              averageDebtUsd = averageDebtUsdByLoanType[loanType],
+              borrowers =
+                borrowersByLoanType[loanType]?.let { borrowers ->
+                  graduatingClass?.let { BorrowerCounts.Counted(borrowers = borrowers, graduatingClass = it) }
+                },
+            )
+          },
+        source =
+          CdsCitation(
+            collegeName = collegeName,
+            sourceYear = sourceYear,
+            url = "https://example.test/cds.pdf",
+            archiveUrl = null,
+          ),
+      ),
+    gapStatusByLoanType =
+      gapStatusByLoanType + notReadLoanTypes.associateWith { FigureStatus.NOT_COLLECTED_BY_US },
+    graduatingClassGapStatus = graduatingClassGapStatus,
   )

@@ -2215,7 +2215,12 @@ assert_failure "ingest-colleges fatals on a nonexistent CDS seed path" test_inge
 # (free-text dates, rolling), gamma (per-group fallback), delta (unmapped
 # schema), epsilon (contradictory H2A), zeta (Feb 30, junk int, junk flag,
 # duplicate + parse_error field rows, rolling reported as "No"), eta (a
-# manifest row with no school_id). Wrapped in a function, per this file's
+# manifest row with no school_id), theta (D6's SECOND contradiction arm: a
+# per-type borrower count above the any-loan count that contains it, and under
+# the graduating class, so only that arm can catch it), iota (the placeholder
+# average rule: a zero average beside a zero borrower count, a zero average with
+# no borrower count at all, and -- the control -- a zero average over borrowers
+# who really exist). Wrapped in a function, per this file's
 # convention: fixture data is detail, not top-level script body.
 write_cds_fixtures() {
   local dir="$1"
@@ -2247,7 +2252,13 @@ write_cds_fixtures() {
    "source_url": "https://zeta.example.edu/cds-2025-26.pdf"},
   {"document_id": "doc-eta", "school_id": null, "ipeds_id": "777777",
    "canonical_year": "2025-26", "sub_institutional": null,
-   "source_url": "https://eta.example.edu/cds-2025-26.pdf"}
+   "source_url": "https://eta.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-theta", "school_id": "theta", "ipeds_id": "888888",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://theta.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-iota", "school_id": "iota", "ipeds_id": "999999",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://iota.example.edu/cds-2025-26.pdf"}
 ]
 EOF
   cat > "$dir/fields.json" << 'EOF'
@@ -2268,6 +2279,22 @@ EOF
    "value_kind": "percent", "value_status": "reported", "value_text": "94.3", "value_num": 0.943},
   {"document_id": "doc-alpha-new", "field_id": "H.211", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "18006.5357", "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.401", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "1000", "value_num": 1000},
+  {"document_id": "doc-alpha-new", "field_id": "H.501", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "600", "value_num": 600},
+  {"document_id": "doc-alpha-new", "field_id": "H.502", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "550", "value_num": 550},
+  {"document_id": "doc-alpha-new", "field_id": "H.505", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "120", "value_num": 120},
+  {"document_id": "doc-alpha-new", "field_id": "H.506", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "60.0", "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.510", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "0.12", "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.511", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "38217.2331", "value_num": null},
+  {"document_id": "doc-alpha-new", "field_id": "H.512", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "$30,000.50", "value_num": null},
   {"document_id": "doc-alpha-new", "field_id": "H.801", "schema_version": "2025-26",
    "value_kind": "checkbox", "value_status": "reported", "value_text": "X", "value_bool": true, "value_num": null},
   {"document_id": "doc-alpha-new", "field_id": "H.803", "schema_version": "2025-26",
@@ -2334,6 +2361,12 @@ EOF
    "value_status": "reported", "value_text": "Nearest 1%", "value_num": null},
   {"document_id": "doc-zeta", "field_id": "H.211", "schema_version": "2025-26",
    "value_status": "not_applicable", "value_text": null, "value_num": null},
+  {"document_id": "doc-zeta", "field_id": "H.401", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "39", "value_num": 39},
+  {"document_id": "doc-zeta", "field_id": "H.501", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "2588", "value_num": 2588},
+  {"document_id": "doc-zeta", "field_id": "H.511", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "29073.0", "value_num": null},
   {"document_id": "doc-zeta", "field_id": "H.802", "schema_version": "2025-26",
    "value_kind": "checkbox", "value_status": "reported", "value_text": "No", "value_bool": false, "value_num": null},
   {"document_id": "doc-zeta", "field_id": "H.804", "schema_version": "2025-26",
@@ -2349,7 +2382,33 @@ EOF
   {"document_id": "doc-zeta", "field_id": "C.1601", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "Yes", "value_bool": true, "value_num": null},
   {"document_id": "doc-zeta", "field_id": "C.2201", "schema_version": "2025-26",
-   "value_status": "reported", "value_text": "Y/N", "value_num": null}
+   "value_status": "reported", "value_text": "Y/N", "value_num": null},
+  {"document_id": "doc-theta", "field_id": "H.401", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "800", "value_num": 800},
+  {"document_id": "doc-theta", "field_id": "H.501", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "300", "value_num": 300},
+  {"document_id": "doc-theta", "field_id": "H.503", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "500", "value_num": 500},
+  {"document_id": "doc-theta", "field_id": "H.513", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "9500.25", "value_num": null},
+  {"document_id": "doc-theta", "field_id": "H.211", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "17500", "value_num": null},
+  {"document_id": "doc-iota", "field_id": "H.401", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "500", "value_num": 500},
+  {"document_id": "doc-iota", "field_id": "H.502", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "100", "value_num": 100},
+  {"document_id": "doc-iota", "field_id": "H.512", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "25000.5", "value_num": null},
+  {"document_id": "doc-iota", "field_id": "H.503", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "12", "value_num": 12},
+  {"document_id": "doc-iota", "field_id": "H.513", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "0", "value_num": 0},
+  {"document_id": "doc-iota", "field_id": "H.504", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "0", "value_num": 0},
+  {"document_id": "doc-iota", "field_id": "H.514", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "0", "value_num": 0},
+  {"document_id": "doc-iota", "field_id": "H.515", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "0", "value_num": 0}
 ]
 EOF
 }
@@ -2584,6 +2643,174 @@ assert_success "a contradictory H2 block emits no aid-policy row at all" \
   seed_lacks '^555555,' aid_policy.csv
 assert_success "the contradictory H2 block is counted in PROVENANCE.json" \
   cds_drop_count aid_policy_h2_contradictory 1
+
+# RFC 175: the H4/H5 borrowing block rides the same file -- eleven more facts,
+# one per loan type, never summed and never dropped into a nameless total.
+assert_success "the graduating class the borrowing block is reported over lands" \
+  seed_has '^111111,2025,graduating_class_count,1000,reported,H.401,' aid_policy.csv
+assert_success "a borrower count keeps its own loan type" \
+  seed_has '^111111,2025,federal_loan_borrower_count,550,reported,H.502,' aid_policy.csv
+assert_success "a second loan type is a second fact, not an addition to the first" \
+  seed_has '^111111,2025,private_loan_borrower_count,120,reported,H.505,' aid_policy.csv
+# The averages go through read_money_cell (get_decimal), never get_int: the
+# corpus publishes them as text like '38217.2331', and get_int's \d+(\.0+)?
+# would silently reject every fractional one.
+assert_success "a fractional average debt survives ingest, which get_int would have rejected" \
+  seed_has '^111111,2025,any_loan_debt_avg_usd,38217.2331,reported,H.511,' aid_policy.csv
+assert_success "a currency-formatted average debt keeps its cents" \
+  seed_has '^111111,2025,federal_loan_debt_avg_usd,30000.5,reported,H.512,' aid_policy.csv
+# A loan type nobody filed is silence, not a zero. Scoped to alpha's filing:
+# iota below files a state-loan count OF zero, which is a different statement
+# and a row this seed does carry.
+assert_success "a loan type the filing does not report gets no row at all" \
+  seed_lacks '^111111,2025,state_loan_borrower_count' aid_policy.csv
+
+# RFC 175 D2, proven rather than promised: the five published "percent who
+# borrowed" cells are NEVER read. The corpus publishes them text-typed, 0..100
+# for most filings and 0..1 for dozens of others, so a stored share would be a
+# coin flip on whose scale a school used ("0.58% borrowed"). The share is
+# derived at read time from the borrower count over H.401. The fixture corpus
+# carries two of them (H.506 as 60.0, H.510 as 0.12) for exactly this test: they
+# are on offer and still nothing reads them.
+# -F, not a regex: `H.506` as a pattern is `H`, ANY character, `506`, so the
+# guard would be free to fire on a row that never carried the field id it names.
+# And the grep STATUS is read rather than collapsed: 1 is "not in this file", 2
+# is "I could not read this file", and treating the two the same lets the
+# strongest guard D2 has pass having read nothing at all.
+test_cds_percent_borrowed_cells_never_read() {
+  local field csv status
+  for csv in "$CDS_OUT"/*.csv "$PROJECT_ROOT/db/seed/cds/aid_policy.csv"; do
+    if [ ! -r "$csv" ]; then
+      log-error "[$csv] is not readable, so this guard would pass on a file it never read"
+      return 1
+    fi
+    for field in H.506 H.507 H.508 H.509 H.510; do
+      status=0
+      grep -qF "$field" "$csv" || status=$?
+      if [ "$status" -eq 0 ]; then
+        log-error "[$field] reached [$csv]; the H.506-H.510 percent cells are never ingested"
+        return 1
+      fi
+      if [ "$status" -ne 1 ]; then
+        log-error "grep failed on [$csv] with status [$status] while looking for [$field]"
+        return 1
+      fi
+    done
+  done
+}
+assert_success "H.506-H.510 (percent who borrowed) reach no seed row" \
+  test_cds_percent_borrowed_cells_never_read
+
+# ... and they are not even requested: a field id is located ONLY by being in
+# FIELD_IDS, so the request list is where "we do not read this cell" is decided.
+test_cds_percent_borrowed_cells_never_requested() {
+  python3 - "$PROJECT_ROOT/bin/fetch-cds-seed" << 'PY'
+import importlib.machinery, importlib.util, sys
+
+# The script has no .py suffix, so spec_from_file_location finds no loader for
+# it; name the source loader instead. The import is safe: everything the script
+# DOES is behind its __main__ guard.
+loader = importlib.machinery.SourceFileLoader("fetch_cds_seed", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(module)
+requested = set(module.FIELD_IDS)
+present = sorted(f for f in ("H.506", "H.507", "H.508", "H.509", "H.510") if f in requested)
+if present:
+    sys.exit(f"FIELD_IDS requests the percent-who-borrowed cells [{present}]")
+missing = sorted(
+    f for f in ["H.401"] + [f"H.50{i}" for i in range(1, 6)] + [f"H.51{i}" for i in range(1, 6)]
+    if f not in requested
+)
+if missing:
+    sys.exit(f"FIELD_IDS does not request the borrowing cells [{missing}]")
+PY
+}
+assert_success "FIELD_IDS requests H.401/H.501-505/H.511-515 and not H.506-H.510" \
+  test_cds_percent_borrowed_cells_never_requested
+
+# RFC 175 D6: a filing whose borrowers outnumber its graduating class (39
+# graduates, 2,588 borrowers -- ipeds 166629 files exactly this) mis-extracted
+# at least one of the two, so the WHOLE borrowing block goes. A share derived at
+# read time must never divide by a mis-extracted denominator.
+assert_success "a contradictory borrowing block seeds no borrower count" \
+  seed_lacks '^666666,2025,any_loan_borrower_count' aid_policy.csv
+assert_success "the whole block goes, not just the offending cell" \
+  seed_lacks '^666666,2025,any_loan_debt_avg_usd' aid_policy.csv
+assert_success "the graduating class goes with the block it is the denominator of" \
+  seed_lacks '^666666,2025,graduating_class_count' aid_policy.csv
+# ... and ONLY the borrowing block: unlike the H2 rule, this one says nothing
+# about the filing's need figures or forms, so they still seed.
+assert_success "the same filing keeps its other aid-policy facts" \
+  seed_has '^666666,2025,avg_need_based_grant_usd,,not_applicable,H.211,' aid_policy.csv
+# D6's SECOND arm, which the class comparison alone never reaches: a per-type
+# count above the any-loan count that CONTAINS it (ipeds 145637 files a dollar
+# amount in H.503, a count cell). theta files 800 graduates, 300 any-loan
+# borrowers and 500 institutional-loan borrowers -- 500 is UNDER the graduating
+# class, so the first arm passes it and only the second can refuse it. (A
+# count of 28,193 here would be refused by the class arm first and prove
+# nothing about this one.)
+assert_success "a per-type count above the any-loan count drops the block too" \
+  seed_lacks '^888888,2025,institutional_loan_borrower_count' aid_policy.csv
+assert_success "the whole block goes on the second arm as well" \
+  seed_lacks '^888888,2025,institutional_loan_debt_avg_usd' aid_policy.csv
+assert_success "the graduating class goes with it, though it contradicted nothing" \
+  seed_lacks '^888888,2025,graduating_class_count' aid_policy.csv
+assert_success "and only the borrowing block: the filing's need figures stand" \
+  seed_has '^888888,2025,avg_need_based_grant_usd,17500,reported,H.211,' aid_policy.csv
+assert_success "both contradictory blocks are counted in PROVENANCE.json" \
+  cds_drop_count aid_policy_h5_contradictory 2
+assert_success "the drop names the fact and both counts it compared" \
+  cds_drop_sample_has aid_policy_h5_contradictory \
+    'fact=[any_loan_borrower_count] borrowers=[2588] graduating_class=[39]'
+assert_success "the second arm names the two counts IT compared" \
+  cds_drop_sample_has aid_policy_h5_contradictory \
+    'fact=[institutional_loan_borrower_count] borrowers=[500] any_loan_borrowers=[300]'
+# ... and it is the per-type comparison that fired, not the class one wearing
+# the same reason: the two arms are told apart by the second count they name.
+test_cds_h5_second_arm_is_not_the_class_arm() {
+  python3 - "$CDS_OUT/PROVENANCE.json" << 'PY'
+import json, sys
+samples = json.load(open(sys.argv[1]))["corpus"]["dropped"]["samples"].get("aid_policy_h5_contradictory", [])
+fired = [s for s in samples if "institutional_loan_borrower_count" in s and "graduating_class=[" in s]
+if fired:
+    sys.exit(f"the class arm refused the per-type fixture, so arm two is still untested: [{fired}]")
+PY
+}
+assert_success "the class arm is not what refused the second fixture" \
+  test_cds_h5_second_arm_is_not_the_class_arm
+
+# RFC 175 D6, the placeholder rule: an average cumulative principal is a mean
+# over the borrowers of ITS OWN loan type, so a `0` in that cell where the type
+# reports NOBODY borrowing is the source's placeholder, not a figure -- 169
+# filings in the live corpus pair the two. Seeded, it is spoken to a family as
+# "owed $0 on average by the time they graduated", a claim no school made.
+# iota files a state-loan pair of 0/0, a private average of 0 with no borrower
+# count at all, and an institutional average of 0 over 12 real borrowers.
+assert_success "a zero borrower count is the school's own fact and stands" \
+  seed_has '^999999,2025,state_loan_borrower_count,0,reported,H.504,' aid_policy.csv
+assert_success "the average over that empty population does not reach the seed" \
+  seed_lacks '^999999,2025,state_loan_debt_avg_usd' aid_policy.csv
+# The other arm: no borrower count row at all is the same empty population, and
+# the one nothing downstream could even explain.
+assert_success "a zero average with no borrower count anywhere is refused too" \
+  seed_lacks '^999999,2025,private_loan_debt_avg_usd' aid_policy.csv
+# Per CELL, not per block: the refusal is conditioned on THIS loan type's count,
+# so the loan types beside it are untouched.
+assert_success "the loan type that reported borrowers keeps its average" \
+  seed_has '^999999,2025,federal_loan_debt_avg_usd,25000.5,reported,H.512,' aid_policy.csv
+# ... and the condition is the population, not the zero: a school that reports
+# borrowers AND a zero average is making a claim, however surprising, and it
+# stands.
+assert_success "a zero average over borrowers who exist is a figure and stands" \
+  seed_has '^999999,2025,institutional_loan_debt_avg_usd,0,reported,H.513,' aid_policy.csv
+assert_success "both placeholder averages are counted in PROVENANCE.json" \
+  cds_drop_count aid_policy_h5_average_over_no_borrowers 2
+assert_success "the drop names the cell and the empty population behind it" \
+  cds_drop_sample_has aid_policy_h5_average_over_no_borrowers \
+    'fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]'
+assert_success "the missing-count arm says the count was missing, not zero" \
+  cds_drop_sample_has aid_policy_h5_average_over_no_borrowers \
+    'fact=[private_loan_debt_avg_usd] source_variable=[H.515] count_fact=[private_loan_borrower_count] borrowers=[None]'
 
 # group_fields' two silent skips are counted: a non-'reported' status (an
 # extraction failure an operator needs a number for) and a duplicate field row

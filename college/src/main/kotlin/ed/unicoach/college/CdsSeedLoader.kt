@@ -23,6 +23,7 @@ import ed.unicoach.db.models.FactorRating
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewAidFormRequirement
@@ -536,6 +537,22 @@ class CdsSeedLoader(
     data class Stat(
       val measure: MoneyMeasure,
       val population: CohortPopulation,
+      /**
+       * The DENOMINATOR the measure is averaged over (RFC 175), stated by
+       * every fact and DEFAULTED by none. It rides on the member for the same
+       * reason [population] does, and it is a different question: [population]
+       * is the cohort the CDS reports the line against, while this is the set
+       * the average divides by. The H2 need figures are averaged over the
+       * freshmen awarded need-based aid, each H5 borrowing average over the
+       * borrowers OF ITS OWN LOAN TYPE.
+       *
+       * No default, because a default is a denominator nobody chose: a measure
+       * added to the routing table would inherit `need_based_aid_receiving` in
+       * silence, which is exactly the defect RFC 162 landed and RFC 170
+       * repeated -- a number about one population stored under the name of
+       * another. The table must show the whole decision.
+       */
+      val aidScope: CohortAidScope,
     ) : AidPolicyFact {
       override val table: FactTable get() = FactTable.COHORT_MONEY_STATS
     }
@@ -662,7 +679,10 @@ class CdsSeedLoader(
     // that population rather than a convenient one (RFC 162's scope rule).
     population = fact.population,
     residencyScope = CohortResidencyScope.ALL,
-    aidScope = CohortAidScope.NEED_BASED_AID_RECEIVING,
+    // The scope follows the DENOMINATOR, per fact, for the same reason the
+    // population does: the H2 averages divide by the freshmen awarded
+    // need-based aid, each H5 average by that loan type's own borrowers.
+    aidScope = fact.aidScope,
     incomeBand = null,
     vintage = row.year,
     reading =
@@ -1250,6 +1270,33 @@ class CdsSeedLoader(
     private val DECIMAL = Regex("""\d+(\.\d+)?""")
 
     /**
+     * H4/H5 borrowing at graduation (RFC 175), DERIVED from [LoanType] rather
+     * than hand-listed.
+     *
+     * That enum is the ONE place a loan type's measure, its DENOMINATOR and its
+     * borrower cohort are tied together, and the seed's own column names are
+     * the member's own slug plus the suffix for what the cell holds. A second
+     * hand-written copy of the triple here could drift from it silently: the
+     * READ ([ed.unicoach.db.dao.BorrowingDao]) refuses a measure stored at a
+     * scope that is not its own denominator, so the drift would land as a
+     * production corrupt-value fault rather than a compile error -- and a
+     * fixture that exercised three of the five loan types would be green while
+     * it did.
+     *
+     * Declared ABOVE [AID_POLICY_FACTS] so companion initialisation order is
+     * satisfied.
+     */
+    private val BORROWING_FACTS: Map<String, AidPolicyFact> =
+      LoanType.entries
+        .flatMap { loanType ->
+          listOf(
+            "${loanType.slug}_borrower_count" to AidPolicyFact.Count(loanType.borrowers),
+            "${loanType.slug}_debt_avg_usd" to
+              AidPolicyFact.Stat(loanType.debtAverage, CohortPopulation.GRADUATING_CLASS, loanType.aidScope),
+          )
+        }.toMap()
+
+    /**
      * The seed's `fact` vocabulary, and what each fact IS in the canonical
      * store (RFC 170). Written here, once: the seed's own names are a CSV
      * detail, and every one of them must resolve to a measure, a population or
@@ -1266,11 +1313,13 @@ class CdsSeedLoader(
           AidPolicyFact.Stat(
             MoneyMeasure.AVG_NEED_MET_SHARE,
             CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
+            CohortAidScope.NEED_BASED_AID_RECEIVING,
           ),
         "avg_need_based_grant_usd" to
           AidPolicyFact.Stat(
             MoneyMeasure.AVG_NEED_BASED_GRANT,
             CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
+            CohortAidScope.NEED_BASED_AID_RECEIVING,
           ),
         // Line d, whose only role is to be line h's denominator.
         "aid_awarded_freshmen_count" to
@@ -1284,7 +1333,11 @@ class CdsSeedLoader(
         "noncustodial_css_profile_required" to AidPolicyFact.Form(AidForm.NONCUSTODIAL_CSS_PROFILE),
         "business_farm_supplement_required" to AidPolicyFact.Form(AidForm.BUSINESS_FARM_SUPPLEMENT),
         "other_institutional_form_required" to AidPolicyFact.Form(AidForm.OTHER_INSTITUTIONAL),
-      )
+        // H4, the class every H5 figure is reported over. Named here rather
+        // than derived, because it belongs to NO loan type: it is the
+        // denominator all five divide by.
+        "graduating_class_count" to AidPolicyFact.Count(CohortPopulation.GRADUATING_CLASS),
+      ) + BORROWING_FACTS
 
     val DEADLINES_COLUMNS =
       listOf(

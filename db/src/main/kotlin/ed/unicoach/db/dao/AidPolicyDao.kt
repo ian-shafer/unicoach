@@ -1,6 +1,5 @@
 package ed.unicoach.db.dao
 
-import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AidForm
@@ -161,15 +160,6 @@ object AidPolicyDao {
   private const val COUNT_KIND = "count"
   private const val FORM_KIND = "form"
 
-  /** One row of the long-format read: the filing it came from, and what it says. */
-  private data class CitedFact(
-    val collegeId: CollegeId,
-    val academicYear: AcademicYear,
-    val sourceUrl: String,
-    val archiveUrl: String?,
-    val fact: CdsAidFact,
-  )
-
   /**
    * What one read row IS, in the read model's own terms -- the read-side twin
    * of `CdsSeedLoader.AidPolicyFact`. A statistic names a measure, a headcount
@@ -199,7 +189,7 @@ object AidPolicyDao {
     ) : CdsAidFact
   }
 
-  private fun mapFact(rs: ResultSet): CitedFact {
+  private fun mapFact(rs: ResultSet): CitedFact<CdsAidFact> {
     val name = rs.getString("name")
     val number = rs.getBigDecimal("number")?.toDouble()
     // WHICH row, not just which column: this is a batch read over a whole
@@ -218,7 +208,7 @@ object AidPolicyDao {
           }
 
           COUNT_KIND -> {
-            CdsAidFact.Count(decodePopulation(name, row), number?.toInt())
+            CdsAidFact.Count(decodeCohortPopulation(name, row), number?.toInt())
           }
 
           FORM_KIND -> {
@@ -229,18 +219,22 @@ object AidPolicyDao {
           // every other corruptValueException read: a bare IllegalStateException would leave
           // the Result channel and lose its PermanentError marker.
           else -> {
-            throw corruptValueException(kind, "one of the kinds this read selects", "the aid-policy read ($row)")
+            throw corruptValue(kind, "one of the kinds this read selects", "the aid-policy read ($row)")
           }
         },
     )
   }
 
   /** One college's facts as the read model. */
-  private fun mapCollegeAidPolicy(rows: List<CitedFact>): CollegeAidPolicy {
+  private fun mapCollegeAidPolicy(rows: List<CitedFact<CdsAidFact>>): CollegeAidPolicy {
     val first = rows.first()
-    val stats = single(rows.mapNotNull { it.fact as? CdsAidFact.Stat }, { it.measure }, { it.figure }, "measure")
+    val read = "the aid-policy read (a college's newest CDS cycle)"
+    val stats =
+      singleByKey(rows.mapNotNull { it.fact as? CdsAidFact.Stat }, { it.measure }, "measure", read)
+        .mapValues { (_, stat) -> stat.figure }
     val counts =
-      single(rows.mapNotNull { it.fact as? CdsAidFact.Count }, { it.population }, { it.headcount }, "population")
+      singleByKey(rows.mapNotNull { it.fact as? CdsAidFact.Count }, { it.population }, "population", read)
+        .mapValues { (_, count) -> count.headcount }
     val forms = rows.mapNotNull { it.fact as? CdsAidFact.Form }
     return CollegeAidPolicy(
       collegeId = first.collegeId,
@@ -260,38 +254,18 @@ object AidPolicyDao {
   }
 
   /**
-   * One value per key, refusing a duplicate.
-   *
-   * `associate` keeps the LAST row silently, and a duplicate key here means the
-   * read matched a row it did not mean to -- a second measure over another
-   * cohort, say -- which would then be spoken as the freshman figure. The
-   * narrowing in the query is the first defence; this is the one that says so
-   * when the narrowing is wrong.
-   */
-  private fun <T, K, V> single(
-    facts: List<T>,
-    key: (T) -> K,
-    value: (T) -> V,
-    axis: String,
-  ): Map<K, V> {
-    val byKey = facts.groupBy(key)
-    val duplicated = byKey.filterValues { it.size > 1 }.keys
-    if (duplicated.isNotEmpty()) {
-      throw corruptValueException(
-        duplicated.joinToString { "[$it]" },
-        "one row per [$axis]",
-        "the aid-policy read (a college's newest CDS cycle)",
-      )
-    }
-    return byKey.mapValues { (_, rows) -> value(rows.single()) }
-  }
-
-  /**
    * A stored dollar figure as whole dollars, ROUNDED and unit-checked.
    *
    * `toInt()` truncates -- 18400.9 became 18400 -- and the same map also holds
    * a 0-1 share, so reading a dollar measure out of it is exactly where a share
    * could be spoken as money. The unit is asserted rather than assumed.
+   *
+   * `require`, deliberately, and NOT the located [corruptValue] its
+   * [BorrowingDao] twin raises: the measure here is a compile-time CONSTANT
+   * this file names, so a wrong unit is a code fault and not a stored value.
+   * The borrowing read decodes its measure FROM the row, so there the same
+   * failure is a corrupt persisted value and is refused as one. The two guards
+   * ask different questions and stay apart on purpose.
    */
   private fun wholeDollars(
     stats: Map<MoneyMeasure, Double?>,
@@ -315,7 +289,7 @@ object AidPolicyDao {
     val awardedAnyAid = counts[CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_ANY_AID] ?: return null
     val fullyMet = counts[CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_NEED_FULLY_MET] ?: return null
     if (fullyMet > awardedAnyAid) {
-      throw corruptValueException(
+      throw corruptValue(
         "need_fully_met=[$fullyMet] awarded_any_aid=[$awardedAnyAid]",
         "a fully-met count no larger than the aided count it is reported against",
         "cohort_population_counts (CDS H2 lines h and d)",
@@ -326,34 +300,17 @@ object AidPolicyDao {
 
   /*
    * A stored slug no enum reads is a schema/enum drift, not a row to skip. It
-   * is raised as the house's located corruptValueException-value exception (the
+   * is raised as the house's located [corruptValue] exception (the
    * CdsAdmissionsDao precedent) so it stays inside the Result channel with its
    * PermanentError marker and names the column that holds it.
    */
   private fun decodeMeasure(
     name: String,
     row: String,
-  ): MoneyMeasure = MoneyMeasure.fromValue(name) ?: throw corruptValueException(name, "MoneyMeasure", "cohort_money_stats.measure ($row)")
-
-  private fun decodePopulation(
-    name: String,
-    row: String,
-  ): CohortPopulation =
-    CohortPopulation.fromValue(name)
-      ?: throw corruptValueException(name, "CohortPopulation", "cohort_population_counts.population ($row)")
+  ): MoneyMeasure = MoneyMeasure.fromValue(name) ?: throw corruptValue(name, "MoneyMeasure", "cohort_money_stats.measure ($row)")
 
   private fun decodeForm(
     name: String,
     row: String,
-  ): AidForm = AidForm.fromValue(name) ?: throw corruptValueException(name, "AidForm", "aid_form_requirements.aid_form ($row)")
-
-  private fun corruptValueException(
-    raw: String,
-    domain: String,
-    location: String,
-  ) = CorruptPersistedValueException(
-    raw,
-    ValidationError.InvalidFormat(expected = "a known [$domain] value"),
-    location = location,
-  )
+  ): AidForm = AidForm.fromValue(name) ?: throw corruptValue(name, "AidForm", "aid_form_requirements.aid_form ($row)")
 }
