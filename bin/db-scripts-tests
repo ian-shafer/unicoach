@@ -1284,8 +1284,14 @@ seed_legacy_database() {
   local legacy="$1" legacy_env="$PRIVATE_ROOT/env.$1"
   drop_legacy_database "$legacy"
   bin/db-write -U "$POSTGRES_SUPERUSER" -d "$POSTGRES_ADMIN_DB" "CREATE DATABASE \"$legacy\";" >/dev/null
+  # Both sequence-ownership shapes, because db-adopt must skip them by two
+  # different pg_depend deptypes: serial's sequence is linked to its column with
+  # 'a' (auto), an identity column's with 'i' (internal). A serial-only fixture
+  # passes against a carve-out that matches 'a' alone; the real schema, which is
+  # identity throughout, does not.
   bin/db-write -U "$POSTGRES_SUPERUSER" -d "$legacy" \
-    "CREATE TABLE legacy_t (id serial PRIMARY KEY, v text); INSERT INTO legacy_t (v) VALUES ('kept');" >/dev/null
+    "CREATE TABLE legacy_t (id serial PRIMARY KEY, v text); INSERT INTO legacy_t (v) VALUES ('kept');
+     CREATE TABLE legacy_identity_t (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text); INSERT INTO legacy_identity_t (v) VALUES ('kept');" >/dev/null
   sed "s|^POSTGRES_DB=.*|POSTGRES_DB=$legacy|" "$PRIVATE_ENV" > "$legacy_env"
   printf '%s\n' "$legacy_env"
 }
@@ -1318,6 +1324,19 @@ test_db_create_adopts_a_legacy_database() {
   rows="$(bin/db-run -r -d "$legacy" ro "SELECT count(*) FROM legacy_t" | tr -d '[:space:]')"
   if [ "$rows" != "1" ]; then
     fail_test "adopting [$legacy] lost its data: [$rows] rows, expected 1"
+  fi
+  # The identity table asserted through a WRITE, not a count: the row this adds
+  # can only be created by calling nextval on legacy_identity_t_id_seq, the
+  # sequence db-adopt skipped. Reading it back proves the skip left a sequence
+  # the owner role can actually use, rather than one still owned by the
+  # superuser -- and it does not depend on db-adopt's loop order the way the
+  # aborting ALTER SEQUENCE does.
+  if ! out="$(bin/db-write -d "$legacy" "INSERT INTO legacy_identity_t (v) VALUES ('added');" 2>&1)"; then
+    fail_test "role [$POSTGRES_USER] cannot write to the identity table in [$legacy] after db-adopt; the server said: $out"
+  fi
+  rows="$(bin/db-run -r -d "$legacy" ro "SELECT count(*) FROM legacy_identity_t" | tr -d '[:space:]')"
+  if [ "$rows" != "2" ]; then
+    fail_test "identity table in [$legacy] has [$rows] rows after adopt + insert, expected 2"
   fi
   # The half that ALTER DATABASE alone does not buy: a db-migrate-shaped statement
   # against a table created before the transition.

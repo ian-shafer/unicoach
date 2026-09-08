@@ -132,11 +132,20 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM extension_member e
                         WHERE e.classid = 'pg_namespace'::regclass AND e.objid = n.oid)
     UNION ALL
-    -- never 'i' (index) or 't' (TOAST): both follow their table, and targeting
-    -- them directly is refused. A serial/identity sequence is OWNED BY its
-    -- column (pg_depend deptype 'a'); ALTER SEQUENCE ... OWNER TO on it is
-    -- refused with \`0A000: cannot change owner of sequence ... is linked to
-    -- table\`, and its owner follows the table's, so it is skipped.
+    -- never relkind 'i'/'I' (index, partitioned index), 't' (TOAST) or 'c'
+    -- (composite): each follows another object, and targeting one directly is
+    -- refused. A sequence OWNED BY a column is the same case: ALTER SEQUENCE
+    -- ... OWNER TO on it is refused with \`0A000: cannot change owner of
+    -- sequence ... is linked to table\`, and its owner follows the table's, so
+    -- it is skipped.
+    --
+    -- BOTH deptypes, because they are ONE concept in two shapes: a SERIAL
+    -- column's sequence is linked to its column with 'a' (auto), a
+    -- GENERATED ... AS IDENTITY column's with 'i' (internal). Matching 'a'
+    -- alone leaves every identity sequence in the loop, where the first
+    -- ALTER SEQUENCE aborts the whole DO block. The refclassid/refobjsubid
+    -- pair holds the test to a link to a COLUMN -- together the three clauses
+    -- are the sequenceIsOwned() check the server itself refuses on.
     --
     -- Every relkind the WHERE clause admits is NAMED here, and there is no ELSE:
     -- a kind added to the filter without a keyword yields NULL, which EXECUTE
@@ -154,7 +163,9 @@ BEGIN
        AND NOT (c.relkind = 'S' AND EXISTS (
              SELECT 1 FROM pg_depend d
               WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
-                AND d.deptype = 'a'))
+                AND d.deptype IN ('a','i')
+                AND d.refclassid = 'pg_class'::regclass
+                AND d.refobjsubid <> 0))
        AND NOT EXISTS (SELECT 1 FROM extension_member e
                         WHERE e.classid = 'pg_class'::regclass AND e.objid = c.oid)
     UNION ALL
