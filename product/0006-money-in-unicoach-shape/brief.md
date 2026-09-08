@@ -451,6 +451,34 @@ group became four). No `Needs:` gate answers were required: its BLOCKS edge to
 the canonical store was already LANDED, and its two CONFLICTS edges cost a
 rebase, as predicted.
 
+shape/07b/borrowing LANDED as RFC 175 (main@3924931d + 64b4875a, 2026-09-08) —
+CDS H4/H5 borrowing at graduation, including the private loans the Scorecard's
+federal-only debt figure never shows. Migration 0089 extends four CHECK lists —
+five measures, three aid scopes, six populations on both cohort tables — and
+adds NO table: loan type rides in the measure for an average and in the
+population slug for a count, the grant-mix rule of RFC 162. The published
+percent cells H.506-H.510 are never ingested (175 filings write 0..100, 38 write
+0..1, all as text), so the share is derived from counts and only when both
+exist. The door is the existing `college_cost_profile` tool plus the Family Cost
+Report page, which Ian added at the gate (D9), and every figure is spoken as the
+school's OWN claim (D10, also his call: these are unaudited self-reports, and
+modelling that softness as DATA goes to /chart as its own brief). Review added
+D11: a zero average over zero borrowers is the source's sentinel for "nobody
+borrowed", not money — 91 of 138 state-loan averages and 81 of 148 institutional
+ones were that placeholder, and the coach would have said "they owed $0 on
+average"; refused at ingest, while the zero COUNT stands, because "no student
+here borrowed a state loan" is true and worth saying. Four review tiers over 39
+lenses found 95 findings; the ones that mattered were three D7 inversions, each
+one level deeper than the last (the unread-cell test covered two silences, then
+the unread flag was filing-wide, then the unread GRADUATING-CLASS cell reached
+no surface at all), a citation edge re-derived on (college, source, year)
+instead of following `source_document_id`, and one school's contradictory counts
+thrown as corruption inside a BATCHED read, which would have denied the price
+answer for every other college in a family's list. Gate: 2932 JUnit tests and
+1187 shell assertions green. Corpus drift rode in with the seed regeneration and
+was proven upstream by experiment (the pre-change fetcher run today reproduces
+it), so it landed with a sign-off paragraph in the RFC rather than a revert.
+
 ## Gate 1 outcome (2026-09-02)
 
 Ian, verbatim: **"I approve the gate"** — D1-D11 approved as defaulted, no
