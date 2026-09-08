@@ -11,7 +11,6 @@ import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
-import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AbsenceStatus
@@ -21,6 +20,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LoanType
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.web.render.NOT_REPORTED
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText

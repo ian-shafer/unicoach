@@ -7,6 +7,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.Test
 import java.util.UUID

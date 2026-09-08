@@ -48,7 +48,17 @@ data class CollegeQuery(
   val maxUndergradEnrollmentHeadcount: Int? = null,
   val minAdmissionRateShare: Double? = null,
   val maxAdmissionRateShare: Double? = null,
-  val maxNetPricePerYearUsd: Int? = null,
+  /**
+   * A maximum price on the ACTIVE ruler ([priceRuler]), in dollars per year.
+   *
+   * ONE field, not one per ruler, because one query is on one ruler: the two
+   * wire fields (`max_in_state_net_price_per_year_usd` and
+   * `max_published_price_on_campus_per_year_usd`) are resolved to this single
+   * bound at the vocabulary boundary, which REFUSES the inactive ruler's field
+   * by name rather than silently ignoring it. A second field here would be a
+   * second chance to build the query that reads two price measures.
+   */
+  val maxPricePerYearUsd: Int? = null,
   val minCompletionRate150pct4yrShare: Double? = null,
   val testPolicy: String? = null,
   val religiousAffiliation: String? = null,
@@ -60,6 +70,25 @@ data class CollegeQuery(
   val hasHousing: Boolean? = null,
   val isActive: Boolean? = true,
   val isFourYear: Boolean? = null,
+  /**
+   * WHICH price this query ranks, filters and sorts on (RFC 169 D1) — the
+   * RESOLVED ruler, carried, not a residency code the readers re-resolve.
+   *
+   * It used to be the raw `familyResidencyState`, with [PriceRuler] derived by a
+   * getter. That getter re-allocated a `Published` ruler and re-ran its USPS
+   * regex at every one of the six read sites a single search touches, and it put
+   * the resolution rule in a place a caller could not see. The vocabulary
+   * boundary already holds the answer, so it hands it over.
+   *
+   * The residency behind it is NOT [states], which means where the COLLEGE is,
+   * and it never arrives from the model: it is read from `money_profiles` by the
+   * student-scoped chat tool, so it cannot contradict what the family said.
+   *
+   * The default is the NET ruler because that is the honest reading of "no
+   * residency on file" — today's behaviour column for column, which is what
+   * makes the whole feature configuration-free to roll back.
+   */
+  val priceRuler: PriceRuler = PriceRuler.NetPrice,
   /**
    * TEST-ONLY, despite reading as a per-call option: `CollegeQueryVocabulary`
    * offers the model no word for it, so no production caller can pass anything
@@ -76,6 +105,20 @@ data class CollegeQuery(
   val sortBy: SortBy = SortBy.ENROLLMENT_DESC,
   val limit: Int,
 ) {
+  init {
+    // A sort word belonging to the INACTIVE ruler is refused by name at the
+    // vocabulary boundary, with a sentence saying which ruler this query is on.
+    // This is the backstop for any caller that bypasses it: an inconsistent
+    // query is not a state this type can be in, so `orderBy` has nothing left
+    // to re-check and cannot quietly fall back to the other measure.
+    require(sortBy != SortBy.PUBLISHED_PRICE_ON_CAMPUS_ASC || priceRuler is PriceRuler.Published) {
+      "sorting on the published on-campus price needs the family's state of residency"
+    }
+    require(sortBy != SortBy.IN_STATE_NET_PRICE_ASC || priceRuler is PriceRuler.NetPrice) {
+      "this query is on the published-price ruler, so it cannot sort on the in-state net price"
+    }
+  }
+
   /** Result orderings for [ed.unicoach.db.dao.CollegesDao.search] (RFC 139). */
   enum class SortBy {
     /** Today's default: biggest undergraduate enrollment first. */
@@ -84,8 +127,19 @@ data class CollegeQuery(
     /** Most selective first (lowest admission rate). */
     ADMISSION_RATE_SHARE_ASC,
 
-    /** Cheapest first (lowest average annual net price). */
-    NET_PRICE_PER_YEAR_USD_ASC,
+    /**
+     * Cheapest first on the NET-PRICE ruler: the blended after-federal-aid
+     * average, which at a public school is the in-state figure — hence the word.
+     * Only offerable while [priceRuler] is [PriceRuler.NetPrice].
+     */
+    IN_STATE_NET_PRICE_ASC,
+
+    /**
+     * Cheapest first on the PUBLISHED ruler: each row's residency-correct
+     * published on-campus total, with no aid in it. Only offerable while
+     * [priceRuler] is [PriceRuler.Published].
+     */
+    PUBLISHED_PRICE_ON_CAMPUS_ASC,
 
     /** Best completion first (highest 6-year graduation rate). */
     COMPLETION_RATE_150PCT_4YR_SHARE_DESC,

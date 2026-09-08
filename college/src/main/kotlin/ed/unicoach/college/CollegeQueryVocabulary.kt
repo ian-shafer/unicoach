@@ -3,6 +3,7 @@ package ed.unicoach.college
 import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.InstitutionControl
+import ed.unicoach.db.models.PriceRuler
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -71,7 +72,7 @@ class CollegeQueryVocabulary(
    * advertised filter that cannot be used is worse than one the model is never
    * told about, and the boot-time warning names the same fields.
    */
-  fun schemaProperties(): Map<String, JsonObject> =
+  fun schemaProperties(offerPublishedPrice: Boolean = true): Map<String, JsonObject> =
     linkedMapOf<String, JsonObject>(
       "cipPrefix" to
         stringProperty(
@@ -136,7 +137,25 @@ class CollegeQueryVocabulary(
         intProperty("Maximum undergraduate enrollment headcount (degree- and certificate-seeking)."),
       "minAdmissionRateShare" to numberProperty("Minimum admission rate, as a share 0.0-1.0."),
       "maxAdmissionRateShare" to numberProperty("Maximum admission rate, as a share 0.0-1.0."),
-      "maxNetPricePerYearUsd" to intProperty("Maximum average annual net price, in whole US dollars."),
+      // TWO price bounds, one per ruler, and only the ACTIVE one is honoured
+      // (RFC 169 D7). Both are advertised because the schema is built once at
+      // boot, before any family is known; naming the inactive one is REFUSED by
+      // name, with a sentence saying which ruler this search is on -- the
+      // expand-and-refuse precedent, never a silently dropped filter.
+      PriceRuler.NET_PRICE_FILTER_FIELD to
+        intProperty(
+          "Maximum average annual NET price -- what students actually paid after federal aid -- " +
+            "in whole US dollars. At a public school that figure is for students paying IN-STATE " +
+            "tuition, which is why the name says so. Honoured only while this family's state of " +
+            "residency is not on file; once it is, use ${PriceRuler.PUBLISHED_PRICE_FILTER_FIELD} instead.",
+        ),
+      PriceRuler.PUBLISHED_PRICE_FILTER_FIELD to
+        intProperty(
+          "Maximum PUBLISHED total price of living on campus for a year -- tuition and fees at " +
+            "THIS family's own tuition tier, plus housing and food, books and supplies, and other " +
+            "expenses -- in whole US dollars. No financial aid of any kind is subtracted from it. " +
+            "Honoured only while this family's state of residency is on file.",
+        ),
       "minCompletionRate150pct4yrShare" to
         numberProperty(
           "Minimum completion rate, as a share 0.0-1.0: first-time full-time students at a " +
@@ -212,6 +231,14 @@ class CollegeQueryVocabulary(
             "a \"no\".",
         ),
     ).filterKeys { it !in codebook.emptyVocabularies }
+      // A surface that can NEVER be on the published ruler does not advertise
+      // its field (RFC 169). The two chat tools resolve a ruler per call, so
+      // both fields are offered there and naming the inactive one is refused by
+      // name; the fit lens has no student residency and is always on the
+      // net-price ruler, so offering it a bound it will always be refused for
+      // is exactly the "advertised filter that cannot be used" this class
+      // already refuses to ship for an empty vocabulary.
+      .filterKeys { offerPublishedPrice || it != PriceRuler.PUBLISHED_PRICE_FILTER_FIELD }
 
   /**
    * Reads every field of [fieldNames] out of [input] into a [CollegeQuery] with
@@ -225,6 +252,7 @@ class CollegeQueryVocabulary(
   fun parse(
     input: JsonObject,
     limit: Int,
+    ruler: PriceRuler,
   ): Result<CollegeQuery> {
     val cipPrefix = parseCipPrefix(input).getOrElse { return Result.failure(it) }
 
@@ -267,7 +295,7 @@ class CollegeQueryVocabulary(
     val minAdmission = optShare(input, "minAdmissionRateShare").getOrElse { return Result.failure(it) }
     val maxAdmission = optShare(input, "maxAdmissionRateShare").getOrElse { return Result.failure(it) }
 
-    val maxNetPrice = optUsd(input, "maxNetPricePerYearUsd").getOrElse { return Result.failure(it) }
+    val maxPrice = parsePriceBound(input, ruler).getOrElse { return Result.failure(it) }
 
     val minCompletion = optShare(input, "minCompletionRate150pct4yrShare").getOrElse { return Result.failure(it) }
 
@@ -283,7 +311,7 @@ class CollegeQueryVocabulary(
         maxUndergradEnrollmentHeadcount = maxUndergrad,
         minAdmissionRateShare = minAdmission,
         maxAdmissionRateShare = maxAdmission,
-        maxNetPricePerYearUsd = maxNetPrice,
+        maxPricePerYearUsd = maxPrice,
         minCompletionRate150pct4yrShare = minCompletion,
         testPolicy = testPolicy,
         religiousAffiliation = religiousAffiliation,
@@ -297,6 +325,7 @@ class CollegeQueryVocabulary(
         // the universe is a default, and a caller who says nothing gets it.
         isActive = isActive ?: true,
         isFourYear = isFourYear,
+        priceRuler = ruler,
         limit = limit,
       ),
     )
@@ -334,7 +363,14 @@ class CollegeQueryVocabulary(
       filters.maxUndergradEnrollmentHeadcount?.let { add("at most $it undergraduates") }
       filters.minAdmissionRateShare?.let { add("admission rate at or above ${mapShareToSpokenPercent(it)}") }
       filters.maxAdmissionRateShare?.let { add("admission rate at or below ${mapShareToSpokenPercent(it)}") }
-      filters.maxNetPricePerYearUsd?.let { add("average annual net price at or below ${mapUsdToSpoken(it)}") }
+      // Through [spokenFigure], which declares itself the ONE home of these two
+      // phrases. Written out by hand here, `similar_colleges` could print the
+      // same constraint two different ways in one response: this sentence in one
+      // wording and `cheaper_than_anchor`'s in another, side by side in
+      // `constraints_used`.
+      filters.maxPricePerYearUsd?.let { max ->
+        add("${filters.priceRuler.spokenFigure()} at or below ${mapUsdToSpoken(max)}")
+      }
       filters.minCompletionRate150pct4yrShare?.let { add("six-year completion rate at or above ${mapShareToSpokenPercent(it)}") }
       filters.testPolicy?.let { add("testing policy [$it]") }
       filters.religiousAffiliation?.let { add("religious affiliation [$it]") }
@@ -380,6 +416,38 @@ class CollegeQueryVocabulary(
     } else {
       "[$field] must be one of [${vocabulary.joinToString(", ")}]; got [$word]"
     }
+
+  /**
+   * The maximum-price bound on the ACTIVE ruler, and a NAMED REFUSAL for the
+   * other one (RFC 169 D7).
+   *
+   * A query is on exactly one price measure, so a bound stated in the other
+   * measure's words cannot be honoured. It is refused rather than ignored, and
+   * the refusal SAYS which ruler this search is on and why: a silently dropped
+   * price bound answers a narrower question with a wider answer, which is the
+   * one failure mode this whole vocabulary is written to avoid.
+   */
+  private fun parsePriceBound(
+    input: JsonObject,
+    ruler: PriceRuler,
+  ): Result<Int?> {
+    val inactiveField =
+      when (ruler) {
+        is PriceRuler.NetPrice -> PriceRuler.PUBLISHED_PRICE_FILTER_FIELD
+        is PriceRuler.Published -> PriceRuler.NET_PRICE_FILTER_FIELD
+      }
+    // Through [field], NOT `containsKey`: every other optional field in this
+    // class treats an explicit `null` as an ABSENT field, and a model writing
+    // `"maxPublishedPriceOnCampusPerYearUsd": null` was having its whole search
+    // refused for naming a bound it did not state.
+    if (field(input, inactiveField) != null) {
+      return fail(
+        "[$inactiveField] cannot be used here: ${ruler.describe()} " +
+          "Use [${ruler.filterField}] instead.",
+      )
+    }
+    return optUsd(input, ruler.filterField)
+  }
 
   /** An optional slug field checked against a closed, loaded word list. */
   private fun parseSlug(
@@ -532,7 +600,8 @@ class CollegeQueryVocabulary(
         "maxUndergradEnrollmentHeadcount",
         "minAdmissionRateShare",
         "maxAdmissionRateShare",
-        "maxNetPricePerYearUsd",
+        PriceRuler.NET_PRICE_FILTER_FIELD,
+        PriceRuler.PUBLISHED_PRICE_FILTER_FIELD,
         "minCompletionRate150pct4yrShare",
         "test_policy",
         "religious_affiliation",

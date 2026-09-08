@@ -3624,6 +3624,27 @@ test_ingest_colleges_help_documents_sfa() {
 }
 assert_success "ingest-colleges -h documents the -S/-f SFA group" \
   test_ingest_colleges_help_documents_sfa
+# The DERIVED-PHASE ORDER is the one thing a reader of this help cannot get
+# anywhere else, and RFC 169 made it load-bearing rather than incidental: the
+# search index sums price_figures into the published price it ranks a family's
+# search on, so `canonical-money` must commit BEFORE `search-index` or the index
+# carries the PREVIOUS run's prices. Asserted here for the reason the SFA
+# assertion above exists -- an undocumented order is one nobody can rely on, and
+# without a test the paragraph could be deleted with the suite still green.
+test_ingest_colleges_help_documents_phase_order() {
+  local out
+  out="$(bin/ingest-colleges -h 2>/dev/null)"
+  case "$out" in
+  *"canonical-money"*"search-index"*) ;;
+  *) log-error "help text does not narrate canonical-money before search-index"; return 1 ;;
+  esac
+  case "$out" in
+  *"comes BEFORE"*) return 0 ;;
+  *) log-error "help text does not say the order is deliberate"; return 1 ;;
+  esac
+}
+assert_success "ingest-colleges -h documents the derived-phase order" \
+  test_ingest_colleges_help_documents_phase_order
 # The resolved file AND the caller's original argument are both forwarded, the
 # same contract the IPEDS five have: the provenance row records what the caller
 # named, not the scratch path an s3:// download landed in.

@@ -345,9 +345,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
           runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
         }
       assertEquals(
-        listOf("institutions", "fields", "aliases", "name-words", "search-index", "canonical-money"),
+        listOf("institutions", "fields", "aliases", "name-words", "canonical-money", "search-index"),
         thrown.committedPhases,
-        "the derived search index and canonical money fill register as committed phases too (RFC 150/158)",
+        "the derived rebuilds register as committed phases too, and `canonical-money` COMMITS BEFORE " +
+          "`search-index`, which now sums its price figures (RFC 150/158/169)",
       )
       assertEquals("provenance", thrown.failedPhase, "the report names the phase that threw, not just what landed")
       // Exactly the expected table, not merely non-empty: the independent
@@ -415,12 +416,17 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The build row exists and says what the report says.
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
-    // Deliberately 7, not 1: RFC 144 added a second source family, RFC 146 the
+    // Deliberately 8, not 1: RFC 144 added a second source family, RFC 146 the
     // derived name-word rebuild, RFC 148 the CDS seed load, RFC 150 the
-    // derived search index, RFC 158 the canonical money fill, and RFC 161/162
-    // two more canonical money sources ahead of the Scorecard — each is exactly
-    // the derivation change method_version exists to record.
-    assertEquals(7, row.methodVersion, "RFC 161 and RFC 162 took the method version to 7: two new sources changed the derivation")
+    // derived search index, RFC 158 the canonical money fill, RFC 161/162 two
+    // more canonical money sources ahead of the Scorecard, and RFC 169 the
+    // published-price columns plus the phase reorder that feeds them — each is
+    // exactly the derivation change method_version exists to record.
+    assertEquals(
+      8,
+      row.methodVersion,
+      "RFC 169 took the method version to 8: the index gained published-price columns fed by a reordered canonical-money phase",
+    )
     assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")
@@ -634,6 +640,29 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
+  fun `one ingest is enough for the index to carry a published price`() {
+    // The phase-order pin (RFC 169), stated as the thing a family would notice:
+    // with `search-index` ahead of `canonical-money` the FIRST ingest of a fresh
+    // database left every published-price column NULL, and a search then ranked
+    // the whole corpus as "no published price" while reporting no fault at all.
+    // The count is taken after ONE ingest on purpose — a second run would hide
+    // the defect by picking up the first run's price figures.
+    ingest()
+    withSession { session ->
+      session
+        .prepareStatement(
+          "SELECT count(*) AS n FROM college_search_index " +
+            "WHERE published_price_out_of_state_on_campus_per_year_usd IS NOT NULL",
+        ).use { stmt ->
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertTrue(rs.getInt("n") > 0, "the first ingest must index the prices it just loaded")
+          }
+        }
+    }
+  }
+
+  @Test
   fun `an unchanged re-ingest reproduces the index column for column`() {
     ingest()
     val first = indexSnapshot()
@@ -840,8 +869,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     try {
       val thrown = assertThrows<PartialIngestException> { ingestWithSfa() }
       assertEquals(
-        listOf("institutions", "fields", "aliases", "sfa", "name-words", "search-index", "canonical-money"),
+        listOf("institutions", "fields", "aliases", "sfa", "name-words", "canonical-money", "search-index"),
         thrown.committedPhases,
+        "`sfa` is a ROW phase and commits before the derived ones; among those, `canonical-money` now " +
+          "commits BEFORE `search-index`, which sums its price figures into the index (RFC 169)",
       )
       assertEquals("provenance", thrown.failedPhase)
       // Committed means committed: the staged cells of the named phase are all

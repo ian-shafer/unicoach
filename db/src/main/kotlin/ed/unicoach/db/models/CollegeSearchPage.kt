@@ -36,4 +36,15 @@ data class CollegeSearchPage(
   val totalMatches: Int,
   val excludedUnknown: Map<String, Int> = emptyMap(),
   val sourceYears: Map<String, IntRange> = emptyMap(),
+  /**
+   * WHICH price this page was filtered, sorted and reported on (RFC 169) — the
+   * query's own [PriceRuler], riding on the result rather than re-derived by the
+   * boundary.
+   *
+   * It rides here because the tool has to SAY it. A published ranking contains
+   * no financial aid, and there is no out-of-state after-aid price to fall back
+   * on, so a page that did not name its ruler would be read as an after-aid
+   * price by every reader who has seen one before.
+   */
+  val priceRuler: PriceRuler,
 )

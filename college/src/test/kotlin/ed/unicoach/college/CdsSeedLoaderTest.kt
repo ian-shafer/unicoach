@@ -612,9 +612,14 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     // 5: RFC 146 took 3 for the derived name-word rebuild, RFC 148's CDS bump
     // was therefore 4, RFC 150's derived search index is the next number in
-    // the sequence, RFC 158's canonical money fill is 6, and 7 is RFC 161's
-    // second canonical money source together with RFC 162's third.
-    assertEquals(7, row.methodVersion, "RFC 161 and RFC 162 took the method version to 7: two new sources changed the derivation")
+    // the sequence, RFC 158's canonical money fill is 6, 7 is RFC 161's second
+    // canonical money source together with RFC 162's third, and RFC 169's
+    // published-price columns (with the phase reorder that feeds them) are 8.
+    assertEquals(
+      8,
+      row.methodVersion,
+      "RFC 169 took the method version to 8: the index gained published-price columns fed by a reordered canonical-money phase",
+    )
     for (file in listOf(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)) {
       assertTrue(row.sources.contains(file.name), "sources names ${file.name}: ${row.sources}")
     }
@@ -688,7 +693,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     try {
       val thrown = assertFailsWith<PartialIngestException> { ingest() }
       assertEquals(
-        listOf("institutions", "fields", "aliases", "cds", "name-words", "search-index", "canonical-money"),
+        listOf("institutions", "fields", "aliases", "cds", "name-words", "canonical-money", "search-index"),
         thrown.committedPhases,
       )
       assertEquals("provenance", thrown.failedPhase)

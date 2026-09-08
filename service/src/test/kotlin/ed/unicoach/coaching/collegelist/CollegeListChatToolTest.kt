@@ -137,7 +137,7 @@ class CollegeListChatToolTest {
     val seeded = seedCollege("Round Trip University")
 
     val searchTool = CollegeSearchTool(CollegeSearchService(CostsTestDb.database), ed.unicoach.college.Codebook.EMPTY)
-    val searchResult = runBlocking { searchTool.execute(input("""{"states":["CA"]}""")) }
+    val searchResult = runBlocking { searchTool.execute(input("""{"states":["CA"]}"""), null) }
     val match =
       searchResult
         .getValue("colleges")

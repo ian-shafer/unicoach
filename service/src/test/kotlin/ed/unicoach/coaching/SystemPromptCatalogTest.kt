@@ -25,6 +25,7 @@ import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.RESIDENCY_TIERS_KEY
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -1476,6 +1477,133 @@ class SystemPromptCatalogTest {
       "the rollback target must not already name the v20 aid-policy section",
     )
   }
+
+  /** The v22 search-ruler paragraph: everything v22 appends to the v21 body. The guards are [appendedParagraph]'s. */
+  private fun searchRulerParagraph(): String = appendedParagraph(base = "v21", revised = "v22")
+
+  /**
+   * The 0092 seed's structural contract (RFC 169). v22 is ADDITIVE like every
+   * coach seed since 0047 except v19: the whole v21 body byte-identical as a
+   * prefix, joined by a single space to exactly one appended paragraph — the
+   * search-ruler instruction. The paragraph's markers are asserted, not its full
+   * copy: the seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v22 is v21 plus one appended search-ruler paragraph`() {
+    val appended = searchRulerParagraph()
+
+    assertTrue(
+      appended.startsWith(" A college search now ranks on one of two prices"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    // Both tools by the name the registry actually advertises, never a literal.
+    assertTrue(appended.contains(COLLEGE_SEARCH_TOOL_NAME), "the paragraph must name the search tool it is about")
+    assertTrue(appended.contains(SIMILAR_TOOL_NAME), "and the peer tool, which ranks on the same ruler")
+    assertTrue(
+      appended.contains("depends on whether the state the family lives in is on file"),
+      "RFC 169 D1: which ruler is in force, and why",
+    )
+    assertTrue(
+      appended.contains("No financial aid of any kind is in a published ranking"),
+      "D14(a): a published ranking says aid is not in it, never silently",
+    )
+    assertTrue(
+      appended.contains("There is no out-of-state price after aid and there never can be"),
+      "the honest reason the published ruler exists at all (RFC 149)",
+    )
+    assertTrue(
+      appended.contains("Never require the answer, never hold back a result waiting for it"),
+      "D6: the state question is offered and never gates -- guided, not gated",
+    )
+    assertTrue(
+      appended.contains("excluded_unknown"),
+      "D11: a school with no figure on the ruler in force is dropped and COUNTED, never treated as cheap",
+    )
+    // The two places this paragraph has to agree with v19 rather than merely
+    // follow it. RFC 166 gave the COST answers a third tuition tier and a
+    // sentence for the school whose publisher separates none; a search ranks two
+    // tiers and now emits that same sentence on a row. Silence on either would
+    // let the coach read a search price back as an in-district one, or read the
+    // shared sentence as a claim about what the school charges.
+    assertTrue(
+      appended.contains("the in-district tier is a cost answer and never a search ranking"),
+      "the search ruler has two tiers, and v19's third one is not one of them",
+    )
+    assertTrue(
+      appended.contains(RESIDENCY_TIERS_KEY),
+      "brief 0006 D19: a search row can carry the same tier sentence a cost answer carries",
+    )
+    assertTrue(
+      v21Body().contains(IN_DISTRICT_OPENER),
+      "the premise: v19 is where the in-district tier lives and v21 still carries it, or the sentences above guard nothing",
+    )
+    // The standing money guards, swept over the span v21 actually adds, so a
+    // relaxation here is reported as v21's own rather than as the catalog's.
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(appended),
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    // v6's ban on source-internal names still governs: the paragraph names
+    // PAYLOAD keys and TOOL names, and no canonical table or publisher column.
+    assertFalse(appended.contains("price_figures"), "a canonical table name is never said to a family")
+    assertFalse(appended.contains("CHG"), "an IPEDS charge code is never said to a family")
+  }
+
+  /**
+   * Every word of v21 must survive RFC 169's append — asserted as ONE equality
+   * rather than as a list of `contains` checks, on the precedent RFC 170's own
+   * v20/v21 tests set: v19 EDITED two interior blocks, so spans extracted from older
+   * pairs of bodies are not guaranteed to be byte-identical spans of the served
+   * body, and a list of them would be asserting the wrong contract.
+   *
+   * The equality is strictly stronger: every ban, every citation rule, every
+   * figure-status sentence and RFC 170's whole aid-policy paragraph survive by
+   * construction, or this fails.
+   */
+  @Test
+  fun `coach v22 keeps the whole v21 body, byte for byte, as its prefix`() {
+    val v21 = v21Body()
+    val v22 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v22").getOrThrow().body
+
+    assertEquals(v21 + searchRulerParagraph(), v22, "v22 is v21 and exactly one appended paragraph, nothing else")
+    // The paragraphs named so a future interior edit to any of them is reported
+    // here rather than inferred from the equality alone.
+    assertTrue(v22.contains(federalAidParagraph()), "v17's federal-aid paragraph must survive the append")
+    assertTrue(v22.contains(shareNudgeParagraph()), "v18's share-nudge paragraph must survive the append")
+    assertTrue(v22.contains(FIGURE_STATUS_OPENER), "v19's figure-status paragraph must survive the append")
+    assertTrue(v22.contains(needAndFormsParagraph()), "v20's need-and-forms paragraph must survive the append")
+    assertTrue(v22.contains(borrowingParagraph()), "v21's borrowing paragraph must survive the append")
+  }
+
+  /**
+   * The rollback RFC 169 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v21`), which is only real if the v21 row is
+   * still in the insert-only catalog, still carries the copy it was approved
+   * with, and does not already carry the search-ruler instruction.
+   */
+  @Test
+  fun `coach v21 stays selectable as v22's rollback target`() {
+    val v21 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v21").getOrThrow()
+
+    assertEquals("v21", v21.version, "the rollback target must still be selectable by name and version")
+    assertTrue(
+      v21.body.contains(CollegeCostChatTool.BORROWING_AVAILABILITY_KEY),
+      "v21 must still carry RFC 175's borrowing copy",
+    )
+    assertFalse(
+      v21.body.contains("ranks on one of two prices"),
+      "the rollback target must not already carry the v22 search-ruler copy",
+    )
+  }
+
+  /** The served v21 body, read from the catalog so the migration stays the one home of the copy. */
+  private fun v21Body(): String = SystemPromptsDao.findByNameAndVersion(session, "coach", "v21").getOrThrow().body
 
   /** The v20 need-and-forms paragraph: everything v20 appends to the v19 body. The guards are [appendedParagraph]'s. */
   private fun needAndFormsParagraph(): String = appendedParagraph(base = "v19", revised = "v20")

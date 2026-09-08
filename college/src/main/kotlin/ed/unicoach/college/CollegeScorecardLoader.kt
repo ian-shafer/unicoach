@@ -836,21 +836,30 @@ class CollegeScorecardLoader(
     // aliases it splits words from, and the IPEDS phases beside them — and
     // before provenance, because its row count is provenance.
     val nameWords = phase("name-words", committedPhases) { rebuildNameWords() }
-    // The second derived rebuild of phase 2 (RFC 150 D47), between `name-words`
-    // and the read-only unknown-code report: it reads `colleges`,
-    // `college_ipeds`, `college_programs_census` and `subjects` after EVERY row
-    // phase has committed, and before `provenance`, because its row count IS
-    // provenance.
-    val searchIndex = phase("search-index", committedPhases) { rebuildSearchIndex() }
-    // The third derived rebuild of phase 2 (RFC 158, P12): a wholesale
+    // The second derived rebuild of phase 2 (RFC 158, P12): a wholesale
     // DELETE + re-fill of `price_figures` and `cohort_money_stats` from a
     // re-parse of the pinned institution CSV with the status-preserving
-    // readers, in its own transaction, after `search-index` and before
+    // readers, in its own transaction, after every row phase and before
     // `provenance` -- because its row counts and per-status breakdown ARE
     // provenance (P11). It runs whether or not this run supplied the
     // vocabulary file: the vocabulary TABLES are the precondition (P2), and
     // an empty one fails the fill loudly at the foreign keys.
+    //
+    // It runs BEFORE `search-index`, and that order is now load-bearing rather
+    // than incidental (RFC 169): the index materialises each college's
+    // published on-campus total by summing `price_figures`, so an index built
+    // ahead of the canonical fill would carry the PREVIOUS run's prices, and on
+    // a first ingest would carry none at all -- a search silently ranking a
+    // whole corpus as "no published price". The reproducibility pin in
+    // `CollegeScorecardIngestTest` is what would catch a swap back: with the
+    // old order, two identical ingests produced two different indexes.
     val canonicalMoney = phase("canonical-money", committedPhases) { canonicalMoneyLoader.fill(institution.file, sfa) }
+    // The third derived rebuild of phase 2 (RFC 150 D47), between
+    // `canonical-money` and the read-only unknown-code report: it reads
+    // `colleges`, `college_ipeds`, `college_programs_census`, `subjects` and now
+    // `price_figures` after EVERY row phase and the canonical money fill have
+    // committed, and before `provenance`, because its row count IS provenance.
+    val searchIndex = phase("search-index", committedPhases) { rebuildSearchIndex() }
     // D46's report, and the reason it is here rather than inside the codebooks
     // phase: it counts the codes stored in `colleges`/`college_ipeds`/
     // `college_programs_census`, so it must read the snapshot THIS run just
@@ -1745,8 +1754,13 @@ class CollegeScorecardLoader(
      * from a different publisher with a different number, and a net price can
      * now be the publisher's own rather than the Scorecard's copy of it -- so a
      * build row from this ingest is not comparable to one from the last.
+     *
+     * 8 = RFC 169's published-price ruler on the search index. The phase ORDER
+     * changed -- `canonical-money` now runs before `search-index` -- and the
+     * index gained four columns derived from `price_figures`, so the same
+     * snapshot produces a different index than version 7 did.
      */
-    const val METHOD_VERSION = 7
+    const val METHOD_VERSION = 8
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")

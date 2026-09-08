@@ -42,6 +42,12 @@ data class CollegeSimilarityPage(
   val totalCandidates: Int,
   val excludedUnknown: Map<String, Int>,
   val sourceYears: Map<String, IntRange>,
+  /**
+   * WHICH price this peer list was ranked and constrained on (RFC 169) — the
+   * same [PriceRuler] the anchor was read with, so `cheaper_than_anchor`
+   * compares two figures on one ladder and the result can say which one.
+   */
+  val priceRuler: PriceRuler,
 )
 
 /**

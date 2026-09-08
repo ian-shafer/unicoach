@@ -1972,6 +1972,8 @@ class CoachingServiceTest {
             ed.unicoach.college.CollegeSearchService(database),
             ed.unicoach.college.Codebook.EMPTY,
           ),
+          ed.unicoach.coaching.moneyprofile
+            .MoneyProfileService(database),
         )
       var continuation: ChatRequest? = null
       val provider =

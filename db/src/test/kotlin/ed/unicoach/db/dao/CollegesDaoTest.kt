@@ -20,6 +20,7 @@ import ed.unicoach.db.models.NewIpedsRegion
 import ed.unicoach.db.models.NewNcesLocale
 import ed.unicoach.db.models.NewReligiousAffiliation
 import ed.unicoach.db.models.NewSubject
+import ed.unicoach.db.models.PriceRuler
 import ed.unicoach.db.models.SimilarityAnchorOutcome
 import ed.unicoach.db.models.SimilarityAxis
 import ed.unicoach.db.models.SimilarityQuery
@@ -573,10 +574,10 @@ class CollegesDaoTest {
   }
 
   @Test
-  fun `search by maxNetPricePerYearUsd includes and excludes`() {
+  fun `search by a maximum price on the active ruler includes and excludes`() {
     seed(newCollege(401, netPricePerYearUsd = 10000))
     seed(newCollege(402, netPricePerYearUsd = 40000))
-    val matches = CollegesDao.search(session, CollegeQuery(maxNetPricePerYearUsd = 20000, limit = 25)).page().matches
+    val matches = CollegesDao.search(session, CollegeQuery(maxPricePerYearUsd = 20000, limit = 25)).page().matches
     assertEquals(listOf(401), matches.map { it.ipedsUnitId })
   }
 
@@ -683,7 +684,7 @@ class CollegesDaoTest {
             cipPrefix = "2607",
             states = listOf("CA", "OR", "WA"),
             maxUndergradEnrollmentHeadcount = 5000,
-            maxNetPricePerYearUsd = 25000,
+            maxPricePerYearUsd = 25000,
             limit = 25,
           ),
         ).page()
@@ -1387,7 +1388,7 @@ class CollegesDaoTest {
     seed(newCollege(840201, netPricePerYearUsd = null))
     seed(newCollege(840202, netPricePerYearUsd = 5000))
 
-    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC, limit = 25)
+    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC, limit = 25)
     val matches = CollegesDao.search(session, query).page().matches
     assertEquals(listOf(840202, 840200, 840201), matches.map { it.ipedsUnitId })
   }
@@ -1418,10 +1419,245 @@ class CollegesDaoTest {
   @Test
   fun `search sortBy never filters - a NULL-keyed row sinks, it does not vanish`() {
     seed(newCollege(840500, netPricePerYearUsd = null))
-    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC, limit = 25)
+    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC, limit = 25)
     val page = CollegesDao.search(session, query).page()
     assertEquals(listOf(840500), page.matches.map { it.ipedsUnitId })
     assertEquals(1, page.totalMatches)
+  }
+
+  // ---------------------------------------------------------------------------
+  // The price ruler (RFC 169): one query, one measure
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The four `price_figures` cells a published on-campus total is summed from,
+   * plus the rebuild. Raw SQL on the `CanonicalMoneyDaoTest` precedent: the
+   * rebuild reads the TABLE, and the vocabulary tables are its write
+   * precondition (already seeded by [SearchIndexFixture.seedCodebooks]).
+   */
+  private fun seedPublishedPrice(
+    collegeId: CollegeId,
+    inStateTuition: Int,
+    outOfStateTuition: Int,
+  ) {
+    val cells =
+      listOf(
+        Triple("tuition_and_fees", "in_state" to "not_applicable", inStateTuition),
+        Triple("tuition_and_fees", "out_of_state" to "not_applicable", outOfStateTuition),
+        Triple("housing_and_food", "not_applicable" to "on_campus", 12000),
+        Triple("books_and_supplies", "not_applicable" to "not_applicable", 1200),
+        Triple("other_expenses", "not_applicable" to "on_campus", 2800),
+      )
+    for ((concept, axes, amount) in cells) {
+      session
+        .prepareStatement(
+          "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+            "academic_year, amount_usd, status, source, source_variable) " +
+            "VALUES (?, ?, ?, ?, 2023, ?, 'reported', 'ipeds_ic_ay', 'FIXTURE')",
+        ).use { stmt ->
+          stmt.setObject(1, collegeId.value)
+          stmt.setString(2, concept)
+          stmt.setString(3, axes.first)
+          stmt.setString(4, axes.second)
+          stmt.setInt(5, amount)
+          stmt.executeUpdate()
+        }
+    }
+    rebuildSearchIndex()
+  }
+
+  /**
+   * The pin brief 0006 D14(c) asks for, and the reason [PriceRuler] is a value
+   * rather than a convention.
+   *
+   * Two publics whose order FLIPS between the rulers: the WA school is cheaper
+   * on the net-price ladder, the NV school on the published ladder for a family
+   * living in NV. The SAME query is run twice, once with the family's state and
+   * once without, and every price-shaped thing about it -- the page order, the
+   * `ORDER BY`, the price bound and the `excluded_unknown` key -- has to name
+   * ONE measure each time. A query that read two price columns would show up
+   * here as an order that agrees with neither ladder.
+   */
+  @Test
+  fun `one query reads one price ruler`() {
+    val cheapOnNet = seed(newCollege(860100, state = "WA", control = 1, netPricePerYearUsd = 12000))
+    val cheapOnPublished = seed(newCollege(860101, state = "NV", control = 1, netPricePerYearUsd = 25000))
+    // Published on-campus totals: WA is 40,000 out of state, NV is 27,000 in
+    // state -- the reverse of the net order above.
+    seedPublishedPrice(cheapOnNet, inStateTuition = 9000, outOfStateTuition = 24000)
+    seedPublishedPrice(cheapOnPublished, inStateTuition = 11000, outOfStateTuition = 26000)
+
+    preparedSql.clear()
+    val onNet =
+      CollegesDao
+        .search(
+          session,
+          CollegeQuery(sortBy = CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC, maxPricePerYearUsd = 30000, limit = 25),
+        ).page()
+    assertEquals(listOf(860100, 860101), onNet.matches.map { it.ipedsUnitId }, "cheapest first on the net ladder")
+    assertEquals(setOf("in_state_net_price_per_year_usd"), onNet.excludedUnknown.keys)
+    val netSql = preparedSql.single { it.contains("FROM (") }
+    assertFalse(netSql.contains("published_price"), "a net-ruler query names no published column: $netSql")
+
+    preparedSql.clear()
+    val onPublished =
+      CollegesDao
+        .search(
+          session,
+          CollegeQuery(
+            sortBy = CollegeQuery.SortBy.PUBLISHED_PRICE_ON_CAMPUS_ASC,
+            maxPricePerYearUsd = 45000,
+            priceRuler = PriceRuler.Published("NV"),
+            limit = 25,
+          ),
+        ).page()
+    // 27,000 (NV, in state) before 40,000 (WA, out of state): the opposite order.
+    assertEquals(listOf(860101, 860100), onPublished.matches.map { it.ipedsUnitId })
+    assertEquals(setOf("published_price_on_campus_per_year_usd"), onPublished.excludedUnknown.keys)
+    val publishedSql = preparedSql.single { it.contains("FROM (") }
+    assertFalse(
+      publishedSql.contains("net_price_per_year_usd <=") || publishedSql.contains("net_price_percentile_share"),
+      "a published-ruler query filters and ranks on no net-price column: $publishedSql",
+    )
+    // ...and the number the result PRINTS is the number it was ranked on.
+    assertEquals(27000, onPublished.matches.first().rulerPriceUsd)
+    assertEquals(40000, onPublished.matches.last().rulerPriceUsd)
+  }
+
+  @Test
+  fun `a published-price ruler ranks a non-resident on the out-of-state total`() {
+    val college = seed(newCollege(860200, state = "WA", control = 1))
+    seedPublishedPrice(college, inStateTuition = 9000, outOfStateTuition = 24000)
+
+    // A family in NV pays the out-of-state total, 40,000: a 30,000 ceiling
+    // excludes this school even though its in-state total is 25,000.
+    val excluded =
+      CollegesDao
+        .search(session, CollegeQuery(maxPricePerYearUsd = 30000, priceRuler = PriceRuler.Published("NV"), limit = 25))
+        .page()
+    assertEquals(emptyList(), excluded.matches.map { it.ipedsUnitId })
+    // Present but not judged cheap is NOT an unknown: the school reports a
+    // figure, and the count is about schools that report none.
+    assertEquals(0, excluded.excludedUnknown.getValue("published_price_on_campus_per_year_usd"))
+  }
+
+  @Test
+  fun `a published-price ruler ranks a resident on the in-state total`() {
+    val college = seed(newCollege(860300, state = "WA", control = 1))
+    seedPublishedPrice(college, inStateTuition = 9000, outOfStateTuition = 24000)
+
+    val page =
+      CollegesDao
+        .search(session, CollegeQuery(maxPricePerYearUsd = 30000, priceRuler = PriceRuler.Published("WA"), limit = 25))
+        .page()
+    assertEquals(listOf(860300), page.matches.map { it.ipedsUnitId })
+    assertEquals(25000, page.matches.single().rulerPriceUsd)
+  }
+
+  @Test
+  fun `a private publishes one price, so residency cannot move it`() {
+    val college = seed(newCollege(860400, state = "ME", control = 2))
+    seedPublishedPrice(college, inStateTuition = 48000, outOfStateTuition = 48000)
+
+    for (state in listOf("ME", "NV")) {
+      val page =
+        CollegesDao
+          .search(session, CollegeQuery(priceRuler = PriceRuler.Published(state), limit = 25))
+          .page()
+      assertEquals(64000, page.matches.single().rulerPriceUsd, "a private is one price for [$state]")
+    }
+  }
+
+  @Test
+  fun `sortBy on the published ruler never filters`() {
+    // The `:1419` shape for the new ruler: a school with no published total is
+    // RETURNED, sunk to the end, and counted in totalMatches -- never dropped by
+    // a sort, which would silently narrow the corpus.
+    val priced = seed(newCollege(860500, state = "NV", control = 1))
+    seedPublishedPrice(priced, inStateTuition = 9000, outOfStateTuition = 24000)
+    seed(newCollege(860501, state = "NV", control = 1))
+
+    val page =
+      CollegesDao
+        .search(
+          session,
+          CollegeQuery(
+            sortBy = CollegeQuery.SortBy.PUBLISHED_PRICE_ON_CAMPUS_ASC,
+            priceRuler = PriceRuler.Published("NV"),
+            limit = 25,
+          ),
+        ).page()
+    assertEquals(listOf(860500, 860501), page.matches.map { it.ipedsUnitId })
+    assertEquals(2, page.totalMatches)
+    assertNull(page.matches.last().rulerPriceUsd)
+  }
+
+  @Test
+  fun `a published bound drops, counts and names a school that reports no total`() {
+    val priced = seed(newCollege(860600, state = "NV", control = 1))
+    seedPublishedPrice(priced, inStateTuition = 9000, outOfStateTuition = 24000)
+    seed(newCollege(860601, state = "NV", control = 1))
+
+    val page =
+      CollegesDao
+        .search(session, CollegeQuery(maxPricePerYearUsd = 40000, priceRuler = PriceRuler.Published("NV"), limit = 25))
+        .page()
+    assertEquals(listOf(860600), page.matches.map { it.ipedsUnitId })
+    // Dropped, counted and NAMED -- never kept as "maybe cheaper".
+    assertEquals(mapOf("published_price_on_campus_per_year_usd" to 1), page.excludedUnknown)
+  }
+
+  @Test
+  fun `naming the inactive ruler is refused before a query can be built`() {
+    // The type-level backstop under the vocabulary's own named refusal: an
+    // inconsistent query is not a state `CollegeQuery` can be in, so nothing
+    // downstream can quietly fall back to the other measure.
+    assertFailsWith<IllegalArgumentException> {
+      CollegeQuery(sortBy = CollegeQuery.SortBy.PUBLISHED_PRICE_ON_CAMPUS_ASC, limit = 25)
+    }
+    assertFailsWith<IllegalArgumentException> {
+      CollegeQuery(
+        sortBy = CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC,
+        priceRuler = PriceRuler.Published("NV"),
+        limit = 25,
+      )
+    }
+  }
+
+  @Test
+  fun `the filter and count statements still name no table but college_search_index on the published ruler`() {
+    // The reason the ruler is MATERIALISED on the index (RFC 169 §6): the
+    // residency-correct expression is a CASE over index columns, so the hot path
+    // gains no join to `price_figures`.
+    val college = seed(newCollege(860700, state = "NV", control = 1))
+    seedPublishedPrice(college, inStateTuition = 9000, outOfStateTuition = 24000)
+    preparedSql.clear()
+
+    CollegesDao
+      .search(
+        session,
+        CollegeQuery(
+          maxPricePerYearUsd = 40000,
+          priceRuler = PriceRuler.Published("NV"),
+          sortBy = CollegeQuery.SortBy.PUBLISHED_PRICE_ON_CAMPUS_ASC,
+          limit = 25,
+        ),
+      ).getOrThrow()
+
+    val countSql = preparedSql.single { it.startsWith("SELECT count(*)") }
+    assertTrue(countSql.contains("FROM college_search_index"), countSql)
+    for (table in listOf("price_figures", "cohort_money_stats", "colleges", "college_ipeds")) {
+      assertFalse(countSql.contains(" $table"), "the count must not reach [$table]: $countSql")
+    }
+    val filterHalf =
+      preparedSql
+        .single { it.contains("FROM (") }
+        .substringAfter("FROM (")
+        .substringBefore(") i")
+    assertTrue(filterHalf.contains("FROM college_search_index"), filterHalf)
+    for (table in listOf("price_figures", "cohort_money_stats", "colleges")) {
+      assertFalse(filterHalf.contains(" $table"), "the filter must not reach [$table]: $filterHalf")
+    }
   }
 
   @Test
@@ -1968,7 +2204,7 @@ class CollegesDaoTest {
     rebuildSearchIndex()
 
     val anchor =
-      assertIs<SimilarityAnchorOutcome.Found>(CollegesDao.findSimilarityAnchor(session, anchorId).getOrThrow()).anchor
+      assertIs<SimilarityAnchorOutcome.Found>(CollegesDao.findSimilarityAnchor(session, anchorId, PriceRuler.NetPrice).getOrThrow()).anchor
     val query =
       SimilarityQuery(
         anchor = anchor,
@@ -2027,7 +2263,7 @@ class CollegesDaoTest {
     rebuildSearchIndex()
 
     val anchor =
-      assertIs<SimilarityAnchorOutcome.Found>(CollegesDao.findSimilarityAnchor(session, anchorId).getOrThrow()).anchor
+      assertIs<SimilarityAnchorOutcome.Found>(CollegesDao.findSimilarityAnchor(session, anchorId, PriceRuler.NetPrice).getOrThrow()).anchor
     val query =
       SimilarityQuery(
         anchor = anchor,

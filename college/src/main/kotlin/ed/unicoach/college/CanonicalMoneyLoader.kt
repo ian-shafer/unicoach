@@ -682,10 +682,13 @@ class CanonicalMoneyLoader internal constructor(
   /**
    * Maps the staged IC_AY charge rows into the price accumulator.
    *
-   * Reads STAGING, not the CSV: the canonical phase runs last, after
-   * `search-index`, so the file it would re-parse has already been loaded into
-   * `college_ipeds_charges` by the `ipeds-charges` phase (its write
-   * precondition). The staging TABLE is what this fill depends on, exactly as
+   * Reads STAGING, not the CSV: the canonical phase runs after every ROW phase
+   * -- `ipeds-charges` among them -- so the file it would re-parse has already
+   * been loaded into `college_ipeds_charges` by that phase (its write
+   * precondition). Since RFC 169 the canonical phase is no longer last of the
+   * derived rebuilds: `search-index` now runs AFTER it, because the index sums
+   * `price_figures` into its published-price columns. That reordering does not
+   * touch this dependency, which is on a ROW phase. The staging TABLE is what this fill depends on, exactly as
    * the money-vocabulary TABLES are (RFC 158 P2) -- so a run that supplies no
    * IC_AY file still serves whatever the last one loaded, rather than silently
    * dropping every IPEDS price for one Scorecard-only ingest.

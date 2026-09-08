@@ -9,6 +9,7 @@ import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.CollegeSimilarityOutcome
 import ed.unicoach.db.models.CollegeSummary
+import ed.unicoach.db.models.PriceRuler
 import ed.unicoach.db.models.SimilarityAnchorOutcome
 import ed.unicoach.db.models.SimilarityQuery
 import kotlinx.coroutines.CancellationException
@@ -174,8 +175,11 @@ class CollegeSearchService(
    * separately, so an unbuilt index is never answered as "that school does not
    * exist".
    */
-  suspend fun findSimilarityAnchor(id: CollegeId): Result<SimilarityAnchorOutcome> =
-    handleFailures { database.withConnection { session -> CollegesDao.findSimilarityAnchor(session, id) } }
+  suspend fun findSimilarityAnchor(
+    id: CollegeId,
+    ruler: PriceRuler,
+  ): Result<SimilarityAnchorOutcome> =
+    handleFailures { database.withConnection { session -> CollegesDao.findSimilarityAnchor(session, id, ruler) } }
       .onSuccess { outcome ->
         if (outcome is SimilarityAnchorOutcome.IndexNotBuilt) {
           logger.error(

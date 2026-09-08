@@ -13,7 +13,7 @@ import java.sql.Connection
  * `CollegesDaoTest`, which asserts on what a search RETURNS, and
  * `CollegeSearchIndexRebuildTest`, which asserts on what the rebuild WRITES.
  *
- * Both need the same seventeen tables emptied and the same miniature codebook
+ * Both need the same nineteen tables emptied and the same miniature codebook
  * present, and both had their own byte-identical copy of the `TRUNCATE` (four
  * copies in all, `@BeforeEach` and `@AfterAll` in each suite). A table added to
  * the index and to three of the four copies is a suite that starts dirty and
@@ -32,6 +32,13 @@ internal object SearchIndexFixture {
       "college_ipeds",
       "college_programs_census",
       "college_search_index",
+      // The canonical money layer (RFC 158), added by RFC 169: the rebuild now
+      // sums `price_figures` into the index's published-price columns, so a row
+      // left behind by one test is a price the next test never seeded.
+      // `cohort_money_stats` is emptied beside it because the two are written
+      // and truncated as one layer by every other suite that touches them.
+      "price_figures",
+      "cohort_money_stats",
       "subjects",
       "ipeds_regions",
       "us_states",
@@ -92,6 +99,14 @@ internal object SearchIndexFixture {
     // omits the `other-us-jurisdictions` region on purpose, which is what keeps
     // region 9 usable below as a code no codebook explains.
     CodebookReferenceFixture.seed(session)
+    // The five money-vocabulary tables `price_figures` foreign-keys into
+    // (`price_concepts`, `residency_bases`, `arrangements`, `figure_statuses`,
+    // `income_bands`). They are a WRITE PRECONDITION, not a miniature: the rows
+    // are read from `db/data/money-vocabulary.json`, the file the ingest itself
+    // loads, so they cannot drift from the real vocabulary and are not
+    // truncated above. Seeding them here means a rebuild test can seed a price
+    // figure without repeating the precondition.
+    MoneyVocabularyFixture.seed(session)
     CodebooksDao
       .upsertCarnegieBasicClass(
         session,

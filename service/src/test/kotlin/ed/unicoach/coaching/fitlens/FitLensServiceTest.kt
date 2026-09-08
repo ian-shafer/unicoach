@@ -947,10 +947,23 @@ class FitLensServiceTest {
       // The SAME fields the search tool offers, from the one shared home -- so
       // the drift this slice deleted cannot come back by editing one of them.
       // Minus any whose vocabulary this database has not loaded: a filter with
-      // no values is not advertised on either surface (RFC 150).
+      // no values is not advertised on either surface (RFC 150). And minus the
+      // PUBLISHED price bound (RFC 169): the fit lens carries no student
+      // residency into its query, so it is always on the net-price ruler and
+      // that bound could only ever be refused -- an advertised filter that
+      // cannot be used, which this vocabulary refuses to ship for the same
+      // reason it drops an empty one.
       assertEquals(
-        ed.unicoach.college.CollegeQueryVocabulary.FIELD_NAMES - codebook.emptyVocabularies.toSet(),
+        ed.unicoach.college.CollegeQueryVocabulary.FIELD_NAMES -
+          codebook.emptyVocabularies.toSet() -
+          ed.unicoach.db.models.PriceRuler.PUBLISHED_PRICE_FILTER_FIELD,
         properties.keys,
+      )
+      assertTrue(
+        ed.unicoach.college.CollegeQueryVocabulary.FIELD_NAMES
+          .contains(ed.unicoach.db.models.PriceRuler.PUBLISHED_PRICE_FILTER_FIELD),
+        "the premise: the field EXISTS in the shared vocabulary, so a model that writes it here is refused " +
+          "BY NAME rather than rejected as an unknown key",
       )
       assertEquals(
         codebook.regionSlugs,
@@ -1388,7 +1401,9 @@ class FitLensServiceTest {
   fun `the search filter still reads the index column, not the canonical figure`() =
     runBlocking {
       // The filter and ranking column `net_price_per_year_usd` is shape/05's and
-      // this slice moves only the DIGEST (RFC 166 §9). The two numbers are seeded
+      // RFC 166 moved only the DIGEST (§9). RFC 169 renamed the WIRE field to
+      // `maxInStateNetPricePerYearUsd` -- the basis is in the name now -- and
+      // left the column and this split exactly as they were. The two numbers are seeded
       // APART so the assertion cannot pass by coincidence: the index says 20000,
       // the canonical store says 9000.
       val student = createStudent()
@@ -1401,7 +1416,7 @@ class FitLensServiceTest {
         )
 
       val filtered =
-        providerFor(college, queryDoc = """{"maxNetPricePerYearUsd":15000}""").also {
+        providerFor(college, queryDoc = """{"maxInStateNetPricePerYearUsd":15000}""").also {
           service(it).discover(student)
         }
       assertEquals(
@@ -1414,7 +1429,7 @@ class FitLensServiceTest {
       // freshness gate would skip a re-run of the same unchanged model.
       val other = createStudent()
       createClaims(other, 3)
-      val admitted = providerFor(college, queryDoc = """{"maxNetPricePerYearUsd":25000}""")
+      val admitted = providerFor(college, queryDoc = """{"maxInStateNetPricePerYearUsd":25000}""")
       service(admitted).discover(other)
       val call2Text =
         ed.unicoach.chat.ContentBlocks

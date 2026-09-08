@@ -22,11 +22,11 @@ import ed.unicoach.coaching.costs.SingleSchoolBasis
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.WithheldReason
 import ed.unicoach.coaching.costs.applicableTuitionFor
-import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.ResidencyTierBasis
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
 import kotlinx.html.FlowContent

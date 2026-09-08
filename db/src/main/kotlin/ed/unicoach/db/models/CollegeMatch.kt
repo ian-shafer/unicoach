@@ -42,6 +42,30 @@ data class CollegeMatch(
   val undergradEnrollmentHeadcount: Int?,
   val admissionRateShare: Double?,
   val netPricePerYearUsd: Int?,
+  /**
+   * The price the query's own [PriceRuler] measured this row on (RFC 169): the
+   * blended net price under the net ruler, this row's residency-correct
+   * published on-campus total under the published one.
+   *
+   * It is the number the sort ordered by and the number a bound was applied to,
+   * read back from the SAME expression, so a result can never print one price
+   * and have been ranked on another. NULL means this row carries no figure on
+   * the active ruler — dropped by a bound and counted in `excluded_unknown`,
+   * sunk (never removed) by a sort.
+   */
+  val rulerPriceUsd: Int?,
+  /**
+   * WHICH tuition tiers this school publishes (brief 0006 D19), decided by the
+   * ONE derivation the cost surfaces use — [ResidencyTierBasis] — from the three
+   * tuition rows read live for the returned page.
+   *
+   * It rides here so a result can SAY, in the enum's own words, when our source
+   * does not separate a district price from the state price. That school is
+   * ranked exactly as every other: never dropped, never excluded, never
+   * substituted. Its in-state figure is shown as it was published, and the
+   * sentence beside it is the whole of what we do not know.
+   */
+  val residencyTierBasis: ResidencyTierBasis,
   val netPricePerYearIncomeQ1Usd: Int?,
   val netPricePerYearIncomeQ2Usd: Int?,
   val netPricePerYearIncomeQ3Usd: Int?,

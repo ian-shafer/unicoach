@@ -3,7 +3,11 @@ package ed.unicoach.college
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.PriceRuler
+import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.putIncomeBand
+import ed.unicoach.db.models.putResidencyTiers
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
@@ -14,24 +18,103 @@ import kotlinx.serialization.json.putJsonObject
 import java.util.Locale
 
 /**
- * The residency basis of [matchObject]'s `net_price_per_year_usd` and of every
- * amount in `net_price_by_income_band`, said in the tool DESCRIPTION that
- * carries the row (RFC 157).
+ * WHICH PRICE a search result is on, and what is in it, said in the tool
+ * DESCRIPTION that carries the row (RFC 157, rewritten by RFC 169).
  *
- * The College Scorecard builds both for students paying the in-state rate at a
- * public school and publishes no out-of-state counterpart, and this read goes
- * round `CollegeCostService` -- and so round its withholding. Said ONCE here,
- * because two tools that return "a college" must describe it the same way (RFC
- * 153 D70). Labelling only: the search index does not carry the family's
- * residency, so withholding belongs with the index (RFC 157 D-G).
+ * There are two rulers and they are different numbers, so the note names both.
  *
- * One SENTENCE, with no glue on either end: a call site joins it to the copy
- * above it with a visible separator, rather than every call site having to
+ * `in_state_net_price_per_year_usd` is the Scorecard blend: what students
+ * actually paid AFTER federal aid, and at a public school it is the figure for
+ * students paying in-state tuition. `published_price_*_on_campus_per_year_usd`
+ * is the school's own published total for a year of living on campus at THIS
+ * family's tuition tier, with NO financial aid of any kind subtracted from it.
+ *
+ * The note also says the thing a reader would otherwise assume: there is no
+ * out-of-state AFTER-AID price, and there never can be. Subtracting an in-state
+ * average grant from an out-of-state total is arithmetic the cost surfaces
+ * forbid outright (RFC 149), so the honest out-of-state answer is a published
+ * price that says it is one — never a subtraction dressed up as a net price.
+ *
+ * Said ONCE here, because two tools that return "a college" must describe it
+ * the same way (RFC 153 D70).
+ *
+ * One SENTENCE group, with no glue on either end: a call site joins it to the
+ * copy above it with a visible separator, rather than every call site having to
  * remember that the value already begins with a space.
  */
-internal const val NET_PRICE_BASIS_NOTE =
-  "At a public school net_price_per_year_usd and every net_price_by_income_band amount are figures for " +
-    "students paying in-state tuition: never offer one to a family from another state as their price."
+internal val NET_PRICE_BASIS_NOTE =
+  "This tool ranks on ONE of two prices. ${PriceRuler.NET_PRICE_RESULT_KEY} is what students actually paid " +
+    "after federal aid, and at a public school it is the figure for students paying in-state tuition: " +
+    "never offer one to a family from another state as their price. " +
+    "${PriceRuler.resultKey(PriceRuler.PublishedTier.IN_STATE)} and " +
+    "${PriceRuler.resultKey(PriceRuler.PublishedTier.OUT_OF_STATE)} " +
+    "are the school's own published total for a year of living on campus at that tuition tier, and no " +
+    "financial aid of any kind is in them. There is no out-of-state after-aid price and there never can " +
+    "be -- nobody may ever subtract an in-state aid average from an out-of-state total -- so an " +
+    "out-of-state family is ranked on a published price, and the result says so."
+
+/**
+ * The one sentence naming the ruler a result was produced on — the thing D14(a)
+ * requires a published ranking to SAY rather than leave a reader to infer.
+ *
+ * It is one function, used by the `price_ruler` object on a result and by the
+ * refusal a caller gets for naming the inactive ruler's field or sort word, so
+ * a family can never be told two different things about which price they are
+ * looking at.
+ */
+internal fun PriceRuler.describe(): String =
+  when (this) {
+    is PriceRuler.NetPrice -> {
+      // It says WHAT the ranking is, and what it would take to change it. It
+      // does NOT assert why this family is on it: `:college` is handed a state
+      // or a null and cannot tell "nobody has asked" from "the profile read
+      // faulted", and the page used to tell every one of them that the family's
+      // state was "not on file" -- untrue for a fault, where we simply do not
+      // know. The layer that KNOWS the cause says so (`ResidencyRead.Cause`).
+      "This search is ranked on the average annual NET price -- what students actually paid after " +
+        "federal aid -- which at a public school is the figure for students paying in-state tuition. " +
+        "A residency-correct ranking needs this family's own state of residency on file."
+    }
+
+    is PriceRuler.Published -> {
+      "This search is ranked on each school's PUBLISHED total price of living on campus for a year, at " +
+        "the tuition tier this family would actually pay (out-of-state at a public school outside " +
+        "$familyResidencyState, in-state everywhere else). NO financial aid is in that number. " +
+        "There is no out-of-state after-aid price and there never can be, so this is the honest ranking " +
+        "for a family from another state -- quote it as a published price, never as what they would pay " +
+        "after aid."
+    }
+  }
+
+/**
+ * The active ruler's figure as a coach says it aloud — the words a refusal, a
+ * constraint sentence and a description all use for the same number.
+ *
+ * One home, because the sentence "cheaper than Bowdoin" and the sentence
+ * refusing it for want of a figure must be about the same price or a reader
+ * cannot tell which one was applied.
+ */
+internal fun PriceRuler.spokenFigure(): String =
+  when (this) {
+    is PriceRuler.NetPrice -> "average annual in-state net price"
+    is PriceRuler.Published -> "published on-campus price for this family, before any aid"
+  }
+
+/**
+ * The `price_ruler` object a result carries: the metric it ranked on, and the
+ * sentence above.
+ *
+ * It is present on EVERY page, not only under the published ruler: a key that
+ * appears exactly when the answer is unusual is a key a reader learns to ignore,
+ * and the net ruler has a basis worth naming too.
+ */
+internal fun JsonObjectBuilder.putPriceRuler(ruler: PriceRuler) {
+  putJsonObject("price_ruler") {
+    put("metric", ruler.sortWord)
+    put("max_filter_field", ruler.filterField)
+    put("note", ruler.describe())
+  }
+}
 
 /**
  * The ONE rendering of a [CollegeMatch] as a tool result row (RFC 153 D70).
@@ -49,6 +132,7 @@ internal const val NET_PRICE_BASIS_NOTE =
 internal fun matchObject(
   match: CollegeMatch,
   vocabulary: CollegeQueryVocabulary,
+  ruler: PriceRuler,
 ): JsonObject =
   buildJsonObject {
     // First key by design: the id the model must copy into
@@ -70,7 +154,7 @@ internal fun matchObject(
     putOrNull("locale_detail", locale?.detail?.word)
     putOrNull("undergrad_enrollment_headcount", match.undergradEnrollmentHeadcount)
     putOrNull("admission_rate_share", match.admissionRateShare)
-    putOrNull("net_price_per_year_usd", match.netPricePerYearUsd)
+    putRulerPrice(match, ruler)
     // One self-describing array rather than five opaque `net_price_per_year_income_qN_usd` keys
     // (RFC 142): every amount arrives beside the band code AND the dollar
     // range a coach says aloud, so the model never has to translate a source
@@ -84,7 +168,7 @@ internal fun matchObject(
           add(
             buildJsonObject {
               putIncomeBand(band)
-              put("net_price_per_year_usd", amount)
+              put(PriceRuler.NET_PRICE_RESULT_KEY, amount)
             },
           )
         }
@@ -105,6 +189,50 @@ internal fun matchObject(
       }
     }
   }
+
+/**
+ * The price keys of ONE row: the net-price blend every row carries, the number
+ * the ACTIVE ruler actually ranked this row on, and D19's sentence when that
+ * number is an in-state figure whose district tier nobody separated.
+ *
+ * Extracted so [matchObject] stays a flat list of keys. The tier choice, the
+ * result key and the D19 silence rule were three decisions nested inside one
+ * serializer, which is three reasons for one function to change.
+ */
+private fun JsonObjectBuilder.putRulerPrice(
+  match: CollegeMatch,
+  ruler: PriceRuler,
+) {
+  // The BASIS is in the key (RFC 169 D7). This number is the after-federal-aid
+  // blend, and at a public school it is the in-state figure -- a key that did
+  // not say so is what let it be read out to a family from another state.
+  putOrNull(PriceRuler.NET_PRICE_RESULT_KEY, match.netPricePerYearUsd)
+  if (ruler !is PriceRuler.Published) return
+
+  // Under the PUBLISHED ruler the row also carries the number it was actually
+  // ranked on, under a key naming the tuition tier applied to THIS row. The
+  // page-level `price_ruler` says what is in it, and what is not.
+  val tier = ruler.tierFor(match.control, match.state)
+  putOrNull(PriceRuler.resultKey(tier), match.rulerPriceUsd)
+
+  // Brief 0006 D19. A published price reported on the IN-STATE tier, at a school
+  // whose district status is a SILENCE rather than an answer, may already BE the
+  // district price wearing a state label -- and saying which it is would be
+  // inventing a fact. So the row is ranked exactly as every other, the figure is
+  // shown as it was published, and the gap is stated in the vocabulary's own
+  // sentence.
+  //
+  // The basis is DECIDED in `:db` by the one derivation the cost surfaces use,
+  // so this site chooses nothing: it asks whether the answer is the one member
+  // D19 is about. A school whose publisher ANSWERED "no district tier here"
+  // carries nothing, which is the 354-school difference between a truthful label
+  // and a wrong one.
+  if (tier == PriceRuler.PublishedTier.IN_STATE &&
+    match.residencyTierBasis == ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT
+  ) {
+    putResidencyTiers(match.residencyTierBasis)
+  }
+}
 
 /**
  * The ONE rendering of `excluded_unknown` (RFC 150 D55): every supplied filter

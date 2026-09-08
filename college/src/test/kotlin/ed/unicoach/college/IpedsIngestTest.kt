@@ -445,8 +445,14 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     // 5 since RFC 146 added the derived name-word rebuild, RFC 148 the CDS
     // seed load and RFC 150 the derived search index; 2 was RFC 144's own bump
     // for this IPEDS source family. 7 is RFC 161's and RFC 162's: IPEDS IC_AY
-    // and IPEDS SFA became canonical money sources ahead of the Scorecard.
-    assertEquals(7, row.methodVersion, "RFC 161 and RFC 162 took the method version to 7: two new sources changed the derivation")
+    // and IPEDS SFA became canonical money sources ahead of the Scorecard. 8 is
+    // RFC 169's: the index gained four published-price columns and
+    // `canonical-money` moved ahead of `search-index` to feed them.
+    assertEquals(
+      8,
+      row.methodVersion,
+      "RFC 169 took the method version to 8: the index gained published-price columns fed by a reordered canonical-money phase",
+    )
     assertTrue(row.sources.contains("ipeds-hd-joined-fixture.csv"), "sources names the HD file: ${row.sources}")
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")
     assertTrue(row.rowsIngested.contains("\"programs_census\""), row.rowsIngested)

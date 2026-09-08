@@ -61,7 +61,7 @@ enum class SimilarityAxis(
  *
  * Every axis value the distance expression binds is carried here, so the SQL
  * takes the anchor as PARAMETERS and never as interpolated text. The two
- * anchor-relative constraints (D68) read [netPricePerYearUsd] and
+ * anchor-relative constraints (D68) read [rulerPriceUsd] and
  * [admissionRateShare], which is why raw figures ride beside the percentiles.
  *
  * [inDefaultUniverse] is the fact D64 refuses on: percentiles are only computed
@@ -85,7 +85,14 @@ data class SimilarityAnchor(
   val controlLabel: String,
   val locale: String?,
   val subjectSlugs: List<String>?,
-  val netPricePerYearUsd: Int?,
+  /**
+   * The anchor's price ON THE ACTIVE RULER (RFC 169) — its blended net price, or
+   * its own residency-correct published on-campus total — read with the very
+   * expression the candidates are ranked with. "Like Bowdoin but cheaper" is a
+   * sentence about ONE measure, so the anchor's figure and the candidates'
+   * cannot come from two.
+   */
+  val rulerPriceUsd: Int?,
   val admissionRateShare: Double?,
   val sizePercentile: Double?,
   /**
@@ -98,6 +105,18 @@ data class SimilarityAnchor(
    */
   val selectivityPercentile: Double?,
   val pricePercentile: Double?,
+  /**
+   * WHICH ruler [rulerPriceUsd] and [pricePercentile] were read on — stamped at
+   * the read, so the query can refuse to pair this anchor with filters on the
+   * other one.
+   *
+   * Two numbers on this row are ruler-dependent and neither says so by itself.
+   * Without the stamp, an anchor read on the net ruler joined to filters on the
+   * published one is a well-typed value, and the mixed anchor-versus-candidate
+   * comparison this whole slice exists to make impossible would be one
+   * constructor call away.
+   */
+  val priceRuler: PriceRuler,
   val inDefaultUniverse: Boolean,
 ) {
   /**
@@ -190,13 +209,20 @@ data class SimilarityQuery(
   val anchor: SimilarityAnchor,
   val axes: Map<AnchoredAxis, Double>,
   val filters: CollegeQuery,
-  /** D68: `net_price_per_year_usd < <this>`, strictly, with no margin; null when unasked. */
+  /** D68: the active ruler's price `< <this>`, strictly, with no margin; null when unasked. */
   val cheaperThanUsd: Int? = null,
   /** D68: `admission_rate_share > <this>`, strictly, with no margin; null when unasked. */
   val easierToAdmitThanShare: Double? = null,
 ) {
   init {
     require(axes.isNotEmpty()) { "a similarity query must rank on at least one axis" }
+    // The last seam a mixed-ruler query could come through. `CollegeQuery` already
+    // refuses a sort word belonging to the inactive ruler; this refuses an anchor
+    // MEASURED on one ruler ranked against candidates filtered on the other,
+    // which no other guard can see because both halves are individually valid.
+    require(anchor.priceRuler == filters.priceRuler) {
+      "an anchor read on [${anchor.priceRuler}] cannot be ranked against filters on [${filters.priceRuler}]"
+    }
   }
 
   /** The result cap, owned by [filters] so one page size cannot be stated twice. */

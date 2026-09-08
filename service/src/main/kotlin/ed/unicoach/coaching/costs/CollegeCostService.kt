@@ -8,7 +8,6 @@ import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.FigureAddress
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
-import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.coaching.costs.canonical.ServedFigures
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.publishedTuitionTiersOf
@@ -37,6 +36,7 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory

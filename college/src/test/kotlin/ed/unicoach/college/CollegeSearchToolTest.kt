@@ -13,6 +13,10 @@ import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgramsCensus
 import ed.unicoach.db.models.NewSubject
+import ed.unicoach.db.models.PriceRuler
+import ed.unicoach.db.models.RESIDENCY_TIERS_KEY
+import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.ResidencyTierBasis
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -151,6 +155,78 @@ class CollegeSearchToolTest {
       }
     }
 
+  /**
+   * The four canonical components a published on-campus total is summed from
+   * (RFC 169), at both tuition tiers, plus the rebuild that materialises them
+   * onto the index.
+   *
+   * Raw SQL on purpose: `CanonicalMoneyDao`'s write API is wholesale-only, and
+   * the rebuild reads the TABLE. The vocabulary tables are a write precondition,
+   * so they are seeded first from the committed vocabulary file.
+   */
+  private fun seedPublishedPrice(
+    college: ed.unicoach.db.models.College,
+    inStateTuition: Int,
+    outOfStateTuition: Int,
+    /**
+     * The IN-DISTRICT tuition row, and the three states brief 0006 D19 turns on:
+     * `null` seeds NO ROW (the Scorecard-only silence), an amount seeds a real
+     * district price, and [inDistrictStatus] seeds a row that bears no value —
+     * `not_applicable` being the publisher's own ANSWER that there is no
+     * district tier here.
+     */
+    inDistrictTuition: Int? = null,
+    inDistrictStatus: String? = null,
+  ) = runBlocking {
+    database.withConnection { session ->
+      ed.unicoach.db.dao.MoneyVocabularyFixture
+        .seed(session)
+      if (inDistrictTuition != null || inDistrictStatus != null) {
+        session
+          .prepareStatement(
+            "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+              "academic_year, amount_usd, status, source, source_variable) " +
+              "VALUES (?, 'tuition_and_fees', 'in_district', 'not_applicable', 2023, ?, ?, " +
+              "'ipeds_ic_ay', 'FIXTURE')",
+          ).use { stmt ->
+            stmt.setObject(1, college.id.value)
+            if (inDistrictTuition == null) {
+              stmt.setNull(2, java.sql.Types.INTEGER)
+            } else {
+              stmt.setInt(2, inDistrictTuition)
+            }
+            stmt.setString(3, inDistrictStatus ?: "reported")
+            stmt.executeUpdate()
+          }
+      }
+      val cells =
+        listOf(
+          Triple("tuition_and_fees", "in_state" to "not_applicable", inStateTuition),
+          Triple("tuition_and_fees", "out_of_state" to "not_applicable", outOfStateTuition),
+          Triple("housing_and_food", "not_applicable" to "on_campus", 12000),
+          Triple("books_and_supplies", "not_applicable" to "not_applicable", 1200),
+          Triple("other_expenses", "not_applicable" to "on_campus", 2800),
+        )
+      for ((concept, axes, amount) in cells) {
+        session
+          .prepareStatement(
+            "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+              "academic_year, amount_usd, status, source, source_variable) " +
+              "VALUES (?, ?, ?, ?, 2023, ?, 'reported', 'ipeds_ic_ay', 'FIXTURE')",
+          ).use { stmt ->
+            stmt.setObject(1, college.id.value)
+            stmt.setString(2, concept)
+            stmt.setString(3, axes.first)
+            stmt.setString(4, axes.second)
+            stmt.setInt(5, amount)
+            stmt.executeUpdate()
+          }
+      }
+      CollegesDao.rebuildSearchIndex(session).getOrThrow()
+      Unit
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Definition
   // ---------------------------------------------------------------------------
@@ -179,7 +255,13 @@ class CollegeSearchToolTest {
         "maxUndergradEnrollmentHeadcount",
         "minAdmissionRateShare",
         "maxAdmissionRateShare",
-        "maxNetPricePerYearUsd",
+        // TWO price bounds since RFC 169, one per ruler, and exactly one is
+        // honoured per call: the schema is built once at boot, before any
+        // family is known, so both are advertised and naming the inactive one
+        // is refused by name (the expand-and-refuse precedent). No residency
+        // FIELD is added -- the state is read from the money profile.
+        "maxInStateNetPricePerYearUsd",
+        "maxPublishedPriceOnCampusPerYearUsd",
         "minCompletionRate150pct4yrShare",
         "test_policy",
         "religious_affiliation",
@@ -235,7 +317,7 @@ class CollegeSearchToolTest {
       val input =
         buildJsonObject {
           put("cipPrefix", "2607")
-          put("maxNetPricePerYearUsd", 25000)
+          put("maxInStateNetPricePerYearUsd", 25000)
         }
       val result = tool.execute(input)
 
@@ -299,7 +381,7 @@ class CollegeSearchToolTest {
       val nonDigitPrefix = tool.execute(buildJsonObject { put("cipPrefix", "bio") })
       assertTrue(nonDigitPrefix.containsKey("error"))
 
-      val wrongTypedNetPrice = tool.execute(buildJsonObject { put("maxNetPricePerYearUsd", "cheap") })
+      val wrongTypedNetPrice = tool.execute(buildJsonObject { put("maxInStateNetPricePerYearUsd", "cheap") })
       assertTrue(wrongTypedNetPrice.containsKey("error"))
 
       val unknownField = tool.execute(buildJsonObject { put("nearOcean", true) })
@@ -400,8 +482,8 @@ class CollegeSearchToolTest {
       assertTrue(badGraduation.containsKey("error"))
       assertNull(badGraduation["count"])
 
-      // maxNetPricePerYearUsd / enrollment bounds: must be >= 0
-      val badNetPrice = tool.execute(buildJsonObject { put("maxNetPricePerYearUsd", -1) })
+      // maxInStateNetPricePerYearUsd / enrollment bounds: must be >= 0
+      val badNetPrice = tool.execute(buildJsonObject { put("maxInStateNetPricePerYearUsd", -1) })
       assertTrue(badNetPrice.containsKey("error"))
       assertNull(badNetPrice["count"])
       val badMinEnrollment = tool.execute(buildJsonObject { put("minUndergradEnrollmentHeadcount", -1) })
@@ -468,7 +550,9 @@ class CollegeSearchToolTest {
         listOf(IncomeBand.UNDER_30K.value, IncomeBand.K48_TO_75K.value),
         bands.map { it["income_band"]!!.jsonPrimitive.content },
       )
-      assertEquals(listOf(-1200, 14500), bands.map { it["net_price_per_year_usd"]!!.jsonPrimitive.intOrNull })
+      // The band amounts carry the SAME basis-naming key the top-level net
+      // price does (RFC 169 D7): one measure, one name, wherever it appears.
+      assertEquals(listOf(-1200, 14500), bands.map { it["in_state_net_price_per_year_usd"]!!.jsonPrimitive.intOrNull })
       // The label is the band's own bracket, from the one home for that copy --
       // so a wire label can never drift from what the prompt teaches.
       assertEquals(
@@ -521,10 +605,21 @@ class CollegeSearchToolTest {
       assertEquals(emptyList(), listViolations(result), "the search result must carry no source code")
       assertTrue(result.toString().contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
 
+      // The SAME search on the published ruler (RFC 169), and one college per
+      // tuition tier: a public in the family's own state renders the in-state
+      // key, a public outside it the out-of-state one. Both are allowlisted, so
+      // both have to be RENDERED here or the allowlist below is vacuous.
+      seedPublishedPrice(insert(newCollege(823).copy(state = "NV", control = 1)), 9000, 26000)
+      seedPublishedPrice(insert(newCollege(824).copy(state = "CA", control = 1)), 11000, 31000)
+      val published = tool.execute(buildJsonObject {}, "NV")
+      assertEquals(emptyList(), listViolations(published), "the published-ruler result must carry no source code either")
+
       // ...and the clean verdict above is over a payload that actually contains
       // every allowlisted field, so the allowlist is exercised rather than
       // vacuously satisfied by absent keys.
-      val rendered = BareSourceCodeGuard.listNumericFields(result).toSet()
+      val rendered =
+        BareSourceCodeGuard.listNumericFields(result).toSet() +
+          BareSourceCodeGuard.listNumericFields(published).toSet()
       assertEquals(emptySet(), NUMBERS_BY_CONTRACT - rendered, "every field the allowlist sanctions must be in the payload")
 
       // The description is prose the model reads before any result, so only the
@@ -557,6 +652,213 @@ class CollegeSearchToolTest {
         listViolations(doctored),
       )
     }
+
+  @Test
+  fun `a school whose publisher does not separate a district price says so, and is ranked anyway`() =
+    runBlocking {
+      // Brief 0006 D19, the ~2,300-institution case: a Scorecard-only school has
+      // NO in-district row at all, so the in-state figure we hold may already BE
+      // the district price. It is RANKED exactly as every other school -- the
+      // whole point is that it is neither dropped nor excluded -- and the gap is
+      // said in the vocabulary's own words.
+      val silent = insert(newCollege(840).copy(state = "NV", control = 1))
+      seedPublishedPrice(silent, 11000, 31000)
+
+      val result = tool.execute(buildJsonObject {}, "NV")
+      val row = (result["colleges"] as JsonArray).single().jsonObject
+      // Ranked, and its price reported, exactly as before the label existed.
+      assertEquals(27000, row["published_price_in_state_on_campus_per_year_usd"]!!.jsonPrimitive.intOrNull)
+      assertEquals(1, result["count"]!!.jsonPrimitive.intOrNull, "$result")
+      assertEquals(emptyMap(), result["excluded_unknown"]!!.jsonObject, "never dropped, never counted out")
+
+      val tiers = row[RESIDENCY_TIERS_KEY]!!.jsonObject
+      // The ENUM's own text, never a literal: the sentence has one home, and a
+      // reword there must travel here rather than leaving two accounts of one
+      // fact on two surfaces.
+      assertEquals(
+        ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.value,
+        tiers["basis"]!!.jsonPrimitive.content,
+      )
+      assertEquals(
+        ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.statement,
+        tiers["statement"]!!.jsonPrimitive.content,
+      )
+    }
+
+  @Test
+  fun `a publisher that ANSWERED not_applicable carries no district sentence`() =
+    runBlocking {
+      // THE regression the first derivation would have shipped. An `in_district`
+      // row at `not_applicable` is IPEDS flag A -- the publisher saying "there is
+      // no district tier at this school" -- and it bears no value, so a rule that
+      // looked only at the absence of an AMOUNT could not tell it from the
+      // silence above. Measured on the 2023 IC_AY snapshot: 354 schools of the
+      // 3,264-school default universe are in this state, and every one of them
+      // would have been told we cannot say whether a lower district price exists.
+      val answered = insert(newCollege(841).copy(state = "NV", control = 1))
+      seedPublishedPrice(answered, 11000, 31000, inDistrictStatus = "not_applicable")
+
+      val row = ((tool.execute(buildJsonObject {}, "NV"))["colleges"] as JsonArray).single().jsonObject
+      assertEquals(27000, row["published_price_in_state_on_campus_per_year_usd"]!!.jsonPrimitive.intOrNull)
+      assertNull(row[RESIDENCY_TIERS_KEY], "the publisher answered, so there is nothing we cannot say: $row")
+    }
+
+  @Test
+  fun `a school that publishes a real district price carries no district sentence either`() =
+    runBlocking {
+      // The third bucket, and the largest: 2,269 of the 3,264. The district price
+      // exists, so nothing is unknown and the sentence would be false.
+      val threeTier = insert(newCollege(842).copy(state = "NV", control = 1))
+      seedPublishedPrice(threeTier, 11000, 31000, inDistrictTuition = 5000)
+
+      val row = ((tool.execute(buildJsonObject {}, "NV"))["colleges"] as JsonArray).single().jsonObject
+      assertNull(row[RESIDENCY_TIERS_KEY], "three tiers published: $row")
+    }
+
+  @Test
+  fun `the district sentence rides the tier it is about, and no net-ruler row`() =
+    runBlocking {
+      val silent = insert(newCollege(843).copy(state = "NV", control = 1))
+      seedPublishedPrice(silent, 11000, 31000)
+
+      // OUT-OF-STATE tier: the figure being reported is the out-of-state one,
+      // which no district price could ever be, so the sentence does not belong.
+      val outOfState = ((tool.execute(buildJsonObject {}, "CA"))["colleges"] as JsonArray).single().jsonObject
+      assertEquals(47000, outOfState["published_price_out_of_state_on_campus_per_year_usd"]!!.jsonPrimitive.intOrNull)
+      assertNull(outOfState[RESIDENCY_TIERS_KEY], "the out-of-state tier is not the tier in question: $outOfState")
+
+      // NET ruler: no published price is reported at all, so there is no
+      // published tier for a sentence to be about.
+      val net = ((tool.execute(buildJsonObject {}))["colleges"] as JsonArray).single().jsonObject
+      assertNull(net[RESIDENCY_TIERS_KEY], "no published price is on the wire here: $net")
+    }
+
+  @Test
+  fun `the result names the ruler it ranked on, and says aid is not in it`() =
+    runBlocking {
+      val college = insert(newCollege(830).copy(state = "NV", control = 1))
+      seedPublishedPrice(college, 11000, 31000)
+
+      // The published ruler, for a family living in NV.
+      val published = tool.execute(buildJsonObject {}, "NV")
+      val ruler = published["price_ruler"]!!.jsonObject
+      assertEquals("published_price_on_campus", ruler["metric"]!!.jsonPrimitive.content)
+      val note = ruler["note"]!!.jsonPrimitive.content
+      assertTrue(note.contains("NO financial aid"), note)
+      assertTrue(note.contains("no out-of-state after-aid price"), note)
+      assertTrue(note.contains("NV"), "the note names the state the tier was chosen against: $note")
+      // The row carries the tier that was applied to it: NV school, NV family.
+      val row = (published["colleges"] as JsonArray).single().jsonObject
+      assertEquals(27000, row["published_price_in_state_on_campus_per_year_usd"]!!.jsonPrimitive.intOrNull)
+      assertNull(row["published_price_out_of_state_on_campus_per_year_usd"], "one tier per row: $row")
+
+      // ...and the same school for a family from another state, on the other
+      // tier, under the other key -- never the same key with a different number.
+      val outOfState = tool.execute(buildJsonObject {}, "CA")
+      val far = (outOfState["colleges"] as JsonArray).single().jsonObject
+      assertEquals(47000, far["published_price_out_of_state_on_campus_per_year_usd"]!!.jsonPrimitive.intOrNull)
+
+      // The net ruler names itself too: a key that appears only when the answer
+      // is unusual is a key a reader learns to ignore.
+      val net = tool.execute(buildJsonObject {})
+      assertEquals("in_state_net_price", net["price_ruler"]!!.jsonObject["metric"]!!.jsonPrimitive.content)
+    }
+
+  @Test
+  fun `an explicit null on the inactive ruler's field is an absent field, not a refusal`() =
+    runBlocking {
+      // Every optional field in this vocabulary reads through `field`, which
+      // treats an explicit JSON null as ABSENT. The inactive-ruler check read
+      // `containsKey`, so a model writing the key with a null value -- a shape
+      // models produce routinely -- had its ENTIRE search refused for naming a
+      // bound it did not state.
+      insert(newCollege(844))
+
+      val result =
+        tool.execute(
+          buildJsonObject {
+            put("maxPublishedPriceOnCampusPerYearUsd", JsonNull)
+          },
+        )
+      assertNull(result["error"], "an explicit null states no bound: $result")
+      assertEquals(1, result["count"]!!.jsonPrimitive.intOrNull, "$result")
+
+      // ...and the refusal still fires for a bound that IS stated.
+      val stated = tool.execute(buildJsonObject { put("maxPublishedPriceOnCampusPerYearUsd", 30000) })
+      // `assertTrue`, not `assertNotNull`: the latter RETURNS the value it
+      // checked, which would give this expression-bodied test a non-Unit return
+      // type and stop JUnit discovering it at all.
+      assertTrue(stated["error"] != null, "a real bound on the inactive ruler is still refused: $stated")
+    }
+
+  @Test
+  fun `naming the inactive ruler is refused by name, never silently ignored`() =
+    runBlocking {
+      insert(newCollege(831))
+
+      // No residency on file: the published words are the inactive ones.
+      val filter = tool.execute(buildJsonObject { put("maxPublishedPriceOnCampusPerYearUsd", 30000) })
+      val filterError = filter["error"]!!.jsonPrimitive.content
+      assertTrue(filterError.contains("maxPublishedPriceOnCampusPerYearUsd"), filterError)
+      assertTrue(filterError.contains("maxInStateNetPricePerYearUsd"), "it says which field to use: $filterError")
+      assertNull(filter["colleges"], "a refusal must not fall through to a search")
+
+      val sort = tool.execute(buildJsonObject { put("sort_by", "published_price_on_campus") })
+      val sortError = sort["error"]!!.jsonPrimitive.content
+      assertTrue(sortError.contains("published_price_on_campus"), sortError)
+      assertTrue(sortError.contains("in_state_net_price"), "it says which word to use: $sortError")
+
+      // ...and with a residency on file the refusal points the other way.
+      val onPublished = tool.execute(buildJsonObject { put("sort_by", "in_state_net_price") }, "NV")
+      val flipped = onPublished["error"]!!.jsonPrimitive.content
+      assertTrue(flipped.contains("in_state_net_price"), flipped)
+      assertTrue(flipped.contains("published_price_on_campus"), flipped)
+    }
+
+  @Test
+  fun `a published bound filters on the family's own tuition tier`() =
+    runBlocking {
+      val nevada = insert(newCollege(832).copy(state = "NV", control = 1))
+      seedPublishedPrice(nevada, 11000, 31000)
+
+      // 27,000 in state, 47,000 out of state: the SAME school and the same
+      // ceiling, answered opposite ways for two families.
+      val resident = tool.execute(buildJsonObject { put("maxPublishedPriceOnCampusPerYearUsd", 30000) }, "NV")
+      assertEquals(1, resident["count"]!!.jsonPrimitive.intOrNull, "$resident")
+
+      val visitor = tool.execute(buildJsonObject { put("maxPublishedPriceOnCampusPerYearUsd", 30000) }, "CA")
+      assertEquals(0, visitor["count"]!!.jsonPrimitive.intOrNull, "$visitor")
+    }
+
+  @Test
+  fun `the tool description states both rulers and never says subtract without never`() {
+    // `NET_PRICE_BASIS_NOTE` had ZERO test coverage before RFC 169, and it
+    // carried the very assumption this slice overturns.
+    val description = tool.definition["description"]!!.jsonPrimitive.content
+    // Against the CONSTANTS the row actually emits, never against literals: the
+    // note types these keys into prose, so a rename that missed it would leave
+    // the model taught keys the payload no longer carries -- with this suite and
+    // the payload suite both green.
+    assertTrue(description.contains(PriceRuler.NET_PRICE_RESULT_KEY), description)
+    assertTrue(
+      description.contains(PriceRuler.resultKey(PriceRuler.PublishedTier.IN_STATE)),
+      description,
+    )
+    assertTrue(
+      description.contains(PriceRuler.resultKey(PriceRuler.PublishedTier.OUT_OF_STATE)),
+      description,
+    )
+    assertTrue(description.contains("no financial aid of any kind"), "the published ruler has no aid in it")
+    assertTrue(description.contains("There is no out-of-state after-aid price"), description)
+    // The forbidden arithmetic is only ever mentioned as forbidden.
+    for (index in Regex("subtract").findAll(description).map { it.range.first }) {
+      assertTrue(
+        description.substring(0, index).trimEnd().endsWith("never") ||
+          description.substring(0, index).contains("nobody may ever "),
+        "[subtract] must never appear without a refusal before it: [$description]",
+      )
+    }
+  }
 
   @Test
   fun `definition description names the five income brackets in dollars`() {
@@ -737,7 +1039,16 @@ class CollegeSearchToolTest {
 
     val sortWords = (properties["sort_by"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content }
     assertEquals(
-      listOf("enrollment", "admission_rate_share", "net_price_per_year_usd", "completion_rate_150pct_4yr_share", "name"),
+      listOf(
+        "enrollment",
+        "admission_rate_share",
+        // Both price words are OFFERED; only the active ruler's is honoured
+        // (RFC 169 D7), and the other is refused with a sentence naming it.
+        "in_state_net_price",
+        "published_price_on_campus",
+        "completion_rate_150pct_4yr_share",
+        "name",
+      ),
       sortWords,
     )
 
@@ -1226,7 +1537,13 @@ private val NUMBERS_BY_CONTRACT =
     "total_matches",
     "undergrad_enrollment_headcount",
     "admission_rate_share",
-    "net_price_per_year_usd",
+    // The price keys NAME THEIR BASIS since RFC 169: the after-federal-aid
+    // blend (in-state at a public school), and the residency-correct published
+    // on-campus total under each tuition tier. All three are numbers by
+    // contract; none of them is or can become a Scorecard code.
+    "in_state_net_price_per_year_usd",
+    "published_price_in_state_on_campus_per_year_usd",
+    "published_price_out_of_state_on_campus_per_year_usd",
     "completion_rate_150pct_4yr_share",
     "median_earnings_10y_after_entry_usd",
     "median_debt_at_completion_usd",
@@ -1236,3 +1553,13 @@ private val NUMBERS_BY_CONTRACT =
 private val QUINTILE_CODE = BareSourceCodeGuard.QUINTILE_CODE
 
 private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSourceCodeGuard.listViolations(payload, NUMBERS_BY_CONTRACT)
+
+/**
+ * The NET ruler, stated once for this suite: `CollegeSearchTool.execute` takes the family's
+ * residency with NO default (RFC 169 tier-1 review), because in production
+ * "the caller forgot" and "this family has no state on file" must never be the
+ * same thing. Most cases here are about the vocabulary rather than the
+ * residency, so they call this one-argument form; the ruler cases pass a state
+ * explicitly.
+ */
+private suspend fun CollegeSearchTool.execute(input: kotlinx.serialization.json.JsonObject) = execute(input, null)

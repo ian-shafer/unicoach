@@ -2,7 +2,6 @@ package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.FigureAddress
-import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.coaching.costs.canonical.ServedFigures
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.servedAt
@@ -15,6 +14,7 @@ import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.Test
 import java.util.UUID

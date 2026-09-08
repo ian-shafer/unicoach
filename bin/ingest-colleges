@@ -46,13 +46,20 @@ The taxonomy is MATERIALISED into college_search_index by the later
 search returns until this script runs again. The run prints the subject count
 and the total expanded code count so a rebuild is visibly a rebuild.
 
+The derived rebuilds run in this order at the end of a run: `name-words`, then
+`canonical-money`, then `search-index`, then `provenance`. `canonical-money`
+comes BEFORE `search-index` because the index sums price_figures into the
+published on-campus price it ranks a family's search on (RFC 169); the reverse
+order would index the PREVIOUS run's prices.
+
 Every run also loads the authored money vocabulary (RFC 158) in its own
 `money-vocabulary` phase after `subjects`: db/data/money-vocabulary.json by
 default, overridable with -v PATH. The five vocabulary tables it fills are a
 write precondition of the later `canonical-money` phase, which rebuilds
 price_figures and cohort_money_stats wholesale from the institution CSV with
 status-preserving readers (PrivacySuppressed survives as its own status). The
-run logs the canonical row counts and the per-status breakdown on stderr.
+run logs the canonical row counts and the per-status breakdown on stderr, and
+the `search-index` phase after it reads price_figures back.
 
 The chat boundary reads that vocabulary ONCE, when rest-server and queue-worker
 start. A codebook loaded into a live deployment therefore does NOT change what a

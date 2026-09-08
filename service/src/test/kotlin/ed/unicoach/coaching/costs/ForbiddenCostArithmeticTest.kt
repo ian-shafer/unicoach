@@ -49,7 +49,21 @@ class ForbiddenCostArithmeticTest {
    */
   private val canonicalSourceDirectory = File("src/main/kotlin/ed/unicoach/coaching/costs/canonical")
 
-  private val scannedDirectories = listOf(sourceDirectory, aidSourceDirectory)
+  /**
+   * The `:db` search-index rebuild (RFC 169 D9). This slice is the first to
+   * BUILD a price outside `:service`: `CollegesDao` sums four published
+   * components into the index's price columns, and the one arithmetic that must
+   * never appear there is a subtraction -- a published total minus an aid
+   * average is exactly the number RFC 149 forbids, and it would be invisible in
+   * a payload because it arrives looking perfectly ordinary.
+   *
+   * Reached by a relative path from the `:service` module directory, beside the
+   * two above; the read-guard below names a file it must find, so a moved DAO
+   * fails this test rather than silently dropping out of the sweep.
+   */
+  private val dbRebuildSourceDirectory = File("../db/src/main/kotlin/ed/unicoach/db/dao")
+
+  private val scannedDirectories = listOf(sourceDirectory, aidSourceDirectory, dbRebuildSourceDirectory)
 
   /**
    * Every Kotlin source under the scanned directories, RECURSIVELY.
@@ -130,6 +144,16 @@ class ForbiddenCostArithmeticTest {
     assertTrue(
       names.contains("FederalAidPolicyService.kt"),
       "the scan must cover the federal-aid package, found [$names]",
+    )
+    // The `:db` rebuild's own read-guard (RFC 169): the search index now
+    // derives a price, so the file that derives it is in the sweep by name.
+    assertTrue(
+      dbRebuildSourceDirectory.isDirectory,
+      "expected the :db DAOs at [${dbRebuildSourceDirectory.absolutePath}]",
+    )
+    assertTrue(
+      names.contains("CollegesDao.kt"),
+      "the scan must cover the search-index rebuild, found [$names]",
     )
   }
 
@@ -215,20 +239,23 @@ class ForbiddenCostArithmeticTest {
       val templated = "the gap is ${'$'}{cost.netPrice.amount - college.booksAndSuppliesPerYearUsd} per year"
       val loanGap = pell.maxAwardUsd - loans.aggregateTotalUsd
       val assumedGap = figures.publishedAmountOf(field) - ASSUMED_WITH_FAMILY_HOUSING_AND_FOOD_USD
+      val indexGap = publishedPriceOutOfStateOnCampusPerYearUsd - netPricePerYearUsd
       """.trimIndent() + "\n",
     )
 
     val hits = offendingLines(control).map { it.first }
     assertEquals(
-      listOf(1, 4, 7, 8, 9, 10),
+      listOf(1, 4, 7, 8, 9, 10, 11),
       hits,
       "the scan must see the plain subtraction on line 1, the wrapped one on line 4, the unspaced one on " +
         "line 7, the one written inside a string template on line 8 and the aid-vocabulary one on line 9 " +
         "(RFC 159: the coaching/aid sweep is vacuous unless the aid money words are in the vocabulary), " +
         "must NOT fire on the comment on line 2 that states the rule in words, and must NOT fire on the " +
         "hyphenated English of line 6, which names two money words inside a string literal and subtracts " +
-        "nothing, and must see the canonical-projection one on line 10 (RFC 166: the costs/canonical sweep is " +
-        "vacuous unless the projection's own money words are in the vocabulary)",
+        "nothing, must see the canonical-projection one on line 10 (RFC 166: the costs/canonical sweep is " +
+        "vacuous unless the projection's own money words are in the vocabulary), and must see line 11, the " +
+        "published-price shape the `:db` rebuild could write (RFC 169: extending the sweep to a directory " +
+        "whose vocabulary it does not carry would scan it and match nothing)",
     )
   }
 

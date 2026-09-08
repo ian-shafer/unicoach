@@ -14,7 +14,6 @@ import ed.unicoach.coaching.costs.CostsTestDb.declineBand
 import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
-import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AbsenceStatus
@@ -27,6 +26,7 @@ import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.ValueBearingStatus
 import kotlinx.coroutines.runBlocking

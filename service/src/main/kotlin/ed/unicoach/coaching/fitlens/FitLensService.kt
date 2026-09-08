@@ -41,6 +41,7 @@ import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
+import ed.unicoach.db.models.PriceRuler
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
@@ -113,7 +114,17 @@ class FitLensService(
       description =
         "Record the structured college-dataset query distilled from the " +
           "student's claims. Omit any axis you are unsure of.",
-      inputSchema = ToolSchema.objectSchema(*vocabulary.schemaProperties().toList().toTypedArray()),
+      // `offerPublishedPrice = false`: the fit lens carries no student residency
+      // into the query, so it is always on the net-price ruler (RFC 169) and the
+      // published bound could only ever be refused. The DIGEST is a different
+      // question and is answered from the canonical net-price stat (RFC 166 §9).
+      inputSchema =
+        ToolSchema.objectSchema(
+          *vocabulary
+            .schemaProperties(offerPublishedPrice = false)
+            .toList()
+            .toTypedArray(),
+        ),
     )
   private val logger = LoggerFactory.getLogger(FitLensService::class.java)
 
@@ -929,7 +940,11 @@ class FitLensService(
     }
 
     return vocabulary
-      .parse(root, config.searchLimit)
+      // The NET ruler, stated: the fit lens carries no student residency into
+      // its query, exactly as it advertises no published bound
+      // (`offerPublishedPrice = false`). Both facts are one fact, said twice
+      // rather than left to a default nobody can see (RFC 169).
+      .parse(root, config.searchLimit, PriceRuler.NetPrice)
       .fold(
         onSuccess = { QueryParse.Parsed(it) },
         // The vocabulary's message already names the field and, for a word it

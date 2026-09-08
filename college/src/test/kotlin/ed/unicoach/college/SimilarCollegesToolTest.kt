@@ -17,6 +17,10 @@ import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewCollegeProgramsCensus
 import ed.unicoach.db.models.NewSubject
+import ed.unicoach.db.models.PriceRuler
+import ed.unicoach.db.models.RESIDENCY_TIERS_KEY
+import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.SimilarityAnchor
 import ed.unicoach.db.models.SimilarityAxis
 import ed.unicoach.db.models.SimilarityQuery
@@ -41,6 +45,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -178,6 +183,51 @@ class SimilarCollegesToolTest {
         college
       }
     }
+
+  /**
+   * The four canonical components of a published on-campus total (RFC 169), at
+   * both tuition tiers, and the rebuild that materialises them onto the index.
+   *
+   * Raw SQL on the `CanonicalMoneyDaoTest` precedent: `CanonicalMoneyDao`'s
+   * write API is wholesale-only and the rebuild reads the TABLE. The five
+   * vocabulary tables are a write precondition, seeded from the committed file.
+   */
+  private fun seedPublishedPrice(
+    college: College,
+    inStateTuition: Int,
+    outOfStateTuition: Int,
+  ) = runBlocking {
+    database.withConnection { session ->
+      ed.unicoach.db.dao.MoneyVocabularyFixture
+        .seed(session)
+      val cells =
+        listOf(
+          Triple("tuition_and_fees", "in_state" to "not_applicable", inStateTuition),
+          Triple("tuition_and_fees", "out_of_state" to "not_applicable", outOfStateTuition),
+          Triple("housing_and_food", "not_applicable" to "on_campus", 12000),
+          Triple("books_and_supplies", "not_applicable" to "not_applicable", 1200),
+          Triple("other_expenses", "not_applicable" to "on_campus", 2800),
+        )
+      for ((concept, axes, amount) in cells) {
+        session
+          .prepareStatement(
+            "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+              "academic_year, amount_usd, status, source, source_variable) " +
+              "VALUES (?, ?, ?, ?, 2023, ?, 'reported', 'ipeds_ic_ay', 'FIXTURE') " +
+              "ON CONFLICT ON CONSTRAINT price_figures_natural_key DO UPDATE SET amount_usd = EXCLUDED.amount_usd",
+          ).use { stmt ->
+            stmt.setObject(1, college.id.value)
+            stmt.setString(2, concept)
+            stmt.setString(3, axes.first)
+            stmt.setString(4, axes.second)
+            stmt.setInt(5, amount)
+            stmt.executeUpdate()
+          }
+      }
+      CollegesDao.rebuildSearchIndex(session).getOrThrow()
+      Unit
+    }
+  }
 
   /** A `college_ipeds` row, the only source of `is_active` on the index. */
   private fun insertIpeds(
@@ -435,7 +485,7 @@ class SimilarCollegesToolTest {
       assertFalse(namesOf(result).contains("Priceless College"), "unreported is not cheaper: $result")
       assertEquals(
         1,
-        result["excluded_unknown"]!!.jsonObject["net_price_per_year_usd"]!!.jsonPrimitive.intOrNull,
+        result["excluded_unknown"]!!.jsonObject["in_state_net_price_per_year_usd"]!!.jsonPrimitive.intOrNull,
         "$result",
       )
     }
@@ -766,6 +816,162 @@ class SimilarCollegesToolTest {
   // ---------------------------------------------------------------------------
 
   @Test
+  fun `an anchor read on one ruler cannot be ranked against filters on the other`() {
+    // The last seam a mixed-ruler query could come through, and the one no other
+    // guard can see: both halves are individually valid, so only the query that
+    // joins them can refuse it. `SimilarityAnchor` is stamped with the ruler it
+    // was READ on, and `SimilarityQuery.init` pairs it with the filters'.
+    val anchor =
+      SimilarityAnchor(
+        id = CollegeId(java.util.UUID.randomUUID()),
+        name = "Mixed Ruler College",
+        state = "ME",
+        control = InstitutionControl.PRIVATE_NONPROFIT,
+        controlLabel = InstitutionControl.PRIVATE_NONPROFIT.label,
+        locale = "rural-fringe",
+        subjectSlugs = null,
+        rulerPriceUsd = 30000,
+        admissionRateShare = null,
+        sizePercentile = 0.5,
+        selectivityPercentile = null,
+        pricePercentile = 0.5,
+        priceRuler = PriceRuler.NetPrice,
+        inDefaultUniverse = true,
+      )
+
+    val thrown =
+      assertFailsWith<IllegalArgumentException> {
+        SimilarityQuery(
+          anchor = anchor,
+          axes = mapOf(checkNotNull(anchor.anchoredOn(SimilarityAxis.PRICE)) to 1.0),
+          filters = CollegeQuery(priceRuler = PriceRuler.Published("NV"), limit = 25),
+        )
+      }
+    assertTrue(
+      thrown.message!!.contains("cannot be ranked against filters"),
+      "the refusal names both rulers: ${thrown.message}",
+    )
+  }
+
+  @Test
+  fun `both tools describe one college's tuition tiers identically`() =
+    runBlocking {
+      // RFC 153 D70 applied to brief 0006 D19: two tools that return "a college"
+      // must return the SAME college, key for key. The tier basis is decided by
+      // ONE derivation in `:db` and written by ONE emitter, so this is a pin on
+      // that arrangement rather than on two hand-kept copies.
+      seedUniverse()
+      val anchor = insert(newCollege(ANCHOR, name = "Bowdoin College", state = "ME", control = 1))
+      seedPublishedPrice(anchor, 12000, 30000)
+      val peer = insert(newCollege(PEER_A, name = "Bates College", state = "ME", control = 1))
+      seedPublishedPrice(peer, 11000, 31000)
+
+      val peerRow =
+        ((tool.execute(anchorInput(anchor), "ME"))["colleges"] as JsonArray)
+          .map { it.jsonObject }
+          .single { it["name"]!!.jsonPrimitive.content == "Bates College" }
+      val searched =
+        ((CollegeSearchTool(CollegeSearchService(database), codebook).execute(buildJsonObject { }, "ME"))["colleges"] as JsonArray)
+          .map { it.jsonObject }
+          .single { it["name"]!!.jsonPrimitive.content == "Bates College" }
+
+      assertEquals(
+        searched[RESIDENCY_TIERS_KEY],
+        peerRow[RESIDENCY_TIERS_KEY],
+        "one college, one account of its price list, whichever tool asked",
+      )
+      assertEquals(
+        ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.statement,
+        peerRow[RESIDENCY_TIERS_KEY]!!
+          .jsonObject["statement"]!!
+          .jsonPrimitive.content,
+        "and it is the enum's own sentence, not a copy either tool keeps",
+      )
+    }
+
+  @Test
+  fun `cheaper_than_anchor compares the anchor's own residency-correct total`() =
+    runBlocking {
+      seedUniverse()
+      val anchor = insert(newCollege(ANCHOR, name = "Bowdoin College", state = "ME", control = 1))
+      seedPublishedPrice(anchor, 12400, 14400)
+      val cheaper = insert(newCollege(PEER_A, name = "Bates College", state = "ME", control = 1))
+      seedPublishedPrice(cheaper, 8000, 9000)
+      val dearer = insert(newCollege(PEER_B, name = "Colby College", state = "ME", control = 1))
+      seedPublishedPrice(dearer, 20000, 22000)
+
+      // A family in NV: every ME public is on its OUT-OF-STATE tier, so the
+      // anchor's own bar is 30,400 and the comparison is total against total.
+      val result =
+        tool.execute(
+          buildJsonObject {
+            put("college_id", anchor.id.value.toString())
+            put("cheaper_than_anchor", true)
+          },
+          "NV",
+        )
+      assertNull(result["error"], "$result")
+      assertTrue(namesOf(result).contains("Bates College"), "$result")
+      assertFalse(namesOf(result).contains("Colby College"), "22,000 out of state is not cheaper: $result")
+      // The figure is SAID BACK, grouped, on the ruler it was applied on.
+      assertTrue(constraints(result).any { it.contains("30,400") }, "${constraints(result)}")
+      assertTrue(
+        constraints(result).any { it.contains("published on-campus price for this family") },
+        "${constraints(result)}",
+      )
+    }
+
+  @Test
+  fun `cheaper_than_anchor is refused by name when the anchor has no figure on the active ruler`() =
+    runBlocking {
+      val anchor = seedUniverse()
+
+      // The anchor has a net price but NO published total, and the family's
+      // state is on file -- so the ask cannot be honoured on the ruler this
+      // query is on. It is refused, never quietly answered on the other one.
+      val result =
+        tool.execute(
+          buildJsonObject {
+            put("college_id", anchor.id.value.toString())
+            put("cheaper_than_anchor", true)
+          },
+          "NV",
+        )
+      val error = result["error"]!!.jsonPrimitive.content
+      assertTrue(error.contains("cheaper_than_anchor"), error)
+      assertTrue(error.contains("published on-campus price"), error)
+      assertNull(result["colleges"], "a refusal must not fall through to a peer list")
+    }
+
+  @Test
+  fun `the tool description states both rulers and never says subtract without never`() {
+    // Two tools that return "a college" describe it the same way (RFC 153 D70),
+    // so the rewritten basis note is asserted on BOTH descriptions.
+    val description = tool.definition["description"]!!.jsonPrimitive.content
+    // Against the CONSTANTS the row actually emits, never against literals: the
+    // note types these keys into prose, so a rename that missed it would leave
+    // the model taught keys the payload no longer carries -- with this suite and
+    // the payload suite both green.
+    assertTrue(description.contains(PriceRuler.NET_PRICE_RESULT_KEY), description)
+    assertTrue(
+      description.contains(PriceRuler.resultKey(PriceRuler.PublishedTier.IN_STATE)),
+      description,
+    )
+    assertTrue(
+      description.contains(PriceRuler.resultKey(PriceRuler.PublishedTier.OUT_OF_STATE)),
+      description,
+    )
+    assertTrue(description.contains("no financial aid of any kind"), description)
+    assertTrue(description.contains("There is no out-of-state after-aid price"), description)
+    for (index in Regex("subtract").findAll(description).map { it.range.first }) {
+      assertTrue(
+        description.substring(0, index).contains("nobody may ever "),
+        "[subtract] must never appear without a refusal before it: [$description]",
+      )
+    }
+  }
+
+  @Test
   fun `constraints_used names the vocabulary filters the SQL actually applied`() =
     runBlocking {
       val anchor = seedUniverse()
@@ -775,7 +981,7 @@ class SimilarCollegesToolTest {
           buildJsonObject {
             put("college_id", anchor.id.value.toString())
             putJsonArray("states") { add(JsonPrimitive("ME")) }
-            put("maxNetPricePerYearUsd", 40000)
+            put("maxInStateNetPricePerYearUsd", 40000)
           },
         )
       assertNull(result["error"], "$result")
@@ -844,11 +1050,12 @@ class SimilarCollegesToolTest {
         controlLabel = InstitutionControl.unknownLabel(4),
         locale = "rural-fringe",
         subjectSlugs = null,
-        netPricePerYearUsd = null,
+        rulerPriceUsd = null,
         admissionRateShare = null,
         sizePercentile = 0.5,
         selectivityPercentile = null,
         pricePercentile = null,
+        priceRuler = PriceRuler.NetPrice,
         inDefaultUniverse = true,
       )
     val query =
@@ -896,6 +1103,78 @@ class SimilarCollegesToolTest {
       assertTrue(reason.contains("easier_to_admit_than_anchor"), "the flag is named: $reason")
       assertTrue(reason.contains("Bowdoin College"), "with the anchor that cannot answer it: $reason")
       assertNull(errorKind(result), "and it is not reported as the no-axis-left refusal: $result")
+    }
+
+  @Test
+  fun `on the published ruler the price axis is dropped, counted and named in that ruler's words`() =
+    runBlocking {
+      // The `excluded_unknown` accounting the RFC specified for the PUBLISHED
+      // ruler, which this suite had only ever exercised on the net one — and the
+      // drop sentence beside it, which used to name the net price on every query
+      // regardless of what was actually ranked.
+      //
+      // A CLOSED three-school universe, not `seedUniverse()`: the count under
+      // test is "how many candidates could not be judged on price", so every
+      // candidate has to be one this test put there.
+      val anchor = insert(newCollege(ANCHOR, name = "Bowdoin College", state = "ME", control = 1))
+      seedPublishedPrice(anchor, 12000, 30000)
+      val priced = insert(newCollege(PEER_A, name = "Bates College", state = "ME", control = 1))
+      seedPublishedPrice(priced, 11000, 31000)
+      // A peer with NO published total at all: on this ruler it cannot be judged
+      // on price, so it is dropped from the axis, counted, and named.
+      insert(newCollege(PEER_B, name = "Colby College", state = "ME", control = 1))
+
+      val ranked =
+        tool.execute(
+          buildJsonObject {
+            put("college_id", anchor.id.value.toString())
+            putJsonArray("axes") { add(JsonPrimitive(SimilarityAxis.PRICE.word)) }
+          },
+          "NV",
+        )
+      assertNull(ranked["error"], "$ranked")
+      assertEquals(listOf("Bates College"), namesOf(ranked), "only the priced peer is comparable: $ranked")
+      assertEquals(
+        1,
+        ranked["excluded_unknown"]!!
+          .jsonObject[SimilarityAxis.PRICE.word]!!
+          .jsonPrimitive.intOrNull,
+        "the school with no published total is counted under the price axis: $ranked",
+      )
+
+      // And the ANCHOR's own missing figure is named on the ruler in force. This
+      // anchor has a net price and no published total, so it is unmeasurable
+      // HERE — and the sentence must not talk about the net price this query
+      // never read.
+      val netOnly = insert(newCollege(15900, name = "Net Only College", state = "ME", control = 1))
+      val dropped =
+        tool.execute(
+          buildJsonObject {
+            put("college_id", netOnly.id.value.toString())
+            putJsonArray("axes") { add(JsonPrimitive(SimilarityAxis.PRICE.word)) }
+          },
+          "NV",
+        )
+      val detail =
+        dropped["error"]!!
+          .jsonObject["detail"]!!
+          .jsonPrimitive.content
+      assertTrue(
+        detail.contains(PriceRuler.Published("NV").spokenFigure()),
+        "the drop names the ACTIVE ruler's metric: $detail",
+      )
+      assertFalse(detail.contains("net price"), "and never the measure this query did not read: $detail")
+
+      // The same drop on the NET ruler names the net measure, so the sentence
+      // tracks the ruler rather than merely having been reworded.
+      val onNet =
+        tool.execute(
+          buildJsonObject {
+            put("college_id", netOnly.id.value.toString())
+            putJsonArray("axes") { add(JsonPrimitive(SimilarityAxis.PRICE.word)) }
+          },
+        )
+      assertNull(onNet["error"], "a net price IS reported here, so the axis ranks: $onNet")
     }
 
   @Test
@@ -972,7 +1251,29 @@ class SimilarCollegesToolTest {
       assertEquals(SimilarityAxis.entries.map { it.word }, axesUsed(result), "$result")
       assertEquals(emptyList(), listViolations(result), "the peer list must carry no source code")
 
-      val rendered = BareSourceCodeGuard.listNumericFields(result).toSet()
+      // The SAME peer list on the published ruler (RFC 169), with the anchor and
+      // one peer in the family's own state and one outside it, so both tier keys
+      // are actually RENDERED and the allowlist below is not vacuous.
+      seedPublishedPrice(insert(newCollege(ANCHOR, name = "Bowdoin College", state = "ME", control = 1)), 9000, 26000)
+      seedPublishedPrice(insert(newCollege(PEER_A, name = "Bates College", state = "NV", control = 1)), 11000, 31000)
+      // A public OUTSIDE the family's state: the row whose price the whole RFC
+      // is about, and the only one that renders the out-of-state key.
+      seedPublishedPrice(insert(newCollege(PEER_B, name = "Colby College", state = "ME", control = 1)), 10000, 29000)
+      val published =
+        tool.execute(
+          buildJsonObject {
+            put("college_id", anchor.id.value.toString())
+            putJsonArray("axes") {
+              SimilarityAxis.entries.forEach { axis -> add(JsonPrimitive(axis.word)) }
+            }
+          },
+          "NV",
+        )
+      assertEquals(emptyList(), listViolations(published), "nor the published-ruler peer list")
+
+      val rendered =
+        BareSourceCodeGuard.listNumericFields(result).toSet() +
+          BareSourceCodeGuard.listNumericFields(published).toSet()
       assertEquals(emptySet(), NUMBERS_BY_CONTRACT - rendered, "every field the allowlist sanctions must be in the payload")
 
       val ambiguous = tool.execute(buildJsonObject { put("name", "College") })
@@ -1247,11 +1548,12 @@ class SimilarCollegesToolTest {
         controlLabel = InstitutionControl.unknownLabel(4),
         locale = "rural-fringe",
         subjectSlugs = null,
-        netPricePerYearUsd = null,
+        rulerPriceUsd = null,
         admissionRateShare = null,
         sizePercentile = 0.5,
         selectivityPercentile = null,
         pricePercentile = null,
+        priceRuler = PriceRuler.NetPrice,
         inDefaultUniverse = true,
       )
     val query =
@@ -1293,7 +1595,12 @@ private val NUMBERS_BY_CONTRACT =
     "total_candidates",
     "undergrad_enrollment_headcount",
     "admission_rate_share",
-    "net_price_per_year_usd",
+    // The price keys NAME THEIR BASIS since RFC 169: the after-federal-aid
+    // blend (in-state at a public school), and the residency-correct published
+    // on-campus total under each tuition tier.
+    "in_state_net_price_per_year_usd",
+    "published_price_in_state_on_campus_per_year_usd",
+    "published_price_out_of_state_on_campus_per_year_usd",
     "completion_rate_150pct_4yr_share",
     "median_earnings_10y_after_entry_usd",
     "median_debt_at_completion_usd",
@@ -1307,3 +1614,13 @@ private val NUMBERS_BY_CONTRACT =
 private val QUINTILE_CODE = BareSourceCodeGuard.QUINTILE_CODE
 
 private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSourceCodeGuard.listViolations(payload, NUMBERS_BY_CONTRACT)
+
+/**
+ * The NET ruler, stated once for this suite: `SimilarCollegesTool.execute` takes the family's
+ * residency with NO default (RFC 169 tier-1 review), because in production
+ * "the caller forgot" and "this family has no state on file" must never be the
+ * same thing. Most cases here are about the vocabulary rather than the
+ * residency, so they call this one-argument form; the ruler cases pass a state
+ * explicitly.
+ */
+private suspend fun SimilarCollegesTool.execute(input: kotlinx.serialization.json.JsonObject) = execute(input, null)

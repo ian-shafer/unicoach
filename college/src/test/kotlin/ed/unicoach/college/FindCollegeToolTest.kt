@@ -390,7 +390,8 @@ class FindCollegeToolTest {
 
       val find = FindCollegeTool(service).execute(buildJsonObject { put("name", "Amherst College") })
       // An empty query: no filter word, so the codebook vocabulary is not read.
-      val search = CollegeSearchTool(service, Codebook(emptyList(), emptyList())).execute(buildJsonObject { })
+      // The net ruler, stated: `execute` takes the residency with no default.
+      val search = CollegeSearchTool(service, Codebook(emptyList(), emptyList())).execute(buildJsonObject { }, null)
 
       assertEquals(
         "search_failed",

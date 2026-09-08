@@ -24,6 +24,7 @@ import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.Test
 import java.util.UUID

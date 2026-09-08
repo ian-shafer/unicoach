@@ -39,7 +39,7 @@ abstract class StudentScopedChatTool : ChatTool {
   final override suspend fun execute(input: JsonObject): JsonObject = errorObject("tool [$name] requires a student-scoped dispatch")
 
   /** The structured error object the [ChatTool] total contract requires — malformed input never throws. */
-  protected fun errorObject(reason: String): JsonObject = buildJsonObject { put("error", reason) }
+  protected fun errorObject(reason: String): JsonObject = buildJsonObject { put(ERROR_KEY, reason) }
 
   /** The rejection reason for input keys outside [known], or null when the input is clean. */
   protected fun unknownFieldsReason(
@@ -187,6 +187,23 @@ abstract class StudentScopedChatTool : ChatTool {
 
   companion object {
     private val logger = LoggerFactory.getLogger(StudentScopedChatTool::class.java)
+
+    /**
+     * The key a refusal rides under. Named here, where the envelope is written,
+     * so a reader of a tool result asks THIS about it rather than probing a
+     * literal of its own — a second unlinked copy is how a change to the
+     * envelope quietly stops being recognised.
+     */
+    const val ERROR_KEY = "error"
+
+    /**
+     * TRUE when [result] is a refusal rather than an answer.
+     *
+     * It exists for [ed.unicoach.coaching.addResidencyOffer], which must not
+     * attach an invitation to a failure: an offer beside an error reads as part
+     * of the error. Asked of the owner of the envelope, never re-derived.
+     */
+    fun isToolRefusal(result: JsonObject): Boolean = ERROR_KEY in result
 
     /** The subset filter's field name — read by the schema, the copy and the parser from one place. */
     const val COLLEGE_IDS_FIELD = "college_ids"

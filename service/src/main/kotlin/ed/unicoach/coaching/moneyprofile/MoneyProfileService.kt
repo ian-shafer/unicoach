@@ -9,6 +9,7 @@ import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.MoneyProfileUpsert
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.UsStateCodes
 
 /**
  * One tri-state field update inside a [MoneyProfileUpdate]: set a value,
@@ -148,19 +149,16 @@ class MoneyProfileService(
      * service that owns the rule owns publishing it; a second list elsewhere
      * would be a list that can drift.
      */
-    val USPS_STATE_CODES: Set<String> =
-      (
-        "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD " +
-          "MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC " +
-          "SD TN TX UT VT VA WA WV WI WY DC AS FM GU MH MP PR PW VI"
-      ).split(" ").toSet()
+    val USPS_STATE_CODES: Set<String> = UsStateCodes.ALL
 
     /**
      * The normalized USPS residency-state code, or null when [raw] is not a
-     * member of [USPS_STATE_CODES]. The single home for the rule every writer
-     * enforces (trim, uppercase, membership); each surface keeps only its own
-     * error wording.
+     * member of [USPS_STATE_CODES]. Both members delegate to [UsStateCodes] in
+     * `:db`, which is where the list moved when a module below `:service` needed
+     * it: `PriceRuler.Published` writes a residency state into SQL, so "is this a
+     * real state?" must be answerable where the ruler is built. They stay here
+     * as the names every caller and the served vocabulary already use.
      */
-    fun parseResidencyState(raw: String): String? = raw.trim().uppercase().takeIf { it in USPS_STATE_CODES }
+    fun parseResidencyState(raw: String): String? = UsStateCodes.parse(raw)
   }
 }

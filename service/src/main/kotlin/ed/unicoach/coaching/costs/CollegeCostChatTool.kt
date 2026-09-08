@@ -6,12 +6,12 @@ import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.canonical.FigureGapOwner
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
-import ed.unicoach.coaching.costs.canonical.ResidencyTierBasis
 import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.coaching.putCollegeIdsSchema
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.putIncomeBand
 import ed.unicoach.db.models.putLivingPlan
@@ -24,6 +24,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
+import ed.unicoach.db.models.putResidencyTiers as putResidencyTierPair
 
 /**
  * The `college_cost_profile` chat tool (RFC 135): the coach's read path into
@@ -529,10 +530,10 @@ class CollegeCostChatTool(
    * of its own, so it takes no part in the vintage labels.
    */
   private fun JsonObjectBuilder.putResidencyTiers(cost: CollegeCost) {
-    putJsonObject(RESIDENCY_TIERS_KEY) {
-      put(BASIS_KEY, cost.residencyTiers.value)
-      put(STATEMENT_KEY, cost.residencyTiers.statement)
-    }
+    // The ONE emitter, beside the vocabulary in `:db` (RFC 169, brief 0006 D19):
+    // college search reports the same fact about the same school, and a second
+    // writer here would be a second way to spell one payload.
+    putResidencyTierPair(cost.residencyTiers)
   }
 
   /**
@@ -1518,8 +1519,13 @@ class CollegeCostChatTool(
      * present, because "we hold no price" is an answer; what it may never carry
      * is `single_published_price`, which announced a price list this payload has
      * no tuition key for.
+     *
+     * The one HOME of the key is `:db`, beside the vocabulary it names (RFC 169):
+     * college search reports the same fact under the same key, and two constants
+     * for one wire key is the drift the shared emitter exists to prevent. This
+     * stays as an alias because the description and the tests read it by name.
      */
-    const val RESIDENCY_TIERS_KEY = "residency_tiers"
+    const val RESIDENCY_TIERS_KEY = ed.unicoach.db.models.RESIDENCY_TIERS_KEY
 
     /**
      * The lines inside one arrangement whose amount is OURS (RFC 166 §7) --

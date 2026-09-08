@@ -3,6 +3,7 @@ package ed.unicoach.college
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.PriceRuler
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -54,7 +55,10 @@ class CollegeSearchTool(
               SORT_BY_WORDS.keys,
               "Result ordering. \"enrollment\" (default): largest undergraduate " +
                 "enrollment first; \"admission_rate_share\": most selective first; " +
-                "\"net_price_per_year_usd\": cheapest first; \"completion_rate_150pct_4yr_share\": best completion " +
+                "\"${PriceRuler.NET_PRICE_SORT_WORD}\" or \"${PriceRuler.PUBLISHED_PRICE_SORT_WORD}\": cheapest first " +
+                "on whichever price this search is ranked on -- exactly one of the two is honoured, and " +
+                "naming the other is refused with a sentence saying which; " +
+                "\"completion_rate_150pct_4yr_share\": best completion " +
                 "first; \"name\": alphabetical. Sorting never filters: colleges " +
                 "missing the sort field are listed last, not dropped.",
             ),
@@ -76,8 +80,20 @@ class CollegeSearchTool(
    * matches. Unknown fields, type mismatches and unknown codebook words yield
    * `{ "error": "<reason>" }`; the executor never throws.
    */
-  suspend fun execute(input: JsonObject): JsonObject {
-    val query = parseQuery(input).getOrElse { return errorObject(it.message ?: "invalid input") }
+  suspend fun execute(
+    input: JsonObject,
+    familyResidencyState: String?,
+  ): JsonObject {
+    // Resolved ONCE, here, and carried on the query from now on. No default:
+    // "the caller forgot" and "this family has no state on file" are different
+    // facts, and only one of them may quietly become the net-price ruler.
+    // `inputErrorObject`, the one home for this shape (and what `FindCollegeTool`
+    // already uses): the hand-rolled fallback here collapsed a Throwable with no
+    // message to the literal "invalid input", which tells the model nothing it
+    // can correct and drops the class name that would have said what happened.
+    val query =
+      parseQuery(input, PriceRuler.of(familyResidencyState))
+        .getOrElse { return inputErrorObject(it) }
 
     // Two channels, kept apart on purpose. `Result.failure` is the DATABASE
     // failing, and gets the retryable `search_failed` shape; an unresolvable
@@ -99,7 +115,7 @@ class CollegeSearchTool(
 
     return buildJsonObject {
       putJsonArray("colleges") {
-        page.matches.forEach { add(matchObject(it, vocabulary)) }
+        page.matches.forEach { add(matchObject(it, vocabulary, page.priceRuler)) }
       }
       put("count", page.matches.size)
       // The honest population count (RFC 139): unclamped, so the model can say
@@ -109,6 +125,10 @@ class CollegeSearchTool(
       // a column a college may not report says how many colleges it could not
       // judge. `{}` when no supplied filter can exclude an unknown.
       putExcludedUnknown(page.excludedUnknown)
+      // WHICH price this page was ranked on, and what is in it (RFC 169 D1):
+      // never left for a reader to infer, because a published ranking has no
+      // financial aid in it at all.
+      putPriceRuler(page.priceRuler)
       putSourceYears(page.sourceYears)
     }
   }
@@ -123,7 +143,10 @@ class CollegeSearchTool(
    * this one offer different field sets around the same filters, so which keys
    * are known is the TOOL's question, not the vocabulary's.
    */
-  private fun parseQuery(input: JsonObject): Result<CollegeQuery> {
+  private fun parseQuery(
+    input: JsonObject,
+    ruler: PriceRuler,
+  ): Result<CollegeQuery> {
     unknownFieldsReason(input, KNOWN_FIELDS)?.let { return fail(it) }
 
     val limit = optInt(input, "limit").getOrElse { return Result.failure(it) } ?: DEFAULT_LIMIT
@@ -131,9 +154,31 @@ class CollegeSearchTool(
       optWordEnum(input, "sort_by", SORT_BY_WORDS).getOrElse { return Result.failure(it) }
         ?: CollegeQuery.SortBy.ENROLLMENT_DESC
 
-    val filters = vocabulary.parse(input, limit).getOrElse { return Result.failure(it) }
+    val filters = vocabulary.parse(input, limit, ruler).getOrElse { return Result.failure(it) }
+    inactiveSortWordReason(sortBy, ruler)?.let { return fail(it) }
 
     return Result.success(filters.copy(sortBy = sortBy))
+  }
+
+  /**
+   * The refusal for a `sort_by` word belonging to the INACTIVE ruler (RFC 169
+   * D7), or null when the word is honourable.
+   *
+   * Reads [SORT_BY_WORDS] rather than restating the enum-to-word mapping: the
+   * second copy this replaced carried an `else -> null` arm, which threw away
+   * the exhaustiveness the first copy exists for — a third ruler sort would have
+   * compiled and gone silently unrefusable.
+   *
+   * Silently substituting the active ruler would answer "cheapest first" with a
+   * different cheapest.
+   */
+  private fun inactiveSortWordReason(
+    sortBy: CollegeQuery.SortBy,
+    ruler: PriceRuler,
+  ): String? {
+    val word = SORT_BY_WORDS.entries.first { it.value == sortBy }.key
+    if (word !in RULER_SORT_WORDS || word == ruler.sortWord) return null
+    return "[sort_by] cannot be [$word] here: ${ruler.describe()} Use [${ruler.sortWord}] instead."
   }
 
   // ---------------------------------------------------------------------------
@@ -155,6 +200,10 @@ class CollegeSearchTool(
     private val KNOWN_FIELDS: Set<String> =
       CollegeQueryVocabulary.FIELD_NAMES + setOf("sort_by", "limit")
 
+    /** The two `sort_by` words that name a price ruler: exactly one is honourable per call. */
+    private val RULER_SORT_WORDS =
+      setOf(PriceRuler.NET_PRICE_SORT_WORD, PriceRuler.PUBLISHED_PRICE_SORT_WORD)
+
     /**
      * The `sort_by` word enum → [CollegeQuery.SortBy]. LinkedHashMap order is
      * the schema's enum order (default first).
@@ -165,9 +214,18 @@ class CollegeSearchTool(
         // fails THIS compile rather than silently going unofferable to the LLM.
         when (sortBy) {
           CollegeQuery.SortBy.ENROLLMENT_DESC -> "enrollment"
+
           CollegeQuery.SortBy.ADMISSION_RATE_SHARE_ASC -> "admission_rate_share"
-          CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC -> "net_price_per_year_usd"
+
+          // The BASIS is in the word (RFC 169 D7). Only the ACTIVE ruler's word
+          // is honoured; naming the other one is refused by name, with a
+          // sentence saying which ruler this search is on.
+          CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC -> PriceRuler.NET_PRICE_SORT_WORD
+
+          CollegeQuery.SortBy.PUBLISHED_PRICE_ON_CAMPUS_ASC -> PriceRuler.PUBLISHED_PRICE_SORT_WORD
+
           CollegeQuery.SortBy.COMPLETION_RATE_150PCT_4YR_SHARE_DESC -> "completion_rate_150pct_4yr_share"
+
           CollegeQuery.SortBy.NAME_ASC -> "name"
         }
       }
@@ -211,7 +269,7 @@ class CollegeSearchTool(
         "the college reports: one entry per band carrying income_band_label, the band's income " +
         "range in plain words -- " +
         IncomeBand.entries.joinToString(" / ") { it.bracket } +
-        " -- alongside the net_price_per_year_usd a family in that band pays. Name a band by that dollar " +
+        " -- alongside the ${PriceRuler.NET_PRICE_RESULT_KEY} a family in that band pays. Name a band by that dollar " +
         "range when you say it aloud, never by a data source's own bucket name. Each result also " +
         "carries median_debt_at_completion_usd, the median cumulative federal loan debt of graduates, so " +
         "cost answers can cite the band matching the family's income. This tool filters on " +

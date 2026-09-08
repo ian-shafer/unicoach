@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.models.AnchoredAxis
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeId
@@ -12,17 +13,25 @@ import ed.unicoach.db.models.CollegeSearchPage
 import ed.unicoach.db.models.CollegeSimilarityOutcome
 import ed.unicoach.db.models.CollegeSimilarityPage
 import ed.unicoach.db.models.CollegeSummary
+import ed.unicoach.db.models.FigureArrangement
+import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.InstitutionSector
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
+import ed.unicoach.db.models.PriceConcept
+import ed.unicoach.db.models.PriceRuler
+import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.SimilarityAnchor
 import ed.unicoach.db.models.SimilarityAnchorOutcome
 import ed.unicoach.db.models.SimilarityAxis
 import ed.unicoach.db.models.SimilarityMatch
 import ed.unicoach.db.models.SimilarityQuery
+import ed.unicoach.db.models.TuitionTierReading
 import ed.unicoach.db.models.Version
+import ed.unicoach.db.models.residencyTierBasisOf
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -217,6 +226,42 @@ object CollegesDao :
     )
 
   /**
+   * One tuition tier as [residencyTierBasisOf] reads it, from the two columns
+   * [PUBLISHED_TUITION_TIERS_LATERAL] emits for it.
+   *
+   * The pair is read together because the two answer different questions: a
+   * NULL amount beside a real status is a row that bears no value, and a NULL
+   * status is no row at all. Reading only the amount would collapse the
+   * publisher's `not_applicable` ANSWER into every other silence, which is the
+   * defect D19 exists against.
+   *
+   * A status the enum cannot read is a located [CorruptPersistedValueException],
+   * never a null — the [CanonicalMoneyReadDao] and [AidPolicyDao] treatment of
+   * this very column. `figure_statuses` is an AUTHORED VOCABULARY TABLE, so a
+   * seventh code can exist in the database without any Kotlin change, and
+   * decoding it to null would make it indistinguishable from "no row at all".
+   * That silence is precisely what prints
+   * [ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT]'s sentence to a
+   * family: a code we cannot read would become a claim we cannot support. A loud
+   * failure is the only honest answer.
+   */
+  private fun ResultSet.getTuitionTierReading(prefix: String): TuitionTierReading {
+    val rawStatus = getString("${prefix}_status")
+    return TuitionTierReading(
+      amountPresent = intOrNull("${prefix}_usd") != null,
+      status =
+        rawStatus?.let { raw ->
+          FigureStatus.fromValue(raw)
+            ?: throw CorruptPersistedValueException(
+              raw,
+              ValidationError.InvalidFormat(expected = "a known [FigureStatus] value"),
+              location = "price_figures.status (tuition_and_fees, [${prefix.removeSuffix("_tuition")}])",
+            )
+        },
+    )
+  }
+
+  /**
    * Maps a [search] result row. The scalar columns are read here; the
    * `program_titles` SQL ARRAY is read via JDBC `getArray` (it cannot be read as
    * a typed scalar). A NULL array — possible when the program JOIN is absent or
@@ -236,6 +281,19 @@ object CollegesDao :
       undergradEnrollmentHeadcount = rs.intOrNull("undergrad_enrollment_headcount"),
       admissionRateShare = rs.doubleOrNull("admission_rate_share"),
       netPricePerYearUsd = rs.intOrNull("net_price_per_year_usd"),
+      // The price the ACTIVE ruler put this row in its place with (RFC 169),
+      // reported under a key that names the tier applied to THIS row.
+      rulerPriceUsd = rs.intOrNull(RULER_PRICE_COLUMN),
+      // WHICH tuition tiers this school publishes, decided by the ONE derivation
+      // both the cost path and search read (brief 0006 D19). Computed here, at
+      // the row boundary, so no consumer re-derives the tier shape from one
+      // amount -- the drift `publishedTuitionTiersOf`'s doc forbids.
+      residencyTierBasis =
+        residencyTierBasisOf(
+          rs.getTuitionTierReading("in_district_tuition"),
+          rs.getTuitionTierReading("in_state_tuition"),
+          rs.getTuitionTierReading("out_of_state_tuition"),
+        ),
       netPricePerYearIncomeQ1Usd = rs.intOrNull("net_price_per_year_income_q1_usd"),
       netPricePerYearIncomeQ2Usd = rs.intOrNull("net_price_per_year_income_q2_usd"),
       netPricePerYearIncomeQ3Usd = rs.intOrNull("net_price_per_year_income_q3_usd"),
@@ -595,7 +653,7 @@ object CollegesDao :
     val matches =
       listMatches(session, query, plan, programCodes.matchedCodes).getOrElse { return Result.failure(it) }
 
-    return countPage(session, plan, matches)
+    return countPage(session, plan, matches, query.priceRuler)
   }
 
   /**
@@ -682,8 +740,14 @@ object CollegesDao :
     query.maxAdmissionRateShare?.let { max ->
       filters += IndexFilter("admission_rate_share <= ?", listOf(doubleBinder(max)), UnknownAxis.ofColumn("admission_rate_share"))
     }
-    query.maxNetPricePerYearUsd?.let { max ->
-      filters += IndexFilter("net_price_per_year_usd <= ?", listOf(intBinder(max)), UnknownAxis.ofColumn("net_price_per_year_usd"))
+    query.maxPricePerYearUsd?.let { max ->
+      // The ACTIVE ruler's own expression (RFC 169 D1). Under the published
+      // ruler it is a `CASE` over the two tier columns -- built from INDEX
+      // columns only, so the filter and count statements still name no table but
+      // `college_search_index`, which is what keeps a residency-correct price
+      // off the hot path of every search.
+      val ruler = query.priceRuler
+      filters += IndexFilter("${ruler.valueSql()} <= ?", listOf(intBinder(max)), UnknownAxis.of(ruler))
     }
     query.minCompletionRate150pct4yrShare?.let { min ->
       filters +=
@@ -808,19 +872,25 @@ object CollegesDao :
       SELECT
         i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
-        i.completion_rate_150pct_4yr_share,
+        i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN,
         c.city, c.net_price_per_year_income_q1_usd, c.net_price_per_year_income_q2_usd,
         c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd,
         c.net_price_per_year_income_q5_usd, c.median_earnings_10y_after_entry_usd,
         c.median_debt_at_completion_usd, c.pell_share, c.website,
         ci.survey_year AS ipeds_survey_year,
+        $PUBLISHED_TUITION_TIERS_SELECT,
         t.titles AS program_titles,
         t.census_year AS programs_census_survey_year
       FROM (
         SELECT
           college_id, ipeds_unit_id, name, state, control, region, locale,
           undergrad_enrollment_headcount, admission_rate_share, net_price_per_year_usd,
-          completion_rate_150pct_4yr_share
+          completion_rate_150pct_4yr_share,
+          -- The price THIS query is on, per row (RFC 169): the sort key, and the
+          -- number the result reports under a key naming the tier applied to
+          -- this row. It is an expression over index columns, so this subquery
+          -- still names no table but `college_search_index`.
+          ${query.priceRuler.valueSql()} AS $RULER_PRICE_COLUMN
         FROM college_search_index
         ${plan.whereClause}
         ORDER BY ${orderBy(query.sortBy, "")}
@@ -828,6 +898,7 @@ object CollegesDao :
       ) i
       JOIN colleges c ON c.id = i.college_id
       LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = i.ipeds_unit_id
+      $PUBLISHED_TUITION_TIERS_LATERAL
       LEFT JOIN LATERAL (
         SELECT $titlesSelect AS titles, max(pc.survey_year) AS census_year
         FROM college_programs_census pc
@@ -858,6 +929,7 @@ object CollegesDao :
     session: SqlSession,
     plan: SearchPlan,
     matches: List<CollegeMatch>,
+    ruler: PriceRuler,
   ): Result<CollegeSearchOutcome> {
     val countSelects =
       buildList {
@@ -887,6 +959,7 @@ object CollegesDao :
             totalMatches = total,
             excludedUnknown = excluded,
             sourceYears = sourceYears(matches),
+            priceRuler = ruler,
           ),
         )
       }
@@ -1018,14 +1091,23 @@ object CollegesDao :
     /** The SQL identifier fragment an arm's count column is built from: never caller text, never a word. */
     val sqlAlias: String
 
-    /** A filter's column: the key IS the column, so the column being NULL is what counts it. */
+    /**
+     * A filter's column. The key defaults to the column, so every existing key
+     * stays byte-identical, and an axis whose WIRE NAME differs from its schema
+     * name — or whose filter is an expression over two columns rather than one —
+     * names itself instead (RFC 169 D7).
+     *
+     * [column] is then only the SQL identifier fragment the count column is
+     * built from, and [columns] the set of index columns the filter actually
+     * READS. Those must be stated for the published ruler or its arm would drop
+     * no filters and count zero by construction — the exact defect [columns]
+     * exists to prevent.
+     */
     data class FilterColumn(
       val column: String,
+      override val key: String = column,
+      override val columns: Set<String> = setOf(column),
     ) : UnknownSubject {
-      override val key: String get() = column
-
-      override val columns: Set<String> get() = setOf(column)
-
       override val sqlAlias: String get() = column
     }
 
@@ -1070,6 +1152,22 @@ object CollegesDao :
       fun ofColumn(column: String): UnknownAxis = UnknownAxis(UnknownSubject.FilterColumn(column), "$column IS NULL")
 
       /**
+       * A bound on the ACTIVE price ruler (RFC 169 D11). The subject is the
+       * AXIS, reported under one key, because a page mixes rows on both tuition
+       * tiers and two keys would ask a reader to add two numbers about the same
+       * question. A row whose residency-correct price is NULL is dropped,
+       * counted and named here — never substituted, never "maybe cheaper".
+       */
+      fun of(ruler: PriceRuler): UnknownAxis =
+        UnknownAxis(
+          UnknownSubject.FilterColumn(
+            column = ruler.excludedUnknownKey,
+            columns = ruler.columns,
+          ),
+          "${ruler.valueSql()} IS NULL",
+        )
+
+      /**
        * A ranked axis, whose unjudgeable rows are the ones its `scored`
        * predicate rejects, and whose [columns] are the index columns that
        * predicate reads.
@@ -1104,19 +1202,30 @@ object CollegesDao :
   fun findSimilarityAnchor(
     session: SqlSession,
     id: CollegeId,
+    ruler: PriceRuler,
   ): Result<SimilarityAnchorOutcome> {
     if (!isSearchIndexBuilt(session).getOrElse { return Result.failure(it) }) {
       return Result.success(SimilarityAnchorOutcome.IndexNotBuilt)
     }
-    return findSimilarityAnchorRow(session, id).map { anchor ->
+    return findSimilarityAnchorRow(session, id, ruler).map { anchor ->
       anchor?.let(SimilarityAnchorOutcome::Found) ?: SimilarityAnchorOutcome.NoSuchCollege
     }
   }
 
-  /** The anchor's index row itself, or null when this database holds none for that id. */
+  /**
+   * The anchor's index row itself, or null when this database holds none for
+   * that id.
+   *
+   * The anchor's price and price POSITION are read through the SAME [PriceRuler]
+   * the candidates will be ranked with (RFC 169), so "like Bowdoin but cheaper"
+   * compares two figures on one ladder. Reading the anchor on one ruler and the
+   * candidates on another is the one way a single-measure guarantee could still
+   * have produced a mixed comparison.
+   */
   private fun findSimilarityAnchorRow(
     session: SqlSession,
     id: CollegeId,
+    ruler: PriceRuler,
   ): Result<SimilarityAnchor?> =
     session
       .queryOne(
@@ -1127,8 +1236,10 @@ object CollegesDao :
           -- the cast is what makes it readable as the text[] every other array
           -- read in this file expects.
           subject_slugs::text[] AS subject_slugs,
-          net_price_per_year_usd, admission_rate_share,
-          undergrad_enrollment_percentile_share, net_price_percentile_share,
+          ${ruler.valueSql()} AS $RULER_PRICE_COLUMN,
+          admission_rate_share,
+          undergrad_enrollment_percentile_share,
+          ${ruler.shareSql()} AS $RULER_SHARE_COLUMN,
           -- The anchor's SELECTIVITY position, computed by the SAME expression
           -- that positions every candidate: one definition of the axis, so a
           -- distance compares two colleges and never two formulas.
@@ -1138,7 +1249,7 @@ object CollegesDao :
         WHERE college_id = ?
         """.trimIndent(),
         bind = { stmt -> stmt.setObject(1, id.value) },
-        map = ::mapSimilarityAnchor,
+        map = { rs -> mapSimilarityAnchor(rs, ruler) },
       ).orNullOnNotFound()
 
   /**
@@ -1181,7 +1292,7 @@ object CollegesDao :
     val matches =
       listSimilarMatches(session, query, plan, programCodes.matchedCodes).getOrElse { return Result.failure(it) }
 
-    return countSimilarPage(session, plan, matches)
+    return countSimilarPage(session, plan, matches, query.filters.priceRuler)
   }
 
   /**
@@ -1204,9 +1315,11 @@ object CollegesDao :
       // The FIGURE, not a flag: the query carries the anchor's own number when
       // the constraint was asked for, so there is nothing to re-check here.
       query.cheaperThanUsd?.let { price ->
-        add(
-          IndexFilter("net_price_per_year_usd < ?", listOf(intBinder(price)), UnknownAxis.ofColumn("net_price_per_year_usd")),
-        )
+        // The anchor's own figure is on the ACTIVE ruler (RFC 169), so
+        // "but cheaper" compares two residency-correct published totals or two
+        // net prices — never one of each.
+        val ruler = query.filters.priceRuler
+        add(IndexFilter("${ruler.valueSql()} < ?", listOf(intBinder(price)), UnknownAxis.of(ruler)))
       }
       query.easierToAdmitThanShare?.let { rate ->
         add(
@@ -1235,7 +1348,7 @@ object CollegesDao :
    * substituted for an unreported percentile.
    */
   private fun createDistance(query: SimilarityQuery): SimilarityDistance {
-    val terms = query.axes.map { (anchored, weight) -> createDistanceTerm(anchored, weight) }
+    val terms = query.axes.map { (anchored, weight) -> createDistanceTerm(anchored, weight, query.filters.priceRuler) }
     val numerator = terms.joinToString(" + ") { "CASE WHEN ${it.scored} THEN ? * (${it.difference}) ELSE 0 END" }
     val denominator = terms.joinToString(" + ") { "CASE WHEN ${it.scored} THEN ? ELSE 0 END" }
     return SimilarityDistance(
@@ -1268,6 +1381,7 @@ object CollegesDao :
   private fun createDistanceTerm(
     anchored: AnchoredAxis,
     weight: Double,
+    ruler: PriceRuler,
   ): DistanceTerm =
     when (anchored) {
       is AnchoredAxis.Size -> {
@@ -1281,10 +1395,14 @@ object CollegesDao :
       }
 
       is AnchoredAxis.Price -> {
+        // The ACTIVE ruler's share column (RFC 169). Both published shares are
+        // positions on ONE ladder, so anchor and candidate are commensurable
+        // even when they sit on different tuition tiers — which is precisely
+        // what a second, in-state ladder would have broken.
         createPercentileTerm(
           anchored.axis,
-          "net_price_percentile_share",
-          setOf("net_price_percentile_share", "net_price_per_year_usd"),
+          ruler.shareSql(),
+          ruler.columns,
           anchored.percentile,
           weight,
         )
@@ -1384,12 +1502,13 @@ object CollegesDao :
       SELECT
         i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
-        i.completion_rate_150pct_4yr_share, i.distance$scoredColumns,
+        i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN, i.distance$scoredColumns,
         c.city, c.net_price_per_year_income_q1_usd, c.net_price_per_year_income_q2_usd,
         c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd,
         c.net_price_per_year_income_q5_usd, c.median_earnings_10y_after_entry_usd,
         c.median_debt_at_completion_usd, c.pell_share, c.website,
         ci.survey_year AS ipeds_survey_year,
+        $PUBLISHED_TUITION_TIERS_SELECT,
         t.titles AS program_titles,
         t.census_year AS programs_census_survey_year
       FROM (
@@ -1397,6 +1516,10 @@ object CollegesDao :
           college_id, ipeds_unit_id, name, state, control, region, locale,
           undergrad_enrollment_headcount, admission_rate_share, net_price_per_year_usd,
           completion_rate_150pct_4yr_share,
+          -- The price this query is on, per row (RFC 169) -- the same expression
+          -- the ordinary page statement carries, so a peer list and a search
+          -- print one college's price the same way.
+          ${query.filters.priceRuler.valueSql()} AS $RULER_PRICE_COLUMN,
           ${plan.distanceExpression} AS distance$scoredSelects
         FROM college_search_index
         WHERE ${plan.search.matchClause} AND ${plan.sharedAxisClause}
@@ -1409,6 +1532,7 @@ object CollegesDao :
       ) i
       JOIN colleges c ON c.id = i.college_id
       LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = i.ipeds_unit_id
+      $PUBLISHED_TUITION_TIERS_LATERAL
       LEFT JOIN LATERAL (
         SELECT $titlesSelect AS titles, max(pc.survey_year) AS census_year
         FROM college_programs_census pc
@@ -1489,6 +1613,7 @@ object CollegesDao :
     session: SqlSession,
     plan: SimilarityPlan,
     matches: List<SimilarityMatch>,
+    ruler: PriceRuler,
   ): Result<CollegeSimilarityOutcome> {
     val countSelects =
       buildList {
@@ -1525,6 +1650,7 @@ object CollegesDao :
             totalCandidates = total,
             excludedUnknown = excluded,
             sourceYears = sourceYears(matches.map { it.match }),
+            priceRuler = ruler,
           ),
         )
       }
@@ -1591,7 +1717,10 @@ object CollegesDao :
   }
 
   /** Maps a [findSimilarityAnchor] row. */
-  private fun mapSimilarityAnchor(rs: ResultSet): SimilarityAnchor {
+  private fun mapSimilarityAnchor(
+    rs: ResultSet,
+    ruler: PriceRuler,
+  ): SimilarityAnchor {
     // The stored label is resolved ONCE, at the row boundary, and both halves
     // travel: the category this vocabulary defines (null when it defines none),
     // and the label exactly as stored, which is what a refusal must quote.
@@ -1604,11 +1733,14 @@ object CollegesDao :
       controlLabel = controlLabel,
       locale = rs.getString("locale"),
       subjectSlugs = rs.getStringListOrNull("subject_slugs"),
-      netPricePerYearUsd = rs.intOrNull("net_price_per_year_usd"),
+      rulerPriceUsd = rs.intOrNull(RULER_PRICE_COLUMN),
+      // Stamped at the READ, from the ruler this statement was built with: the
+      // two figures above are ruler-dependent and neither says so alone.
+      priceRuler = ruler,
       admissionRateShare = rs.doubleOrNull("admission_rate_share"),
       sizePercentile = rs.doubleOrNull("undergrad_enrollment_percentile_share"),
       selectivityPercentile = rs.doubleOrNull("selectivity_percentile_share"),
-      pricePercentile = rs.doubleOrNull("net_price_percentile_share"),
+      pricePercentile = rs.doubleOrNull(RULER_SHARE_COLUMN),
       inDefaultUniverse = rs.getBoolean("in_default_universe"),
     )
   }
@@ -1902,8 +2034,13 @@ object CollegesDao :
         "${prefix}admission_rate_share ASC NULLS LAST"
       }
 
-      CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC -> {
-        "${prefix}net_price_per_year_usd ASC NULLS LAST"
+      // BOTH price sorts order by the same output column, `ruler_price`, which
+      // the statement computes from the ACTIVE ruler's own expression (RFC 169).
+      // One key means the sort and the filter cannot end up on two measures, and
+      // `CollegeQuery.init` has already refused the inactive ruler's word, so
+      // there is nothing here to choose between.
+      CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC, CollegeQuery.SortBy.PUBLISHED_PRICE_ON_CAMPUS_ASC -> {
+        "${prefix}$RULER_PRICE_COLUMN ASC NULLS LAST"
       }
 
       CollegeQuery.SortBy.COMPLETION_RATE_150PCT_4YR_SHARE_DESC -> {
@@ -2238,6 +2375,169 @@ object CollegesDao :
   private const val INST_LEVEL_FOUR_OR_MORE_YEARS = 1
 
   /**
+   * The output column carrying the ACTIVE price ruler's value for one row (RFC
+   * 169): computed once in the page statement's subquery, sorted on, and read
+   * back as [CollegeMatch.rulerPriceUsd].
+   *
+   * It exists because the published ruler's value is an EXPRESSION over two tier
+   * columns, so an `ORDER BY` in an outer query has nothing to name and a result
+   * row has no column to read. Naming it once means the sort key and the number
+   * the result prints are the same expression evaluated once, never two.
+   */
+  private const val RULER_PRICE_COLUMN = "ruler_price"
+
+  /** The anchor's position on the active ruler's ladder, named for the same reason. */
+  private const val RULER_SHARE_COLUMN = "ruler_price_share"
+
+  /**
+   * The three published tuition tiers of ONE returned row, read live from
+   * `price_figures` — brief 0006 D19, and the reason it costs no column.
+   *
+   * It sits on the PAYLOAD half of both page statements, beside the join back to
+   * `colleges`, and never on the filter subquery or the count: the label is a
+   * fact about the at-most-25 rows being returned, not a thing anything filters,
+   * sorts or ranks on. `CollegesDaoTest`'s scope pin is written that way on
+   * purpose — its absence assertions are taken over the `FROM (` … `) i`
+   * subquery, and it separately asserts the payload half DOES reach `colleges` —
+   * so this is legal by that test's design rather than in spite of it.
+   *
+   * `DISTINCT ON (residency_basis) … ORDER BY academic_year DESC` serves the
+   * LATEST year per tier, the same rule the rebuild and the cost path both use,
+   * so the search label and a cost answer about the same school read the same
+   * row. The outer aggregates see AT MOST ONE row per tier by construction, so
+   * `max(...)` is a projection and not a comparison.
+   *
+   * Both halves of each tier travel: the amount says whether the school
+   * publishes that tier, and the status says WHY when it does not. A row bearing
+   * no value has a NULL amount and a real status; a tier with no row at all has
+   * both NULL. Telling those apart is the whole of D19 — an `in_district` row
+   * saying `not_applicable` is the publisher ANSWERING, and every other absence
+   * is a district price nobody can speak about.
+   *
+   * One lateral over `price_figures_college_idx` for at most 25 rows, on a
+   * statement that already joins `colleges`, `college_ipeds` and a census
+   * lateral.
+   */
+  private val PUBLISHED_TUITION_TIERS_LATERAL =
+    """
+    LEFT JOIN LATERAL (
+      SELECT
+        max(f.amount_usd) FILTER (WHERE f.residency_basis = '${ResidencyBasis.IN_DISTRICT.value}')
+          AS in_district_tuition_usd,
+        max(f.status)     FILTER (WHERE f.residency_basis = '${ResidencyBasis.IN_DISTRICT.value}')
+          AS in_district_tuition_status,
+        max(f.amount_usd) FILTER (WHERE f.residency_basis = '${ResidencyBasis.IN_STATE.value}')
+          AS in_state_tuition_usd,
+        max(f.status)     FILTER (WHERE f.residency_basis = '${ResidencyBasis.IN_STATE.value}')
+          AS in_state_tuition_status,
+        max(f.amount_usd) FILTER (WHERE f.residency_basis = '${ResidencyBasis.OUT_OF_STATE.value}')
+          AS out_of_state_tuition_usd,
+        max(f.status)     FILTER (WHERE f.residency_basis = '${ResidencyBasis.OUT_OF_STATE.value}')
+          AS out_of_state_tuition_status
+      FROM (
+        SELECT DISTINCT ON (pf.residency_basis) pf.residency_basis, pf.amount_usd, pf.status
+        FROM price_figures pf
+        WHERE pf.college_id = i.college_id
+          AND pf.price_concept = '${PriceConcept.TUITION_AND_FEES.value}'
+          AND pf.arrangement = '${FigureArrangement.NOT_APPLICABLE.value}'
+          AND pf.residency_basis IN (
+            '${ResidencyBasis.IN_DISTRICT.value}',
+            '${ResidencyBasis.IN_STATE.value}',
+            '${ResidencyBasis.OUT_OF_STATE.value}')
+        ORDER BY pf.residency_basis, pf.academic_year DESC
+      ) f
+    ) tiers ON TRUE
+    """.trimIndent()
+
+  /** The tier columns [PUBLISHED_TUITION_TIERS_LATERAL] contributes, for both payload select lists. */
+  private const val PUBLISHED_TUITION_TIERS_SELECT =
+    "tiers.in_district_tuition_usd, tiers.in_district_tuition_status, " +
+      "tiers.in_state_tuition_usd, tiers.in_state_tuition_status, " +
+      "tiers.out_of_state_tuition_usd, tiers.out_of_state_tuition_status"
+
+  /**
+   * The four `price_figures` cells a published ON-CAMPUS total is made of (RFC
+   * 169 D3), mirroring `CostBreakdown`'s own arrangement components: tuition and
+   * fees at the residency tier, plus housing and food on campus, books and
+   * supplies, and other expenses on campus.
+   *
+   * Residency lives on exactly ONE addend. Every living cost is
+   * `residency_basis = 'not_applicable'` in 0083, so the tier enters through
+   * `tuition_and_fees` alone — which is what makes "only the rate tier varies,
+   * never the measure" true of the two value columns rather than merely
+   * intended.
+   *
+   * Generated from the vocabulary enums, never typed as SQL literals, on the
+   * [CONTROL_CASE] argument: the schema's foreign keys, these enums and this SQL
+   * are three statements of one vocabulary and the hand-written third copy is
+   * the one that drifts.
+   */
+  private val PUBLISHED_ON_CAMPUS_COMPONENTS:
+    List<Triple<PriceConcept, ResidencyBasis?, FigureArrangement>> =
+    listOf(
+      Triple(PriceConcept.TUITION_AND_FEES, null, FigureArrangement.NOT_APPLICABLE),
+      Triple(PriceConcept.HOUSING_AND_FOOD, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.ON_CAMPUS),
+      Triple(PriceConcept.BOOKS_AND_SUPPLIES, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.NOT_APPLICABLE),
+      Triple(PriceConcept.OTHER_EXPENSES, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.ON_CAMPUS),
+    )
+
+  /**
+   * One `LEFT JOIN LATERAL` summing [PUBLISHED_ON_CAMPUS_COMPONENTS] at [tier]
+   * into the published on-campus total for the college of the enclosing row, or
+   * NULL — RFC 169 §5, statement 2.
+   *
+   * LEFT, so a college with no canonical money keeps its index row and the
+   * column goes NULL: the established rule of this INSERT, and exactly the shape
+   * `excluded_unknown` already counts.
+   *
+   * Three rules are in the SQL, and all three are load-bearing:
+   * - **`count(*) = 4` IS the all-or-nothing rule.** Three components produce
+   *   NULL, not a short total. A total missing its housing line is not a cheaper
+   *   school, it is a school this ruler cannot rank, and quoting the short sum
+   *   would put the wrong school first.
+   * - **`amount_usd IS NOT NULL` is value-bearing-statuses-only.** It is
+   *   equivalent to `status IN ('reported','imputed_by_publisher')` by
+   *   `price_figures_value_iff_status_check`; the other four statuses are an
+   *   absence to report, never a zero.
+   * - **`DISTINCT ON ... academic_year DESC` serves the LATEST year per cell**
+   *   (brief 0006 D15, store all / serve latest). IPEDS carries four years and
+   *   the Scorecard writes one, so "the latest year" is not one year across the
+   *   table: a literal year here would silently drop every Scorecard-only
+   *   college. The natural key `UNIQUE (college_id, price_concept,
+   *   residency_basis, arrangement, academic_year)` guarantees there is no tie
+   *   left to break, so the pick is deterministic (D59).
+   *
+   * It is a SUM of published components and nothing else — never a subtraction,
+   * never a blend, never `net_price_per_year_usd` (RFC 149; the guard scan
+   * reaches this file for exactly that reason).
+   */
+  private fun createPublishedPriceLateral(
+    tier: ResidencyBasis,
+    alias: String,
+  ): String {
+    val cells =
+      PUBLISHED_ON_CAMPUS_COMPONENTS.joinToString(",\n                ") { (concept, residency, arrangement) ->
+        "('${concept.value}', '${(residency ?: tier).value}', '${arrangement.value}')"
+      }
+    return """
+      LEFT JOIN LATERAL (
+          SELECT CASE WHEN count(*) = ${PUBLISHED_ON_CAMPUS_COMPONENTS.size} THEN sum(f.amount_usd)::INTEGER END AS total
+          FROM (
+              SELECT DISTINCT ON (pf.price_concept, pf.residency_basis, pf.arrangement)
+                     pf.amount_usd
+              FROM price_figures pf
+              WHERE pf.college_id = c.id
+                AND pf.amount_usd IS NOT NULL
+                AND (pf.price_concept, pf.residency_basis, pf.arrangement) IN (
+                $cells)
+              ORDER BY pf.price_concept, pf.residency_basis, pf.arrangement,
+                       pf.academic_year DESC
+          ) f
+      ) $alias ON TRUE
+      """.trimIndent()
+  }
+
+  /**
    * Rebuilds `college_search_index` WHOLESALE inside the caller's transaction
    * and returns the rows written — the `search-index` phase (RFC 150 D47), and
    * [rebuildNameWords] in shape and in transaction discipline.
@@ -2307,6 +2607,8 @@ object CollegesDao :
           control, is_active, is_four_year, is_degree_granting, sector,
           undergrad_enrollment_headcount, admission_rate_share,
           net_price_per_year_usd, completion_rate_150pct_4yr_share,
+          published_price_in_state_on_campus_per_year_usd,
+          published_price_out_of_state_on_campus_per_year_usd,
           test_policy, religious_affiliation, carnegie_class, carnegie_size,
           has_rotc, has_study_abroad, offers_housing, athletic_associations,
           cip_codes, subject_slugs)
@@ -2343,6 +2645,11 @@ object CollegesDao :
           c.admission_rate_share,
           c.net_price_per_year_usd,
           c.completion_rate_150pct_4yr_share,
+          -- The published-price ruler (RFC 169), summed in the two LATERALs
+          -- below. Four parts or no number, and never a subtraction: no aid can
+          -- enter this measure by construction.
+          ins.total,
+          oos.total,
           pol.slug, rel.slug, cbc.slug, csz.slug,
           ci.has_rotc, ci.has_study_abroad, ci.offers_housing,
           -- NULL is "nothing was reported", the empty array is "reported: none"
@@ -2364,6 +2671,8 @@ object CollegesDao :
       LEFT JOIN religious_affiliations       rel ON rel.code = ci.rel_affil
       LEFT JOIN carnegie_2021_basic_classes  cbc ON cbc.code = ci.carnegie_basic
       LEFT JOIN carnegie_2021_size_settings  csz ON csz.code = ci.carnegie_size
+      ${createPublishedPriceLateral(ResidencyBasis.IN_STATE, "ins")}
+      ${createPublishedPriceLateral(ResidencyBasis.OUT_OF_STATE, "oos")}
       LEFT JOIN LATERAL (
           SELECT array_agg(a.slug ORDER BY a.code) AS slugs
           FROM unnest(coalesce(ci.athletic_assoc, '{}'::smallint[])) AS ord
@@ -2387,10 +2696,43 @@ object CollegesDao :
     )
 
   /**
+   * ONE reading of the published ladder, as a CTE named [cte] over the universe
+   * column [valueColumn] — the SQL half of "one ladder, two readings".
+   *
+   * Written once and called twice, for the reason [createPublishedPriceLateral] is:
+   * the RFC's guarantee is that both stored shares are positions on ONE ladder,
+   * and two hand-copied blocks make that guarantee a fact about two pieces of
+   * text staying in step. Four things had to agree between them — the `n > 1`
+   * guard, the STRICT `<`, the `least(…, 1.0)` cap and the `numeric(5,4)` cast —
+   * and a divergence in any one of them would have moved a school's position on
+   * one tier and not the other, silently.
+   *
+   * `least()` is capped at 1.0 rather than left to the division, and the
+   * one-school corpus is guarded by `CASE WHEN n > 1` and NOT by a
+   * `nullif(n - 1, 0)`: `least()` IGNORES a NULL argument, so a NULL quotient
+   * would come back out of `least(NULL, 1.0)` as 1.0 and pin the only school in
+   * the corpus to the top of the ladder.
+   */
+  private fun createPublishedLadderShareCte(
+    cte: String,
+    valueColumn: String,
+  ): String =
+    """
+    $cte AS (
+        SELECT u.college_id,
+               (CASE WHEN s.n > 1 THEN
+                   least((SELECT count(*) FROM ladder l WHERE l.v < u.$valueColumn)::numeric
+                         / (s.n - 1), 1.0)
+                END)::numeric(5,4) AS v
+        FROM universe u CROSS JOIN ladder_size s
+        WHERE u.$valueColumn IS NOT NULL)
+    """.trimIndent()
+
+  /**
    * Statement 3 of [rebuildSearchIndex]: the percentile `UPDATE`, over the
    * DEFAULT universe only (D52).
    *
-   * The four ranks are computed INDEPENDENTLY so a row missing one input still
+   * The ranks are computed INDEPENDENTLY so a row missing one input still
    * ranks on the others, and the universe CTE joins `colleges` for
    * `sat_average_equivalent_score`, which D60 does not carry on the index: it is
    * the input to a percentile and nothing else. Rows OUTSIDE the default
@@ -2399,6 +2741,36 @@ object CollegesDao :
    * searching. The corpus is [DefaultUniverse]'s own words, not a second copy of
    * them, so it cannot drift from what a default search returns (D52).
    * `percent_rank()` is deterministic under ties (D59).
+   *
+   * The published price is the one axis with TWO stored shares and ONE ladder
+   * (RFC 169 D2). The ladder's corpus is each school's OUT-OF-STATE published
+   * on-campus total over the same default universe — one value per school, one
+   * scale — and the in-state share is that school's in-state value's place on
+   * THAT ladder, not a second `percent_rank()` over in-state values. Two ladders
+   * would mean an anchor and a candidate on different tuition tiers were
+   * compared on different scales, and `AnchoredAxis.Price` would then measure a
+   * distance between two rulers.
+   *
+   * Postgres' `percent_rank()` is `(rank - 1) / (n - 1)`, where `rank - 1` is
+   * the count of strictly smaller rows, so ONE expression serves both columns:
+   *
+   *     share(v) = least(count(corpus.value < v) / (n - 1), 1.0)
+   *
+   * evaluated at the row's own out-of-state value for one column and its
+   * in-state value for the other. For a corpus member the two definitions are
+   * identical, which a test pins against `percent_rank()` itself. `least(…, 1.0)`
+   * bounds a value ABOVE the whole corpus (a possible in-state reading only in
+   * principle, since the in-state total never exceeds the out-of-state one) so
+   * the range CHECK can never be the thing that fails a rebuild. A one-school
+   * corpus is guarded by `CASE WHEN n > 1`, NOT by a `nullif(n - 1, 0)` inside
+   * the division: `least()` IGNORES a NULL argument, so a NULL quotient would
+   * have come back out of `least(NULL, 1.0)` as 1.0 and put the only school in
+   * the corpus at the very top of the ladder.
+   *
+   * Coverage honesty is the existing rule, unchanged: the CORPUS is not
+   * restricted, only the ladder's POPULATION (`WHERE … IS NOT NULL`). A school
+   * with no published total is absent from the ladder and keeps a NULL share —
+   * dropped, counted and named by `excluded_unknown`, never substituted.
    */
   private fun rankPercentiles(session: SqlSession): Result<Int> =
     session.execute(
@@ -2406,6 +2778,8 @@ object CollegesDao :
       WITH universe AS (
           SELECT i.college_id, i.undergrad_enrollment_headcount,
                  i.admission_rate_share, i.net_price_per_year_usd,
+                 i.published_price_in_state_on_campus_per_year_usd AS published_in,
+                 i.published_price_out_of_state_on_campus_per_year_usd AS published_out,
                  c.sat_average_equivalent_score
           FROM college_search_index i
           JOIN colleges c ON c.id = i.college_id
@@ -2424,17 +2798,27 @@ object CollegesDao :
           FROM universe WHERE sat_average_equivalent_score IS NOT NULL),
       price AS (
           SELECT college_id, percent_rank() OVER (ORDER BY net_price_per_year_usd) AS v
-          FROM universe WHERE net_price_per_year_usd IS NOT NULL)
+          FROM universe WHERE net_price_per_year_usd IS NOT NULL),
+      -- ONE ladder, read twice: the out-of-state totals of the default universe.
+      ladder AS (
+          SELECT published_out AS v FROM universe WHERE published_out IS NOT NULL),
+      ladder_size AS (SELECT count(*)::numeric AS n FROM ladder),
+      ${createPublishedLadderShareCte("published_out", "published_out")},
+      ${createPublishedLadderShareCte("published_in", "published_in")}
       UPDATE college_search_index t
       SET undergrad_enrollment_percentile_share = e.v,
           admission_rate_percentile_share       = a.v,
           sat_average_percentile_share          = s.v,
-          net_price_percentile_share            = p.v
+          net_price_percentile_share            = p.v,
+          published_price_out_of_state_on_campus_ladder_share = po.v,
+          published_price_in_state_on_campus_ladder_share     = pi.v
       FROM universe u
       LEFT JOIN enrollment e ON e.college_id = u.college_id
       LEFT JOIN admission  a ON a.college_id = u.college_id
       LEFT JOIN sat        s ON s.college_id = u.college_id
       LEFT JOIN price      p ON p.college_id = u.college_id
+      LEFT JOIN published_out po ON po.college_id = u.college_id
+      LEFT JOIN published_in  pi ON pi.college_id = u.college_id
       WHERE t.college_id = u.college_id
       """.trimIndent(),
     )

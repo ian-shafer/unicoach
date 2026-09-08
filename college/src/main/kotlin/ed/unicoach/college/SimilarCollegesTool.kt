@@ -7,6 +7,7 @@ import ed.unicoach.db.models.CollegeSimilarityPage
 import ed.unicoach.db.models.CollegeSummary
 import ed.unicoach.db.models.DEFAULT_UNIVERSE_SENTENCE
 import ed.unicoach.db.models.InstitutionControl
+import ed.unicoach.db.models.PriceRuler
 import ed.unicoach.db.models.SimilarityAnchor
 import ed.unicoach.db.models.SimilarityAnchorOutcome
 import ed.unicoach.db.models.SimilarityAxis
@@ -124,14 +125,23 @@ class SimilarCollegesTool(
    * peers. Four steps and no more; every per-call decision of D65-D68 lives in
    * [createQueryPlan], and all ranking is SQL.
    */
-  suspend fun execute(input: JsonObject): JsonObject {
+  suspend fun execute(
+    input: JsonObject,
+    familyResidencyState: String?,
+  ): JsonObject {
     val unknown = input.keys - KNOWN_FIELDS
     if (unknown.isNotEmpty()) {
       return errorObject("unknown field(s): [${unknown.sorted().joinToString(", ")}]")
     }
 
+    // Resolved ONCE per call and passed down, never re-derived: the anchor read,
+    // the plan, the constraint expansion and the vocabulary parse all take THIS
+    // value, so "like Bowdoin but cheaper" compares two figures on one ladder
+    // rather than an in-state net price against a published total.
+    val ruler = PriceRuler.of(familyResidencyState)
+
     val anchor =
-      when (val resolved = findAnchor(input)) {
+      when (val resolved = findAnchor(input, ruler)) {
         is AnchorResolution.Refused -> return resolved.refusal
         is AnchorResolution.Resolved -> resolved.anchor
       }
@@ -148,7 +158,7 @@ class SimilarCollegesTool(
     }
 
     val planned =
-      when (val plan = createQueryPlan(input, anchor)) {
+      when (val plan = createQueryPlan(input, anchor, ruler)) {
         is PlanResolution.Refused -> return plan.refusal
         is PlanResolution.Planned -> plan
       }
@@ -189,7 +199,10 @@ class SimilarCollegesTool(
    * reads perfectly fluent and is entirely wrong, and the refusal costs one
    * conversational turn.
    */
-  private suspend fun findAnchor(input: JsonObject): AnchorResolution {
+  private suspend fun findAnchor(
+    input: JsonObject,
+    ruler: PriceRuler,
+  ): AnchorResolution {
     val id = optString(input, "college_id").getOrElse { return createRefusal(mapErrorReason(it)) }
     val name = optString(input, "name").getOrElse { return createRefusal(mapErrorReason(it)) }
 
@@ -206,11 +219,11 @@ class SimilarCollegesTool(
       }
 
       id != null -> {
-        findAnchorById(id)
+        findAnchorById(id, ruler)
       }
 
       name != null -> {
-        findAnchorByName(name)
+        findAnchorByName(name, ruler)
       }
 
       else -> {
@@ -220,12 +233,15 @@ class SimilarCollegesTool(
   }
 
   /** The anchor by id: the identifier another tool's result handed the model, verbatim. */
-  private suspend fun findAnchorById(id: String): AnchorResolution {
+  private suspend fun findAnchorById(
+    id: String,
+    ruler: PriceRuler,
+  ): AnchorResolution {
     val uuid =
       runCatching { UUID.fromString(id) }.getOrNull() ?: return createRefusal(
         "[college_id] must be a college identifier copied verbatim from a tool result; got [$id]",
       )
-    return loadAnchor(CollegeId(uuid), id)
+    return loadAnchor(CollegeId(uuid), id, ruler)
   }
 
   /**
@@ -240,7 +256,10 @@ class SimilarCollegesTool(
    * and `[handleFailures]` catches `Exception` around the JDBC driver, so a
    * class test here would also answer a different question from the one asked.
    */
-  private suspend fun findAnchorByName(name: String): AnchorResolution {
+  private suspend fun findAnchorByName(
+    name: String,
+    ruler: PriceRuler,
+  ): AnchorResolution {
     val candidates =
       service.searchByName(name, ANCHOR_CANDIDATES).getOrElse { error ->
         // Never a page of zero, and never "that school does not exist": an
@@ -256,7 +275,7 @@ class SimilarCollegesTool(
     if (candidates.isEmpty()) return createRefusal("no college matches the name [$name]")
 
     val chosen = getCandidate(name, candidates) ?: return createRefusal(anchorAmbiguousObject(name, candidates))
-    return loadAnchor(chosen.id, chosen.id.value.toString())
+    return loadAnchor(chosen.id, chosen.id.value.toString(), ruler)
   }
 
   /**
@@ -290,10 +309,11 @@ class SimilarCollegesTool(
   private suspend fun loadAnchor(
     id: CollegeId,
     written: String,
+    ruler: PriceRuler,
   ): AnchorResolution =
     when (
       val outcome =
-        service.findSimilarityAnchor(id).getOrElse { return createRefusal(searchFailureObject(it)) }
+        service.findSimilarityAnchor(id, ruler).getOrElse { return createRefusal(searchFailureObject(it)) }
     ) {
       is SimilarityAnchorOutcome.IndexNotBuilt -> createRefusal(INDEX_NOT_BUILT)
       is SimilarityAnchorOutcome.NoSuchCollege -> createRefusal("no college has [college_id] [$written]")
@@ -334,6 +354,7 @@ class SimilarCollegesTool(
   private fun createQueryPlan(
     input: JsonObject,
     anchor: SimilarityAnchor,
+    ruler: PriceRuler,
   ): PlanResolution {
     val requested =
       when (val selection = parseAxes(input)) {
@@ -364,7 +385,10 @@ class SimilarCollegesTool(
     val limit = written ?: DEFAULT_LIMIT
 
     val constraints =
-      when (val expanded = expandConstraints(anchor, cheaper = cheaper, easier = easier)) {
+      when (
+        val expanded =
+          expandConstraints(anchor, cheaper = cheaper, easier = easier, ruler = ruler)
+      ) {
         is ConstraintResolution.Refused -> return PlanResolution.Refused(expanded.refusal)
         is ConstraintResolution.Expanded -> expanded
       }
@@ -378,10 +402,13 @@ class SimilarCollegesTool(
       // A DIFFERENT fact from D64's, so a different kind: the anchor is
       // rankable, but nothing this call asked to rank on survived. One
       // machine-readable kind meaning two things is not machine-readable.
-      return PlanResolution.Refused(noRankableAxisObject(dropped, anchor))
+      return PlanResolution.Refused(noRankableAxisObject(dropped, anchor, ruler))
     }
 
-    val filters = vocabulary.parse(input, limit).getOrElse { return PlanResolution.Refused(errorObject(mapErrorReason(it))) }
+    val filters =
+      vocabulary
+        .parse(input, limit, ruler)
+        .getOrElse { return PlanResolution.Refused(errorObject(mapErrorReason(it))) }
     return PlanResolution.Planned(
       SimilarityQuery(
         anchor = anchor,
@@ -421,13 +448,18 @@ class SimilarCollegesTool(
     anchor: SimilarityAnchor,
     cheaper: Boolean,
     easier: Boolean,
+    ruler: PriceRuler,
   ): ConstraintResolution {
     val price =
       if (!cheaper) {
         null
       } else {
-        anchor.netPricePerYearUsd ?: return ConstraintResolution.Refused(
-          errorObject(missingFigureReason("cheaper_than_anchor", anchor.name, "an average annual net price", "cheaper")),
+        // The anchor's figure ON THE ACTIVE RULER (RFC 169). An anchor with no
+        // figure on THAT ruler is refused BY NAME -- never quietly compared on
+        // the other one, which would answer "cheaper than Bowdoin" with a
+        // different Bowdoin.
+        anchor.rulerPriceUsd ?: return ConstraintResolution.Refused(
+          errorObject(missingFigureReason("cheaper_than_anchor", anchor.name, ruler.spokenFigure(), "cheaper")),
         )
       }
     val rate =
@@ -604,6 +636,7 @@ class SimilarCollegesTool(
   private fun mapDropToSentence(
     drop: DroppedAxis,
     anchor: SimilarityAnchor,
+    ruler: PriceRuler,
   ): String =
     when (drop.reason) {
       DropReason.RelaxedByConstraint -> {
@@ -612,7 +645,7 @@ class SimilarCollegesTool(
       }
 
       DropReason.AnchorUnmeasured -> {
-        missingAxisReason(drop.axis, anchor)
+        missingAxisReason(drop.axis, anchor, ruler)
       }
     }
 
@@ -648,6 +681,7 @@ class SimilarCollegesTool(
   private fun missingAxisReason(
     axis: SimilarityAxis,
     anchor: SimilarityAnchor,
+    ruler: PriceRuler,
   ): String =
     when (axis) {
       SimilarityAxis.SIZE -> {
@@ -658,8 +692,14 @@ class SimilarCollegesTool(
         "${anchor.name}'s admission rate and SAT average are both unreported"
       }
 
+      // The ACTIVE ruler's metric, in the words the rest of the page already
+      // says it in (RFC 169). This sentence used to name the net price
+      // unconditionally, so a query ranked on the family's residency-correct
+      // PUBLISHED total was told the anchor's "average annual net price" was
+      // unreported -- a figure that query never read, on the one surface this
+      // slice exists to make honest.
       SimilarityAxis.PRICE -> {
-        "${anchor.name}'s average annual net price is unreported"
+        "${anchor.name}'s ${ruler.spokenFigure()} is unreported"
       }
 
       SimilarityAxis.SETTING -> {
@@ -723,15 +763,19 @@ class SimilarCollegesTool(
       }
       // Never silent: an axis nobody could measure is said, with its reason, on
       // every response that dropped one.
-      putAxesDropped(dropped, query.anchor)
+      putAxesDropped(dropped, query.anchor, page.priceRuler)
       putJsonArray("constraints_used") {
         listConstraintSentences(query).forEach { add(it) }
       }
       putJsonArray("colleges") {
-        page.matches.forEach { add(similarObject(it)) }
+        page.matches.forEach { add(similarObject(it, page.priceRuler)) }
       }
       put("total_candidates", page.totalCandidates)
       putExcludedUnknown(page.excludedUnknown)
+      // WHICH price ranked this peer list, and what is in it (RFC 169 D1) --
+      // the same object `search_colleges` carries, because two tools that
+      // return "a college" must describe it the same way.
+      putPriceRuler(page.priceRuler)
       putSourceYears(page.sourceYears)
     }
 
@@ -743,13 +787,14 @@ class SimilarCollegesTool(
   private fun JsonObjectBuilder.putAxesDropped(
     dropped: List<DroppedAxis>,
     anchor: SimilarityAnchor,
+    ruler: PriceRuler,
   ) {
     putJsonArray("axes_dropped") {
       dropped.forEach { drop ->
         add(
           buildJsonObject {
             put("axis", drop.axis.word)
-            put("reason", mapDropToSentence(drop, anchor))
+            put("reason", mapDropToSentence(drop, anchor, ruler))
           },
         )
       }
@@ -773,7 +818,13 @@ class SimilarCollegesTool(
       // it came from the anchor or from the caller.
       addAll(vocabulary.listConstraintSentences(query.filters.copy(control = null)))
       query.cheaperThanUsd?.let { price ->
-        add("average annual net price below ${mapUsdToSpoken(price)} (${query.anchor.name}'s own net price)")
+        // Said back on the ACTIVE ruler, with the figure grouped, so a reader
+        // knows WHICH price the peers had to beat and whose it was (RFC 169).
+        val ruler = query.filters.priceRuler
+        add(
+          "${ruler.spokenFigure()} below ${mapUsdToSpoken(price)} " +
+            "(${query.anchor.name}'s own ${ruler.spokenFigure()})",
+        )
       }
       query.easierToAdmitThanShare?.let { rate ->
         add("admission rate above ${mapShareToSpokenPercent(rate)} (${query.anchor.name}'s own admission rate)")
@@ -860,9 +911,12 @@ class SimilarCollegesTool(
    * two facts that make this tool's answer readable — how far it sits from the
    * anchor, and which axes that number was computed over.
    */
-  private fun similarObject(match: SimilarityMatch): JsonObject =
+  private fun similarObject(
+    match: SimilarityMatch,
+    ruler: PriceRuler,
+  ): JsonObject =
     buildJsonObject {
-      matchObject(match.match, vocabulary).forEach { (key, value) -> put(key, value) }
+      matchObject(match.match, vocabulary, ruler).forEach { (key, value) -> put(key, value) }
       put("distance", (match.distance * DISTANCE_SCALE).roundToInt() / DISTANCE_SCALE)
       putJsonArray(AXES_SCORED_KEY) {
         match.axesScored.forEach { add(it.word) }
@@ -930,15 +984,19 @@ class SimilarCollegesTool(
   private fun noRankableAxisObject(
     dropped: List<DroppedAxis>,
     anchor: SimilarityAnchor,
+    ruler: PriceRuler,
   ): JsonObject =
     buildJsonObject {
       putJsonObject("error") {
         put("kind", NO_RANKABLE_AXIS)
-        put("detail", "no axis is left to rank on: " + dropped.joinToString("; ") { mapDropToSentence(it, anchor) })
+        put(
+          "detail",
+          "no axis is left to rank on: " + dropped.joinToString("; ") { mapDropToSentence(it, anchor, ruler) },
+        )
         // The drops ARE the answer here, so they travel as the SAME
         // `{axis, reason}` rows a successful response reports rather than as a
         // semicolon blob whose axis words a reader would have to re-parse.
-        putAxesDropped(dropped, anchor)
+        putAxesDropped(dropped, anchor, ruler)
       }
     }
 
