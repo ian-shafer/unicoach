@@ -21,10 +21,14 @@ resolver, so there is no CDS special case. An unmapped Scorecard variable is a
 located, typed fault, and the closure test derives its key space from the
 loader's own registry. **No migration, no column, no seeded table, no prompt
 version** — this is a code-level correction with no rollback knob. **Next free
-RFC 181** (`rfc/` tops out at 179; `pipeline/rfc-178` and `pipeline/rfc-180` are
-live runs); **next free migration 0095** (`db/schema` tops out at `0094`, landed
-with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
-`soft/04/two-more-ingest-refusals`, both READY.
+RFC 184** (`rfc/` tops out at 180; `pipeline/rfc-178`, `-181`, `-182` and `-183`
+are live runs — recompute this, never copy it); **next free migration 0095**
+(`db/schema` tops out at `0094`, landed with RFC 176). Brief 0008 has two slices
+left, `soft/03/the-year-we-cite` and `soft/04/two-more-ingest-refusals`, both
+READY. **Brief 0006 is closed**: `shape/08/drop-the-publisher-shape` landed as
+RFC 176 (2026-09-09, migration 0094) and the publisher money columns are gone
+from `colleges` and `colleges_versions`; only the deferred
+`shape/09/exchange-participation` remains.
 
 ## TL;DR — next steps, most important first
 
@@ -195,14 +199,29 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
    149/151/152/157 honesty rules did not change; they now read stored rows
    instead of repairing publisher shape at read time. Coach prompt **v19**,
    rollback `COACHING_SYSTEM_PROMPT_VERSION=v18`; migration **0086**. `colleges`
-   keeps its columns until `shape/08`. Review found ten blockers, all of them
-   wrong money statements: the sharpest is that RFC 162 landed mid-run with a
-   second `avg_net_price` series, and a measure-only key would have served that
+   kept its columns until `shape/08`, which dropped all eighteen of them (RFC
+   176, 2026-09-09). Review found ten blockers, all of them wrong money
+   statements: the sharpest is that RFC 162 landed mid-run with a second
+   `avg_net_price` series, and a measure-only key would have served that
    grant-aided figure to every family as "the overall average net price" — no
    test caught it, because the fixtures wrote at the reader's own addresses. A
    cross-module address-contract test now closes that hole.
 
-8. **UNICOACH NOW KNOWS WHO AN AID NUMBER IS ABOUT (RFC 162,
+8. **ONE SOURCE FOR EVERY MONEY NUMBER (RFC 176,
+   `shape/08/drop-the-publisher-shape`, 2026-09-09).** No door, by design — this
+   is the slice that is invisible when it is right. `colleges` and
+   `colleges_versions` no longer carry money at all: all eighteen
+   publisher-shaped columns are dropped (migration 0094), and every money figure
+   the product speaks comes from `price_figures` / `cohort_money_stats`. **The
+   one thing a family can notice**: a search result's per-band net prices and
+   Pell share now agree with the same school's cost answer. They could differ
+   before, because the search payload read the Scorecard's copy of a figure
+   while the cost answer read the publisher's own newer one (IPEDS SFA writes
+   both at the same address). There is no rollback knob and no prompt version —
+   the removal is a migration, and the pre-drop database dump kept outside the
+   repo is the only route back to the dropped values.
+
+9. **UNICOACH NOW KNOWS WHO AN AID NUMBER IS ABOUT (RFC 162,
    `shape/03/ipeds-sfa`, 2026-09-05).** IPEDS SFA fills the canonical store with
    aid: net price by income band, Pell share and **average award** (a figure the
    Scorecard does not publish), grant mix by source, and loan share and average.
@@ -222,27 +241,27 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
    stake), and `not_reported_by_institution` cannot be filled from SFA at all
    because NCES imputes instead of blanking.
 
-9. **THE iOS COLLEGE LIST NOW SAYS WHAT IT MEANS ON THE WIRE (RFC 168,
-   `profile/03/list-screen-parity`, 2026-09-05).** The client's college-list
-   PATCH carries a three-state `LivingPlanUpdate` — keep / set / clear — with a
-   hand-written encoder: keep sends neither wire key, so a Save from the list
-   screen cannot destroy a per-college living plan the coach set in chat, and
-   clear sends `livingPlanClear: true`, which the app previously could not
-   express at all. Sending both keys is unrepresentable in the type, so the
-   server's 400 cannot be reached. `reasons` keeps its opposite, deliberate rule
-   — omission clears it, which is the shipped Clear button (RFC 164 D4) — and
-   that is asserted in all three living-plan states. **Nothing user-visible on
-   its own**: brief 0007 D3 defers the per-college living-plan picker, so there
-   is no new control and no new screen; RFC 164 already stopped the data loss
-   server-side on deploy. What this adds is that the contract is now written
-   down in Swift and pinned by a server test that sends the Swift encoder's
-   exact bytes. The slice's other deliverable was an audit of the iOS list
-   screen against everything the chat tool can do: nine gaps, **reported not
-   fixed**, now backlog lines B1-B9 in brief 0007's ledger — including that an
-   unknown `status` would black out the whole list for every shipped build, and
-   that **reorder exists on no surface** (no column, no field, no route).
+10. **THE iOS COLLEGE LIST NOW SAYS WHAT IT MEANS ON THE WIRE (RFC 168,
+    `profile/03/list-screen-parity`, 2026-09-05).** The client's college-list
+    PATCH carries a three-state `LivingPlanUpdate` — keep / set / clear — with a
+    hand-written encoder: keep sends neither wire key, so a Save from the list
+    screen cannot destroy a per-college living plan the coach set in chat, and
+    clear sends `livingPlanClear: true`, which the app previously could not
+    express at all. Sending both keys is unrepresentable in the type, so the
+    server's 400 cannot be reached. `reasons` keeps its opposite, deliberate
+    rule — omission clears it, which is the shipped Clear button (RFC 164 D4) —
+    and that is asserted in all three living-plan states. **Nothing user-visible
+    on its own**: brief 0007 D3 defers the per-college living-plan picker, so
+    there is no new control and no new screen; RFC 164 already stopped the data
+    loss server-side on deploy. What this adds is that the contract is now
+    written down in Swift and pinned by a server test that sends the Swift
+    encoder's exact bytes. The slice's other deliverable was an audit of the iOS
+    list screen against everything the chat tool can do: nine gaps, **reported
+    not fixed**, now backlog lines B1-B9 in brief 0007's ledger — including that
+    an unknown `status` would black out the whole list for every shipped build,
+    and that **reorder exists on no surface** (no column, no field, no route).
 
-10. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
+11. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
     `profile/01/served-vocabulary`, 2026-09-05).** `GET /api/v1/vocabularies` is
     a registry, not a money-profile route: one map of vocabulary name to
     entries, every entry `value` + `label`, extras allowed and nothing fewer.
@@ -259,7 +278,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     were demoted to an offline fallback pinned to the server by tests, which is
     what brief 0007 D6 asked for.
 
-11. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
+12. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
     2026-09-05).** IPEDS's published-charges file fills the canonical store
     ahead of the College Scorecard, and it fixes a wrong number we have been
     serving: the Scorecard collapses in-district into "in", so a community
@@ -281,7 +300,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     institutions, not ~6,100, because program-year reporters live in a different
     file, so the Scorecard stays the only source for the rest.
 
-12. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
+13. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
     2026-09-04).** Brief 0006's substrate: a price carries its residency, its
     living arrangement and its academic year; a statistic carries the population
     it describes; and an absence carries a reason instead of being an
@@ -289,11 +308,13 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     become projections of stored rows rather than a growing compensation stack.
     The payoff **arrived** at `shape/04/cost-answers-from-canonical` (RFC 166,
     2026-09-05): those four RFCs are now projections of these rows, and every
-    cost answer a family reads comes from them. What is left in the cutover is
-    `shape/05/search-on-your-price`, the other reader, and then `shape/08`,
-    which drops the publisher-shaped columns.
+    cost answer a family reads comes from them. The cutover is **complete**:
+    `shape/05/search-on-your-price` (RFC 169) moved the other reader, and
+    `shape/08/drop-the-publisher-shape` (RFC 176, migration 0094) dropped the
+    publisher-shaped columns from `colleges` and `colleges_versions`. There is
+    no second place a money figure can come from any more.
 
-13. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
+14. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
     a moment it chooses (RFC 160, `first-value/06/invite-your-parent`,
     2026-09-03).** Brief 0001's wedge is closed end to end. Until now the report
     existed but the coach could only produce a link when the student thought to
@@ -310,7 +331,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     (minted, repeat, reissued, revoked, opted out), which is both the first read
     on share-rate and the substrate Beat 2's parent-account claim path needs.
 
-14. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
+15. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
     questions with cited federal facts (RFC 159, `shape/06/pell-and-loans`,
     2026-09-03).** A family can ask "can we get a Pell grant?" in session one —
     no college list, no profile — and get an honest answer naming the
@@ -324,7 +345,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     The dependency question is invited in flow and is fully declinable; both
     loan tables are served either way.
 
-15. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian,
+16. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian,
     2026-09-02, defaults, no amendments); WAVE 1 NOW HALF DONE.** The standing
     mistake is named: every money figure is stored in its publisher's shape, and
     RFCs 149/151/152/157 are a growing read-time compensation stack. Approved
@@ -342,7 +363,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     PAUSED by 0006 D11** — its question IS `shape/05/search-on-your-price`,
     decided at D14. Spec: `product/0006-money-in-unicoach-shape/spec.md`.
 
-16. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
+17. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
     IT BY USING THE PRODUCT. Fixed by RFC 157** (`main@29242880` + `7c7c56af`,
     2026-09-02). The Scorecard's published cost of attendance (`COSTT4_A`) and
     its net price (`NPT4` family) are figures for students paying the
@@ -366,7 +387,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     slice, not a fix to fold into the next run), and `first-value/06`'s spec
     drift.**
 
-17. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
+18. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
     LANDED as RFC 155 (`main@47cf9d62` + `6777c7c7`, 2026-09-01), so brief
     0001's Beat 1 is ONE SLICE from complete.** A parent no longer needs an
     account, a login, or the app. The student asks the coach to share,
@@ -389,7 +410,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     production; unset, the feature stays dark, declines honestly, and warns once
     at boot.
 
-18. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
+19. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
     LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
     every slice in the brief.** The coach now leads with the one way of living
     the family said they plan, instead of offering three and letting them pick —
@@ -409,7 +430,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable
     — the brief is done.**
 
-19. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
+20. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
     (RFCs 139, 144, 147, 150, 154 and 153, `search/04/similar-colleges`,
     2026-09-01); only `search/06/unattended-refresh` is left, and it is DEFERRED
     by intent.** A **`similar_colleges`** chat tool decides "similar" per call
@@ -425,7 +446,7 @@ with RFC 176). Brief 0008 has two slices left, `soft/03/the-year-we-cite` and
     debt it leaves is in the Backlog: the `NewCollege` test fixture is a 5th
     copy and the shared helper is in the wrong source set, parked twice over.
 
-20. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
+21. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
     The admissions layer is user-visible: the coach can answer, with citations,
     what a school weighs in admissions, when its rounds close, and how it
     actually behaves on merit aid — and merit rides along inside cost answers.
@@ -1571,21 +1592,25 @@ written. Readiness is a fact about the repo at this second, so it is computed,
 never remembered. What stays here is what only a person can write: the bet, the
 user manual, priorities, and the backlog.
 
-**One structural note, because it is an edge and not a readiness claim (brief
-0006, updated 2026-09-08).** `shape/05/search-on-your-price` LANDED as RFC 169
-and leaves the board. With `shape/04/cost-answers-from-canonical` (RFC 166)
-already landed, **both `BLOCKS` edges on `shape/08/drop-the-publisher-shape` are
-now satisfied**, so the board will print it READY. Read that as "no dependency
-stops you", not as "the spec is right": `shape/08`'s text was written before RFC
-169 and has drifted from the code. The search-index copy it says to shrink is
-now **four columns wider** (migration 0091), `PriceRuler`/`PriceRulerSql` in
-`:db` are **new readers** of those published columns, and
-`IncomeBand.netPriceFor(College)` — which `shape/04` recorded as surviving only
-"for `shape/05` to retire" — is still in the tree, so the audit-to-zero-readers
-list is no longer the list `shape/08` names. **`shape/08` wants a /chart re-spec
-pass before it is dispatched.** `shape/07/need-and-forms` split at RFC 170's
-design gate into `shape/07a` and `shape/07b/borrowing`, and **both have LANDED**
-(RFCs 170 and 175), so neither is board material any longer.
+**Brief 0006 leaves the board entirely (2026-09-09).**
+`shape/08/drop-the-publisher-shape` LANDED as RFC 176 and was the last startable
+slice in the brief. `shape/09/exchange-participation` is DEFERRED by intent, not
+blocked, so nothing in brief 0006 is board material. It blocked nothing outside
+itself, so its exit unblocks nothing.
+
+Worth keeping, because it is the lesson and not the status: this file said for
+four days that **`shape/08` wants a /chart re-spec pass before it is
+dispatched** — its text predated RFC 169, the search-index copy it named had
+grown four columns wider, and the audit-to-zero-readers list was no longer the
+list the slice named. The re-spec never happened, and the slice ran anyway. That
+was the right call for a reason worth writing down: the drift was **in the
+slice's premise, not in its intent**. A current-tree audit run at design time
+found reader count was not zero, the run cut those readers first and proved the
+suite green on the new source before dropping anything, and the RFC recorded the
+corrected premise. A slice whose _what_ is still right and whose _facts_ have
+moved wants an audit inside /ship, not a trip back to /chart — a re-spec would
+have re-derived the same list from the same tree and delayed the work by a day.
+Keep the /chart pass for slices whose INTENT is in doubt.
 
 **Brief 0008 is half landed (2026-09-09).** `soft/02/assurance-tiers` LANDED as
 RFC 179 and leaves the board, as `soft/01/one-hedge-seam` (RFC 177) did the day

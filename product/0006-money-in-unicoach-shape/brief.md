@@ -519,6 +519,51 @@ failures**, 1126 shell assertions. Both readers of the publisher-shaped money
 columns are now landed, so the cutover slice's two BLOCKS edges are satisfied;
 its spec text predates this RFC and wants a /chart pass first.
 
+shape/08/drop-the-publisher-shape LANDED as RFC 176 (main@b9f1b031 + 10d9774c,
+2026-09-09, migration 0094) — the cutover closes: `colleges` and
+`colleges_versions` end as identity, location and codes, and all EIGHTEEN
+publisher-shaped money columns are dropped from BOTH tables, with
+`log_college_version()` restated in the same transaction and the cutoff recorded
+in a table comment. Money lives only in `price_figures` / `cohort_money_stats`.
+The slice's own premise was wrong and the run corrected it rather than following
+it: an audit found reader count was NOT zero — nine columns were already dead,
+but nine still reached a family through the `search` / `similar_colleges`
+payload (the five band net prices, earnings, debt, Pell share, and net price via
+the index copy). So the readers were cut to canonical FIRST, with the columns
+still present and still written, and the suite went green on the new source
+before anything was dropped — which is what makes "the same numbers" evidence
+rather than hope. **Not zero behaviour change, and the exception is named
+(D12)**: IPEDS SFA writes the five band net prices and `pell_share` at the
+Scorecard's own addresses at newer vintages, so the payload now serves the
+publisher's own figure where the column held the Scorecard's copy of it — the
+figure every other money surface has served since RFC 166. One school can no
+longer quote one band price in a cost answer and a different one in a search
+result. **Ian's gate flipped D5** from freezing a money tail on
+`colleges_versions` to dropping it there too, against a measurement taken first:
+6,338 version rows, and a v1-vs-v2 join over all 16 price columns returns ZERO
+differing rows — there was no money history, only a snapshot stored twice. A
+pre-drop `pg_dump` is kept outside the repo. **Ian also caught the vintage
+question at the gate**, which turned out to be bigger than the year: the
+upsert's content-change predicate loses 18 of its 32 columns, so a money-only
+snapshot no longer bumps `colleges.version`, writes no version row and does not
+advance `updated_at` — three effects, none with a reader that cares, all now
+stated (D11), and the dead `CollegeCostProfile.ingestYear` deleted rather than
+re-sourced. Review over 36 lenses in four sequential tiers found **no defect in
+what the code does and several in what protects it**: the canonical read key
+pinned three of the four columns that separate two rows of one cell, so with two
+residency scopes at one address the planner chose the figure (now ordered by the
+scope matching the college's control, the rule both fills write by); the
+zero-reader proof that migration 0094 cites swept 6 of 17 modules and keyed its
+exemptions by BASENAME; "one address per measure" was a comment, never
+evaluated, one edit away from repeating RFC 166's blocker; and SQL `round()`
+disagreed with the cost surface's half-up rounding on the negative net prices
+this data admits by design. The cohort address now has ONE home in `:db` — which
+made the run's own cross-module contract test tautological, so it was deleted
+deliberately, the falsifier and the two-series tests carrying the real
+protection. Gate: **3,012 tests, 0 failures**, 1,188 shell assertions. **Brief
+0006's cutover is complete**; `shape/09/exchange-participation` remains DEFERRED
+by intent.
+
 ## Gate 1 outcome (2026-09-02)
 
 Ian, verbatim: **"I approve the gate"** — D1-D11 approved as defaulted, no
