@@ -29,6 +29,27 @@ _(one line per landed slice: ID, RFC, SHAs, one-line what.)_
        aid-policy constants and the report's merit/borrowing CDS sentence state
        CORPUS COVERAGE, not a figure's publisher.
 
+    soft/02/assurance-tiers LANDED as RFC 179 (main@922e33c6 + 55b829f3,
+       2026-09-09) — a figure now says what KIND of number it is:
+       AssuranceTier (ADMINISTRATIVE_RECORD / MANDATORY_SURVEY /
+       VOLUNTARY_SELF_REPORT) derived as a pure function of
+       (MoneySource, source_variable), read as a pair with FigureStatus. No
+       migration, no column, no seeded table, no prompt version. source_variable
+       now travels to the copy seam, a SHOWN figure gets a note at last (so the
+       tier is visible beside a dollar amount, not only on blank cells), and the
+       Common Data Set's own read path calls the same resolver. figure_statuses[]
+       gains assurance + assurance_statement. An unmapped Scorecard variable is a
+       located typed fault, and the closure test derives the key space from the
+       loader's own registry. Four spec corrections returned to /chart: H.208 is
+       a headcount and cannot reach the seam (the softest sentence pins to
+       H.209/H.211), DEBT_MDN is not a column this loader reads, DISCOVER item 9
+       is stale (RFC 175 landed the H4/H5 facts), and no Scorecard data
+       dictionary was committed — RFC 179 commits the 24 rows we use as
+       db/seed/scorecard/dictionary-variable-sources.csv. Declined and open: a
+       PublishedCell value type for the (source, source_variable) pair, asked for
+       by three separate review lenses; it crosses four modules and wants its own
+       slice.
+
 ## The question
 
 The canonical money store (RFC 158) already models **why a figure is absent**:
