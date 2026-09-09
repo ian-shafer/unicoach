@@ -7,27 +7,50 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-08 — **RFC 169, `shape/05/search-on-your-price`**
-(`main@8aaaa49b` + `d5610753`): search now ranks, filters and sorts on **one
-price ruler** — with the family's state on file, each school's **published
-on-campus total at that family's own tuition tier**, with the result saying that
-aid is not in it; with no state on file, the net price as before, its basis in
-the metric name on the wire. The two rulers can never mix. Migration 0091 adds
-**four nullable columns** to `college_search_index` and extends the named
-percentile CHECK from four clauses to six; it adds **no index** — every
-published-price read is a `CASE` over two tier columns, which no single-column
-btree serves. D19 rode in at zero DDL cost: a school with no separate
-in-district price is ranked AND labelled, never silently treated as in-state.
-Coach prompt **v22** (migration 0092); rollback =
-`COACHING_SYSTEM_PROMPT_VERSION=v21`. **Next free RFC 176; next free migration
-0093.** With `shape/05` landed, both readers named by
-`shape/08/drop-the-publisher-shape` are LANDED — `shape/08` is the last
-unstarted slice of brief 0006's cutover, and its spec text needs a /chart pass
-before it runs (see the sequencing note).
+Updated: 2026-09-08 — **RFC 177, `soft/01/one-hedge-seam`** (`main@3c010785` +
+`ebaef69e`): a money figure's publisher is now **derived per figure**, not typed
+by hand at each site. The winning `MoneySource` was read out of the canonical
+store and dropped two lines later, so nothing above the domain layer could know
+who published a number — which is why chat and the parent-facing report both
+credited **IPEDS figures to the College Scorecard**, contradicting
+`ORDERED_SOURCES`. `MoneySourceCopy` is now the only English name of a
+publisher, `FigureStatusCopy` names it exactly where the sentence is about the
+publisher's act, and a publisher is named only when it published a figure a
+family can actually see. `CostSources.SCORECARD_ATTRIBUTION` is deleted. Coach
+prompt **v23** (migration 0093) stops naming the Scorecard by hand; rollback =
+`COACHING_SYSTEM_PROMPT_VERSION=v22`. **No new table.** **Next free RFC 179;
+next free migration 0094** — note `pipeline/rfc-176` also holds a `0093`
+(`drop-publisher-money-columns`) and must renumber, since 177 landed first.
+`soft/02/assurance-tiers` is unblocked: its only reader now exists.
 
 ## TL;DR — next steps, most important first
 
-1. **SEARCH NOW RANKS ON THE PRICE YOU WOULD ACTUALLY PAY (RFC 169,
+1. **A FIGURE'S PUBLISHER IS NOW DERIVED, AND THE LIE IS GONE (RFC 177,
+   `soft/01/one-hedge-seam`, 2026-09-08).** Until today unicoach told families
+   that an IPEDS figure came from the U.S. Department of Education College
+   Scorecard. One hand-typed constant said so in chat and on the Family Cost
+   Report, and the coach prompt said it in prose, while
+   `CanonicalMoneyLoader.ORDERED_SOURCES` — the code that actually decides which
+   of two conflicting prices a family sees — puts **IPEDS first**. The cause was
+   structural, not a typo: the winning `MoneySource` was read out of the store
+   and **dropped two lines later**, so no file under `service/` or `public-web/`
+   could know who published a number, and every surface that wanted to say it
+   typed a name by hand. The publisher now travels to **one seam** and the
+   sentence is derived there. `MoneySourceCopy` holds the only English name of a
+   publisher; `FigureStatusCopy` names it exactly where the sentence is about
+   the publisher's ACT — "the Scorecard withholds this figure to protect
+   students' privacy", "IPEDS estimated this for the school" — and leaves the
+   school's own silence and our own gap unattributed, because naming a publisher
+   there would misattribute the gap. A publisher is named only when it published
+   a figure a family can actually SEE: a suppressed or value-free row no longer
+   puts a publisher's name in the page's sources sentence. Adding a fifth
+   publisher now fails to compile at the seam rather than shipping a silently
+   wrong sentence. Coach prompt **v23** stops naming the Scorecard by hand and
+   says "attribute each figure to the source the tool names beside it"; rollback
+   = **v22**. The door is the existing one — any family asking what a school
+   costs, and any parent opening a shared Family Cost Report.
+
+2. **SEARCH NOW RANKS ON THE PRICE YOU WOULD ACTUALLY PAY (RFC 169,
    `shape/05/search-on-your-price`, 2026-09-08).** Until now every family was
    ranked on ONE price — the Scorecard net price, which at a public school is
    the **in-state** figure after federal aid — so a family in Washington asking
@@ -54,7 +77,7 @@ before it runs (see the sequencing note).
    named under `excluded_unknown`, never substituted. Migration 0091 is four
    nullable index columns and **no new index**. Rollback = coach prompt v21.
 
-2. **A FAMILY CAN NOW SEE WHAT GRADUATES HERE ACTUALLY BORROWED, INCLUDING
+3. **A FAMILY CAN NOW SEE WHAT GRADUATES HERE ACTUALLY BORROWED, INCLUDING
    PRIVATE LOANS (RFC 175, `shape/07b/borrowing`, 2026-09-08).** Until now the
    only debt sentence unicoach said was the Scorecard's, which counts **federal
    loans only** — the tidier half. Ask "do students at Amherst take out loans?"
@@ -77,7 +100,7 @@ before it runs (see the sequencing note).
    ~90 with no filing at all hear "we don't hold a Common Data Set for this
    school", never "students here don't borrow". Rollback = coach prompt v20.
 
-3. **A FAMILY CAN NOW FIX ITS OWN MONEY FACTS ON A SCREEN (RFC 171,
+4. **A FAMILY CAN NOW FIX ITS OWN MONEY FACTS ON A SCREEN (RFC 171,
    `profile/02/your-details-screen`, 2026-09-05). BRIEF 0007 IS COMPLETE.** The
    door is a new slide-over menu row **"Your details"**, above "My colleges",
    which pushes a screen carrying the household income band and the state or
@@ -103,7 +126,7 @@ before it runs (see the sequencing note).
    and **`dependency` is still chat-only**, on neither REST verb, so no screen
    can reach the money profile's fourth tri-state.
 
-4. **THE COACH CAN NOW ANSWER "DO WE HAVE TO DO THE CSS PROFILE?" (RFC 170,
+5. **THE COACH CAN NOW ANSWER "DO WE HAVE TO DO THE CSS PROFILE?" (RFC 170,
    `shape/07a/need-and-forms`, 2026-09-05).** Ask what forms a school requires,
    or whether it meets full financial need, and the answer comes from that
    school's own Common Data Set with the year and a citation. Two honesty rules
@@ -117,7 +140,7 @@ before it runs (see the sequencing note).
    the academic year is a typed start year instead of a `'YYYY-YY'` string with
    an `'undated'` sentinel.
 
-5. **A FAMILY CAN NOW SEE THE CANONICAL MONEY STORE (RFC 166,
+6. **A FAMILY CAN NOW SEE THE CANONICAL MONEY STORE (RFC 166,
    `shape/04/cost-answers-from-canonical`, 2026-09-05).** This is the first
    slice of brief 0006 a person can SEE. Ask the coach — or read a shared Family
    Cost Report — what a school costs, and the answer is built from
@@ -140,7 +163,7 @@ before it runs (see the sequencing note).
    test caught it, because the fixtures wrote at the reader's own addresses. A
    cross-module address-contract test now closes that hole.
 
-6. **UNICOACH NOW KNOWS WHO AN AID NUMBER IS ABOUT (RFC 162,
+7. **UNICOACH NOW KNOWS WHO AN AID NUMBER IS ABOUT (RFC 162,
    `shape/03/ipeds-sfa`, 2026-09-05).** IPEDS SFA fills the canonical store with
    aid: net price by income band, Pell share and **average award** (a figure the
    Scorecard does not publish), grant mix by source, and loan share and average.
@@ -160,7 +183,7 @@ before it runs (see the sequencing note).
    stake), and `not_reported_by_institution` cannot be filled from SFA at all
    because NCES imputes instead of blanking.
 
-7. **THE iOS COLLEGE LIST NOW SAYS WHAT IT MEANS ON THE WIRE (RFC 168,
+8. **THE iOS COLLEGE LIST NOW SAYS WHAT IT MEANS ON THE WIRE (RFC 168,
    `profile/03/list-screen-parity`, 2026-09-05).** The client's college-list
    PATCH carries a three-state `LivingPlanUpdate` — keep / set / clear — with a
    hand-written encoder: keep sends neither wire key, so a Save from the list
@@ -180,7 +203,7 @@ before it runs (see the sequencing note).
    unknown `status` would black out the whole list for every shipped build, and
    that **reorder exists on no surface** (no column, no field, no route).
 
-8. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
+9. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
    `profile/01/served-vocabulary`, 2026-09-05).** `GET /api/v1/vocabularies` is
    a registry, not a money-profile route: one map of vocabulary name to entries,
    every entry `value` + `label`, extras allowed and nothing fewer. That shape
@@ -197,29 +220,29 @@ before it runs (see the sequencing note).
    demoted to an offline fallback pinned to the server by tests, which is what
    brief 0007 D6 asked for.
 
-9. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
-   2026-09-05).** IPEDS's published-charges file fills the canonical store ahead
-   of the College Scorecard, and it fixes a wrong number we have been serving:
-   the Scorecard collapses in-district into "in", so a community college's
-   in-state price was its in-district price. Measured over the whole file the
-   two sources agree on five of six shared figures at 100.0%, disagree on
-   in-state tuition-and-fees for **269 institutions**, and **every single
-   disagreement is exactly the in-district figure**. Fees also split from
-   tuition, and four academic years land per file. **These rows became visible
-   to families at `shape/04` (RFC 166, 2026-09-05)**, which serves the
-   in-district tier as its own tier. **Two spec facts were corrected against the
-   pinned codebook, and both are now resolved**: `CHG7/8AY` is off campus
-   **NOT** with family, so **no source anywhere publishes with-family food and
-   housing** — **Ian decided (D17, 2026-09-05) to treat living at home as $0
-   food-and-housing and say so in words**, on the grounds that eating at home is
-   negligible and is not a new expense caused by enrolling, which is what a
-   cost-of-attendance figure measures. `shape/04` (RFC 166) now shows that
-   complete with-family total with the assumption stated as ours, never a silent
-   zero and never a blank blamed on the school. IC_AY also covers 3,825
-   institutions, not ~6,100, because program-year reporters live in a different
-   file, so the Scorecard stays the only source for the rest.
+10. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
+    2026-09-05).** IPEDS's published-charges file fills the canonical store
+    ahead of the College Scorecard, and it fixes a wrong number we have been
+    serving: the Scorecard collapses in-district into "in", so a community
+    college's in-state price was its in-district price. Measured over the whole
+    file the two sources agree on five of six shared figures at 100.0%, disagree
+    on in-state tuition-and-fees for **269 institutions**, and **every single
+    disagreement is exactly the in-district figure**. Fees also split from
+    tuition, and four academic years land per file. **These rows became visible
+    to families at `shape/04` (RFC 166, 2026-09-05)**, which serves the
+    in-district tier as its own tier. **Two spec facts were corrected against
+    the pinned codebook, and both are now resolved**: `CHG7/8AY` is off campus
+    **NOT** with family, so **no source anywhere publishes with-family food and
+    housing** — **Ian decided (D17, 2026-09-05) to treat living at home as $0
+    food-and-housing and say so in words**, on the grounds that eating at home
+    is negligible and is not a new expense caused by enrolling, which is what a
+    cost-of-attendance figure measures. `shape/04` (RFC 166) now shows that
+    complete with-family total with the assumption stated as ours, never a
+    silent zero and never a blank blamed on the school. IC_AY also covers 3,825
+    institutions, not ~6,100, because program-year reporters live in a different
+    file, so the Scorecard stays the only source for the rest.
 
-10. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
+11. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
     2026-09-04).** Brief 0006's substrate: a price carries its residency, its
     living arrangement and its academic year; a statistic carries the population
     it describes; and an absence carries a reason instead of being an
@@ -231,7 +254,7 @@ before it runs (see the sequencing note).
     `shape/05/search-on-your-price`, the other reader, and then `shape/08`,
     which drops the publisher-shaped columns.
 
-11. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
+12. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
     a moment it chooses (RFC 160, `first-value/06/invite-your-parent`,
     2026-09-03).** Brief 0001's wedge is closed end to end. Until now the report
     existed but the coach could only produce a link when the student thought to
@@ -248,7 +271,7 @@ before it runs (see the sequencing note).
     (minted, repeat, reissued, revoked, opted out), which is both the first read
     on share-rate and the substrate Beat 2's parent-account claim path needs.
 
-12. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
+13. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
     questions with cited federal facts (RFC 159, `shape/06/pell-and-loans`,
     2026-09-03).** A family can ask "can we get a Pell grant?" in session one —
     no college list, no profile — and get an honest answer naming the
@@ -262,7 +285,7 @@ before it runs (see the sequencing note).
     The dependency question is invited in flow and is fully declinable; both
     loan tables are served either way.
 
-13. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian,
+14. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian,
     2026-09-02, defaults, no amendments); WAVE 1 NOW HALF DONE.** The standing
     mistake is named: every money figure is stored in its publisher's shape, and
     RFCs 149/151/152/157 are a growing read-time compensation stack. Approved
@@ -280,7 +303,7 @@ before it runs (see the sequencing note).
     PAUSED by 0006 D11** — its question IS `shape/05/search-on-your-price`,
     decided at D14. Spec: `product/0006-money-in-unicoach-shape/spec.md`.
 
-14. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
+15. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
     IT BY USING THE PRODUCT. Fixed by RFC 157** (`main@29242880` + `7c7c56af`,
     2026-09-02). The Scorecard's published cost of attendance (`COSTT4_A`) and
     its net price (`NPT4` family) are figures for students paying the
@@ -304,7 +327,7 @@ before it runs (see the sequencing note).
     slice, not a fix to fold into the next run), and `first-value/06`'s spec
     drift.**
 
-15. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
+16. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
     LANDED as RFC 155 (`main@47cf9d62` + `6777c7c7`, 2026-09-01), so brief
     0001's Beat 1 is ONE SLICE from complete.** A parent no longer needs an
     account, a login, or the app. The student asks the coach to share,
@@ -327,7 +350,7 @@ before it runs (see the sequencing note).
     production; unset, the feature stays dark, declines honestly, and warns once
     at boot.
 
-16. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
+17. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
     LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
     every slice in the brief.** The coach now leads with the one way of living
     the family said they plan, instead of offering three and letting them pick —
@@ -347,7 +370,7 @@ before it runs (see the sequencing note).
     `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable
     — the brief is done.**
 
-17. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
+18. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
     (RFCs 139, 144, 147, 150, 154 and 153, `search/04/similar-colleges`,
     2026-09-01); only `search/06/unattended-refresh` is left, and it is DEFERRED
     by intent.** A **`similar_colleges`** chat tool decides "similar" per call
@@ -363,7 +386,7 @@ before it runs (see the sequencing note).
     debt it leaves is in the Backlog: the `NewCollege` test fixture is a 5th
     copy and the shared helper is in the wrong source set, parked twice over.
 
-18. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
+19. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
     The admissions layer is user-visible: the coach can answer, with citations,
     what a school weighs in admissions, when its rounds close, and how it
     actually behaves on merit aid — and merit rides along inside cost answers.
@@ -376,7 +399,7 @@ before it runs (see the sequencing note).
 
 368) is a silence, not a zero.
 
-19. **Before any App Store submission: brief 0002, account deletion** — parked
+20. **Before any App Store submission: brief 0002, account deletion** — parked
     in the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR
     Art. 17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
 
@@ -982,6 +1005,36 @@ btree serves.
 columns are additive, and a query with no residency on file resolves to the
 net-price ruler — the pre-RFC-169 behaviour, column for column.
 
+### Who published this number (brief 0008 `soft/01`, RFC 177)
+
+**The door.** No new surface. Any family asking the coach what a school costs,
+and any parent opening a shared Family Cost Report, sees it in the sentences
+already there.
+
+**What it does.** Every money figure now carries the publisher whose row won it,
+and one seam turns that into English. A family is told which organisation
+published the number in front of them, and the answer is read off the data
+rather than typed by a developer at each site. Before this, chat and the report
+page both said every cost figure came from the College Scorecard, while IPEDS
+actually wins most of them — so families were told the wrong source for the
+price of their school.
+
+The publisher is named where the sentence is about the publisher's act: a figure
+that is shown ("this figure comes from IPEDS' survey of college costs"), one the
+publisher estimated, and one the publisher withholds for privacy. Where the gap
+belongs to the school, or to us, the sentence stays as it was and names nobody —
+crediting a publisher for a school's silence would be a new mis-attribution.
+
+**How it degrades.** A publisher is named only when it published a figure the
+family can actually see. A school whose only Scorecard rows are suppressed or
+empty is described as an IPEDS-sourced page, and the sources sentence disappears
+entirely for a page with no money figure on it, rather than naming a publisher
+of nothing.
+
+**Rollback.** `COACHING_SYSTEM_PROMPT_VERSION=v22` restores the previous coach
+prompt; every earlier prompt row is immutable and stays in the catalog. The code
+seam has no flag — it is a correction, not an experiment.
+
 ### The served vocabularies (brief 0007 `profile/01`, RFC 165)
 
 **Door: none for a user yet — this is a server surface a client walks through.**
@@ -1399,7 +1452,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 
 | Pri | Work                                  | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Where                                        |
 | --- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| P1  | How soft is this number? (brief 0008) | **GATES 1+2 APPROVED (2026-09-05, defaults, no amendments) — EXECUTE, wave 1 startable.** The money store treats a Scorecard administrative record and a school's unaudited self-report as the same kind of fact, and the hedge that covers the difference is hand-written at ~39 prompt sites plus 19 Kotlin strings. Research killed the obvious shape: a `self_reported` flag on the SOURCE would be false, because **16 of the 18 Scorecard cells we load are re-published IPEDS** and only `GRAD_DEBT_MDN` (NSLDS) and `MD_EARN_WNE_P10` (Treasury) are administrative. The axis is real from the publishers' own words — IPEDS is mandatory under 20 USC 1094(a)(17), edit-checked and keyholder-attested; the CDS has no collector, no deadline, no sanction and no audit. Ian's "14 of 249 filings report more borrowers than graduates" reproduces **exactly**, but **12 of the 14 are our own PDF-extraction failures** (two carry the class year as the graduate count), so it measures our extractor, not school honesty — which is why **no findings table is being built** (every internal check runs 0/309 today; `bin/fetch-cds-seed` already drops those blocks). Four slices: `soft/01/one-hedge-seam` (one derived attribution, prompt v21, kills a LIVE defect — IPEDS figures are credited to the Scorecard in chat and on the report page today), `soft/02/assurance-tiers` (three tiers keyed on `(source, source_variable)`, code-side, no migration; BLOCKED on 01), `soft/03/the-year-we-cite` (Scorecard AY2024-25 is stamped 2022, so RFC 161's designed IPEDS displacement NEVER FIRES and NPT4 collides with SFA 2021-22 — held until `shape/07b` lands, to avoid a three-way rebase on `CanonicalMoneyLoader.kt`), `soft/04/two-more-ingest-refusals` (two cross-source refusals; **8 wrong freshman counts ship today**). Standing decision D7: **unicoach never renders a confidence score, percentage or rating for a figure.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `product/0008-how-soft-is-this-number`       |
+| P1  | How soft is this number? (brief 0008) | **GATES 1+2 APPROVED (2026-09-05); ONE OF FOUR SLICES LANDED.** **`soft/01/one-hedge-seam` LANDED as RFC 177 (`main@3c010785` + `ebaef69e`, 2026-09-08, migration 0093, coach prompt v23)** — attribution is derived per figure at one seam (`MoneySourceCopy` + a source-carrying `FigureStatusCopy`), `CostSources.SCORECARD_ATTRIBUTION` is deleted, and the LIVE defect is dead: IPEDS figures are no longer credited to the College Scorecard in chat or on the report page, pinned by a test that fails on the old code. A publisher is named only when it published a figure the family can SEE, and a fifth `MoneySource` now fails to COMPILE at the seam. Review found and fixed a second instance of the same defect class (the page named publishers of suppressed and value-free rows) and a nullable that would have rendered the literal "null" into coach copy. Two slice-text items were returned to /chart as a spec defect: the four aid-policy constants and the report's merit/borrowing CDS sentence state CORPUS COVERAGE, not a figure's publisher, so deriving them from `MoneySource` would state something false. **`soft/02/assurance-tiers` is now unblocked** — its only reader exists. `soft/03` and `soft/04` remain READY. The money store treats a Scorecard administrative record and a school's unaudited self-report as the same kind of fact, and the hedge that covers the difference is hand-written at ~39 prompt sites plus 19 Kotlin strings. Research killed the obvious shape: a `self_reported` flag on the SOURCE would be false, because **16 of the 18 Scorecard cells we load are re-published IPEDS** and only `GRAD_DEBT_MDN` (NSLDS) and `MD_EARN_WNE_P10` (Treasury) are administrative. The axis is real from the publishers' own words — IPEDS is mandatory under 20 USC 1094(a)(17), edit-checked and keyholder-attested; the CDS has no collector, no deadline, no sanction and no audit. Ian's "14 of 249 filings report more borrowers than graduates" reproduces **exactly**, but **12 of the 14 are our own PDF-extraction failures** (two carry the class year as the graduate count), so it measures our extractor, not school honesty — which is why **no findings table is being built** (every internal check runs 0/309 today; `bin/fetch-cds-seed` already drops those blocks). Four slices: `soft/01/one-hedge-seam` (one derived attribution, prompt v21, kills a LIVE defect — IPEDS figures are credited to the Scorecard in chat and on the report page today), `soft/02/assurance-tiers` (three tiers keyed on `(source, source_variable)`, code-side, no migration; BLOCKED on 01), `soft/03/the-year-we-cite` (Scorecard AY2024-25 is stamped 2022, so RFC 161's designed IPEDS displacement NEVER FIRES and NPT4 collides with SFA 2021-22 — held until `shape/07b` lands, to avoid a three-way rebase on `CanonicalMoneyLoader.kt`), `soft/04/two-more-ingest-refusals` (two cross-source refusals; **8 wrong freshman counts ship today**). Standing decision D7: **unicoach never renders a confidence score, percentage or rating for a figure.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `product/0008-how-soft-is-this-number`       |
 | P1  | Money in unicoach shape (brief 0006)  | **Gates 1+2 APPROVED (2026-09-02, defaults, no amendments); WAVE 1 COMPLETE, WAVE 2 MOSTLY DONE.** Canonical money layer: PriceFigure vs CohortMoneyStat, stored missingness status, authored vocabularies, IPEDS IC_AY + SFA un-deferred, policy-parameter store, staged cutover. Ten slices specced (`shape/07b/borrowing` was split out of `shape/07` at design and is now SPECCED, 2026-09-05), **six landed**. **`shape/06/pell-and-loans` LANDED as RFC 159 (2026-09-03)**; **`shape/01/canonical-store` LANDED as RFC 158 (2026-09-04)**; **`shape/02/ipeds-ic-ay` LANDED as RFC 161 (2026-09-05)** — IPEDS charges fill the store ahead of the Scorecard, making the in-district tier real (269 institutions were served their in-district price under an in-state label) and splitting fees from tuition; **`shape/03/ipeds-sfa` LANDED as RFC 162 (2026-09-05, migration 0085)** — IPEDS SFA fills the store with AID (net price by income band, Pell share and average, grant mix by source, loan share and average) plus `cohort_population_counts`, the residency and living-arrangement headcounts behind every basis; aid scope now follows the denominator; **`shape/04/cost-answers-from-canonical` LANDED as RFC 166 (2026-09-05, migration 0086, coach prompt v19)** — **the door**: every cost answer the coach and the Family Cost Report give now reads `price_figures` and `cohort_money_stats`, the in-district tier and split fees are spoken, living at home gets a complete total whose `$0` food-and-housing line is labelled as OUR assumption (D17), and each figure's status is said aloud; the RFC 149/151/152/157 honesty layer survives as a projection. **`shape/07a/need-and-forms` LANDED as RFC 170 (2026-09-05, migrations 0087/0088, coach prompt v20)** — the CDS answers what a school ASKS you to file (`aid_forms` + `aid_form_requirements`) and how it TREATS need (the canonical money tables); the modeled-ahead `aid_policy_facts` was DROPPED rather than filled, because the data is two shapes, not one bag; `source_documents` gives a filing one row so three older CDS tables stop duplicating its urls; `academic_year` and `money_source` became DOMAINs and the `'undated'` sentinel became NULL. **`shape/07b/borrowing` LANDED as RFC 175 (2026-09-08, migrations 0089/0090, coach prompt v21)** — CDS H4/H5 borrowing including the private loans the Scorecard never shows; loan type is part of the MEASURE (the `shape/03` grant-mix pattern), so no table and no `loan_types` vocabulary was added, and Ian's gate flipped D9 (the Family Cost Report page carries it too) and added D10 (a CDS figure is spoken as the school's OWN claim). Review added D11: a zero average over zero borrowers is the source's sentinel, refused at ingest, while the zero COUNT stands. **`shape/05/search-on-your-price` LANDED as RFC 169 (2026-09-08, migrations 0091/0092, coach prompt v22)** — search runs on ONE price ruler: with the family's state on file, each school's published on-campus total at that family's own tuition tier, with aid said to be absent from it in one sentence; with no state on file, the net price as before with its basis in the metric NAME on the wire. The two rulers can never mix (the anchor carries its own ruler; a mixed pairing is refused). Search now ASKS for residency, an offer that never gates a result, and **D19 landed with it at zero DDL cost** — a school with no separately published in-district price is ranked AND labelled (641 of 3,264 in the default universe), never silently treated as in-state. Migration 0091 is four nullable `college_search_index` columns plus a 4→6 clause percentile CHECK and **no index** (every published-price read is a CASE over two tier columns). **Honest next state**: EIGHT of ten slices landed, and **both readers `shape/08/drop-the-publisher-shape` names are now LANDED**, so its BLOCKS edges are satisfied — but `shape/08` is NOT simply startable as written: its spec text predates RFC 169, the search-index copy it says to shrink is now four columns WIDER, `PriceRuler`/`PriceRulerSql` in `:db` are new readers of those published columns, and `IncomeBand.netPriceFor(College)` — which `shape/04` recorded as surviving only "for `shape/05` to retire" — is still in the tree. **`shape/08` needs a /chart re-spec pass before it runs.** `shape/09/exchange-participation` is the other unlanded slice. **Spec defects found and closed the same day**: `CHG7/8AY` is off campus NOT with family, so no source publishes with-family food and housing — **D17 (Ian, 2026-09-05) treats living at home as $0 and states the assumption in words**, and shape/04 implemented exactly that; and shape/03's spec text carries a public-only SFA variable list (~65% of colleges would be dropped) plus a `Z`-flag mapping that is wrong for both IPEDS surveys — **RFC 162 corrects landed RFC 161 on `Z`**, and both are open items for /chart. Brief 0005 PAUSED into this brief (D11); D14 decided its search-ranking question. | `product/0006-money-in-unicoach-shape`       |
 | P1  | College search index (brief 0004)     | **CORE COMPLETE** — gates 1+2 approved (2026-08-27); every specced slice has landed: `search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147), `search/03b/the-index` (RFC 150), `search/05/consumer-sweep` (RFC 154) and `search/04/similar-colleges` (RFC 153, 2026-09-01). S3b was the aha — the derived index serves both search paths. S5 turned out to be an audit (RFC 150 had already repointed every consumer, so there was nothing to delete) and closed the real gap instead with the `find_college` chat tool. S4 closes the brief: `similar_colleges` answers "schools like X" with one query-time weighted distance over the index, no similarity table, on coach prompt **v13** — and it is the first and only reader of the percentile columns S3b computed. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067). **Nothing here is startable.** `search/06/unattended-refresh` stays DEFERRED — automate the quarterly ingest only if running it by hand proves annoying. The debt S4 declined moved to the Backlog: the 5th `NewCollege` fixture copy, and genericising `CollegeSearchOutcome`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `product/0004-college-search-index`          |
 | P1  | Clear money language (brief 0003)     | **COMPLETE — every slice landed.** `money/01` + `01.1` + RFC 143 + `01.2` + `02` + `03` + **`04/where-youll-live`** (RFCs 141–143, 145, 149, 151, 152; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, states the assumption lines above any side-by-side, and now leads with the one way of living the family said they plan — a global default with a per-college override, because living at home is possible at the in-state school and not at the far one (D20). When it cannot show a total it says which kind of silence it is: our unanswered residency, a price we cannot select, or a part the school does not publish. Prompt v14; v13 is the rollback. Nothing left in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `product/0003-clear-money-language`          |
@@ -1441,6 +1494,18 @@ list is no longer the list `shape/08` names. **`shape/08` wants a /chart re-spec
 pass before it is dispatched.** `shape/07/need-and-forms` split at RFC 170's
 design gate into `shape/07a` and `shape/07b/borrowing`, and **both have LANDED**
 (RFCs 170 and 175), so neither is board material any longer.
+
+**Brief 0008's wave 1 has started (2026-09-08).** `soft/01/one-hedge-seam`
+LANDED as RFC 177 and leaves the board. It was the only unmet `BLOCKS` edge on
+`soft/02/assurance-tiers`, so **`soft/02` moves from BLOCKED to READY**: the
+widened `FigureStatusCopy` seam its tier reads now exists, which is the reader
+`rfc/170:153` required before the tier could be built.
+`soft/03/the-year-we-cite` and `soft/04/two-more-ingest-refusals` stay READY.
+Note the scheduling choice recorded at gate 2 is now spent: `soft/03` was held
+until `shape/07b/borrowing` landed to avoid a three-way rebase on
+`CanonicalMoneyLoader.kt`, and `shape/07b` has landed (RFC 175). RFC 177 touched
+that file only to widen `ORDERED_SOURCES` from `internal` to public, so the
+rebase risk `soft/03` carries is unchanged.
 
 **Brief 0007 leaves the board entirely (2026-09-05).**
 `profile/02/your-details-screen` LANDED as RFC 171, so all three of its slices

@@ -18,7 +18,16 @@ at each site? Decide the shape and slice it."
 
 _(one line per landed slice: ID, RFC, SHAs, one-line what.)_
 
-_(empty — nothing landed yet.)_
+    soft/01/one-hedge-seam LANDED as RFC 177 (main@3c010785 + ebaef69e,
+       2026-09-08) — money attribution derived per figure: MoneySourceCopy is the
+       only English name of a publisher, FigureStatusCopy names it where the
+       sentence is about the publisher's act, CostSources.SCORECARD_ATTRIBUTION is
+       deleted, and coach prompt v23 stops naming the Scorecard by hand (rollback
+       COACHING_SYSTEM_PROMPT_VERSION=v22). The live mis-attribution — IPEDS
+       figures told to families as College Scorecard figures — is pinned by test.
+       Two slice-text items returned to /chart as a spec defect: the four
+       aid-policy constants and the report's merit/borrowing CDS sentence state
+       CORPUS COVERAGE, not a figure's publisher.
 
 ## The question
 
