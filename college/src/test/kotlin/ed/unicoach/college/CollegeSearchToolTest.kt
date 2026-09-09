@@ -5,6 +5,7 @@ import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CanonicalCohortFixture
 import ed.unicoach.db.dao.CodebooksDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
@@ -83,12 +84,6 @@ class CollegeSearchToolTest {
 
   private fun newCollege(ipedsUnitId: Int) =
     NewCollege(
-      housingAndFoodOnCampusPerYearUsd = null,
-      housingAndFoodOffCampusPerYearUsd = null,
-      booksAndSuppliesPerYearUsd = null,
-      otherExpensesOnCampusPerYearUsd = null,
-      otherExpensesOffCampusPerYearUsd = null,
-      otherExpensesWithFamilyPerYearUsd = null,
       ipedsUnitId = ipedsUnitId,
       opeid = null,
       name = "Coastal College $ipedsUnitId",
@@ -102,19 +97,7 @@ class CollegeSearchToolTest {
       undergradEnrollmentHeadcount = 2000,
       admissionRateShare = 0.4,
       satAverageEquivalentScore = null,
-      costOfAttendancePerYearUsd = null,
-      netPricePerYearUsd = 18000,
-      netPricePerYearIncomeQ1Usd = null,
-      netPricePerYearIncomeQ2Usd = null,
-      netPricePerYearIncomeQ3Usd = null,
-      netPricePerYearIncomeQ4Usd = null,
-      netPricePerYearIncomeQ5Usd = null,
-      tuitionAndFeesInStatePerYearUsd = null,
-      tuitionAndFeesOutOfStatePerYearUsd = null,
       completionRate150pct4yrShare = 0.7,
-      medianEarnings10yAfterEntryUsd = 55000,
-      medianDebtAtCompletionUsd = null,
-      pellShare = 0.4,
       website = null,
     )
 
@@ -132,6 +115,7 @@ class CollegeSearchToolTest {
   ) = runBlocking {
     database.withConnection { session ->
       val college = CollegesDao.upsert(session, newCollege(ipedsUnitId)).getOrThrow()
+      CanonicalCohortFixture.seedMoney(session, college.id, defaultMoney)
       CollegeIpedsDao
         .upsertProgramsCensus(session, NewCollegeProgramsCensus(college.id, cipCode, 5, 12, 2023))
         .getOrThrow()
@@ -141,19 +125,37 @@ class CollegeSearchToolTest {
   }
 
   /**
+   * The money this suite's colleges used to carry as `colleges` columns, now
+   * written where every reader reads it (RFC 176).
+   */
+  private val defaultMoney =
+    CanonicalCohortFixture.CollegeMoney(
+      netPricePerYearUsd = 18000,
+      medianEarnings10yAfterEntryUsd = 55000,
+      medianDebtAtCompletionUsd = null,
+      pellShare = 0.4,
+    )
+
+  /**
    * Seeds one college and rebuilds `college_search_index` (RFC 150 D53). Both
    * search entry points read that table, and only the ingest's `search-index`
    * phase writes it — so a test that writes `colleges` directly must rebuild it
    * here, where a later test cannot forget to.
    */
-  private fun insert(input: NewCollege) =
-    runBlocking {
-      database.withConnection { session ->
-        val college = CollegesDao.upsert(session, input).getOrThrow()
-        CollegesDao.rebuildSearchIndex(session).getOrThrow()
-        college
-      }
+  private fun insert(
+    input: NewCollege,
+    money: CanonicalCohortFixture.CollegeMoney = defaultMoney,
+  ) = runBlocking {
+    database.withConnection { session ->
+      val college = CollegesDao.upsert(session, input).getOrThrow()
+      // This college's money (RFC 176): the payload's band prices, earnings,
+      // debt and Pell share, and the net-price ruler, are all read from
+      // `cohort_money_stats` -- `colleges` carries none.
+      CanonicalCohortFixture.seedMoney(session, college.id, money)
+      CollegesDao.rebuildSearchIndex(session).getOrThrow()
+      college
     }
+  }
 
   /**
    * The four canonical components a published on-campus total is summed from
@@ -535,7 +537,15 @@ class CollegeSearchToolTest {
       // gone -- what serializes is one entry per REPORTED band, each carrying
       // the band code, the dollar range a coach says aloud, and the amount.
       insert(
-        newCollege(820).copy(netPricePerYearIncomeQ1Usd = -1200, netPricePerYearIncomeQ3Usd = 14500, medianDebtAtCompletionUsd = 21000),
+        newCollege(820),
+        defaultMoney.copy(
+          netPriceUsdByBand =
+            mapOf(
+              IncomeBand.UNDER_30K to -1200,
+              IncomeBand.K48_TO_75K to 14500,
+            ),
+          medianDebtAtCompletionUsd = 21000,
+        ),
       )
 
       val result = tool.execute(buildJsonObject {})
@@ -591,13 +601,12 @@ class CollegeSearchToolTest {
       // sleep through.
       insert(
         newCollege(821).copy(
-          netPricePerYearIncomeQ5Usd = 31000,
           control = 3,
-          medianDebtAtCompletionUsd = 21000,
           satAverageEquivalentScore = 1200,
-          costOfAttendancePerYearUsd = 40000,
-          tuitionAndFeesInStatePerYearUsd = 12000,
-          tuitionAndFeesOutOfStatePerYearUsd = 30000,
+        ),
+        defaultMoney.copy(
+          netPriceUsdByBand = mapOf(IncomeBand.OVER_110K to 31000),
+          medianDebtAtCompletionUsd = 21000,
         ),
       )
 
@@ -996,8 +1005,14 @@ class CollegeSearchToolTest {
       // next search fails with a permanent (non-transient) DatabaseException. The
       // structured error must preserve that category rather than flattening it to a
       // bare string, then we restore the column so the rest of the suite is unaffected.
+      //
+      // `website`, not `pell_share`: since RFC 176 the payload's money is read
+      // from `cohort_money_stats` and the statement's join to `colleges` is
+      // down to the city and the website, so dropping a money column no longer
+      // breaks the query at all -- the search simply succeeded and this test
+      // asserted nothing.
       database.createRawConnection().use { conn ->
-        conn.createStatement().use { it.execute("ALTER TABLE colleges DROP COLUMN pell_share") }
+        conn.createStatement().use { it.execute("ALTER TABLE colleges DROP COLUMN website") }
       }
       try {
         val result = tool.execute(buildJsonObject {})
@@ -1018,8 +1033,8 @@ class CollegeSearchToolTest {
         database.createRawConnection().use { conn ->
           conn.createStatement().use {
             it.execute(
-              "ALTER TABLE colleges ADD COLUMN pell_share DOUBLE PRECISION " +
-                "CONSTRAINT colleges_pell_share_range_check CHECK (pell_share IS NULL OR pell_share BETWEEN 0 AND 1)",
+              "ALTER TABLE colleges ADD COLUMN website TEXT " +
+                "CONSTRAINT colleges_website_length_check CHECK (website IS NULL OR length(website) <= 255)",
             )
           }
         }

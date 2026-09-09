@@ -88,6 +88,14 @@ class FitLensServiceTest {
     /** `colleges.control` for a private not-for-profit institution. */
     private const val CONTROL_PRIVATE_NONPROFIT = 2
 
+    /**
+     * The ten-year earnings figure every fixture college reports, on BOTH
+     * sources: the `colleges` column and the canonical `median_earnings_10y`
+     * row the digest now reads (RFC 176). Named once, so the two cannot be
+     * seeded apart by accident.
+     */
+    private const val MEDIAN_EARNINGS_USD = 55000
+
     /** The vintage every fixture net-price row carries, stated so a test can assert the digest speaks it. */
     private val NET_PRICE_YEAR = AcademicYear(2022)
 
@@ -330,12 +338,6 @@ class FitLensServiceTest {
         .upsert(
           session,
           NewCollege(
-            housingAndFoodOnCampusPerYearUsd = null,
-            housingAndFoodOffCampusPerYearUsd = null,
-            booksAndSuppliesPerYearUsd = null,
-            otherExpensesOnCampusPerYearUsd = null,
-            otherExpensesOffCampusPerYearUsd = null,
-            otherExpensesWithFamilyPerYearUsd = null,
             ipedsUnitId = ipedsUnitIdCounter++,
             opeid = null,
             name = name,
@@ -349,24 +351,18 @@ class FitLensServiceTest {
             undergradEnrollmentHeadcount = 5000,
             admissionRateShare = 0.5,
             satAverageEquivalentScore = 1200,
-            costOfAttendancePerYearUsd = 40000,
-            netPricePerYearUsd = indexNetPricePerYearUsd,
-            netPricePerYearIncomeQ1Usd = null,
-            netPricePerYearIncomeQ2Usd = null,
-            netPricePerYearIncomeQ3Usd = null,
-            netPricePerYearIncomeQ4Usd = null,
-            netPricePerYearIncomeQ5Usd = null,
-            tuitionAndFeesInStatePerYearUsd = 12000,
-            tuitionAndFeesOutOfStatePerYearUsd = 30000,
             completionRate150pct4yrShare = 0.7,
-            medianEarnings10yAfterEntryUsd = 55000,
-            medianDebtAtCompletionUsd = null,
-            pellShare = 0.4,
             website = null,
           ),
         ).getOrThrow()
         .id
     if (seedsNetPriceRow) seedNetPriceStat(collegeId, control, netPriceReading, netPriceVintage)
+    // The digest's EARNINGS line comes from the canonical store too since RFC
+    // 176 -- the search payload carries `median_earnings_10y` from
+    // `cohort_money_stats`, not from the `colleges` column -- so a college
+    // seeded without this row reads to the model as one that reports no
+    // earnings.
+    seedMedianEarningsStat(collegeId)
     // Both search entry points read `college_search_index` (RFC 150 D53),
     // which is derived state the ingest rebuilds in its own phase — so a
     // test that seeds `colleges` directly must rebuild it or the college is
@@ -407,6 +403,52 @@ class FitLensServiceTest {
             reading = reading,
             source = MoneySource.SCORECARD,
             sourceVariable = "NPT4",
+          ),
+        ),
+      ).getOrThrow()
+  }
+
+  /**
+   * Restates a college's canonical net price WITHOUT rebuilding the search
+   * index: the one way, after RFC 176, that the materialised ruler and the
+   * live canonical read can hold different numbers. A raw UPDATE, because the
+   * DAO's write path is wholesale.
+   */
+  private fun updateNetPriceStat(
+    collegeId: CollegeId,
+    value: Double,
+  ) {
+    connection
+      .prepareStatement(
+        "UPDATE cohort_money_stats SET value = ? WHERE college_id = ? AND measure = ? AND income_band IS NULL",
+      ).use { stmt ->
+        stmt.setDouble(1, value)
+        stmt.setObject(2, collegeId.value)
+        stmt.setString(3, MoneyMeasure.AVG_NET_PRICE.value)
+        stmt.executeUpdate()
+      }
+  }
+
+  /**
+   * The college's canonical `median_earnings_10y` row, at the same figure the
+   * `colleges` column holds. Undated, as the publisher leaves it (P5).
+   */
+  private fun seedMedianEarningsStat(collegeId: CollegeId) {
+    CanonicalMoneyDao
+      .insertCohortMoneyStats(
+        session,
+        listOf(
+          NewCohortMoneyStat(
+            collegeId = collegeId.value,
+            measure = MoneyMeasure.MEDIAN_EARNINGS_10Y,
+            population = CohortPopulation.EMPLOYED_NOT_ENROLLED_10Y_AFTER_ENTRY,
+            residencyScope = CohortResidencyScope.ALL,
+            aidScope = CohortAidScope.ALL,
+            incomeBand = null,
+            vintage = null,
+            reading = FigureReading.Present(MEDIAN_EARNINGS_USD.toDouble(), ValueBearingStatus.REPORTED),
+            source = MoneySource.SCORECARD,
+            sourceVariable = "MD_EARN_WNE_P10",
           ),
         ),
       ).getOrThrow()
@@ -1399,22 +1441,29 @@ class FitLensServiceTest {
     }
 
   @Test
-  fun `the search filter still reads the index column, not the canonical figure`() =
+  fun `the search filter reads the MATERIALISED index column, not the canonical row live`() =
     runBlocking {
-      // The filter and ranking column `net_price_per_year_usd` is shape/05's and
-      // RFC 166 moved only the DIGEST (§9). RFC 169 renamed the WIRE field to
-      // `maxInStateNetPricePerYearUsd` -- the basis is in the name now -- and
-      // left the column and this split exactly as they were. The two numbers are seeded
-      // APART so the assertion cannot pass by coincidence: the index says 20000,
-      // the canonical store says 9000.
+      // The filter and ranking column `college_search_index.net_price_per_year_usd`
+      // is shape/05's, and RFC 166 moved only the DIGEST (§9). RFC 176 moved
+      // the column's SOURCE to the canonical store and nothing else: it is
+      // still MATERIALISED by the rebuild, and the digest still reads the row
+      // live, with its status and its vintage.
+      //
+      // So the split can no longer be seeded as two different numbers at one
+      // address -- the rebuild would copy the canonical one -- and it is seeded
+      // as two different MOMENTS instead, which is the property that actually
+      // remains: the college is indexed at 20000, and the canonical row is then
+      // restated to 9000 with NO rebuild after it. A filter reading canonical
+      // live would admit the college; the materialised one does not.
       val student = createStudent()
       createClaims(student, 3)
       val college =
         createCollege(
           name = "Split Net Price U",
           indexNetPricePerYearUsd = 20_000,
-          netPriceReading = FigureReading.Present(9_000.0, ValueBearingStatus.REPORTED),
+          netPriceReading = FigureReading.Present(20_000.0, ValueBearingStatus.REPORTED),
         )
+      updateNetPriceStat(college, 9_000.0)
 
       val filtered =
         providerFor(college, queryDoc = """{"maxInStateNetPricePerYearUsd":15000}""").also {

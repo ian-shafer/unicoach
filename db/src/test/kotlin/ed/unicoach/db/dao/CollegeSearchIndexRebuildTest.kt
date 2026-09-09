@@ -116,7 +116,6 @@ class CollegeSearchIndexRebuildTest {
     locale: Int? = 13,
     undergradEnrollmentHeadcount: Int? = 5000,
     admissionRateShare: Double? = 0.5,
-    netPricePerYearUsd: Int? = 20000,
     satAverageEquivalentScore: Int? = 1200,
   ) = NewCollege(
     ipedsUnitId = ipedsUnitId,
@@ -132,29 +131,27 @@ class CollegeSearchIndexRebuildTest {
     undergradEnrollmentHeadcount = undergradEnrollmentHeadcount,
     admissionRateShare = admissionRateShare,
     satAverageEquivalentScore = satAverageEquivalentScore,
-    costOfAttendancePerYearUsd = null,
-    netPricePerYearUsd = netPricePerYearUsd,
-    netPricePerYearIncomeQ1Usd = null,
-    netPricePerYearIncomeQ2Usd = null,
-    netPricePerYearIncomeQ3Usd = null,
-    netPricePerYearIncomeQ4Usd = null,
-    netPricePerYearIncomeQ5Usd = null,
-    tuitionAndFeesInStatePerYearUsd = null,
-    tuitionAndFeesOutOfStatePerYearUsd = null,
     completionRate150pct4yrShare = 0.7,
-    medianEarnings10yAfterEntryUsd = null,
-    medianDebtAtCompletionUsd = null,
-    housingAndFoodOnCampusPerYearUsd = null,
-    housingAndFoodOffCampusPerYearUsd = null,
-    booksAndSuppliesPerYearUsd = null,
-    otherExpensesOnCampusPerYearUsd = null,
-    otherExpensesOffCampusPerYearUsd = null,
-    otherExpensesWithFamilyPerYearUsd = null,
-    pellShare = null,
     website = null,
   )
 
-  private fun insertCollege(input: NewCollege): CollegeId = CollegesDao.upsert(session, input).getOrThrow().id
+  /**
+   * One college AND its money (RFC 176): the rebuild's net-price ruler is read
+   * from `cohort_money_stats` at the full address, so a college seeded without
+   * canonical rows indexes as a school that reports no price. `colleges`
+   * carries no money at all now, so the figure has exactly one home here.
+   */
+  private fun insertCollege(
+    input: NewCollege,
+    money: CanonicalCohortFixture.CollegeMoney = defaultMoney,
+  ): CollegeId {
+    val id = CollegesDao.upsert(session, input).getOrThrow().id
+    CanonicalCohortFixture.seedMoney(session, id, money)
+    return id
+  }
+
+  /** The money `newCollege` used to carry as a `colleges` column. */
+  private val defaultMoney = CanonicalCohortFixture.CollegeMoney(netPricePerYearUsd = 20000)
 
   private fun newIpeds(
     ipedsUnitId: Int,
@@ -1075,6 +1072,32 @@ class CollegeSearchIndexRebuildTest {
   }
 
   @Test
+  fun `a college with no canonical money keeps a NULL ruler and no place on the price ladder`() {
+    SearchIndexFixture.seedCodebooks(session)
+    // Seeded through `CollegesDao.upsert` alone, so this college has NO
+    // `cohort_money_stats` rows at all -- the RFC 176 case where the ruler has
+    // no source. `colleges` carries no money column any more, so an empty
+    // store is the only thing left to read, and a substituted zero would rank
+    // this school as the cheapest in the corpus.
+    CollegesDao.upsert(session, newCollege(201700)).getOrThrow()
+    insertCollege(newCollege(201701))
+    CollegesDao.rebuildSearchIndex(session).getOrThrow()
+
+    assertNull(intOrNull("net_price_per_year_usd", 201700), "an empty cohort_money_stats leaves the ruler NULL")
+    assertNull(
+      bigDecimalOrNull("net_price_percentile_share", 201700),
+      "a school with no canonical net price has no place on the price ladder, rather than the bottom of it",
+    )
+    // The priced school still ranks, so the NULLs above are this college's
+    // absence and not a ladder that failed to build.
+    assertEquals(20000, intOrNull("net_price_per_year_usd", 201701))
+    // Read through the null-preserving helper the two `assertNull`s above use:
+    // `rs.getDouble` would map a NULL -- a ladder that never built -- to the
+    // same 0.0 that "cheapest in the corpus" is spelled with.
+    assertEquals(0.0, bigDecimalOrNull("net_price_percentile_share", 201701)?.toDouble())
+  }
+
+  @Test
   fun `the SAT percentile reads its input from colleges, which the index does not carry`() {
     SearchIndexFixture.seedCodebooks(session)
     insertCollege(newCollege(201300, satAverageEquivalentScore = 1000))
@@ -1170,9 +1193,9 @@ class CollegeSearchIndexRebuildTest {
             locale = if (i % 3 == 0) 13 else null,
             undergradEnrollmentHeadcount = 1000 * (i + 1),
             admissionRateShare = 0.1 * (i + 1),
-            netPricePerYearUsd = 10000 + 1000 * i,
             satAverageEquivalentScore = 1000 + 50 * i,
           ),
+          defaultMoney.copy(netPricePerYearUsd = 10000 + 1000 * i),
         )
       CollegeIpedsDao
         .upsert(session, newIpeds(unitId, sector = if (i == 5) 99 else 1, athleticAssoc = listOf(2, 1)))

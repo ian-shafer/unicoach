@@ -5,6 +5,7 @@ import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CanonicalCohortFixture
 import ed.unicoach.db.dao.CodebooksDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
@@ -131,14 +132,7 @@ class SimilarCollegesToolTest {
     undergradEnrollmentHeadcount: Int? = 2000,
     admissionRateShare: Double? = 0.14,
     satAverageEquivalentScore: Int? = 1420,
-    netPricePerYearUsd: Int? = 30000,
   ) = NewCollege(
-    housingAndFoodOnCampusPerYearUsd = null,
-    housingAndFoodOffCampusPerYearUsd = null,
-    booksAndSuppliesPerYearUsd = null,
-    otherExpensesOnCampusPerYearUsd = null,
-    otherExpensesOffCampusPerYearUsd = null,
-    otherExpensesWithFamilyPerYearUsd = null,
     ipedsUnitId = ipedsUnitId,
     opeid = null,
     name = name,
@@ -152,21 +146,22 @@ class SimilarCollegesToolTest {
     undergradEnrollmentHeadcount = undergradEnrollmentHeadcount,
     admissionRateShare = admissionRateShare,
     satAverageEquivalentScore = satAverageEquivalentScore,
-    costOfAttendancePerYearUsd = null,
-    netPricePerYearUsd = netPricePerYearUsd,
-    netPricePerYearIncomeQ1Usd = null,
-    netPricePerYearIncomeQ2Usd = null,
-    netPricePerYearIncomeQ3Usd = null,
-    netPricePerYearIncomeQ4Usd = null,
-    netPricePerYearIncomeQ5Usd = null,
-    tuitionAndFeesInStatePerYearUsd = null,
-    tuitionAndFeesOutOfStatePerYearUsd = null,
     completionRate150pct4yrShare = 0.9,
-    medianEarnings10yAfterEntryUsd = 55000,
-    medianDebtAtCompletionUsd = 21000,
-    pellShare = 0.2,
     website = null,
   )
+
+  /**
+   * The money this suite's colleges used to carry as `colleges` columns, now
+   * written where every reader reads it (RFC 176). Stated once so a test that
+   * varies one figure varies exactly that one.
+   */
+  private val defaultMoney =
+    CanonicalCohortFixture.CollegeMoney(
+      netPricePerYearUsd = 30000,
+      medianEarnings10yAfterEntryUsd = 55000,
+      medianDebtAtCompletionUsd = 21000,
+      pellShare = 0.2,
+    )
 
   /**
    * Upserts one college and rebuilds BOTH derived tables. The name words are
@@ -174,10 +169,17 @@ class SimilarCollegesToolTest {
    * ranking reads; a test that rebuilt neither would resolve nothing and rank
    * nothing.
    */
-  private fun insert(input: NewCollege): College =
+  private fun insert(
+    input: NewCollege,
+    money: CanonicalCohortFixture.CollegeMoney = defaultMoney,
+  ): College =
     runBlocking {
       database.withConnection { session ->
         val college = CollegesDao.upsert(session, input).getOrThrow()
+        // This college's money (RFC 176): the payload's band prices and the
+        // net-price ruler are read from `cohort_money_stats`, so a college
+        // seeded without it ranks and prints as one that reports no price.
+        CanonicalCohortFixture.seedMoney(session, college.id, money)
         CollegesDao.rebuildNameWords(session).getOrThrow()
         CollegesDao.rebuildSearchIndex(session).getOrThrow()
         college
@@ -278,8 +280,8 @@ class SimilarCollegesToolTest {
           undergradEnrollmentHeadcount = 1800,
           admissionRateShare = 0.09,
           satAverageEquivalentScore = 1450,
-          netPricePerYearUsd = 28400,
         ),
+        defaultMoney.copy(netPricePerYearUsd = 28400),
       )
     insert(
       newCollege(
@@ -288,8 +290,8 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 2000,
         admissionRateShare = 0.14,
         satAverageEquivalentScore = 1420,
-        netPricePerYearUsd = 30000,
       ),
+      defaultMoney.copy(netPricePerYearUsd = 30000),
     )
     insert(
       newCollege(
@@ -298,8 +300,8 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 2200,
         admissionRateShare = 0.10,
         satAverageEquivalentScore = 1440,
-        netPricePerYearUsd = 26000,
       ),
+      defaultMoney.copy(netPricePerYearUsd = 26000),
     )
     insert(
       newCollege(
@@ -310,8 +312,8 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 65000,
         admissionRateShare = 0.88,
         satAverageEquivalentScore = 1150,
-        netPricePerYearUsd = 15000,
       ),
+      defaultMoney.copy(netPricePerYearUsd = 15000),
     )
     insert(
       newCollege(
@@ -321,8 +323,8 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 40000,
         admissionRateShare = 0.80,
         satAverageEquivalentScore = 1100,
-        netPricePerYearUsd = 45000,
       ),
+      defaultMoney.copy(netPricePerYearUsd = 45000),
     )
     return anchor
   }
@@ -470,7 +472,7 @@ class SimilarCollegesToolTest {
   fun `a candidate with no net price is excluded from a cheaper ask and counted`() =
     runBlocking {
       val anchor = seedUniverse()
-      insert(newCollege(15012, name = "Priceless College", netPricePerYearUsd = null))
+      insert(newCollege(15012, name = "Priceless College"), defaultMoney.copy(netPricePerYearUsd = null))
 
       val result =
         tool.execute(
@@ -1382,7 +1384,7 @@ class SimilarCollegesToolTest {
       // Private, so the D65 default control constraint admits it, and priceless:
       // the `cheaper_than_anchor` filter removes it, and the `price` axis cannot
       // judge it. It is the college the axis arm exists to count.
-      insert(newCollege(15050, name = "Priceless College", netPricePerYearUsd = null))
+      insert(newCollege(15050, name = "Priceless College"), defaultMoney.copy(netPricePerYearUsd = null))
 
       val result =
         tool.execute(

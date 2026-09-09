@@ -35,7 +35,7 @@ data class NewCollegeIpeds(
   val hasRotc: Boolean?,
   val hasStudyAbroad: Boolean?,
   val disabilityBand: Int?,
-  /** Raw IC `DISABPCT`, a 0–100 PERCENT — not a 0–1 fraction like `College.pellShare`. */
+  /** Raw IC `DISABPCT`, a 0–100 PERCENT — not a 0–1 fraction like the canonical Pell-share measure. */
   val registeredDisabilityPercent: Double?,
   val offersHousing: Boolean?,
   val housingCapacityHeadcount: Int?,

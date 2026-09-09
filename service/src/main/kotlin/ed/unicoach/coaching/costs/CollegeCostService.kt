@@ -42,7 +42,6 @@ import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
-import java.time.ZoneOffset
 
 /**
  * WHICH published net-price figure the family's own answer selected -- the label
@@ -310,7 +309,7 @@ data class CollegeCost(
   private val publishedNetPrice: NetPrice.Reported,
   val medianDebtAtCompletionUsd: Int?,
   val medianEarnings10yAfterEntryUsd: Int?,
-  /** True when the college reports at least one `net_price_per_year_income_qN_usd` bracket column. */
+  /** True when the college reports at least one household-income band net price. */
   val reportsBandPricing: Boolean,
   /**
    * True when the college publishes at least one tuition figure — the residency
@@ -788,15 +787,19 @@ data class MoneyProfileStatuses(
 )
 
 /**
- * The full cost read for one student (RFC 135). [ingestYear] is the most recent
- * `colleges.updated_at` ingest year among the returned rows (null when
- * [colleges] is empty).
+ * The full cost read for one student (RFC 135).
+ *
+ * It carries no profile-wide "as of" year. RFC 176 D11 deleted `ingestYear` —
+ * a `colleges.updated_at` proxy that nothing read — because after the
+ * publisher money columns left `colleges`, money can no longer move that
+ * timestamp at all. The vintage a family is told is the one on the FIGURE the
+ * answer actually used: `price_figures.academic_year` / the cohort row's
+ * vintage, typed [ed.unicoach.common.util.AcademicYear] (RFC 149).
  */
 data class CollegeCostProfile(
   val colleges: List<CollegeCost>,
   val unknownCollegeIds: List<CollegeId>,
   val moneyProfile: MoneyProfileStatuses,
-  val ingestYear: Int?,
   /**
    * The assumptions a side-by-side holds constant (RFC 151), or NULL below two
    * colleges: a one-school answer is already fully labelled by its per-college
@@ -992,8 +995,8 @@ enum class PrecisionOffer(
  *
  * - An absent money-profile row is simply all-unanswered (RFC 134's
  *   NotFoundException-as-absence convention), not an error.
- * - The band -> `net_price_per_year_income_qN_usd` selection stays in its one home,
- *   [IncomeBand.netPriceFor].
+ * - The band -> band-price selection stays in its one home, [IncomeBand], and
+ *   the figures come from `cohort_money_stats` (RFC 166/176), never a column.
  * - [collegeIds] filters to a subset of the active list; ids not on the list
  *   (unknown or another student's) are reported in
  *   [CollegeCostProfile.unknownCollegeIds] while known ones still answer —
@@ -1131,7 +1134,6 @@ class CollegeCostService(
       colleges = costs,
       unknownCollegeIds = selection.unknown,
       moneyProfile = moneyProfile,
-      ingestYear = ingestYearOf(selection.colleges),
       // Reads the per-college list above, so it is built after it. Why it costs
       // no query of its own is stated once, on [ComparisonBasis].
       comparisonBasis = ComparisonBasis.of(costs, moneyProfile),
@@ -1611,7 +1613,7 @@ class CollegeCostService(
     }
   }
 
-  /** True when the college reports any bracket column, via the band -> column home ([IncomeBand.netPriceFor]). */
+  /** True when the canonical store serves any band net price for this college. */
   private fun reportsBandPricing(served: ServedFigures): Boolean =
     IncomeBand.entries.any { served.cohortOf(CostField.NET_PRICE, it)?.amountUsd != null }
 
@@ -1634,17 +1636,6 @@ class CollegeCostService(
     // rule rather than as a hand-listed pair, so a fourth tier is admitted or
     // excluded by what it IS.
     publishedTuitionTiersOf(served).any { it.residency != ResidencyAxis.IN_DISTRICT }
-
-  /**
-   * The recency the attribution quotes. `colleges.updated_at` is the row's
-   * modification time — the last ingest that touched it — used as a proxy for
-   * data vintage; it is *not* the Scorecard release year, which we do not
-   * store. Taken over the returned rows only, so a subset read may report an
-   * older year than the whole list: honest for what was answered. If a
-   * non-ingest write ever touches `colleges`, this stops being a vintage at
-   * all and the attribution must move to a real ingest column.
-   */
-  private fun ingestYearOf(colleges: Collection<College>): Int? = colleges.maxOfOrNull { it.updatedAt.atZone(ZoneOffset.UTC).year }
 
   companion object {
     private val logger = LoggerFactory.getLogger(CollegeCostService::class.java)

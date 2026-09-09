@@ -155,7 +155,7 @@ internal fun matchObject(
     putOrNull("undergrad_enrollment_headcount", match.undergradEnrollmentHeadcount)
     putOrNull("admission_rate_share", match.admissionRateShare)
     putRulerPrice(match, ruler)
-    // One self-describing array rather than five opaque `net_price_per_year_income_qN_usd` keys
+    // One self-describing array rather than five opaque per-quintile keys
     // (RFC 142): every amount arrives beside the band code AND the dollar
     // range a coach says aloud, so the model never has to translate a source
     // bucket name into English -- and cannot say "Q5" because it never saw it.
@@ -164,7 +164,7 @@ internal fun matchObject(
         // An unreported bracket is omitted entirely rather than carried as a
         // labelled null: the array names the bands this college actually
         // reports, so there is nothing to mistake for a price of zero.
-        band.netPriceFor(match)?.let { amount ->
+        band.getNetPrice(match)?.let { amount ->
           add(
             buildJsonObject {
               putIncomeBand(band)

@@ -1520,24 +1520,6 @@ class CollegeScorecardLoader(
   // here, once per dropped row / coerced cell, so the audit trail is unchanged.
   // ---------------------------------------------------------------------------
 
-  /**
-   * A GROSS dollar column: non-negative by definition, so an out-of-domain value
-   * is coerced to null and tallied (mechanism A), with the schema's own
-   * `_nonneg_check` as the backstop.
-   *
-   * The ONE home for that domain on the loader side, and the loader-side twin of
-   * `db/schema/0062`'s `*_nonneg_check` constraints: the bound was written as a
-   * bare `0, Int.MAX_VALUE` pair at a dozen call sites in a file that names
-   * every other domain (`REGION_MIN`, `RATE_MIN`), so nothing tied the loader's
-   * rule to the migration's. Named once here, they can be read together.
-   */
-  private fun grossUsdOrNull(
-    record: CSVRecord,
-    column: String,
-    columnName: String,
-    coercions: MutableMap<String, Int>,
-  ): Int? = intInDomainOrNull(record, column, GROSS_USD_MIN, GROSS_USD_MAX, columnName, coercions)
-
   private fun mapInstitution(record: CSVRecord): MapResult<NewCollege> {
     val ipedsUnitId = intOrNull(record, COL_UNITID)
     val name = stringOrNull(record, COL_INSTNM)
@@ -1568,33 +1550,6 @@ class CollegeScorecardLoader(
       return MapResult.Skipped(SkipReason.MissingRequiredField(missing))
     }
 
-    // Net-price selection is keyed on control: public (control=1) reads the
-    // *_PUB column, all else *_PRIV; both blank => null. All net-price columns
-    // are EXCLUDED from mechanism-A coercion -- negatives are valid (0022), and
-    // the low-income bands go negative most often (aid exceeding cost). The
-    // Scorecard PrivacySuppressed/NULL sentinels fall out as null via the
-    // toIntOrNull path in intOrNull.
-    fun readControlKeyed(base: String): Int? =
-      if (control == 1) {
-        intOrNull(record, "$base$SUFFIX_PUBLIC")
-      } else {
-        intOrNull(record, "$base$SUFFIX_PRIVATE")
-      }
-
-    val netPricePerYearUsd = readControlKeyed(COL_NET_PRICE_BASE)
-
-    // Income-band net prices (RFC 133): the five household income brackets,
-    // read from NPT41_PUB, NPT42_PUB, NPT43_PUB, NPT44_PUB, NPT45_PUB or
-    // NPT41_PRIV, NPT42_PRIV, NPT43_PRIV, NPT44_PRIV, NPT45_PRIV per control
-    // (full names spelled out so a grep for any column finds this read). The
-    // band domain is fixed by the Scorecard schema; anything outside
-    // [INCOME_BANDS] is a programming error, failed loudly rather than read as
-    // a fabricated column name.
-    fun readBandPrice(band: Int): Int? {
-      require(band in INCOME_BANDS) { "income band must be in [$INCOME_BANDS], got [$band]" }
-      return readControlKeyed("$COL_NET_PRICE_BASE$band")
-    }
-
     val coercions = mutableMapOf<String, Int>()
     val college =
       NewCollege(
@@ -1614,16 +1569,6 @@ class CollegeScorecardLoader(
           intInDomainOrNull(record, COL_UGDS, 0, Int.MAX_VALUE, "undergrad_enrollment_headcount", coercions),
         admissionRateShare = doubleInDomainOrNull(record, COL_ADM_RATE, RATE_MIN, RATE_MAX, "admission_rate_share", coercions),
         satAverageEquivalentScore = intInDomainOrNull(record, COL_SAT_AVG, 0, Int.MAX_VALUE, "sat_average_equivalent_score", coercions),
-        costOfAttendancePerYearUsd = grossUsdOrNull(record, COL_COSTT4_A, "cost_of_attendance_per_year_usd", coercions),
-        netPricePerYearUsd = netPricePerYearUsd,
-        netPricePerYearIncomeQ1Usd = readBandPrice(1),
-        netPricePerYearIncomeQ2Usd = readBandPrice(2),
-        netPricePerYearIncomeQ3Usd = readBandPrice(3),
-        netPricePerYearIncomeQ4Usd = readBandPrice(4),
-        netPricePerYearIncomeQ5Usd = readBandPrice(5),
-        tuitionAndFeesInStatePerYearUsd = grossUsdOrNull(record, COL_TUITIONFEE_IN, "tuition_and_fees_in_state_per_year_usd", coercions),
-        tuitionAndFeesOutOfStatePerYearUsd =
-          grossUsdOrNull(record, COL_TUITIONFEE_OUT, "tuition_and_fees_out_of_state_per_year_usd", coercions),
         completionRate150pct4yrShare =
           doubleInDomainOrNull(
             record,
@@ -1633,25 +1578,6 @@ class CollegeScorecardLoader(
             "completion_rate_150pct_4yr_share",
             coercions,
           ),
-        medianEarnings10yAfterEntryUsd = grossUsdOrNull(record, COL_MD_EARN_WNE_P10, "median_earnings_10y_after_entry_usd", coercions),
-        // median_debt_at_completion_usd is a loan amount: genuinely nonneg, so mechanism A applies
-        // like the sibling money fields.
-        medianDebtAtCompletionUsd = grossUsdOrNull(record, COL_GRAD_DEBT_MDN, "median_debt_at_completion_usd", coercions),
-        // The six published cost components (RFC 149). Gross costs, so mechanism
-        // A applies exactly as it does to tuition: an out-of-domain value is
-        // coerced to null and tallied, with the DB nonneg CHECK as the backstop.
-        // The "NA"/"PrivacySuppressed" sentinels fall out as null through
-        // intOrNull's toIntOrNull path, which is what "not reported" looks like.
-        housingAndFoodOnCampusPerYearUsd = grossUsdOrNull(record, COL_ROOMBOARD_ON, "housing_and_food_on_campus_per_year_usd", coercions),
-        housingAndFoodOffCampusPerYearUsd =
-          grossUsdOrNull(record, COL_ROOMBOARD_OFF, "housing_and_food_off_campus_per_year_usd", coercions),
-        booksAndSuppliesPerYearUsd = grossUsdOrNull(record, COL_BOOKSUPPLY, "books_and_supplies_per_year_usd", coercions),
-        otherExpensesOnCampusPerYearUsd = grossUsdOrNull(record, COL_OTHEREXPENSE_ON, "other_expenses_on_campus_per_year_usd", coercions),
-        otherExpensesOffCampusPerYearUsd =
-          grossUsdOrNull(record, COL_OTHEREXPENSE_OFF, "other_expenses_off_campus_per_year_usd", coercions),
-        otherExpensesWithFamilyPerYearUsd =
-          grossUsdOrNull(record, COL_OTHEREXPENSE_FAM, "other_expenses_with_family_per_year_usd", coercions),
-        pellShare = doubleInDomainOrNull(record, COL_PCTPELL, RATE_MIN, RATE_MAX, "pell_share", coercions),
         website = stringOrNull(record, COL_INSTURL),
       )
     return MapResult.Mapped(college, coercions)
@@ -1759,8 +1685,15 @@ class CollegeScorecardLoader(
      * changed -- `canonical-money` now runs before `search-index` -- and the
      * index gained four columns derived from `price_figures`, so the same
      * snapshot produces a different index than version 7 did.
+     *
+     * 9 = RFC 176's drop of the eighteen publisher money columns from
+     * `colleges` (migration `0094`). The institution phase no longer parses or
+     * writes any money, and `change_summary`'s `non_null` axis therefore falls
+     * from 28 keys to 10. The log is append-only and untouched by the
+     * migration, so a version-8 row keeps its 28 keys; this number is what
+     * makes a 10-key row a DIFFERENT derivation rather than a truncated one.
      */
-    const val METHOD_VERSION = 8
+    const val METHOD_VERSION = 9
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")
@@ -1856,10 +1789,19 @@ class CollegeScorecardLoader(
     private const val COL_CREDLEV = "CREDLEV"
 
     /**
-     * Every institution-file column [mapInstitution] reads — required to EXIST
-     * in the header (cells may still be blank). Derived from the constants
-     * above (the same names the mapper reads through), so the mapper and this
-     * list cannot drift without editing one place.
+     * Every institution-file column THIS RUN reads — required to EXIST in the
+     * header (cells may still be blank). Derived from the constants above, so
+     * the reads and this list cannot drift without editing one place.
+     *
+     * "This run", not "[mapInstitution]", since RFC 176: the money columns
+     * (`COSTT4_A`, both `TUITIONFEE_*`, the six component columns, `PCTPELL`,
+     * `GRAD_DEBT_MDN`, `MD_EARN_WNE_P10` and the `NPT4*` family) are no longer
+     * read into `NewCollege` — they are read by [CanonicalMoneyLoader], which
+     * re-parses THIS SAME FILE in the `canonical-money` phase. This is the one
+     * header assertion the run makes on that file, so the names stay: dropping
+     * them would move a missing-column failure from one loud check before any
+     * write to a silent hole in the canonical fill. These are CSV variable
+     * names, never `colleges` column names.
      */
     internal val REQUIRED_INSTITUTION_COLUMNS =
       listOf(
@@ -1897,39 +1839,27 @@ class CollegeScorecardLoader(
 
     /**
      * The nullable curated columns whose non-null counts the change summary
-     * tracks (RFC 139) — every Scorecard-sourced optional metric on `colleges`.
+     * tracks (RFC 139) — every Scorecard-sourced optional metric still ON
+     * `colleges`.
+     *
+     * NOT a second list: it IS [CollegesDao.NON_NULL_COUNTABLE_COLUMNS], the
+     * allowlist `nonNullCounts` validates against, on the [IpedsLoader]
+     * precedent — so the summary can never ask for a column the DAO would
+     * reject, and a countable column added to one side cannot be silently
+     * uncounted by the other.
+     *
+     * Ten keys, not twenty-eight: RFC 176 dropped the eighteen money names
+     * with the columns themselves (migration `0094`), and deriving is what
+     * made that ONE edit. The money axis of the provenance is
+     * `canonical_money_summary` instead, written by the canonical fill from
+     * the same CSV.
+     *
+     * `college_index_build.change_summary` is append-only and the migration
+     * does nothing to it, so a build row written before this change keeps its
+     * twenty-eight keys and stays readable. [METHOD_VERSION] 9 is what tells
+     * the two row shapes apart.
      */
-    internal val NON_NULL_SUMMARY_COLUMNS =
-      listOf(
-        "opeid",
-        "region",
-        "locale",
-        "latitude",
-        "longitude",
-        "undergrad_enrollment_headcount",
-        "admission_rate_share",
-        "sat_average_equivalent_score",
-        "cost_of_attendance_per_year_usd",
-        "net_price_per_year_usd",
-        "net_price_per_year_income_q1_usd",
-        "net_price_per_year_income_q2_usd",
-        "net_price_per_year_income_q3_usd",
-        "net_price_per_year_income_q4_usd",
-        "net_price_per_year_income_q5_usd",
-        "tuition_and_fees_in_state_per_year_usd",
-        "tuition_and_fees_out_of_state_per_year_usd",
-        "completion_rate_150pct_4yr_share",
-        "median_earnings_10y_after_entry_usd",
-        "median_debt_at_completion_usd",
-        "housing_and_food_on_campus_per_year_usd",
-        "housing_and_food_off_campus_per_year_usd",
-        "books_and_supplies_per_year_usd",
-        "other_expenses_on_campus_per_year_usd",
-        "other_expenses_off_campus_per_year_usd",
-        "other_expenses_with_family_per_year_usd",
-        "pell_share",
-        "website",
-      )
+    internal val NON_NULL_SUMMARY_COLUMNS: List<String> = CollegesDao.NON_NULL_COUNTABLE_COLUMNS.toList()
 
     // Optional-metric domains, mirrored from the 0015 CHECKs (the DB CHECK is the
     // backstop; this duplication is intentional defense-in-depth). Required-field
@@ -1942,12 +1872,6 @@ class CollegeScorecardLoader(
     private const val RATE_MIN = ScorecardInstitutionColumns.RATE_MIN
     private const val RATE_MAX = ScorecardInstitutionColumns.RATE_MAX
 
-    // A gross published cost cannot be negative -- the loader-side twin of
-    // `db/schema/0062`'s `*_nonneg_check` constraints (and of the same rule on
-    // the older money columns), derived from the shared home the
-    // canonical-money fill reads too (RFC 158).
-    private const val GROSS_USD_MIN = ScorecardInstitutionColumns.GROSS_USD_MIN
-    private const val GROSS_USD_MAX = ScorecardInstitutionColumns.GROSS_USD_MAX
     private const val CREDENTIAL_LEVEL_MIN = 1
     private const val CREDENTIAL_LEVEL_MAX = 8
   }

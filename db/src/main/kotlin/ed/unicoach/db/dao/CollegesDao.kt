@@ -2,6 +2,9 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.models.AnchoredAxis
+import ed.unicoach.db.models.CohortAddresses
+import ed.unicoach.db.models.CohortResidencyScope
+import ed.unicoach.db.models.CohortStatAddress
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
@@ -15,8 +18,10 @@ import ed.unicoach.db.models.CollegeSimilarityPage
 import ed.unicoach.db.models.CollegeSummary
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.InstitutionSector
+import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
@@ -180,25 +185,7 @@ object CollegesDao :
       undergradEnrollmentHeadcount = rs.intOrNull("undergrad_enrollment_headcount"),
       admissionRateShare = rs.doubleOrNull("admission_rate_share"),
       satAverageEquivalentScore = rs.intOrNull("sat_average_equivalent_score"),
-      costOfAttendancePerYearUsd = rs.intOrNull("cost_of_attendance_per_year_usd"),
-      netPricePerYearUsd = rs.intOrNull("net_price_per_year_usd"),
-      netPricePerYearIncomeQ1Usd = rs.intOrNull("net_price_per_year_income_q1_usd"),
-      netPricePerYearIncomeQ2Usd = rs.intOrNull("net_price_per_year_income_q2_usd"),
-      netPricePerYearIncomeQ3Usd = rs.intOrNull("net_price_per_year_income_q3_usd"),
-      netPricePerYearIncomeQ4Usd = rs.intOrNull("net_price_per_year_income_q4_usd"),
-      netPricePerYearIncomeQ5Usd = rs.intOrNull("net_price_per_year_income_q5_usd"),
-      tuitionAndFeesInStatePerYearUsd = rs.intOrNull("tuition_and_fees_in_state_per_year_usd"),
-      tuitionAndFeesOutOfStatePerYearUsd = rs.intOrNull("tuition_and_fees_out_of_state_per_year_usd"),
       completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
-      medianEarnings10yAfterEntryUsd = rs.intOrNull("median_earnings_10y_after_entry_usd"),
-      medianDebtAtCompletionUsd = rs.intOrNull("median_debt_at_completion_usd"),
-      housingAndFoodOnCampusPerYearUsd = rs.intOrNull("housing_and_food_on_campus_per_year_usd"),
-      housingAndFoodOffCampusPerYearUsd = rs.intOrNull("housing_and_food_off_campus_per_year_usd"),
-      booksAndSuppliesPerYearUsd = rs.intOrNull("books_and_supplies_per_year_usd"),
-      otherExpensesOnCampusPerYearUsd = rs.intOrNull("other_expenses_on_campus_per_year_usd"),
-      otherExpensesOffCampusPerYearUsd = rs.intOrNull("other_expenses_off_campus_per_year_usd"),
-      otherExpensesWithFamilyPerYearUsd = rs.intOrNull("other_expenses_with_family_per_year_usd"),
-      pellShare = rs.doubleOrNull("pell_share"),
       website = rs.getString("website"),
       aliases = rs.getStringList("aliases"),
       createdAt = rs.getInstant("created_at"),
@@ -294,15 +281,26 @@ object CollegesDao :
           rs.getTuitionTierReading("in_state_tuition"),
           rs.getTuitionTierReading("out_of_state_tuition"),
         ),
-      netPricePerYearIncomeQ1Usd = rs.intOrNull("net_price_per_year_income_q1_usd"),
-      netPricePerYearIncomeQ2Usd = rs.intOrNull("net_price_per_year_income_q2_usd"),
-      netPricePerYearIncomeQ3Usd = rs.intOrNull("net_price_per_year_income_q3_usd"),
-      netPricePerYearIncomeQ4Usd = rs.intOrNull("net_price_per_year_income_q4_usd"),
-      netPricePerYearIncomeQ5Usd = rs.intOrNull("net_price_per_year_income_q5_usd"),
+      // The band prices, the earnings, the debt and the Pell share come from
+      // [CANONICAL_COHORT_LATERAL] -- `cohort_money_stats` at the full address
+      // (RFC 176) -- and no longer off the publisher-shaped `colleges`
+      // columns. The ALIASES are the lateral's, and deliberately not the old
+      // column names: a `c.` select left behind by a half-done move cannot
+      // then feed this mapper by accident. [CollegeMatch]'s field names and
+      // every `CollegeMatchRow` wire key are unchanged -- a source move, not a
+      // contract change.
+      //
+      // ITERATED, never five hand-paired arms: the band that NAMED the column
+      // is the band the value is filed under, so no arm exists to transpose
+      // and ship a real price under the wrong dollar range.
+      netPriceUsdByBand =
+        IncomeBand.entries
+          .mapNotNull { band -> rs.intOrNull(netPriceColumn(band))?.let { band to it } }
+          .toMap(),
       completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
-      medianEarnings10yAfterEntryUsd = rs.intOrNull("median_earnings_10y_after_entry_usd"),
-      medianDebtAtCompletionUsd = rs.intOrNull("median_debt_at_completion_usd"),
-      pellShare = rs.doubleOrNull("pell_share"),
+      medianEarnings10yAfterEntryUsd = rs.intOrNull(MEDIAN_EARNINGS_COLUMN),
+      medianDebtAtCompletionUsd = rs.intOrNull(MEDIAN_DEBT_COLUMN),
+      pellShare = rs.doubleOrNull(PELL_SHARE_COLUMN),
       website = rs.getString("website"),
       programTitles = titles,
       ipedsSurveyYear = rs.intOrNull("ipeds_survey_year"),
@@ -342,14 +340,10 @@ object CollegesDao :
       WITH up AS (
         INSERT INTO colleges (
           ipeds_unit_id, opeid, name, city, state, region, locale, latitude, longitude,
-          control, undergrad_enrollment_headcount, admission_rate_share, sat_average_equivalent_score, cost_of_attendance_per_year_usd,
-          net_price_per_year_usd, tuition_and_fees_in_state_per_year_usd, tuition_and_fees_out_of_state_per_year_usd, completion_rate_150pct_4yr_share,
-          median_earnings_10y_after_entry_usd, pell_share, website, net_price_per_year_income_q1_usd, net_price_per_year_income_q2_usd,
-          net_price_per_year_income_q3_usd, net_price_per_year_income_q4_usd, net_price_per_year_income_q5_usd, median_debt_at_completion_usd,
-          housing_and_food_on_campus_per_year_usd, housing_and_food_off_campus_per_year_usd, books_and_supplies_per_year_usd,
-          other_expenses_on_campus_per_year_usd, other_expenses_off_campus_per_year_usd, other_expenses_with_family_per_year_usd
+          control, undergrad_enrollment_headcount, admission_rate_share, sat_average_equivalent_score,
+          completion_rate_150pct_4yr_share, website
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (ipeds_unit_id) DO UPDATE SET
           opeid = EXCLUDED.opeid,
           name = EXCLUDED.name,
@@ -363,55 +357,21 @@ object CollegesDao :
           undergrad_enrollment_headcount = EXCLUDED.undergrad_enrollment_headcount,
           admission_rate_share = EXCLUDED.admission_rate_share,
           sat_average_equivalent_score = EXCLUDED.sat_average_equivalent_score,
-          cost_of_attendance_per_year_usd = EXCLUDED.cost_of_attendance_per_year_usd,
-          net_price_per_year_usd = EXCLUDED.net_price_per_year_usd,
-          tuition_and_fees_in_state_per_year_usd = EXCLUDED.tuition_and_fees_in_state_per_year_usd,
-          tuition_and_fees_out_of_state_per_year_usd = EXCLUDED.tuition_and_fees_out_of_state_per_year_usd,
           completion_rate_150pct_4yr_share = EXCLUDED.completion_rate_150pct_4yr_share,
-          median_earnings_10y_after_entry_usd = EXCLUDED.median_earnings_10y_after_entry_usd,
-          pell_share = EXCLUDED.pell_share,
           website = EXCLUDED.website,
-          net_price_per_year_income_q1_usd = EXCLUDED.net_price_per_year_income_q1_usd,
-          net_price_per_year_income_q2_usd = EXCLUDED.net_price_per_year_income_q2_usd,
-          net_price_per_year_income_q3_usd = EXCLUDED.net_price_per_year_income_q3_usd,
-          net_price_per_year_income_q4_usd = EXCLUDED.net_price_per_year_income_q4_usd,
-          net_price_per_year_income_q5_usd = EXCLUDED.net_price_per_year_income_q5_usd,
-          median_debt_at_completion_usd = EXCLUDED.median_debt_at_completion_usd,
-          housing_and_food_on_campus_per_year_usd = EXCLUDED.housing_and_food_on_campus_per_year_usd,
-          housing_and_food_off_campus_per_year_usd = EXCLUDED.housing_and_food_off_campus_per_year_usd,
-          books_and_supplies_per_year_usd = EXCLUDED.books_and_supplies_per_year_usd,
-          other_expenses_on_campus_per_year_usd = EXCLUDED.other_expenses_on_campus_per_year_usd,
-          other_expenses_off_campus_per_year_usd = EXCLUDED.other_expenses_off_campus_per_year_usd,
-          other_expenses_with_family_per_year_usd = EXCLUDED.other_expenses_with_family_per_year_usd,
           version = colleges.version + 1
         WHERE (
           colleges.opeid, colleges.name, colleges.city, colleges.state,
           colleges.region, colleges.locale, colleges.latitude, colleges.longitude,
           colleges.control, colleges.undergrad_enrollment_headcount, colleges.admission_rate_share,
-          colleges.sat_average_equivalent_score, colleges.cost_of_attendance_per_year_usd, colleges.net_price_per_year_usd,
-          colleges.tuition_and_fees_in_state_per_year_usd, colleges.tuition_and_fees_out_of_state_per_year_usd,
-          colleges.completion_rate_150pct_4yr_share, colleges.median_earnings_10y_after_entry_usd, colleges.pell_share,
-          colleges.website, colleges.net_price_per_year_income_q1_usd, colleges.net_price_per_year_income_q2_usd,
-          colleges.net_price_per_year_income_q3_usd, colleges.net_price_per_year_income_q4_usd, colleges.net_price_per_year_income_q5_usd,
-          colleges.median_debt_at_completion_usd,
-          colleges.housing_and_food_on_campus_per_year_usd, colleges.housing_and_food_off_campus_per_year_usd,
-          colleges.books_and_supplies_per_year_usd, colleges.other_expenses_on_campus_per_year_usd,
-          colleges.other_expenses_off_campus_per_year_usd, colleges.other_expenses_with_family_per_year_usd,
-          colleges.ipeds_unit_id
+          colleges.sat_average_equivalent_score, colleges.completion_rate_150pct_4yr_share,
+          colleges.website, colleges.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
           EXCLUDED.region, EXCLUDED.locale, EXCLUDED.latitude, EXCLUDED.longitude,
           EXCLUDED.control, EXCLUDED.undergrad_enrollment_headcount, EXCLUDED.admission_rate_share,
-          EXCLUDED.sat_average_equivalent_score, EXCLUDED.cost_of_attendance_per_year_usd, EXCLUDED.net_price_per_year_usd,
-          EXCLUDED.tuition_and_fees_in_state_per_year_usd, EXCLUDED.tuition_and_fees_out_of_state_per_year_usd,
-          EXCLUDED.completion_rate_150pct_4yr_share, EXCLUDED.median_earnings_10y_after_entry_usd, EXCLUDED.pell_share,
-          EXCLUDED.website, EXCLUDED.net_price_per_year_income_q1_usd, EXCLUDED.net_price_per_year_income_q2_usd,
-          EXCLUDED.net_price_per_year_income_q3_usd, EXCLUDED.net_price_per_year_income_q4_usd, EXCLUDED.net_price_per_year_income_q5_usd,
-          EXCLUDED.median_debt_at_completion_usd,
-          EXCLUDED.housing_and_food_on_campus_per_year_usd, EXCLUDED.housing_and_food_off_campus_per_year_usd,
-          EXCLUDED.books_and_supplies_per_year_usd, EXCLUDED.other_expenses_on_campus_per_year_usd,
-          EXCLUDED.other_expenses_off_campus_per_year_usd, EXCLUDED.other_expenses_with_family_per_year_usd,
-          EXCLUDED.ipeds_unit_id
+          EXCLUDED.sat_average_equivalent_score, EXCLUDED.completion_rate_150pct_4yr_share,
+          EXCLUDED.website, EXCLUDED.ipeds_unit_id
         )
         RETURNING *
       )
@@ -444,26 +404,8 @@ object CollegesDao :
         stmt.setIntOrNull(next(), input.undergradEnrollmentHeadcount)
         stmt.setDoubleOrNull(next(), input.admissionRateShare)
         stmt.setIntOrNull(next(), input.satAverageEquivalentScore)
-        stmt.setIntOrNull(next(), input.costOfAttendancePerYearUsd)
-        stmt.setIntOrNull(next(), input.netPricePerYearUsd)
-        stmt.setIntOrNull(next(), input.tuitionAndFeesInStatePerYearUsd)
-        stmt.setIntOrNull(next(), input.tuitionAndFeesOutOfStatePerYearUsd)
         stmt.setDoubleOrNull(next(), input.completionRate150pct4yrShare)
-        stmt.setIntOrNull(next(), input.medianEarnings10yAfterEntryUsd)
-        stmt.setDoubleOrNull(next(), input.pellShare)
         stmt.setStringOrNull(next(), input.website)
-        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ1Usd)
-        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ2Usd)
-        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ3Usd)
-        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ4Usd)
-        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ5Usd)
-        stmt.setIntOrNull(next(), input.medianDebtAtCompletionUsd)
-        stmt.setIntOrNull(next(), input.housingAndFoodOnCampusPerYearUsd)
-        stmt.setIntOrNull(next(), input.housingAndFoodOffCampusPerYearUsd)
-        stmt.setIntOrNull(next(), input.booksAndSuppliesPerYearUsd)
-        stmt.setIntOrNull(next(), input.otherExpensesOnCampusPerYearUsd)
-        stmt.setIntOrNull(next(), input.otherExpensesOffCampusPerYearUsd)
-        stmt.setIntOrNull(next(), input.otherExpensesWithFamilyPerYearUsd)
         // The UNION ALL arm's own `WHERE ipeds_unit_id = ?` -- positionally last.
         stmt.setInt(next(), input.ipedsUnitId)
       },
@@ -873,12 +815,10 @@ object CollegesDao :
         i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
         i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN,
-        c.city, c.net_price_per_year_income_q1_usd, c.net_price_per_year_income_q2_usd,
-        c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd,
-        c.net_price_per_year_income_q5_usd, c.median_earnings_10y_after_entry_usd,
-        c.median_debt_at_completion_usd, c.pell_share, c.website,
+        c.city, c.website,
         ci.survey_year AS ipeds_survey_year,
         $PUBLISHED_TUITION_TIERS_SELECT,
+        $CANONICAL_COHORT_SELECT,
         t.titles AS program_titles,
         t.census_year AS programs_census_survey_year
       FROM (
@@ -899,6 +839,7 @@ object CollegesDao :
       JOIN colleges c ON c.id = i.college_id
       LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = i.ipeds_unit_id
       $PUBLISHED_TUITION_TIERS_LATERAL
+      $CANONICAL_COHORT_LATERAL
       LEFT JOIN LATERAL (
         SELECT $titlesSelect AS titles, max(pc.survey_year) AS census_year
         FROM college_programs_census pc
@@ -1503,12 +1444,10 @@ object CollegesDao :
         i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
         i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN, i.distance$scoredColumns,
-        c.city, c.net_price_per_year_income_q1_usd, c.net_price_per_year_income_q2_usd,
-        c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd,
-        c.net_price_per_year_income_q5_usd, c.median_earnings_10y_after_entry_usd,
-        c.median_debt_at_completion_usd, c.pell_share, c.website,
+        c.city, c.website,
         ci.survey_year AS ipeds_survey_year,
         $PUBLISHED_TUITION_TIERS_SELECT,
+        $CANONICAL_COHORT_SELECT,
         t.titles AS program_titles,
         t.census_year AS programs_census_survey_year
       FROM (
@@ -1533,6 +1472,7 @@ object CollegesDao :
       JOIN colleges c ON c.id = i.college_id
       LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = i.ipeds_unit_id
       $PUBLISHED_TUITION_TIERS_LATERAL
+      $CANONICAL_COHORT_LATERAL
       LEFT JOIN LATERAL (
         SELECT $titlesSelect AS titles, max(pc.survey_year) AS census_year
         FROM college_programs_census pc
@@ -2449,6 +2389,352 @@ object CollegesDao :
     ) tiers ON TRUE
     """.trimIndent()
 
+  /**
+   * The four canonical cohort addresses the search / similar payload serves
+   * (RFC 176 D4), each named from the ONE catalogue in `:db`
+   * ([CohortAddresses]) that the fill writing these cells names too.
+   *
+   * Which addresses THIS surface serves is a per-surface decision, so the list
+   * lives here; what each address IS is not, so the members do not. The grid
+   * holds exactly ONE address per measure, which is what lets the lateral
+   * group by `(measure, income_band)` alone -- a rule now EVALUATED rather
+   * than merely written down ([requireOneAddressPerProjectedMeasure]).
+   */
+  val SERVED_ADDRESSES: Set<CohortStatAddress> =
+    setOf(
+      CohortAddresses.AVG_NET_PRICE,
+      CohortAddresses.MEDIAN_EARNINGS_10Y,
+      CohortAddresses.MEDIAN_DEBT_AT_COMPLETION,
+      CohortAddresses.PELL_SHARE,
+    )
+
+  /**
+   * The address as a SQL row-value, generated from the enums and never typed
+   * as literals (RFC 176 D4).
+   *
+   * A DAO-private extension, not a method on [CohortStatAddress]: the type
+   * says WHERE a cell lives, and rendering that as one dialect's SQL is this
+   * reader's business alone.
+   */
+  private fun CohortStatAddress.createTupleSql(alias: String): String =
+    "($alias.measure, $alias.population, $alias.aid_scope) = " +
+      "('${measure.value}', '${population.value}', '${aidScope.value}')"
+
+  /**
+   * ONE cell of this address: the triple PLUS the band axis, which is what
+   * finishes naming a cell.
+   *
+   * The band parameter is REQUIRED, and `null` -- the store's own way of
+   * saying "the overall figure" (`0083`) -- is spelled by this function rather
+   * than by the caller. A single-row read used to state the address through
+   * the type and then hand-write `AND cs.income_band IS NULL` beside it;
+   * deleting that line compiled, and `LIMIT 1` then served some BAND's price
+   * as the corpus-wide net-price ruler.
+   */
+  private fun CohortStatAddress.createCellSql(
+    alias: String,
+    incomeBand: IncomeBand?,
+  ): String =
+    createTupleSql(alias) +
+      if (incomeBand == null) {
+        " AND $alias.income_band IS NULL"
+      } else {
+        " AND $alias.income_band = '${incomeBand.value}'"
+      }
+
+  /**
+   * How the rows of ONE cohort cell order, newest-and-right-scope first --
+   * a TOTAL order, which is the whole point of it.
+   *
+   * Two rows of one cell are separated by exactly two columns the address does
+   * not pin: `residency_scope` and `vintage` (`cohort_money_stats_natural_key`,
+   * `0083`). Pin both and the natural key leaves exactly ONE row, so what the
+   * reader serves can never be whichever row the planner happened to return
+   * first.
+   *
+   * - **Scope first, and the rule is stated rather than pinned in the WHERE.**
+   *   The scope a college's figures are quoted on is CONTROL-dependent, and
+   *   both fills choose it that way: a public school's cohorts are
+   *   in-state-rate-paying and everyone else's are `all` (RFC 157 --
+   *   `CanonicalMoneyLoader.blendScope`, `CollegeSfaLoader.SfaFamily`).
+   *   Pinning one scope in the WHERE would silently drop every public school's
+   *   net price; preferring the one that MATCHES THIS ROW'S CONTROL serves the
+   *   figure the publisher meant, and still answers when only the other exists.
+   * - **Then vintage, dated years first and an UNDATED row (a NULL `vintage`
+   *   since `0087`) last.** `ORDER BY vintage DESC` alone would put the NULLs
+   *   FIRST -- PostgreSQL's default for a descending sort -- and an undated row
+   *   would then outrank every dated one. `:service` states the same policy
+   *   from the Kotlin end (`CollegeFigures.VINTAGE_ORDER`, a `nullsFirst()`
+   *   read as "undated sorts oldest"), and that comparator exists because the
+   *   value was once the literal `'undated'`, which sorted ABOVE every year by
+   *   char code. This is the same accident, in the other language.
+   *
+   * `:service` meets the two-scope case and REFUSES it
+   * (`CollegeFigures.cohortOf`: "one cohort address is one population basis").
+   * The two layers differ ON PURPOSE. There, one college's cost answer is the
+   * whole answer, and a wrong population basis is worth failing over. Here the
+   * read is one row of a ranked PAGE and the same expression fills the whole
+   * corpus's price ruler, so throwing would fail a search that asked nothing
+   * about the offending school. A total order answers instead, by the same
+   * rule the fills wrote by.
+   *
+   * [control] is the outer row's own control test, because the two callers
+   * hold control in two shapes: `colleges.control` is the published SMALLINT
+   * code, `college_search_index.control` is our word (RFC 150 D61). It is a
+   * [ControlSource] and not the bare SQL, because the two tests also name two
+   * different OUTER ALIASES (`c.` and `i.`): as strings they were swappable at
+   * compile time, and the swap is a `42P01` at best -- at worst, in a statement
+   * where both aliases are in scope, a silently inverted residency preference.
+   *
+   * The scope preference is a PREFERENCE and the vintage tie is broken by year,
+   * so neither key is total on its own; `residency_scope` itself closes the
+   * order last. Without it "0 before 1" is total only while
+   * [CohortResidencyScope] has exactly two members -- a third would put two rows
+   * of one cell in the losing rank with nothing to separate them, and
+   * `DISTINCT ON` would serve whichever the planner returned first.
+   */
+  private fun createCohortRowOrderSql(
+    alias: String,
+    control: ControlSource,
+  ): String =
+    "(CASE WHEN $alias.residency_scope = (CASE WHEN ${control.isPublicSql} " +
+      "THEN '${CohortResidencyScope.IN_STATE_RATE_PAYING.value}' " +
+      "ELSE '${CohortResidencyScope.ALL.value}' END) THEN 0 ELSE 1 END), " +
+      "$alias.vintage DESC NULLS LAST, $alias.residency_scope"
+
+  /**
+   * WHOSE control column [createCohortRowOrderSql] tests, as a TYPE rather than as a
+   * hand-passed SQL string.
+   *
+   * Each member carries both halves of one caller's answer -- the outer alias
+   * and the shape control is held in there -- so the two cannot be mixed: the
+   * payload statement reads `college_search_index.control`, our word (RFC 150
+   * D61), through `i`; the rebuild reads `colleges.control`, the published
+   * code, through `c`.
+   */
+  private enum class ControlSource(
+    val isPublicSql: String,
+  ) {
+    /** The payload half of the search / similar statements, where `i` is `college_search_index`. */
+    SEARCH_INDEX_ROW("i.control = '${InstitutionControl.PUBLIC.label}'"),
+
+    /** The index rebuild's SELECT, where `c` is `colleges`. */
+    COLLEGE_ROW("c.control = ${InstitutionControl.PUBLIC.code}"),
+  }
+
+  /**
+   * The lateral's aliases for the three overall figures, stated ONCE each.
+   *
+   * A name here is the join between three sites -- the cell the lateral
+   * projects, the payload select list, and the row mapper's `rs.get...` -- and
+   * three raw strings could disagree, which is a `42703` at best and a NULL
+   * field at worst. The five band aliases already have this via
+   * [netPriceColumn]; these are the same rule for the cells that do not
+   * band.
+   */
+  private const val MEDIAN_EARNINGS_COLUMN = "median_earnings_10y"
+
+  /** The lateral's alias for the median debt at completion. See [MEDIAN_EARNINGS_COLUMN]. */
+  private const val MEDIAN_DEBT_COLUMN = "median_debt"
+
+  /**
+   * The lateral's alias for the Pell share. See [MEDIAN_EARNINGS_COLUMN].
+   *
+   * Deliberately NOT `pell_share`, which is one of the eighteen names `0094`
+   * dropped from `colleges`: an alias that spells a dropped column would let a
+   * leftover `c.pell_share` in some select list feed this mapper, which is the
+   * one accident these aliases exist to make impossible.
+   */
+  private const val PELL_SHARE_COLUMN = "pell_share_of_undergraduates"
+
+  /**
+   * The money the search / similar payload carries about ONE returned row,
+   * read live from `cohort_money_stats` -- RFC 176 D2, and the reason it costs
+   * no column on `college_search_index`.
+   *
+   * It sits on the PAYLOAD half of both page statements, beside
+   * [PUBLISHED_TUITION_TIERS_LATERAL] and shaped exactly like it: these are
+   * DISPLAY values for the at-most-25 rows being returned, never rulers.
+   * Nothing filters, sorts or ranks the corpus on them -- confirmed against
+   * `CollegeQuery`, [PriceRuler] and `PriceRulerSql` -- so materialising them
+   * into the index would put eight more columns into a table that exists to
+   * rank a corpus, and leave every one of them one rebuild stale.
+   *
+   * Three rules are in the SQL and all three are load-bearing:
+   * - **Each disjunct is a FULL address triple** ([SERVED_ADDRESSES]),
+   *   generated from the house enums and never typed as a SQL literal.
+   *   `cohort_money_stats` holds TWO `avg_net_price` series that differ by
+   *   population and aid scope and NEVER by vintage, so a `(measure,
+   *   income_band)` key would serve IPEDS SFA's grant-aided cohort as the
+   *   Title IV band price -- RFC 166 tier-0 blocker 1, with every test green.
+   * - **`DISTINCT ON (measure, income_band)` over [createCohortRowOrderSql] serves ONE
+   *   row per cell**, the rule the cost path folds in Kotlin. The grid holds
+   *   one address per measure, so those two columns name a cell exactly; the
+   *   order then pins the two columns that separate two rows of one cell --
+   *   residency scope, preferred to match this row's control, and vintage --
+   *   so the natural key leaves exactly one candidate and the outer aggregates
+   *   see AT MOST ONE row per cell by construction (`max(...)` is a
+   *   projection, not a comparison).
+   * - **No `value IS NOT NULL` filter.** A suppressed newest row is the
+   *   publisher's own answer about the latest cohort; skipping it to reach an
+   *   older figure would quote a year the school has since restated. The cost
+   *   path takes the latest vintage and then reads its status, and this reads
+   *   the same row it does.
+   *
+   * The dollar cells are rounded to whole dollars HALF UP
+   * ([createWholeDollarsHalfUpSql]) -- the cost surface's own rule, so one school can
+   * never quote two integers for one figure -- which is what the `INTEGER`
+   * columns they replace held; the Pell share stays the fraction it is stored
+   * as, on both sides.
+   *
+   * DECLARATION ORDER IS LOAD-BEARING. This initialiser runs eagerly, and the
+   * named refusal [requireOneAddressPerProjectedMeasure] promises depends on
+   * it standing BELOW [SERVED_ADDRESSES]: an object's properties initialise in
+   * source order, so moving this line above that set would read it as `null`
+   * and turn the refusal into a bare NPE inside the static initialiser.
+   */
+  private val CANONICAL_COHORT_LATERAL = createCanonicalCohortLateral()
+
+  /** The money columns [CANONICAL_COHORT_LATERAL] contributes, for both payload select lists. */
+  private val CANONICAL_COHORT_SELECT =
+    (
+      IncomeBand.entries.map { "money.${netPriceColumn(it)}" } +
+        listOf(MEDIAN_EARNINGS_COLUMN, MEDIAN_DEBT_COLUMN, PELL_SHARE_COLUMN).map { "money.$it" }
+    ).joinToString(", ")
+
+  /**
+   * The lateral's alias for one band's net price, named by the BAND'S OWN CODE
+   * ([IncomeBand.value]) so the five aliases and the five bands cannot be
+   * transposed by an edit to either list.
+   *
+   * Not the published `q1..q5` digit. That positional convention is exactly
+   * what RFC 176 deleted from the Kotlin field names -- five parallel slots a
+   * `when` could file under the wrong bracket -- and re-encoding it in the
+   * alias would have put it back one layer down, on the same line as the band
+   * code the WHERE is already generated from.
+   */
+  private fun netPriceColumn(band: IncomeBand): String = "net_price_income_${band.value}"
+
+  /**
+   * The ONE row of a cell, projected out of the already-deduplicated `s`.
+   *
+   * `max(...)` is a projection here rather than a comparison: `DISTINCT ON`
+   * has already left at most one row per `(measure, income_band)`, so this
+   * picks that row's value out of the group. Named, so the four cells state
+   * their address the SAME way and a hand-written `FILTER` cannot address a
+   * cell the deduplication never keyed.
+   *
+   * A null [band] is the store's own "overall figure" (`0083`) and is spelled
+   * `IS NULL` by this function, never by the caller -- the rule
+   * [CohortStatAddress.createCellSql] states for the single-row reads.
+   */
+  private fun createCohortCellValueSql(
+    measure: MoneyMeasure,
+    band: IncomeBand?,
+  ): String =
+    "max(s.value) FILTER (WHERE s.measure = '${measure.value}' " +
+      if (band == null) "AND s.income_band IS NULL)" else "AND s.income_band = '${band.value}')"
+
+  /**
+   * One cohort value as whole dollars, rounded HALF UP.
+   *
+   * `floor(x + 0.5)`, and NOT SQL `round()`. PostgreSQL's `round()` breaks a
+   * tie AWAY FROM ZERO, and `CollegeFigures.toWholeDollars` -- the cost
+   * surface's rounding -- uses Kotlin's `roundToInt`, which breaks it UPWARD.
+   * The two agree on every positive value and disagree on a negative half
+   * dollar, which `cohort_money_stats.value` admits BY DESIGN (aid exceeding
+   * cost at the lowest bands is why that column carries no non-negative
+   * CHECK). A -1234.5 band net price would then read -1235 on search and
+   * -1234 on the cost page: one school quoting two numbers for one figure.
+   *
+   * Stated once and used by every dollar cell in BOTH laterals, so the two
+   * readers of this table cannot round differently again.
+   */
+  private fun createWholeDollarsHalfUpSql(valueSql: String): String = "floor(($valueSql) + 0.5)::INTEGER"
+
+  /**
+   * The lateral, assembled as ONE list of cells so the five band cells are
+   * GENERATED from [IncomeBand] and the four scalar cells are stated once
+   * each. Whitespace in generated SQL is not a style question here: the
+   * statement text is what `CollegesDaoTest`'s scope pins read.
+   *
+   * The address set is CHECKED here, at the one site that can see both it and
+   * the cells: see [SERVED_ADDRESSES].
+   */
+  private fun createCanonicalCohortLateral(): String {
+    // The measures this lateral actually PROJECTS a cell for -- the second half
+    // of the check below, written beside the cells rather than as a list to
+    // maintain: an address at a measure no cell reads would be admitted by the
+    // WHERE and then silently discarded.
+    val bandedMeasure = MoneyMeasure.AVG_NET_PRICE
+    val overallMeasures =
+      listOf(MoneyMeasure.MEDIAN_EARNINGS_10Y, MoneyMeasure.MEDIAN_DEBT_AT_COMPLETION, MoneyMeasure.PELL_SHARE)
+    requireOneAddressPerProjectedMeasure(listOf(bandedMeasure) + overallMeasures)
+
+    val bandCells =
+      IncomeBand.entries.map { band ->
+        "${createWholeDollarsHalfUpSql(createCohortCellValueSql(bandedMeasure, band))} AS ${netPriceColumn(band)}"
+      }
+    val overallCells =
+      listOf(
+        "${createWholeDollarsHalfUpSql(createCohortCellValueSql(MoneyMeasure.MEDIAN_EARNINGS_10Y, band = null))} " +
+          "AS $MEDIAN_EARNINGS_COLUMN",
+        "${createWholeDollarsHalfUpSql(createCohortCellValueSql(MoneyMeasure.MEDIAN_DEBT_AT_COMPLETION, band = null))} " +
+          "AS $MEDIAN_DEBT_COLUMN",
+        // The Pell share is a 0-1 SHARE, not money ([MoneyMeasure.unit]), so it
+        // is served as the fraction it is stored as. Rounded like a dollar cell
+        // it would read 0 for every school.
+        "${createCohortCellValueSql(MoneyMeasure.PELL_SHARE, band = null)} AS $PELL_SHARE_COLUMN",
+      )
+    val cells = (bandCells + overallCells).joinToString(",\n    ")
+    val addresses = SERVED_ADDRESSES.joinToString("\n      OR ") { it.createTupleSql("cs") }
+    return """
+      LEFT JOIN LATERAL (
+        SELECT
+          $cells
+        FROM (
+          SELECT DISTINCT ON (cs.measure, cs.income_band)
+                 cs.measure, cs.income_band, cs.value
+          FROM cohort_money_stats cs
+          WHERE cs.college_id = i.college_id
+            AND ($addresses)
+          ORDER BY cs.measure, cs.income_band, ${createCohortRowOrderSql("cs", ControlSource.SEARCH_INDEX_ROW)}
+        ) s
+      ) money ON TRUE
+      """.trimIndent()
+  }
+
+  /**
+   * Refuses a [SERVED_ADDRESSES] this lateral cannot serve: the set is
+   * the reader's whole input boundary, and its precondition -- one address per
+   * projected measure -- was documented three times and evaluated nowhere.
+   *
+   * Two things are refused, and they are different failures. A measure
+   * addressed TWICE is admitted by the WHERE and then merged by
+   * `DISTINCT ON (measure, income_band)` into one cell, so two populations'
+   * numbers would be served under one label: RFC 166 tier-0 blocker 1, which
+   * adding `SFA_GRANT_AIDED_NET_PRICE` to the set would have reintroduced
+   * with every test green. A measure addressed but NOT projected is admitted
+   * and then silently discarded, which is a set that no longer says what this
+   * surface serves.
+   *
+   * At construction, so a wrong set cannot reach a query: the DAO fails to
+   * initialise rather than answering a search with a cohort nobody asked for.
+   */
+  private fun requireOneAddressPerProjectedMeasure(projected: List<MoneyMeasure>) {
+    val byMeasure = SERVED_ADDRESSES.groupBy { it.measure }
+    val doubled = byMeasure.filterValues { it.size != 1 }.keys.map { it.value }
+    require(doubled.isEmpty()) {
+      "one measure, one address: [$doubled] is addressed more than once, and " +
+        "DISTINCT ON (measure, income_band) would merge those cohorts into one cell"
+    }
+    require(byMeasure.keys == projected.toSet()) {
+      "the served addresses and the projected cells must name the same measures: " +
+        "addressed=[${byMeasure.keys.map { it.value }.sorted()}] " +
+        "projected=[${projected.map { it.value }.sorted()}]"
+    }
+  }
+
   /** The tier columns [PUBLISHED_TUITION_TIERS_LATERAL] contributes, for both payload select lists. */
   private const val PUBLISHED_TUITION_TIERS_SELECT =
     "tiers.in_district_tuition_usd, tiers.in_district_tuition_status, " +
@@ -2536,6 +2822,42 @@ object CollegesDao :
       ) $alias ON TRUE
       """.trimIndent()
   }
+
+  /**
+   * The OVERALL average net price of one college, read from
+   * `cohort_money_stats` at [CohortAddresses.AVG_NET_PRICE] in full -- the
+   * index rebuild's only money source (RFC 176 D3).
+   *
+   * `income_band IS NULL` is the store's own way of saying "the overall
+   * figure" (`0083`: not unanswered, not unknown, and never a sentinel
+   * `'overall'` band), so the five band rows of the SAME address cannot be
+   * mistaken for it. It is stated through `createCellSql` rather than as a line of
+   * hand-written SQL beside the address: the band is part of naming a cell,
+   * and a caller that could forget it would rank the whole corpus on some
+   * band's price.
+   *
+   * This is the address that made D4 necessary. The SFA fill writes a SECOND
+   * overall `avg_net_price` -- a grant-aided, full-time first-time cohort --
+   * at a NEWER vintage, so a lateral keyed on the measure alone would fill the
+   * whole corpus's price ruler with a different cohort's number, ranking every
+   * school against a figure the Scorecard never published. Population and aid
+   * scope are what tell the two apart; the vintage never does.
+   *
+   * LEFT, so a college with no canonical money keeps its index row and the
+   * column goes NULL -- the established rule of this INSERT, and the shape
+   * `excluded_unknown` already counts.
+   */
+  private val CANONICAL_NET_PRICE_LATERAL =
+    """
+    LEFT JOIN LATERAL (
+        SELECT ${createWholeDollarsHalfUpSql("cs.value")} AS net_price_per_year_usd
+        FROM cohort_money_stats cs
+        WHERE cs.college_id = c.id
+          AND ${CohortAddresses.AVG_NET_PRICE.createCellSql("cs", incomeBand = null)}
+        ORDER BY ${createCohortRowOrderSql("cs", ControlSource.COLLEGE_ROW)}
+        LIMIT 1
+    ) net ON TRUE
+    """.trimIndent()
 
   /**
    * Rebuilds `college_search_index` WHOLESALE inside the caller's transaction
@@ -2643,7 +2965,15 @@ object CollegesDao :
           $SECTOR_CASE,
           c.undergrad_enrollment_headcount,
           c.admission_rate_share,
-          c.net_price_per_year_usd,
+          -- The NET ruler's value, read from the canonical store at the FULL
+          -- address (RFC 176 D3/D4). It used to be copied off the `colleges`
+          -- column of the same name, which migration 0094 dropped; the INDEX
+          -- column `net_price_per_year_usd` stays -- it IS a ruler, the default
+          -- one and the no-residency-on-file fallback -- and only its SOURCE
+          -- moved. `net_price_percentile_share` is ranked
+          -- from it by [rankPercentiles], unchanged, so both stored shares
+          -- remain positions on one ladder.
+          net.net_price_per_year_usd,
           c.completion_rate_150pct_4yr_share,
           -- The published-price ruler (RFC 169), summed in the two LATERALs
           -- below. Four parts or no number, and never a subtraction: no aid can
@@ -2673,6 +3003,7 @@ object CollegesDao :
       LEFT JOIN carnegie_2021_size_settings  csz ON csz.code = ci.carnegie_size
       ${createPublishedPriceLateral(ResidencyBasis.IN_STATE, "ins")}
       ${createPublishedPriceLateral(ResidencyBasis.OUT_OF_STATE, "oos")}
+      $CANONICAL_NET_PRICE_LATERAL
       LEFT JOIN LATERAL (
           SELECT array_agg(a.slug ORDER BY a.code) AS slugs
           FROM unnest(coalesce(ci.athletic_assoc, '{}'::smallint[])) AS ord
@@ -2906,6 +3237,13 @@ object CollegesDao :
    * Every `colleges` column [nonNullCounts] may count — the closed identifier
    * allowlist (RFC 139). SQL has no identifier binding, so the boundary is this
    * set: anything outside it never becomes SQL text.
+   *
+   * It carries no money since RFC 176: the eighteen publisher money columns
+   * left `colleges` in migration `0094`, and this list becomes SQL, so a name
+   * left behind here would fail the ingest with `42703 column does not exist`
+   * AFTER the load. Its twin, `CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS`,
+   * is the same list and shrank in the same commit. The money axis of the
+   * provenance is `canonical_money_summary`.
    */
   val NON_NULL_COUNTABLE_COLUMNS: Set<String> =
     setOf(
@@ -2917,27 +3255,7 @@ object CollegesDao :
       "undergrad_enrollment_headcount",
       "admission_rate_share",
       "sat_average_equivalent_score",
-      "cost_of_attendance_per_year_usd",
-      "net_price_per_year_usd",
-      "net_price_per_year_income_q1_usd",
-      "net_price_per_year_income_q2_usd",
-      "net_price_per_year_income_q3_usd",
-      "net_price_per_year_income_q4_usd",
-      "net_price_per_year_income_q5_usd",
-      "tuition_and_fees_in_state_per_year_usd",
-      "tuition_and_fees_out_of_state_per_year_usd",
       "completion_rate_150pct_4yr_share",
-      "median_earnings_10y_after_entry_usd",
-      "median_debt_at_completion_usd",
-      // The six published cost components (RFC 149): counted so the ingest
-      // change summary proves they actually loaded.
-      "housing_and_food_on_campus_per_year_usd",
-      "housing_and_food_off_campus_per_year_usd",
-      "books_and_supplies_per_year_usd",
-      "other_expenses_on_campus_per_year_usd",
-      "other_expenses_off_campus_per_year_usd",
-      "other_expenses_with_family_per_year_usd",
-      "pell_share",
       "website",
     )
 

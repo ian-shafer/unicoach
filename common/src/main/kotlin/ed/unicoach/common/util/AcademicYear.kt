@@ -7,9 +7,11 @@ package ed.unicoach.common.util
  * A TYPE rather than a formatter over a bare `Int`, because a calendar year and
  * an academic year are different facts that share a representation. RFC 149
  * D-E's whole point is that an ingest year (a wall-clock `colleges.updated_at`
- * year, `CollegeCostProfile.ingestYear`) is NOT a vintage; while the label took
- * a bare `Int`, `label(profile.ingestYear)` was type-legal -- the one mistake
- * the work was done to prevent. Constructing this type is now the place that
+ * year) is NOT a vintage; while the label took a bare `Int`, labelling one was
+ * type-legal -- the one mistake the work was done to prevent. The field that
+ * held such a year, `CollegeCostProfile.ingestYear`, is gone: RFC 176 D11
+ * deleted it rather than re-source it, because money can no longer move
+ * `colleges.updated_at` at all. Constructing this type is now the place that
  * says "this number names an academic year", so a wall-clock year cannot be
  * spoken as one by accident.
  *

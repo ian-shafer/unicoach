@@ -48,12 +48,6 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
           .upsert(
             session,
             NewCollege(
-              housingAndFoodOnCampusPerYearUsd = null,
-              housingAndFoodOffCampusPerYearUsd = null,
-              booksAndSuppliesPerYearUsd = null,
-              otherExpensesOnCampusPerYearUsd = null,
-              otherExpensesOffCampusPerYearUsd = null,
-              otherExpensesWithFamilyPerYearUsd = null,
               ipedsUnitId = ipedsUnitId,
               opeid = null,
               name = "IPEDS U $ipedsUnitId",
@@ -67,19 +61,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
               undergradEnrollmentHeadcount = null,
               admissionRateShare = null,
               satAverageEquivalentScore = null,
-              costOfAttendancePerYearUsd = null,
-              netPricePerYearUsd = null,
-              netPricePerYearIncomeQ1Usd = null,
-              netPricePerYearIncomeQ2Usd = null,
-              netPricePerYearIncomeQ3Usd = null,
-              netPricePerYearIncomeQ4Usd = null,
-              netPricePerYearIncomeQ5Usd = null,
-              tuitionAndFeesInStatePerYearUsd = null,
-              tuitionAndFeesOutOfStatePerYearUsd = null,
               completionRate150pct4yrShare = null,
-              medianEarnings10yAfterEntryUsd = null,
-              medianDebtAtCompletionUsd = null,
-              pellShare = null,
               website = null,
             ),
           ).getOrThrow()
@@ -449,9 +431,9 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     // RFC 169's: the index gained four published-price columns and
     // `canonical-money` moved ahead of `search-index` to feed them.
     assertEquals(
-      8,
+      9,
       row.methodVersion,
-      "RFC 169 took the method version to 8: the index gained published-price columns fed by a reordered canonical-money phase",
+      "RFC 176 took the method version to 9: the institution phase writes no money, so `non_null` carries 10 keys, not 28",
     )
     assertTrue(row.sources.contains("ipeds-hd-joined-fixture.csv"), "sources names the HD file: ${row.sources}")
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")

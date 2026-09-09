@@ -11,7 +11,7 @@ package ed.unicoach.db.models
  * the different fact that the filter matched none of this college's programs.
  * A boundary omits the key entirely for the null.
  *
- * [netPricePerYearIncomeQ1Usd]..[netPricePerYearIncomeQ5Usd] are the average annual net price by household
+ * [netPriceUsdByBand] is the average annual net price by household
  * income band ($0-30k / 30,001-48k / 48,001-75k / 75,001-110k / 110k+) and
  * [medianDebtAtCompletionUsd] the median cumulative federal debt of completers (RFC 133) --
  * returned context only, never filters.
@@ -66,11 +66,18 @@ data class CollegeMatch(
    * sentence beside it is the whole of what we do not know.
    */
   val residencyTierBasis: ResidencyTierBasis,
-  val netPricePerYearIncomeQ1Usd: Int?,
-  val netPricePerYearIncomeQ2Usd: Int?,
-  val netPricePerYearIncomeQ3Usd: Int?,
-  val netPricePerYearIncomeQ4Usd: Int?,
-  val netPricePerYearIncomeQ5Usd: Int?,
+  /**
+   * The average annual net price, in whole US dollars (USD), by household
+   * income band, KEYED BY THE BAND it is about. A band with no served figure is ABSENT from the map, never a
+   * zero and never a null entry.
+   *
+   * A map rather than five parallel fields because band identity then lives in
+   * the key rather than in a name's `Q1..Q5` suffix. The five values are read
+   * from lateral aliases that deliberately do NOT share a token with any field
+   * name, so five hand-paired assignments could ship a real price under the
+   * wrong dollar range and only compile.
+   */
+  val netPriceUsdByBand: Map<IncomeBand, Int>,
   val completionRate150pct4yrShare: Double?,
   val medianEarnings10yAfterEntryUsd: Int?,
   val medianDebtAtCompletionUsd: Int?,

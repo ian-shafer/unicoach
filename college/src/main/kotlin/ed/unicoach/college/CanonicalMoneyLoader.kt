@@ -34,9 +34,11 @@ import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeSfaDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.CohortAddresses
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
+import ed.unicoach.db.models.CohortStatAddress
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeIpedsCharge
 import ed.unicoach.db.models.CollegeSfaCell
@@ -59,25 +61,6 @@ import org.apache.commons.csv.CSVRecord
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.util.UUID
-
-/**
- * WHERE one cohort statistic lives: the measure, the POPULATION it is about
- * and the aid relationship that bounds it -- the three columns that
- * together say which students a number describes.
- *
- * A type rather than three arguments, because the three must travel as one:
- * `avg_net_price` is filed for TWO populations in this store (the Title
- * IV-aided undergraduates the Scorecard's NPT4 band series describes, and
- * the full-time first-time aid cohort IPEDS SFA publishes a grant-aided net
- * price for), and a reader that keyed on the measure alone served the wrong
- * cohort's number under the right label -- RFC 166 tier-0 blocker 1, with
- * every test green.
- */
-data class CohortCoordinate(
-  val measure: MoneyMeasure,
-  val population: CohortPopulation,
-  val aidScope: CohortAidScope,
-)
 
 /**
  * The `canonical-money` fill (RFC 158): re-reads the pinned Scorecard CSV, the
@@ -494,7 +477,7 @@ class CanonicalMoneyLoader internal constructor(
     // apart from "this institution published nothing".
     fun stat(
       variable: String,
-      address: CohortCoordinate,
+      address: CohortStatAddress,
       residencyScope: CohortResidencyScope,
       incomeBand: IncomeBand? = null,
     ) {
@@ -548,7 +531,7 @@ class CanonicalMoneyLoader internal constructor(
         // makes upstream-wins bite: the publisher's own number displaces the
         // Scorecard's copy of it.
         for (band in IncomeBand.entries) {
-          stat(family.bandNetPrice(band, suffix), AVG_NET_PRICE, family.residencyScope, incomeBand = band)
+          stat(family.bandNetPrice(band, suffix), CohortAddresses.AVG_NET_PRICE, family.residencyScope, incomeBand = band)
         }
       }
     }
@@ -559,7 +542,7 @@ class CanonicalMoneyLoader internal constructor(
     // read off the MEASURE's unit, so no call site can forget it. The Pell RECIPIENT COUNT
     // is not here: a headcount is not money, so it is a
     // `cohort_population_counts` row (RFC 162).
-    stat(SfaVariables.PELL_SHARE, PELL_SHARE, CohortResidencyScope.ALL)
+    stat(SfaVariables.PELL_SHARE, CohortAddresses.PELL_SHARE, CohortResidencyScope.ALL)
     stat(SfaVariables.PELL_AVERAGE_AWARD, PELL_AVERAGE_AWARD, CohortResidencyScope.ALL)
     // The aid mix, all of it about the full-time first-time financial-aid
     // cohort. The aid scope follows the DENOMINATOR: a `_P` share is a share of
@@ -569,12 +552,12 @@ class CanonicalMoneyLoader internal constructor(
     for (mix in AID_MIX) {
       stat(
         "${mix.stem}_p",
-        CohortCoordinate(mix.shareMeasure, CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT, CohortAidScope.ALL),
+        CohortStatAddress(mix.shareMeasure, CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT, CohortAidScope.ALL),
         CohortResidencyScope.ALL,
       )
       stat(
         "${mix.stem}_a",
-        CohortCoordinate(mix.averageMeasure, CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT, mix.averageScope),
+        CohortStatAddress(mix.averageMeasure, CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT, mix.averageScope),
         CohortResidencyScope.ALL,
       )
     }
@@ -947,7 +930,7 @@ class CanonicalMoneyLoader internal constructor(
     stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
   ) {
     fun stat(
-      address: CohortCoordinate,
+      address: CohortStatAddress,
       residencyScope: CohortResidencyScope,
       incomeBand: IncomeBand?,
       vintage: AcademicYear?,
@@ -1000,7 +983,7 @@ class CanonicalMoneyLoader internal constructor(
       ) {
         val column = "$base$netPriceSuffix"
         stat(
-          address = AVG_NET_PRICE,
+          address = CohortAddresses.AVG_NET_PRICE,
           residencyScope = blendScope,
           incomeBand = band,
           vintage = BLENDED_AVERAGE_VINTAGE,
@@ -1016,7 +999,7 @@ class CanonicalMoneyLoader internal constructor(
     // and fabricating a year to satisfy the key is exactly what `undated`
     // exists to refuse.
     stat(
-      address = PELL_SHARE,
+      address = CohortAddresses.PELL_SHARE,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
       vintage = VINTAGE_UNDATED,
@@ -1024,7 +1007,7 @@ class CanonicalMoneyLoader internal constructor(
       sourceVariable = PCTPELL,
     )
     stat(
-      address = MEDIAN_DEBT_AT_COMPLETION,
+      address = CohortAddresses.MEDIAN_DEBT_AT_COMPLETION,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
       vintage = VINTAGE_UNDATED,
@@ -1032,7 +1015,7 @@ class CanonicalMoneyLoader internal constructor(
       sourceVariable = GRAD_DEBT_MDN,
     )
     stat(
-      address = MEDIAN_EARNINGS_10Y,
+      address = CohortAddresses.MEDIAN_EARNINGS_10Y,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
       vintage = VINTAGE_UNDATED,
@@ -1164,58 +1147,30 @@ class CanonicalMoneyLoader internal constructor(
     internal val BLENDED_AVERAGE_VINTAGE = AcademicYear(2021)
 
     /** COSTT4_A, the blended published price: Title IV-aided undergraduates, whole cohort. */
-    val PUBLISHED_COST_BLEND: CohortCoordinate =
-      CohortCoordinate(
+    val PUBLISHED_COST_BLEND: CohortStatAddress =
+      CohortStatAddress(
         MoneyMeasure.PUBLISHED_COST_BLEND,
         CohortPopulation.TITLE_IV_AIDED_UNDERGRADUATES,
         CohortAidScope.ALL,
       )
 
-    /** The NPT4 family (Scorecard) and SFA's NPIS4/NPT4 band twins: federal-aid-receiving Title IV undergraduates. */
-    val AVG_NET_PRICE: CohortCoordinate =
-      CohortCoordinate(
-        MoneyMeasure.AVG_NET_PRICE,
-        CohortPopulation.TITLE_IV_AIDED_UNDERGRADUATES,
-        CohortAidScope.FEDERAL_AID_RECEIVING,
-      )
-
     /**
      * SFA's OVERALL net price: a GRANT-AIDED, full-time first-time cohort --
-     * the same measure as [AVG_NET_PRICE] about DIFFERENT students, filed once
+     * the same measure as [CohortAddresses.AVG_NET_PRICE] about DIFFERENT students, filed once
      * per SFA aid year. Population and aid scope separate the two, never the
      * vintage. It is here so a reader can be tested against the fact that these
      * two are different addresses.
      */
-    val SFA_GRANT_AIDED_NET_PRICE: CohortCoordinate =
-      CohortCoordinate(
+    val SFA_GRANT_AIDED_NET_PRICE: CohortStatAddress =
+      CohortStatAddress(
         MoneyMeasure.AVG_NET_PRICE,
         CohortPopulation.FIRST_TIME_FULL_TIME_AID_COHORT,
         CohortAidScope.GRANT_AIDED,
       )
 
-    /** GRAD_DEBT_MDN: the completers who borrowed federally. Undated (P5). */
-    val MEDIAN_DEBT_AT_COMPLETION: CohortCoordinate =
-      CohortCoordinate(
-        MoneyMeasure.MEDIAN_DEBT_AT_COMPLETION,
-        CohortPopulation.FEDERAL_LOAN_BORROWING_COMPLETERS,
-        CohortAidScope.FEDERAL_LOAN_BORROWING,
-      )
-
-    /** MD_EARN_WNE_P10: employed, not enrolled, ten years after entry. Undated (P5). */
-    val MEDIAN_EARNINGS_10Y: CohortCoordinate =
-      CohortCoordinate(
-        MoneyMeasure.MEDIAN_EARNINGS_10Y,
-        CohortPopulation.EMPLOYED_NOT_ENROLLED_10Y_AFTER_ENTRY,
-        CohortAidScope.ALL,
-      )
-
-    /** PCTPELL / UPGRNTP: the Pell share of all undergraduates. */
-    val PELL_SHARE: CohortCoordinate =
-      CohortCoordinate(MoneyMeasure.PELL_SHARE, CohortPopulation.UNDERGRADUATES, CohortAidScope.ALL)
-
     /** UPGRNTA: the average Pell award, over its RECIPIENTS. */
-    val PELL_AVERAGE_AWARD: CohortCoordinate =
-      CohortCoordinate(
+    val PELL_AVERAGE_AWARD: CohortStatAddress =
+      CohortStatAddress(
         MoneyMeasure.PELL_AVERAGE_AWARD,
         CohortPopulation.UNDERGRADUATES,
         CohortAidScope.PELL_RECEIVING,
@@ -1225,11 +1180,19 @@ class CanonicalMoneyLoader internal constructor(
      * Every cohort address the NAMED fills write -- the write side of the
      * address grid, exported for the one consumer that has to agree with it.
      *
-     * DERIVED, not a list beside the writes: each constant above is what the
-     * `stat(...)` call site itself passes, so an address that moves moves here
-     * too and this set cannot describe writes that no longer happen. The aid
-     * MIX rows (`AID_MIX`, one pair per aid type) are deliberately absent: their
-     * measure is data, not a constant, and no consumer surface reads them.
+     * DERIVED, not a list beside the writes: each constant named here is what
+     * the `stat(...)` call site itself passes, so an address that moves moves
+     * here too and this set cannot describe writes that no longer happen. The
+     * aid MIX rows (`AID_MIX`, one pair per aid type) are deliberately absent:
+     * their measure is data, not a constant, and no consumer surface reads
+     * them.
+     *
+     * Four of the seven come from [CohortAddresses], the shared catalogue in
+     * `:db`: what an address IS is stated once, for the fill that writes it
+     * and the search DAO that reads it alike. The three that stay here --
+     * the published-cost blend, SFA's grant-aided net price, the average Pell
+     * award -- are written by this fill and addressed by no reader, so they
+     * are this module's own vocabulary.
      *
      * `:service` states the same grid from the other end
      * (`CostField.figureAddress`) in this repo's own wire vocabulary; neither
@@ -1238,14 +1201,14 @@ class CanonicalMoneyLoader internal constructor(
      * different cohort's number under the same label and nothing fails -- the
      * defect RFC 166 tier-0 blocker 1 actually was.
      */
-    val COHORT_ADDRESSES: Set<CohortCoordinate> =
+    val WRITTEN_ADDRESSES: Set<CohortStatAddress> =
       setOf(
         PUBLISHED_COST_BLEND,
-        AVG_NET_PRICE,
+        CohortAddresses.AVG_NET_PRICE,
         SFA_GRANT_AIDED_NET_PRICE,
-        MEDIAN_DEBT_AT_COMPLETION,
-        MEDIAN_EARNINGS_10Y,
-        PELL_SHARE,
+        CohortAddresses.MEDIAN_DEBT_AT_COMPLETION,
+        CohortAddresses.MEDIAN_EARNINGS_10Y,
+        CohortAddresses.PELL_SHARE,
         PELL_AVERAGE_AWARD,
       )
 

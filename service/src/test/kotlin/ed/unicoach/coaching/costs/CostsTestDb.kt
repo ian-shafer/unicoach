@@ -65,7 +65,7 @@ object CostsTestDb {
 
   private var nextIpedsUnitId = 500000
 
-  /** The shared bracket dollar figures (`net_price_per_year_income_q1_usd..q5`) [seedCollege] seeds by default — the one home both test classes read. */
+  /** The shared bracket dollar figures ([MoneyMeasure.AVG_NET_PRICE] per income band) [seedCollege] seeds by default — the one home both test classes read. */
   const val NET_PRICE_PER_YEAR_INCOME_Q1_USD = 9000
   const val NET_PRICE_PER_YEAR_INCOME_Q2_USD = 11000
   const val NET_PRICE_PER_YEAR_INCOME_Q3_USD = 14000
@@ -633,6 +633,7 @@ object CostsTestDb {
     netPricePerYearUsd: Int?,
     netPriceReading: FigureReading<Double>?,
     bandNetPrices: Map<IncomeBand, Int?>,
+    netPriceReadingByIncomeBand: Map<IncomeBand, FigureReading<Double>>,
     tuitionAndFeesInStatePerYearUsd: Int?,
     tuitionAndFeesOutOfStatePerYearUsd: Int?,
     tuitionAndFeesInDistrictPerYearUsd: Int?,
@@ -725,7 +726,7 @@ object CostsTestDb {
         CostField.NET_PRICE,
         blendScope,
         vintage = BLENDED_YEAR,
-        reading = readingOf(bandNetPrices[band]?.toDouble()),
+        reading = netPriceReadingByIncomeBand[band] ?: readingOf(bandNetPrices[band]?.toDouble()),
         incomeBand = band,
       )
     }
@@ -798,6 +799,13 @@ object CostsTestDb {
     netPricePerYearIncomeQ3Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q3_USD,
     netPricePerYearIncomeQ4Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q4_USD,
     netPricePerYearIncomeQ5Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q5_USD,
+    /**
+     * A band net-price ROW as the store holds it, overriding the `Int?`
+     * parameter for that band -- the band-level twin of [netPriceReading], and
+     * there for the same reason: `cohort_money_stats.value` is `NUMERIC`, so a
+     * band price is not always a whole number and no `Int?` can seed one.
+     */
+    netPriceReadingByIncomeBand: Map<IncomeBand, FigureReading<Double>> = emptyMap(),
     tuitionAndFeesInStatePerYearUsd: Int? = TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
     tuitionAndFeesOutOfStatePerYearUsd: Int? = TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
     // The third tier (RFC 166 §4), canonical-only: there is no `colleges` column
@@ -855,34 +863,17 @@ object CostsTestDb {
           undergradEnrollmentHeadcount = 5000,
           admissionRateShare = 0.5,
           satAverageEquivalentScore = 1200,
-          costOfAttendancePerYearUsd = costOfAttendancePerYearUsd,
-          netPricePerYearUsd = netPricePerYearUsd,
-          netPricePerYearIncomeQ1Usd = netPricePerYearIncomeQ1Usd,
-          netPricePerYearIncomeQ2Usd = netPricePerYearIncomeQ2Usd,
-          netPricePerYearIncomeQ3Usd = netPricePerYearIncomeQ3Usd,
-          netPricePerYearIncomeQ4Usd = netPricePerYearIncomeQ4Usd,
-          netPricePerYearIncomeQ5Usd = netPricePerYearIncomeQ5Usd,
-          tuitionAndFeesInStatePerYearUsd = tuitionAndFeesInStatePerYearUsd,
-          tuitionAndFeesOutOfStatePerYearUsd = tuitionAndFeesOutOfStatePerYearUsd,
           completionRate150pct4yrShare = 0.7,
-          medianEarnings10yAfterEntryUsd = medianEarnings10yAfterEntryUsd,
-          medianDebtAtCompletionUsd = medianDebtAtCompletionUsd,
-          housingAndFoodOnCampusPerYearUsd = housingAndFoodOnCampusPerYearUsd,
-          housingAndFoodOffCampusPerYearUsd = housingAndFoodOffCampusPerYearUsd,
-          booksAndSuppliesPerYearUsd = booksAndSuppliesPerYearUsd,
-          otherExpensesOnCampusPerYearUsd = otherExpensesOnCampusPerYearUsd,
-          otherExpensesOffCampusPerYearUsd = otherExpensesOffCampusPerYearUsd,
-          otherExpensesWithFamilyPerYearUsd = otherExpensesWithFamilyPerYearUsd,
-          pellShare = 0.4,
           website = "https://test$ipedsUnitId.edu",
         ),
       ).getOrThrow()
       .id
       .also { collegeId ->
-        // The canonical rows are where the cost read looks (RFC 166). The
-        // `colleges` money columns above are still written and still read by the
-        // search index, `similar_colleges` and admin-web -- this slice adds a
-        // reader, it removes nothing.
+        // The canonical rows are the ONLY place this fixture's money lands,
+        // and where every reader looks: the cost answer (RFC 166), the search
+        // / similar payload and the search index's net-price ruler (RFC 176).
+        // `colleges` carries no money column to seed -- migration `0094`
+        // dropped all eighteen.
         seedCanonicalMoney(
           collegeId = collegeId,
           control = control,
@@ -897,6 +888,7 @@ object CostsTestDb {
               IncomeBand.K75_TO_110K to netPricePerYearIncomeQ4Usd,
               IncomeBand.OVER_110K to netPricePerYearIncomeQ5Usd,
             ),
+          netPriceReadingByIncomeBand = netPriceReadingByIncomeBand,
           tuitionAndFeesInStatePerYearUsd = tuitionAndFeesInStatePerYearUsd,
           tuitionAndFeesOutOfStatePerYearUsd = tuitionAndFeesOutOfStatePerYearUsd,
           tuitionAndFeesInDistrictPerYearUsd = tuitionAndFeesInDistrictPerYearUsd,

@@ -6,8 +6,8 @@ import kotlinx.serialization.json.put
 /**
  * Household income band backing `money_profiles.income_band` (RFC 134), with
  * self-describing labels naming the Scorecard NPT4 brackets (RFC 133). This
- * enum owns the band -> `net_price_per_year_income_qN_usd` selection ([netPriceFor]) so the mapping
- * has exactly one home.
+ * enum owns the band -> band-price selection ([getNetPrice]) so the mapping has
+ * exactly one home.
  */
 enum class IncomeBand(
   val value: String,
@@ -61,54 +61,20 @@ enum class IncomeBand(
 
   /**
    * The average annual net price, in whole US dollars (USD), a family in this
-   * band pays at [college]: the matching `net_price_per_year_income_qN_usd` column (RFC 133). Null
-   * when the college did not report that bracket.
+   * band pays at the school this search result row ([match]) stands for. Null
+   * when no band price is served for that bracket.
+   *
+   * A LOOKUP, not a selection: [CollegeMatch.netPriceUsdByBand] is keyed by
+   * the band the figure is about, so there is no band -> slot mapping left for
+   * this enum to get wrong. It used to index five parallel fields through a
+   * hand-written `when`, which could compile with two arms transposed and ship
+   * a real net price under the wrong dollar-range label -- precisely the harm
+   * RFC 142 exists to prevent.
+   *
+   * The values reach [CollegeMatch] from `cohort_money_stats` at the canonical
+   * band address (RFC 176), never from a `colleges` column.
    */
-  fun netPriceFor(college: College): Int? =
-    netPriceOf(
-      college.netPricePerYearIncomeQ1Usd,
-      college.netPricePerYearIncomeQ2Usd,
-      college.netPricePerYearIncomeQ3Usd,
-      college.netPricePerYearIncomeQ4Usd,
-      college.netPricePerYearIncomeQ5Usd,
-    )
-
-  /**
-   * The same band -> column selection for a search result row ([match]), so
-   * search and the cost tools read the mapping from this one home rather than
-   * each hand-indexing the five `net_price_per_year_income_qN_usd` fields.
-   */
-  fun netPriceFor(match: CollegeMatch): Int? =
-    netPriceOf(
-      match.netPricePerYearIncomeQ1Usd,
-      match.netPricePerYearIncomeQ2Usd,
-      match.netPricePerYearIncomeQ3Usd,
-      match.netPricePerYearIncomeQ4Usd,
-      match.netPricePerYearIncomeQ5Usd,
-    )
-
-  /**
-   * The band -> bracket-column selection itself, written ONCE over the five
-   * values rather than once per row type. `College` and `CollegeMatch` declare
-   * the same five identically-named, identically-typed properties, so two
-   * parallel `when` blocks would compile with two arms transposed and ship a
-   * real net price under the wrong dollar-range label — precisely the harm
-   * RFC 142 exists to prevent. One mapping, two thin adapters.
-   */
-  private fun netPriceOf(
-    q1: Int?,
-    q2: Int?,
-    q3: Int?,
-    q4: Int?,
-    q5: Int?,
-  ): Int? =
-    when (this) {
-      UNDER_30K -> q1
-      K30_TO_48K -> q2
-      K48_TO_75K -> q3
-      K75_TO_110K -> q4
-      OVER_110K -> q5
-    }
+  fun getNetPrice(match: CollegeMatch): Int? = match.netPriceUsdByBand[this]
 
   companion object {
     fun fromValue(value: String): IncomeBand? = entries.find { it.value == value }

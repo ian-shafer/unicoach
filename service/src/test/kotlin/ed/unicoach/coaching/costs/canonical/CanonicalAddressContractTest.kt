@@ -2,8 +2,9 @@ package ed.unicoach.coaching.costs.canonical
 
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.college.CanonicalMoneyLoader
-import ed.unicoach.college.CohortCoordinate
 import ed.unicoach.college.IpedsChargeVocabulary
+import ed.unicoach.db.models.CohortAddresses
+import ed.unicoach.db.models.CohortStatAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -70,11 +71,11 @@ class CanonicalAddressContractTest {
     assertTrue(served.isNotEmpty(), "the cohort statistics are what this surface reads for the net price and the debt")
     served.forEach { address ->
       val written =
-        CohortCoordinate(address.measure, address.population, address.aidScope)
+        CohortStatAddress(address.measure, address.population, address.aidScope)
       assertTrue(
-        written in CanonicalMoneyLoader.COHORT_ADDRESSES,
+        written in CanonicalMoneyLoader.WRITTEN_ADDRESSES,
         "no fill writes [$written], so this field would read as a silence: " +
-          "written=[${CanonicalMoneyLoader.COHORT_ADDRESSES}]",
+          "written=[${CanonicalMoneyLoader.WRITTEN_ADDRESSES}]",
       )
     }
   }
@@ -84,15 +85,15 @@ class CanonicalAddressContractTest {
     val netPrice =
       (CostField.NET_PRICE.figureAddress as FigureAddress.Cohort).address
     val served =
-      CohortCoordinate(netPrice.measure, netPrice.population, netPrice.aidScope)
+      CohortStatAddress(netPrice.measure, netPrice.population, netPrice.aidScope)
     // The two rows share a MEASURE and describe different students. Keyed on the
     // measure alone -- which the reader was, until tier-0 -- the newer SFA row
     // wins and a family is quoted a grant-aided cohort's net price as "the
     // average net price".
-    assertEquals(CanonicalMoneyLoader.AVG_NET_PRICE, served)
+    assertEquals(CohortAddresses.AVG_NET_PRICE, served)
     assertNotEquals(CanonicalMoneyLoader.SFA_GRANT_AIDED_NET_PRICE, served)
     assertEquals(
-      CanonicalMoneyLoader.AVG_NET_PRICE.measure,
+      CohortAddresses.AVG_NET_PRICE.measure,
       CanonicalMoneyLoader.SFA_GRANT_AIDED_NET_PRICE.measure,
       "if these ever stop sharing a measure this test has stopped guarding anything",
     )

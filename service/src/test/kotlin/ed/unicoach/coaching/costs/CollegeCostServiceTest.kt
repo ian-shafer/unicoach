@@ -730,7 +730,6 @@ class CollegeCostServiceTest {
     assertTrue(profile.colleges.isEmpty())
     assertTrue(profile.unknownCollegeIds.isEmpty())
     assertEquals(AnswerStatus.ANSWERED, profile.moneyProfile.incomeBandStatus)
-    assertNull(profile.ingestYear, "no colleges, no ingest year")
   }
 
   @Test
@@ -788,12 +787,6 @@ class CollegeCostServiceTest {
     assertEquals(
       listOf(CollegeListEntryStatus.CONSIDERING, CollegeListEntryStatus.ADMITTED),
       profile.colleges.map { it.listStatus },
-    )
-    assertEquals(
-      java.time.Year
-        .now(java.time.ZoneOffset.UTC)
-        .value,
-      profile.ingestYear,
     )
   }
 

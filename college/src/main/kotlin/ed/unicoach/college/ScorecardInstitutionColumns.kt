@@ -33,9 +33,13 @@ internal object ScorecardInstitutionColumns {
   const val SUFFIX_PRIVATE = "_PRIV"
 
   // A gross published cost cannot be negative -- the loader-side twin of
-  // `db/schema/0062`'s `*_nonneg_check` constraints. The upper end is the
-  // column's own INTEGER width, not a business bound: the Scorecard publishes
-  // no cap and inventing one would silently drop a real figure.
+  // `db/schema/0083`'s `price_figures_amount_nonneg_check`, the live backstop
+  // over the table [CanonicalMoneyLoader] -- now the only reader of this
+  // domain -- writes these figures to. (0062's `*_nonneg_check` family was the
+  // earlier twin; migration 0094 dropped it with the publisher columns.) The
+  // upper end is the column's own INTEGER width, not a business bound: the
+  // Scorecard publishes no cap and inventing one would silently drop a real
+  // figure.
   const val GROSS_USD_MIN = 0
   const val GROSS_USD_MAX = Int.MAX_VALUE
 

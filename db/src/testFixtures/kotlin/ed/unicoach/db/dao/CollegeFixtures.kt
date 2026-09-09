@@ -8,18 +8,17 @@ import ed.unicoach.db.models.NewCollege
  * every column; suites asserting on college fields vary only what they assert
  * on. A test fixture so consumers in other modules (`:service`) share the one
  * literal.
+ *
+ * It carries no money since RFC 176 — `colleges` has none. A suite that needs
+ * this college to HAVE money seeds it beside the row with
+ * [CanonicalCohortFixture.seedMoney], which writes
+ * `cohort_money_stats` at the canonical addresses every money reader reads.
  */
 fun newCollegeFixture(
   ipedsUnitId: Int,
   name: String = "Test College",
 ): NewCollege =
   NewCollege(
-    housingAndFoodOnCampusPerYearUsd = null,
-    housingAndFoodOffCampusPerYearUsd = null,
-    booksAndSuppliesPerYearUsd = null,
-    otherExpensesOnCampusPerYearUsd = null,
-    otherExpensesOffCampusPerYearUsd = null,
-    otherExpensesWithFamilyPerYearUsd = null,
     ipedsUnitId = ipedsUnitId,
     opeid = null,
     name = name,
@@ -33,18 +32,6 @@ fun newCollegeFixture(
     undergradEnrollmentHeadcount = 5000,
     admissionRateShare = 0.5,
     satAverageEquivalentScore = 1200,
-    costOfAttendancePerYearUsd = 40000,
-    netPricePerYearUsd = 20000,
-    netPricePerYearIncomeQ1Usd = null,
-    netPricePerYearIncomeQ2Usd = null,
-    netPricePerYearIncomeQ3Usd = null,
-    netPricePerYearIncomeQ4Usd = null,
-    netPricePerYearIncomeQ5Usd = null,
-    tuitionAndFeesInStatePerYearUsd = 12000,
-    tuitionAndFeesOutOfStatePerYearUsd = 30000,
     completionRate150pct4yrShare = 0.7,
-    medianEarnings10yAfterEntryUsd = 55000,
-    medianDebtAtCompletionUsd = null,
-    pellShare = 0.4,
     website = null,
   )

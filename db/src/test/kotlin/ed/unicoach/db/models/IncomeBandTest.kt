@@ -1,74 +1,70 @@
 package ed.unicoach.db.models
 
-import java.time.Instant
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class IncomeBandTest {
-  private fun college(
+  /**
+   * A search result row carrying only the five band prices this suite is
+   * about. The band prices reach [CollegeMatch] from `cohort_money_stats`
+   * since RFC 176, keyed by the band they are about; the lookup
+   * [IncomeBand.getNetPrice] makes over them is what is under test here, and
+   * an ABSENT key is how the row says "no figure for that bracket" — there is
+   * no null entry to mistake for one.
+   */
+  private fun match(
     q1: Int?,
     q2: Int?,
     q3: Int?,
     q4: Int?,
     q5: Int?,
-  ): College =
-    College(
+  ): CollegeMatch =
+    CollegeMatch(
       id = CollegeId(UUID.randomUUID()),
-      version = 1,
       ipedsUnitId = 1,
-      opeid = null,
       name = "C",
       city = "X",
       state = "CA",
+      control = "public",
       region = null,
       locale = null,
-      latitude = null,
-      longitude = null,
-      control = 1,
       undergradEnrollmentHeadcount = null,
       admissionRateShare = null,
-      satAverageEquivalentScore = null,
-      costOfAttendancePerYearUsd = null,
       netPricePerYearUsd = null,
-      netPricePerYearIncomeQ1Usd = q1,
-      netPricePerYearIncomeQ2Usd = q2,
-      netPricePerYearIncomeQ3Usd = q3,
-      netPricePerYearIncomeQ4Usd = q4,
-      netPricePerYearIncomeQ5Usd = q5,
-      tuitionAndFeesInStatePerYearUsd = null,
-      tuitionAndFeesOutOfStatePerYearUsd = null,
+      rulerPriceUsd = null,
+      residencyTierBasis = ResidencyTierBasis.NO_PUBLISHED_TUITION,
+      netPriceUsdByBand =
+        listOf(
+          IncomeBand.UNDER_30K to q1,
+          IncomeBand.K30_TO_48K to q2,
+          IncomeBand.K48_TO_75K to q3,
+          IncomeBand.K75_TO_110K to q4,
+          IncomeBand.OVER_110K to q5,
+        ).mapNotNull { (band, amount) -> amount?.let { band to it } }.toMap(),
       completionRate150pct4yrShare = null,
       medianEarnings10yAfterEntryUsd = null,
       medianDebtAtCompletionUsd = null,
-      housingAndFoodOnCampusPerYearUsd = null,
-      housingAndFoodOffCampusPerYearUsd = null,
-      booksAndSuppliesPerYearUsd = null,
-      otherExpensesOnCampusPerYearUsd = null,
-      otherExpensesOffCampusPerYearUsd = null,
-      otherExpensesWithFamilyPerYearUsd = null,
       pellShare = null,
       website = null,
-      aliases = emptyList(),
-      createdAt = Instant.EPOCH,
-      updatedAt = Instant.EPOCH,
+      programTitles = null,
     )
 
   @Test
   fun `each band selects its own net price quintile`() {
-    val c = college(10, 20, 30, 40, 50)
-    assertEquals(10, IncomeBand.UNDER_30K.netPriceFor(c))
-    assertEquals(20, IncomeBand.K30_TO_48K.netPriceFor(c))
-    assertEquals(30, IncomeBand.K48_TO_75K.netPriceFor(c))
-    assertEquals(40, IncomeBand.K75_TO_110K.netPriceFor(c))
-    assertEquals(50, IncomeBand.OVER_110K.netPriceFor(c))
+    val c = match(10, 20, 30, 40, 50)
+    assertEquals(10, IncomeBand.UNDER_30K.getNetPrice(c))
+    assertEquals(20, IncomeBand.K30_TO_48K.getNetPrice(c))
+    assertEquals(30, IncomeBand.K48_TO_75K.getNetPrice(c))
+    assertEquals(40, IncomeBand.K75_TO_110K.getNetPrice(c))
+    assertEquals(50, IncomeBand.OVER_110K.getNetPrice(c))
   }
 
   @Test
   fun `an unreported bracket is null, not a fallback to another bracket`() {
-    val c = college(null, 20, null, null, null)
-    assertEquals(null, IncomeBand.UNDER_30K.netPriceFor(c))
-    assertEquals(20, IncomeBand.K30_TO_48K.netPriceFor(c))
+    val c = match(null, 20, null, null, null)
+    assertEquals(null, IncomeBand.UNDER_30K.getNetPrice(c))
+    assertEquals(20, IncomeBand.K30_TO_48K.getNetPrice(c))
   }
 
   @Test

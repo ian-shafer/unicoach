@@ -5,6 +5,7 @@ import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.CollegeSearchPage
 import ed.unicoach.db.models.CollegeSimilarityOutcome
+import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.NewAdmissionTestPolicy
 import ed.unicoach.db.models.NewAthleticAssociation
@@ -104,6 +105,27 @@ class CollegesDaoTest {
   // Helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * The money a `newCollege` used to carry as `colleges` columns, now written
+   * where every reader reads it. Kept as one named value so a suite-wide
+   * figure is stated once and a test that needs a different one says so.
+   */
+  private val defaultMoney =
+    CanonicalCohortFixture.CollegeMoney(
+      netPricePerYearUsd = 20000,
+      netPriceUsdByBand =
+        mapOf(
+          IncomeBand.UNDER_30K to 9000,
+          IncomeBand.K30_TO_48K to 11000,
+          IncomeBand.K48_TO_75K to 14000,
+          IncomeBand.K75_TO_110K to 17000,
+          IncomeBand.OVER_110K to 21000,
+        ),
+      medianEarnings10yAfterEntryUsd = 55000,
+      medianDebtAtCompletionUsd = 23000,
+      pellShare = 0.4,
+    )
+
   private fun newCollege(
     ipedsUnitId: Int,
     name: String = "Test U $ipedsUnitId",
@@ -112,22 +134,7 @@ class CollegesDaoTest {
     control: Int = 1,
     undergradEnrollmentHeadcount: Int? = 5000,
     admissionRateShare: Double? = 0.5,
-    netPricePerYearUsd: Int? = 20000,
-    netPricePerYearIncomeQ1Usd: Int? = 9000,
-    netPricePerYearIncomeQ2Usd: Int? = 11000,
-    netPricePerYearIncomeQ3Usd: Int? = 14000,
-    netPricePerYearIncomeQ4Usd: Int? = 17000,
-    netPricePerYearIncomeQ5Usd: Int? = 21000,
     completionRate150pct4yrShare: Double? = 0.7,
-    medianEarnings10yAfterEntryUsd: Int? = 55000,
-    medianDebtAtCompletionUsd: Int? = 23000,
-    housingAndFoodOnCampusPerYearUsd: Int? = 9000,
-    housingAndFoodOffCampusPerYearUsd: Int? = 11000,
-    booksAndSuppliesPerYearUsd: Int? = 1200,
-    otherExpensesOnCampusPerYearUsd: Int? = 3000,
-    otherExpensesOffCampusPerYearUsd: Int? = 3500,
-    otherExpensesWithFamilyPerYearUsd: Int? = 2500,
-    pellShare: Double? = 0.4,
     locale: Int? = 13,
     region: Int? = 8,
   ) = NewCollege(
@@ -144,25 +151,7 @@ class CollegesDaoTest {
     undergradEnrollmentHeadcount = undergradEnrollmentHeadcount,
     admissionRateShare = admissionRateShare,
     satAverageEquivalentScore = 1200,
-    costOfAttendancePerYearUsd = 40000,
-    netPricePerYearUsd = netPricePerYearUsd,
-    netPricePerYearIncomeQ1Usd = netPricePerYearIncomeQ1Usd,
-    netPricePerYearIncomeQ2Usd = netPricePerYearIncomeQ2Usd,
-    netPricePerYearIncomeQ3Usd = netPricePerYearIncomeQ3Usd,
-    netPricePerYearIncomeQ4Usd = netPricePerYearIncomeQ4Usd,
-    netPricePerYearIncomeQ5Usd = netPricePerYearIncomeQ5Usd,
-    tuitionAndFeesInStatePerYearUsd = 12000,
-    tuitionAndFeesOutOfStatePerYearUsd = 30000,
     completionRate150pct4yrShare = completionRate150pct4yrShare,
-    medianEarnings10yAfterEntryUsd = medianEarnings10yAfterEntryUsd,
-    medianDebtAtCompletionUsd = medianDebtAtCompletionUsd,
-    housingAndFoodOnCampusPerYearUsd = housingAndFoodOnCampusPerYearUsd,
-    housingAndFoodOffCampusPerYearUsd = housingAndFoodOffCampusPerYearUsd,
-    booksAndSuppliesPerYearUsd = booksAndSuppliesPerYearUsd,
-    otherExpensesOnCampusPerYearUsd = otherExpensesOnCampusPerYearUsd,
-    otherExpensesOffCampusPerYearUsd = otherExpensesOffCampusPerYearUsd,
-    otherExpensesWithFamilyPerYearUsd = otherExpensesWithFamilyPerYearUsd,
-    pellShare = pellShare,
     website = "https://test$ipedsUnitId.edu",
   )
 
@@ -176,8 +165,17 @@ class CollegesDaoTest {
    * silently lose the one-keystroke arm and pass on the substring arm alone.
    * That is exactly the way RFC 139's fuzzy test passed for the wrong reason.
    */
-  private fun seed(input: NewCollege): CollegeId {
+  private fun seed(
+    input: NewCollege,
+    money: CanonicalCohortFixture.CollegeMoney = defaultMoney,
+  ): CollegeId {
     val id = CollegesDao.upsert(session, input).getOrThrow().id
+    // Money is not on `colleges` any more (RFC 176): the payload and the
+    // net-price ruler read `cohort_money_stats`, so a college seeded without
+    // its canonical rows searches as a school that reports none. Seeding it
+    // HERE keeps that one line away from every test that only needs a college
+    // to exist, and lets the few tests that care state their own figures.
+    CanonicalCohortFixture.seedMoney(session, id, money)
     rebuildNameWords()
     rebuildSearchIndex()
     return id
@@ -281,13 +279,9 @@ class CollegesDaoTest {
     assertNotNull(college.id)
     assertEquals(100100, college.ipedsUnitId)
     assertEquals(1, college.control)
-    assertEquals(20000, college.netPricePerYearUsd)
-    assertEquals(9000, college.netPricePerYearIncomeQ1Usd)
-    assertEquals(11000, college.netPricePerYearIncomeQ2Usd)
-    assertEquals(14000, college.netPricePerYearIncomeQ3Usd)
-    assertEquals(17000, college.netPricePerYearIncomeQ4Usd)
-    assertEquals(21000, college.netPricePerYearIncomeQ5Usd)
-    assertEquals(23000, college.medianDebtAtCompletionUsd)
+    assertEquals(0.5, college.admissionRateShare)
+    assertEquals(1200, college.satAverageEquivalentScore)
+    assertEquals(0.7, college.completionRate150pct4yrShare)
   }
 
   @Test
@@ -358,52 +352,6 @@ class CollegesDaoTest {
     val result = CollegesDao.upsert(session, newCollege(100600, undergradEnrollmentHeadcount = -1))
     assertTrue(result.isFailure)
     assertTrue(result.exceptionOrNull() is ConstraintViolationException)
-  }
-
-  @Test
-  fun `negative net_price_per_year_usd is accepted`() {
-    // Net price is cost of attendance minus average aid, so a heavily-subsidized
-    // institution (e.g. a community college) publishes a negative figure.
-    val result = CollegesDao.upsert(session, newCollege(100650, netPricePerYearUsd = -982))
-    assertTrue(result.isSuccess, "expected negative net_price_per_year_usd to be accepted")
-    assertEquals(-982, result.getOrThrow().netPricePerYearUsd)
-  }
-
-  @Test
-  fun `negative band net price is accepted, negative median_debt_at_completion_usd is rejected`() {
-    // The five band columns follow the net_price_per_year_usd precedent (0022): no nonneg
-    // CHECK, because aid exceeding cost publishes a negative figure -- and the
-    // low-income bands go negative most often.
-    val ok = CollegesDao.upsert(session, newCollege(100660, netPricePerYearIncomeQ1Usd = -1913))
-    assertTrue(ok.isSuccess, "expected negative net_price_per_year_income_q1_usd to be accepted")
-    assertEquals(-1913, ok.getOrThrow().netPricePerYearIncomeQ1Usd)
-
-    // median_debt_at_completion_usd is a loan amount: genuinely nonneg, CHECK-backed.
-    val bad = CollegesDao.upsert(session, newCollege(100661, medianDebtAtCompletionUsd = -1))
-    assertTrue(bad.isFailure)
-    assertTrue(bad.exceptionOrNull() is ConstraintViolationException)
-  }
-
-  @Test
-  fun `a negative cost component is rejected`() {
-    // RFC 149: all six components are GROSS costs -- unlike the net-price band
-    // columns, a negative is a loader bug, so every one carries a nonneg CHECK.
-    // Each is asserted separately: one shared CHECK would pass this test while
-    // five columns went unconstrained.
-    val negatives: List<Pair<String, NewCollege>> =
-      listOf(
-        "housing_and_food_on_campus_per_year_usd" to newCollege(100670, housingAndFoodOnCampusPerYearUsd = -1),
-        "housing_and_food_off_campus_per_year_usd" to newCollege(100671, housingAndFoodOffCampusPerYearUsd = -1),
-        "books_and_supplies_per_year_usd" to newCollege(100672, booksAndSuppliesPerYearUsd = -1),
-        "other_expenses_on_campus_per_year_usd" to newCollege(100673, otherExpensesOnCampusPerYearUsd = -1),
-        "other_expenses_off_campus_per_year_usd" to newCollege(100674, otherExpensesOffCampusPerYearUsd = -1),
-        "other_expenses_with_family_per_year_usd" to newCollege(100675, otherExpensesWithFamilyPerYearUsd = -1),
-      )
-    for ((column, input) in negatives) {
-      val result = CollegesDao.upsert(session, input)
-      assertTrue(result.isFailure, "expected a negative [$column] to be rejected")
-      assertTrue(result.exceptionOrNull() is ConstraintViolationException, "[$column]: ${result.exceptionOrNull()}")
-    }
   }
 
   @Test
@@ -575,8 +523,8 @@ class CollegesDaoTest {
 
   @Test
   fun `search by a maximum price on the active ruler includes and excludes`() {
-    seed(newCollege(401, netPricePerYearUsd = 10000))
-    seed(newCollege(402, netPricePerYearUsd = 40000))
+    seed(newCollege(401), defaultMoney.copy(netPricePerYearUsd = 10000))
+    seed(newCollege(402), defaultMoney.copy(netPricePerYearUsd = 40000))
     val matches = CollegesDao.search(session, CollegeQuery(maxPricePerYearUsd = 20000, limit = 25)).page().matches
     assertEquals(listOf(401), matches.map { it.ipedsUnitId })
   }
@@ -641,7 +589,7 @@ class CollegesDaoTest {
 
   @Test
   fun `search returns the outcome columns`() {
-    seed(newCollege(501, completionRate150pct4yrShare = 0.65, medianEarnings10yAfterEntryUsd = 62000, pellShare = 0.33))
+    seed(newCollege(501, completionRate150pct4yrShare = 0.65), defaultMoney.copy(medianEarnings10yAfterEntryUsd = 62000, pellShare = 0.33))
     val match =
       CollegesDao
         .search(session, CollegeQuery(limit = 25))
@@ -651,29 +599,37 @@ class CollegesDaoTest {
     assertEquals(0.65, match.completionRate150pct4yrShare)
     assertEquals(62000, match.medianEarnings10yAfterEntryUsd)
     assertEquals(0.33, match.pellShare)
-    assertEquals(9000, match.netPricePerYearIncomeQ1Usd)
-    assertEquals(11000, match.netPricePerYearIncomeQ2Usd)
-    assertEquals(14000, match.netPricePerYearIncomeQ3Usd)
-    assertEquals(17000, match.netPricePerYearIncomeQ4Usd)
-    assertEquals(21000, match.netPricePerYearIncomeQ5Usd)
+    // Keyed by band, and every seeded figure is DISTINCT, so a pairing that
+    // slipped anywhere between the lateral alias and the map key shows up as
+    // one band carrying another band's number.
+    assertEquals(
+      mapOf(
+        IncomeBand.UNDER_30K to 9000,
+        IncomeBand.K30_TO_48K to 11000,
+        IncomeBand.K48_TO_75K to 14000,
+        IncomeBand.K75_TO_110K to 17000,
+        IncomeBand.OVER_110K to 21000,
+      ),
+      match.netPriceUsdByBand,
+    )
     assertEquals(23000, match.medianDebtAtCompletionUsd)
   }
 
   @Test
   fun `search combines filters conjunctively`() {
     // The motivating example: small + coastal-state set + marine-biology CIP + net-price ceiling.
-    val target = seed(newCollege(601, state = "CA", undergradEnrollmentHeadcount = 2000, netPricePerYearUsd = 18000))
+    val target = seed(newCollege(601, state = "CA", undergradEnrollmentHeadcount = 2000), defaultMoney.copy(netPricePerYearUsd = 18000))
     seedCensusProgram(target, "260702")
 
     // Too big.
-    val big = seed(newCollege(602, state = "OR", undergradEnrollmentHeadcount = 40000, netPricePerYearUsd = 18000))
+    val big = seed(newCollege(602, state = "OR", undergradEnrollmentHeadcount = 40000), defaultMoney.copy(netPricePerYearUsd = 18000))
     seedCensusProgram(big, "260702")
 
     // No marine biology program.
-    seed(newCollege(603, state = "CA", undergradEnrollmentHeadcount = 2000, netPricePerYearUsd = 18000))
+    seed(newCollege(603, state = "CA", undergradEnrollmentHeadcount = 2000), defaultMoney.copy(netPricePerYearUsd = 18000))
 
     // Too expensive.
-    val pricey = seed(newCollege(604, state = "CA", undergradEnrollmentHeadcount = 2000, netPricePerYearUsd = 60000))
+    val pricey = seed(newCollege(604, state = "CA", undergradEnrollmentHeadcount = 2000), defaultMoney.copy(netPricePerYearUsd = 60000))
     seedCensusProgram(pricey, "260702")
 
     val matches =
@@ -743,75 +699,45 @@ class CollegesDaoTest {
   }
 
   @Test
-  fun `a change in only net_price_per_year_income_q3_usd bumps version and logs history carrying all six new fields`() {
-    // RFC 133: the six new columns are in the upsert's IS DISTINCT FROM tuple,
-    // so a re-ingest differing only in one band price is a real content change.
-    val first = CollegesDao.upsert(session, newCollege(800250)).getOrThrow()
-    assertEquals(1, first.version)
-
-    val second = CollegesDao.upsert(session, newCollege(800250, netPricePerYearIncomeQ3Usd = 14500)).getOrThrow()
-    assertEquals(2, second.version)
-    assertEquals(14500, second.netPricePerYearIncomeQ3Usd)
-
-    val history = CollegesDao.listVersions(session, first.id).getOrThrow()
-    assertEquals(listOf(1, 2), history.map { it.version })
-    val latest = history.last().entity
-    assertEquals(9000, latest.netPricePerYearIncomeQ1Usd)
-    assertEquals(11000, latest.netPricePerYearIncomeQ2Usd)
-    assertEquals(14500, latest.netPricePerYearIncomeQ3Usd)
-    assertEquals(17000, latest.netPricePerYearIncomeQ4Usd)
-    assertEquals(21000, latest.netPricePerYearIncomeQ5Usd)
-    assertEquals(23000, latest.medianDebtAtCompletionUsd)
-  }
-
-  @Test
-  fun `a change in only one cost component bumps version and logs history carrying all six`() {
-    // RFC 149: the six components are in the upsert's IS DISTINCT FROM tuple, so
-    // a re-ingest differing only in the books allowance is a real content change
-    // -- and the redefined log_college_version() carries all six into history.
-    val first = CollegesDao.upsert(session, newCollege(800260)).getOrThrow()
-    assertEquals(1, first.version)
-    assertEquals(9000, first.housingAndFoodOnCampusPerYearUsd)
-    assertEquals(11000, first.housingAndFoodOffCampusPerYearUsd)
-    assertEquals(1200, first.booksAndSuppliesPerYearUsd)
-    assertEquals(3000, first.otherExpensesOnCampusPerYearUsd)
-    assertEquals(3500, first.otherExpensesOffCampusPerYearUsd)
-    assertEquals(2500, first.otherExpensesWithFamilyPerYearUsd)
-
-    val unchanged = CollegesDao.upsert(session, newCollege(800260)).getOrThrow()
-    assertEquals(1, unchanged.version, "an unchanged re-ingest must not bump the version")
-
-    val second = CollegesDao.upsert(session, newCollege(800260, booksAndSuppliesPerYearUsd = 1350)).getOrThrow()
-    assertEquals(2, second.version)
-    assertEquals(1350, second.booksAndSuppliesPerYearUsd)
+  fun `a change writes a version row through the restated history writer, and no money column exists on either side`() {
+    // RFC 176. `log_college_version()` names every `colleges` column literally
+    // in both the INSERT list and the NEW.* list, and a plpgsql body is stored
+    // as TEXT -- so migration 0094's DROP COLUMN neither rewrote it nor failed
+    // on it. A stale body kills the NEXT write to `colleges`, from inside the
+    // trigger, with `42703 record "new" has no field ...`. That is what this
+    // asserts: the trigger still fires, and it carries the shape that is left.
+    val first = CollegesDao.upsert(session, newCollege(800900, name = "Before")).getOrThrow()
+    val second = CollegesDao.upsert(session, newCollege(800900, name = "After")).getOrThrow()
+    assertEquals(2, second.version, "a real content change must still bump the version")
 
     val history = CollegesDao.listVersions(session, first.id).getOrThrow()
     assertEquals(listOf(1, 2), history.map { it.version })
     val latest = history.last().entity
-    assertEquals(9000, latest.housingAndFoodOnCampusPerYearUsd)
-    assertEquals(11000, latest.housingAndFoodOffCampusPerYearUsd)
-    assertEquals(1350, latest.booksAndSuppliesPerYearUsd)
-    assertEquals(3000, latest.otherExpensesOnCampusPerYearUsd)
-    assertEquals(3500, latest.otherExpensesOffCampusPerYearUsd)
-    assertEquals(2500, latest.otherExpensesWithFamilyPerYearUsd)
-  }
+    assertEquals("After", latest.name, "the restated writer carries the identity columns")
+    assertEquals("Townsville", latest.city)
+    assertEquals("CA", latest.state)
+    assertEquals(1, latest.control)
+    assertEquals(1200, latest.satAverageEquivalentScore)
+    assertEquals(0.7, latest.completionRate150pct4yrShare)
 
-  @Test
-  fun `a null cost component round-trips as not reported, never as zero`() {
-    val seeded =
-      CollegesDao
-        .upsert(
-          session,
-          newCollege(
-            800270,
-            housingAndFoodOnCampusPerYearUsd = null,
-            otherExpensesOnCampusPerYearUsd = null,
-          ),
-        ).getOrThrow()
-    val read = CollegesDao.findById(session, seeded.id).getOrThrow()
-    assertNull(read.housingAndFoodOnCampusPerYearUsd, "an unreported component is null, never 0")
-    assertNull(read.otherExpensesOnCampusPerYearUsd)
-    assertEquals(11000, read.housingAndFoodOffCampusPerYearUsd, "the reported ones are untouched")
+    // And neither table carries a money column for it to have written.
+    for (table in listOf("colleges", "colleges_versions")) {
+      val columns =
+        connection
+          .prepareStatement(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
+          ).use { stmt ->
+            stmt.setString(1, table)
+            stmt.executeQuery().use { rs ->
+              val names = mutableSetOf<String>()
+              while (rs.next()) names += rs.getString("column_name")
+              names
+            }
+          }
+      assertTrue("name" in columns, "[$table] must exist for this to mean anything")
+      assertFalse("net_price_per_year_usd" in columns, "[$table] still carries net_price_per_year_usd")
+      assertFalse("pell_share" in columns, "[$table] still carries pell_share")
+    }
   }
 
   @Test
@@ -865,7 +791,7 @@ class CollegesDaoTest {
 
     val rows = CollegesDao.listByIds(session, listOf(a, b, CollegeId(UUID.randomUUID()))).getOrThrow()
     assertEquals(setOf("Alpha U", "Beta U"), rows.map { it.name }.toSet())
-    assertEquals(9000, rows.first { it.id == a }.netPricePerYearIncomeQ1Usd, "the full cost columns must ride the row")
+    assertEquals(1200, rows.first { it.id == a }.satAverageEquivalentScore, "the full row must ride, not just the name")
 
     assertEquals(emptyList(), CollegesDao.listByIds(session, emptyList()).getOrThrow(), "empty ids short-circuit")
   }
@@ -1306,9 +1232,16 @@ class CollegesDaoTest {
     seed(newCollege(825100, admissionRateShare = 0.4))
     seed(newCollege(825101, admissionRateShare = null))
 
-    val counts = CollegesDao.nonNullCounts(session, listOf("admission_rate_share", "net_price_per_year_usd")).getOrThrow()
+    val counts = CollegesDao.nonNullCounts(session, listOf("admission_rate_share", "website")).getOrThrow()
     assertEquals(1, counts["admission_rate_share"])
-    assertEquals(2, counts["net_price_per_year_usd"])
+    assertEquals(2, counts["website"])
+
+    // A DROPPED publisher money column is outside the allowlist too, and is
+    // refused HERE rather than reaching SQL and failing the whole ingest with
+    // `42703 column does not exist` after the load (RFC 176 D7).
+    assertFailsWith<IllegalArgumentException> {
+      CollegesDao.nonNullCounts(session, listOf("net_price_per_year_usd"))
+    }
 
     // An identifier outside the allowlist never reaches SQL — including one
     // that would otherwise be a valid injection point.
@@ -1384,9 +1317,9 @@ class CollegesDaoTest {
 
   @Test
   fun `search sortBy net price ascends with NULLS LAST`() {
-    seed(newCollege(840200, netPricePerYearUsd = 30000))
-    seed(newCollege(840201, netPricePerYearUsd = null))
-    seed(newCollege(840202, netPricePerYearUsd = 5000))
+    seed(newCollege(840200), defaultMoney.copy(netPricePerYearUsd = 30000))
+    seed(newCollege(840201), defaultMoney.copy(netPricePerYearUsd = null))
+    seed(newCollege(840202), defaultMoney.copy(netPricePerYearUsd = 5000))
 
     val query = CollegeQuery(sortBy = CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC, limit = 25)
     val matches = CollegesDao.search(session, query).page().matches
@@ -1418,7 +1351,7 @@ class CollegesDaoTest {
 
   @Test
   fun `search sortBy never filters - a NULL-keyed row sinks, it does not vanish`() {
-    seed(newCollege(840500, netPricePerYearUsd = null))
+    seed(newCollege(840500), defaultMoney.copy(netPricePerYearUsd = null))
     val query = CollegeQuery(sortBy = CollegeQuery.SortBy.IN_STATE_NET_PRICE_ASC, limit = 25)
     val page = CollegesDao.search(session, query).page()
     assertEquals(listOf(840500), page.matches.map { it.ipedsUnitId })
@@ -1480,8 +1413,8 @@ class CollegesDaoTest {
    */
   @Test
   fun `one query reads one price ruler`() {
-    val cheapOnNet = seed(newCollege(860100, state = "WA", control = 1, netPricePerYearUsd = 12000))
-    val cheapOnPublished = seed(newCollege(860101, state = "NV", control = 1, netPricePerYearUsd = 25000))
+    val cheapOnNet = seed(newCollege(860100, state = "WA", control = 1), defaultMoney.copy(netPricePerYearUsd = 12000))
+    val cheapOnPublished = seed(newCollege(860101, state = "NV", control = 1), defaultMoney.copy(netPricePerYearUsd = 25000))
     // Published on-campus totals: WA is 40,000 out of state, NV is 27,000 in
     // state -- the reverse of the net order above.
     seedPublishedPrice(cheapOnNet, inStateTuition = 9000, outOfStateTuition = 24000)
@@ -2188,9 +2121,10 @@ class CollegesDaoTest {
    */
   @Test
   fun `findSimilar scores the weighted mean absolute difference over the axes both colleges have`() {
-    val anchorId = seed(newCollege(909001, name = "Anchor College", undergradEnrollmentHeadcount = 5000, netPricePerYearUsd = 20000))
-    seed(newCollege(909002, name = "Twin College", undergradEnrollmentHeadcount = 5000, netPricePerYearUsd = 20000))
-    seed(newCollege(909003, name = "Far College", undergradEnrollmentHeadcount = 40000, netPricePerYearUsd = 45000))
+    val anchorId =
+      seed(newCollege(909001, name = "Anchor College", undergradEnrollmentHeadcount = 5000), defaultMoney.copy(netPricePerYearUsd = 20000))
+    seed(newCollege(909002, name = "Twin College", undergradEnrollmentHeadcount = 5000), defaultMoney.copy(netPricePerYearUsd = 20000))
+    seed(newCollege(909003, name = "Far College", undergradEnrollmentHeadcount = 40000), defaultMoney.copy(netPricePerYearUsd = 45000))
     // Neither axis reported: it shares nothing with the anchor, so it is
     // EXCLUDED and counted, never ranked at the top on a substituted zero.
     seed(
@@ -2198,8 +2132,8 @@ class CollegesDaoTest {
         909004,
         name = "Silent College",
         undergradEnrollmentHeadcount = null,
-        netPricePerYearUsd = null,
       ),
+      defaultMoney.copy(netPricePerYearUsd = null),
     )
     rebuildSearchIndex()
 

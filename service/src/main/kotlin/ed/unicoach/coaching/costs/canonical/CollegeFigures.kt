@@ -7,6 +7,7 @@ import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortMoneyStat
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
+import ed.unicoach.db.models.CohortStatAddress
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
@@ -459,9 +460,16 @@ class CollegeFigures(
         // reach either surface with no year beside it -- the vintage label is
         // written per group ([blendedAverageVintage]), and a null year emits no
         // label at all rather than an unlabelled dollar figure.
-        check(vintage != null || CohortSeries(key.measure, key.population, key.aidScope) !in DATED_COHORT_SERIES) {
+        check(vintage != null || CohortStatAddress(key.measure, key.population, key.aidScope) !in DATED_COHORT_SERIES) {
+          // The WHOLE natural key, all six columns of it. Four of them named
+          // the series and not the ROW, so an operator holding this message
+          // still had to guess which of a college's rows to go and look at --
+          // and residency scope is exactly the column two rows of one address
+          // differ by. Every value is already bound on this line.
           "a dated cohort series may not be served from an undated row: college_id=[${collegeId.value}] " +
-            "measure=[${key.measure.value}] population=[${key.population.value}] aid_scope=[${key.aidScope.value}]"
+            "measure=[${key.measure.value}] population=[${key.population.value}] " +
+            "residency_scope=[${key.residencyScope.value}] aid_scope=[${key.aidScope.value}] " +
+            "income_band=[${key.incomeBand?.value}] source=[${row.source.value}]"
         }
         DatedStat(
           vintage = vintage,
@@ -901,20 +909,6 @@ class CollegeFigures(
   )
 
   /**
-   * One cohort SERIES -- the part of a [CohortKey] a [CohortAddress] pins, with
-   * no residency scope and no band.
-   *
-   * A type rather than a `Triple` for the same reason [CohortKey] is one: it is
-   * matched against the served addresses, and a column dropped from it would
-   * merge two populations again.
-   */
-  private data class CohortSeries(
-    val measure: MoneyMeasure,
-    val population: CohortPopulation,
-    val aidScope: CohortAidScope,
-  )
-
-  /**
    * The family's band where the address files a band series, and null
    * everywhere else -- the ONE statement of that coercion.
    *
@@ -949,11 +943,18 @@ class CollegeFigures(
      * The cohort series this surface serves that a [FigureGroup] DATES -- the
      * addresses at which an `undated` row is a contradiction.
      *
+     * A [CohortStatAddress]: the shared triple that says WHERE a cell lives,
+     * which is exactly the part of a [CohortKey] a [CohortAddress] pins, with
+     * no residency scope and no band. This surface's own [CohortAddress] is
+     * NOT that triple -- it carries a [FigureGroup] and [bandSelected] besides,
+     * which are facts about how a [CostField] reads, not about where the cell
+     * is -- so it stays its own type and this set is keyed on the shared one.
+     *
      * Derived from [CostField.figureAddress], so a field added at a dated
      * address is covered with no edit here, and the two undated measures
      * (median debt, median earnings) stay out of it by declaring no group.
      */
-    private val DATED_COHORT_SERIES: Set<CohortSeries> =
+    private val DATED_COHORT_SERIES: Set<CohortStatAddress> =
       CostField.entries
         .mapNotNull { field ->
           when (val address = field.figureAddress) {
@@ -961,7 +962,7 @@ class CollegeFigures(
             is FigureAddress.Price, FigureAddress.AssumedByUnicoach -> null
           }
         }.filter { it.group != null }
-        .map { CohortSeries(it.measure, it.population, it.aidScope) }
+        .map { CohortStatAddress(it.measure, it.population, it.aidScope) }
         .toSet()
 
     /**

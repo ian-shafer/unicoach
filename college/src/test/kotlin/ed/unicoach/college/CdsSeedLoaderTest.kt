@@ -616,9 +616,9 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // canonical money source together with RFC 162's third, and RFC 169's
     // published-price columns (with the phase reorder that feeds them) are 8.
     assertEquals(
-      8,
+      9,
       row.methodVersion,
-      "RFC 169 took the method version to 8: the index gained published-price columns fed by a reordered canonical-money phase",
+      "RFC 176 took the method version to 9: the institution phase writes no money, so `non_null` carries 10 keys, not 28",
     )
     for (file in listOf(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)) {
       assertTrue(row.sources.contains(file.name), "sources names ${file.name}: ${row.sources}")

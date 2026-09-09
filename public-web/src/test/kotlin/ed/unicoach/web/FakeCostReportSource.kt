@@ -501,7 +501,6 @@ fun costProfile(
     colleges = colleges,
     unknownCollegeIds = emptyList(),
     moneyProfile = moneyProfile,
-    ingestYear = 2026,
     comparisonBasis = ComparisonBasis.of(colleges, moneyProfile),
   )
 

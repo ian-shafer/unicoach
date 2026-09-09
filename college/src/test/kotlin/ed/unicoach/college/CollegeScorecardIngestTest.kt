@@ -4,6 +4,11 @@ import ed.unicoach.db.dao.CodebookTable
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.io.File
@@ -22,6 +27,34 @@ import kotlin.test.assertTrue
  * application, and the `college_index_build` row + human summary.
  */
 class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
+  /**
+   * The eighteen money names RFC 176 took OUT of the change-summary allowlist
+   * with the columns themselves. Spelled here rather than imported: the point
+   * of the assertion below is that this file's list and the loader's cannot be
+   * the same object, so a name creeping back into one is caught by the other.
+   */
+  private val publisherMoneyColumns =
+    setOf(
+      "cost_of_attendance_per_year_usd",
+      "net_price_per_year_usd",
+      "net_price_per_year_income_q1_usd",
+      "net_price_per_year_income_q2_usd",
+      "net_price_per_year_income_q3_usd",
+      "net_price_per_year_income_q4_usd",
+      "net_price_per_year_income_q5_usd",
+      "tuition_and_fees_in_state_per_year_usd",
+      "tuition_and_fees_out_of_state_per_year_usd",
+      "median_earnings_10y_after_entry_usd",
+      "median_debt_at_completion_usd",
+      "housing_and_food_on_campus_per_year_usd",
+      "housing_and_food_off_campus_per_year_usd",
+      "books_and_supplies_per_year_usd",
+      "other_expenses_on_campus_per_year_usd",
+      "other_expenses_off_campus_per_year_usd",
+      "other_expenses_with_family_per_year_usd",
+      "pell_share",
+    )
+
   private val loader = CollegeScorecardLoader(database)
   private val institutionCsv = fixture("scorecard-institutions-fixture.csv")
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
@@ -416,18 +449,23 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The build row exists and says what the report says.
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
-    // Deliberately 8, not 1: RFC 144 added a second source family, RFC 146 the
+    // Deliberately 9, not 1: RFC 144 added a second source family, RFC 146 the
     // derived name-word rebuild, RFC 148 the CDS seed load, RFC 150 the
     // derived search index, RFC 158 the canonical money fill, RFC 161/162 two
-    // more canonical money sources ahead of the Scorecard, and RFC 169 the
-    // published-price columns plus the phase reorder that feeds them — each is
-    // exactly the derivation change method_version exists to record.
+    // more canonical money sources ahead of the Scorecard, RFC 169 the
+    // published-price columns plus the phase reorder that feeds them, and RFC
+    // 176 the drop of the publisher money columns — each is exactly the
+    // derivation change method_version exists to record.
     assertEquals(
-      8,
+      9,
       row.methodVersion,
-      "RFC 169 took the method version to 8: the index gained published-price columns fed by a reordered canonical-money phase",
+      "RFC 176 took the method version to 9: the institution phase writes no money, so `non_null` carries " +
+        "[${CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.size}] keys, not 28",
     )
-    assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
+    assertTrue(
+      row.rowsIngested.contains("\"inserted\": 5"),
+      "rows_ingested carries the insert count: [${row.rowsIngested}]",
+    )
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")
   }
@@ -486,29 +524,67 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `the change summary proves all six cost components loaded`() {
-    // RFC 149: the six components are in NON_NULL_SUMMARY_COLUMNS precisely so
-    // the run's own report proves they arrived. The fixture's five loaded rows
-    // report 4 of each component except the two the fixture leaves NA:
-    // 330300's ROOMBOARD_OFF and 550500's ROOMBOARD_ON, plus 440400's whole row.
+  fun `the change summary carries ten non-money keys at method version 9, and an older row keeps its own`() {
+    // RFC 176 D7. The `non_null` axis fell from 28 keys to 10 when money left
+    // `colleges`. TEN, not the twelve an earlier draft of D7 claimed: all
+    // EIGHTEEN of the dropped columns were in this list, median earnings and
+    // Pell share among them, and 28 - 18 = 10. There is now ONE list -- the
+    // loader DERIVES its summary columns from
+    // `CollegesDao.NON_NULL_COUNTABLE_COLUMNS`, which is the one that becomes
+    // SQL -- so the eighteen left in a single edit and no second copy can hold
+    // a name that would fail the run with 42703 AFTER the load.
     val report = ingest()
-    val expectedAfter =
-      mapOf(
-        "books_and_supplies_per_year_usd" to 4,
-        "housing_and_food_on_campus_per_year_usd" to 3,
-        "housing_and_food_off_campus_per_year_usd" to 3,
-        "other_expenses_on_campus_per_year_usd" to 4,
-        "other_expenses_off_campus_per_year_usd" to 4,
-        "other_expenses_with_family_per_year_usd" to 4,
+    assertEquals(
+      CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.toSet(),
+      report.nonNullAfter.keys,
+      "the summary counts exactly the allowlist",
+    )
+    assertEquals(10, report.nonNullAfter.size, "ten keys, not twenty-eight")
+    for (column in CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS) {
+      assertTrue(
+        column !in publisherMoneyColumns,
+        "[$column] is a dropped publisher money column and cannot be counted on `colleges`",
       )
-    for ((column, after) in expectedAfter) {
-      assertEquals(0, report.nonNullBefore[column], "[$column] starts from an empty table")
-      assertEquals(after, report.nonNullAfter[column], "[$column] must be counted by the change summary")
     }
-    val summary = report.humanSummary()
-    assertTrue(
-      summary.contains("books_and_supplies_per_year_usd 0→4"),
-      "the printed non-null deltas must carry the components: $summary",
+
+    // The append-only half of the contract, asserted rather than promised: a
+    // build row written the old way keeps its 28 keys and is still readable,
+    // because migration 0094 does nothing to `change_summary`.
+    val legacyKeys = publisherMoneyColumns.toList() + CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS
+    assertEquals(28, legacyKeys.size, "the pre-0094 axis carried twenty-eight keys: the ten survivors plus the eighteen dropped")
+    // Built with the same library `CollegeScorecardLoader.changeSummaryJson`
+    // writes with, so the escaping is the platform's and the axis is a real
+    // nested object rather than a string that merely looks like one.
+    val legacy =
+      buildJsonObject {
+        putJsonObject("non_null") {
+          for (key in legacyKeys) {
+            putJsonObject(key) {
+              put("before", 0)
+              put("after", 6273)
+            }
+          }
+        }
+      }
+    withSession { session ->
+      session
+        .prepareStatement("UPDATE college_index_build SET change_summary = ?::jsonb WHERE id = ?")
+        .use { stmt ->
+          stmt.setString(1, legacy.toString())
+          stmt.setObject(2, report.buildId)
+          stmt.executeUpdate()
+        }
+    }
+    val row = withSession { buildRow(it, report.buildId) }
+    assertNotNull(row)
+    // Every key AND its axis: a substring check passes on a document whose keys
+    // were re-nested under some other axis, and losing keys is precisely what
+    // append-only forbids.
+    val nonNullAxis = Json.parseToJsonElement(row.changeSummary).jsonObject["non_null"]
+    assertEquals(
+      legacyKeys.toSet(),
+      nonNullAxis?.jsonObject?.keys,
+      "migration 0094 does nothing to `change_summary`, so a pre-0094 row keeps every key: [${row.changeSummary}]",
     )
   }
 

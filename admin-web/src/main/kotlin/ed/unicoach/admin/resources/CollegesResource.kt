@@ -22,9 +22,16 @@ import java.util.UUID
  * `delete`, `undelete` are all null. The table carries no `deleted_at`, so
  * [isDeleted] is always false and `scope`/`includeDeleted` are ignored.
  *
- * The list stays narrow (`name`/`city`/`state`/`control`/`admissionRateShare`/
- * `netPricePerYearUsd`); the detail page shows the full curated row plus `version` and the
- * timestamps. `college_programs` is intentionally not surfaced as an edge.
+ * The list stays narrow (`name`/`city`/`state`/`control`/`admissionRateShare`);
+ * the detail page shows the full curated row plus `version` and the timestamps.
+ * `college_programs` is intentionally not surfaced as an edge.
+ *
+ * It shows NO money (RFC 176 D8). The eighteen publisher money columns left
+ * `colleges` with migration `0094`, so there is nothing on this row to show;
+ * the version panel could not be re-pointed at all, because `price_figures` is
+ * not versioned per `colleges.version` and so has no per-version value to put
+ * in a per-version row. An admin view OF the canonical layer is a slice of its
+ * own, not a footnote in a removal.
  */
 object CollegesResource : AdminResource<College, CollegeId> {
   override val slug = "college"
@@ -54,37 +61,13 @@ object CollegesResource : AdminResource<College, CollegeId> {
         sensitive = false,
         inList = false,
       ),
-      // admissionRateShare/completionRate150pct4yrShare/pellShare are 0.0-1.0 decimal ratios; TEXT is used
-      // rather than a numeric/INT FieldType, which would discard the fraction.
+      // admissionRateShare/completionRate150pct4yrShare are 0.0-1.0 decimal
+      // ratios; TEXT is used rather than a numeric/INT FieldType, which would
+      // discard the fraction.
       AdminField("admissionRateShare", "Admission Rate", FieldType.TEXT, editable = false, sensitive = false),
       AdminField(
         "satAverageEquivalentScore",
         "SAT Average (SAT-equivalent, admitted)",
-        FieldType.INT,
-        editable = false,
-        sensitive = false,
-        inList = false,
-      ),
-      AdminField(
-        "costOfAttendancePerYearUsd",
-        "Cost of Attendance (annual, USD)",
-        FieldType.INT,
-        editable = false,
-        sensitive = false,
-        inList = false,
-      ),
-      AdminField("netPricePerYearUsd", "Net Price (annual, USD)", FieldType.INT, editable = false, sensitive = false),
-      AdminField(
-        "tuitionAndFeesInStatePerYearUsd",
-        "Tuition and Fees In-State (annual, USD)",
-        FieldType.INT,
-        editable = false,
-        sensitive = false,
-        inList = false,
-      ),
-      AdminField(
-        "tuitionAndFeesOutOfStatePerYearUsd",
-        "Tuition and Fees Out-of-State (annual, USD)",
         FieldType.INT,
         editable = false,
         sensitive = false,
@@ -98,30 +81,6 @@ object CollegesResource : AdminResource<College, CollegeId> {
         sensitive = false,
         inList = false,
       ),
-      AdminField(
-        "medianEarnings10yAfterEntryUsd",
-        "Median Earnings, 10y After Entry (USD)",
-        FieldType.INT,
-        editable = false,
-        sensitive = false,
-        inList = false,
-      ),
-      // Income-band net prices + median debt (RFC 133): detail-only, like the
-      // other outcome columns.
-      AdminField("netPricePerYearIncomeQ1Usd", "Net Price \$0-30k", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("netPricePerYearIncomeQ2Usd", "Net Price \$30-48k", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("netPricePerYearIncomeQ3Usd", "Net Price \$48-75k", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("netPricePerYearIncomeQ4Usd", "Net Price \$75-110k", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("netPricePerYearIncomeQ5Usd", "Net Price \$110k+", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField(
-        "medianDebtAtCompletionUsd",
-        "Median Debt at Completion (USD)",
-        FieldType.INT,
-        editable = false,
-        sensitive = false,
-        inList = false,
-      ),
-      AdminField("pellShare", "Pell Share", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("website", "Website", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
       AdminField("updatedAt", "Updated", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
@@ -154,19 +113,7 @@ object CollegesResource : AdminResource<College, CollegeId> {
       "undergradEnrollmentHeadcount" to (row.undergradEnrollmentHeadcount?.toString() ?: ""),
       "admissionRateShare" to (row.admissionRateShare?.toString() ?: ""),
       "satAverageEquivalentScore" to (row.satAverageEquivalentScore?.toString() ?: ""),
-      "costOfAttendancePerYearUsd" to (row.costOfAttendancePerYearUsd?.toString() ?: ""),
-      "netPricePerYearUsd" to (row.netPricePerYearUsd?.toString() ?: ""),
-      "tuitionAndFeesInStatePerYearUsd" to (row.tuitionAndFeesInStatePerYearUsd?.toString() ?: ""),
-      "tuitionAndFeesOutOfStatePerYearUsd" to (row.tuitionAndFeesOutOfStatePerYearUsd?.toString() ?: ""),
       "completionRate150pct4yrShare" to (row.completionRate150pct4yrShare?.toString() ?: ""),
-      "medianEarnings10yAfterEntryUsd" to (row.medianEarnings10yAfterEntryUsd?.toString() ?: ""),
-      "netPricePerYearIncomeQ1Usd" to (row.netPricePerYearIncomeQ1Usd?.toString() ?: ""),
-      "netPricePerYearIncomeQ2Usd" to (row.netPricePerYearIncomeQ2Usd?.toString() ?: ""),
-      "netPricePerYearIncomeQ3Usd" to (row.netPricePerYearIncomeQ3Usd?.toString() ?: ""),
-      "netPricePerYearIncomeQ4Usd" to (row.netPricePerYearIncomeQ4Usd?.toString() ?: ""),
-      "netPricePerYearIncomeQ5Usd" to (row.netPricePerYearIncomeQ5Usd?.toString() ?: ""),
-      "medianDebtAtCompletionUsd" to (row.medianDebtAtCompletionUsd?.toString() ?: ""),
-      "pellShare" to (row.pellShare?.toString() ?: ""),
       "website" to (row.website ?: ""),
       "createdAt" to row.createdAt.toString(),
       "updatedAt" to row.updatedAt.toString(),
@@ -204,7 +151,6 @@ object CollegesResource : AdminResource<College, CollegeId> {
             EdgePanel.Table.Column("State"),
             EdgePanel.Table.Column("Control", FieldType.INT),
             EdgePanel.Table.Column("Admission Rate"),
-            EdgePanel.Table.Column("Net Price", FieldType.INT),
             EdgePanel.Table.Column("Updated", FieldType.TIMESTAMP),
           ),
         rows =
@@ -218,7 +164,6 @@ object CollegesResource : AdminResource<College, CollegeId> {
                   v.entity.state,
                   v.entity.control.toString(),
                   v.entity.admissionRateShare?.toString() ?: "",
-                  v.entity.netPricePerYearUsd?.toString() ?: "",
                   v.entity.updatedAt.toString(),
                 ),
             )
