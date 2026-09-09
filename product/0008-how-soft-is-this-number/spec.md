@@ -166,6 +166,28 @@ fact tables; `FigureStatus`, which stays orthogonal;
 `IpedsImputationFlag`/`publisher_flag` for the per-cell imputation fact we
 already ingest.
 
+**Implementation note, recorded 2026-09-08 after RFC 177 landed (Ian asked for
+it during `soft/01`'s close-out; no decision here is changed, and this is a fact
+about the tree, not a re-specification).** `soft/01` threaded the winning
+publisher — and **only** the publisher — from the store to the copy seam.
+`source_variable` is on the read rows (`CanonicalMoneyReadRows.kt:29,49`) and
+reaches **zero** files under `service/src/main/**`. So the second half of this
+slice's key still has to travel:
+
+- the carriers `DatedFigure`, `DatedStat`, `FigureProvenance` and
+  `FigureStatusNote` each carry `source: MoneySource` and must also carry the
+  variable;
+- the seam is `FigureStatusCopy.statementOf(status, source)` today and becomes a
+  triple once the tier is a function of `(source, source_variable)`;
+- the publisher's own English name already exists as `MoneySourceCopy`, so the
+  tier's sentences compose with it rather than repeating a publisher name;
+- `agentlessStatementOf` is the byte-frozen one-argument form the immutable v19
+  prompt row recites — it must keep its exact words, so a tier sentence is added
+  beside it, never inside it.
+
+The threading is the same shape `soft/01` already did once, one field over. It
+is work this slice inherits, not a new decision.
+
 **Decided here (gate 1, D2/D3).**
 
 - Three tiers: `ADMINISTRATIVE_RECORD`, `MANDATORY_SURVEY`,
