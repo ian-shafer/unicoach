@@ -3,6 +3,7 @@ package ed.unicoach.coaching.costs.canonical
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.FigureGroup
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.db.models.CellCarrier
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortMoneyStat
 import ed.unicoach.db.models.CohortPopulation
@@ -18,6 +19,7 @@ import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyBasis
 import kotlin.math.roundToInt
 
@@ -304,35 +306,28 @@ data class DatedFigure(
   val academicYear: AcademicYear,
   val reading: FigureReading<Int>,
   /**
-   * The publisher whose row won this cell (RFC 177).
+   * WHICH PUBLISHED CELL this figure was read from: the publisher and the
+   * publisher's own name for the cell, as ONE value (RFC 184).
    *
-   * NON-NULL, because a [DatedFigure] IS a row: `price_figures.source` is a
-   * required column and `PriceFigure.source` is non-null, so a figure with no
-   * publisher is not a state this surface can be in. "No publisher" is the
-   * ABSENCE of a figure -- no [DatedFigure] at all -- never one carrying a null.
+   * NON-NULL, because a [DatedFigure] IS a row: `price_figures.source` and
+   * `price_figures.source_variable` are both required columns, so a figure with
+   * no published cell behind it is not a state this surface can be in. "No
+   * publisher" is the ABSENCE of a figure -- no [DatedFigure] at all -- never
+   * one carrying a null.
    *
    * It rides on the figure because it was dropped here: this index used to keep
    * only the reading, so nothing above the domain layer could know whether a
-   * price came from IPEDS or from the Scorecard, and every surface that wanted
-   * to say it typed one publisher's name by hand.
-   */
-  val source: MoneySource,
-  /**
-   * The publisher's OWN name for the cell this row was read from -- IPEDS
-   * IC_AY's `CHG2AY3`, the Scorecard's `TUITIONFEE_IN` (RFC 179).
+   * price came from IPEDS or from the Scorecard, or tell a compelled,
+   * edit-checked survey answer from a filing a school published about itself.
    *
-   * The second half of the key an [ed.unicoach.db.models.AssuranceTier] is a
-   * function of, and non-null for exactly [source]'s reason:
-   * `price_figures.source_variable` is a required column, so a figure with no
-   * published cell id behind it is not a state this surface can be in.
-   *
-   * It rides here because it died here: the read row carried it into the
-   * service layer and this index kept only the reading and the publisher, so
-   * nothing above the domain layer could tell a compelled, edit-checked survey
-   * answer from a filing a school published about itself.
+   * It is the CELL and not the two loose columns because a caller that holds
+   * both can pair them wrongly, and one that holds the cell cannot: an
+   * [ed.unicoach.db.models.AssuranceTier] is a property of this field
+   * ([PublishedCell.assurance]) rather than a lookup each reader must remember
+   * to do with the right two arguments.
    */
-  val sourceVariable: String,
-) {
+  override val cell: PublishedCell,
+) : CellCarrier {
   /** The dollars, or null when the reading bears no value. */
   val amountUsd: Int? get() = (reading as? FigureReading.Present)?.value
 
@@ -358,11 +353,9 @@ data class DatedStat(
   val vintage: AcademicYear?,
   val residencyScope: CohortResidencyScope,
   val reading: FigureReading<Int>,
-  /** The publisher whose row won this cell (RFC 177) -- the cohort twin of [DatedFigure.source], and non-null for the same reason. */
-  val source: MoneySource,
-  /** The publisher's own name for this cell (RFC 179) -- the cohort twin of [DatedFigure.sourceVariable], non-null for the same reason. */
-  val sourceVariable: String,
-) {
+  /** WHICH published cell this statistic was read from -- the cohort twin of [DatedFigure.cell], one value for the same reason (RFC 184). */
+  override val cell: PublishedCell,
+) : CellCarrier {
   val amountUsd: Int? get() = (reading as? FigureReading.Present)?.value
 
   val status: FigureStatus get() = reading.status
@@ -377,24 +370,29 @@ data class DatedStat(
  * caller that reads one without the other is exactly how a Scorecard name ended
  * up beside an IPEDS figure.
  *
- * Both fields come off ONE row, so [source] is non-null: where no row answers --
+ * Both fields come off ONE row, so [cell] is non-null: where no row answers --
  * the assumed at-home line, or a cell no publisher ever wrote -- [statusOf]
  * returns no provenance at all rather than a provenance with nothing in it.
  */
 data class FigureProvenance(
   val status: FigureStatus,
-  val source: MoneySource,
   /**
-   * The publisher's own name for the cell (RFC 179): the second half of the
-   * pair an [ed.unicoach.db.models.AssuranceTier] is a function of.
+   * WHICH published cell the status is about: the publisher and the publisher's
+   * own name for the cell, as ONE value (RFC 184).
    *
-   * Non-null for [source]'s reason -- it comes off the SAME row -- and carried
-   * on the provenance rather than looked up again downstream, because a caller
-   * that re-derived the variable from the field would be answering a different
-   * question from the one this row answers.
+   * It is carried on the provenance rather than looked up again downstream,
+   * because a caller that re-derived the cell from the field would be answering
+   * a different question from the one this row answers.
+   *
+   * It is ONE value and not two loose columns because this type is precisely
+   * where the two used to be nameable apart: `FigureProvenance(status,
+   * MoneySource.SCORECARD, "H.209")` -- a Common Data Set field id under the
+   * Scorecard -- compiled, and died at read time inside one family's cost
+   * report. It does not compile now: there is no [MoneySource] parameter to
+   * disagree with the variable.
    */
-  val sourceVariable: String,
-)
+  override val cell: PublishedCell,
+) : CellCarrier
 
 /**
  * The resolved canonical figure set for ONE college -- the type that replaces
@@ -432,10 +430,12 @@ class CollegeFigures(
     priceFigures
       .groupBy { PriceAddress(it.priceConcept, it.residencyBasis, it.arrangement) }
       // The whole served figure, not the bare reading: the row's own
-      // [PriceFigure.source] is the publisher that won this cell, and keeping
-      // only the reading here is where it used to die (RFC 177).
+      // [PriceFigure.cell] is the published cell that won this address, and
+      // keeping only the reading here is where it used to die (RFC 177/179).
+      // The cell travels WHOLE, already decoded by the DAO (RFC 184) -- this
+      // layer never re-pairs a publisher with a variable.
       .mapValues { (_, rows) ->
-        rows.associate { it.academicYear to DatedFigure(it.academicYear, it.reading, it.source, it.sourceVariable) }
+        rows.associate { it.academicYear to DatedFigure(it.academicYear, it.reading, it.cell) }
       }
 
   /**
@@ -505,9 +505,9 @@ class CollegeFigures(
           // The winning row is in hand on this line, and its publisher used to
           // be dropped from it (RFC 177) -- and its published cell id with it
           // (RFC 179), which is the half of the key that says what KIND of
-          // number the publisher produced.
-          source = row.source,
-          sourceVariable = row.sourceVariable,
+          // number the publisher produced. Both travel as the one cell the DAO
+          // decoded (RFC 184).
+          cell = row.cell,
         )
       }
 
@@ -638,12 +638,12 @@ class CollegeFigures(
       // [yearGapOf], so exactly one door speaks for each.
       is FigureAddress.Price -> {
         (priceAt(address.address, year) ?: latestValuelessPriceOf(field))
-          ?.let { FigureProvenance(it.status, it.source, it.sourceVariable) }
+          ?.let { FigureProvenance(it.status, it.cell) }
       }
 
       is FigureAddress.Cohort -> {
         cohortOf(address.address, selectedBandOf(address.address, band))
-          ?.let { FigureProvenance(it.status, it.source, it.sourceVariable) }
+          ?.let { FigureProvenance(it.status, it.cell) }
       }
 
       FigureAddress.AssumedByUnicoach -> {

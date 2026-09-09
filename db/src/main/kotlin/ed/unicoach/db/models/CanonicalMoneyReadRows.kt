@@ -25,10 +25,20 @@ data class PriceFigure(
   /** Always a real academic year, never absent here (P5). */
   val academicYear: AcademicYear,
   val reading: FigureReading<Int>,
-  val source: MoneySource,
-  val sourceVariable: String,
+  /**
+   * WHICH published cell this row was read from: the publisher and the
+   * publisher's own name for the cell, as ONE value (RFC 184).
+   *
+   * The two stored columns come back as one [PublishedCell] for the reason the
+   * two reading columns come back as one [FigureReading]: they are halves of a
+   * key, an [AssuranceTier] is a function of the pair, and carried as two loose
+   * fields nothing stopped a Scorecard source being paired with a Common Data
+   * Set field id. Decoded ONCE, in the DAO's mapper, beside every other decode
+   * this row does.
+   */
+  override val cell: PublishedCell,
   val publisherFlag: String?,
-)
+) : CellCarrier
 
 /**
  * One `cohort_money_stats` row, read back (RFC 158, D2/P4): a number about a
@@ -45,10 +55,10 @@ data class CohortMoneyStat(
   /** The year the source dates the cohort, or null where it pools or does not date it (RFC 170 D14, P5). */
   val vintage: AcademicYear?,
   val reading: FigureReading<Double>,
-  val source: MoneySource,
-  val sourceVariable: String,
+  /** WHICH published cell this row was read from -- the cohort twin of [PriceFigure.cell], and one value for the same reason (RFC 184). */
+  override val cell: PublishedCell,
   val publisherFlag: String?,
-)
+) : CellCarrier
 
 /**
  * One batched read of a canonical fact table: the rows this build could decode,

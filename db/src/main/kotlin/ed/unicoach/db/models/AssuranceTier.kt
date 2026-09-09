@@ -1,7 +1,5 @@
 package ed.unicoach.db.models
 
-import ed.unicoach.db.dao.corruptValue
-
 /**
  * How HARD the number behind a figure is: what kind of instrument produced it
  * (RFC 179).
@@ -43,65 +41,28 @@ enum class AssuranceTier(
     /**
      * The tier of one stored cell, from the pair the row carries.
      *
-     * A `when` over [MoneySource] with NO `else`, so a fifth publisher must
-     * decide what kind of number it produces before this compiles. Three arms
-     * answer for the WHOLE source and one is keyed on the variable, and that is
-     * a decision rather than a default: an IC_AY or SFA cell is a cell of one
-     * compelled, edit-checked survey whichever variable it is, and a Common
-     * Data Set cell is one filing the school published about itself whichever
-     * field id it carries. The instrument is a property of the source there.
-     * The Scorecard is the one publisher for which that is false -- it relays
-     * some publishers and originates others -- so it is the one arm keyed on
-     * the variable.
+     * ONE LINE, delegating to [PublishedCell.of]: the decode of the
+     * `(source, source_variable)` pair moved into [PublishedCell] (RFC 184),
+     * which closes the pair into a single type built once at the read boundary,
+     * and a tier is a property OF that cell. There is therefore exactly one
+     * `when` over the pair in the tree; keeping a second one here -- over the
+     * same source vocabulary and with the same fatal -- is how two answers to
+     * one question start to drift apart at the next edit.
      *
-     * `source_variable` is an OPEN `TEXT` column on all four fact tables, so no
-     * `when` over it can be exhaustive and the compiler cannot supply the
-     * safety net it supplies for the source. An unmapped Scorecard variable is
-     * therefore FATAL, on the `CanonicalMoneyLoader.ORDERED_SOURCES`
-     * unranked-member precedent: a column added to the loader without a tier
-     * stops the read instead of being served under a guessed one. It never
-     * defaults to the softest tier and never to the hardest.
+     * The SIGNATURE is unchanged, deliberately. Every caller that holds the two
+     * stored columns and wants only the tier still asks this, and [location] is
+     * still REQUIRED for the reason it always was: an unlocated corrupt-value
+     * fault costs the operator a `source_variable` scan of two fact tables.
      *
-     * It is fatal in the HOUSE's shape: this is a read-path reconstruction
-     * failure over a stored pair, so it leaves as the located
-     * [ed.unicoach.db.dao.CorruptPersistedValueException] every sibling decode
-     * raises -- with its `PermanentError` marker, both halves of the pair as the
-     * exception's `value`, and [location] naming the row. [location] is
-     * REQUIRED, not defaulted: every caller already holds the row's identity or
-     * the field it is serving, and an unlocated corrupt-value fault costs the
-     * operator a `source_variable` scan of two fact tables.
+     * What the arms decide, and why, now lives on [PublishedCell] and its
+     * arms. [SCORECARD_TIERS] stays HERE: it is a table of tiers, it is
+     * this enum's own data, and [PublishedCell.ScorecardCell.of] reads it.
      */
     fun of(
       source: MoneySource,
       sourceVariable: String,
       location: String,
-    ): AssuranceTier =
-      when (source) {
-        MoneySource.IPEDS_SFA -> {
-          MANDATORY_SURVEY
-        }
-
-        MoneySource.IPEDS_IC_AY -> {
-          MANDATORY_SURVEY
-        }
-
-        MoneySource.COMMON_DATA_SET -> {
-          VOLUNTARY_SELF_REPORT
-        }
-
-        MoneySource.SCORECARD -> {
-          SCORECARD_TIERS[sourceVariable]
-            ?: throw corruptValue(
-              // BOTH halves of the key as the exception's own DATA: the tier is
-              // a function of the pair, so a fixer needs the publisher as well
-              // as the cell id, and neither may be left to be parsed back out
-              // of prose.
-              "source=[${source.value}] source_variable=[$sourceVariable]",
-              "a tiered Scorecard source_variable (AssuranceTier.SCORECARD_TIERS)",
-              location,
-            )
-        }
-      }
+    ): AssuranceTier = PublishedCell.of(source, sourceVariable, location).assurance
 
     /**
      * The twenty-four Scorecard `source_variable` strings this corpus loads,

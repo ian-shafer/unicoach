@@ -14,6 +14,7 @@ import ed.unicoach.db.models.FullyMetNeedCounts
 import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.PublishedCell
 import java.sql.ResultSet
 import java.util.UUID
 
@@ -191,6 +192,13 @@ object AidPolicyDao {
        * a service-side resolver would have forced a SECOND mapping for the
        * Common Data Set -- the special case this seam must not have. The source
        * is this read's own bound constant, so the pair is complete on the spot.
+       *
+       * A BARE TIER, not the [PublishedCell] the money carriers now hold (RFC
+       * 184). This fact is not a money carrier: nothing downstream asks it
+       * which cell id it came from, and the aid-policy wire says only what kind
+       * of number it is. The cell is built to get the tier and then dropped --
+       * widening this field would put a variable on a type with no reader for
+       * it.
        */
       val assurance: AssuranceTier,
     ) : CdsAidFact
@@ -234,6 +242,10 @@ object AidPolicyDao {
               // 150 lines from the SQL that binds the filter it was copied
               // from: a pair half-read and half-typed is a pair that can
               // disagree with the row it claims to describe.
+              // Through [AssuranceTier.of], the door kept for a caller that
+              // holds the two columns and wants only the tier (RFC 184): its
+              // body IS this decode, so spelling it out here would be a second
+              // copy of the one resolver.
               assurance =
                 AssuranceTier.of(
                   decodeSource(rs.getString("source"), row),

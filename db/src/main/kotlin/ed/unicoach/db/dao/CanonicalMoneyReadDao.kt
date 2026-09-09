@@ -17,6 +17,7 @@ import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.UnreadableMoneyRow
 import java.sql.ResultSet
@@ -190,8 +191,16 @@ object CanonicalMoneyReadDao {
           column = "price_figures.[amount_usd]",
           naturalKey = key,
         ),
-      source = decode(rs.getString("source"), MoneySource::fromValue, "MoneySource", "price_figures.[source]", key),
-      sourceVariable = rs.getString("source_variable"),
+      // The publisher and its own name for the cell, decoded together into ONE
+      // value (RFC 184). It joins the five sibling decodes above it inside the
+      // same `try`, with the same natural-key location, so an unmapped
+      // Scorecard variable costs THIS ROW -- it leaves the batch as an
+      // `UnreadableMoneyRow` and the reader logs it -- rather than failing the
+      // whole request from the service layer, which is where the tier used to
+      // be resolved. That is the case `UnreadableMoneyRow` exists for (RFC
+      // 166): a build that meets a cell it does not know withdraws the cell,
+      // not the family's answer.
+      cell = decodeCell(rs, "price_figures", key),
       publisherFlag = rs.getString("publisher_flag"),
     )
   }
@@ -225,8 +234,8 @@ object CanonicalMoneyReadDao {
           column = "cohort_money_stats.[value]",
           naturalKey = key,
         ),
-      source = decode(rs.getString("source"), MoneySource::fromValue, "MoneySource", "cohort_money_stats.[source]", key),
-      sourceVariable = rs.getString("source_variable"),
+      // One value, decoded inside the row's own `try` -- see [mapPriceFigure].
+      cell = decodeCell(rs, "cohort_money_stats", key),
       publisherFlag = rs.getString("publisher_flag"),
     )
   }
@@ -309,6 +318,30 @@ object CanonicalMoneyReadDao {
     column: String,
     naturalKey: String,
   ): FigureStatus = decode(stored, FigureStatus::fromValue, "FigureStatus", column, naturalKey)
+
+  /**
+   * The published cell a money row was read from (RFC 184): the `source` and
+   * `source_variable` columns every fact table carries, decoded as ONE value.
+   *
+   * A named helper for the reason [decodeStatus] is one: both money tables read
+   * the same columns in the same order and raise the same located fault, so a
+   * third fact table would otherwise copy that shape a third time. The TABLE is
+   * all a caller supplies, because it is all that differs.
+   */
+  private fun decodeCell(
+    rs: ResultSet,
+    table: String,
+    naturalKey: String,
+  ): PublishedCell =
+    PublishedCell.of(
+      decode(rs.getString("source"), MoneySource::fromValue, "MoneySource", "$table.[source]", naturalKey),
+      rs.getString("source_variable"),
+      // The sibling decodes' own shape -- the columns and the row's natural
+      // key -- because the fault is about the PAIR and not either column
+      // alone, and an operator reading the throwable alone still needs the
+      // fact table: both money tables carry these two columns.
+      "$table.[source, source_variable] (row [$naturalKey])",
+    )
 
   /**
    * Reconstructs a persisted enum string. Every coded column here is either a

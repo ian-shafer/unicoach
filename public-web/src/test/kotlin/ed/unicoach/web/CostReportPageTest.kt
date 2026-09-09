@@ -24,6 +24,7 @@ import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.web.render.NOT_REPORTED
 import io.ktor.client.request.get
@@ -377,7 +378,7 @@ class CostReportPageTest {
         housingAndFoodOnCampus = 11000,
         booksAndSupplies = 1200,
         otherExpensesOnCampus = 2500,
-        priceSource = MoneySource.IPEDS_IC_AY,
+        priceCell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "CHG2AY3"),
       )
 
     val body = render(costProfile(listOf(ipedsSchool), answeredMoney()))
@@ -431,7 +432,7 @@ class CostReportPageTest {
         // The Scorecard's row, and it bears a value -- so the Scorecard really
         // is a publisher of a figure this family can see.
         medianDebt = 21000,
-        priceSource = MoneySource.IPEDS_IC_AY,
+        priceCell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "CHG2AY3"),
       )
 
     val body = render(costProfile(listOf(twoPublisherSchool), answeredMoney()))
@@ -483,7 +484,7 @@ class CostReportPageTest {
         netPrice = NetPrice.OverallAverage(null),
         medianDebt = null,
         absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
-        priceSource = MoneySource.IPEDS_IC_AY,
+        priceCell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "CHG2AY3"),
       )
 
     val body = render(costProfile(listOf(ipedsPricedScorecardSilent), answeredMoney()))

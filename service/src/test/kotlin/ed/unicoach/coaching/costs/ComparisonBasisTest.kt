@@ -14,6 +14,7 @@ import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.Test
@@ -188,8 +189,9 @@ class ComparisonBasisTest {
               arrangement = address.arrangement,
               academicYear = it,
               reading = FigureReading.Present(1, ValueBearingStatus.REPORTED),
-              source = MoneySource.IPEDS_IC_AY,
-              sourceVariable = "FIXTURE",
+              // The published cell (RFC 184): the IC_AY arm answers for the
+              // whole source whichever variable it is.
+              cell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "FIXTURE"),
               publisherFlag = null,
             ),
           )

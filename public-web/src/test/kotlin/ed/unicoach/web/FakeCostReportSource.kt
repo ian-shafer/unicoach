@@ -39,6 +39,7 @@ import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.LoanTypeBorrowing
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
@@ -157,6 +158,9 @@ fun answeredMoney(
  */
 val FIXTURE_PRICE_YEAR: AcademicYear = AcademicYear(2023)
 
+/** Where a refused fixture cell says it came from -- one home, so every row this file builds names the same place. */
+private const val FIXTURE_LOCATION = "the cost-report page fixture"
+
 /** [FIXTURE_PRICE_YEAR] as words, derived rather than a second literal (RFC 170 D14). */
 val FIXTURE_PRICE_ACADEMIC_YEAR: String = FIXTURE_PRICE_YEAR.label
 
@@ -242,15 +246,23 @@ fun costFixture(
    */
   heldOnlyInOtherYear: Map<CostField, Int> = emptyMap(),
   /**
-   * The publisher whose rows won this school's PRICE cells (RFC 177).
+   * The published CELL this school's PRICE rows stand for (RFC 184), or null
+   * for the Scorecard's own column for each field.
    *
    * A parameter because it is the whole point of the seam: the loader ranks the
    * two IPEDS surveys above the Scorecard, so most real price rows are IPEDS,
    * and the page used to cite the Scorecard for every one of them. The cohort
    * rows stay the Scorecard's, because that is where the blended averages
    * really come from -- one school with two publishers is the ordinary case.
+   *
+   * A CELL and not a bare publisher: a fixture that named the source on its own
+   * kept the variable from [ScorecardVariableNames] whatever it said, so an
+   * IPEDS school here really seeded `(IPEDS_IC_AY, "TUITIONFEE_IN")` -- a
+   * Scorecard column under a survey, the exact pairing RFC 184 exists to close,
+   * reproduced in our own fixture. Naming the cell makes the publisher and its
+   * own column travel together.
    */
-  priceSource: MoneySource = MoneySource.SCORECARD,
+  priceCell: PublishedCell? = null,
 ): CollegeCost {
   val collegeId = CollegeId(UUID.randomUUID())
   val figures =
@@ -271,7 +283,7 @@ fun costFixture(
           // what makes it a gap rather than a silence -- so it keeps only its
           // row at the other year.
           .filterNot { (field, _) -> field in heldOnlyInOtherYear }
-          .mapNotNull { (field, amountUsd) -> priceRow(collegeId, field, amountUsd, absenceStatuses, source = priceSource) } +
+          .mapNotNull { (field, amountUsd) -> priceRow(collegeId, field, amountUsd, absenceStatuses, cell = priceCell) } +
           heldOnlyInOtherYear.mapNotNull { (field, amountUsd) -> yearGapRow(collegeId, field, amountUsd) },
       cohortStats = cohortRows(collegeId, control, publishedPrice, netPrice, medianDebt, absenceStatuses),
     )
@@ -349,7 +361,7 @@ private fun priceRow(
   amountUsd: Int?,
   absenceStatuses: Map<CostField, AbsenceStatus> = emptyMap(),
   academicYear: AcademicYear = FIXTURE_PRICE_YEAR,
-  source: MoneySource = MoneySource.SCORECARD,
+  cell: PublishedCell? = null,
 ): PriceFigure? {
   val address = (field.figureAddress as? FigureAddress.Price)?.address ?: return null
   return PriceFigure(
@@ -359,11 +371,14 @@ private fun priceRow(
     arrangement = address.arrangement,
     academicYear = academicYear,
     reading = readingOf(amountUsd, absenceStatuses[field] ?: AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
-    source = source,
-    // The publisher's OWN column for this price cell, from the same one home as
-    // the cohort names above: exhaustive over [CostField] there, so a new price
-    // field must decide at the BUILD rather than at some later run (RFC 179).
-    sourceVariable = ScorecardVariableNames.priceOf(field),
+    // The published cell this row stands for (RFC 184). A caller that names no
+    // cell gets the SCORECARD's own column for this field, from the same one
+    // home as the cohort names below -- exhaustive over [CostField] there, so a
+    // new price field must decide at the BUILD rather than at some later run
+    // (RFC 179). A caller that wants another publisher names that publisher's
+    // OWN cell, which is why this is a cell and not a loose source: the source
+    // could never be handed this Scorecard column again.
+    cell = cell ?: PublishedCell.ScorecardCell.of(ScorecardVariableNames.priceOf(field), FIXTURE_LOCATION),
     publisherFlag = null,
   )
 }
@@ -469,13 +484,18 @@ private fun cohortRow(
     reading =
       amountUsd?.let { FigureReading.Present(it.toDouble(), ValueBearingStatus.REPORTED) }
         ?: FigureReading.Absent(absent ?: AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
-    source = MoneySource.SCORECARD,
     // The Scorecard's own column for this measure -- from the ONE home that
     // names them ([ScorecardVariableNames]), which the :service cost fixtures
     // read too. Typed here as well, the two copies were free to be corrected
     // apart, and a fixture writing a name the tier resolver does not know seeds
-    // a row the production read refuses (RFC 179).
-    sourceVariable = ScorecardVariableNames.cohortOf(address.measure, incomeBand),
+    // a row the production read refuses (RFC 179). Built through
+    // [PublishedCell.ScorecardCell.of], so this fixture is refused at the same
+    // door the read is (RFC 184).
+    cell =
+      PublishedCell.ScorecardCell.of(
+        ScorecardVariableNames.cohortOf(address.measure, incomeBand),
+        FIXTURE_LOCATION,
+      ),
     publisherFlag = null,
   )
 }

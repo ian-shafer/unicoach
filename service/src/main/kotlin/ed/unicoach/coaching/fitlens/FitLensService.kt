@@ -776,13 +776,12 @@ class FitLensService(
       .readCohortStats(collegeIds)
       .mapNotNull { (collegeId, figures) ->
         figures.cohortOf(CostField.NET_PRICE, band = null)?.let { stat ->
-          // The tier is resolved HERE, with the row, INSIDE the guard that
-          // makes this read best-effort -- never at render time. A stored cell
-          // id no tier answers for is a store problem like any other, so this
-          // run omits the net-price key and continues; resolved in the digest
-          // loop it would throw out of a pass that has already billed a call.
-          collegeId to
-            DigestNetPrice(stat, AssuranceTier.of(stat.source, stat.sourceVariable, "the fit-lens net-price digest"))
+          // Nothing is resolved here at all: the tier rides on the row's own
+          // published cell, which the DAO decoded (RFC 184), so this loop
+          // cannot throw over a publisher/variable pair and cannot re-pair
+          // them. A stored cell id no tier answers for never reaches this
+          // loop -- it was refused at the read, where it costs one row.
+          collegeId to DigestNetPrice(stat)
         }
       }.toMap()
 
@@ -1116,18 +1115,22 @@ class FitLensService(
   }
 
   /**
-   * One digest net price and what KIND of number it is -- the tier resolved
-   * WITH the row, inside the guarded read, rather than at render time.
+   * One digest net price and what KIND of number it is.
    *
-   * The two travel as one value so the digest loop cannot reach a stat whose
-   * tier has not been resolved: resolving it in the loop put a throwing step
-   * outside [netPricesForDigest]'s best-effort catch, where one bad stored row
-   * halted a whole pass after a billed LLM call.
+   * The tier is COMPUTED off the row's own cell, never a second constructor
+   * argument: the cell was decoded at the DAO (RFC 184), so the tier is a
+   * property of the stat this type already carries and no caller can pair the
+   * two so that they disagree. Resolving a tier in the digest loop is what this
+   * type was built to prevent -- it put a throwing step outside
+   * [netPricesForDigest]'s best-effort catch, where one bad stored row halted a
+   * whole pass after a billed LLM call -- and there is now no resolution left
+   * here to be moved.
    */
   private data class DigestNetPrice(
     val stat: DatedStat,
-    val assurance: AssuranceTier,
-  )
+  ) {
+    val assurance: AssuranceTier get() = stat.cell.assurance
+  }
 
   private sealed interface ReasonParse {
     data class Chosen(

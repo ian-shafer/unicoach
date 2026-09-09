@@ -5,6 +5,7 @@ import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.FigureGroup
 import ed.unicoach.coaching.costs.LineOrigin
 import ed.unicoach.coaching.costs.NoTotalReason
+import ed.unicoach.coaching.costs.ScorecardVariableNames
 import ed.unicoach.coaching.costs.components
 import ed.unicoach.coaching.costs.isAssumedByUnicoach
 import ed.unicoach.coaching.costs.reportedComponentsOf
@@ -24,6 +25,7 @@ import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.Test
@@ -51,6 +53,9 @@ import kotlin.test.assertTrue
  */
 class CollegeFiguresTest {
   private val collegeId = CollegeId(UUID.randomUUID())
+
+  /** Where a refused fixture cell says it came from -- one home, so both fixture rows name the same place. */
+  private val fixtureLocation = "the CollegeFigures fixture"
 
   // ---------------------------------------------------------------------------
   // Latest year, per key, and no cross-year total (§3).
@@ -944,11 +949,50 @@ class CollegeFiguresTest {
         reading
           ?: amountUsd?.let { FigureReading.Present(it, ValueBearingStatus.REPORTED) }
           ?: FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
-      source = source,
-      sourceVariable = "FIXTURE",
+      // The published cell (RFC 184), built through the ONE decoder rather than
+      // paired by hand: the Scorecard arm is keyed on the variable and refuses
+      // a name no tier answers for, so a fixture that types `FIXTURE` under
+      // that publisher would seed a row the production read declines. The
+      // Scorecard's REAL price column comes from the one home that names them.
+      cell = fixturePriceCellOf(source, field),
       publisherFlag = null,
     )
   }
+
+  /**
+   * The published cell a fixture PRICE row stands for -- the one fixture whose
+   * publisher is genuinely a parameter.
+   *
+   * Only the Scorecard arm needs a real published name -- the other three
+   * answer for the whole source whatever the variable is -- so every other
+   * fixture row keeps saying `FIXTURE`, which is what it is. Nothing in this
+   * suite reads the variable back; what it reads is the publisher and, through
+   * it, the served figure.
+   *
+   * The Scorecard name is asked for INSIDE the branch that uses it:
+   * [ScorecardVariableNames] fails loudly for a field the Scorecard publishes
+   * no column for, and this suite drives plenty of such fields under IPEDS.
+   */
+  private fun fixturePriceCellOf(
+    source: MoneySource,
+    field: CostField,
+  ): PublishedCell =
+    when (source) {
+      MoneySource.SCORECARD -> {
+        PublishedCell.ScorecardCell.of(ScorecardVariableNames.priceOf(field), fixtureLocation)
+      }
+
+      // The three publishers whose tier answers for the WHOLE source, named one
+      // by one and with no `else`: RFC 184's guard is that a fifth publisher
+      // must decide what kind of number it produces, and an `else` here would
+      // fixture it under a name no tier answers for without stopping the build.
+      MoneySource.IPEDS_SFA,
+      MoneySource.IPEDS_IC_AY,
+      MoneySource.COMMON_DATA_SET,
+      -> {
+        PublishedCell.of(source, "FIXTURE", fixtureLocation)
+      }
+    }
 
   /**
    * A cohort row at the FULL canonical address of [field] -- population and aid
@@ -1000,8 +1044,15 @@ class CollegeFiguresTest {
       incomeBand = band,
       vintage = vintage,
       reading = reading ?: FigureReading.Present(value, ValueBearingStatus.REPORTED),
-      source = MoneySource.SCORECARD,
-      sourceVariable = "FIXTURE",
+      // A real Scorecard column for the measure, from the one home that names
+      // them: this arm is keyed on the variable (RFC 179/184). Built AS the
+      // Scorecard arm, because this fixture names no other publisher -- there
+      // is no source to decode, so nothing decodes one.
+      cell =
+        PublishedCell.ScorecardCell.of(
+          ScorecardVariableNames.cohortOf(measure, band),
+          fixtureLocation,
+        ),
       publisherFlag = null,
     )
 

@@ -27,6 +27,7 @@ import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.BorrowerCounts
+import ed.unicoach.db.models.CellCarrier
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeAidPolicy
 import ed.unicoach.db.models.CollegeBorrowing
@@ -40,6 +41,7 @@ import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
@@ -729,37 +731,27 @@ data class FigureStatusNote(
    */
   val statement: String?,
   /**
-   * The publisher whose row won this figure (RFC 177 D4).
+   * WHICH PUBLISHED CELL this figure came from: the publisher and the
+   * publisher's own name for the cell, as ONE value (RFC 184).
    *
    * The note is already the carrier of "a code and its sentence travelling
-   * together", and WHO published the figure is the third fact of the same shape:
-   * the sentence in [statement] names this publisher where the status is about
-   * the publisher's own act, and a renderer that re-derived the name from
+   * together", and the cell behind the figure is the third fact of the same
+   * shape: the sentence in [statement] names this publisher where the status is
+   * about the publisher's own act, and a renderer that re-derived the name from
    * anywhere else is how one hand-typed constant came to contradict the data.
    *
-   * NON-NULL: both construction sites read the publisher off a row that exists
-   * -- the row the status came from ([figureStatusesOf]) or the row we hold for
+   * NON-NULL: both construction sites read the cell off a row that exists --
+   * the row the status came from ([figureStatusesOf]) or the row we hold for
    * another year ([yearGapOf]). A cell no loader ever wrote produces no note at
    * all, so a null here would be a state nothing can build.
-   */
-  val source: MoneySource,
-  /**
-   * What KIND of number this is (RFC 179): a federal administrative record, a
-   * compelled and edit-checked survey answer, or a filing the school published
-   * about itself.
    *
-   * ORTHOGONAL to [status] and read as a PAIR with it. An imputed IPEDS cell is
-   * soft in a different way from a Common Data Set cell: the first is a survey
-   * the school had to file and the publisher filled this cell in itself, the
-   * second is the school's own unaudited claim. Collapsing the two into one
-   * "soft" is exactly what this field exists to prevent.
-   *
-   * The publisher's own cell id it is derived from does NOT ride here. It is
-   * the resolver's INPUT, and both construction sites hold the row it comes off
-   * ([FigureProvenance.sourceVariable], [DatedFigure.sourceVariable]); carried
-   * on this note as well it was written by two sites and read by none.
+   * It is the CELL, not a publisher plus a separately resolved tier, because
+   * the tier IS a function of the pair the cell holds: resolved here from a
+   * pair this note carried half of, the two halves could disagree, and the
+   * resolution had to be spelled out identically at both sites. Now both read
+   * it off the row.
    */
-  val assurance: AssuranceTier,
+  override val cell: PublishedCell,
   /**
    * The academic year this school's price is quoted at, and the year we hold
    * THIS figure for -- both non-null for a YEAR GAP and both null for every
@@ -777,7 +769,24 @@ data class FigureStatusNote(
    */
   val servedAcademicYear: String? = null,
   val heldAcademicYear: String? = null,
-) {
+) : CellCarrier {
+  /**
+   * What KIND of number this is (RFC 179): a federal administrative record, a
+   * compelled and edit-checked survey answer, or a filing the school published
+   * about itself.
+   *
+   * ORTHOGONAL to [status] and read as a PAIR with it. An imputed IPEDS cell is
+   * soft in a different way from a Common Data Set cell: the first is a survey
+   * the school had to file and the publisher filled this cell in itself, the
+   * second is the school's own unaudited claim. Collapsing the two into one
+   * "soft" is exactly what this field exists to prevent.
+   *
+   * COMPUTED off [cell] rather than resolved and stored here (RFC 184): the
+   * tier is a function of the pair the cell already holds, so a stored copy is
+   * a second answer to a question that has one.
+   */
+  val assurance: AssuranceTier get() = cell.assurance
+
   init {
     require((servedAcademicYear == null) == (heldAcademicYear == null)) {
       "a year gap names BOTH years or neither: field=[${field.wireName}] " +
@@ -1994,18 +2003,14 @@ private fun statusNoteOf(
     field = field,
     status = provenance.status,
     statement = statusStatementOf(provenance, shown),
-    source = provenance.source,
-    // What KIND of number this cell is, from the pair the row itself carries
-    // (RFC 179). Resolved for EVERY figure with provenance, shown or blank: a
-    // tier hung only on the blanks would never appear beside a dollar amount,
-    // which is every figure a family actually reads. The field is the locator
-    // an operator would need to find the offending row, so it is passed.
-    assurance =
-      AssuranceTier.of(
-        provenance.source,
-        provenance.sourceVariable,
-        "the figure-status walk (field=[${field.wireName}])",
-      ),
+    // The published cell the row itself carries, whole (RFC 184). Both the
+    // publisher and what KIND of number this cell is come off it -- for EVERY
+    // figure with provenance, shown or blank, because a tier hung only on the
+    // blanks would never appear beside a dollar amount, which is every figure a
+    // family actually reads. Nothing is resolved here: the pair was decoded
+    // once, at the DAO, with the offending row's own natural key as its
+    // locator.
+    cell = provenance.cell,
   )
 }
 
@@ -2053,16 +2058,7 @@ private fun yearGapOf(
     // are not showing is still data about it (RFC 177 D4), and so is what kind
     // of number it is (RFC 179): the figure we hold for another year is that
     // publisher's cell whether or not we are showing it.
-    source = held.source,
-    // ONE resolution of the pair, named: the tier is a function of
-    // `(source, source_variable)` and calling the resolver twice on one row
-    // invites the two calls to drift apart at the next edit.
-    assurance =
-      AssuranceTier.of(
-        held.source,
-        held.sourceVariable,
-        "the year-gap note (field=[${field.wireName}] held_year=[${held.academicYear.label}])",
-      ),
+    cell = held.cell,
     // The two years travel as DATA as well as inside the sentence: they are the
     // fact that distinguishes this case from a cell we have never collected,
     // and a consumer that can only reach them by parsing our English cannot

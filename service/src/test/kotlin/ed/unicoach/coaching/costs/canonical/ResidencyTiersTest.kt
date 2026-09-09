@@ -7,6 +7,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.Test
@@ -224,8 +225,9 @@ class ResidencyTiersTest {
         reading
           ?: amountUsd?.let { FigureReading.Present(it, ValueBearingStatus.REPORTED) }
           ?: FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
-      source = MoneySource.IPEDS_IC_AY,
-      sourceVariable = "FIXTURE",
+      // The published cell (RFC 184). The IC_AY arm answers for the whole
+      // source whichever variable it is, so the fixture name stays what it is.
+      cell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "FIXTURE"),
       publisherFlag = null,
     )
   }

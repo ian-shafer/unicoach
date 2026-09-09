@@ -186,7 +186,7 @@ class CanonicalMoneyReadDaoTest {
     assertEquals(FigureArrangement.NOT_APPLICABLE, row.arrangement)
     assertEquals(AcademicYear(2022), row.academicYear)
     assertEquals(MoneySource.SCORECARD, row.source)
-    assertEquals("TUITIONFEE_IN", row.sourceVariable)
+    assertEquals("TUITIONFEE_IN", row.cell.variable)
     assertEquals(null, row.publisherFlag)
     assertEquals(FigureReading.Present(11000, ValueBearingStatus.REPORTED), row.reading)
   }
@@ -438,6 +438,77 @@ class CanonicalMoneyReadDaoTest {
     assertEquals(skipped.location, skipped.cause.location)
     assertEquals(
       ValidationError.InvalidFormat(expected = "a known FigureStatus value"),
+      skipped.cause.error,
+      "the structured reason must survive the row boundary, not be recoverable only by parsing prose",
+    )
+  }
+
+  @Test
+  fun `a Scorecard source_variable no tier answers for costs its own row, and every other college still answers`() {
+    // `source_variable` is an open TEXT column with no CHECK and no vocabulary
+    // table behind it, so a NEWER loader can write a Scorecard column this
+    // build has no tier for -- the same deploy skew the status case above
+    // models, arriving through the pair RFC 184 closed into one value. The
+    // decode now sits INSIDE the row's `try` (CanonicalMoneyReadDao.mapPriceFigure),
+    // and that containment is the whole of the behaviour delta: the tier used
+    // to be resolved in the service layer, where the refusal failed the
+    // family's whole request instead of the one cell it is about.
+    val readable = college(110100)
+    val partlyUnreadable = college(110300)
+    CanonicalMoneyDao
+      .insertPriceFigures(
+        session,
+        listOf(
+          priceFigure(readable, concept = PriceConcept.TUITION_AND_FEES),
+          // `DEBT_MDN` is the variable AssuranceTier.SCORECARD_TIERS deliberately
+          // does not name, so the REAL writer stores it and only the read refuses.
+          priceFigure(partlyUnreadable, concept = PriceConcept.TUITION_AND_FEES, sourceVariable = "DEBT_MDN"),
+          priceFigure(partlyUnreadable, concept = PriceConcept.FEES_ONLY),
+        ),
+      ).getOrThrow()
+
+    val read = CanonicalMoneyReadDao.listPriceFigures(session, listOf(readable, partlyUnreadable)).getOrThrow()
+
+    // 1. The read SUCCEEDS: an untiered cell is a fact about that row.
+    assertEquals(
+      PriceConcept.TUITION_AND_FEES,
+      read.byCollege
+        .getValue(readable)
+        .single()
+        .priceConcept,
+      "a college with no untiered row must still get its figures",
+    )
+
+    // 2. The affected college keeps every row that IS readable; only the cell
+    //    whose tier this build cannot name is missing.
+    assertEquals(
+      listOf(PriceConcept.FEES_ONLY),
+      read.byCollege.getValue(partlyUnreadable).map { it.priceConcept },
+      "only the unreadable row may leave the batch",
+    )
+
+    // 3. And it is named, carrying BOTH halves of the pair as the stored value
+    //    -- the tier is a function of the pair, so a fixer needs the publisher
+    //    as much as the cell id, and neither may be left to be parsed back out
+    //    of prose.
+    val skipped = read.unreadable.single()
+    assertEquals("price_figures", skipped.table)
+    assertEquals("source=[scorecard] source_variable=[DEBT_MDN]", skipped.stored)
+    // The location names BOTH columns and the row's natural key, the shape
+    // every sibling decode in the mapper uses: the fault is about the pair
+    // rather than either column alone, and the fact table is the identifier an
+    // operator reading the throwable alone would otherwise lack -- both money
+    // tables carry these two columns.
+    assertEquals(
+      "price_figures.[source, source_variable] (row [college_id=[${partlyUnreadable.value}] " +
+        "price_concept=[tuition_and_fees] residency_basis=[in_state] arrangement=[not_applicable] " +
+        "academic_year=[2022-23]])",
+      skipped.location,
+    )
+    assertEquals("source=[scorecard] source_variable=[DEBT_MDN]", skipped.cause.value)
+    assertEquals(skipped.location, skipped.cause.location)
+    assertEquals(
+      ValidationError.InvalidFormat(expected = "a known [a tiered Scorecard source_variable (AssuranceTier.SCORECARD_TIERS)] value"),
       skipped.cause.error,
       "the structured reason must survive the row boundary, not be recoverable only by parsing prose",
     )
