@@ -379,9 +379,64 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
           loader.load(meritCsv, factorsCsv, deadlinesCsv, fixture("cds-aid-policy-unknown-fact-fixture.csv"))
         }
       val defect = thrown.defect as CdsSeedLoader.Defect.UnknownCode
+      // Still the `fact` column, unchanged: the field-id check RFC 179 added
+      // runs AFTER the fact lookup precisely so this row keeps failing on the
+      // column an operator has to fix. This fixture carries `H.999` too, and a
+      // check ordered the other way would report that instead.
       assertEquals("fact", defect.column)
       assertEquals("meets_full_need", defect.value)
     }
+
+  @Test
+  fun `a row published under another fact's field id is refused, so the CDS key set is closed at ingest`() =
+    runBlocking {
+      seedColleges()
+      // `source_variable` is read verbatim out of the seed and has no CHECK on
+      // any of the three tables it lands in, so this pair was the one
+      // `source_variable` key set in the store that nothing closed. An
+      // assurance tier is a function of that string (RFC 179), so a figure
+      // filed under the wrong field id is a wrong claim about how hard a
+      // number is -- refused here rather than stored.
+      val thrown =
+        assertFailsWith<CdsSeedLoader.FormatException> {
+          loader.load(meritCsv, factorsCsv, deadlinesCsv, fixture("cds-aid-policy-wrong-field-id-fixture.csv"))
+        }
+      val defect = thrown.defect as CdsSeedLoader.Defect.UnknownCode
+      assertEquals(
+        "source_variable (for fact [avg_need_met_percent])",
+        defect.column,
+        "the row's own fact is what decided the single accepted id, so the refusal names it",
+      )
+      assertEquals("H.211", defect.value, "the average GRANT's field id, on the average need MET row")
+      assertEquals(listOf("H.209"), defect.allowed, "one allowed id, because the fact decides it")
+      assertEquals(0, withSession { count(it, "cohort_money_stats") })
+    }
+
+  @Test
+  fun `every aid-policy fact names the field id it is published under, and the committed seed agrees`() {
+    // The pairing itself is no longer assertable: fact and field id are ONE
+    // value ([CdsSeedLoader.AidPolicyCell]), so a fact without an id does not
+    // compile. What is still worth walking is the committed seed, so the ids are
+    // the ones the corpus actually carries rather than a plausible list.
+    val pairs =
+      CSVParser
+        .parse(
+          File(committedSeedDir, "aid_policy.csv"),
+          Charsets.UTF_8,
+          CSVFormat.DEFAULT
+            .builder()
+            .setHeader()
+            .setSkipHeaderRecord(true)
+            .build(),
+        ).use { records -> records.map { it.get("fact").trim() to it.get("source_variable").trim() }.toSet() }
+    assertEquals(22, pairs.size, "22 facts, each published under exactly one field id")
+    assertEquals(
+      CdsSeedLoader.AID_POLICY_CELLS.entries
+        .map { it.key to it.value.fieldId }
+        .toSet(),
+      pairs,
+    )
+  }
 
   @Test
   fun `the aid-policy rebuild is wholesale, so a re-run neither duplicates nor accumulates`() =
@@ -827,7 +882,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     LoanType.entries.forEach { loanType ->
       assertEquals(
         CdsSeedLoader.AidPolicyFact.Count(loanType.borrowers),
-        CdsSeedLoader.AID_POLICY_FACTS["${loanType.slug}_borrower_count"],
+        CdsSeedLoader.AID_POLICY_CELLS["${loanType.slug}_borrower_count"]?.fact,
         "the borrower headcount of [${loanType.slug}] is filed under another cohort",
       )
       assertEquals(
@@ -836,7 +891,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
           CohortPopulation.GRADUATING_CLASS,
           loanType.aidScope,
         ),
-        CdsSeedLoader.AID_POLICY_FACTS["${loanType.slug}_debt_avg_usd"],
+        CdsSeedLoader.AID_POLICY_CELLS["${loanType.slug}_debt_avg_usd"]?.fact,
         "the average of [${loanType.slug}] is stored at a denominator that is not its own",
       )
     }
@@ -863,7 +918,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
             .setSkipHeaderRecord(true)
             .build(),
         ).use { records -> records.map { it.get("fact").trim() }.toSet() }
-    assertEquals(CdsSeedLoader.AID_POLICY_FACTS.keys, facts)
+    assertEquals(CdsSeedLoader.AID_POLICY_CELLS.keys, facts)
   }
 
   @Test

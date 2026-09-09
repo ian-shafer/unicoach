@@ -13,12 +13,14 @@ import ed.unicoach.coaching.costs.CostsTestDb.createStudent
 import ed.unicoach.coaching.costs.CostsTestDb.declineBand
 import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AidForm
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
@@ -1218,6 +1220,70 @@ class CollegeCostChatToolTest {
     // Nothing is claimed as required, and no figure is invented.
     assertNull(policy[AidPolicyWire.FORMS_KEY])
     assertNull(policy[AidPolicyWire.NEED_MET_SHARE_KEY])
+    // And no tier either: a tier states what kind of number a figure is, and
+    // there is no figure here. Defaulting one to the softest because the section
+    // is a school's own filing would be asserting it by position on the page
+    // (RFC 179).
+    assertNull(policy[AidPolicyWire.NEED_MET_ASSURANCE_KEY])
+    assertNull(policy[AidPolicyWire.NEED_MET_ASSURANCE_STATEMENT_KEY])
+    assertNull(policy[AidPolicyWire.AVERAGE_GRANT_ASSURANCE_KEY])
+  }
+
+  @Test
+  fun `the two Common Data Set averages carry the softest tier, resolved from the row's own field id`() {
+    // The slice's first-session test: "does Amherst meet full financial need?"
+    // is answered from this section, and the answer now carries "the college
+    // published this about itself; no one checks it" as part of the sentence
+    // rather than as a warning box (RFC 179).
+    val student = createStudent()
+    val college = seedListedCollege(student, "Self Reported U")
+    CostsTestDb.seedAidPolicy(college)
+
+    val policy =
+      collegesOf(execute(student))
+        .single()[AidPolicyWire.KEY]!!
+        .jsonObject
+    // H.209 -- the average percent of need met -- and H.211, the average
+    // need-based grant. Both are the school's own unaudited filing, and the
+    // tier is read off each ROW's `(source, source_variable)` pair rather than
+    // asserted from the section's name.
+    listOf(
+      AidPolicyWire.NEED_MET_ASSURANCE_KEY to AidPolicyWire.NEED_MET_ASSURANCE_STATEMENT_KEY,
+      AidPolicyWire.AVERAGE_GRANT_ASSURANCE_KEY to AidPolicyWire.AVERAGE_GRANT_ASSURANCE_STATEMENT_KEY,
+    ).forEach { (assuranceKey, statementKey) ->
+      assertEquals(
+        AssuranceTier.VOLUNTARY_SELF_REPORT.value,
+        policy.getValue(assuranceKey).jsonPrimitive.content,
+        "[$assuranceKey]",
+      )
+      assertEquals(
+        AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT),
+        policy.getValue(statementKey).jsonPrimitive.content,
+        "the sentence is the domain's own, never re-worded here: [$statementKey]",
+      )
+    }
+    // The OTHER half of the pair rule, which is a declared ABSENCE and so the
+    // half that rots silently: a reported Common Data Set figure carries a TIER
+    // and says NOTHING about its status. A status sentence added beside these
+    // averages later must fail here.
+    val statusWords =
+      FigureStatus.entries.mapNotNull { FigureStatusCopy.statementOf(it, MoneySource.COMMON_DATA_SET) }
+    assertTrue(
+      policy.values.none { value -> statusWords.any { value.toString().contains(it) } },
+      "a reported Common Data Set figure says nothing about its status: [$policy]",
+    )
+    // And no status-shaped KEY either, so a new one is caught by name rather
+    // than only by the words it happens to carry.
+    assertTrue(
+      policy.keys.none { it.endsWith("_status") || it.endsWith("_status_statement") },
+      "the aid-policy section carries no figure status, only a tier: keys=[${policy.keys}]",
+    )
+    // The headcounts get no tier: they reach the wire only through a derived
+    // share, whose tier would be a claim about two rows at once.
+    assertFalse(
+      policy.keys.any { it.startsWith(AidPolicyWire.FULLY_MET_SHARE_KEY) && it.contains("assurance") },
+      "keys=[${policy.keys}]",
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -2519,11 +2585,27 @@ class CollegeCostChatToolTest {
         "the sentence is the domain's own, never re-worded on the wire: [$field]",
       )
     }
-    // The sixth status carries no entry, and that is the rule rather than an
-    // omission: a plainly reported figure is shown plainly.
+    // The sixth status HAS an entry now (RFC 179 D6) and says nothing about its
+    // status: the entry exists so the figure can carry what KIND of number it
+    // is, which is the one thing a family could not learn beside a shown dollar
+    // amount before. No status prose was invented for it -- the key is absent,
+    // and absence has one representation on this payload.
+    val reported = assertNotNull(statuses[CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName])
+    assertEquals(FigureStatus.REPORTED.value, reported.getValue("status").jsonPrimitive.content)
     assertNull(
-      statuses[CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName],
-      "a reported figure needs no sentence beside it: [$statuses]",
+      reported[CollegeCostChatTool.STATEMENT_KEY],
+      "a shown, plainly reported figure says nothing about its status: [$reported]",
+    )
+    // This fixture's price rows are IPEDS IC_AY: a compelled, edit-checked
+    // survey, whichever variable the cell is.
+    assertEquals(
+      AssuranceTier.MANDATORY_SURVEY.value,
+      reported.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
+    )
+    assertEquals(
+      AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+      reported.getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY).jsonPrimitive.content,
+      "the tier's sentence is the domain's own, never re-worded on the wire",
     )
     assertEquals(
       CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.toString(),

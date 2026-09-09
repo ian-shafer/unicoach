@@ -9,6 +9,7 @@ import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.coaching.putCollegeIdsSchema
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
@@ -747,7 +748,18 @@ class CollegeCostChatTool(
     buildJsonObject {
       put("field", note.field.wireName)
       put("status", note.status.value)
-      put(STATEMENT_KEY, note.statement)
+      // ABSENT rather than empty where the note has no status sentence -- a
+      // shown, plainly reported figure (RFC 179 D6). Absence has ONE
+      // representation on this payload, and an empty string would be a second.
+      note.statement?.let { put(STATEMENT_KEY, it) }
+      // What KIND of number this figure is, as a CODE and as the sentence to say
+      // it in (RFC 179 D7) -- the `income_band` + `income_band_label`
+      // convention a third time. A reader must not have to parse our English to
+      // learn which tier a figure is on, and the two keys are read as a PAIR
+      // with `status`: an imputed IPEDS cell and a self-reported one are soft in
+      // different ways.
+      put(ASSURANCE_KEY, note.assurance.value)
+      put(ASSURANCE_STATEMENT_KEY, note.assuranceStatement)
       // The publisher whose row won this cell, as a CODE beside the sentence
       // (RFC 177 D4). `imputed_by_publisher` and `suppressed_by_publisher` are
       // acts of a publisher, so a reader that needs to know which one acted must
@@ -1311,6 +1323,25 @@ class CollegeCostChatTool(
      */
     const val FIGURE_SOURCE_KEY = "source"
 
+    /**
+     * WHAT KIND of number a figure is ([AssuranceTier.value]), inside a
+     * [FIGURE_STATUSES_KEY] entry (RFC 179 D7).
+     *
+     * Beside [FIGURE_SOURCE_KEY] and not folded into it: WHO published a figure
+     * and WHAT INSTRUMENT produced it are two facts, and the Scorecard is
+     * exactly where they come apart -- it relays sixteen IPEDS cells and
+     * originates two federal administrative records, so the publisher does not
+     * decide the tier.
+     *
+     * Read as a PAIR with `status`, never instead of it: `imputed_by_publisher`
+     * sits ON TOP of whichever tier the cell is on. Never a score, a number or
+     * a rating -- three slugs, three sentences, and no ranking between them.
+     */
+    const val ASSURANCE_KEY = "assurance"
+
+    /** The sentence that says [ASSURANCE_KEY], from the domain's one home for it -- said, never re-worded. */
+    const val ASSURANCE_STATEMENT_KEY = "assurance_statement"
+
     /** The wire names one vintage dates, so no reader infers membership from a naming convention. */
     const val DATED_FIGURES_KEY = "figures"
 
@@ -1592,6 +1623,12 @@ class CollegeCostChatTool(
      * convention (`income_band` + `income_band_label`) applied to the comparison
      * contract: whenever a code goes on the wire, the words go with it, from the
      * same construct.
+     *
+     * ONE exception, and it is not a gap: a `figure_statuses` entry for a SHOWN
+     * `reported` figure omits this key entirely (RFC 179 D6). Such a figure says
+     * nothing new about its status, and inventing prose to keep the pairing
+     * would be new copy about a status that has nothing to say. The entry still
+     * pairs its OTHER code — `assurance` always ships with `assurance_statement`.
      */
     const val STATEMENT_KEY = "statement"
 
@@ -1693,8 +1730,16 @@ class CollegeCostChatTool(
         "beside figures from another year. " +
         "\"${FigureStatus.IMPUTED_BY_PUBLISHER.value}\" is not a blank at all: the figure IS shown, and it is " +
         "the publisher's own estimate rather than a number the school reported, so quote it with that said - " +
-        "including when it is a zero. \"${FigureStatus.REPORTED.value}\" carries no entry here; a plainly " +
-        "reported figure is shown plainly. Every college carries $APPLIES_BASIS_KEY, which says which of three " +
+        "including when it is a zero. A \"${FigureStatus.REPORTED.value}\" entry that is shown carries no " +
+        "$STATEMENT_KEY at all; a plainly reported figure is shown plainly and you say nothing about its " +
+        "status. " +
+        "Every entry also carries $ASSURANCE_KEY - what KIND of number the figure is, which is a different " +
+        "fact from who published it and from whether it is blank: a federal administrative record, a survey " +
+        "the college was required to file and that is edit-checked, or a figure the college published about " +
+        "itself that nobody checks. $ASSURANCE_STATEMENT_KEY is the sentence to say that in - say it beside " +
+        "the figure, after the $STATEMENT_KEY sentence where there is one, and never re-word it, rank the " +
+        "three or turn them into a score. " +
+        "Every college carries $APPLIES_BASIS_KEY, which says which of three " +
         "states it is in: ${BlendedFigureApplicability.APPLIES.value} means the published price and the price " +
         "after a financial aid offer are this family's there, ${BlendedFigureApplicability.WITHHELD.value} " +
         "means they are withheld, and ${BlendedFigureApplicability.BASIS_STATED.value} means we cannot say " +

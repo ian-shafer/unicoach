@@ -34,9 +34,9 @@ data class CollegeAidPolicy(
    * says it aloud. A `Double` crossing this boundary is the 100x hazard with
    * nothing to catch it.
    */
-  val averageNeedMet: Share?,
+  val averageNeedMet: AssuredFigure<Share>?,
   /** CDS H2 line k: the average need-based grant of those in line e, whole US dollars. */
-  val averageNeedBasedGrantUsd: Int?,
+  val averageNeedBasedGrantUsd: AssuredFigure<Int>?,
   /**
    * CDS H2 lines d and h as ONE fact, or null when the school reports neither:
    * the freshmen who were awarded any financial aid, and those of them whose
@@ -80,3 +80,26 @@ data class FullyMetNeedCounts(
 ) {
   val share: Share? = Share.ofOrNull(part = freshmenNeedFullyMet, whole = freshmenAwardedAnyAid)
 }
+
+/**
+ * One published figure and what KIND of number it is (RFC 179), as ONE value.
+ *
+ * An ENVELOPE rather than a side-map keyed by measure. The tier was a parallel
+ * `Map<MoneyMeasure, AssuranceTier>` beside the figures, whose keys did not have
+ * to match the record's own fields: `averageNeedMet != null` with an empty map
+ * compiled, and the wire writer's `?: return` then dropped the tier in silence
+ * -- a figure served to a family with nothing saying how hard the number is,
+ * with nothing failing. Enveloped, a figure without a tier is not a value anyone
+ * can build, so the drop has no representation to hide in.
+ *
+ * The [FullyMetNeedCounts] rule, one size smaller: what may not be published
+ * apart must not be constructible apart.
+ */
+data class AssuredFigure<T : Any>(
+  val figure: T,
+  /**
+   * What kind of instrument produced [figure] -- read off the ROW the figure
+   * came from, never asserted from where the figure sits on a page.
+   */
+  val assurance: AssuranceTier,
+)

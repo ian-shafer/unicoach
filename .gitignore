@@ -54,3 +54,8 @@ __pycache__/
 db/seed/scorecard/*
 !db/seed/scorecard/PROVENANCE.json
 !db/seed/scorecard/FETCH-NOTES.md
+# The transcription of the data dictionary's own SOURCE column (RFC 179 D4):
+# authored vocabulary with a citation, not a fetched file, and the pin the
+# assurance-tier test reads. Its row count is the file's own and is stated
+# nowhere but there.
+!db/seed/scorecard/dictionary-variable-sources.csv

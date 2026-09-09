@@ -572,6 +572,22 @@ class CdsSeedLoader(
     }
   }
 
+  /**
+   * One seed `fact` name fully decoded: what the row IS in the canonical store,
+   * and the CDS field id the school publishes it under (RFC 179 D5).
+   *
+   * A PAIR rather than two parallel String-keyed maps. The two facts are one
+   * decision about one cell -- "line i is the average share of need met, and the
+   * filing prints it as H.209" -- and split across two maps either half could go
+   * missing while the other shipped, with only a hand-written init check between
+   * that and a stored cell id no tier answers for.
+   */
+  internal data class AidPolicyCell(
+    val fact: AidPolicyFact,
+    /** The CDS field id, e.g. `H.209`: the `source_variable` a row of this fact must carry. */
+    val fieldId: String,
+  )
+
   /** Everything one aid-policy seed read produced, before a single row is written. */
   private data class ReadAidPolicy(
     val stats: List<NewCohortMoneyStat>,
@@ -613,9 +629,20 @@ class CdsSeedLoader(
       forEachResolvedRow(session, file, Table.AID_POLICY, AID_POLICY_COLUMNS) { collegeId, ipedsUnitId, record ->
         val row = aidPolicyRow(session, collegeId, ipedsUnitId, record, seen)
         seen = row.filings
+        val cell = getCode(record, "fact", Table.AID_POLICY, AID_POLICY_CELLS)
+        // AFTER the fact lookup, deliberately (RFC 179 D5): a row whose `fact`
+        // is unknown must fail on the `fact` column, which is the column an
+        // operator has to fix, and checking the pair first would report the
+        // wrong one. Here the fact is known good, so the only question left is
+        // whether the row was published under the field id that fact belongs
+        // to -- the check that closes this store's one open `source_variable`
+        // key set. The DECODED cell is handed in: the caller has it, and
+        // re-reading the `fact` column to look it up again would be a second
+        // decode whose safety rests on this line and states nothing.
+        checkFieldId(record, cell, row.sourceVariable)
         // A pure router: which of the three canonical shapes this row IS, and
         // nothing else. The row building lives with the shape it builds.
-        when (val fact = getCode(record, "fact", Table.AID_POLICY, AID_POLICY_FACTS)) {
+        when (val fact = cell.fact) {
           is AidPolicyFact.Stat -> stats += statOf(fact, row)
           is AidPolicyFact.Count -> counts += countOf(fact, row)
           is AidPolicyFact.Form -> forms += formOf(fact, row)
@@ -642,6 +669,36 @@ class CdsSeedLoader(
     val document: SourceDocumentId,
     val filings: Filings,
   )
+
+  /**
+   * Refuses an aid-policy row whose `source_variable` is not the CDS field id
+   * its `fact` is published under (RFC 179 D5).
+   *
+   * The same [Defect.UnknownCode] an unknown `fact` raises, naming the
+   * `source_variable` column and the ONE id that would have been accepted: the
+   * allowed set for this column is a function of the row's own fact, so listing
+   * all 22 would tell an operator to consider ids for facts this row is not.
+   */
+  private fun checkFieldId(
+    record: CSVRecord,
+    cell: AidPolicyCell,
+    sourceVariable: String,
+  ) {
+    if (sourceVariable != cell.fieldId) {
+      throw FormatException(
+        Defect.UnknownCode(
+          Table.AID_POLICY,
+          record.recordNumber,
+          // The row's own `fact` is the state that DECIDED the single accepted
+          // id, so it is named: without it "is not one of [H.209]" reads as a
+          // rule about the whole column rather than about this fact.
+          "source_variable (for fact [${record.get("fact")}])",
+          sourceVariable,
+          listOf(cell.fieldId),
+        ),
+      )
+    }
+  }
 
   private fun aidPolicyRow(
     session: SqlSession,
@@ -760,7 +817,7 @@ class CdsSeedLoader(
     // DERIVED from the fact mapping, never a second list: a fact routed to a
     // new table is cleared because it is routed there, not because someone
     // remembered to add the table name here too.
-    for (table in AID_POLICY_FACTS.values.map { it.table }.distinct()) {
+    for (table in AID_POLICY_CELLS.values.map { it.fact.table }.distinct()) {
       CanonicalMoneyDao.deleteFactsOfSources(session, table, listOf(MoneySource.COMMON_DATA_SET)).getOrThrow()
     }
     return AidPolicySummary(
@@ -1270,6 +1327,33 @@ class CdsSeedLoader(
     private val DECIMAL = Regex("""\d+(\.\d+)?""")
 
     /**
+     * The two H5 block prefixes, named rather than spelled inline twice: the
+     * borrowers count is `H.50N` and the average debt `H.51N`, and the one
+     * character between them is the whole difference between a headcount's
+     * field id and a dollar figure's.
+     */
+    private const val BORROWER_COUNT_PREFIX = "H.50"
+    private const val DEBT_AVERAGE_PREFIX = "H.51"
+
+    /**
+     * The H5 block's own numbering: each loan type is published as `H.50N`
+     * (borrowers) and `H.51N` (average debt), N being its position in the
+     * filing's own list.
+     *
+     * A digit per member rather than the enum's ordinal: a reorder of [LoanType]
+     * must not be able to file the private-loan average under the state-loan
+     * field id.
+     */
+    private val LOAN_FIELD_DIGIT: Map<LoanType, Int> =
+      mapOf(
+        LoanType.ANY to 1,
+        LoanType.FEDERAL to 2,
+        LoanType.INSTITUTIONAL to 3,
+        LoanType.STATE to 4,
+        LoanType.PRIVATE to 5,
+      )
+
+    /**
      * H4/H5 borrowing at graduation (RFC 175), DERIVED from [LoanType] rather
      * than hand-listed.
      *
@@ -1283,61 +1367,109 @@ class CdsSeedLoader(
      * fixture that exercised three of the five loan types would be green while
      * it did.
      *
-     * Declared ABOVE [AID_POLICY_FACTS] so companion initialisation order is
+     * Declared ABOVE [AID_POLICY_CELLS] so companion initialisation order is
      * satisfied.
      */
-    private val BORROWING_FACTS: Map<String, AidPolicyFact> =
+    private val BORROWING_CELLS: Map<String, AidPolicyCell> =
       LoanType.entries
         .flatMap { loanType ->
+          val digit = LOAN_FIELD_DIGIT.getValue(loanType)
           listOf(
-            "${loanType.slug}_borrower_count" to AidPolicyFact.Count(loanType.borrowers),
+            "${loanType.slug}_borrower_count" to
+              AidPolicyCell(AidPolicyFact.Count(loanType.borrowers), "$BORROWER_COUNT_PREFIX$digit"),
             "${loanType.slug}_debt_avg_usd" to
-              AidPolicyFact.Stat(loanType.debtAverage, CohortPopulation.GRADUATING_CLASS, loanType.aidScope),
+              AidPolicyCell(
+                AidPolicyFact.Stat(loanType.debtAverage, CohortPopulation.GRADUATING_CLASS, loanType.aidScope),
+                "$DEBT_AVERAGE_PREFIX$digit",
+              ),
           )
         }.toMap()
 
     /**
-     * The seed's `fact` vocabulary, and what each fact IS in the canonical
-     * store (RFC 170). Written here, once: the seed's own names are a CSV
-     * detail, and every one of them must resolve to a measure, a population or
-     * a form -- an unknown one is a broken seed.
+     * The seed's `fact` vocabulary: what each fact IS in the canonical store
+     * (RFC 170), and the CDS FIELD ID it is published under (RFC 179 D5).
+     *
+     * Written here, once: the seed's own names are a CSV detail, and every one
+     * of them must resolve to a measure, a population or a form -- an unknown
+     * one is a broken seed.
+     *
+     * ONE map to a PAIR, and not two String-keyed maps held level by a class-init
+     * check. The field id closes the one `source_variable` key set in this store
+     * that nothing else closes: three of the four publishers build theirs by
+     * string concatenation over closed Kotlin vocabularies, and this one reads it
+     * VERBATIM out of the seed CSV (`aidPolicyRow`), with no allow-list and no
+     * schema CHECK -- so `H.2O9` for `H.209` would land as a stored cell id no
+     * reader could resolve and no test could see, and a tier is a function of
+     * that string. Kept as two maps the pair could go missing on one side, and
+     * the only thing standing between a half-filled vocabulary and a shipped
+     * untiered cell was an assertion someone had to keep writing. Held as one
+     * value it cannot be half-declared: a fact added without a field id does not
+     * compile.
      *
      * The published-unit conversion is not here: it is read off the measure's
      * own MeasureUnit, which is where every loader reads it.
      */
-    internal val AID_POLICY_FACTS: Map<String, AidPolicyFact> =
+    internal val AID_POLICY_CELLS: Map<String, AidPolicyCell> =
       mapOf(
         // Lines i and k: both averages are reported over line e, the freshmen
-        // awarded need-based scholarship or grant aid.
+        // awarded need-based scholarship or grant aid. H2 field ids.
         "avg_need_met_percent" to
-          AidPolicyFact.Stat(
-            MoneyMeasure.AVG_NEED_MET_SHARE,
-            CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
-            CohortAidScope.NEED_BASED_AID_RECEIVING,
+          AidPolicyCell(
+            AidPolicyFact.Stat(
+              MoneyMeasure.AVG_NEED_MET_SHARE,
+              CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
+              CohortAidScope.NEED_BASED_AID_RECEIVING,
+            ),
+            "H.209",
           ),
         "avg_need_based_grant_usd" to
-          AidPolicyFact.Stat(
-            MoneyMeasure.AVG_NEED_BASED_GRANT,
-            CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
-            CohortAidScope.NEED_BASED_AID_RECEIVING,
+          AidPolicyCell(
+            AidPolicyFact.Stat(
+              MoneyMeasure.AVG_NEED_BASED_GRANT,
+              CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_NEED_BASED_GRANT,
+              CohortAidScope.NEED_BASED_AID_RECEIVING,
+            ),
+            "H.211",
           ),
         // Line d, whose only role is to be line h's denominator.
         "aid_awarded_freshmen_count" to
-          AidPolicyFact.Count(CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_ANY_AID),
+          AidPolicyCell(
+            AidPolicyFact.Count(CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_AWARDED_ANY_AID),
+            "H.204",
+          ),
         "need_fully_met_count" to
-          AidPolicyFact.Count(CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_NEED_FULLY_MET),
-        "fafsa_required" to AidPolicyFact.Form(AidForm.FAFSA),
-        "institutional_form_required" to AidPolicyFact.Form(AidForm.INSTITUTIONAL),
-        "css_profile_required" to AidPolicyFact.Form(AidForm.CSS_PROFILE),
-        "state_aid_form_required" to AidPolicyFact.Form(AidForm.STATE),
-        "noncustodial_css_profile_required" to AidPolicyFact.Form(AidForm.NONCUSTODIAL_CSS_PROFILE),
-        "business_farm_supplement_required" to AidPolicyFact.Form(AidForm.BUSINESS_FARM_SUPPLEMENT),
-        "other_institutional_form_required" to AidPolicyFact.Form(AidForm.OTHER_INSTITUTIONAL),
+          AidPolicyCell(
+            AidPolicyFact.Count(CohortPopulation.FIRST_TIME_FULL_TIME_FRESHMEN_NEED_FULLY_MET),
+            "H.208",
+          ),
+        // H8: the forms block, in the order the filing prints them.
+        "fafsa_required" to AidPolicyCell(AidPolicyFact.Form(AidForm.FAFSA), "H.801"),
+        "institutional_form_required" to AidPolicyCell(AidPolicyFact.Form(AidForm.INSTITUTIONAL), "H.802"),
+        "css_profile_required" to AidPolicyCell(AidPolicyFact.Form(AidForm.CSS_PROFILE), "H.803"),
+        "state_aid_form_required" to AidPolicyCell(AidPolicyFact.Form(AidForm.STATE), "H.804"),
+        "noncustodial_css_profile_required" to
+          AidPolicyCell(AidPolicyFact.Form(AidForm.NONCUSTODIAL_CSS_PROFILE), "H.805"),
+        "business_farm_supplement_required" to
+          AidPolicyCell(AidPolicyFact.Form(AidForm.BUSINESS_FARM_SUPPLEMENT), "H.806"),
+        "other_institutional_form_required" to
+          AidPolicyCell(AidPolicyFact.Form(AidForm.OTHER_INSTITUTIONAL), "H.807"),
         // H4, the class every H5 figure is reported over. Named here rather
         // than derived, because it belongs to NO loan type: it is the
         // denominator all five divide by.
-        "graduating_class_count" to AidPolicyFact.Count(CohortPopulation.GRADUATING_CLASS),
-      ) + BORROWING_FACTS
+        "graduating_class_count" to AidPolicyCell(AidPolicyFact.Count(CohortPopulation.GRADUATING_CLASS), "H.401"),
+      ).plus(BORROWING_CELLS)
+        .also { cells ->
+          // A field id names ONE fact, or `checkFieldId` stops being a
+          // partition: two facts sharing an id would each accept the other's
+          // rows, and the guard's own docstring -- that a reorder may not file
+          // the private-loan average under the state-loan field id -- would be
+          // false of a typed duplicate.
+          val fieldIds = cells.values.map { it.fieldId }
+          check(fieldIds.size == fieldIds.toSet().size) {
+            "one CDS field id may name only one fact: " +
+              "duplicates=[${fieldIds.groupingBy { it }.eachCount().filterValues { it > 1 }}]"
+          }
+        }
 
     val DEADLINES_COLUMNS =
       listOf(

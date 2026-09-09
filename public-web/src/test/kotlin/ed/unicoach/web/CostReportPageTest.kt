@@ -10,11 +10,13 @@ import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.CollegeBorrowing
 import ed.unicoach.db.models.CollegeId
@@ -540,6 +542,49 @@ class CostReportPageTest {
 
     assertTrue(body.contains("\$21,000 in federal loans"), "missing the debt figure")
     assertTrue(body.contains("The source publishes no year for this figure"), "the debt figure must be undated on purpose")
+  }
+
+  @Test
+  fun `the shown debt paragraph says what KIND of number it is, and it is not the college's`() {
+    // Where ADMINISTRATIVE_RECORD first becomes visible to a family (RFC 179):
+    // the median federal debt is `GRAD_DEBT_MDN`, which the Scorecard relays
+    // from the federal loan file. Until a SHOWN figure carried a note there was
+    // nowhere on this page to say so, and the number read as the college's own.
+    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+
+    assertTrue(
+      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)),
+      "the shown debt paragraph carries the administrative-record sentence: [$body]",
+    )
+    // Beside the figure, not instead of it, and the two sentences stay two.
+    assertTrue(
+      body.indexOf("The source publishes no year for this figure") <
+        body.indexOf(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)),
+      "the tier sentence follows the figure's own words",
+    )
+  }
+
+  @Test
+  fun `a blank cell says the status first and what kind of number it would have been second`() {
+    // The page's own order, stated once (RFC 179): whose act, then what kind of
+    // number. Never one concatenated sentence, and never the tier alone -- a
+    // reader who is told only "nobody audits it" has not been told why the cell
+    // is empty.
+    val body =
+      render(
+        costProfile(
+          listOf(
+            oneBlankSchool(
+              absenceStatuses = mapOf(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+            ),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    val status = requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER, MoneySource.SCORECARD))
+    val tier = AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)
+    assertTrue(body.contains("$status $tier"), "status sentence then tier sentence, in that order: [$body]")
   }
 
   @Test

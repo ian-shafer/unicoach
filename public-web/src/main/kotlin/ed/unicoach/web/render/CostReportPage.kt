@@ -21,6 +21,7 @@ import ed.unicoach.coaching.costs.SingleSchoolBasis
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.WithheldReason
 import ed.unicoach.coaching.costs.applicableTuitionFor
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
@@ -658,18 +659,35 @@ private fun blankFor(
   return when (note.status) {
     // The one status [otherwise] is TRUE of: the school reported nothing here.
     // The page keeps its own cell-sized words for it rather than lengthening
-    // every ordinary blank on the page into a sentence.
+    // every ordinary blank on the page into a sentence -- which is also why the
+    // tier sentence is NOT composed onto this arm: it rides with the domain's
+    // own sentence, and a table cell whose whole content is two long sentences
+    // is a different page.
     FigureStatus.NOT_REPORTED_BY_INSTITUTION -> otherwise
 
-    // [FigureStatus.REPORTED] carries no note at all, so it cannot arrive here;
-    // it is named rather than folded into an `else` so the `when` stays a
-    // decision about every status.
-    FigureStatus.REPORTED,
+    // [FigureStatus.REPORTED] now carries a note -- a shown figure gets one so
+    // that it can carry its assurance tier (RFC 179 D6) -- and that note says
+    // NOTHING about its status: [CollegeCostService.figureStatusesOf] nulls the
+    // statement for a SHOWN reported figure, and a BLANK one cannot be reported
+    // at all (`price_figures_value_iff_status_check` /
+    // `cohort_money_stats_value_iff_status_check`: a row bears a value exactly
+    // when its status is `reported` or `imputed_by_publisher`). A blank cell
+    // reached through this arm therefore keeps the caller's own words: a note
+    // that says nothing about a status may not blank a cell.
+    FigureStatus.REPORTED -> otherwise
+
+    // The four the domain speaks for. Two sentences, in the seam's own order:
+    // whose act first, what KIND of number second (RFC 179) -- never one
+    // sentence, and never re-worded here. The status sentence is handed over
+    // NULLABLE: [AssuranceTierCopy.composedStatementOf] already treats the tier
+    // sentence as the FLOOR, and unwrapping it first would fold "this status
+    // has no sentence" into the school's silence and drop a tier this note does
+    // carry.
     FigureStatus.IMPUTED_BY_PUBLISHER,
     FigureStatus.SUPPRESSED_BY_PUBLISHER,
     FigureStatus.NOT_APPLICABLE,
     FigureStatus.NOT_COLLECTED_BY_US,
-    -> note.statement
+    -> AssuranceTierCopy.composedStatementOf(note.statement, note.assurance)
   }
 }
 
@@ -975,15 +993,36 @@ private fun FlowContent.debtBlock(cost: CollegeCost) {
         )
       }
     } else {
-      p {
-        +(
-          "Students who finished here carried a median of ${WholeDollars.spoken(debt)} in federal loans. " +
-            "The source publishes no year for this figure."
-        )
-      }
+      p { +shownDebtSentence(cost, debt) }
     }
     borrowingParagraphs(cost)
   }
+}
+
+/**
+ * The median federal debt, said, with what KIND of number it is under it (RFC
+ * 179): `GRAD_DEBT_MDN` is the federal loan file, not something the college
+ * filed, and the shown paragraph is where a family first hears that.
+ *
+ * One level down from the block that decides this is a `p`: what the paragraph
+ * SAYS is a sentence-building decision, not layout. Composed by the seam that
+ * owns the composition, never by a `+ " "` here -- the ORDER of the two
+ * sentences is [AssuranceTierCopy]'s, once, for every surface.
+ */
+private fun shownDebtSentence(
+  cost: CollegeCost,
+  debt: Int,
+): String {
+  val said =
+    "Students who finished here carried a median of ${WholeDollars.spoken(debt)} in federal loans. " +
+      "The source publishes no year for this figure."
+  // UNREACHABLE for a shown debt figure, and provably so: [CollegeCost.medianDebtAtCompletionUsd]
+  // and this note read the SAME cohort row -- a value here means that row exists, and a row with
+  // provenance always yields a note (RFC 179 D6). It stays because the note list is assembled by
+  // another module: a page may not invent a tier the domain did not resolve, so where the note is
+  // somehow absent the figure is said alone rather than under a guessed one.
+  val note = cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD) ?: return said
+  return AssuranceTierCopy.composedStatementOf(said, note.assurance)
 }
 
 /**

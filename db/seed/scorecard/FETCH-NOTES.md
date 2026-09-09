@@ -84,6 +84,43 @@ order from a filename.
 A second run of the fetcher against this directory reports both guards `armed`
 and both counts unchanged.
 
+## The data dictionary, and the transcription beside it
+
+`dictionary-variable-sources.csv` in this directory is a HAND TRANSCRIPTION, not
+a fetched artifact: `variable_name,source` for every Scorecard column this
+corpus loads, each carrying the `SOURCE` value the publisher's own dictionary
+states for it (RFC 179 D4). How many columns that is, is the file's own answer —
+it is stated there and restated nowhere else, so a column added to the loader
+moves one number in one place.
+
+It is transcribed rather than pinned, on the `IpedsImputationFlag` precedent: a
+small table that changes when NCES re-sources a column is authored vocabulary
+with a citation, not a 727 KB spreadsheet to parse at runtime — and there is no
+xlsx reader on this project's JVM classpath at all. RFC 173 declined to pin the
+workbook for that reason and this file does not reverse that decision.
+
+The source it was read from:
+
+- <https://collegescorecard.ed.gov/files/CollegeScorecardDataDictionary.xlsx>,
+  sheet `Institution_Data_Dictionary`, downloaded **2026-09-05**, **727,278**
+  bytes.
+- Corroborated against `InstitutionDataDocumentation.pdf` (531,031 bytes,
+  "Version: September 2025"), whose cost section states that the cost elements
+  are derived from data reported to the IPEDS Institutional Characteristics and
+  Student Financial Aid components, and whose debt and earnings sections name
+  NSLDS and Treasury.
+
+The committed transcription's own digest, so an undocumented edit of it fails a
+test rather than moving a tier quietly:
+
+- `dictionary-variable-sources.csv` — sha256
+  `fbabaaa33ed47383c82f999277183c0d8c8c9479eec0572e67e81ec6a9022a2e`
+
+`AssuranceTier.SCORECARD_TIERS` is asserted against this file column by column,
+and the digest above is typed beside that test. `PROVENANCE.json` deliberately
+carries none of this: the fetcher writes that file whole and would erase a
+hand-added key.
+
 ## Regenerating
 
 Re-run the fetcher; it discovers the current release, downloads it, and rewrites

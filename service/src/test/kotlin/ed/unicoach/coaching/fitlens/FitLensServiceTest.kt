@@ -9,6 +9,7 @@ import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.exhaustedBudgetService
 import ed.unicoach.coaching.budget.generousBudgetService
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
@@ -27,6 +28,7 @@ import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.ClaimKind
 import ed.unicoach.db.models.ClaimOrigin
 import ed.unicoach.db.models.ClaimSubject
@@ -402,7 +404,9 @@ class FitLensServiceTest {
             vintage = vintage,
             reading = reading,
             source = MoneySource.SCORECARD,
-            sourceVariable = "NPT4",
+            // A REAL Scorecard column: the net-price family is control-keyed, and
+            // the tier resolver refuses a variable it does not know (RFC 179).
+            sourceVariable = "NPT4_PRIV",
           ),
         ),
       ).getOrThrow()
@@ -1253,6 +1257,37 @@ class FitLensServiceTest {
     }
 
   @Test
+  fun `call 2 states the tier of a SHOWN net price, and not only of a blank one`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      // The defect this pins is the one RFC 179 removed in `figureStatusesOf`
+      // and left standing here: the tier hung on the NO-DOLLARS branch alone,
+      // so what KIND of number this is was stated for exactly the figures the
+      // model never quotes. A shown net price is the figure it does quote.
+      val college = createCollege(name = "Shown Net Price U")
+
+      val call2Text = reasonContextOf(student, college)
+
+      assertTrue(
+        call2Text.contains("netPricePerYearUsd=[20000]"),
+        "the shown figure is still the dollar key's own value, message=[$call2Text]",
+      )
+      // Two sentences, in the seam's own order: whose act first (RFC 177's
+      // reported sentence names the publisher), then what KIND of number it is.
+      // `NPT4_PRIV` is the Scorecard re-publishing IPEDS -- a compelled,
+      // edit-checked survey -- so the tier sentence is the mandatory-survey one.
+      assertTrue(
+        call2Text.contains(
+          "netPriceStatus=[reported] " +
+            "netPriceNote=[This figure comes from the U.S. Department of Education College Scorecard. " +
+            "${AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)}]",
+        ),
+        "a SHOWN net price must carry its tier too, message=[$call2Text]",
+      )
+    }
+
+  @Test
   fun `call 2 speaks a suppressed net price as its status, never a number and never the bare local wording`() =
     runBlocking {
       val student = createStudent()
@@ -1267,11 +1302,16 @@ class FitLensServiceTest {
 
       val call2Text = reasonContextOf(student, college)
 
+      // Two sentences, in the seam's own order: whose act first, then what KIND
+      // of number it would have been (RFC 179). The net price is the Scorecard's
+      // `NPT4_PRIV`, which the Scorecard re-publishes from IPEDS -- a compelled,
+      // edit-checked survey -- so the tier sentence is the mandatory-survey one.
       assertTrue(
         call2Text.contains(
           "netPriceStatus=[suppressed_by_publisher] " +
             "netPriceNote=[The U.S. Department of Education College Scorecard withholds this figure to protect " +
-            "students' privacy.]",
+            "students' privacy. " +
+            "${AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)}]",
         ),
         "a suppressed figure must ride as a status CODE with its sentence beside it, message=[$call2Text]",
       )

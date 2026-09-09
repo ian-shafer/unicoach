@@ -894,7 +894,11 @@ class CanonicalMoneyLoader internal constructor(
           academicYear = PUBLISHED_PRICE_YEAR,
           reading = grossCell(record, column, coercions).reading(),
           source = MoneySource.SCORECARD,
-          sourceVariable = column,
+          // Through the registry, never straight off the constant: the fill may
+          // write only a cell id [ScorecardInstitutionColumns.LOADED_VARIABLES]
+          // names, so a column added here without a tier stops the fill (RFC
+          // 179).
+          sourceVariable = ScorecardInstitutionColumns.loadedVariableOf(column),
           // The Scorecard publishes no per-cell imputation code; its one
           // sentinel (`PrivacySuppressed`) is already carried by the status.
           publisherFlag = null,
@@ -948,7 +952,8 @@ class CanonicalMoneyLoader internal constructor(
           vintage = vintage,
           reading = cell.reading(),
           source = MoneySource.SCORECARD,
-          sourceVariable = sourceVariable,
+          // The same registry door as the price arm, for the same reason.
+          sourceVariable = ScorecardInstitutionColumns.loadedVariableOf(sourceVariable),
         )
       stats.putIfAbsent(
         StatKey(collegeId, address.measure, address.population, residencyScope, address.aidScope, incomeBand, vintage),

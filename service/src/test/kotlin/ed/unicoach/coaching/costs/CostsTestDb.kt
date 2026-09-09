@@ -483,7 +483,7 @@ object CostsTestDb {
     academicYear: AcademicYear = PRICE_YEAR,
     reading: FigureReading<Int>,
     source: MoneySource = MoneySource.IPEDS_IC_AY,
-    sourceVariable: String = "FIXTURE",
+    sourceVariable: String? = null,
     publisherFlag: String? = null,
   ) {
     CanonicalMoneyDao
@@ -498,12 +498,41 @@ object CostsTestDb {
             academicYear = academicYear,
             reading = reading,
             source = source,
-            sourceVariable = sourceVariable,
+            sourceVariable = priceVariableFor(source, sourceVariable),
             publisherFlag = publisherFlag,
           ),
         ),
       ).getOrThrow()
   }
+
+  /**
+   * The `source_variable` a fixture price row carries: whatever the caller
+   * named, else a default the row's OWN publisher permits.
+   *
+   * `FIXTURE` was the default for every publisher, and [source] is overridable
+   * here, so one caller passing [MoneySource.SCORECARD] and forgetting the
+   * variable seeded a row whose `(source, source_variable)` pair resolves to no
+   * assurance tier -- a write that succeeds and a read that faults (RFC 179).
+   * The Scorecard tiers by the STRING, so its rows must name a real published
+   * column; the other three tier by source, and their cell id is opaque to the
+   * resolver.
+   */
+  private fun priceVariableFor(
+    source: MoneySource,
+    sourceVariable: String?,
+  ): String =
+    sourceVariable ?: when (source) {
+      MoneySource.SCORECARD -> {
+        error(
+          "name the Scorecard column this price row is published under: the tier is a function of that " +
+            "string, so a [FIXTURE] cell id seeds a row the production read refuses (RFC 179)",
+        )
+      }
+
+      MoneySource.IPEDS_IC_AY, MoneySource.IPEDS_SFA, MoneySource.COMMON_DATA_SET -> {
+        "FIXTURE"
+      }
+    }
 
   /**
    * One `price_figures` row for [field], written at the address
@@ -521,7 +550,7 @@ object CostsTestDb {
     reading: FigureReading<Int>,
     academicYear: AcademicYear = PRICE_YEAR,
     source: MoneySource = MoneySource.IPEDS_IC_AY,
-    sourceVariable: String = "FIXTURE",
+    sourceVariable: String? = null,
     publisherFlag: String? = null,
   ) {
     val address =
@@ -551,7 +580,7 @@ object CostsTestDb {
     incomeBand: IncomeBand? = null,
     vintage: AcademicYear?,
     reading: FigureReading<Double>,
-    sourceVariable: String = "FIXTURE",
+    sourceVariable: String = scorecardVariableOf(measure, incomeBand),
   ) {
     CanonicalMoneyDao
       .insertCohortMoneyStats(
@@ -591,7 +620,7 @@ object CostsTestDb {
     vintage: AcademicYear?,
     reading: FigureReading<Double>,
     incomeBand: IncomeBand? = null,
-    sourceVariable: String = "FIXTURE",
+    sourceVariable: String? = null,
   ) {
     val address =
       requireNotNull((field.figureAddress as? FigureAddress.Cohort)?.address) {
@@ -610,9 +639,26 @@ object CostsTestDb {
       incomeBand = incomeBand,
       vintage = vintage,
       reading = reading,
-      sourceVariable = sourceVariable,
+      sourceVariable = sourceVariable ?: scorecardVariableOf(address.measure, incomeBand),
     )
   }
+
+  /**
+   * The Scorecard column a cohort measure is actually published under -- the
+   * fixture's default `source_variable`, from the ONE home that names them
+   * ([ScorecardVariableNames]).
+   *
+   * A real published name and not `"FIXTURE"`, because the string is no longer
+   * decoration: an assurance tier is a function of `(source, source_variable)`
+   * (RFC 179), and the resolver refuses a Scorecard variable it does not know
+   * rather than guessing a tier for it. A fixture writing a made-up column would
+   * be seeding a row the production read would refuse, which is the class of
+   * fixture this file exists not to be.
+   */
+  private fun scorecardVariableOf(
+    measure: MoneyMeasure,
+    incomeBand: IncomeBand?,
+  ): String = ScorecardVariableNames.cohortOf(measure, incomeBand)
 
   /**
    * The canonical rows behind one fixture college -- the same figures

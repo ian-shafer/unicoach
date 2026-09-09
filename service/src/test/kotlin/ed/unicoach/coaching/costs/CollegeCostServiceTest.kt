@@ -10,6 +10,7 @@ import ed.unicoach.coaching.costs.CostsTestDb.declineBand
 import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.CostsTestDb.seedCollege
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureAddress
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.figureGroup
@@ -17,6 +18,7 @@ import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
@@ -266,6 +268,92 @@ class CollegeCostServiceTest {
     assertFalse(
       CostField.NET_PRICE in cost.notReported,
       "the publisher's suppression may not be published as the school's silence: [${cost.notReported}]",
+    )
+  }
+
+  @Test
+  fun `a shown figure carries a tier and no status prose, and the note list cannot flood`() {
+    // RFC 179 D6. The drop of every shown, non-imputed note is why RFC 177's
+    // `reported` sentence was unreachable and why a tier would have been
+    // invisible on every dollar amount a family reads. What replaces it is
+    // bounded by construction: one note per CostField that HAS a row, so the
+    // ceiling is the field vocabulary itself and nothing a college can grow.
+    val student = createStudent()
+    val collegeId = seedCollege("Fully Priced U")
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertTrue(
+      cost.figureStatuses.size <= CostField.entries.size,
+      "the ceiling is the field vocabulary, pinned as entries.size: [${cost.figureStatuses.size}]",
+    )
+    // Twelve: the eight published price cells this fixture writes, plus the
+    // sticker cost, the net price, the median debt and the median earnings. The
+    // fixture writes NO row for the fees-only and in-district fields unless a
+    // test asks for them, and no row means no note.
+    assertEquals(
+      12,
+      cost.figureStatuses.size,
+      "one note per field this fixture seeds a row for: [${cost.figureStatuses.map { it.field.wireName }}]",
+    )
+    // No row, no note -- the rule the ceiling is made of. The fixture prices no
+    // with-family food and housing, because no publisher does.
+    assertTrue(
+      cost.figureStatuses.none { it.field == CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD },
+      "a field with no row still produces no entry",
+    )
+
+    // A shown, plainly reported figure: a tier, and NOTHING about its status.
+    val tuition =
+      assertNotNull(cost.statusNoteFor(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD))
+    assertEquals(FigureStatus.REPORTED, tuition.status)
+    assertNull(tuition.statement, "no status prose was invented for a figure whose status says nothing")
+    assertEquals(AssuranceTier.MANDATORY_SURVEY, tuition.assurance)
+    assertEquals(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY), tuition.assuranceStatement)
+
+    // And the tier is read from the row's own pair, so one college's two
+    // publishers do not collapse: the median debt is the Scorecard relaying
+    // NSLDS, which is a federal file about students and not a college's filing.
+    val debt = assertNotNull(cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD))
+    assertEquals(MoneySource.SCORECARD, debt.source)
+    // The cell id is the resolver's INPUT and does not ride on the note; what
+    // the note owes is the tier that pair resolved to.
+    assertEquals(AssuranceTier.ADMINISTRATIVE_RECORD, debt.assurance)
+    assertTrue(
+      cost.figureStatuses
+        .map { it.assuranceStatement }
+        .toSet()
+        .size > 1,
+      "two publishers on one college produce two different tier sentences",
+    )
+  }
+
+  @Test
+  fun `an imputed figure emits its status AND its tier, and neither collapses into the other`() {
+    // The PAIR rule (brief 0008 D3): `imputed_by_publisher` sits ON TOP of
+    // whichever tier the cell is on. An imputed IPEDS cell is soft in a
+    // different way from a school's own unaudited filing, and reading either
+    // one alone loses half the fact.
+    val student = createStudent()
+    val collegeId = seedCollege("Imputed U")
+    CostsTestDb.seedPriceFigure(
+      collegeId,
+      CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD,
+      reading = FigureReading.Present(0, ValueBearingStatus.IMPUTED_BY_PUBLISHER),
+    )
+    addToCollegeList(student, collegeId)
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    val note = assertNotNull(cost.statusNoteFor(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD))
+    assertEquals(FigureStatus.IMPUTED_BY_PUBLISHER, note.status)
+    assertEquals(AssuranceTier.MANDATORY_SURVEY, note.assurance)
+    assertNotNull(note.statement, "the imputed figure keeps its own sentence")
+    assertEquals(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY), note.assuranceStatement)
+    assertFalse(
+      note.statement.orEmpty().contains(note.assuranceStatement),
+      "two sentences, composed beside each other and never concatenated into one",
     )
   }
 
@@ -1287,9 +1375,13 @@ class CollegeCostServiceTest {
     assertTrue(note.isYearGap, "a figure held at another year is a year gap, and says so as data")
     assertEquals(CostsTestDb.PRICE_ACADEMIC_YEAR, note.servedAcademicYear)
     assertEquals(olderAcademicYear, note.heldAcademicYear)
+    // A year gap always HAS a sentence -- only a shown, plainly reported figure
+    // has none (RFC 179 D6) -- so this asserts the sentence exists as well as
+    // what it says.
+    val gapStatement = assertNotNull(note.statement, "a year gap states both years in words")
     assertTrue(
-      note.statement.contains(CostsTestDb.PRICE_ACADEMIC_YEAR) && note.statement.contains(olderAcademicYear),
-      "both years are named: [${note.statement}]",
+      gapStatement.contains(CostsTestDb.PRICE_ACADEMIC_YEAR) && gapStatement.contains(olderAcademicYear),
+      "both years are named: [$gapStatement]",
     )
     assertFalse(
       CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD in cost.notReported,
@@ -1350,9 +1442,10 @@ class CollegeCostServiceTest {
     )
     assertFalse(suppressed.isYearGap, "we hold no figure for that year either, so there is no gap of ours to name")
     assertNull(suppressed.heldAcademicYear)
+    val suppressedStatement = assertNotNull(suppressed.statement, "a suppressed figure keeps its publisher's sentence")
     assertFalse(
-      olderAcademicYear in suppressed.statement,
-      "a year we hold nothing for may never be named as a year we hold the figure for: [${suppressed.statement}]",
+      olderAcademicYear in suppressedStatement,
+      "a year we hold nothing for may never be named as a year we hold the figure for: [$suppressedStatement]",
     )
     assertFalse(
       CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD in cost.notReported,

@@ -1,9 +1,12 @@
 package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.admissions.putCitation
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.common.util.Share
+import ed.unicoach.db.models.AssuredFigure
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -37,6 +40,26 @@ object AidPolicyWire {
   const val AIDED_FRESHMEN_KEY: String = "freshmen_receiving_any_aid_headcount"
   const val FULLY_MET_KEY: String = "freshmen_with_full_need_met_headcount"
 
+  /**
+   * What KIND of number each average is, and the sentence to say it in (RFC
+   * 179): the slug beside the sentence, the `income_band` + `income_band_label`
+   * convention again.
+   *
+   * Both averages here are a school's own Common Data Set filing, so both are
+   * `voluntary_self_report` today -- but the tier is read off the ROW, not
+   * asserted from the section's name, and these keys are how a reader learns it
+   * without parsing our English. Neither is numeric, so neither joins
+   * [NUMERIC_KEYS].
+   *
+   * The headcounts and the form flags get no tier: the headcounts reach the
+   * wire only through a derived share, whose tier would be a claim about two
+   * rows at once, and the forms are not money figures.
+   */
+  const val NEED_MET_ASSURANCE_KEY: String = "average_need_met_assurance"
+  const val NEED_MET_ASSURANCE_STATEMENT_KEY: String = "average_need_met_assurance_statement"
+  const val AVERAGE_GRANT_ASSURANCE_KEY: String = "average_need_based_grant_assurance"
+  const val AVERAGE_GRANT_ASSURANCE_STATEMENT_KEY: String = "average_need_based_grant_assurance_statement"
+
   /** The spoken sentences, each emitted from the same construct as its number. */
   const val NEED_MET_LABEL_KEY: String = "average_need_met_label"
   const val FULLY_MET_LABEL_KEY: String = "fully_met_label"
@@ -61,9 +84,14 @@ object AidPolicyWire {
    */
   fun objectOf(policy: AidPolicyPractice): JsonObject =
     buildJsonObject {
-      policy.averageNeedMet?.let { share ->
-        put(NEED_MET_SHARE_KEY, share.percent)
-        put(NEED_MET_LABEL_KEY, needMetLabel(share))
+      policy.averageNeedMet?.let { assured ->
+        put(NEED_MET_SHARE_KEY, assured.figure.percent)
+        put(NEED_MET_LABEL_KEY, needMetLabel(assured.figure))
+        // The softest tier's one visible figure (RFC 179): "average percent of
+        // need met" is the school's own unaudited claim, and it is emitted from
+        // the same construct as its number so no call site can put the figure
+        // in the model's context without what kind of number it is.
+        putAssurance(assured, NEED_MET_ASSURANCE_KEY, NEED_MET_ASSURANCE_STATEMENT_KEY)
       }
       // The derived share and both of its counts, or none of them: the two
       // headcounts ARE the derivation, and a share without its denominator is
@@ -79,9 +107,10 @@ object AidPolicyWire {
           put(FULLY_MET_KEY, counts.freshmenNeedFullyMet)
         }
       }
-      policy.averageNeedBasedGrantUsd?.let {
-        put(AVERAGE_GRANT_KEY, it)
-        put(AVERAGE_GRANT_LABEL_KEY, averageGrantLabel(it))
+      policy.averageNeedBasedGrantUsd?.let { assured ->
+        put(AVERAGE_GRANT_KEY, assured.figure)
+        put(AVERAGE_GRANT_LABEL_KEY, averageGrantLabel(assured.figure))
+        putAssurance(assured, AVERAGE_GRANT_ASSURANCE_KEY, AVERAGE_GRANT_ASSURANCE_STATEMENT_KEY)
       }
       if (policy.requiredForms.isNotEmpty()) {
         putJsonArray(FORMS_KEY) { policy.requiredForms.forEach { add(it.value) } }
@@ -99,6 +128,24 @@ object AidPolicyWire {
       put(FORMS_NOTE_KEY, FORMS_NOTE)
       putJsonObject("source") { putCitation(policy.source) }
     }
+
+  /**
+   * One figure's tier and its sentence, from the figure itself.
+   *
+   * It takes the [AssuredFigure] and not the policy plus a measure, so there is
+   * no lookup to miss: the tier travels inside the figure, so a figure that
+   * reaches the wire HAS one. The earlier shape read a side-map and returned
+   * early when the key was absent, which dropped the tier of a figure it was
+   * emitting in the same breath -- silently, and with nothing failing.
+   */
+  private fun JsonObjectBuilder.putAssurance(
+    figure: AssuredFigure<*>,
+    assuranceKey: String,
+    statementKey: String,
+  ) {
+    put(assuranceKey, figure.assurance.value)
+    put(statementKey, AssuranceTierCopy.statementOf(figure.assurance))
+  }
 
   /**
    * The average share of need met, with the cohort it is over inside the

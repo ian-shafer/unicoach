@@ -3,6 +3,7 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.coaching.admissions.CdsCitation
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AidForm
+import ed.unicoach.db.models.AssuredFigure
 import ed.unicoach.db.models.CollegeAidPolicy
 import ed.unicoach.db.models.FullyMetNeedCounts
 
@@ -27,10 +28,20 @@ import ed.unicoach.db.models.FullyMetNeedCounts
  * whole of what absence says.
  */
 data class AidPolicyPractice(
-  /** The average share of need met, over the freshmen who received need-based aid (CDS H2 line i, over line e). */
-  val averageNeedMet: Share?,
-  /** The average need-based grant of the freshmen who received one, whole US dollars (line k, over line e). */
-  val averageNeedBasedGrantUsd: Int?,
+  /**
+   * The average share of need met, over the freshmen who received need-based aid
+   * (CDS H2 line i, over line e) -- WITH what kind of number it is (RFC 179).
+   *
+   * Enveloped, and the tier carried rather than re-derived: the tier is a
+   * function of the row's own `(source, source_variable)` pair, which this type
+   * does not hold. A renderer that re-derived it from "this is a Common Data Set
+   * section" would be asserting the softest tier by position on the page rather
+   * than reading it off the row -- and a tier kept in a side-map beside the
+   * figure could simply be missing while the figure was served.
+   */
+  val averageNeedMet: AssuredFigure<Share>?,
+  /** The average need-based grant of the freshmen who received one, whole US dollars (line k, over line e), and its tier. */
+  val averageNeedBasedGrantUsd: AssuredFigure<Int>?,
   /**
    * Lines d and h as one value: the freshmen who received ANY financial aid,
    * and those of them met in full. Null when the school reports neither, and

@@ -4,6 +4,8 @@ import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AidForm
 import ed.unicoach.db.models.AidFormApplicantGroup
+import ed.unicoach.db.models.AssuranceTier
+import ed.unicoach.db.models.AssuredFigure
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CollegeAidPolicy
@@ -84,7 +86,7 @@ object AidPolicyDao {
       latest AS (SELECT college_id, max(year) AS year FROM cds_years GROUP BY college_id),
       facts AS (
         SELECT l.college_id, l.year, '$STAT_KIND' AS kind, s.measure AS name, s.value AS number,
-               NULL::boolean AS is_required, s.source_document_id
+               NULL::boolean AS is_required, s.source, s.source_variable, s.source_document_id
         FROM latest l
         CROSS JOIN cds
         JOIN cohort_money_stats s
@@ -97,7 +99,7 @@ object AidPolicyDao {
          AND s.aid_scope = cds.aid_scope
         UNION ALL
         SELECT l.college_id, l.year, '$COUNT_KIND', c.population, c.headcount, NULL::boolean,
-               c.source_document_id
+               c.source, c.source_variable, c.source_document_id
         FROM latest l
         CROSS JOIN cds
         JOIN cohort_population_counts c
@@ -109,14 +111,23 @@ object AidPolicyDao {
         -- and a row that states our own gap (D7) still proves the filing
         -- exists -- which is a different silence from having no filing, and
         -- the reader must be able to tell them apart.
-        SELECT l.college_id, l.year, '$FORM_KIND', a.aid_form, NULL, a.is_required, a.source_document_id
+        SELECT l.college_id, l.year, '$FORM_KIND', a.aid_form, NULL, a.is_required, a.source,
+               a.source_variable, a.source_document_id
         FROM latest l
         CROSS JOIN cds
         JOIN aid_form_requirements a
           ON a.college_id = l.college_id AND a.academic_year = l.year AND a.source = cds.source
          AND a.applicant_group = ?
       )
-      SELECT f.college_id, f.year, f.kind, f.name, f.number, f.is_required,
+      -- `(source, source_variable)` is the WHOLE key an assurance tier is a
+      -- function of (RFC 179): who published the row, and the CDS field id it
+      -- was published under (H.209, H.211, H.801, ...). BOTH halves are selected
+      -- on all three arms and decoded from the row -- the read binds the CDS
+      -- slug as a filter sixty lines up, but a filter is not a value, and a
+      -- decoder that asserted the publisher as a literal would be re-typing at
+      -- the mapper what the row already says. The columns are NOT NULL on all
+      -- three tables, so a NULL on any arm would be a lie about the row.
+      SELECT f.college_id, f.year, f.kind, f.name, f.number, f.is_required, f.source, f.source_variable,
              ${SourceDocumentJoin.CITATION_COLUMNS}
       ${SourceDocumentJoin.withDocumentById("facts")}
       ORDER BY f.college_id, f.kind, f.name
@@ -171,6 +182,17 @@ object AidPolicyDao {
     data class Stat(
       val measure: MoneyMeasure,
       val figure: Double?,
+      /**
+       * What KIND of number this is (RFC 179), resolved from the row's own
+       * `(source, source_variable)` pair.
+       *
+       * Resolved HERE rather than in `:service` for the reason the one resolver
+       * exists at all: this DAO is in `:db` and cannot see the service layer, so
+       * a service-side resolver would have forced a SECOND mapping for the
+       * Common Data Set -- the special case this seam must not have. The source
+       * is this read's own bound constant, so the pair is complete on the spot.
+       */
+      val assurance: AssuranceTier,
     ) : CdsAidFact
 
     data class Count(
@@ -204,7 +226,21 @@ object AidPolicyDao {
       fact =
         when (val kind = rs.getString("kind")) {
           STAT_KIND -> {
-            CdsAidFact.Stat(decodeMeasure(name, row), number)
+            CdsAidFact.Stat(
+              measure = decodeMeasure(name, row),
+              figure = number,
+              // BOTH halves of the tier key off the ROW. The publisher used to
+              // be asserted here as a literal while only the variable was read,
+              // 150 lines from the SQL that binds the filter it was copied
+              // from: a pair half-read and half-typed is a pair that can
+              // disagree with the row it claims to describe.
+              assurance =
+                AssuranceTier.of(
+                  decodeSource(rs.getString("source"), row),
+                  rs.getString("source_variable"),
+                  "the aid-policy read ($row)",
+                ),
+            )
           }
 
           COUNT_KIND -> {
@@ -229,9 +265,7 @@ object AidPolicyDao {
   private fun mapCollegeAidPolicy(rows: List<CitedFact<CdsAidFact>>): CollegeAidPolicy {
     val first = rows.first()
     val read = "the aid-policy read (a college's newest CDS cycle)"
-    val stats =
-      singleByKey(rows.mapNotNull { it.fact as? CdsAidFact.Stat }, { it.measure }, "measure", read)
-        .mapValues { (_, stat) -> stat.figure }
+    val statRows = singleByKey(rows.mapNotNull { it.fact as? CdsAidFact.Stat }, { it.measure }, "measure", read)
     val counts =
       singleByKey(rows.mapNotNull { it.fact as? CdsAidFact.Count }, { it.population }, "population", read)
         .mapValues { (_, count) -> count.headcount }
@@ -241,8 +275,13 @@ object AidPolicyDao {
       academicYear = first.academicYear,
       sourceUrl = first.sourceUrl,
       archiveUrl = first.archiveUrl,
-      averageNeedMet = stats[MoneyMeasure.AVG_NEED_MET_SHARE]?.let { Share.ofRatio(it) },
-      averageNeedBasedGrantUsd = wholeDollars(stats, MoneyMeasure.AVG_NEED_BASED_GRANT),
+      // Each figure leaves this read WITH its own row's tier (RFC 179). The
+      // tier is a fact about the row a figure came from, so it travels inside
+      // the figure rather than in a side-map beside it: a policy-wide tier
+      // would be a claim about rows this read did not look at, and a side-map
+      // could simply be missing the key.
+      averageNeedMet = assuredShare(statRows, MoneyMeasure.AVG_NEED_MET_SHARE),
+      averageNeedBasedGrantUsd = assuredWholeDollars(statRows, MoneyMeasure.AVG_NEED_BASED_GRANT),
       fullyMetNeed = fullyMetNeedCounts(counts),
       // The tri-state, carried rather than collapsed (D7): a REQUIREMENT the
       // source states, our own gap, and -- by absence from both -- a form the
@@ -254,11 +293,42 @@ object AidPolicyDao {
   }
 
   /**
-   * A stored dollar figure as whole dollars, ROUNDED and unit-checked.
+   * A stored 0-1 share as the [Share] it is spoken as, unit-checked.
    *
-   * `toInt()` truncates -- 18400.9 became 18400 -- and the same map also holds
-   * a 0-1 share, so reading a dollar measure out of it is exactly where a share
-   * could be spoken as money. The unit is asserted rather than assumed.
+   * The unit and the conversion legal for it are stated TOGETHER, once: they
+   * used to be two independent arguments at the call site, so a share's unit
+   * could be paired with money's rounding and a stored `0.68` spoken as `$1`.
+   * No call site chooses either half now.
+   */
+  private fun assuredShare(
+    rows: Map<MoneyMeasure, CdsAidFact.Stat>,
+    measure: MoneyMeasure,
+  ): AssuredFigure<Share>? = assured(rows, measure, MeasureUnit.SHARE) { Share.ofRatio(it) }
+
+  /** A stored dollar figure as whole dollars, ROUNDED -- the money half of the same one decision. */
+  private fun assuredWholeDollars(
+    rows: Map<MoneyMeasure, CdsAidFact.Stat>,
+    measure: MoneyMeasure,
+  ): AssuredFigure<Int>? = assured(rows, measure, MeasureUnit.USD_PER_YEAR) { Math.round(it).toInt() }
+
+  /**
+   * One statistic as the read model carries it: the converted figure ENVELOPED
+   * with its own row's assurance tier, or null where the read holds no such row
+   * or the row bears no value.
+   *
+   * The tier comes from the SAME row the number does and leaves this function
+   * inside the same value, so a figure can never be built without one -- the
+   * side-map this replaced could be missing the key while the figure was served
+   * (RFC 179).
+   *
+   * PRIVATE to the two per-unit readers above, never called directly: [unit]
+   * and [convert] are two halves of ONE decision, and a call site free to
+   * choose them separately can pair a share's unit with money's rounding.
+   *
+   * [unit] is asserted rather than assumed: `cohort_money_stats.value` is one
+   * NUMERIC column carrying whole dollars and 0-1 shares, and `toInt()`
+   * truncates -- 18400.9 became 18400 -- so reading the wrong measure out of it
+   * is exactly where a share could be spoken as money.
    *
    * `require`, deliberately, and NOT the located [corruptValue] its
    * [BorrowingDao] twin raises: the measure here is a compile-time CONSTANT
@@ -267,14 +337,18 @@ object AidPolicyDao {
    * failure is a corrupt persisted value and is refused as one. The two guards
    * ask different questions and stay apart on purpose.
    */
-  private fun wholeDollars(
-    stats: Map<MoneyMeasure, Double?>,
+  private fun <T : Any> assured(
+    rows: Map<MoneyMeasure, CdsAidFact.Stat>,
     measure: MoneyMeasure,
-  ): Int? {
-    require(measure.unit == MeasureUnit.USD_PER_YEAR) {
-      "[${measure.value}] is [${measure.unit}], not money; it may not be read as whole dollars"
+    unit: MeasureUnit,
+    convert: (Double) -> T,
+  ): AssuredFigure<T>? {
+    require(measure.unit == unit) {
+      "[${measure.value}] is [${measure.unit}], not [$unit]; it may not be read as one"
     }
-    return stats[measure]?.let { Math.round(it).toInt() }
+    val stat = rows[measure] ?: return null
+    val figure = stat.figure ?: return null
+    return AssuredFigure(convert(figure), stat.assurance)
   }
 
   /**
@@ -308,6 +382,12 @@ object AidPolicyDao {
     name: String,
     row: String,
   ): MoneyMeasure = MoneyMeasure.fromValue(name) ?: throw corruptValue(name, "MoneyMeasure", "cohort_money_stats.measure ($row)")
+
+  /** The publisher this row was actually stored under -- read, never assumed (RFC 179). */
+  private fun decodeSource(
+    name: String,
+    row: String,
+  ): MoneySource = MoneySource.fromValue(name) ?: throw corruptValue(name, "MoneySource", "the aid-policy read ($row)")
 
   private fun decodeForm(
     name: String,

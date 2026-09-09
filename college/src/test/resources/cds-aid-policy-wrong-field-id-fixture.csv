@@ -1,0 +1,2 @@
+unit_id,source_year,fact,value,status,source_variable,source_url,archive_url
+110100,2024,avg_need_met_percent,94.3,reported,H.211,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25

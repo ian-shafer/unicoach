@@ -2,6 +2,7 @@ package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.StudentCollegeSelection
 import ed.unicoach.coaching.admissions.MeritPractice
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.CohortAddress
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
@@ -24,6 +25,7 @@ import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeAidPolicy
@@ -713,8 +715,19 @@ private data class ShownFigures(
 data class FigureStatusNote(
   val field: CostField,
   val status: FigureStatus,
-  /** The sentence a coach says this status in; never null here, because a plainly reported figure has no note. */
-  val statement: String,
+  /**
+   * The sentence a coach says this status in, or NULL for a shown, plainly
+   * reported figure (RFC 179 D6).
+   *
+   * It became nullable when a shown figure started getting a note at all. The
+   * note exists for such a figure to carry its [assurance] -- what KIND of
+   * number it is -- and inventing status prose to fill this field would be new
+   * copy about a status that has nothing to say: a plainly reported, plainly
+   * shown figure still says nothing about its own status. Null is that silence,
+   * with ONE representation on the wire (the key is absent), never an empty
+   * string.
+   */
+  val statement: String?,
   /**
    * The publisher whose row won this figure (RFC 177 D4).
    *
@@ -730,6 +743,23 @@ data class FigureStatusNote(
    * all, so a null here would be a state nothing can build.
    */
   val source: MoneySource,
+  /**
+   * What KIND of number this is (RFC 179): a federal administrative record, a
+   * compelled and edit-checked survey answer, or a filing the school published
+   * about itself.
+   *
+   * ORTHOGONAL to [status] and read as a PAIR with it. An imputed IPEDS cell is
+   * soft in a different way from a Common Data Set cell: the first is a survey
+   * the school had to file and the publisher filled this cell in itself, the
+   * second is the school's own unaudited claim. Collapsing the two into one
+   * "soft" is exactly what this field exists to prevent.
+   *
+   * The publisher's own cell id it is derived from does NOT ride here. It is
+   * the resolver's INPUT, and both construction sites hold the row it comes off
+   * ([FigureProvenance.sourceVariable], [DatedFigure.sourceVariable]); carried
+   * on this note as well it was written by two sites and read by none.
+   */
+  val assurance: AssuranceTier,
   /**
    * The academic year this school's price is quoted at, and the year we hold
    * THIS figure for -- both non-null for a YEAR GAP and both null for every
@@ -764,6 +794,17 @@ data class FigureStatusNote(
    * carry [FigureStatus.NOT_COLLECTED_BY_US].
    */
   val isYearGap: Boolean get() = heldAcademicYear != null
+
+  /**
+   * The sentence that says [assurance], from its one home ([AssuranceTierCopy])
+   * -- never re-worded by a renderer.
+   *
+   * DERIVED, not carried: the sentence is a pure function of the tier, and held
+   * as constructor state it was a second field every construction site had to
+   * remember to fill with the same call. A note whose tier and tier sentence
+   * disagreed would have compiled.
+   */
+  val assuranceStatement: String get() = AssuranceTierCopy.statementOf(assurance)
 }
 
 /** The money-profile field statuses echoed with every result, so the coach knows the history. */
@@ -1887,18 +1928,29 @@ fun notReportedOf(
 }
 
 /**
- * Every field this answer carries no amount for AND holds a canonical status
- * for, with the status spoken (RFC 166 §6).
+ * Every field this answer holds a canonical status for, with the status spoken
+ * where it has anything to say and WHAT KIND OF NUMBER it is always (RFC 166
+ * §6, RFC 179 D6).
  *
  * A field with NO ROW AT ALL gets no entry: we hold no reason for it, and
  * inventing `not_collected_by_us` on its behalf would state a fact about our
  * own pipeline that no row supports. `data_availability` still names the
- * silence; this list names the ones we can explain.
+ * silence; this list names the ones we can explain. No row, no note -- which is
+ * also what keeps the array bounded by [CostField.entries] and not by anything
+ * a college can grow.
  *
- * An IMPUTED figure is not here, and that is the point of it being a separate
- * list rather than a subset of the blanks: `imputed_by_publisher` is
+ * A SHOWN figure gets an entry too, and used to be dropped here. That drop is
+ * why RFC 177's `reported` sentence was unreachable on both surfaces, and it is
+ * why an assurance tier would have been invisible on every dollar amount a
+ * family reads -- the tier's whole subject is the number that IS shown. A shown,
+ * plainly reported figure carries no [FigureStatusNote.statement] at all: no
+ * status prose is added anywhere by this, one tier sentence is.
+ *
+ * An IMPUTED figure keeps its own sentence and now carries a tier under it,
+ * which is the PAIR the tier is meant to be read as: `imputed_by_publisher` is
  * value-bearing, so the figure is SHOWN -- with the publisher's-estimate
- * sentence beside it, never hidden.
+ * sentence beside it, never hidden -- and it is imputed INTO a compelled survey,
+ * which is a different softness from a school's own unaudited filing.
  *
  * Top-level and public beside [reportedOf] and [notReportedOf], and for the same
  * reason: `public-web`'s `FakeCostReportSource` carried its own copy of this
@@ -1918,23 +1970,63 @@ fun figureStatusesOf(
     // either. It is stated as ours, naming both years (RFC 166 §3). Checked
     // FIRST, because such a field has no row at the served year and would
     // otherwise fall out of every list this function walks.
-    yearGapOf(field, served)?.let { return@mapNotNull it }
-    val provenance = statusOf(field, served, band) ?: return@mapNotNull null
-    val status = provenance.status
-    val shown = !isNotReported(field, served, computed)
-    // A shown figure needs a note only when its status qualifies the number
-    // itself -- an imputed figure is the publisher's estimate, and a family
-    // reading it as the school's own would be reading it wrong.
-    if (shown && status != FigureStatus.IMPUTED_BY_PUBLISHER) return@mapNotNull null
-    // The two-argument form (RFC 177 D3): where the sentence is about the
-    // PUBLISHER's own act it names the publisher that actually published this
-    // cell, instead of the agentless "the publisher" every surface used to
-    // resolve by hand to one guessed name.
-    FigureStatusCopy
-      .statementOf(status, provenance.source)
-      ?.let { FigureStatusNote(field, status, it, provenance.source) }
+    yearGapOf(field, served) ?: statusNoteOf(field, served, computed, band)
   }
 }
+
+/**
+ * The note for a field the read holds a row for at the SERVED year, or null
+ * where it holds none: the status, the publisher, and what KIND of number the
+ * row's `(source, source_variable)` pair makes it (RFC 179).
+ *
+ * Its own function so the walk above stays a walk: which fields get a note and
+ * what a note SAYS are two levels, and they used to sit in one lambda.
+ */
+private fun statusNoteOf(
+  field: CostField,
+  served: ServedFigures,
+  computed: Map<CostField, Int?>,
+  band: IncomeBand?,
+): FigureStatusNote? {
+  val provenance = statusOf(field, served, band) ?: return null
+  val shown = !isNotReported(field, served, computed)
+  return FigureStatusNote(
+    field = field,
+    status = provenance.status,
+    statement = statusStatementOf(provenance, shown),
+    source = provenance.source,
+    // What KIND of number this cell is, from the pair the row itself carries
+    // (RFC 179). Resolved for EVERY figure with provenance, shown or blank: a
+    // tier hung only on the blanks would never appear beside a dollar amount,
+    // which is every figure a family actually reads. The field is the locator
+    // an operator would need to find the offending row, so it is passed.
+    assurance =
+      AssuranceTier.of(
+        provenance.source,
+        provenance.sourceVariable,
+        "the figure-status walk (field=[${field.wireName}])",
+      ),
+  )
+}
+
+/**
+ * RFC 177's status sentence, or null for a shown, plainly reported figure.
+ *
+ * Such a figure says nothing NEW about its status -- the note it gets exists to
+ * carry the tier, and inventing status prose for it is what D6 refuses. Every
+ * other case keeps RFC 177's sentence exactly: the two-argument form, where a
+ * sentence about the PUBLISHER's own act names the publisher that actually
+ * published this cell.
+ */
+private fun statusStatementOf(
+  provenance: FigureProvenance,
+  shown: Boolean,
+): String? =
+  if (shown && provenance.status == FigureStatus.REPORTED) {
+    null
+  } else {
+    FigureStatusCopy.statementOf(provenance.status, provenance.source)
+  }
 
 /**
  * The note a YEAR GAP produces, or null when this field has no year gap (RFC
@@ -1958,8 +2050,19 @@ private fun yearGapOf(
     statement = FigureStatusCopy.yearGapStatementOf(servedYear, held.academicYear.label),
     // The publisher of the row we DO hold. The sentence is ours and names
     // nobody -- the gap is ours -- but the fact of who published the figure we
-    // are not showing is still data about it (RFC 177 D4).
+    // are not showing is still data about it (RFC 177 D4), and so is what kind
+    // of number it is (RFC 179): the figure we hold for another year is that
+    // publisher's cell whether or not we are showing it.
     source = held.source,
+    // ONE resolution of the pair, named: the tier is a function of
+    // `(source, source_variable)` and calling the resolver twice on one row
+    // invites the two calls to drift apart at the next edit.
+    assurance =
+      AssuranceTier.of(
+        held.source,
+        held.sourceVariable,
+        "the year-gap note (field=[${field.wireName}] held_year=[${held.academicYear.label}])",
+      ),
     // The two years travel as DATA as well as inside the sentence: they are the
     // fact that distinguishes this case from a cell we have never collected,
     // and a consumer that can only reach them by parsing our English cannot

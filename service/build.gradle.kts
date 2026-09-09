@@ -21,6 +21,11 @@ dependencies {
   implementation(libs.java.jwt)
   implementation(libs.jwks.rsa)
 
+  // The fixtures source set names Scorecard columns per [MoneyMeasure] (RFC
+  // 179), so it compiles against the store's vocabulary -- `api` because
+  // :public-web's report-page test reads that signature.
+  testFixturesApi(project(":db"))
+
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)
   // The published state/locale reference rows migration 0067 made a

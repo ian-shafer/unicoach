@@ -10,6 +10,7 @@ import ed.unicoach.coaching.ToolSchema
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.DatedStat
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
@@ -31,6 +32,7 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SystemPromptsDao
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
@@ -769,11 +771,19 @@ class FitLensService(
    * The band-less row is the one asked for: this pass knows nothing about the
    * family's income band, and the overall figure is the school's own.
    */
-  private suspend fun readNetPrices(collegeIds: List<CollegeId>): Map<CollegeId, DatedStat> =
+  private suspend fun readNetPrices(collegeIds: List<CollegeId>): Map<CollegeId, DigestNetPrice> =
     canonicalCostReader
       .readCohortStats(collegeIds)
       .mapNotNull { (collegeId, figures) ->
-        figures.cohortOf(CostField.NET_PRICE, band = null)?.let { collegeId to it }
+        figures.cohortOf(CostField.NET_PRICE, band = null)?.let { stat ->
+          // The tier is resolved HERE, with the row, INSIDE the guard that
+          // makes this read best-effort -- never at render time. A stored cell
+          // id no tier answers for is a store problem like any other, so this
+          // run omits the net-price key and continues; resolved in the digest
+          // loop it would throw out of a pass that has already billed a call.
+          collegeId to
+            DigestNetPrice(stat, AssuranceTier.of(stat.source, stat.sourceVariable, "the fit-lens net-price digest"))
+        }
       }.toMap()
 
   /**
@@ -811,45 +821,74 @@ class FitLensService(
    * 2. `netPricePerYearUsd` holds DOLLARS or nothing. A status sentence served
    *    under a key that names a per-year USD amount invites a model to quote the
    *    sentence as if it were the figure. Where there is no amount the key is
-   *    OMITTED and [FigureStatus] rides as its own token, with the family-facing
-   *    statement beside it -- the shape of the tool's `figure_statuses`.
+   *    OMITTED. [FigureStatus] rides as its own token EITHER WAY, with the
+   *    family-facing statement beside it where the status has one -- the shape
+   *    of the tool's `figure_statuses`.
    * 3. Nothing is dated that does not exist. With no row there is no source, so
    *    no vintage clause and no basis is stated at all: the only true thing is
    *    that we have not collected it ([FigureStatus.NOT_COLLECTED_BY_US]), which
    *    is OUR silence and never the school's.
    */
-  private fun netPriceDigest(stat: DatedStat?): String {
+  private fun netPriceDigest(netPrice: DigestNetPrice?): String {
     // No row, so no publisher: the status sentence names nobody, which is right
     // -- the gap is OURS (RFC 177).
-    if (stat == null) return agentlessStatusFields(FigureStatus.NOT_COLLECTED_BY_US)
+    if (netPrice == null) return agentlessStatusFields(FigureStatus.NOT_COLLECTED_BY_US)
 
+    val stat = netPrice.stat
     val amount = stat.amountUsd
-    val figure =
-      if (amount != null) {
-        "netPricePerYearUsd=[$amount] "
-      } else {
-        // No dollars, so no dollar key: the status IS the answer.
-        statusFields(stat.status, stat.source) + " "
-      }
+    // No dollars, no dollar key: where there is no amount the key is OMITTED
+    // and the status fields below are the whole answer.
+    val figure = if (amount != null) "netPricePerYearUsd=[$amount] " else ""
+    // The status fields are emitted for EVERY row, shown or blank. They used to
+    // hang on the no-dollars branch alone, which put the tier -- what KIND of
+    // number this is -- on exactly the figures a family never sees, and left the
+    // one net price the model actually quotes with no instrument behind it. A
+    // shown, plainly reported row says nothing about its status
+    // ([FigureStatusCopy.statementOf] answers null for it) and so says its tier
+    // alone.
     return figure +
       "netPriceBasis=[${stat.residencyScope.value}] " +
-      "netPriceVintage=[${stat.vintage?.label ?: NOT_DATED}]"
+      "netPriceVintage=[${stat.vintage?.label ?: NOT_DATED}] " +
+      statusFields(stat.status, stat.source, netPrice.assurance)
   }
 
   /**
-   * A missing figure's status as the digest states it: the stable CODE, plus the
-   * sentence a coach may say where there is one, NAMING the publisher whose row
-   * this cell came from (RFC 177).
+   * ONE row's status as the digest states it, shown or blank: the stable CODE,
+   * plus the sentence a coach may say where there is one, NAMING the publisher
+   * whose row this cell came from (RFC 177), and always saying what KIND of
+   * number it is (RFC 179).
    *
-   * [FigureStatusCopy.statementOf] answers null only for
-   * [FigureStatus.REPORTED], which is value-bearing and so never reaches here;
-   * [NOT_REPORTED] keeps the field non-empty if a future status is added
-   * value-less and wordless.
+   * Emitted for EVERY row and not for the blanks alone. Hung on the no-dollars
+   * branch, the tier appeared on exactly the figures a family never sees and the
+   * one net price the model quotes had no instrument behind it.
+   *
+   * [assurance] arrives ALREADY RESOLVED, from the read that owns the row: the
+   * tier is a function of the stored `(source, source_variable)` pair, and
+   * resolving that pair here -- at render time, outside the read's best-effort
+   * guard -- let one unreadable row halt the whole pass. A row is a row whether
+   * or not it bears dollars, so a suppressed net price still has an instrument
+   * behind it and the digest may say which.
+   *
+   * [FigureStatus.REPORTED] DOES reach here now: a shown net price carries its
+   * tier too, under the publisher sentence RFC 177 wrote for it. Where a status
+   * has nothing to say, [AssuranceTierCopy.composedStatementOf] leaves the tier
+   * sentence standing alone -- it is the FLOOR, so the composed line always says
+   * something.
    */
   private fun statusFields(
     status: FigureStatus,
     source: MoneySource,
-  ): String = statusLine(status, FigureStatusCopy.statementOf(status, source))
+    assurance: AssuranceTier,
+  ): String =
+    statusLine(
+      status,
+      // Two sentences, in the seam's own order: whose act first, what kind of
+      // number second (RFC 179). Composed BESIDE the status sentence and never
+      // into it -- [FigureStatusCopy] is byte-pinned by the immutable prompt
+      // row, and a tier appended inside its return value would move it. The
+      // composition itself is [AssuranceTierCopy]'s, not this file's.
+      AssuranceTierCopy.composedStatementOf(FigureStatusCopy.statementOf(status, source), assurance),
+    )
 
   /**
    * The same two fields with NO publisher in hand: there is no row, so there is
@@ -1070,11 +1109,25 @@ class FitLensService(
    */
   private sealed interface DigestNetPrices {
     data class Read(
-      val byCollege: Map<CollegeId, DatedStat>,
+      val byCollege: Map<CollegeId, DigestNetPrice>,
     ) : DigestNetPrices
 
     data object Unavailable : DigestNetPrices
   }
+
+  /**
+   * One digest net price and what KIND of number it is -- the tier resolved
+   * WITH the row, inside the guarded read, rather than at render time.
+   *
+   * The two travel as one value so the digest loop cannot reach a stat whose
+   * tier has not been resolved: resolving it in the loop put a throwing step
+   * outside [netPricesForDigest]'s best-effort catch, where one bad stored row
+   * halted a whole pass after a billed LLM call.
+   */
+  private data class DigestNetPrice(
+    val stat: DatedStat,
+    val assurance: AssuranceTier,
+  )
 
   private sealed interface ReasonParse {
     data class Chosen(

@@ -14,6 +14,7 @@ import ed.unicoach.coaching.costs.CostBreakdown
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.MoneyProfileStatuses
 import ed.unicoach.coaching.costs.NetPrice
+import ed.unicoach.coaching.costs.ScorecardVariableNames
 import ed.unicoach.coaching.costs.applicableTuitionFor
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.FigureAddress
@@ -359,7 +360,10 @@ private fun priceRow(
     academicYear = academicYear,
     reading = readingOf(amountUsd, absenceStatuses[field] ?: AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
     source = source,
-    sourceVariable = field.wireName,
+    // The publisher's OWN column for this price cell, from the same one home as
+    // the cohort names above: exhaustive over [CostField] there, so a new price
+    // field must decide at the BUILD rather than at some later run (RFC 179).
+    sourceVariable = ScorecardVariableNames.priceOf(field),
     publisherFlag = null,
   )
 }
@@ -466,7 +470,12 @@ private fun cohortRow(
       amountUsd?.let { FigureReading.Present(it.toDouble(), ValueBearingStatus.REPORTED) }
         ?: FigureReading.Absent(absent ?: AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
     source = MoneySource.SCORECARD,
-    sourceVariable = address.measure.value,
+    // The Scorecard's own column for this measure -- from the ONE home that
+    // names them ([ScorecardVariableNames]), which the :service cost fixtures
+    // read too. Typed here as well, the two copies were free to be corrected
+    // apart, and a fixture writing a name the tier resolver does not know seeds
+    // a row the production read refuses (RFC 179).
+    sourceVariable = ScorecardVariableNames.cohortOf(address.measure, incomeBand),
     publisherFlag = null,
   )
 }
