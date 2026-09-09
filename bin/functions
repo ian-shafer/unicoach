@@ -51,6 +51,26 @@ conventional_dump_path() {
 # FAILED (both plain status 1). A caller that scripts around bin/db-migrate can
 # tell the cases apart only if they carry different numbers (RFC 180).
 : "${EXIT_SCHEMA_ORDER_DRIFT:=9}"       # ORDER and $DB_SCHEMA_DIR disagree; run bin/db-status
+# A GENERATED artifact in the tree is not what its source plus the base ref
+# produce -- bin/prompt-seed -n (RFC 181), read by ship-land as "regenerate and
+# re-commit". Deliberately the same number and the same meaning as ship-order's
+# own would-change status, because ship-land reads the two identically. It lives
+# here for the same reason every other code above does: a reserved value with
+# three homes is a value that moves in two of them.
+: "${EXIT_SEED_WOULD_CHANGE:=3}"        # prompt-seed -n: the seed is not what the source file plus the base generate
+
+# Git hooks EXPORT GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE, and all three
+# OUTRANK `git -C <dir>`: with them set, `git -C /elsewhere rev-parse` answers
+# for the hook's repository and the -C is silently ignored. Any bin/ script that
+# reads a repository OTHER than the one the hook is committing to -- a scratch
+# fixture, a sibling worktree -- must strip them first, and the strip was
+# copy-pasted at three sites with three explanations. One name, one home.
+#
+# The ship-* scripts under .prime/agent/skills/ship/scripts keep their own
+# copies deliberately: they do not source bin/, so there is nothing to share.
+strip_git_hook_env() {
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+}
 
 log-info() {
   echo "$@" >&2

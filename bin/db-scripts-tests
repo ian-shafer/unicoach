@@ -6,13 +6,6 @@
 # worktrees share. The private cluster is torn down and deleted on exit.
 set -euo pipefail
 
-# The hook that runs this harness exports GIT_DIR and GIT_INDEX_FILE, and both
-# outrank `git -C`. Unset here for the throwaway `git init` fixture below; it
-# escaped once and re-initialised the REAL checkout, rewriting .git/config with
-# core.bare=true (which broke `git check-ignore` in every worktree) plus this
-# harness's test identity, and failing an unrelated pre-commit test.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
-
 THIS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Private env: throwaway data dir, a PID-derived port (dynamic/private range) to
@@ -44,6 +37,17 @@ EOF
 export ENV_FILE="$PRIVATE_ENV"
 source "$THIS_DIR/common"
 source "$THIS_DIR/tests-common"
+
+# The hook that runs this harness exports GIT_DIR and GIT_INDEX_FILE, and both
+# outrank `git -C`. Stripped here for the throwaway `git init` fixture below; it
+# escaped once and re-initialised the REAL checkout, rewriting .git/config with
+# core.bare=true (which broke `git check-ignore` in every worktree) plus this
+# harness's test identity, and failing an unrelated pre-commit test.
+#
+# The strip itself is bin/functions' strip_git_hook_env: three bin/ files needed
+# the same three unsets for the same reason and each carried its own copy and its
+# own explanation of it. Nothing above this line runs git.
+strip_git_hook_env
 
 # Tear down the PRIVATE cluster and delete its data on exit. Safe — it is ours
 # alone (private port + data dir), unrelated to the shared cluster.

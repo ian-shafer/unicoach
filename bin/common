@@ -173,6 +173,59 @@ schema_order_scanned() {
     || fatal "[$caller] was called before schema_order_scan; there is no corpus to report on."
 }
 
+# The name -> line-number index behind schema_order_scan, as two parallel
+# indexed arrays.
+#
+# NOT part of the SCHEMA_ORDER_* return channel declared above, despite sharing
+# its prefix: these two are the scan's own working index, and the pairing is
+# POSITIONAL — index i of one names index i of the other — which is a coupling
+# no reader outside this file should have to know. Read it through
+# schema_order_seen_index / schema_order_lineno_of / schema_order_lists, never
+# directly. They are global only because bash 3.2 has no associative arrays and
+# a `local` inside schema_order_scan is invisible to the helpers below.
+#
+# It used to be three `local -A` associative arrays, which cost nothing here and
+# cost the whole contract elsewhere: `/usr/bin/env bash` on macOS is bash 3.2,
+# which HAS no associative arrays, so every reader of this file was silently
+# restricted to the Nix dev shell. bin/prompt-seed is invoked directly by
+# .prime/agent/skills/ship/scripts/ship-land, which runs OUTSIDE the dev shell —
+# so the ORDER contract's owner was unusable by the one caller that gates a land.
+# ORDER is a hundred lines, so a linear index is free, and the alternative is a
+# second implementation of the contract for bash 3.2 to use.
+SCHEMA_ORDER_SEEN_NAMES=()
+SCHEMA_ORDER_SEEN_LINES=()
+
+# Echoes the index of <name>, or returns 1.
+schema_order_seen_index() {
+  local want="$1" i=0 total="${#SCHEMA_ORDER_SEEN_NAMES[@]}"
+  while [ "$i" -lt "$total" ]; do
+    if [ "${SCHEMA_ORDER_SEEN_NAMES[$i]}" = "$want" ]; then
+      printf '%s' "$i"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Echoes the ORDER line number <name> was first seen on, or returns 1.
+schema_order_lineno_of() {
+  local index
+  index="$(schema_order_seen_index "$1")" || return 1
+  printf '%s' "${SCHEMA_ORDER_SEEN_LINES[$index]}"
+}
+
+# Is <needle> one of the remaining arguments? The set-membership half of what
+# the associative arrays used to answer, over a plain list.
+schema_order_name_in() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
 # Reads the corpus and records EVERY disagreement of EVERY kind. It never fails
 # on a disagreement — the two callers disagree about what a disagreement should
 # cost, so the cost is theirs to choose. A missing schema DIRECTORY is different:
@@ -182,7 +235,9 @@ schema_order_scan() {
   local schema_dir="${1:?schema_order_scan requires the schema directory as an argument}"
   local order_file="$schema_dir/ORDER"
   local file base line lineno=0
-  local -A seen=() lineno_of=() flagged_bad=()
+  local flagged_bad=()
+  SCHEMA_ORDER_SEEN_NAMES=()
+  SCHEMA_ORDER_SEEN_LINES=()
 
   [ -d "$schema_dir" ] || fatal "Schema directory not found [$schema_dir]."
 
@@ -228,11 +283,11 @@ schema_order_scan() {
         SCHEMA_ORDER_BLANK_LINES+=("$lineno")
         continue
       fi
-      if [ -n "${seen[$line]:-}" ]; then
-        SCHEMA_ORDER_DUPLICATES+=("[$line] (line $lineno, first at line ${lineno_of[$line]})")
+      if schema_order_seen_index "$line" > /dev/null; then
+        SCHEMA_ORDER_DUPLICATES+=("[$line] (line $lineno, first at line $(schema_order_lineno_of "$line"))")
       else
-        seen["$line"]=1
-        lineno_of["$line"]="$lineno"
+        SCHEMA_ORDER_SEEN_NAMES+=("$line")
+        SCHEMA_ORDER_SEEN_LINES+=("$lineno")
         SCHEMA_ORDER_LISTED+=("$line")
       fi
     done < "$order_file"
@@ -245,16 +300,25 @@ schema_order_scan() {
   # Every offender is reported with the LINE NUMBER it sits on. The remedy for
   # all of these is "edit that line", and the line number is known here — it was
   # simply thrown away, leaving the reader to search the whole file by eye.
-  for base in "${SCHEMA_ORDER_LISTED[@]}"; do
+  #
+  # `${a[@]+"${a[@]}"}` and NOT the tidier `"${a[@]}"`, here and at every other
+  # expansion of these arrays below: bash 3.2 — the interpreter ship-land runs
+  # bin/prompt-seed and this file under, outside the dev shell — treats the
+  # expansion of an EMPTY array as an UNBOUND variable, so `set -u` aborts the
+  # scan on a corpus that merely has nothing in it, which is an ordinary state.
+  # The `+` form expands to nothing when the array is empty and is otherwise
+  # identical, so the tidy-up this comment exists to stop is a silent land-gate
+  # abort under system bash that never reproduces under the dev shell's bash 5.
+  for base in ${SCHEMA_ORDER_LISTED[@]+"${SCHEMA_ORDER_LISTED[@]}"}; do
     [ -f "$schema_dir/$base" ] \
-      || SCHEMA_ORDER_ABSENT_FROM_DISK+=("[$base] (line ${lineno_of[$base]})")
+      || SCHEMA_ORDER_ABSENT_FROM_DISK+=("[$base] (line $(schema_order_lineno_of "$base"))")
     # Checked HERE, over the whole corpus, and not inside db-migrate's apply
     # loop: an illegal name at pending #12 used to abort the run after eleven
     # migrations had already COMMITTED, which is exactly the half-applied corpus
     # the pre-BEGIN refusal exists to prevent.
     if ! schema_filename_is_valid "$base"; then
-      flagged_bad["$base"]=1
-      SCHEMA_ORDER_INVALID_NAMES+=("[$base] (line ${lineno_of[$base]})")
+      flagged_bad+=("$base")
+      SCHEMA_ORDER_INVALID_NAMES+=("[$base] (line $(schema_order_lineno_of "$base"))")
     fi
   done
 
@@ -263,11 +327,11 @@ schema_order_scan() {
   # be applied" — advice that produces a corpus the very NEXT run refuses for a
   # different reason. It is an illegal migration filename now, and is not also
   # offered as something to append.
-  for base in "${SCHEMA_ORDER_ON_DISK[@]}"; do
-    [ -n "${seen[$base]:-}" ] && continue
+  for base in ${SCHEMA_ORDER_ON_DISK[@]+"${SCHEMA_ORDER_ON_DISK[@]}"}; do
+    schema_order_seen_index "$base" > /dev/null && continue
     if schema_filename_is_valid "$base"; then
       SCHEMA_ORDER_UNORDERED+=("$base")
-    elif [ -z "${flagged_bad[$base]:-}" ]; then
+    elif ! schema_order_name_in "$base" ${flagged_bad[@]+"${flagged_bad[@]}"}; then
       SCHEMA_ORDER_INVALID_NAMES+=("[$base] (on disk, not in [$(basename "$order_file")])")
     fi
   done
@@ -284,6 +348,43 @@ schema_order_has_drift() {
   [ "${#SCHEMA_ORDER_DUPLICATES[@]}" -gt 0 ] && return 0
   [ "${#SCHEMA_ORDER_ABSENT_FROM_DISK[@]}" -gt 0 ] && return 0
   [ "${#SCHEMA_ORDER_UNORDERED[@]}" -gt 0 ] && return 0
+  [ "${#SCHEMA_ORDER_INVALID_NAMES[@]}" -gt 0 ] && return 0
+  return 1
+}
+
+# Does the last scan's ORDER declare <filename>? Membership against
+# SCHEMA_ORDER_LISTED, which is the ONE reading of the file, rather than a
+# caller's own `grep -Fxq "$name" "$dir/ORDER"`.
+#
+# The two are not the same question, and that is the point. `grep -Fxq` answers
+# "is there a line whose bytes are exactly this", so an ORDER line carrying a
+# trailing space or a CR from a CRLF checkout reads as ABSENT -- and a generator
+# that appends on "absent" then writes a SECOND line for the same migration,
+# which bin/db-migrate refuses two steps later with no mention of the CR that
+# caused it. Here the same corpus is scanned once, so the near-miss line is also
+# sitting in SCHEMA_ORDER_INVALID_NAMES for schema_order_file_is_corrupt to
+# refuse by name.
+schema_order_lists() {
+  local base="${1:?schema_order_lists requires a migration filename as an argument}"
+  schema_order_scanned
+  schema_order_seen_index "$base" > /dev/null
+}
+
+# True when the last scan found a fault that appending a line cannot fix: ORDER
+# is not a readable list, or a name -- listed or on disk -- is blank, duplicated
+# or not a legal migration filename.
+#
+# Deliberately NARROWER than schema_order_has_drift, which also fires on the
+# ordinary "on disk but not yet listed" state. A generator that is in the middle
+# of writing a migration and appending its line IS that state, so it cannot use
+# the wider predicate -- but it must not append to a file whose existing lines
+# are already wrong, because the append compounds a corruption into a duplicate.
+schema_order_file_is_corrupt() {
+  schema_order_scanned
+  [ "$SCHEMA_ORDER_NOT_REGULAR" -eq 1 ] && return 0
+  [ "$SCHEMA_ORDER_UNREADABLE" -eq 1 ] && return 0
+  [ "${#SCHEMA_ORDER_BLANK_LINES[@]}" -gt 0 ] && return 0
+  [ "${#SCHEMA_ORDER_DUPLICATES[@]}" -gt 0 ] && return 0
   [ "${#SCHEMA_ORDER_INVALID_NAMES[@]}" -gt 0 ] && return 0
   return 1
 }

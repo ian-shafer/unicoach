@@ -12,6 +12,7 @@
 set -euo pipefail
 
 log-info() { echo "$@" >&2; }
+log-error() { echo "[ERROR] $*" >&2; }
 fatal() { echo "[FATAL] $*" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +26,9 @@ branch onto the run branch from the original checkout, removes the worktree, and
 deletes the merged branch. Refuses on uncommitted changes or a non-fast-forward.
 
 Also refuses a db/schema/ORDER that is not in land order — `ship-order -n` — so
-a run that skipped ship-order in phase 6 cannot land a mis-ordered manifest.
+a run that skipped ship-order in phase 6 cannot land a mis-ordered manifest, and
+a coach prompt seed that is not what this base plus prompts/coach-system-prompt.txt
+generates — `bin/prompt-seed -n`, when that script exists in the checkout.
 
 Refuses a land lock (see ship-lock) held by another run, acquires a free one for
 the fast-forward, and releases a lock it holds — including on any failure AFTER
@@ -122,23 +125,87 @@ trap release_lock EXIT
 # Copied from ship-order WITH THE SAME VALUE rather than sourced — the same
 # note ship-lock carries about bin/functions' reserved band. ship-order spells
 # it EXIT_ORDER_WOULD_CHANGE, because there the 3 is that script's OWN exit
-# code; here it names a foreign script's, so the name carries the owner. The
-# two spellings are intentional — grep for both when the value moves.
-SHIP_ORDER_WOULD_CHANGE=3
-ORDER_STATUS=0
-"$SCRIPT_DIR/ship-order" -s "$RUN_SCRATCH" -n || ORDER_STATUS=$?
-# ONE [FATAL] header per cause. ship-order has already printed its own, naming
-# the file and the exact remedy; a second header here reports one event as two
-# faults. So this states what happens NEXT and nothing else, and the copy-
-# pasteable command is left unbracketed on purpose — brackets corrupt a command
-# meant to be pasted.
-if [ "$ORDER_STATUS" -eq "$SHIP_ORDER_WOULD_CHANGE" ]; then
-  log-info "        This run does not land. Re-place ORDER, re-commit through the hook, and re-run ship-land:"
-  log-info "          scripts/ship-order -s $RUN_SCRATCH"
-  exit "$ORDER_STATUS"
-elif [ "$ORDER_STATUS" -ne 0 ]; then
-  log-info "        ship-order refused this run's db/schema/ORDER (status [$ORDER_STATUS], reported above). This run does not land: fix the corpus, re-commit through the hook, and re-run ship-land."
-  exit "$ORDER_STATUS"
+# code; here it names a foreign script's, so the name carries the owner. One
+# value now serves BOTH land gates below, because both read it the same way.
+LAND_GATE_WOULD_CHANGE=3
+
+# ONE land gate, run twice. Step 3c was step 3b with the names swapped — the
+# same eleven lines, the same status-passing rule implemented twice and
+# explained twice — and a third gate would have been a third copy.
+#
+# The rule: run <tool>, and let ITS status decide. LAND_GATE_WOULD_CHANGE means
+# "regenerate and re-commit"; anything else non-zero is the tool's own refusal.
+# Either way this run does not land. The status is PASSED THROUGH rather than
+# collapsed into fatal's flat 1, so a scripted caller can tell "stale, re-run
+# the generator" from "the corpus is corrupt" and from a dirty worktree. Both
+# exits run under the EXIT trap installed in step 2, so they release the land
+# lock exactly as every other post-acquire refusal does.
+#
+# ONE [FATAL] header per cause: the tool has already printed its own, naming the
+# file and the exact remedy, and a second header here would report one event as
+# two faults. So this states what happens NEXT and nothing else — through
+# log-error, because the one message that STOPS a land must carry a severity
+# marker a log scan can find, and a second [FATAL] is what we are avoiding, not
+# a severity. <remedy> stays on log-info and unbracketed on purpose: brackets
+# corrupt a command meant to be pasted, and an [ERROR] prefix does too.
+run_land_gate() { # run_land_gate <tool label> <remedy command> <command> [args...]
+  local label="$1" remedy="$2"
+  shift 2
+  local status=0
+  "$@" || status=$?
+  if [ "$status" -eq "$LAND_GATE_WOULD_CHANGE" ]; then
+    log-error "This run does not land. Re-run the generator, re-commit through the hook, and re-run ship-land:"
+    log-info "          $remedy"
+    exit "$status"
+  elif [ "$status" -ne 0 ]; then
+    log-error "[$label] refused this run's corpus (status [$status], reported above). This run does not land: fix it, re-commit through the hook, and re-run ship-land."
+    exit "$status"
+  fi
+}
+
+run_land_gate "ship-order" "scripts/ship-order -s $RUN_SCRATCH" \
+  "$SCRIPT_DIR/ship-order" -s "$RUN_SCRATCH" -n
+
+# 3c. The coach prompt seed is generated, not written (RFC 181), and the same
+# argument as 3b applies with one difference that makes it worse: a run that
+# skipped bin/prompt-seed lands a seed whose CONTENT is fine and whose VERSION
+# LABEL belongs to a base that has moved. Nothing downstream notices — the file
+# exists, ORDER names it — until db-migrate meets two rows claiming one version,
+# or the pin resolves to a body nobody authored. `-n` recomputes from $BASE_SHA,
+# which is the tree this run is actually landing on, and writes nothing.
+#
+# GUARDED on the script being PRESENT, deliberately: these scripts are copied
+# into checkouts that predate RFC 181, and a land that failed because a repo has
+# no bin/prompt-seed would be this check inventing a requirement.
+#
+# Presence and executability are asked SEPARATELY. A single `[ -x ]` conflates
+# "this checkout predates RFC 181" with "the file is right there and lost its
+# exec bit" — and answers the second with the first, so a `chmod -x`, a bad
+# archive extraction or a copy through a filesystem with no permission bits
+# DELETES the land gate and every other check stays green. The two states have
+# nothing in common: one is a checkout that never had the gate, the other is a
+# checkout whose gate is broken, and only the second is worth stopping for.
+#
+# The path is built from $CODEBASE_ROOT and NOT from $SCRIPT_DIR: bin/prompt-seed
+# lives in the repository being landed, not beside these scripts. It is also run
+# WITHOUT the Nix dev shell, because ship-land itself has none — which is why
+# bin/prompt-seed is written to parse and run under macOS system bash 3.2, and
+# why bin/prompt-seed-scripts-tests asserts exactly that.
+#
+# Presence is probed with `-e` OR `-L`, not `-e` alone: `-e` FOLLOWS the link, so
+# a DANGLING symlink answers "absent" and takes the "this checkout predates RFC
+# 181" branch — which is precisely the conflation the paragraph above refuses,
+# reintroduced by the test that implements it. `-L` sees the link itself, and
+# `-f` then separates "present but not a runnable file" (a broken link, a
+# directory) from "never had the gate".
+PROMPT_SEED="$CODEBASE_ROOT/bin/prompt-seed"
+if [ -e "$PROMPT_SEED" ] || [ -L "$PROMPT_SEED" ]; then
+  [ -f "$PROMPT_SEED" ] ||
+    fatal "[$PROMPT_SEED] exists but is not a regular file (a dangling symlink, or a directory), so the coach prompt seed gate cannot run. Restore it and re-run ship-land; do not land around it."
+  [ -x "$PROMPT_SEED" ] ||
+    fatal "[$PROMPT_SEED] exists but is not executable, so the coach prompt seed gate cannot run. Restore the mode (chmod +x) and re-run ship-land; do not land around it."
+  run_land_gate "bin/prompt-seed" "nix develop -c bin/prompt-seed -b $BASE_SHA" \
+    "$PROMPT_SEED" -b "$BASE_SHA" -d "$CODEBASE_ROOT/db/schema" -n
 fi
 
 TIP="$(git rev-parse HEAD)"

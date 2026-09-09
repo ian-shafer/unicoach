@@ -1,0 +1,694 @@
+#!/usr/bin/env bash
+# prompt-seed — generate the coach system-prompt seed migration from the file a
+# human actually edits, prompts/coach-system-prompt.txt (RFC 181).
+#
+# The prompt body used to be AUTHORED inside the seed migration: ~412 hand-wrapped
+# `|| '...'` fragments of one 25 KB line, retyped in full for every version. Two
+# runs that both touched the prompt therefore produced two unrelated file ADDS of
+# the same logical thing, which git cannot merge. Here the body is a line-based
+# text file that git merges like any other source, and the seed is a GENERATED
+# artifact: deleted and rewritten from the source file, at land, after the final
+# rebase, so its version label is the tree that is actually landing.
+#
+# It also owns the PIN. The version label is computed at land, so a literal
+# nobody moves in service.conf drifts from it the moment a second run lands
+# between this run's generation and its own: the seed says v25 and the pin still
+# says v24, which serves last week's body from a row nobody meant to pin. The
+# label and the pin are one fact, so one writer writes both.
+#
+# The only seed this script deletes is one that is absent from <base-ref> — i.e.
+# one this run generated itself. That inference is only sound while <base-ref>
+# is the tip this run lands on: a base that is BEHIND its upstream reports
+# another run's already-landed seed as this run's own, so the script refuses
+# such a base rather than deleting a migration on a guess. Given a current base,
+# nothing here edits an applied migration.
+#
+# PORTABILITY: this file must parse under macOS system bash 3.2, not only the
+# dev shell's bash 5. `.prime/agent/skills/ship/scripts/ship-land` invokes it
+# directly, and ship-land runs OUTSIDE `nix develop`. A construct bash 3.2
+# cannot parse makes this script refuse the very land it exists to gate, with a
+# syntax error rather than a verdict — which is why a `/bin/bash -n` assertion
+# guards it in bin/prompt-seed-scripts-tests. In particular: NO heredoc inside a
+# `$( )` command substitution (bash 3.2 mis-scans the heredoc body's quotes).
+source "$(dirname "$0")/common"
+
+# A git hook exports GIT_DIR and GIT_INDEX_FILE, and both OUTRANK `git -C`: with
+# them set, every git read below would answer for the hook's repository instead
+# of the corpus this run is generating.
+strip_git_hook_env
+
+# The generated fragment width, measured in body BYTES under LC_ALL=C, BEFORE
+# `'` is escaped as `''` and before the joining space is appended. So a fragment
+# with no apostrophe closes on column 72-73 (`  || '` is six columns plus the
+# closing quote), and one carrying apostrophes closes a little further right —
+# the emitted column is an output of the rule, not the rule itself.
+#
+# Bytes, not characters, because gawk's length() counts CHARACTERS and most
+# other awks count bytes: measuring bytes under LC_ALL=C is what makes the same
+# source wrap identically on every machine, which is the property `-n` compares
+# locally and at land. Breaks happen at spaces only, so a multi-byte character
+# (an em dash) is never split across two fragments.
+FRAGMENT_WIDTH=65
+
+# The pin this script rewrites, relative to the repository root.
+PIN_REL="service/src/main/resources/service.conf"
+
+help() {
+  cat << 'EOF'
+prompt-seed [options]
+
+Generates <schema-dir>/seed-coach-system-prompt-v<N>.sql from the authored source
+file prompts/coach-system-prompt.txt, appends its ORDER line, and rewrites the
+`systemPromptVersion = "vNN"` pin in service/src/main/resources/service.conf to
+the label it just generated.
+
+The body is the source file's lines, each stripped, blank ones dropped, joined
+with a single space. A hand-edited seed, a hand-edited source or a stale seed
+fails the build: `-n` refuses a tree that differs from what this run generates,
+and a Kotlin test compares the SERVED row's body against the same join of the
+same file.
+
+<N> is one past the highest coach seed present in <base-ref>. A coach seed in
+the worktree that <base-ref> does NOT have is this run's own, previously
+generated file: it is deleted and rewritten, so a stale label cannot survive a
+rebase. That reading holds only for a CURRENT base — a base ref behind its
+upstream would report another run's landed seed the same way — so such a base
+is refused rather than acted on, and no applied migration is ever touched.
+
+Run it at land, between the final rebase and the squash, so the label is
+computed from the tree that is landing and the regenerated seed is part of the
+hook-verified commit.
+
+Options:
+  -b: The base ref this run lands on (default: main)
+  -d: The schema directory to generate into (default: $PROJECT_ROOT/db/schema).
+      The repository, the source file and the pin are derived from it.
+  -n: Dry run. Writes nothing; exits 3 if the tree differs from what a real
+      run would generate, 0 if it is already correct.
+  -h: Help
+
+Exit codes:
+  0   the seed, its ORDER line and the pin are correct, or were written
+  1   refused: the corpus or the base ref is not usable
+  3   -n only: the tree differs from what would be generated
+  9   refused: <schema-dir>/ORDER is corrupt and cannot be appended to
+      (EXIT_SCHEMA_ORDER_DRIFT, the status bin/db-migrate uses for the same
+      corpus); `bin/db-status` reports it without refusing
+  10, 11, 20, 22  usage errors
+EOF
+  exit 0
+}
+
+BASE_REF="main"
+DRY_RUN=""
+# Routed by an EXPLICIT option, not by the inherited $DB_SCHEMA_DIR that
+# bin/db-migrate and bin/db-status read. bin/common says it in as many words:
+# "$DB_SCHEMA_DIR is a caller's variable, not a routing channel". Everything
+# this script touches — the repository, the source file, the pin, the ORDER
+# file — is derived from this one path, so a stale export in the environment of
+# whoever called ship-land would otherwise make the generator read and report on
+# ANOTHER checkout while calling the landing tree green without reading it.
+SCHEMA_DIR_ARG="$PROJECT_ROOT/db/schema"
+
+parse_args() {
+  local OPTIND OPTARG opt
+  while getopts ":b:d:nh" opt; do
+    case "$opt" in
+    b) BASE_REF="$OPTARG" ;;
+    d) SCHEMA_DIR_ARG="$OPTARG" ;;
+    n) DRY_RUN=1 ;;
+    h) help ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+    :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  if [ "$#" -gt 0 ]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "prompt-seed does not accept positional arguments: [$*]"
+  fi
+
+  if [ -z "$BASE_REF" ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "option -b requires a non-empty base ref"
+  fi
+
+  if [ -z "$SCHEMA_DIR_ARG" ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "option -d requires a non-empty schema directory"
+  fi
+}
+
+# ── Where the corpus is ────────────────────────────────────────────────────────
+# Everything this script reads and writes hangs off the one -d path: the
+# repository, the source file, the ORDER file and the pin.
+resolve_corpus() {
+  if [ ! -d "$SCHEMA_DIR_ARG" ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "schema directory not found [$SCHEMA_DIR_ARG]"
+  fi
+  SCHEMA_DIR="$(cd "$SCHEMA_DIR_ARG" && pwd -P)"
+
+  # git's own stderr is NOT suppressed: "not a repository" is one of several
+  # reasons this fails, and dubious ownership, an unreadable .git and a corrupt
+  # object store are the others — all live at land, where this runs outside the
+  # dev shell. Replacing them with one fixed string names the wrong cause and
+  # deletes the right one.
+  REPO_ROOT="$(git -C "$SCHEMA_DIR" rev-parse --show-toplevel)" ||
+    fatal "[$SCHEMA_DIR] has no readable git repository, so no base ref can be read; git's own error is above"
+  REPO_ROOT="$(cd "$REPO_ROOT" && pwd -P)"
+
+  case "$SCHEMA_DIR/" in
+  "$REPO_ROOT"/*) SCHEMA_REL="${SCHEMA_DIR#"$REPO_ROOT"/}" ;;
+  *) fatal "[$SCHEMA_DIR] is not under its own repository root [$REPO_ROOT]" ;;
+  esac
+
+  SOURCE_FILE="$REPO_ROOT/prompts/coach-system-prompt.txt"
+  ORDER_FILE="$SCHEMA_DIR/ORDER"
+  PIN_FILE="$REPO_ROOT/$PIN_REL"
+}
+
+# ── The one whitespace class of the join rule ──────────────────────────────────
+# The rule is `strip -> drop blanks -> join with one space`, and it has three
+# implementations: this validator, the emitter below, and the Kotlin assertion
+# in SystemPromptCatalogTest that the shipped row equals the file. Three
+# implementations only work if they agree on what WHITESPACE is, and they did
+# not: a leading U+2000 EN QUAD passed a bash locale trim, was KEPT by the
+# C-locale awk emitter, and was TRIMMED by Kotlin's String.trim() (which is
+# Char.isWhitespace()). The build then failed telling the operator to
+# "regenerate the seed", while regeneration produced byte-identical output —
+# unfixable without editing a test.
+#
+# The one class is ASCII whitespace: space, tab, CR, LF, VT, FF, and nothing
+# else. It is expressed here ONCE, as an awk function under LC_ALL=C where
+# [[:space:]] is exactly those six bytes, and both awk programs below are built
+# on top of it — so the validator and the emitter are not two implementations
+# that agree, they are one implementation used twice. Kotlin's copy stays
+# deliberate double entry and trims the same six characters, pinned by its own
+# test.
+JOIN_RULE_AWK='
+function authored_trim(s) {
+  sub(/^[[:space:]]+/, "", s)
+  sub(/[[:space:]]+$/, "", s)
+  return s
+}
+'
+
+# ── The source file ────────────────────────────────────────────────────────────
+assert_source_exists() {
+  [ -f "$SOURCE_FILE" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "prompt source file not found [$SOURCE_FILE]"
+  [ -s "$SOURCE_FILE" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "prompt source file is empty [$SOURCE_FILE]"
+}
+
+# Every question about the source file, answered in ONE pass and reported as
+# machine-readable records on stdout: `tab <line>`, `control <line>`,
+# `double <line>`, `content`. One pass because a validator that stops at the
+# first offender turns a five-line fix into five runs, and one PROGRAM because it
+# shares authored_trim with the emitter.
+#
+# `content` is here, up front, and not in the emitter's END rule where it used to
+# live. There it fired AFTER the delete loop had already removed this run's seed
+# and its ORDER line — so an all-blank source exited 1 having left a zero-byte
+# seed on disk and absent from ORDER. A refusal that destroys state is not a
+# refusal.
+#
+# `control` is the third unfixable-build trap of the same family as the U+2000
+# one above, and it is refused rather than accommodated: a bare CR (or any other
+# C0 byte) mid-line is an ORDINARY BYTE to this C-locale emitter and a LINE BREAK
+# to Kotlin's String.lines(), so the seed would carry it and the test would split
+# on it. The build then fails saying "regenerate the seed" while regeneration is
+# byte-identical — the exact state that is unfixable without editing a test. It
+# is asked of the TRIMMED line, so the trailing CR of a CRLF checkout is stripped
+# like any other trailing whitespace rather than refused for nothing.
+VALIDATE_AWK='
+{
+  if (index($0, "\t") > 0) print "tab " NR
+  line = authored_trim($0)
+  # A tab IS a control character and already has its own refusal above, so it is
+  # taken out of this probe rather than reported twice under two names.
+  probe = line
+  gsub(/\t/, "", probe)
+  if (match(probe, /[[:cntrl:]]/)) print "control " NR
+  if (index(line, "  ") > 0) print "double " NR
+  if (line != "") content = 1
+}
+END { if (content) print "content" }
+'
+
+# The join rule is only REVERSIBLE for a file that carries no tab and no interior
+# double space: either would be collapsed on the way in and unrecoverable on the
+# way out. Trailing whitespace is NOT refused — it is stripped, which is what a
+# stray space at end-of-line deserves.
+assert_source_is_usable() {
+  local kind number tabs="" controls="" doubles="" content=""
+  while read -r kind number; do
+    case "$kind" in
+    tab) tabs="$tabs $number" ;;
+    control) controls="$controls $number" ;;
+    double) doubles="$doubles $number" ;;
+    content) content=1 ;;
+    esac
+  done <<< "$(LC_ALL=C awk "$JOIN_RULE_AWK$VALIDATE_AWK" "$SOURCE_FILE")"
+
+  local refused=""
+  if [ -n "$tabs" ]; then
+    log-error "[$SOURCE_FILE] has a tab character on line(s) [${tabs# }] — a tab does not survive the join, so it may not be authored."
+    refused=1
+  fi
+  if [ -n "$controls" ]; then
+    log-error "[$SOURCE_FILE] has a control character on line(s) [${controls# }] — a bare CR or other C0 byte is an ordinary byte to the generator and a LINE BREAK to the Kotlin assertion, so the seed and the test could never agree and regenerating would not fix it."
+    refused=1
+  fi
+  if [ -n "$doubles" ]; then
+    log-error "[$SOURCE_FILE] has interior double spaces on line(s) [${doubles# }] — the join uses a single space, so a double space does not round-trip."
+    refused=1
+  fi
+  if [ -z "$content" ]; then
+    log-error "[$SOURCE_FILE] has no content lines — every line is blank, so there is no body to seed."
+    refused=1
+  fi
+  [ -z "$refused" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "prompt source file is not usable; fix the line(s) reported above and re-run."
+}
+
+# ── The pin ────────────────────────────────────────────────────────────────────
+# The `systemPromptVersion = "vNN"` line, and only that line: the second
+# assignment beside it is `${?COACHING_SYSTEM_PROMPT_VERSION}`, the operator
+# override, which carries no literal and must be left alone.
+PIN_LINE_RE='^([[:space:]]*systemPromptVersion[[:space:]]*=[[:space:]]*)"v[0-9]+"[[:space:]]*$'
+
+# grep's status here is THREE-valued: 0 matched, 1 matched nothing — which is a
+# COUNT of zero and a legitimate answer — and 2-or-above grep itself failing to
+# read the file. A `|| true` would collapse the third into the second and leave
+# the count EMPTY, and `[ "" -ne 1 ]` does not evaluate to "refuse": it errors
+# with status 2, which `if` reads as false, so the one gate that lets this
+# script rewrite service.conf would be SKIPPED on the way to rewriting it.
+# The count is read in the FUNCTION rather than through `PIN_COUNT="$(pin_lines)"`:
+# a `fatal` inside a command substitution exits the subshell, and the refusal
+# then depends on `set -e` noticing the substitution's status to stop the run.
+read_pin() {
+  local status=0
+  [ -f "$PIN_FILE" ] ||
+    fatal "the version pin file is not there [$PIN_FILE]; the label this script computes has nothing to write to"
+  PIN_COUNT="$(grep -cE "$PIN_LINE_RE" "$PIN_FILE")" || status=$?
+  [ "$status" -le 1 ] ||
+    fatal "could not read the version pin file [$PIN_FILE]: grep exited [$status], reported above"
+  # grep prints nothing when it could not read the file, so the count is
+  # asserted as a NUMBER before it is compared as one: an answer that is not a
+  # count is a fault in the READING, not a verdict on the file, and `[ "" -ne 1 ]`
+  # cannot say so — it errors with status 2, which `if` reads as FALSE, so the
+  # one gate that lets this script rewrite service.conf would be skipped on the
+  # way to rewriting it.
+  if [[ ! "$PIN_COUNT" =~ ^[0-9]+$ ]]; then
+    fatal "could not count the coach version pin lines in [$PIN_FILE]: grep said [$PIN_COUNT]"
+  fi
+  if [ "$PIN_COUNT" -ne 1 ]; then
+    fatal "[$PIN_FILE] has [$PIN_COUNT] lines matching the coach version pin; exactly one is required, because this script rewrites it"
+  fi
+
+  PINNED_VERSION="$(sed -nE 's/'"$PIN_LINE_RE"'/&/p' "$PIN_FILE" | sed -nE 's/.*"(v[0-9]+)".*/\1/p')"
+}
+
+# ── The tip, and what is deletable ─────────────────────────────────────────────
+# LANDED is what <base-ref> has. Everything else in the schema directory that
+# looks like a coach seed is this run's own generated file.
+assert_base_ref_is_usable() {
+  # --quiet is dropped for the same reason the suppression above is: it hides
+  # git's own account of WHY the ref could not be resolved, and this refusal
+  # then asserts a single cause it has not established.
+  git -C "$REPO_ROOT" rev-parse --verify "$BASE_REF^{commit}" > /dev/null ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "base ref [$BASE_REF] does not name a commit in [$REPO_ROOT]; git's own error is above"
+
+# "Absent from <base-ref>" has a THIRD producer besides this run's own file and a
+# file nobody generated: a seed some OTHER run landed, which is already in the
+# tree while <base-ref> is stale. To the ownership test below that seed is
+# indistinguishable from this run's, so the write phase deletes it and rewrites
+# a landed body under a label that has already been applied — and the header's
+# "an applied migration is by construction never touched" is only true while
+# <base-ref> is the tip this run lands on.
+#
+# A ref that is behind its own upstream is exactly that state, and it is refused
+# rather than guessed at. ship-land passes a SHA, which has no upstream, so the
+# land path is unaffected; the case this catches is an operator running the
+# generator against a local `main` they have not fast-forwarded.
+# The suppression here is the one case it is right: "this ref tracks nothing" is
+# the ORDINARY answer for a SHA or a local-only branch, not a fault, and git
+# still writes a message for it.
+  BASE_UPSTREAM="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REF@{upstream}" 2> /dev/null)" || BASE_UPSTREAM=""
+  if [ -n "$BASE_UPSTREAM" ] &&
+    [ "$(git -C "$REPO_ROOT" rev-list --count "$BASE_REF..$BASE_UPSTREAM")" -ne 0 ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" \
+      "base ref [$BASE_REF] is behind its upstream, so a coach seed absent from it may be another run's LANDED migration rather than this run's own — and this script would delete it. Update it (git fetch && git merge --ff-only) and re-run."
+  fi
+}
+
+# The COACH-specific half of the filename grammar only. The general half — what
+# a legal migration filename is at all — is bin/common's schema_filename_is_valid,
+# which is its declared owner; restating it here would be a third copy of a
+# grammar two readers already share.
+# `-v[1-9][0-9]*`, not `-v[0-9]+`: `v0` is not a version this catalog can follow,
+# and a label with a leading zero (`v08`) is an OCTAL literal to `$(( ))`, so it
+# passes the filename check, survives `test -gt` (base 10) and then aborts the
+# run with `value too great for base` instead of a verdict.
+COACH_SEED_RE='^([0-9]{4}\.)?seed-coach-system-prompt(-v[1-9][0-9]*)?\.sql$'
+
+# Is this filename a coach system-prompt seed? A PREDICATE: the answer is the
+# exit status, so a caller asks the question directly instead of testing a
+# string for emptiness and hoping the empty case means "no" rather than "the
+# extractor failed".
+is_coach_seed() {
+  local base="${1:?is_coach_seed requires a migration filename as an argument}"
+  schema_filename_is_valid "$base" && [[ "$base" =~ $COACH_SEED_RE ]]
+}
+
+# The version NUMBER a coach seed filename carries; v1's file predates the label,
+# so an unlabelled seed is version 1. Only meaningful for a name is_coach_seed
+# accepts — it is a value extractor, and asking it to also answer "is this a
+# seed?" is what made the old seed_version_of return two things at once.
+coach_seed_version() {
+  local base="${1:?coach_seed_version requires a coach seed filename as an argument}"
+  if [[ "$base" =~ -v([1-9][0-9]*)\.sql$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '1'
+  fi
+}
+
+# The label this run owes: one past the highest coach seed <base-ref> carries.
+resolve_target_version() {
+  local base version
+  LANDED_SEEDS="$(git -C "$REPO_ROOT" ls-tree --name-only "$BASE_REF" -- "$SCHEMA_REL/" | while IFS= read -r path; do
+    base="${path##*/}"
+    if is_coach_seed "$base"; then printf '%s\n' "$base"; fi
+  done)"
+
+  TIP=0
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    version="$(coach_seed_version "$base")"
+    if [ "$version" -gt "$TIP" ]; then TIP="$version"; fi
+  done <<< "$LANDED_SEEDS"
+
+  if [ "$TIP" -eq 0 ]; then
+    fatal "[$BASE_REF] carries no coach system-prompt seed under [$SCHEMA_REL/], so there is no version to follow"
+  fi
+
+  NEXT=$((TIP + 1))
+  TARGET_NAME="seed-coach-system-prompt-v$NEXT.sql"
+  TARGET_FILE="$SCHEMA_DIR/$TARGET_NAME"
+  TARGET_VERSION="v$NEXT"
+}
+
+# This run's own seeds: present on disk, absent from the base.
+list_run_owned_seeds() {
+  local path base
+  for path in "$SCHEMA_DIR"/*.sql; do
+    [ -e "$path" ] || continue
+    base="${path##*/}"
+    is_coach_seed "$base" || continue
+    if ! printf '%s\n' "$LANDED_SEEDS" | grep -Fxq "$base"; then
+      printf '%s\n' "$base"
+    fi
+  done
+}
+
+# ── The ORDER contract, read through its owner ─────────────────────────────────
+# bin/common is the declared sole owner of what ORDER is, what a legal migration
+# filename is, and what counts as a disagreement. This script sources it, so it
+# ASKS rather than re-deriving the path, re-implementing membership with
+# `grep -Fxq` and carrying its own copy of the grammar — three re-implementations
+# that diverged in a way nobody would find by reading: a whitespace- or
+# CR-terminated ORDER line reads as absent to `grep -Fxq`, so the append below
+# would write a SECOND line for one migration, and bin/db-migrate would refuse a
+# corpus this script had just called correct.
+#
+# Refused up front, beside the other refusals, and never mid-write.
+scan_order() { schema_order_scan "$SCHEMA_DIR"; }
+
+assert_order_is_appendable() {
+  scan_order
+  if schema_order_file_is_corrupt; then
+    fatal -s "$EXIT_SCHEMA_ORDER_DRIFT" \
+      "[$ORDER_FILE] cannot be appended to safely:"$'\n'"$(schema_order_drift_report)"$'\n'"  Fix it and re-run. \`bin/db-status\` reports the same corpus without refusing it."
+  fi
+}
+
+# ── Generation ─────────────────────────────────────────────────────────────────
+# The emitted file is deliberately the SAME SHAPE as the 23 hand-written seeds
+# before it: one INSERT, the body as `||`-joined single-quoted fragments with ''
+# escaping, no newline in the body itself. A reader diffing it against 0093 sees
+# the same file.
+#
+# Read into a variable through a plain heredoc rather than `$(cat << 'AWK' ...)`:
+# bash 3.2, which ship-land runs under, cannot parse a heredoc inside a command
+# substitution when the heredoc body carries unbalanced quotes — and this one is
+# nothing but unbalanced quotes. `read -d ''` stops at EOF and reports 1 for it,
+# hence the `|| true` under `set -e`.
+IFS='' read -r -d '' SEED_AWK << 'AWK' || true
+function emit(text, suffix,   escaped) {
+  escaped = text
+  gsub(/'/, "''", escaped)
+  if (first_done) {
+    printf "  || '%s'%s\n", escaped, suffix
+  } else {
+    printf "  '%s'%s\n", escaped, suffix
+    first_done = 1
+  }
+}
+
+{
+  line = authored_trim($0)
+  if (line == "") next
+  body = (body == "") ? line : body " " line
+}
+END {
+  print "-- GENERATED FILE. DO NOT EDIT."
+  print "--"
+  print "-- Written by bin/prompt-seed (RFC 181) from prompts/coach-system-prompt.txt,"
+  print "-- which is the file to edit. This seed is deleted and regenerated at land,"
+  print "-- after the final rebase, so a hand edit here is lost without warning; the"
+  print "-- body-equality test in SystemPromptCatalogTest is what fails the build for it."
+  print "--"
+  print "-- The body is the source file's lines, stripped, blanks dropped, joined with"
+  print "-- one space; the || fragments are layout only, exactly as in every seed since"
+  print "-- 0011, and no newline enters the body."
+  print "--"
+  print "-- Rollback is COACHING_SYSTEM_PROMPT_VERSION=v" (version - 1) " -- that row is"
+  print "-- immutable and stays selectable in the catalog."
+  print ""
+  print "INSERT INTO system_prompts (name, version, body)"
+  print "VALUES ("
+  print "  'coach',"
+  printf "  'v%s',\n", version
+
+  # Wrap at SPACES only, greedily, to at most `width` body bytes per fragment.
+  # Never mid-character: awk runs under LC_ALL=C here so length() is bytes on
+  # every implementation (gawk counts characters otherwise, which would make the
+  # same source wrap differently on two machines), and a space is the one byte
+  # that cannot be part of a multi-byte character. A word longer than the width
+  # takes a fragment of its own rather than being cut.
+  count = split(body, words, " ")
+  chunk = ""
+  for (w = 1; w <= count; w++) {
+    if (chunk == "") {
+      chunk = words[w]
+    } else if (length(chunk) + 1 + length(words[w]) <= width) {
+      chunk = chunk " " words[w]
+    } else {
+      emit(chunk " ", "")
+      chunk = words[w]
+    }
+  }
+  emit(chunk, "")
+  print ");"
+}
+AWK
+
+generate_seed() { # generate_seed <outfile>
+  LC_ALL=C awk -v version="$NEXT" -v width="$FRAGMENT_WIDTH" \
+    "$JOIN_RULE_AWK$SEED_AWK" "$SOURCE_FILE" > "$1" ||
+    fatal "could not generate the seed for [$TARGET_NAME] from [$SOURCE_FILE]; awk's own error is above. Nothing has been moved into [$SCHEMA_DIR]."
+}
+
+# service.conf with the pin line rewritten to <version>. The rest of the file —
+# including the append-only comment log above the pin, which is the AUTHOR's to
+# write — passes through byte for byte.
+generate_pin() { # generate_pin <outfile> <version>
+  LC_ALL=C awk -v want="$2" -v re="$PIN_LINE_RE" '
+    $0 ~ re {
+      sub(/"v[0-9]+"/, "\"" want "\"")
+    }
+    { print }
+  ' "$PIN_FILE" > "$1" ||
+    fatal "could not generate the repinned [$PIN_REL] at [$2]; awk's own error is above. [$PIN_FILE] is unchanged."
+}
+
+# Everything this run writes is generated into a temp file FIRST and moved into
+# place only once every refusal has been passed, so no failure can leave the tree
+# half-written.
+#
+# Staged INSIDE the schema directory, not in $TMPDIR: every install below is
+# then a same-filesystem rename(2), which either happens or does not. A $TMPDIR
+# on another filesystem — the usual case on Linux CI — turns each `mv` into
+# copy-plus-unlink, which can fail halfway (ENOSPC) AFTER the delete loop has
+# already committed, leaving a corpus with neither the old seed nor the new one.
+# The leading dot and the `.sql`-less name keep it outside every glob the corpus
+# is read with, and the trap owns it, so no scratch file is ever left beside
+# ORDER for a later `git add db/schema` to commit.
+generate_candidates() {
+  WORK_DIR="$(mktemp -d "$SCHEMA_DIR/.prompt-seed.XXXXXX")"
+  trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
+  CANDIDATE_SEED="$WORK_DIR/seed.sql"
+  CANDIDATE_PIN="$WORK_DIR/pin.conf"
+
+  generate_seed "$CANDIDATE_SEED"
+  generate_pin "$CANDIDATE_PIN" "$TARGET_VERSION"
+}
+
+# ── -n: the enforcement half ───────────────────────────────────────────────────
+# Phase 6 calling this script is prose, and a run that skipped it lands cleanly:
+# the seed exists, only its LABEL is wrong. ship-land runs this before the
+# fast-forward, so the dry run must answer without writing anything.
+# Each assert_* REPORTS its own complaint and returns 1; the verdict collects
+# them, so one run names every reason the tree is not current and refuses once.
+assert_no_stale_run_owned_seed() {
+  local base stale=0
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    if [ "$base" = "$TARGET_NAME" ]; then continue; fi
+    log-error "[$SCHEMA_DIR/$base] is this run's own seed but is not [$TARGET_NAME]: the base moved, so the label is stale."
+    stale=1
+  done <<< "$(list_run_owned_seeds)"
+  return "$stale"
+}
+
+# Only the comparison genuinely depends on the file existing, so only IT is
+# chained. `cmp` is run WITHOUT -s: the byte and line where the two part is the
+# one fact that separates the two causes this message names, and the remedy it
+# prints — regenerate — destroys a hand edit, so an operator has to be able to
+# see what they are about to lose without diffing by hand.
+assert_target_seed_is_generated() {
+  local difference
+  if [ ! -f "$TARGET_FILE" ]; then
+    log-error "[$TARGET_FILE] is missing: this run has not generated its seed against [$BASE_REF]."
+    return 1
+  elif ! difference="$(cmp "$TARGET_FILE" "$CANDIDATE_SEED" 2>&1)"; then
+    log-error "[$TARGET_FILE] differs from what [$SOURCE_FILE] generates [$difference]: it is hand-edited or stale. Regenerating overwrites any hand edit."
+    return 1
+  fi
+  return 0
+}
+
+# Independent of the seed's CONTENT: a correct file ORDER does not declare is
+# never applied, and this script's own validator comment says a check that stops
+# at the first offender turns a five-line fix into five runs. Chained behind the
+# comparison, it was skipped in exactly the case an operator most needs it — the
+# one where they are already about to re-run.
+assert_target_is_ordered() {
+  schema_order_lists "$TARGET_NAME" && return 0
+  log-error "[$ORDER_FILE] does not declare [$TARGET_NAME], so the seed would never be applied."
+  return 1
+}
+
+# The pin is checked here and not left to a Kotlin test, because a Kotlin test
+# can only compare the pin against the catalog it can SEE. It cannot know the
+# label this run owes, which is the one thing that moves when another run lands
+# first — and that is exactly the case ship-land calls this to catch.
+assert_pin_names_target() {
+  [ "$PINNED_VERSION" = "$TARGET_VERSION" ] && return 0
+  log-error "[$PIN_FILE] pins systemPromptVersion [$PINNED_VERSION], but this run's seed is [$TARGET_VERSION]: the label and the pin disagree, so the runtime would serve a body this run did not generate."
+  return 1
+}
+
+assert_tree_is_current() {
+  local stale=""
+  assert_no_stale_run_owned_seed || stale=1
+  assert_target_seed_is_generated || stale=1
+  assert_target_is_ordered || stale=1
+  assert_pin_names_target || stale=1
+
+  if [ -n "$stale" ]; then
+    fatal -s "$EXIT_SEED_WOULD_CHANGE" "the coach prompt seed is not what [$BASE_REF] plus prompts/coach-system-prompt.txt generates. Re-run: bin/prompt-seed -b $BASE_REF"
+  fi
+
+  log-info "prompt-seed: [$TARGET_NAME] is current against [$BASE_REF] and [$PIN_REL] pins it; nothing to do."
+}
+
+# ── Write ──────────────────────────────────────────────────────────────────────
+# Drops <migration filename> from ORDER, or does nothing when ORDER does not
+# list it. The filter is staged in $WORK_DIR — never as `ORDER.tmp` beside ORDER,
+# which is a scratch file in the operator's corpus that this script's cleanup
+# trap does not own — and grep's status decides whether it is installed at all:
+# 1 is "the last line was dropped", which is a correct empty ORDER, while 2 and
+# above is grep failing to READ the file, and installing THAT output replaces
+# the migration manifest with a truncated one under a success log.
+drop_order_line() { # drop_order_line <migration filename>
+  local base="${1:?drop_order_line requires a migration filename as an argument}"
+  local status=0
+  schema_order_lists "$base" || return 0
+  grep -Fxv "$base" "$ORDER_FILE" > "$WORK_DIR/order" || status=$?
+  [ "$status" -le 1 ] ||
+    fatal "could not rewrite [$ORDER_FILE] to drop [$base]: grep exited [$status], reported above. [$ORDER_FILE] is unchanged."
+  mv "$WORK_DIR/order" "$ORDER_FILE"
+}
+
+# Delete-then-write, never edit in place: a seed carrying a stale label must not
+# survive the run that supersedes it. The new seed is INSTALLED FIRST, though,
+# and the target is skipped here: the corpus then never passes through a state
+# with no coach seed in it, so a failure between the two steps cannot leave one
+# behind. (It is the same set either way — the installed target is run-owned by
+# construction — so the skip is what makes the order safe, not an exception to
+# it.)
+delete_superseded_seeds() {
+  local base
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    if [ "$base" = "$TARGET_NAME" ]; then continue; fi
+    rm -f "$SCHEMA_DIR/$base"
+    drop_order_line "$base"
+    log-info "prompt-seed: removed this run's previous seed [$base] (it is not in [$BASE_REF])."
+  done <<< "$(list_run_owned_seeds)"
+}
+
+append_target_order_line() {
+  # The delete loop above rewrote ORDER, so the scan behind schema_order_lists is
+  # stale. Re-read the corpus rather than reasoning about what the loop did.
+  scan_order
+  schema_order_lists "$TARGET_NAME" && return 0
+  printf '%s\n' "$TARGET_NAME" >> "$ORDER_FILE"
+  log-info "prompt-seed: appended [$TARGET_NAME] to [$ORDER_FILE]."
+}
+
+update_pin() {
+  [ "$PINNED_VERSION" = "$TARGET_VERSION" ] && return 0
+  mv "$CANDIDATE_PIN" "$PIN_FILE"
+  log-info "prompt-seed: repinned [$PIN_REL] systemPromptVersion from [$PINNED_VERSION] to [$TARGET_VERSION]."
+  return 0
+}
+
+write_generated_tree() {
+  mv "$CANDIDATE_SEED" "$TARGET_FILE"
+  delete_superseded_seeds
+  append_target_order_line
+  update_pin
+  log-info "prompt-seed: wrote [$TARGET_FILE] from [$SOURCE_FILE], following [v$TIP] in [$BASE_REF]."
+}
+
+# ── Top-level flow ────────────────────────────────────────────────────────────
+main() {
+  parse_args "$@"            # getopts; -b/-d non-empty; no positional arguments
+  resolve_corpus             # -d -> SCHEMA_DIR, REPO_ROOT, SOURCE_FILE, ORDER_FILE, PIN_FILE
+  assert_source_exists       # the authored file is there and is not empty
+  assert_source_is_usable    # tabs, control bytes, interior double spaces, an all-blank file
+  read_pin                   # PINNED_VERSION, refusing anything but exactly one pin line
+  assert_base_ref_is_usable  # -b names a commit, and is not behind its upstream
+  resolve_target_version     # LANDED_SEEDS, TIP, NEXT, TARGET_NAME/FILE/VERSION
+  assert_order_is_appendable # scan_order, then refuse a corpus db-migrate would refuse
+  generate_candidates        # the seed and the repinned service.conf, in $WORK_DIR
+
+  if [ -n "$DRY_RUN" ]; then
+    assert_tree_is_current
+  else
+    write_generated_tree
+  fi
+}
+
+main "$@"

@@ -1,0 +1,797 @@
+#!/usr/bin/env bash
+# prompt-seed-scripts-tests — shell assertions over bin/prompt-seed (RFC 181).
+#
+# The `-scripts-tests` suffix is load-bearing, not decoration. bin/scripts-tests
+# sweeps `bin/*scripts-tests` and asserts each one is named in bin/shell-tests,
+# because an orphaned harness looks exactly like a passing one. Named
+# `prompt-seed-tests` this file was the ONLY harness that sweep could not see:
+# deleting its single line in bin/shell-tests would have silently disabled every
+# assertion below, and with them the land gate they cover, with nothing failing.
+#
+# The subject is the generator that turns prompts/coach-system-prompt.txt into
+# db/schema/seed-coach-system-prompt-vN.sql. Two of its properties cannot be
+# eyeballed and are the reason this file exists:
+#
+#   1. The label is computed from <base-ref>, so a run whose base MOVED must
+#      delete its own stale seed and rewrite it under the next label. Getting
+#      that wrong lands a duplicate version, or a version that already exists.
+#   2. `-n` must answer "the tree is stale" with exit 3 and write nothing, since
+#      ship-land runs it as the last gate before the fast-forward.
+#
+# It also demonstrates the change's whole point: two branches editing DIFFERENT
+# paragraphs of the source file merge with no conflict, and the regenerated seed
+# carries both edits. That is the merge the old one-25-KB-line seed made
+# impossible.
+#
+# NO POSTGRES, NO GRADLE, NO WORKTREE. Every assertion runs against a throwaway
+# `git init` repo under a temp dir, routed there by the EXPLICIT `-d` option.
+# bin/prompt-seed derives the repository, the source file, the ORDER file and the
+# service.conf pin from that one argument, so this harness cannot half-move it
+# and can never touch the real db/schema — and, unlike the inherited
+# $DB_SCHEMA_DIR it used to be routed by, a stale export in whoever called
+# ship-land cannot move it either.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+prompt-seed-scripts-tests [options]
+
+Runs the shell assertions over bin/prompt-seed: the source-file refusals, the
+-n exit-3 contract, idempotence, the delete-and-relabel path against a moved
+base, the service.conf repin, and the two-branch merge demonstration. Needs no
+database, no daemon and no worktree: every assertion runs against a throwaway
+git repo under a temp dir.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: prompt-seed-scripts-tests accepts no positional arguments."
+fi
+
+PROMPT_SEED="$PROJECT_ROOT/bin/prompt-seed"
+[ -x "$PROMPT_SEED" ] || fail_test "prompt-seed is missing or not executable [$PROMPT_SEED]"
+
+# `git -C` loses to GIT_DIR, and the pre-commit hook that runs this harness
+# exports it. Strip it here for this file's own `git init`; prompt-seed strips it
+# for itself, and one assertion below proves it.
+strip_git_hook_env
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+# prompt-seed's exit vocabulary comes from bin/functions, which is where this
+# repo keeps every reserved code: $EXIT_SEED_WOULD_CHANGE (3) is the -n verdict
+# "the seed is not what this base plus this source file generates",
+# $EXIT_INVALID_ARG_VALUE (22) is a malformed value, and $EXIT_SCHEMA_ORDER_DRIFT
+# (9) is a corpus this script must not append to. Retyping any of them here would
+# make the harness agree with a number rather than with the script.
+
+REPO="$FIXTURE_DIR/repo"
+SCHEMA="$REPO/db/schema"
+SOURCE="$REPO/prompts/coach-system-prompt.txt"
+PIN="$REPO/service/src/main/resources/service.conf"
+
+seed_err="$FIXTURE_DIR/seed.err"
+seed_status=0
+
+# Records BOTH halves of the answer: stderr in $seed_err and the status in
+# $seed_status. A refusal assertion that greps stderr and drops the status
+# passes on a script that printed the refusal and exited 0.
+# $DB_SCHEMA_DIR is deliberately pointed at a path that does not exist. It is a
+# caller's variable, not a routing channel (bin/common says so in as many words),
+# and every run below proves it: if prompt-seed ever reads it again, every
+# assertion in this file fails at once instead of quietly reporting on whatever
+# checkout the caller happened to have exported.
+run_seed() {
+  seed_status=0
+  DB_SCHEMA_DIR="$FIXTURE_DIR/not-a-schema-dir" \
+    "$PROMPT_SEED" -d "$SCHEMA" "$@" 2> "$seed_err" || seed_status=$?
+}
+
+git_repo() { git -C "$REPO" "$@"; }
+
+# The pinned version the fixture's service.conf currently carries, read back
+# through the same line shape bin/prompt-seed rewrites.
+pin_version_of() { sed -nE 's/^[[:space:]]*systemPromptVersion[[:space:]]*=[[:space:]]*"(v[0-9]+)".*/\1/p' "$PIN"; }
+
+# A fresh fixture repository: a base commit carrying a v3 coach seed (so the tip
+# is a fact read from git, not a guess), an ORDER file, and a three-line source.
+# It pins `v3`, matching that landed seed, so a fixture that has had no run yet
+# is self-consistent, exactly as the real checkout is.
+reset_fixture() {
+  rm -rf "$REPO"
+  mkdir -p "$SCHEMA" "$REPO/prompts" "$REPO/service/src/main/resources"
+  git init -q "$REPO"
+  git_repo config user.email "prompt-seed-tests@example.invalid"
+  git_repo config user.name "prompt-seed-tests"
+  echo "-- landed" > "$SCHEMA/0003.seed-coach-system-prompt-v3.sql"
+  printf '%s\n' "0003.seed-coach-system-prompt-v3.sql" > "$SCHEMA/ORDER"
+  printf '%s\n' "First sentence." "Second sentence." "Third sentence." > "$SOURCE"
+  # Enough of service.conf to carry the pin and its operator override, plus a
+  # comment line above it: the comment log is the AUTHOR's to write, and a repin
+  # that ate it would be silently destroying prose nobody would miss until they
+  # went looking for why v22 was cut.
+  {
+    echo "coaching {"
+    echo "  # RFC 129: the catalog row the runtime is served."
+    echo '  systemPromptVersion = "v3"'
+    echo '  systemPromptVersion = ${?COACHING_SYSTEM_PROMPT_VERSION}'
+    echo "}"
+  } > "$PIN"
+  git_repo add -A
+  git_repo commit -q -m "base corpus"
+  git_repo checkout -q -B main
+  BASE_SHA="$(git_repo rev-parse HEAD)"
+}
+
+# The body a seed would insert: every SQL fragment after the version literal,
+# re-joined, '' unescaped. Read the way a reader of the file would read it, so a
+# change in the generator's LAYOUT does not silently change what this harness
+# believes the body is.
+body_of() { # body_of <seed file>
+  python3 - "$1" << 'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+fragments = re.findall(r"'((?:[^']|'')*)'", text[text.index("VALUES ("):])
+# name, version, then the body fragments.
+print("".join(f.replace("''", "'") for f in fragments[2:]), end="")
+PY
+}
+
+echo "==== prompt-seed: it must PARSE under the bash ship-land actually has ===="
+
+# 0. macOS `/usr/bin/env bash` is bash 3.2, and ship-land — which runs OUTSIDE
+# the Nix dev shell — invokes $CODEBASE_ROOT/bin/prompt-seed directly. A
+# construct only bash 5 can parse therefore does not make the gate lenient, it
+# makes it a syntax error: the script refuses the very land it exists to gate,
+# and says nothing about seeds while doing it. This shipped once — a heredoc
+# inside `$( )`, which bash 3.2 mis-scans as an unterminated quote.
+#
+# `/bin/bash` is named explicitly, not `$SHELL` and not `bash`: the point is the
+# SYSTEM interpreter, and inside the dev shell a bare `bash` is 5.x and would
+# assert nothing.
+assert_success "bin/prompt-seed parses under the system bash (/bin/bash -n)" \
+  /bin/bash -n "$PROMPT_SEED"
+assert_success "bin/prompt-seed-scripts-tests parses under the system bash (/bin/bash -n)" \
+  /bin/bash -n "$PROJECT_ROOT/bin/prompt-seed-scripts-tests"
+
+echo ""
+reset_fixture
+
+echo "==== prompt-seed: generation ===="
+
+# 1. THE BASELINE. The seed is written under the label after the base's tip, and
+# its ORDER line is appended. Everything below is a variation on this.
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed on a clean fixture: $(cat "$seed_err")"
+[ -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "prompt-seed did not write the v4 seed; wrote: $(ls "$SCHEMA")"
+pass_test "the seed is written under the label after the base's tip"
+grep -Fxq "seed-coach-system-prompt-v4.sql" "$SCHEMA/ORDER" ||
+  fail_test "prompt-seed did not append the ORDER line; ORDER is [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "the generated seed's ORDER line is appended"
+
+# 1b. THE PIN IS THE SCRIPT'S, NOT THE AUTHOR'S. The label is computed at land,
+# so a literal nobody moves drifts from it the moment another run lands first:
+# the seed says v5 and service.conf still pins v4, which serves a row this run
+# did not generate. Two facts that must agree have one writer.
+[ "$(pin_version_of)" = "v4" ] ||
+  fail_test "prompt-seed did not repin service.conf to the label it generated; the pin says [$(pin_version_of)]"
+pass_test "service.conf's systemPromptVersion is rewritten to the generated label"
+grep -q "RFC 129: the catalog row the runtime is served." "$PIN" ||
+  fail_test "the repin ate the author's comment log above the pin"
+grep -q 'COACHING_SYSTEM_PROMPT_VERSION' "$PIN" ||
+  fail_test "the repin ate the operator override line beside the pin"
+pass_test "the repin leaves the comment log and the operator override untouched"
+
+# 2. The body is the join rule, exactly: stripped lines, blanks dropped, one
+# space between them. If this drifts, every version ships a body nobody wrote.
+[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
+  fail_test "the generated body is [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
+pass_test "the body is the source's lines joined with one space"
+
+# 4. bin/ rule: the caller asked for a file, not for prose. Progress and the
+# closing summary are diagnostics and belong on stderr.
+#
+# ROUTED with -d and its stderr CAPTURED, like every other run in this file.
+# This assertion once did neither: it set $DB_SCHEMA_DIR — which the script
+# refuses to read — and dropped stderr on the floor, so it ran the real
+# generator against the OPERATOR'S OWN $PROJECT_ROOT/db/schema, deleting a seed,
+# appending an ORDER line and repinning service.conf in their checkout with
+# nothing printed to say so. It passed only because that run happened to be a
+# no-op on the day it was written.
+seed_out="$(DB_SCHEMA_DIR="$FIXTURE_DIR/not-a-schema-dir" "$PROMPT_SEED" -d "$SCHEMA" 2> "$seed_err")" ||
+  fail_test "prompt-seed failed on the stdout assertion: $(cat "$seed_err")"
+[ -z "$seed_out" ] || fail_test "prompt-seed wrote to stdout: [$seed_out]"
+pass_test "prompt-seed writes NOTHING to stdout on a normal run"
+help_out="$("$PROMPT_SEED" -d "$SCHEMA" -h 2> "$seed_err")" ||
+  fail_test "-h should exit 0: $(cat "$seed_err")"
+[ -n "$help_out" ] || fail_test "-h printed nothing to stdout"
+pass_test "-h exits 0 and prints the help to stdout"
+
+# 5. Derived, so re-runnable: phase 6 fix loops re-enter and run it again, and a
+# second pass must not double the ORDER line or move a byte of the seed.
+cp "$SCHEMA/seed-coach-system-prompt-v4.sql" "$FIXTURE_DIR/v4.first"
+cp "$SCHEMA/ORDER" "$FIXTURE_DIR/order.first"
+cp "$PIN" "$FIXTURE_DIR/pin.first"
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "the second prompt-seed run failed: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/v4.first" "$SCHEMA/seed-coach-system-prompt-v4.sql" ||
+  fail_test "a second run changed the generated seed"
+cmp -s "$FIXTURE_DIR/order.first" "$SCHEMA/ORDER" ||
+  fail_test "a second run changed ORDER: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+cmp -s "$FIXTURE_DIR/pin.first" "$PIN" ||
+  fail_test "a second run rewrote service.conf: [$(diff "$FIXTURE_DIR/pin.first" "$PIN")]"
+pass_test "a second run is a byte-for-byte no-op"
+
+# 6. GIT_DIR from a hook outranks `git -C`. Unstripped, prompt-seed would read
+# the tip of whatever repository the hook is committing to — the real one — and
+# label this run's seed from it.
+GIT_DIR="$PROJECT_ROOT/.git" GIT_WORK_TREE="$PROJECT_ROOT" run_seed
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed under a hook's GIT_DIR: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/v4.first" "$SCHEMA/seed-coach-system-prompt-v4.sql" ||
+  fail_test "GIT_DIR moved prompt-seed off the fixture repository"
+pass_test "GIT_DIR from a hook cannot move prompt-seed off the run's own repository"
+
+echo ""
+echo "==== prompt-seed: the moved base ===="
+
+# 7. THE CASE THE SCRIPT EXISTS FOR. Another run lands v4 while this one is open.
+# After the rebase, this run's own v4 is no longer in the base — so it is
+# DELETED and rewritten as v5, with its ORDER line moved too. A generator that
+# edited in place would land a second v4 and a UNIQUE violation at migrate time.
+git_repo add -A
+git_repo commit -q -m "this run's v4, as if it were landed by someone else"
+echo "-- landed by another run" > "$SCHEMA/seed-coach-system-prompt-v4.sql"
+git_repo add -A
+git_repo commit -q -m "another run's v4 lands"
+git_repo checkout -q -B main
+BASE_SHA="$(git_repo rev-parse HEAD)"
+printf '%s\n' "First sentence." "Second sentence." "Third sentence." "A fourth, from this run." > "$SOURCE"
+run_seed -b "$BASE_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed against a moved base: $(cat "$seed_err")"
+[ -f "$SCHEMA/seed-coach-system-prompt-v5.sql" ] ||
+  fail_test "prompt-seed did not relabel to v5; wrote: $(ls "$SCHEMA")"
+pass_test "a run whose base moved is relabelled to the next free version"
+grep -q "another run" "$SCHEMA/seed-coach-system-prompt-v4.sql" ||
+  fail_test "prompt-seed overwrote the LANDED v4 seed"
+pass_test "the landed seed present in the base is left untouched"
+grep -Fxq "seed-coach-system-prompt-v5.sql" "$SCHEMA/ORDER" ||
+  fail_test "the relabelled seed has no ORDER line: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "the relabelled seed's ORDER line is present"
+[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v5.sql")" = "First sentence. Second sentence. Third sentence. A fourth, from this run." ] ||
+  fail_test "the relabelled body is [$(body_of "$SCHEMA/seed-coach-system-prompt-v5.sql")]"
+pass_test "the relabelled seed carries this run's edited source"
+[ "$(pin_version_of)" = "v5" ] ||
+  fail_test "the relabel left service.conf pinning [$(pin_version_of)]; the pin must follow the label"
+pass_test "a relabel moves the service.conf pin with it"
+
+echo ""
+echo "==== prompt-seed: -n, the land-time gate ===="
+
+# 8. Clean tree, clean answer, and NOTHING written — ship-land runs this inside
+# the land lock on a tree that has already passed the hook.
+cp "$SCHEMA/seed-coach-system-prompt-v5.sql" "$FIXTURE_DIR/v5.current"
+run_seed -b "$BASE_SHA" -n
+[ "$seed_status" -eq 0 ] || fail_test "-n on a current tree exited $seed_status: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/v5.current" "$SCHEMA/seed-coach-system-prompt-v5.sql" ||
+  fail_test "-n modified the seed"
+pass_test "-n on a current tree exits 0 and writes nothing"
+
+# 9. A HAND-EDITED seed. The whole file is generated, so any difference is either
+# a hand edit or a stale generation, and both must stop the land.
+echo "-- someone fixed a typo here" >> "$SCHEMA/seed-coach-system-prompt-v5.sql"
+run_seed -b "$BASE_SHA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on a hand-edited seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+grep -q "seed-coach-system-prompt-v5.sql" "$seed_err" ||
+  fail_test "the -n refusal did not name the seed; said [$(cat "$seed_err")]"
+pass_test "-n exits 3 on a hand-edited seed and names it"
+cp "$FIXTURE_DIR/v5.current" "$SCHEMA/seed-coach-system-prompt-v5.sql"
+
+# 10. An EDITED SOURCE with the seed never regenerated. This is the everyday
+# mistake: the author edits the prompt, runs the tests, and forgets the
+# generator. ship-land's re-check is the backstop.
+printf '%s\n' "First sentence." "Second sentence." "Third sentence." "A fourth, from this run." "A fifth, added after generating." > "$SOURCE"
+run_seed -b "$BASE_SHA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on an edited source exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+pass_test "-n exits 3 when the source was edited and the seed not regenerated"
+printf '%s\n' "First sentence." "Second sentence." "Third sentence." "A fourth, from this run." > "$SOURCE"
+
+# 11. THE CASE THE RE-CHECK EXISTS FOR, and the one no reviewer can see: the
+# seed's CONTENT is right and the label is not, because another run took it
+# while this one was open. After that rebase the tree carries the OTHER run's
+# v5, which is now landed history, and this run has generated nothing under v6.
+# ship-land runs -n exactly here, before the fast-forward.
+git_repo add -A
+git_repo commit -q -m "this run's v5"
+echo "-- landed by yet another run" > "$SCHEMA/seed-coach-system-prompt-v5.sql"
+git_repo add -A
+git_repo commit -q -m "another run's v5 lands"
+git_repo checkout -q -B main
+MOVED_SHA="$(git_repo rev-parse HEAD)"
+run_seed -b "$MOVED_SHA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n against a moved base exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+grep -q "seed-coach-system-prompt-v6.sql" "$seed_err" ||
+  fail_test "the refusal did not name the label this run now owes; said [$(cat "$seed_err")]"
+pass_test "-n exits 3 when the base moved and this run has not regenerated"
+
+# 11b. And regenerating against the moved base is the fix the refusal names.
+run_seed -b "$MOVED_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "regeneration against the moved base failed: $(cat "$seed_err")"
+run_seed -b "$MOVED_SHA" -n
+[ "$seed_status" -eq 0 ] || fail_test "-n still refused after regenerating: $(cat "$seed_err")"
+pass_test "regenerating against the moved base clears the refusal"
+
+# 12. A LEFTOVER seed under a label this base does not lead to — the mirror
+# image, reached by re-pointing -b at an earlier base. It is this run's own file
+# (the base does not have it), so it is reported as stale rather than silently
+# left beside the seed that WOULD be generated: two coach seeds in one run's
+# diff is two rows and a version nobody pinned.
+run_seed -b "$BASE_SHA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n with a leftover run-owned seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+grep -q "stale" "$seed_err" ||
+  fail_test "the stale-label refusal did not say so; said [$(cat "$seed_err")]"
+pass_test "-n exits 3 on a run-owned seed whose label this base does not lead to"
+
+# 12b. And a real run against that base DELETES the leftover rather than leaving
+# it behind — delete-then-write is what makes a stale label impossible to keep.
+run_seed -b "$BASE_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "regeneration against the earlier base failed: $(cat "$seed_err")"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v6.sql" ] ||
+  fail_test "the leftover v6 seed survived a regeneration that relabelled it"
+if grep -Fxq "seed-coach-system-prompt-v6.sql" "$SCHEMA/ORDER"; then
+  fail_test "the deleted seed's ORDER line survived: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+fi
+pass_test "a superseded run-owned seed and its ORDER line are deleted, not edited"
+
+# 13. A seed present but UNDECLARED in ORDER applies to nobody. bin/db-migrate
+# refuses that state; -n must not pass a tree db-migrate would refuse.
+run_seed -b "$MOVED_SHA"
+grep -Fxv "seed-coach-system-prompt-v6.sql" "$SCHEMA/ORDER" > "$SCHEMA/ORDER.tmp"
+mv "$SCHEMA/ORDER.tmp" "$SCHEMA/ORDER"
+run_seed -b "$MOVED_SHA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n with the ORDER line deleted exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+grep -q "ORDER" "$seed_err" ||
+  fail_test "the missing-ORDER-line refusal did not name ORDER; said [$(cat "$seed_err")]"
+pass_test "-n exits 3 when the seed is not declared in ORDER"
+
+
+echo ""
+echo "==== prompt-seed: refusals ===="
+
+reset_fixture
+
+# 14. A TAB does not survive `strip -> join with one space`, so a source carrying
+# one would generate a body the author cannot reproduce from their own file.
+printf '%s\n' "First sentence." $'Second\tsentence.' "Third sentence." > "$SOURCE"
+run_seed
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a tabbed source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "line(s) \[2\]" "$seed_err" ||
+  fail_test "the tab refusal did not name line 2; said [$(cat "$seed_err")]"
+pass_test "a tab in the source is refused, naming the line"
+
+# 15. Interior double spaces, same reason — and EVERY offending line is named in
+# one pass, so a five-line fix is one run, not five.
+printf '%s\n' "First  sentence." "Second sentence." "Third  sentence." > "$SOURCE"
+run_seed
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a double-spaced source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "line(s) \[1 3\]" "$seed_err" ||
+  fail_test "the double-space refusal did not name BOTH lines 1 and 3; said [$(cat "$seed_err")]"
+pass_test "interior double spaces are refused, naming every offending line in one pass"
+
+# 16. TRAILING whitespace is NOT a refusal: it is stripped. A stray space at
+# end-of-line is not worth a failed land, and it round-trips perfectly.
+printf '%s\n' "First sentence.   " "  Second sentence." "Third sentence." > "$SOURCE"
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "trailing whitespace was refused: $(cat "$seed_err")"
+[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
+  fail_test "stripping produced [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
+pass_test "leading and trailing whitespace is stripped, not refused"
+
+# 17. Blank lines are permitted and dropped, so a later author may paragraph the
+# file at zero cost and with no effect on the body.
+printf '%s\n' "First sentence." "" "Second sentence." "" "Third sentence." > "$SOURCE"
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "blank lines were refused: $(cat "$seed_err")"
+[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
+  fail_test "blank lines changed the body: [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
+pass_test "blank lines are dropped and do not change the body"
+
+# 17b. A source file that is not there at all, and one that is there and empty.
+# Both are the same mistake to the caller — there is no body to seed — and both
+# are a bad VALUE, not a fault, so both carry EXIT_INVALID_ARG_VALUE. Untested,
+# these two adjacent arms of one declared validation drifted apart once already.
+rm -f "$SOURCE"
+run_seed
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a missing source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "coach-system-prompt.txt" "$seed_err" ||
+  fail_test "the missing-source refusal did not name the file; said [$(cat "$seed_err")]"
+pass_test "a missing source file is refused with EXIT_INVALID_ARG_VALUE, naming the file"
+
+: > "$SOURCE"
+run_seed
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "an empty source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "coach-system-prompt.txt" "$seed_err" ||
+  fail_test "the empty-source refusal did not name the file; said [$(cat "$seed_err")]"
+pass_test "an empty source file is refused with EXIT_INVALID_ARG_VALUE, naming the file"
+
+# Put a usable source back: the source is validated BEFORE the base ref, so a
+# case below asserting an unresolvable -b would otherwise be answered by the
+# empty-source arm with the same status and prove nothing.
+printf '%s\n' "First sentence." "Second sentence." "Third sentence." > "$SOURCE"
+
+# 18. A base ref that names nothing is a usage error, not a crash and not a
+# silent v1: ship-land passes $BASE_SHA straight through.
+run_seed -b "no-such-ref"
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "an unknown base ref exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+pass_test "an unresolvable -b is refused with EXIT_INVALID_ARG_VALUE"
+
+# 19. The reserved usage band, so a caller that invoked the script wrongly is
+# distinguishable from a run that faulted.
+# Routed with -d like every other invocation in this file. These three refusals
+# all fire in the option parser, before any corpus is resolved, so the routing
+# changes no outcome — which is the point: an assertion that is a no-op against
+# the fixture today must not become a write against the operator's real
+# db/schema the day the refusal moves one line later.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$PROMPT_SEED" -d "$SCHEMA" -Z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-b with no value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$PROMPT_SEED" -d "$SCHEMA" -b
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a positional argument exits EXIT_UNEXPECTED_ARG" \
+  "$PROMPT_SEED" -d "$SCHEMA" stray
+
+echo ""
+echo "==== prompt-seed: the pin, and -n over it ===="
+
+# 21. The label and the pin are ONE fact with one writer, so -n must refuse a
+# tree where they disagree — and this is the case a Kotlin test cannot cover. A
+# test can compare the pin against the catalog it can SEE; it cannot know the
+# label this run OWES, which is precisely what moves when another run lands
+# first. Told "regenerate the seed" for a seed that is already correct, an
+# operator regenerates and nothing changes.
+reset_fixture
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed on a clean fixture: $(cat "$seed_err")"
+run_seed -n
+[ "$seed_status" -eq 0 ] || fail_test "-n refused a tree it had just generated: $(cat "$seed_err")"
+sed -i.bak 's/systemPromptVersion = "v4"/systemPromptVersion = "v3"/' "$PIN"
+rm -f "$PIN.bak"
+run_seed -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n with the pin left behind exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+grep -q "systemPromptVersion" "$seed_err" ||
+  fail_test "the stale-pin refusal did not name the pin; said [$(cat "$seed_err")]"
+pass_test "-n exits 3 when service.conf pins a version this run did not generate"
+
+# 22. A pin file that is not there, or that carries no pin line, is a fault and
+# not a silent skip: the label this script computes would have nothing to write
+# to, and the runtime would keep serving whatever it served yesterday.
+rm -f "$PIN"
+run_seed
+[ "$seed_status" -eq 1 ] || fail_test "a missing pin file exited $seed_status, expected 1"
+grep -q "service.conf" "$seed_err" ||
+  fail_test "the missing-pin refusal did not name the file; said [$(cat "$seed_err")]"
+pass_test "a missing service.conf is refused, naming the file"
+
+echo ""
+echo "==== prompt-seed: one whitespace class ===="
+
+# 23. THE THREE-IMPLEMENTATION TRAP, pinned. The join rule is implemented here
+# (awk, LC_ALL=C), and again in Kotlin as deliberate double entry. They only work
+# if they agree on what WHITESPACE is. They did not: a leading U+2000 EN QUAD
+# passed the old bash locale trim, was KEPT by the C-locale emitter, and was
+# TRIMMED by Kotlin's String.trim() — so the build failed telling the operator to
+# regenerate a seed whose regeneration was byte-identical. Unfixable without
+# editing a test.
+#
+# The one class is ASCII whitespace. This asserts the generator's half of it with
+# a REAL non-ASCII space: U+2000 is body text, not padding, and survives the join
+# untouched at both ends.
+reset_fixture
+printf '%s\n' "First sentence." $'\u2000Second sentence, en-quadded.\u2000' "Third sentence." > "$SOURCE"
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "a source carrying U+2000 was refused: $(cat "$seed_err")"
+[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = $'First sentence. \u2000Second sentence, en-quadded.\u2000 Third sentence.' ] ||
+  fail_test "U+2000 did not survive the join: [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
+pass_test "a non-ASCII space is body text, kept at both ends of a line"
+
+echo ""
+echo "==== prompt-seed: a refusal never leaves the tree half-written ===="
+
+# 24. THE EMPTINESS CHECK USED TO LIVE IN THE EMITTER'S END RULE, which runs
+# AFTER the delete loop has already removed this run's seed and its ORDER line.
+# An all-blank source therefore exited 1 having destroyed exactly the state the
+# refusal existed to protect: a zero-byte seed on disk and absent from ORDER.
+# Reproduced verbatim below. Content is validated up front now, beside every
+# other refusal, and everything this run writes is generated into a temp file
+# first.
+reset_fixture
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed on a clean fixture: $(cat "$seed_err")"
+cp "$SCHEMA/seed-coach-system-prompt-v4.sql" "$FIXTURE_DIR/v4.before-blank"
+printf '%s\n' "" "   " "" > "$SOURCE"
+run_seed
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "an all-blank source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "no content lines" "$seed_err" ||
+  fail_test "the all-blank refusal did not say what was wrong; said [$(cat "$seed_err")]"
+pass_test "an all-blank source is refused with EXIT_INVALID_ARG_VALUE"
+cmp -s "$FIXTURE_DIR/v4.before-blank" "$SCHEMA/seed-coach-system-prompt-v4.sql" ||
+  fail_test "the refusal destroyed the seed it refused to replace: [$(ls -l "$SCHEMA")]"
+grep -Fxq "seed-coach-system-prompt-v4.sql" "$SCHEMA/ORDER" ||
+  fail_test "the refusal removed the seed's ORDER line: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ "$(pin_version_of)" = "v4" ] ||
+  fail_test "the refusal moved the pin to [$(pin_version_of)]"
+pass_test "a refused run leaves the seed, its ORDER line and the pin exactly as they were"
+
+echo ""
+echo "==== prompt-seed: the ORDER contract is bin/common's, not this script's ===="
+
+# 25. A CR-TERMINATED ORDER LINE, from a CRLF checkout or a careless editor. The
+# script used to answer membership with its own `grep -Fxq`, which compares
+# BYTES: "seed-...-v4.sql\r" is not "seed-...-v4.sql", so the line read as
+# ABSENT and a SECOND line was appended for one migration — a duplicate
+# bin/db-migrate refuses two steps later, with no mention of the CR that caused
+# it. bin/common owns what an ORDER line is; asked through it, the near-miss is
+# an illegal filename and is refused BY NAME, before anything is written.
+reset_fixture
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed on a clean fixture: $(cat "$seed_err")"
+printf 'seed-coach-system-prompt-v4.sql\r\n' > "$SCHEMA/ORDER"
+printf '%s\n' "0003.seed-coach-system-prompt-v3.sql" >> "$SCHEMA/ORDER"
+run_seed
+[ "$seed_status" -eq "$EXIT_SCHEMA_ORDER_DRIFT" ] ||
+  fail_test "a CR-terminated ORDER line exited $seed_status, expected $EXIT_SCHEMA_ORDER_DRIFT"
+[ "$(grep -c "seed-coach-system-prompt-v4.sql" "$SCHEMA/ORDER")" -eq 1 ] ||
+  fail_test "prompt-seed appended a duplicate ORDER line: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "a CR-terminated ORDER line is refused by name, not silently duplicated"
+
+echo ""
+echo "==== prompt-seed: a byte that no two readers agree on ===="
+
+# 26. THE THIRD UNFIXABLE BUILD of the U+2000 family, refused rather than
+# accommodated. A bare CR inside a line is an ORDINARY BYTE to the C-locale
+# emitter and a LINE BREAK to Kotlin's String.lines(), so the seed would carry
+# it and the assertion that compares them would split on it: the build fails
+# saying "regenerate the seed" and regeneration is byte-identical.
+reset_fixture
+printf 'First sentence.\nSecond\rsentence.\nThird sentence.\n' > "$SOURCE"
+run_seed
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a source with a bare CR exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "control character on line(s) \[2\]" "$seed_err" ||
+  fail_test "the control-character refusal did not name line 2; said [$(cat "$seed_err")]"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "the refused run wrote a seed anyway"
+pass_test "a bare CR in the source is refused, naming the line"
+
+# 26b. And the check is on the TRIMMED line, so an ordinary CRLF checkout is
+# not refused for a byte the join strips anyway. Refusing it would turn a
+# whitespace convention into a failed land.
+printf 'First sentence.\r\nSecond sentence.\r\nThird sentence.\r\n' > "$SOURCE"
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "a CRLF source was refused: $(cat "$seed_err")"
+[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
+  fail_test "a CRLF source produced [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
+pass_test "a CRLF checkout is stripped, not refused"
+
+echo ""
+echo "==== prompt-seed: labels the version arithmetic can survive ===="
+
+# 27. A LEADING-ZERO LABEL IS OCTAL to $(( )). `seed-coach-system-prompt-v08.sql`
+# passed the old `-v[0-9]+` filename grammar, survived `test -gt` (which is base
+# 10) and then killed the run inside `$((TIP + 1))` with `bash: 08: value too
+# great for base` — a shell error instead of a verdict, from a file the script
+# had just called a coach seed. The grammar now names the labels that exist.
+reset_fixture
+echo "-- not a label this generator writes" > "$SCHEMA/seed-coach-system-prompt-v08.sql"
+printf '%s\n' "seed-coach-system-prompt-v08.sql" >> "$SCHEMA/ORDER"
+git_repo add -A
+git_repo commit -q -m "an octal-looking label lands"
+git_repo checkout -q -B main
+BASE_SHA="$(git_repo rev-parse HEAD)"
+run_seed -b "$BASE_SHA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "an octal-looking label exited $seed_status instead of a verdict: $(cat "$seed_err")"
+grep -q "value too great for base" "$seed_err" &&
+  fail_test "the run died in bash arithmetic: [$(cat "$seed_err")]"
+[ -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "prompt-seed did not follow the v3 tip past the v08 file; wrote: $(ls "$SCHEMA")"
+pass_test "a v08-style label is not a coach seed label, and does not abort the run in arithmetic"
+
+echo ""
+echo "==== prompt-seed: a base ref that is behind its upstream ===="
+
+# 28. "PRESENT ON DISK, ABSENT FROM <base-ref>" HAS A THIRD PRODUCER: a seed
+# another run landed, sitting in the tree while the base ref is stale. The
+# ownership test cannot tell it from this run's own file, so the write phase
+# deleted a LANDED migration and rewrote its body under a label already applied.
+# Reproduced here exactly as it was found — local main one land behind, which is
+# the ordinary state after a fetch — and refused.
+reset_fixture
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed on a clean fixture: $(cat "$seed_err")"
+git_repo add -A
+git_repo commit -q -m "v4 lands, on the branch main is meant to track"
+UPSTREAM_SHA="$(git_repo rev-parse HEAD)"
+git_repo branch -f upstreamish HEAD
+# main keeps the landed v4 in the WORKTREE while the branch itself falls back to
+# the base: `reset --soft` moves the ref and leaves the files, which is what a
+# stale checkout looks like.
+git_repo reset -q --soft "$BASE_SHA"
+git_repo config branch.main.remote .
+git_repo config branch.main.merge refs/heads/upstreamish
+cp "$SCHEMA/seed-coach-system-prompt-v4.sql" "$FIXTURE_DIR/v4.landed"
+run_seed -b main
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a base ref behind its upstream exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "behind its upstream" "$seed_err" ||
+  fail_test "the stale-base refusal did not say why; said [$(cat "$seed_err")]"
+[ -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "the run deleted a seed that is landed in the base ref's upstream"
+cmp -s "$FIXTURE_DIR/v4.landed" "$SCHEMA/seed-coach-system-prompt-v4.sql" ||
+  fail_test "the run rewrote a landed seed's body under its applied label"
+pass_test "a base ref behind its upstream is refused, and the landed seed is untouched"
+
+# 28b. ship-land passes a SHA, which tracks nothing, so the land path is
+# unaffected by the refusal above. Asserted because a guard that also stopped
+# the one caller that gates a land would be worse than the defect it fixes.
+run_seed -b "$UPSTREAM_SHA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a base SHA was refused by the upstream check: $(cat "$seed_err")"
+pass_test "a base ref given as a SHA has no upstream and is not refused"
+
+echo ""
+echo "==== prompt-seed: the pin gate cannot fail open ===="
+
+# 29. `grep -c` PRINTS NOTHING AND EXITS 2 on a file it cannot read, and the old
+# `|| true` turned that into an empty count. `[ "" -ne 1 ]` does not refuse: it
+# ERRORS with status 2, which `if` reads as false — so the one gate that lets
+# this script rewrite service.conf was skipped, and the script went on to
+# rewrite a file it had never validated. root ignores the mode bits, so the case
+# would be about the test runner rather than the script.
+if [ "$(id -u)" -ne 0 ]; then
+  reset_fixture
+  chmod 000 "$PIN"
+  run_seed
+  chmod 644 "$PIN"
+  [ "$seed_status" -eq 1 ] ||
+    fail_test "an unreadable pin file exited $seed_status, expected 1"
+  grep -q "could not read the version pin file" "$seed_err" ||
+    fail_test "the unreadable-pin refusal named the wrong fault; said [$(cat "$seed_err")]"
+  [ ! -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+    fail_test "the run wrote a seed after failing to read the pin it must rewrite"
+  pass_test "an unreadable service.conf is refused as a read failure, not counted as zero pin lines"
+fi
+
+echo ""
+echo "==== prompt-seed: -n reports every independent fault in one run ===="
+
+# 30. THE ORDER CHECK IS INDEPENDENT of the seed's content, and used to sit in
+# an elif behind it: an operator with both faults fixed one, re-ran, and met the
+# other — in a script whose own validator comment says that turns a five-line
+# fix into five runs.
+reset_fixture
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed on a clean fixture: $(cat "$seed_err")"
+echo "-- a hand edit" >> "$SCHEMA/seed-coach-system-prompt-v4.sql"
+grep -Fxv "seed-coach-system-prompt-v4.sql" "$SCHEMA/ORDER" > "$FIXTURE_DIR/order.pruned"
+cp "$FIXTURE_DIR/order.pruned" "$SCHEMA/ORDER"
+run_seed -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n with two faults exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+grep -q "hand-edited or stale" "$seed_err" ||
+  fail_test "-n did not report the differing seed; said [$(cat "$seed_err")]"
+grep -q "does not declare" "$seed_err" ||
+  fail_test "-n reported the differing seed and SKIPPED the independent ORDER check; said [$(cat "$seed_err")]"
+pass_test "-n reports a stale seed AND a missing ORDER line in the same run"
+
+# 30b. And the difference names WHERE the two files part. The remedy the same
+# message prints — regenerate — destroys a hand edit, so an operator must be
+# able to see what they are about to lose without diffing by hand; `cmp -s`
+# threw exactly that away.
+grep -qE ", line [0-9]+" "$seed_err" ||
+  fail_test "the difference refusal did not carry cmp's divergence point; said [$(cat "$seed_err")]"
+pass_test "the difference refusal names the byte and line where the seed and the source part"
+
+echo ""
+echo "==== prompt-seed: nothing of this run's is left in the corpus ===="
+
+# 31. The staging area is the script's own resource and must not surface in the
+# operator's schema directory. The ORDER rewrite used to be staged as
+# `db/schema/ORDER.tmp` — a scratch file in the corpus, owned by no cleanup
+# trap, invisible to ship-land's tracked-changes check and therefore committable
+# by the next `git add db/schema`.
+reset_fixture
+run_seed
+git_repo add -A
+git_repo commit -q -m "this run's v4"
+echo "-- landed by another run" > "$SCHEMA/seed-coach-system-prompt-v4.sql"
+git_repo add -A
+git_repo commit -q -m "another run's v4 lands"
+git_repo checkout -q -B main
+MOVED_SHA="$(git_repo rev-parse HEAD)"
+run_seed -b "$MOVED_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "the relabelling run failed: $(cat "$seed_err")"
+leftovers="$(find "$SCHEMA" -mindepth 1 ! -name 'ORDER' ! -name '*.sql' | tr '\n' ' ')"
+[ -z "$leftovers" ] ||
+  fail_test "the run left its own scratch in the corpus: [$leftovers]"
+pass_test "a run leaves no temp file or staging directory in the schema directory"
+if grep -vE '^[[:space:]]*#' "$PROMPT_SEED" | grep -q 'ORDER_FILE\.tmp'; then
+  fail_test "bin/prompt-seed stages the ORDER rewrite as ORDER.tmp beside ORDER again; it belongs in the directory the cleanup trap owns"
+fi
+pass_test "the ORDER rewrite is never staged as a file beside ORDER"
+
+echo ""
+echo "==== prompt-seed: the merge this change exists for ===="
+
+# 20. THE DEMONSTRATION. Two runs each add a paragraph, in different places of
+# the source file. As one 25 KB SQL line this was an add/add conflict of two
+# files with no common ancestor — resolved, three times running, by retyping a
+# paragraph into someone else's body. As a line-based file it is an ordinary
+# merge, and this asserts it with a REAL `git merge`, not a description of one.
+reset_fixture
+printf '%s\n' "Opening sentence." "Middle sentence." "Closing sentence." > "$SOURCE"
+git_repo add -A
+git_repo commit -q -m "the shared source"
+git_repo checkout -q -B main
+BASE_SHA="$(git_repo rev-parse HEAD)"
+
+git_repo checkout -q -b run-a
+printf '%s\n' "Opening sentence." "Run A's new sentence, near the top." "Middle sentence." "Closing sentence." > "$SOURCE"
+git_repo commit -q -am "run A edits the opening"
+
+git_repo checkout -q main
+git_repo checkout -q -b run-b
+printf '%s\n' "Opening sentence." "Middle sentence." "Run B's new sentence, near the bottom." "Closing sentence." > "$SOURCE"
+git_repo commit -q -am "run B edits the closing"
+
+git_repo checkout -q main
+git_repo merge -q --no-edit run-a
+git_repo merge --no-edit run-b > /dev/null 2>&1 ||
+  fail_test "git could not merge two runs editing different paragraphs: $(git_repo diff --name-only --diff-filter=U)"
+pass_test "two branches editing different paragraphs merge with NO conflict"
+
+git_repo checkout -q -B main
+BASE_SHA="$(git_repo rev-parse HEAD)"
+run_seed -b "$BASE_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "prompt-seed failed on the merged source: $(cat "$seed_err")"
+merged_body="$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")"
+case "$merged_body" in
+*"Run A's new sentence, near the top."*) ;;
+*) fail_test "the regenerated body lost run A's edit: [$merged_body]" ;;
+esac
+case "$merged_body" in
+*"Run B's new sentence, near the bottom."*) ;;
+*) fail_test "the regenerated body lost run B's edit: [$merged_body]" ;;
+esac
+pass_test "the seed regenerated from the merged source carries BOTH runs' edits"
+
+end_tests

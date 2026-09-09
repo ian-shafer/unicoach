@@ -277,6 +277,7 @@ other long command — and, for any UI change, screenshots as artifacts (see
 
     scripts/ship-lock   -s <rs> acquire   # ← enter the critical section
     scripts/ship-rebase -s <rs>          # no-op if nothing moved since verify
+    nix develop -c bin/prompt-seed -b "$(scripts/ship-state -s <rs> get BASE_SHA)"
     scripts/ship-order  -s <rs>          # re-place this run's ORDER lines
     scripts/ship-squash -s <rs>
     nix develop -c bin/format
@@ -308,6 +309,34 @@ would need a `--no-verify` commit and a doc-glob exemption for `db/schema/ORDER`
 — a hole in the one gate phase 6 exists to protect. It is derived and
 idempotent: a run with no migration changes nothing, and a fix loop re-runs it
 for free (RFC 180).
+
+`bin/prompt-seed` sits at the same seam and for the same two reasons (RFC 181).
+The coach system prompt is authored as `prompts/coach-system-prompt.txt` and its
+seed migration is a GENERATED file: the script deletes this run's own seed,
+recomputes the version label as one past the highest coach seed in `BASE_SHA`,
+and rewrites it from the source. So it must run **after** the final rebase, or
+the label is a prediction of a tip that has since moved, and **before** the
+squash and the commit, so the regenerated seed lands inside the hook-verified
+tree. A run that touched no prompt regenerates the same bytes and changes
+nothing, so it is safe to run on every land, exactly like `ship-order`.
+**Pass `-b` explicitly.** The default base is `main`, and a run claimed against
+any other base would then classify the PARENT branch's landed coach seed as its
+own generated file and delete it — the one file this script must never touch.
+`ship-land` re-runs it as
+`bin/prompt-seed -b "$BASE_SHA" -d "$CODEBASE_ROOT/db/schema" -n` before the
+fast-forward and refuses with that script's own status (3 = regenerate, anything
+else = the corpus or the source file is refused). The fix is
+`nix develop -c bin/prompt-seed -b "$(scripts/ship-state -s <rs> get BASE_SHA)"`,
+re-commit through the hook, re-run `ship-land`.
+
+It also owns the **pin**: it rewrites `systemPromptVersion = "vNN"` in
+`service/src/main/resources/service.conf` to the label it just generated. The
+label is computed at land, so a literal nobody moves drifts from it the moment
+another run lands first — the seed says `v25` while the pin still says `v24`,
+and the runtime is served a row this run did not generate. The append-only
+comment log above that pin is still the **author's** to write; the script
+rewrites the one assignment line and passes every other byte of the file
+through.
 
 `db/schema/ORDER` is marked `merge=union` in `.gitattributes`. A rebase
 therefore never stops on it: git keeps both sides' lines, with the newly landed

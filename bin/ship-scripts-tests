@@ -54,9 +54,9 @@ SHIP_LAND="$SHIP_SCRIPTS/ship-land"
 [ -x "$SHIP_LOCK" ] || fail_test "ship-lock is missing or not executable [$SHIP_LOCK]"
 
 # The hook that runs this harness exports GIT_DIR and GIT_INDEX_FILE, and both
-# outrank `git -C`. Unset here for this file's own `git init`; ship-lock strips
+# outrank `git -C`. Stripped here for this file's own `git init`; ship-lock strips
 # them for itself, and the assertion at the end of the acquire section proves it.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+strip_git_hook_env
 
 FIXTURE_DIR="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
@@ -318,6 +318,55 @@ echo "$land_err" | grep -q "run-b" ||
   fail_test "ship-land did not name the foreign holder; said [$land_err]"
 pass_test "ship-land refuses a lock held by another run, naming the holder"
 clear_lock
+
+# The prompt-seed re-check is WIRING, and wiring is what silently disappears:
+# ship-land calls bin/prompt-seed by a path it builds from $CODEBASE_ROOT (RFC
+# 181 step 3c), and the call is guarded on that path being executable. So a
+# renamed or moved script does not FAIL a land — it SKIPS this gate, and every
+# other check stays green. These two assertions are the only thing that would
+# ever say so. The full path needs a real worktree; the wiring does not.
+grep -q 'PROMPT_SEED" -b "\$BASE_SHA" -d "\$CODEBASE_ROOT/db/schema" -n' "$SHIP_LAND" ||
+  fail_test "ship-land no longer runs bin/prompt-seed -b \$BASE_SHA -d <schema dir> -n before the fast-forward"
+grep -q 'run_land_gate "bin/prompt-seed"' "$SHIP_LAND" ||
+  fail_test "ship-land no longer routes bin/prompt-seed through run_land_gate, so its status is not passed through"
+grep -q 'exit "\$status"' "$SHIP_LAND" ||
+  fail_test "run_land_gate no longer exits with the gated tool's OWN status"
+pass_test "ship-land runs bin/prompt-seed -n before the fast-forward and passes its status through"
+
+# The schema directory is passed EXPLICITLY. bin/prompt-seed used to be routed by
+# the inherited $DB_SCHEMA_DIR, which bin/common calls "a caller's variable, not
+# a routing channel": a stale export in whoever invoked ship-land would have made
+# the gate read and report on ANOTHER checkout, and call the landing tree green
+# without ever reading it.
+# Comments are stripped first: the script EXPLAINS the rule by naming the very
+# variable it forbids itself, which is exactly the text a naive grep would find.
+if grep -vE '^[[:space:]]*#' "$PROJECT_ROOT/bin/prompt-seed" | grep -q 'DB_SCHEMA_DIR'; then
+  fail_test "bin/prompt-seed reads \$DB_SCHEMA_DIR again; it must be routed by -d only"
+fi
+pass_test "bin/prompt-seed is routed by an explicit -d, never by the inherited \$DB_SCHEMA_DIR"
+
+# The guard is on PRESENCE, and a present-but-not-executable file is a LOUD
+# failure rather than a skipped gate. A single `[ -x ]` answered "the exec bit is
+# gone" with "this checkout predates RFC 181" and deleted the gate in silence.
+grep -q 'if \[ -e "\$PROMPT_SEED" \]' "$SHIP_LAND" ||
+  fail_test "ship-land no longer guards bin/prompt-seed on EXISTENCE; an [ -x ] guard skips the gate on a lost exec bit"
+grep -q 'exists but is not executable' "$SHIP_LAND" ||
+  fail_test "ship-land no longer fails loudly on a present-but-not-executable bin/prompt-seed"
+pass_test "ship-land distinguishes an absent bin/prompt-seed from one that lost its exec bit"
+
+# And a DANGLING SYMLINK is the same fault as a lost exec bit, not the same
+# state as a checkout that predates RFC 181. `[ -e ]` follows the link, so on
+# its own it answers "absent" for a link pointing at nothing and skips the gate
+# in silence — the exact conflation the paragraph above the guard refuses. `-L`
+# sees the link itself and `-f` refuses it.
+grep -q '\[ -L "\$PROMPT_SEED" \]' "$SHIP_LAND" ||
+  fail_test "ship-land no longer probes bin/prompt-seed with [ -L ]; a dangling symlink then reads as absent and the gate is skipped"
+grep -q 'is not a regular file' "$SHIP_LAND" ||
+  fail_test "ship-land no longer refuses a bin/prompt-seed that is not a regular file (a dangling symlink, a directory)"
+pass_test "ship-land refuses a dangling-symlink or directory bin/prompt-seed instead of skipping the gate"
+[ -x "$PROJECT_ROOT/bin/prompt-seed" ] ||
+  fail_test "ship-land's guarded path names no executable [$PROJECT_ROOT/bin/prompt-seed], so the gate would be skipped"
+pass_test "the path ship-land guards on names a script that exists and is executable"
 
 echo ""
 echo "==== ship-order: land-time re-placement of db/schema/ORDER ===="

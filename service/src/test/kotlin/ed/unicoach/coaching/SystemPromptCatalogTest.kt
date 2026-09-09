@@ -31,6 +31,7 @@ import ed.unicoach.db.models.RESIDENCY_TIERS_KEY
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -59,6 +60,27 @@ import kotlin.test.fail
 class SystemPromptCatalogTest {
   companion object {
     /**
+     * The ONE whitespace class the authoring join rule knows: ASCII space, tab,
+     * newline, vertical tab, form feed, carriage return. Nothing else is
+     * whitespace to this rule.
+     *
+     * It is spelled out rather than left to [String.trim] because `String.trim`
+     * is `Char.isWhitespace`, which strips the Unicode spaces too — U+2000 EN
+     * QUAD and its family. The generator does not: `bin/prompt-seed` measures
+     * bytes under `LC_ALL=C`, where a U+2000 is three ordinary bytes and stays
+     * exactly where the author put it.
+     *
+     * The join rule has three implementations — the shell validator, the awk
+     * emitter, and this test — and three implementations of one rule only work
+     * if they agree on the class. The failure mode of disagreeing is the worst
+     * kind: a leading U+2000 in the source file is KEPT by the generator and
+     * TRIMMED here, so this suite fails telling the operator to regenerate the
+     * seed while regeneration produces byte-identical output. An unfixable
+     * build. Hence: ASCII only, on all three sides.
+     */
+    private const val ASCII_WHITESPACE = " \t\n\u000B\u000C\r"
+
+    /**
      * The ONLY prefix that may precede the word "subtract" in coach copy: the
      * rule has to be stated as a prohibition, never as a licence.
      */
@@ -82,11 +104,72 @@ class SystemPromptCatalogTest {
         .filterNot { it == PERMITTED_SUBTRACT_PREFIX }
         .toList()
 
-    /** The first words of v4's cost paragraph — the boundary v5 replaces from. */
-    private const val COST_PARAGRAPH_OPENER = " When the student has schools on their college list"
+    /** A `vNN` catalog label, and the number it carries. No leading zero: `v08` is not a label anything writes. */
+    private val VERSION_LABEL = Regex("^v([1-9][0-9]*)$")
 
-    /** The first words of v4's college-list paragraph — the boundary v5 preserves and v6 inserts before. */
-    private const val LIST_PARAGRAPH_OPENER = " The student's college list is theirs"
+    /**
+     * The single space `bin/prompt-seed` joins two authored lines with, and
+     * therefore the one byte that makes an opener match the START of a sentence
+     * in the served body rather than a phrase inside one.
+     *
+     * Named and applied in [openerOf], not typed into each literal below: a
+     * leading space inside a string literal is invisible and load-bearing at
+     * once, so an author adding a paragraph could not see the rule, and the
+     * drift guard had to trim the space back off to compare the opener with the
+     * file it came from. The literals are the copy; the join is this constant.
+     */
+    private const val JOIN_SPACE = " "
+
+    /**
+     * Every paragraph of the served coach prompt, each named by its opening
+     * words.
+     *
+     * The body is one continuous run of text with no paragraph marker in it, so
+     * a paragraph's END is the next paragraph's beginning, and this set is what
+     * says where those are. It exists to keep a paragraph-scoped assertion
+     * SCOPED: "this paragraph never says room and board" is a true and useful
+     * rule that the whole body fails, because the glossary paragraph says the
+     * words in order to retire them.
+     *
+     * Order does not matter — [paragraphOf] takes the nearest opener that
+     * follows — so a new paragraph is one entry here, wherever it is added.
+     *
+     * It is a CLOSED SET rather than a list of strings because the opener used
+     * to live in two homes: once in the index that bounds every paragraph, and
+     * again, retyped verbatim, at the accessor that asks for it. The drift guard
+     * below only ever watched the index, so a reworded first sentence could
+     * leave an accessor's literal pointing at nothing while the guard stayed
+     * green. With an enum there is one literal per paragraph and an opener
+     * outside the set does not compile.
+     */
+    private enum class CoachParagraph(
+      val openingWords: String,
+    ) {
+      COST("When the student has schools on their college list"),
+      SOURCE_JARGON("Never name a data source's internal buckets"),
+      COLLEGE_LIST("The student's college list is theirs"),
+      FIGURE_STATUS("When a figure has no amount"),
+      ADMISSIONS("A school also publishes what it looks for and when it"),
+      LIVING_ARRANGEMENT("When a school reports its costs by living arrangement,"),
+      SEARCH("When a student names something they want to study, search"),
+      COMPARISON("When two or more schools appear together, the cost tool"),
+      NAME_LOOKUP("When the student names a school in words -- the full name,"),
+      SIMILAR_COLLEGES("When a student names one school and asks for others like"),
+      LIVING_PLAN("A cost result may also carry a third precision_offer"),
+      COST_REPORT("When the student and you have actually compared what"),
+      RESIDENCY_BASIS("At a public school, the published price and the price"),
+      FEDERAL_AID("When a family asks about the Pell Grant or federal student"),
+      SHARE_NUDGE("When your opening reflections include one about sharing"),
+      NEED_AND_FORMS("When a family asks whether a school meets full financial"),
+      BORROWING("Borrowing is a different question from price, and you"),
+      SEARCH_RULER("A college search now ranks on one of two prices, and which"),
+    }
+
+    /**
+     * [paragraph]'s opening words as they appear in the SERVED body: the join
+     * space, then the copy. The one place the two are put together.
+     */
+    private fun openerOf(paragraph: CoachParagraph): String = JOIN_SPACE + paragraph.openingWords
 
     /**
      * The admissions tool the v8 paragraph names (RFC 148), read from the tool
@@ -141,29 +224,18 @@ class SystemPromptCatalogTest {
     private val STOP_OFFERS_TOOL_NAME = StopCostReportOffersChatTool.TOOL_NAME
 
     /**
-     * The three spans v19 ADDS to the v18 body (RFC 166), each located at
-     * runtime by its opening words and by the words that follow it, so the seed
-     * migration stays the single home of the approved copy.
+     * The two interior rules RFC 166 added (the in-district tier, the at-home
+     * assumption), each named by its opening words so the served body — not a
+     * quoted copy of it — is what the assertions read.
      *
-     * v19 is the first coach body that is not "v(N-1) plus one appended
-     * paragraph": two interior blocks are EDITED, so [appendedParagraph]'s
-     * prefix guard cannot express it. The contract is stated instead as "v18
-     * with exactly these three insertions and nothing else changed", which is
-     * strictly stronger — it proves every ban v18 carried survives byte-for-byte.
+     * They open no paragraph of their own: they sit inside the residency and
+     * living-arrangement paragraphs, which is why they are located by their own
+     * first words rather than by the paragraph walk.
      */
     private const val IN_DISTRICT_OPENER = "Some public schools publish a third, lower price"
 
-    /** The v18 sentence the in-district span is inserted in front of — the span's right edge. */
-    private const val IN_DISTRICT_SUCCESSOR = "Only ask when the result offers it"
-
     /** The first words of the at-home assumption v19 inserts (gate-2 D17). */
     private const val AT_HOME_OPENER = "The at-home total counts no housing and food"
-
-    /** The v18 sentence that assumption is inserted in front of — the span's right edge. */
-    private const val AT_HOME_SUCCESSOR = "When an arrangement carries no total"
-
-    /** The first words of the one paragraph v19 APPENDS: the six figure statuses (RFC 166 D-D). */
-    private const val FIGURE_STATUS_OPENER = " When a figure has no amount"
 
     /**
      * The at-home assumption, read from the SHIPPING Kotlin constant rather
@@ -259,6 +331,369 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The file a human edits (RFC 181): `prompts/coach-system-prompt.txt`, one
+   * sentence per line, from which `bin/prompt-seed` GENERATES the seed
+   * migration.
+   *
+   * Resolved relative to the module directory, which is the working directory of
+   * a `:service` test, on this suite's own precedent — `ForbiddenCostArithmeticTest`
+   * reads `File("../db/src/main/kotlin/...")` and
+   * `MoneyAttributionNamesNoPublisherTest` reads `File("../public-web/src/main")`.
+   * A root walk looking for `settings.gradle.kts` would be a second way of
+   * answering a question this suite already answers one way.
+   */
+  private val promptSourceFile = File("../prompts/coach-system-prompt.txt")
+
+  /**
+   * `bin/prompt-seed`'s join rule, restated: strip each line, drop the blank
+   * ones, join what is left with a single space.
+   *
+   * Restated rather than shelled out to, because the point of the assertion is
+   * that the SHIPPED ROW equals the file under this rule. Running the generator
+   * would compare it against itself.
+   */
+  private fun authoredBody(): String = joinSourceLines(promptSourceFile.readText())
+
+  /**
+   * The join rule itself, over a String and nothing else: strip each line of
+   * [ASCII_WHITESPACE], drop the blank ones, join what is left with a single
+   * space.
+   *
+   * Pure on purpose — no file, no database — so the rule can be pinned by
+   * example (see the U+2000 regression below) rather than only observed through
+   * a whole seeded catalog. [authoredBody] is this function applied to the
+   * source file.
+   */
+  private fun joinSourceLines(text: String): String =
+    text
+      .lines()
+      .map { line -> line.trim { c -> c in ASCII_WHITESPACE } }
+      .filter(String::isNotEmpty)
+      .joinToString(" ")
+
+  /**
+   * The text around [index], for a failure that has to show WHERE two long
+   * bodies part. Both bodies are one 25 KB line, so `assertEquals` dumps 50 KB
+   * of prose into the log and locates nothing; the first differing character,
+   * with a window from each side, is the whole finding.
+   */
+  private fun String.getExcerptAround(index: Int): String = substring((index - 40).coerceAtLeast(0), (index + 40).coerceAtMost(length))
+
+  /**
+   * The pinned row as `coach/v24` — the identity every failure about that row
+   * carries. "The pinned coach row" is not an identifier: `bin/prompt-seed`
+   * moves the label at land, so the reader of a CI log would have to open
+   * `service.conf` to learn which row the failure is about.
+   */
+  private fun pinnedRowLabel(): String = "${coaching.systemPromptName}/${coaching.systemPromptVersion}"
+
+  /**
+   * The number in a `vNN` catalog label, refusing anything else.
+   *
+   * The shape is asserted, never assumed: `removePrefix("v")` is a SILENT NO-OP
+   * when the affix does not match — the deleted helper this file replaced said
+   * so in its own comment — so an unguarded `removePrefix("v").toInt()` reports
+   * a malformed label as an unhandled NumberFormatException, and a leading zero
+   * as a number nothing in this catalog names. `bin/prompt-seed` writes these
+   * labels with the same grammar (`-v[1-9][0-9]*`).
+   */
+  private fun versionNumberOf(label: String): Int {
+    val number = versionNumberOrNull(label)
+    assertNotNull(
+      number,
+      "a [${coaching.systemPromptName}] version this test reasons about must be a vNN label with no leading zero; [$label] is not, so its number has no meaning",
+    )
+    return number
+  }
+
+  /**
+   * The number in a `vNN` label, or null when the label is not one.
+   *
+   * The null case is not hypothetical and is not corruption: `system_prompts`
+   * is shared by every test in this suite and is NOT truncated between tests,
+   * and sibling tests insert their own `coach` rows under a `v-<uuid>` label to
+   * anchor a foreign key. Those rows are not catalog versions, so a question
+   * about the catalog's newest version has to skip them rather than assert they
+   * cannot exist — asserting it made the answer depend on which test class ran
+   * first.
+   */
+  private fun versionNumberOrNull(label: String): Int? =
+    VERSION_LABEL
+      .find(label)
+      ?.groupValues
+      ?.get(1)
+      ?.toInt()
+
+  /** The body the runtime is actually served: the coach row `service.conf` pins. */
+  private fun servedBody(): String =
+    SystemPromptsDao
+      .findByNameAndVersion(session, coaching.systemPromptName, coaching.systemPromptVersion)
+      .getOrThrow()
+      .body
+
+  /**
+   * One paragraph of the served body: from [paragraph]'s opening words to the
+   * next paragraph's, or to the end of the prompt when nothing follows it.
+   *
+   * THE SCOPING RULE every paragraph test below relies on, stated here once: the
+   * paragraph is located by its opening words and read no further than the next
+   * paragraph, so an assertion made over the returned text is about THAT
+   * paragraph's copy and not about the whole prompt. What a paragraph says is
+   * the subject; which version introduced it is git's business now, in the diff
+   * of prompts/coach-system-prompt.txt (RFC 181).
+   *
+   * This replaces the version-diffing extractors RFC 181 retired
+   * (`appendedParagraph`, `insertedSpan`, `revisedMiddle`). They answered
+   * "what did version N add to version N-1?", which is a question about
+   * ancestry, and ancestry is now `git diff prompts/coach-system-prompt.txt`.
+   * What is left is the question those extractors were only ever a means to:
+   * does the copy we SHIP say what it must? So the paragraph is located in the
+   * shipped body, and no previous version's wording is quoted anywhere.
+   */
+  private fun paragraphAt(paragraph: CoachParagraph): String = paragraphOf(servedBody(), paragraph)
+
+  /**
+   * [paragraphAt]'s substring arithmetic, over a body handed to it rather than
+   * one it reads.
+   *
+   * Split out because the walk — find the opener, then stop at the nearest
+   * opener that starts after it — is the part that can be wrong, and it needed
+   * a database round trip to exercise. With the body as a parameter the rule is
+   * a pure function of text, and [paragraphAt] is the one line that says where
+   * the text comes from.
+   */
+  private fun paragraphOf(
+    body: String,
+    paragraph: CoachParagraph,
+  ): String {
+    val start = body.indexOf(openerOf(paragraph))
+    assertTrue(start >= 0, "the served coach prompt must contain the paragraph opening [${paragraph.openingWords}]")
+    val end =
+      CoachParagraph.entries
+        .mapNotNull { other -> body.indexOf(openerOf(other)).takeIf { it > start } }
+        .minOrNull()
+        ?: body.length
+    return body.substring(start, end)
+  }
+
+  /**
+   * The standing copy rules, asserted over one paragraph.
+   *
+   * These six assertions are not about any one slice: they are the rules every
+   * paragraph of the coach prompt has had to satisfy since RFCs 141/142/147 —
+   * the retired terms stay retired, no mention of subtracting is a licence, and
+   * no source codebook is transcribed into copy a family will hear. They were
+   * retyped at each paragraph test, which is how one of them ended up asserted
+   * in ten places and skipped in an eleventh with nothing to say so.
+   *
+   * [name] is passed because a shared helper otherwise reports a failure with
+   * no paragraph in it, and "the coach prompt says award somewhere" is a much
+   * worse message than the one it replaces.
+   *
+   * The positive glossary assertions (`tuition and fees`, `housing and food`,
+   * `published price`) stay at the call sites: they differ per paragraph, which
+   * is precisely what makes them not standing rules.
+   */
+  private fun assertParagraphKeepsTheStandingCopyRules(
+    name: String,
+    paragraph: String,
+  ) {
+    assertFalse(paragraph.contains("room and board"), "[$name] states the retired term, not even contrastively")
+    assertFalse(paragraph.contains("sticker"), "[$name] says sticker price; it is the published price (RFC 141)")
+    assertFalse(paragraph.contains("award"), "[$name] says award; it is a financial aid offer (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(paragraph),
+      "every mention of subtracting in [$name] must forbid it",
+    )
+    // The negative below passes for free if CODE_EQUALS_WORD ever stops matching
+    // anything, so the pattern's own health is asserted first: a vacuous guard
+    // and a clean paragraph are indistinguishable from this assertion alone.
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(paragraph), "[$name] transcribes a source codebook")
+  }
+
+  /**
+   * RFC 181's central assertion, and the one that replaces the retired
+   * byte-identical-prefix family: the body the runtime is SERVED is exactly the
+   * file a human edits, under the documented join rule.
+   *
+   * The old tests pinned version N against version N-1's wording quoted as a
+   * Kotlin literal, and left the file on disk unchecked. This pins the shipped
+   * row against the authored file, so a seed regenerated from a different source,
+   * a hand-edited seed, and a source edited without regenerating all fail here.
+   *
+   * It is the SOLE guarantee that the seed still corresponds to the file (RFC 181
+   * D4): the recorded-digest column that used to state the same thing a second
+   * time was dropped, because an immutable row cannot stay accurate about a
+   * mutable file. So this failure message has to be enough on its own — it names
+   * both artifacts, the character they part at, an excerpt from each side, and
+   * the one command that fixes it.
+   */
+  @Test
+  fun `the pinned coach prompt body is exactly the authored source file`() {
+    assertTrue(
+      promptSourceFile.isFile,
+      "the authored prompt source must exist at [${promptSourceFile.absolutePath}]; it is what the seed is generated from",
+    )
+    val served = servedBody()
+    val authored = authoredBody()
+    val divergence = authored.commonPrefixWith(served).length
+
+    assertEquals(
+      authored,
+      served,
+      "the served coach prompt is not the authored file: row [${pinnedRowLabel()}] and " +
+        "[${promptSourceFile.absolutePath}] first differ at character [$divergence] — " +
+        "the file says [${authored.getExcerptAround(divergence)}], the row says [${served.getExcerptAround(divergence)}]. " +
+        "Either the seed is stale or hand-edited, or the file was edited without regenerating it; " +
+        "the seed is a GENERATED artifact, so edit the file and regenerate: nix develop -c bin/prompt-seed",
+    )
+  }
+
+  /**
+   * The acceptance test for "this slice changed no wording" (RFC 181 D5).
+   *
+   * The new row exists to prove the generator produces a real one, not to say
+   * anything new: the source file was extracted FROM its predecessor, so the two
+   * bodies must be equal byte for byte. It is also what makes the rollback in
+   * `service.conf` free — `COACHING_SYSTEM_PROMPT_VERSION=v<pinned - 1>` serves
+   * the identical text.
+   *
+   * Both labels are DERIVED from the pin rather than written as `"v24"` and
+   * `"v23"`, for the same reason the pin itself is no longer a literal:
+   * `bin/prompt-seed` computes the version at land, so a second run landing
+   * first renumbers this row and a hardcoded pair then names a version that does
+   * not exist. The RELATION — this row is its predecessor with no wording
+   * changed — is what the slice promised, and it survives any renumbering.
+   */
+  @Test
+  fun `the pinned coach prompt is byte-identical to its predecessor, because RFC 181 changed no wording`() {
+    val pinned = versionNumberOf(coaching.systemPromptVersion)
+    assertTrue(pinned > 1, "the pinned coach version [${coaching.systemPromptVersion}] has no predecessor to be identical to")
+    val predecessor = "v${pinned - 1}"
+
+    val before = SystemPromptsDao.findByNameAndVersion(session, "coach", predecessor).getOrThrow().body
+    val pinnedBody = servedBody()
+
+    assertEquals(
+      before,
+      pinnedBody,
+      "the pinned coach row is the FILE-AUTHORED [$predecessor]: the mechanism changed, the copy did not",
+    )
+  }
+
+  /**
+   * The drift guard on [CoachParagraph] itself.
+   *
+   * The openers are the only thing that says where a paragraph of the served
+   * body ENDS, and they are Kotlin literals. If an author rewords the first
+   * sentence of a paragraph in `prompts/coach-system-prompt.txt` — which RFC 181
+   * exists to make easy — a stale opener does not fail loudly: [paragraphOf]
+   * would run on to the NEXT opener, quietly widening someone else's
+   * paragraph-scoped negative until it scopes nothing at all. Every opener is
+   * therefore pinned to a real sentence start of the file, and to exactly one
+   * position in the served body, so the index cannot drift in silence.
+   *
+   * The line trim is the authoring class ([ASCII_WHITESPACE]), not
+   * `String.trim`, for the reason that constant gives: the served body is what
+   * the C-locale generator emitted, so a test that trimmed a wider class than
+   * the generator would compare two different strings and blame the author.
+   * The openers themselves need no trim any more — they carry no padding, and
+   * [openerOf] is where the join space is added for the search over the served
+   * body.
+   */
+  @Test
+  fun `every paragraph opener still starts a sentence of the authored source file`() {
+    val sentences =
+      promptSourceFile
+        .readText()
+        .lines()
+        .map { line -> line.trim { c -> c in ASCII_WHITESPACE } }
+        .filter(String::isNotEmpty)
+    val body = servedBody()
+
+    CoachParagraph.entries.forEach { paragraph ->
+      assertTrue(
+        sentences.any { it.startsWith(paragraph.openingWords) },
+        "[CoachParagraph.$paragraph] names [${paragraph.openingWords}], which no line of prompts/coach-system-prompt.txt starts with; the index has drifted from the file",
+      )
+      assertEquals(
+        1,
+        Regex(Regex.escape(openerOf(paragraph))).findAll(body).count(),
+        "the opener [${paragraph.openingWords}] must locate exactly one paragraph of the served body, or paragraphOf is scoping by luck",
+      )
+    }
+  }
+
+  /**
+   * The whitespace class the join rule runs under, pinned by example.
+   *
+   * U+2000 EN QUAD is whitespace to `Char.isWhitespace` and therefore to
+   * `String.trim`, and is NOT whitespace to `LC_ALL=C` awk, which is what
+   * `bin/prompt-seed` emits the seed with. If [joinSourceLines]
+   * used `String.trim`, a leading U+2000 in `prompts/coach-system-prompt.txt`
+   * would be kept by the generator and dropped here, and
+   * `the pinned coach prompt body is exactly the authored source file` would
+   * fail telling the operator to regenerate a seed that regeneration would not
+   * change. This test is what stops that being possible.
+   */
+  @Test
+  fun `the authoring join rule keeps a non-ASCII space, because the generator does`() {
+    assertEquals(
+      "\u2000leading kept trailing\u2000",
+      joinSourceLines("  \u2000leading kept trailing\u2000  \n\n"),
+    )
+  }
+
+  /**
+   * The pin and the catalog tip are the same version (RFC 181).
+   *
+   * `bin/prompt-seed` now OWNS the `coaching.systemPromptVersion` line: at land
+   * it generates the next coach seed and rewrites the pin to the label it just
+   * generated. So the assertion that used to live in `CoachingConfigTest` as
+   * `assertEquals("v24", ...)` cannot be a literal any more — any land-time
+   * relabel invalidates it, and a literal that has to be edited by the same
+   * step that made it wrong guards nothing.
+   *
+   * What is worth guarding is the relation the generator promises: the runtime
+   * serves the NEWEST coach row, never a row the generator has already
+   * superseded. That is stated here, in the class that already holds the
+   * session and already owns the pin-versus-catalog contract.
+   *
+   * The tip is found by numeric order on the `vNN` label, not by string order:
+   * `v9` sorts after `v24` as text, and the catalog has long since passed the
+   * point where that is hypothetical.
+   *
+   * Rows whose label is not a `vNN` version are SKIPPED, not refused: sibling
+   * tests in this suite insert their own `coach` rows under a `v-<uuid>` label
+   * and `system_prompts` is not truncated between tests, so refusing them made
+   * this assertion depend on which test class happened to run first.
+   */
+  @Test
+  fun `the pinned coach version is the catalog's highest coach version`() {
+    val versionNumbers = mutableListOf<Int>()
+    connection.prepareStatement("SELECT version FROM system_prompts WHERE name = ?").use { statement ->
+      statement.setString(1, coaching.systemPromptName)
+      statement.executeQuery().use { rows ->
+        while (rows.next()) {
+          versionNumberOrNull(rows.getString("version"))?.let { versionNumbers += it }
+        }
+      }
+    }
+    assertTrue(
+      versionNumbers.isNotEmpty(),
+      "the catalog must carry at least one vNN [${coaching.systemPromptName}] row",
+    )
+
+    assertEquals(
+      "v${versionNumbers.max()}",
+      coaching.systemPromptVersion,
+      "service.conf pins a coach version that is not the catalog's newest; bin/prompt-seed rewrites this line at land (RFC 181)",
+    )
+  }
+
+  /**
    * The 0047 seed's structural contract (RFC 135, mirroring 0044's v2-over-v1
    * convention): v3 is the v2 body byte-identical as a prefix, joined by a
    * single space to exactly one appended paragraph — the know-your-real-price
@@ -284,7 +719,6 @@ class SystemPromptCatalogTest {
     // The paragraph deliberately does NOT name the write tool: the coach is
     // told what to offer; which tool records it is the tool description's job.
     assertFalse(appended.contains(MoneyProfileChatTool.TOOL_NAME), "the write tool's name does not ride the prompt")
-    assertTrue(appended.contains("U.S. Department of Education College Scorecard"), "the paragraph must require attribution")
   }
 
   /**
@@ -317,54 +751,36 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The 0049 seed's structural contract (RFC 141). Unlike 0047/0048, v5 does
-   * not append: it REPLACES v4's cost paragraph, which sits in the middle of
-   * the body followed by the college-list paragraph. So the contract is a
-   * byte-identical prefix AND a byte-identical suffix, with the new money
-   * paragraph in between; both boundaries are located from the v4 body at
-   * runtime, so the seed migration stays the single home of the approved copy.
-   *
-   * The middle is asserted by markers only, and absence of the banned terms is
-   * deliberately NOT asserted: the glossary is stated contrastively ("housing
-   * and food, never room and board"), so the prompt must name a term in order
-   * to forbid it.
+   * The money paragraph (RFC 141), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v5 is v4 with the cost paragraph replaced`() {
-    // The prefix/suffix assertions themselves live in moneyParagraph(), which
-    // refuses to return a vacuous extraction; this test owns the markers that
-    // say the replacement is the RIGHT paragraph, not merely a well-formed one.
+  fun `the served money paragraph names the cost tool, the offer key and the glossary terms`() {
     val moneyParagraph = moneyParagraph()
 
-    assertTrue(
-      moneyParagraph.startsWith(COST_PARAGRAPH_OPENER),
-      "the money paragraph must open with the single space that joins it to the paragraph before it",
-    )
     assertTrue(moneyParagraph.contains(CollegeCostChatTool.TOOL_NAME), "the paragraph must name the cost tool")
     assertTrue(
       moneyParagraph.contains("precision_offer"),
       "the paragraph must key the in-answer invitation off the result",
     )
-    assertTrue(
-      moneyParagraph.contains("U.S. Department of Education College Scorecard"),
-      "the paragraph must require attribution",
-    )
     assertTrue(moneyParagraph.contains("tuition and fees"), "the glossary term for the price the school sets")
     assertTrue(moneyParagraph.contains("housing and food"), "the glossary term that retires room and board")
+    // RFC 177's POSITIVE half. MoneyAttributionNamesNoPublisherTest bans the
+    // fixed publisher name, which a prompt with no attribution sentence at all
+    // would also satisfy; this is the assertion that says the attribution must
+    // be there and must be to the source the TOOL names.
+    assertTrue(
+      moneyParagraph.contains("the source the tool names beside it"),
+      "RFC 177: every cost figure is attributed to the source the tool names, never to a fixed publisher",
+    )
   }
 
   /**
-   * The glossary half of the 0049 seed's contract (RFC 141), split from the
-   * structural test so a drifted glossary pair is never reported under the
-   * structural test's name — `assertTrue` short-circuits, so one test would
-   * let a prefix regression mask every glossary assertion behind it.
-   *
-   * The pairs are asserted CONTRASTIVELY ("housing and food, never room and
-   * board"): the prompt must name a banned term in order to forbid it, so
-   * absence of the banned tokens is deliberately not assertable.
+   * The money paragraph (RFC 141), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v5 states each contrastive glossary pair`() {
+  fun `the served money paragraph states each contrastive glossary pair`() {
     val moneyParagraph = moneyParagraph()
 
     assertTrue(moneyParagraph.contains("never tuition on its own"), "contrastive pair: tuition and fees")
@@ -378,27 +794,13 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The 0050 seed's structural contract (RFC 142). v6 neither appends nor
-   * replaces: it INSERTS one sentence at a known interior boundary — the end of
-   * v5's money paragraph, immediately before the college-list paragraph. So the
-   * contract is a byte-identical v5 prefix AND a byte-identical v5 college-list
-   * suffix, with the appended sentence between them.
-   *
-   * The sentence is asserted by markers only, and the absence of the jargon it
-   * forbids is deliberately NOT asserted: like v5's glossary, the rule names
-   * the terms to avoid ("no quintiles") in order to forbid them.
+   * The money paragraph (RFC 142), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v6 is v5 plus the source-jargon sentence`() {
-    // The prefix/suffix assertions themselves live in sourceJargonSentence(),
-    // which refuses to return a vacuous extraction; this test owns the markers
-    // that say the inserted sentence is the RIGHT one.
+  fun `the served money paragraph forbids source jargon and says what to say instead`() {
     val sentence = sourceJargonSentence()
 
-    assertTrue(
-      sentence.startsWith(" Never name a data source's internal buckets"),
-      "the sentence must open with the single space that joins it to the sentence before it",
-    )
     assertTrue(sentence.contains("no quintiles"), "the rule must name quintiles as one instance of the banned class")
     assertTrue(
       sentence.contains("the band's dollar range"),
@@ -414,24 +816,13 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The 0053 seed's structural contract (RFC 145). Like v5 over v4, v7
-   * REPLACES the money paragraph — v6's precision_offer rule is income-only and
-   * would misfire on a residency offer — so the contract is the same one: a
-   * byte-identical v6 prefix, a byte-identical v6 college-list suffix, and the
-   * rewritten paragraph between them, through the same guarded extractor.
-   *
-   * The markers say the replacement is the RIGHT paragraph: it raises
-   * residency, asks the single state question, says what that unlocks, and
-   * raises it BEFORE income.
+   * The money paragraph (RFC 145), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v7 is v6 with the money paragraph replaced`() {
-    val moneyParagraph = v7MoneyParagraph()
+  fun `the served money paragraph raises residency before household income`() {
+    val moneyParagraph = moneyParagraph()
 
-    assertTrue(
-      moneyParagraph.startsWith(COST_PARAGRAPH_OPENER),
-      "the money paragraph must open with the single space that joins it to the paragraph before it",
-    )
     assertTrue(moneyParagraph.contains(CollegeCostChatTool.TOOL_NAME), "the paragraph must still name the cost tool")
     assertTrue(
       moneyParagraph.contains(CollegeCostChatTool.PRECISION_OFFER_KEY),
@@ -462,164 +853,105 @@ class SystemPromptCatalogTest {
       moneyParagraph.contains("ask what state the family lives in before you raise household income"),
       "residency must be raised before household income - the ordering is the product decision",
     )
-    assertTrue(
-      moneyParagraph.contains("U.S. Department of Education College Scorecard"),
-      "the attribution rule must survive the rewrite",
-    )
     assertTrue(moneyParagraph.contains("never raise that field again yourself"), "a decline of either field stays permanent")
   }
 
   /**
-   * RFC 142's source-jargon rule must survive RFC 145's rewrite of the
-   * paragraph it lives inside. The sentence is extracted from v6 at runtime and
-   * asserted to be present verbatim in v7's money paragraph — never retyped
-   * here, or the test would only prove that two hand-typed copies agree.
+   * The admissions paragraph (RFC 148), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v7 preserves the v6 source-jargon sentence verbatim`() {
-    val sentence = sourceJargonSentence()
+  fun `the served admissions paragraph routes every admissions question to the tool`() {
+    val paragraph = admissionsParagraph()
 
+    assertTrue(paragraph.contains(ADMISSIONS_TOOL_NAME), "the paragraph must name the admissions tool")
+    assertTrue(paragraph.contains("Common Data Set"), "the paragraph must say whose data the tool reports")
     assertTrue(
-      v7MoneyParagraph().contains(sentence),
-      "v7's money paragraph must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-  }
-
-  /**
-   * The 0058 seed's structural contract (RFC 148). v8 is ADDITIVE like v3 over
-   * v2 and v4 over v3: the whole v7 body byte-identical as a prefix, joined by
-   * a single space to exactly one appended paragraph — the admissions
-   * instruction. The paragraph's markers are asserted, not its full copy: the
-   * seed migration is the single home of the approved wording.
-   */
-  @Test
-  fun `coach v8 is v7 plus one appended admissions paragraph`() {
-    val appended = admissionsParagraph()
-
-    assertTrue(
-      appended.startsWith(" A school also publishes what it looks for"),
-      "the admissions paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(appended.contains(ADMISSIONS_TOOL_NAME), "the paragraph must name the admissions tool")
-    assertTrue(appended.contains("Common Data Set"), "the paragraph must say whose data the tool reports")
-    assertTrue(
-      appended.contains("what an admission office weighs") && appended.contains("application deadlines"),
+      paragraph.contains("what an admission office weighs") && paragraph.contains("application deadlines"),
       "the paragraph must say when to reach for the tool, not merely that it exists",
     )
     assertTrue(
-      appended.contains("data_availability"),
+      paragraph.contains("data_availability"),
       "the first silence: a named field is a school that does not report it",
     )
     assertTrue(
-      appended.contains("say so plainly rather than estimating it"),
+      paragraph.contains("say so plainly rather than estimating it"),
       "an unreported field is stated, never estimated",
     )
     assertTrue(
-      appended.contains("not missing data"),
+      paragraph.contains("not missing data"),
       "the second silence: a round flagged not offered is a reported fact",
     )
     // RFCs 141/142 money language, carried into the new paragraph.
-    assertTrue(appended.contains("a financial aid offer"), "the glossary term survives: an offer, never an award")
-    assertFalse(appended.contains("award"), "'award' is retired copy (RFC 141) and this paragraph never states it contrastively")
+    assertTrue(paragraph.contains("a financial aid offer"), "the glossary term survives: an offer, never an award")
+    assertFalse(paragraph.contains("award"), "'award' is retired copy (RFC 141) and this paragraph never states it contrastively")
     assertTrue(
-      appended.contains("never subtract merit money from a published price"),
+      paragraph.contains("never subtract merit money from a published price"),
       "a share and an average are not an offer to this student; they never net out of a price",
     )
   }
 
   /**
-   * RFC 148's D4, the binding honesty rule: the merit share's denominator is
-   * ALL full-time freshmen. The Common Data Set has no count of students
-   * without financial need, so a prompt that said or implied that denominator
-   * would teach the coach a statistic no source reports.
-   *
-   * Absence is assertable here — unlike v5's contrastive glossary, this rule is
-   * stated positively, so the banned phrasing appears nowhere in the paragraph.
-   * "non-need" is the approved term and does not contain the banned substring,
-   * so no exception is needed for it.
+   * The admissions paragraph (RFC 148), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v8 carries the honest denominator`() {
-    val appended = admissionsParagraph()
+  fun `the served admissions paragraph carries the honest denominator`() {
+    val paragraph = admissionsParagraph()
 
     assertTrue(
-      appended.contains("of all full-time freshmen"),
+      paragraph.contains("of all full-time freshmen"),
       "the share's denominator must be stated in full: all full-time freshmen",
     )
-    assertTrue(appended.contains("non-need (merit) aid"), "the approved term for the money itself")
-    assertFalse(appended.contains("without need"), "the banned denominator: no source reports a count of students without need")
-    assertFalse(appended.contains("without financial need"), "the same banned denominator, spelled out")
-    assertFalse(appended.contains("freshmen without"), "no phrasing may narrow the denominator away from all freshmen")
+    assertTrue(paragraph.contains("non-need (merit) aid"), "the approved term for the money itself")
+    assertFalse(paragraph.contains("without need"), "the banned denominator: no source reports a count of students without need")
+    assertFalse(paragraph.contains("without financial need"), "the same banned denominator, spelled out")
+    assertFalse(paragraph.contains("freshmen without"), "no phrasing may narrow the denominator away from all freshmen")
   }
 
   /**
-   * RFC 142's source-jargon sentence must survive RFC 148's append. It does so
-   * by construction — v8 keeps the whole v7 body as a prefix — but the sentence
-   * is the one piece of copy two prior versions have already had to preserve
-   * across a rewrite, so it is asserted rather than assumed. It is extracted
-   * from v6 at runtime, never retyped here.
+   * The living-arrangement paragraph (RFC 149), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v8 preserves the v7 source-jargon sentence verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v8 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v8").getOrThrow().body
+  fun `the served living-arrangement paragraph leads with the split, never a blended total`() {
+    val paragraph = livingArrangementParagraph()
 
     assertTrue(
-      v8.contains(sentence),
-      "v8 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-  }
-
-  /**
-   * The 0063 seed's structural contract (RFC 149). v9 is ADDITIVE like v3 over
-   * v2, v4 over v3 and v8 over v7: the whole v8 body byte-identical as a prefix,
-   * joined by a single space to exactly one appended paragraph — the
-   * living-arrangement instruction. The paragraph's markers are asserted, not its
-   * full copy: the seed migration is the single home of the approved wording.
-   */
-  @Test
-  fun `coach v9 is v8 plus one appended living-arrangement paragraph`() {
-    val appended = livingArrangementParagraph()
-
-    assertTrue(
-      appended.startsWith(" When a school reports its costs by living arrangement"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(
-      appended.contains("lead with that split rather than with one total"),
+      paragraph.contains("lead with that split rather than with one total"),
       "v9's whole point: the split comes first, not the blended total",
     )
     assertTrue(
-      appended.contains("Always name which arrangement you are quoting"),
+      paragraph.contains("Always name which arrangement you are quoting"),
       "the same school has three prices; an unnamed one is a number the family cannot use",
     )
     assertTrue(
-      appended.contains("living on campus") &&
-        appended.contains("renting off campus") &&
-        appended.contains("living at home"),
+      paragraph.contains("living on campus") &&
+        paragraph.contains("renting off campus") &&
+        paragraph.contains("living at home"),
       "the three arrangements must be named in words a student says, not in wire keys",
     )
     assertTrue(
-      appended.contains("say they are estimates"),
+      paragraph.contains("say they are estimates"),
       "the living-cost lines are the school's own estimates and must be marked as such",
     )
     assertTrue(
-      appended.contains("living at home instead of on campus would cost"),
+      paragraph.contains("living at home instead of on campus would cost"),
       "the at-home comparison is the sentence this slice exists to make sayable",
     )
     assertTrue(
-      appended.contains("never add up the parts that are there and call the result the total"),
+      paragraph.contains("never add up the parts that are there and call the result the total"),
       "a missing total is a missing part, never a sum of whatever happens to be present",
     )
     assertTrue(
-      appended.contains("no residence halls"),
+      paragraph.contains("no residence halls"),
       "the no-dorms case is an answer the coach states, not an unreported figure",
     )
     // RFCs 141/142 money language, carried into the new paragraph.
-    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
-    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertTrue(paragraph.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(paragraph.contains("housing and food"), "the glossary term that retires room and board")
+    assertFalse(paragraph.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(paragraph.contains("sticker"), "the published price, never the sticker price (RFC 141)")
   }
 
   /**
@@ -638,11 +970,7 @@ class SystemPromptCatalogTest {
     // typed here: a literal "v9" would keep passing after a v10 was pinned,
     // leaving the body the coach is really given unverified -- which is the one
     // failure this class exists to make loud.
-    val served =
-      SystemPromptsDao
-        .findByNameAndVersion(session, coaching.systemPromptName, coaching.systemPromptVersion)
-        .getOrThrow()
-        .body
+    val served = servedBody()
 
     val subtractions = SUBTRACT_MENTIONS.findAll(served).map { it.groupValues[1] }.toList()
     assertTrue(subtractions.isNotEmpty(), "the rule must actually be stated, or this assertion is vacuous")
@@ -668,319 +996,173 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * RFC 142's source-jargon sentence must survive RFC 149's append. It does so by
-   * construction — v9 keeps the whole v8 body as a prefix — but it is the one
-   * piece of copy three prior versions have already had to preserve, so it is
-   * asserted rather than assumed. It is extracted from v6 at runtime, never
-   * retyped here.
+   * The comparison paragraph (RFC 151), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v9 preserves the v7 and v8 source-jargon sentence verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v9 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v9").getOrThrow().body
+  fun `the served comparison paragraph keeps one basis to a column`() {
+    val paragraph = comparisonParagraph()
 
     assertTrue(
-      v9.contains(sentence),
-      "v9 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-    // And RFC 141's contrastive glossary pairs, which live in the money
-    // paragraph v7 rewrote and v9 leaves untouched -- extracted at runtime,
-    // never retyped. v5's own paragraph is NOT the one to look for: v7 replaced
-    // it, so asserting that would assert the wrong copy survived.
-    assertTrue(v9.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-  }
-
-  /**
-   * The 0066 seed's structural contract (RFC 151). v11 is ADDITIVE like v3 over
-   * v2, v4 over v3, v8 over v7, v9 over v8 and v10 over v9: the whole v10 body
-   * byte-identical as a prefix, joined by a single space to exactly one appended
-   * paragraph — the comparison instruction. The paragraph's markers are
-   * asserted, not its full copy: the seed migration is the single home of the
-   * approved wording.
-   */
-  @Test
-  fun `coach v11 is v10 plus one appended comparison paragraph`() {
-    val appended = comparisonParagraph()
-
-    assertTrue(
-      appended.startsWith(" When two or more schools appear together"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(
-      appended.contains(CollegeCostChatTool.COMPARISON_BASIS_KEY),
+      paragraph.contains(CollegeCostChatTool.COMPARISON_BASIS_KEY),
       "the paragraph must key the contract off the object the result carries",
     )
     assertTrue(
-      appended.contains("say those five lines first") && appended.contains("above the table"),
+      paragraph.contains("say those five lines first") && paragraph.contains("above the table"),
       "v11's whole point: the assumptions are said as ordinary copy above the table, never as a note beneath it",
     )
     assertTrue(
-      appended.contains("above the estimated living costs"),
+      paragraph.contains("above the estimated living costs"),
       "the stable block is rendered above the estimate block, and the two are named",
     )
     assertTrue(
-      appended.contains("three columns"),
+      paragraph.contains("three columns"),
       "RFC 124's cap, restated in the concrete comparison case",
     )
     assertTrue(
-      appended.contains("leave that cell blank and label it as not reported"),
+      paragraph.contains("leave that cell blank and label it as not reported"),
       "a missing part is a labelled blank; the payload's data_availability is never rendered as a number",
     )
     assertTrue(
-      appended.contains("never write a zero") && appended.contains("never carry a neighbour's number across"),
+      paragraph.contains("never write a zero") && paragraph.contains("never carry a neighbour's number across"),
       "a blank is never a zero and never a neighbour's figure",
     )
     assertTrue(
-      appended.contains("no residence halls has none"),
+      paragraph.contains("no residence halls has none"),
       "the no-dorms case is an answer the coach states, not an unreported figure",
     )
     assertTrue(
-      appended.contains("Keep one residency and one way of living in a column"),
+      paragraph.contains("Keep one residency and one way of living in a column"),
       "two bases never mix into one column - the contract this slice exists for",
     )
     // RFCs 141/142 money language, carried into the new paragraph.
-    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
-    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertTrue(paragraph.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(paragraph.contains("housing and food"), "the glossary term that retires room and board")
     // The served-body guard below sweeps the WHOLE prompt; this says the rule
     // holds inside the span v11 actually adds, so a relaxation here is reported
     // as v11's own rather than as the catalog's.
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertParagraphKeepsTheStandingCopyRules("the comparison paragraph", paragraph)
   }
 
   /**
-   * RFC 142's source-jargon sentence and RFC 141's glossary pairs must survive
-   * RFC 151's append. They do so by construction — v11 keeps the whole v10 body
-   * as a prefix — but they are the copy five prior versions have already had to
-   * preserve, so they are asserted rather than assumed. Both are extracted at
-   * runtime, never retyped here.
+   * The living-plan paragraph (RFC 152), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v11 preserves the source-jargon sentence and the money paragraph verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v11 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v11").getOrThrow().body
+  fun `the served living-plan paragraph leads with the plan the student answered`() {
+    val paragraph = livingPlanParagraph()
 
     assertTrue(
-      v11.contains(sentence),
-      "v11 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-    assertTrue(v11.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-  }
-
-  /**
-   * The 0072 seed's structural contract (RFC 152 D6). v14 is ADDITIVE like
-   * every coach seed since 0047: the whole v13 body byte-identical as a prefix,
-   * joined by a single space to exactly one appended paragraph — the
-   * living-plan instruction. The paragraph's markers are asserted, not its full
-   * copy: the seed migration is the single home of the approved wording.
-   */
-  @Test
-  fun `coach v14 is v13 plus one appended living-plan paragraph`() {
-    val appended = livingPlanParagraph()
-
-    assertTrue(
-      appended.startsWith(" A cost result may also carry a third precision_offer field"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(
-      appended.contains(PrecisionOffer.LIVING_PLAN.field),
+      paragraph.contains(PrecisionOffer.LIVING_PLAN.field),
       "the paragraph must name the money-profile field the offer fills",
     )
     assertTrue(
-      appended.contains(PrecisionOffer.RESIDENCY.field) && appended.contains(PrecisionOffer.INCOME_BAND.field),
+      paragraph.contains(PrecisionOffer.RESIDENCY.field) && paragraph.contains(PrecisionOffer.INCOME_BAND.field),
       "and must place it AFTER the two offers that move the number more often (D4)",
     )
     assertTrue(
-      appended.contains("only when the result offers it") && appended.contains("cost is already what you are talking about"),
+      paragraph.contains("only when the result offers it") && paragraph.contains("cost is already what you are talking about"),
       "the question is raised only when the result offers it and cost is already the subject",
     )
     assertTrue(
-      appended.contains("lead with that one way of living"),
+      paragraph.contains("lead with that one way of living"),
       "v14's whole point: an answered plan is what the coach LEADS with",
     )
     LivingArrangement.entries.forEach { arrangement ->
       assertTrue(
-        appended.contains(arrangement.label),
+        paragraph.contains(arrangement.label),
         "the plan is named in the student's own words, never as a wire key: [${arrangement.label}]",
       )
       assertFalse(
-        appended.contains(arrangement.value),
+        paragraph.contains(arrangement.value),
         "and the wire key itself is never read aloud: [${arrangement.value}]",
       )
     }
     assertTrue(
-      appended.contains("A plan set for one school wins over the usual plan at that school"),
+      paragraph.contains("A plan set for one school wins over the usual plan at that school"),
       "the per-college override (D2a), stated as the rule the coach applies",
     )
     assertTrue(
-      appended.contains("Living at home is never something you assume quietly"),
+      paragraph.contains("Living at home is never something you assume quietly"),
       "with_family is never inferred by us: the assumption is named in the same breath",
     )
     assertTrue(
-      appended.contains("keep the correction as that school's own plan"),
+      paragraph.contains("keep the correction as that school's own plan"),
       "and a correction becomes that school's override, not a rewritten default",
     )
     assertTrue(
-      appended.contains("say the reason plainly") && appended.contains("no residence halls"),
+      paragraph.contains("say the reason plainly") && paragraph.contains("no residence halls"),
       "a school not priced for the plan gets its reason said, never a substituted arrangement",
     )
     assertTrue(
-      appended.contains("never quote a different arrangement in its place") &&
-        appended.contains("never carry a neighbour's figure across"),
+      paragraph.contains("never quote a different arrangement in its place") &&
+        paragraph.contains("never carry a neighbour's figure across"),
       "never a substitute and never a neighbour's figure",
     )
     assertTrue(
-      appended.contains("The other ways of living stay true and stay available"),
+      paragraph.contains("The other ways of living stay true and stay available"),
       "the breakdown is never filtered (D2): a \"what if\" stays answerable from the same result",
     )
     assertTrue(
-      appended.contains("never raise the question again yourself"),
+      paragraph.contains("never raise the question again yourself"),
       "a decline is permanent (brief 0001 D11)",
     )
     // RFCs 141/142 money language, carried into the new paragraph.
-    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
-    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertTrue(paragraph.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(paragraph.contains("housing and food"), "the glossary term that retires room and board")
+    assertParagraphKeepsTheStandingCopyRules("the living-plan paragraph", paragraph)
   }
 
   /**
-   * RFC 142's source-jargon sentence and RFC 141's glossary pairs must survive
-   * RFC 152's append — and so must v7's money paragraph, whose "either field"
-   * wording RFC 152 deliberately did NOT reword (D6), and v11's comparison,
-   * v12's name-lookup and v13's similar-colleges paragraphs, which sit at
-   * interior positions of the body v14 keeps whole. Every one is extracted at
-   * runtime, never retyped here, so the chain is asserted rather than assumed
-   * as it lengthens.
+   * The cost-report paragraph (RFC 155), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v14 preserves the source-jargon sentence and the money paragraph verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v14 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v14").getOrThrow().body
+  fun `the served cost-report paragraph offers the share link only after a real comparison`() {
+    val paragraph = costReportParagraph()
 
+    assertTrue(paragraph.contains(SHARE_REPORT_TOOL_NAME), "the paragraph must name the share tool")
+    assertTrue(paragraph.contains(REVOKE_SHARE_TOOL_NAME), "the paragraph must name the revoke tool")
     assertTrue(
-      v14.contains(sentence),
-      "v14 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-    assertTrue(v14.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-    assertTrue(v14.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
-    assertTrue(v14.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
-    assertTrue(
-      v14.contains(similarCollegesParagraph()),
-      "v13's similar-colleges paragraph must survive the append byte-for-byte",
-    )
-  }
-
-  /**
-   * The 0074 seed's structural contract (RFC 155). v15 is ADDITIVE like every
-   * coach seed since 0047: the whole v14 body byte-identical as a prefix,
-   * joined by a single space to exactly one appended paragraph — the Family
-   * Cost Report instruction. The paragraph's markers are asserted, not its full
-   * copy: the seed migration is the single home of the approved wording.
-   */
-  @Test
-  fun `coach v15 is v14 plus one appended cost-report paragraph`() {
-    val appended = costReportParagraph()
-
-    assertTrue(
-      appended.startsWith(" When the student and you have actually compared"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(appended.contains(SHARE_REPORT_TOOL_NAME), "the paragraph must name the share tool")
-    assertTrue(appended.contains(REVOKE_SHARE_TOOL_NAME), "the paragraph must name the revoke tool")
-    assertTrue(
-      appended.contains("Offer it only after the comparison has happened"),
+      paragraph.contains("Offer it only after the comparison has happened"),
       "value before ask (brief 0001 D12): the offer follows a real cost comparison, it never opens one",
     )
     assertTrue(
-      appended.contains("unless the student asks for it or accepts the offer"),
+      paragraph.contains("unless the student asks for it or accepts the offer"),
       "the link is never minted or sent without the student's say-so",
     )
     assertTrue(
-      appended.contains("anyone who has it can see"),
+      paragraph.contains("anyone who has it can see"),
       "handing over the link must always carry what the link actually is",
     )
-    assertTrue(appended.contains("needs no login"), "the parent opens it with no account; the coach says so")
-    assertTrue(appended.contains("can revoke"), "revocation is the control, and the student is told they hold it")
+    assertTrue(paragraph.contains("needs no login"), "the parent opens it with no account; the coach says so")
+    assertTrue(paragraph.contains("can revoke"), "revocation is the control, and the student is told they hold it")
     assertTrue(
-      appended.contains("every link they have shared is now dead"),
+      paragraph.contains("every link they have shared is now dead"),
       "RFC 155 D-B: revoke is a promise about every link ever sent, not the latest one",
     )
     assertTrue(
-      appended.contains("let it change nothing about what you do next"),
+      paragraph.contains("let it change nothing about what you do next"),
       "a declined offer changes nothing: the nudge belongs to first-value/06, not here",
     )
     assertTrue(
-      appended.contains("the report is live") && appended.contains("it updates as the student updates their list"),
+      paragraph.contains("the report is live") && paragraph.contains("it updates as the student updates their list"),
       "the page is not a document: a parent must not read last week's list as this week's answer",
     )
     assertTrue(
-      appended.contains("you get the same one back"),
+      paragraph.contains("you get the same one back"),
       "asking again returns the SAME link, so a link a parent already saved keeps working (RFC 155 D-B)",
     )
     // RFCs 141/142 money language, carried into the new paragraph.
-    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
-    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
-    assertTrue(appended.contains("published price"), "the published price, stated positively")
-    assertTrue(appended.contains("financial aid offer"), "a financial aid offer, stated positively")
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertFalse(appended.contains("without need"), "the banned denominator: no source reports a count of students without need")
+    assertTrue(paragraph.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(paragraph.contains("housing and food"), "the glossary term that retires room and board")
+    assertTrue(paragraph.contains("published price"), "the published price, stated positively")
+    assertTrue(paragraph.contains("financial aid offer"), "a financial aid offer, stated positively")
+    assertFalse(paragraph.contains("without need"), "the banned denominator: no source reports a count of students without need")
     // The served-body guard elsewhere sweeps the WHOLE prompt; this says the
     // rule holds inside the span v15 actually adds, so a relaxation here is
     // reported as v15's own rather than as the catalog's.
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
-  }
-
-  /**
-   * RFC 142's source-jargon sentence, RFC 141's money paragraph, RFC 151's
-   * comparison paragraph, RFC 154's name-lookup paragraph, RFC 153's
-   * similar-colleges paragraph and RFC 152's living-plan paragraph must all
-   * survive RFC 155's append. They do so by construction — v15 keeps the whole
-   * v14 body as a prefix — but they are the copy every prior version has
-   * already had to preserve, so they are asserted rather than assumed. All six
-   * are extracted at runtime, never retyped here.
-   */
-  @Test
-  fun `coach v15 preserves the source-jargon, money, comparison, name-lookup, similar-colleges and living-plan copy verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v15 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v15").getOrThrow().body
-
-    assertTrue(
-      v15.contains(sentence),
-      "v15 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-    assertTrue(v15.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-    assertTrue(v15.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
-    assertTrue(v15.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
-    assertTrue(
-      v15.contains(similarCollegesParagraph()),
-      "v13's similar-colleges paragraph must survive the append byte-for-byte",
-    )
-    assertTrue(v15.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
+    assertParagraphKeepsTheStandingCopyRules("the cost-report paragraph", paragraph)
   }
 
   /**
@@ -1002,102 +1184,66 @@ class SystemPromptCatalogTest {
 
     assertTrue(v14.body.isNotEmpty(), "the v14 body must be the copy it was seeded with, not an empty row")
     assertTrue(v14.body != v15, "v14 and v15 must be different bodies, or the pin bought nothing")
-    assertTrue(v14.body.contains(sourceJargonSentence()), "v14 must still carry v6's source-jargon sentence byte-for-byte")
-    assertTrue(v14.body.contains(v7MoneyParagraph()), "v14 must still carry v7's money paragraph byte-for-byte")
+    assertTrue(
+      v14.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      "v14 must still carry the source-jargon rule it was approved with",
+    )
+    assertTrue(v14.body.contains(openerOf(CoachParagraph.COST)), "v14 must still carry the money paragraph it was approved with")
     assertFalse(v14.body.contains(SHARE_REPORT_TOOL_NAME), "the rollback target must not already name the v15 share tool")
   }
 
   /**
-   * The 0076 seed's structural contract (RFC 157 D-F). v16 is ADDITIVE like
-   * every coach seed since 0047: the whole v15 body byte-identical as a prefix,
-   * joined by a single space to exactly one appended paragraph — the
-   * residency-basis instruction. The paragraph's markers are asserted, not its
-   * full copy: the seed migration is the single home of the approved wording.
+   * The residency-basis paragraph (RFC 157), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v16 is v15 plus one appended residency-basis paragraph`() {
-    val appended = residencyBasisParagraph()
+  fun `the served residency-basis paragraph says which residency every figure assumes`() {
+    val paragraph = residencyBasisParagraph()
 
     assertTrue(
-      appended.startsWith(" At a public school, the published price"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(
-      appended.contains("students paying in-state tuition and fees"),
+      paragraph.contains("students paying in-state tuition and fees"),
       "RFC 157: the basis the two blended figures have always had and never stated",
     )
     assertTrue(
-      appended.contains("Never offer either of those two figures to a family from another state as their price"),
+      paragraph.contains("Never offer either of those two figures to a family from another state as their price"),
       "D-A: a figure whose residency does not apply to this family is never offered as theirs",
     )
     assertTrue(
-      appended.contains("Say the out-of-state total instead"),
+      paragraph.contains("Say the out-of-state total instead"),
       "and the family is pointed at the figure that IS theirs, not left with a blank",
     )
     assertTrue(
-      appended.contains("out-of-state tuition and fees"),
+      paragraph.contains("out-of-state tuition and fees"),
       "the out-of-state total is named by what it is built from",
     )
+    // RFC 177's POSITIVE half, for the residency basis: the basis is published
+    // by whichever source the tool names, so the sentence names no publisher.
     assertTrue(
-      appended.contains("A private school publishes one price for every family"),
+      paragraph.contains("the source the tool names publishes them on that basis"),
+      "RFC 177: the residency basis is published by the source the tool names, never by a fixed publisher",
+    )
+    assertTrue(
+      paragraph.contains("A private school publishes one price for every family"),
       "at a private college the distinction does not exist (RFC 135), so nothing changes there",
     )
     assertTrue(
-      appended.contains("show both figures still and say what basis they are on"),
+      paragraph.contains("show both figures still and say what basis they are on"),
       "D-B: residency unknown states the basis and withholds nothing",
     )
     assertTrue(
-      appended.contains("never make an answer wait on it"),
+      paragraph.contains("never make an answer wait on it"),
       "guided, not gated (brief 0001 D11): no answer is ever gated on the residency question",
     )
     // RFCs 141/142 money language, carried into the new paragraph.
-    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
-    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
-    assertTrue(appended.contains("published price"), "the published price, stated positively")
-    assertTrue(appended.contains("financial aid offer"), "a financial aid offer, stated positively")
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertFalse(appended.contains("without need"), "the banned denominator: no source reports a count of students without need")
+    assertTrue(paragraph.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(paragraph.contains("housing and food"), "the glossary term that retires room and board")
+    assertTrue(paragraph.contains("published price"), "the published price, stated positively")
+    assertTrue(paragraph.contains("financial aid offer"), "a financial aid offer, stated positively")
+    assertFalse(paragraph.contains("without need"), "the banned denominator: no source reports a count of students without need")
     // The served-body guard elsewhere sweeps the WHOLE prompt; this says the
     // rule holds inside the span v16 actually adds, so a relaxation here is
     // reported as v16's own rather than as the catalog's.
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
-  }
-
-  /**
-   * RFC 142's source-jargon sentence, RFC 141's money paragraph, RFC 151's
-   * comparison paragraph, RFC 154's name-lookup paragraph, RFC 153's
-   * similar-colleges paragraph, RFC 152's living-plan paragraph and RFC 155's
-   * cost-report paragraph must all survive RFC 157's append. They do so by
-   * construction — v16 keeps the whole v15 body as a prefix — but they are the
-   * copy every prior version has already had to preserve, so they are asserted
-   * rather than assumed. All are extracted at runtime, never retyped here.
-   */
-  @Test
-  fun `coach v16 preserves the source-jargon, money, comparison, name-lookup, similar, plan and report copy verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v16 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v16").getOrThrow().body
-
-    assertTrue(
-      v16.contains(sentence),
-      "v16 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-    assertTrue(v16.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-    assertTrue(v16.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
-    assertTrue(v16.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
-    assertTrue(
-      v16.contains(similarCollegesParagraph()),
-      "v13's similar-colleges paragraph must survive the append byte-for-byte",
-    )
-    assertTrue(v16.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
-    assertTrue(v16.contains(costReportParagraph()), "v15's cost-report paragraph must survive the append byte-for-byte")
+    assertParagraphKeepsTheStandingCopyRules("the residency-basis paragraph", paragraph)
   }
 
   /**
@@ -1120,173 +1266,109 @@ class SystemPromptCatalogTest {
 
     assertTrue(v15.body.isNotEmpty(), "the v15 body must be the copy it was seeded with, not an empty row")
     assertTrue(v15.body != v16, "v15 and v16 must be different bodies, or the pin bought nothing")
-    assertTrue(v15.body.contains(sourceJargonSentence()), "v15 must still carry v6's source-jargon sentence byte-for-byte")
-    assertTrue(v15.body.contains(v7MoneyParagraph()), "v15 must still carry v7's money paragraph byte-for-byte")
+    assertTrue(
+      v15.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      "v15 must still carry the source-jargon rule it was approved with",
+    )
+    assertTrue(v15.body.contains(openerOf(CoachParagraph.COST)), "v15 must still carry the money paragraph it was approved with")
     assertFalse(
       v15.body.contains("students paying in-state tuition and fees"),
       "the rollback target must not already carry v16's residency-basis rule",
     )
   }
 
-  /** The v17 federal-aid paragraph: everything v17 appends to the v16 body. The guards are [appendedParagraph]'s. */
-  private fun federalAidParagraph(): String = appendedParagraph(base = "v16", revised = "v17")
+  private fun federalAidParagraph(): String = paragraphAt(CoachParagraph.FEDERAL_AID)
 
   /**
-   * The 0079 seed's structural contract (RFC 159). v17 is ADDITIVE like every
-   * coach seed since 0047: the whole v16 body byte-identical as a prefix,
-   * joined by a single space to exactly one appended paragraph — the
-   * federal-aid-policy instruction. The paragraph's markers are asserted, not
-   * its full copy: the seed migration is the single home of the approved
-   * wording.
-   *
-   * One deliberate absence among the assertions: this paragraph SAYS "award
-   * year" — the July-June policy year Federal Student Aid itself names, the
-   * slice's first acceptance criterion — so the "never the word award" sweep
-   * the v12/v16 paragraphs carry does not apply to this span. No financial aid
-   * offer is called an award here, which is what RFC 141 retired.
+   * The federal-aid paragraph (RFC 159), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v17 is v16 plus one appended federal-aid paragraph`() {
-    val appended = federalAidParagraph()
+  fun `the served federal-aid paragraph dates every figure by its award year`() {
+    val paragraph = federalAidParagraph()
 
-    assertTrue(
-      appended.startsWith(" When a family asks about the Pell Grant"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
     // Seeded copy versus SHIPPING tool name, read from the tool itself: a
     // literal here would keep passing after a rename, leaving the prompt
     // naming a tool the registry does not serve.
-    assertTrue(appended.contains(FEDERAL_AID_TOOL_NAME), "the paragraph must name the federal-aid tool")
+    assertTrue(paragraph.contains(FEDERAL_AID_TOOL_NAME), "the paragraph must name the federal-aid tool")
     assertTrue(
-      appended.contains("rather than from memory"),
+      paragraph.contains("rather than from memory"),
       "policy figures come from the tool, never remembered (RFC 159 D-D)",
     )
     assertTrue(
-      appended.contains("Always say which award year a figure is for"),
+      paragraph.contains("Always say which award year a figure is for"),
       "the slice's first acceptance criterion: every figure is dated by its award year",
     )
     assertTrue(
-      appended.contains("never a promised amount") && appended.contains("never promise a family a specific Pell amount"),
+      paragraph.contains("never a promised amount") && paragraph.contains("never promise a family a specific Pell amount"),
       "Pell is eligibility and a range, never a promised amount",
     )
     assertTrue(
-      appended.contains("never subtract a loan or a loan limit from any price"),
+      paragraph.contains("never subtract a loan or a loan limit from any price"),
       "brief 0003: a loan limit is a cap, never a discount",
     )
     assertTrue(
-      appended.contains("prior award year") && appended.contains("say that plainly"),
+      paragraph.contains("prior award year") && paragraph.contains("say that plainly"),
       "D-G: a stale award year is said, never silently served",
     )
     assertTrue(
-      appended.contains("dependent or independent for federal aid") &&
-        appended.contains("most students applying straight from high school are dependent"),
+      paragraph.contains("dependent or independent for federal aid") &&
+        paragraph.contains("most students applying straight from high school are dependent"),
       "D-F: the dependency question is invited with its value named",
     )
     assertTrue(
-      appended.contains("answer fully anyway with both sets of figures") &&
-        appended.contains("never raise it again yourself"),
+      paragraph.contains("answer fully anyway with both sets of figures") &&
+        paragraph.contains("never raise it again yourself"),
       "declinable, with a full answer served regardless — guided, not gated",
     )
     // The retired money words stay retired inside the new span.
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(paragraph.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(paragraph.contains("sticker"), "the published price, never the sticker price (RFC 141)")
     // The served-body guard elsewhere sweeps the WHOLE prompt; this says the
     // rule holds inside the span v17 actually adds, so a relaxation here is
     // reported as v17's own rather than as the catalog's.
     assertEquals(
       emptyList(),
-      listSubtractionsNotForbidden(appended),
+      listSubtractionsNotForbidden(paragraph),
       "every mention of subtracting in the new paragraph must forbid it",
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(paragraph), "the new paragraph must transcribe no source codebook")
   }
 
   /**
-   * The 0082 seed's structural contract (RFC 160). v18 is ADDITIVE like every
-   * coach seed since 0047: the whole v17 body byte-identical as a prefix,
-   * joined by a single space to exactly one appended paragraph — the
-   * share-nudge instruction. The paragraph's markers are asserted, not its full
-   * copy: the seed migration is the single home of the approved wording.
-   *
-   * v18 composes on v17 rather than on v16 because RFC 159 landed its own v16
-   * append while this run was open. Both paragraphs therefore stand, and the
-   * federal-aid copy is asserted below as interior copy v18 must preserve.
+   * The share-nudge paragraph (RFC 160), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v18 is v17 plus one appended share-nudge paragraph`() {
-    val appended = shareNudgeParagraph()
+  fun `the served share-nudge paragraph treats a surfaced reflection as the sanctioned offer`() {
+    val paragraph = shareNudgeParagraph()
 
+    assertTrue(paragraph.contains(SHARE_REPORT_TOOL_NAME), "the paragraph must name the share tool it routes to")
+    assertTrue(paragraph.contains(STOP_OFFERS_TOOL_NAME), "the paragraph must name the opt-out tool")
     assertTrue(
-      appended.startsWith(" When your opening reflections include one about sharing"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(appended.contains(SHARE_REPORT_TOOL_NAME), "the paragraph must name the share tool it routes to")
-    assertTrue(appended.contains(STOP_OFFERS_TOOL_NAME), "the paragraph must name the opt-out tool")
-    assertTrue(
-      appended.contains("the sanctioned moment"),
+      paragraph.contains("the sanctioned moment"),
       "RFC 160: a surfaced share-nudge reflection IS the sanctioned offer",
     )
     assertTrue(
-      appended.contains("you still never open with the offer"),
+      paragraph.contains("you still never open with the offer"),
       "the never-open-unasked rule stands in every other conversation",
     )
     assertTrue(
-      appended.contains("the topic is closed for this conversation"),
+      paragraph.contains("the topic is closed for this conversation"),
       "a decline or deferral ends the topic without residue",
     )
     assertTrue(
-      appended.contains("Nothing you offer is ever gated on sharing"),
+      paragraph.contains("Nothing you offer is ever gated on sharing"),
       "guided, not gated (brief 0001 D11)",
     )
     assertTrue(
-      appended.contains("they can still ask to share"),
+      paragraph.contains("they can still ask to share"),
       "opting out of the suggestion never disables the ability",
     )
     // The paragraph states no price and no price arithmetic; the standing money
     // guards still sweep the appended span so a relaxation is reported as v18's own.
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
-  }
-
-  /**
-   * Every interior paragraph — including RFC 159's federal-aid paragraph, the
-   * one immediately before this append — must survive RFC 160's append. They do
-   * so by construction, v18 keeping the whole v17 body as a prefix, but they are
-   * the copy every seed since 0047 has had to preserve, so they are asserted
-   * rather than assumed. All are extracted at runtime, never retyped here.
-   */
-  @Test
-  fun `coach v18 preserves the source-jargon, money, report, residency and federal-aid copy verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v18 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v18").getOrThrow().body
-
-    assertTrue(v18.contains(sentence), "v18 must carry v6's source-jargon sentence byte-for-byte: [$sentence]")
-    assertTrue(v18.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-    assertTrue(v18.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
-    assertTrue(v18.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
-    assertTrue(
-      v18.contains(similarCollegesParagraph()),
-      "v13's similar-colleges paragraph must survive the append byte-for-byte",
-    )
-    assertTrue(v18.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
-    assertTrue(v18.contains(costReportParagraph()), "v15's cost-report paragraph must survive the append byte-for-byte")
-    assertTrue(
-      v18.contains(residencyBasisParagraph()),
-      "v16's residency-basis paragraph must survive the append byte-for-byte",
-    )
-    assertTrue(
-      v18.contains(federalAidParagraph()),
-      "v17's federal-aid paragraph must survive the append byte-for-byte",
-    )
+    assertParagraphKeepsTheStandingCopyRules("the share-nudge paragraph", paragraph)
   }
 
   /**
@@ -1304,37 +1386,6 @@ class SystemPromptCatalogTest {
     assertFalse(
       v17.body.contains(STOP_OFFERS_TOOL_NAME),
       "the rollback target must not already name the v18 opt-out tool",
-    )
-  }
-
-  /**
-   * RFC 142's source-jargon sentence and the paragraphs of every prior version
-   * must survive RFC 159's append. They do so by construction — v17 keeps the
-   * whole v16 body as a prefix — but they are the copy every seed since 0047
-   * has had to preserve, so they are asserted rather than assumed. All are
-   * extracted at runtime, never retyped here.
-   */
-  @Test
-  fun `coach v17 preserves the source-jargon, money, comparison, name-lookup, similar, plan, report and residency copy verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v17 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v17").getOrThrow().body
-
-    assertTrue(
-      v17.contains(sentence),
-      "v17 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-    assertTrue(v17.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-    assertTrue(v17.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
-    assertTrue(v17.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
-    assertTrue(
-      v17.contains(similarCollegesParagraph()),
-      "v13's similar-colleges paragraph must survive the append byte-for-byte",
-    )
-    assertTrue(v17.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
-    assertTrue(v17.contains(costReportParagraph()), "v15's cost-report paragraph must survive the append byte-for-byte")
-    assertTrue(
-      v17.contains(residencyBasisParagraph()),
-      "v16's residency-basis paragraph must survive the append byte-for-byte",
     )
   }
 
@@ -1357,8 +1408,11 @@ class SystemPromptCatalogTest {
 
     assertTrue(v16.body.isNotEmpty(), "the v16 body must be the copy it was seeded with, not an empty row")
     assertTrue(v16.body != v17, "v16 and v17 must be different bodies, or the pin bought nothing")
-    assertTrue(v16.body.contains(sourceJargonSentence()), "v16 must still carry v6's source-jargon sentence byte-for-byte")
-    assertTrue(v16.body.contains(v7MoneyParagraph()), "v16 must still carry v7's money paragraph byte-for-byte")
+    assertTrue(
+      v16.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      "v16 must still carry the source-jargon rule it was approved with",
+    )
+    assertTrue(v16.body.contains(openerOf(CoachParagraph.COST)), "v16 must still carry the money paragraph it was approved with")
     assertFalse(
       v16.body.contains(FEDERAL_AID_TOOL_NAME),
       "the rollback target must not already name the v17 federal-aid tool",
@@ -1370,93 +1424,49 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The 0088 seed's structural contract (RFC 170). v20 is ADDITIVE like every
-   * coach seed since 0047 except v19: the whole v19 body byte-identical as a
-   * prefix,
-   * joined by a single space to exactly one appended paragraph — the
-   * need-and-forms instruction. The paragraph's markers are asserted, not its
-   * full copy: the seed migration is the single home of the approved wording.
+   * The need-and-forms paragraph (RFC 170), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v20 is v19 plus one appended need-and-forms paragraph`() {
-    val appended = needAndFormsParagraph()
+  fun `the served need-and-forms paragraph gives the two figures and never a verdict`() {
+    val paragraph = needAndFormsParagraph()
 
+    assertTrue(paragraph.contains(AidPolicyWire.KEY), "the paragraph must name the section it routes to")
+    assertTrue(paragraph.contains(AidPolicyWire.FORMS_KEY), "the paragraph must name the forms list")
     assertTrue(
-      appended.startsWith(" When a family asks whether a school meets full financial need"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(appended.contains(AidPolicyWire.KEY), "the paragraph must name the section it routes to")
-    assertTrue(appended.contains(AidPolicyWire.FORMS_KEY), "the paragraph must name the forms list")
-    assertTrue(
-      appended.contains(CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY),
+      paragraph.contains(CollegeCostChatTool.AID_POLICY_AVAILABILITY_KEY),
       "the paragraph must name the key that says why a school has no section",
     )
     // D6: no source publishes a yes/no about meeting full need, so the coach
     // must never produce one.
     assertTrue(
-      appended.contains("neither of them is a yes or a no"),
+      paragraph.contains("neither of them is a yes or a no"),
       "the two figures answer the question; a verdict of the coach's own does not",
     )
     assertTrue(
-      appended.contains("never give one of your own"),
+      paragraph.contains("never give one of your own"),
       "RFC 170 D6: the meets-full-need verdict is not the coach's to give",
     )
     // RFC 148's denominator rule, carried into the copy: both figures are
     // about a much smaller population than "freshmen".
     assertTrue(
-      appended.contains("never about every freshman and never about this student"),
+      paragraph.contains("never about every freshman and never about this student"),
       "each figure must be said over the cohort it is actually about",
     )
     // D5: absence is absence from a FILING, never a school's denial.
     assertTrue(
-      appended.contains("not listed in that filing"),
+      paragraph.contains("not listed in that filing"),
       "an absent form is absent from the filing",
     )
     assertTrue(
-      appended.contains("not the school saying it is not required"),
+      paragraph.contains("not the school saying it is not required"),
       "RFC 170 D5: no source publishes a negative, so the coach must not imply one",
     )
     // The standing money guards still sweep the appended span, so a relaxation
     // is reported as v20's own rather than as the catalog's.
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertParagraphKeepsTheStandingCopyRules("the need-and-forms paragraph", paragraph)
     // No bare CDS field id may reach the model, and the prompt is context too.
-    assertFalse(Regex("H\\.\\d").containsMatchIn(appended), "a CDS field id must never appear in the prompt")
-  }
-
-  /**
-   * Every word of v19 must survive RFC 170's append -- asserted as ONE equality
-   * rather than as a list of `contains` checks, which is what RFC 166's own v19
-   * test taught: v19 EDITED two interior blocks, so the interior paragraphs
-   * v18-era tests extracted are no longer byte-identical spans of the served
-   * body, and a list of them would be asserting the wrong contract.
-   *
-   * `v20 starts with v19` is strictly stronger than any such list: every ban,
-   * every citation rule and every figure-status sentence v19 carried survives
-   * by construction, or this fails. The remainder is the appended paragraph,
-   * which [`coach v20 is v19 plus one appended need-and-forms paragraph`]
-   * checks in full.
-   */
-  @Test
-  fun `coach v20 keeps the whole v19 body, byte for byte, as its prefix`() {
-    val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow().body
-    val v20 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v20").getOrThrow().body
-
-    assertTrue(v20.startsWith(v19), "v20 must carry the whole v19 body unchanged before what it appends")
-    assertEquals(v19 + needAndFormsParagraph(), v20, "v20 is v19 and exactly one appended paragraph, nothing else")
-    // The two paragraphs RFC 166's edits did NOT touch, named so a future
-    // interior edit to either is reported here rather than inferred.
-    assertTrue(v20.contains(federalAidParagraph()), "v17's federal-aid paragraph must survive the append byte-for-byte")
-    assertTrue(v20.contains(shareNudgeParagraph()), "v18's share-nudge paragraph must survive the append byte-for-byte")
-    assertTrue(v20.contains(FIGURE_STATUS_OPENER), "v19's figure-status paragraph must survive the append")
+    assertFalse(Regex("H\\.\\d").containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
   }
 
   /**
@@ -1470,7 +1480,7 @@ class SystemPromptCatalogTest {
     val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow()
 
     assertEquals("v19", v19.version, "the rollback target must still be selectable by name and version")
-    assertTrue(v19.body.contains(FIGURE_STATUS_OPENER), "v19 must still carry RFC 166's figure-status copy")
+    assertTrue(v19.body.contains(openerOf(CoachParagraph.FIGURE_STATUS)), "v19 must still carry RFC 166's figure-status copy")
     // NOT a bare `aid_policy` check: v17's paragraph names the
     // `federal_aid_policy` TOOL, which contains that key as a substring. The
     // marker is the phrase the v20 paragraph actually adds.
@@ -1480,45 +1490,37 @@ class SystemPromptCatalogTest {
     )
   }
 
-  /** The v22 search-ruler paragraph: everything v22 appends to the v21 body. The guards are [appendedParagraph]'s. */
-  private fun searchRulerParagraph(): String = appendedParagraph(base = "v21", revised = "v22")
+  private fun searchRulerParagraph(): String = paragraphAt(CoachParagraph.SEARCH_RULER)
 
   /**
-   * The 0092 seed's structural contract (RFC 169). v22 is ADDITIVE like every
-   * coach seed since 0047 except v19: the whole v21 body byte-identical as a
-   * prefix, joined by a single space to exactly one appended paragraph — the
-   * search-ruler instruction. The paragraph's markers are asserted, not its full
-   * copy: the seed migration is the single home of the approved wording.
+   * The search-ruler paragraph (RFC 169), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v22 is v21 plus one appended search-ruler paragraph`() {
-    val appended = searchRulerParagraph()
+  fun `the served search-ruler paragraph says which ruler is in force and why`() {
+    val paragraph = searchRulerParagraph()
 
-    assertTrue(
-      appended.startsWith(" A college search now ranks on one of two prices"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
     // Both tools by the name the registry actually advertises, never a literal.
-    assertTrue(appended.contains(COLLEGE_SEARCH_TOOL_NAME), "the paragraph must name the search tool it is about")
-    assertTrue(appended.contains(SIMILAR_TOOL_NAME), "and the peer tool, which ranks on the same ruler")
+    assertTrue(paragraph.contains(COLLEGE_SEARCH_TOOL_NAME), "the paragraph must name the search tool it is about")
+    assertTrue(paragraph.contains(SIMILAR_TOOL_NAME), "and the peer tool, which ranks on the same ruler")
     assertTrue(
-      appended.contains("depends on whether the state the family lives in is on file"),
+      paragraph.contains("depends on whether the state the family lives in is on file"),
       "RFC 169 D1: which ruler is in force, and why",
     )
     assertTrue(
-      appended.contains("No financial aid of any kind is in a published ranking"),
+      paragraph.contains("No financial aid of any kind is in a published ranking"),
       "D14(a): a published ranking says aid is not in it, never silently",
     )
     assertTrue(
-      appended.contains("There is no out-of-state price after aid and there never can be"),
+      paragraph.contains("There is no out-of-state price after aid and there never can be"),
       "the honest reason the published ruler exists at all (RFC 149)",
     )
     assertTrue(
-      appended.contains("Never require the answer, never hold back a result waiting for it"),
+      paragraph.contains("Never require the answer, never hold back a result waiting for it"),
       "D6: the state question is offered and never gates -- guided, not gated",
     )
     assertTrue(
-      appended.contains("excluded_unknown"),
+      paragraph.contains("excluded_unknown"),
       "D11: a school with no figure on the ruler in force is dropped and COUNTED, never treated as cheap",
     )
     // The two places this paragraph has to agree with v19 rather than merely
@@ -1528,11 +1530,11 @@ class SystemPromptCatalogTest {
     // let the coach read a search price back as an in-district one, or read the
     // shared sentence as a claim about what the school charges.
     assertTrue(
-      appended.contains("the in-district tier is a cost answer and never a search ranking"),
+      paragraph.contains("the in-district tier is a cost answer and never a search ranking"),
       "the search ruler has two tiers, and v19's third one is not one of them",
     )
     assertTrue(
-      appended.contains(RESIDENCY_TIERS_KEY),
+      paragraph.contains(RESIDENCY_TIERS_KEY),
       "brief 0006 D19: a search row can carry the same tier sentence a cost answer carries",
     )
     assertTrue(
@@ -1541,158 +1543,28 @@ class SystemPromptCatalogTest {
     )
     // The standing money guards, swept over the span v21 actually adds, so a
     // relaxation here is reported as v21's own rather than as the catalog's.
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertParagraphKeepsTheStandingCopyRules("the search-ruler paragraph", paragraph)
     // v6's ban on source-internal names still governs: the paragraph names
     // PAYLOAD keys and TOOL names, and no canonical table or publisher column.
-    assertFalse(appended.contains("price_figures"), "a canonical table name is never said to a family")
-    assertFalse(appended.contains("CHG"), "an IPEDS charge code is never said to a family")
-  }
-
-  /**
-   * Every word of v21 must survive RFC 169's append — asserted as ONE equality
-   * rather than as a list of `contains` checks, on the precedent RFC 170's own
-   * v20/v21 tests set: v19 EDITED two interior blocks, so spans extracted from older
-   * pairs of bodies are not guaranteed to be byte-identical spans of the served
-   * body, and a list of them would be asserting the wrong contract.
-   *
-   * The equality is strictly stronger: every ban, every citation rule, every
-   * figure-status sentence and RFC 170's whole aid-policy paragraph survive by
-   * construction, or this fails.
-   */
-  @Test
-  fun `coach v22 keeps the whole v21 body, byte for byte, as its prefix`() {
-    val v21 = v21Body()
-    val v22 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v22").getOrThrow().body
-
-    assertEquals(v21 + searchRulerParagraph(), v22, "v22 is v21 and exactly one appended paragraph, nothing else")
-    // The paragraphs named so a future interior edit to any of them is reported
-    // here rather than inferred from the equality alone.
-    assertTrue(v22.contains(federalAidParagraph()), "v17's federal-aid paragraph must survive the append")
-    assertTrue(v22.contains(shareNudgeParagraph()), "v18's share-nudge paragraph must survive the append")
-    assertTrue(v22.contains(FIGURE_STATUS_OPENER), "v19's figure-status paragraph must survive the append")
-    assertTrue(v22.contains(needAndFormsParagraph()), "v20's need-and-forms paragraph must survive the append")
-    assertTrue(v22.contains(borrowingParagraph()), "v21's borrowing paragraph must survive the append")
+    assertFalse(paragraph.contains("price_figures"), "a canonical table name is never said to a family")
+    assertFalse(paragraph.contains("CHG"), "an IPEDS charge code is never said to a family")
   }
 
   /**
    * The v22 wording of the two spans RFC 177 rewrites, quoted from the IMMUTABLE
    * `db/schema/0092` row.
    *
-   * Literals, and safe as literals for exactly one reason: they are the copy of
-   * a row that can never be updated in place (`db/schema/0007`'s triggers), so
-   * they cannot drift. They are asserted PRESENT in v22 before they are used to
-   * reconstruct it, or the reconstruction below would hold vacuously.
+   * A literal, and safe as one for exactly one reason: it is the copy of a row
+   * that can never be updated in place (`db/schema/0007`'s triggers), so it
+   * cannot drift. It is what makes the rollback claim real — v22 is only a
+   * rollback if it still carries the copy it was approved with.
    */
   private val v22MoneyAttribution =
     "Always attribute cost figures to the U.S. Department of Education College Scorecard, and when a " +
       "school doesn't report a figure, say that plainly rather than estimating."
 
-  private val v22ResidencyPublisher = "and the U.S. Department of Education publishes them on that basis."
-
-  /** The v23 openers, and the unchanged v22 words each edited span was written in front of. */
+  /** The v23 attribution copy, named here only to assert v22 does NOT already carry it. */
   private val moneyAttributionOpener = "Always attribute each cost figure"
-
-  private val moneyAttributionSuccessor = " Never name a data source's internal buckets"
-
-  private val residencyPublisherOpener = "and the source the tool names publishes"
-
-  private val residencyPublisherSuccessor = " Never offer either of those two figures"
-
-  /**
-   * RFC 177's seed (`db/schema/0093`): v23 is v22 with exactly the two
-   * publisher-naming sentences about MONEY figures rewritten, and nothing else
-   * touched.
-   *
-   * An INTERIOR EDIT, so it follows 0086's shape and not the additive one, and
-   * the contract is proved by RECONSTRUCTION rather than by a list of `contains`
-   * checks: put each new span back to its v22 wording and the whole body must be
-   * v22 again, byte for byte. Every other paragraph -- the six figure statuses,
-   * the Common Data Set citation rules for admissions and aid_policy, the
-   * federal-aid attribution, the search rulers -- survives by construction or
-   * this fails.
-   *
-   * The rewrite itself is not cosmetic. The prompt told the coach to attribute
-   * EVERY cost figure to the College Scorecard while the loader ranks both IPEDS
-   * surveys above it, so the instruction was wrong for most figures, and the
-   * payload now names its own publishers.
-   */
-  @Test
-  fun `coach v23 is v22 with exactly the two money publisher-naming sentences rewritten`() {
-    val v22 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v22").getOrThrow().body
-    val v23 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v23").getOrThrow().body
-
-    // The convention, broken deliberately: a clean v22 prefix would mean the two
-    // interior edits never landed and v23 was an append after all.
-    assertFalse(v23.startsWith(v22), "v23 EDITS v22's interior, so v22 must not survive as a byte-identical prefix")
-    assertTrue(v22.contains(v22MoneyAttribution), "the v22 attribution rule must be there to be rewritten")
-    assertTrue(v22.contains(v22ResidencyPublisher), "the v22 residency publisher clause must be there to be rewritten")
-
-    val money = insertedSpan(v23, moneyAttributionOpener, moneyAttributionSuccessor)
-    val residency = insertedSpan(v23, residencyPublisherOpener, residencyPublisherSuccessor)
-
-    assertEquals(
-      v22,
-      v23.replace(money, v22MoneyAttribution).replace(residency, v22ResidencyPublisher),
-      "v23 must be v22 with exactly these two spans rewritten and nothing else changed",
-    )
-
-    // 1. The attribution is now agnostic, and points at the payload.
-    assertTrue(
-      money.contains("the source the tool names beside it"),
-      "the coach must attribute each figure to the source the payload names: [$money]",
-    )
-    assertTrue(
-      money.contains("say that plainly rather than estimating"),
-      "the never-estimate half of the same sentence is unchanged: [$money]",
-    )
-    assertTrue(
-      residency.contains("the source the tool names publishes them on that basis"),
-      "the residency basis is published by the source the tool names: [$residency]",
-    )
-
-    // 2. NO publisher of a money figure is named anywhere in v23 any more.
-    MoneySource.entries
-      .filterNot { it == MoneySource.COMMON_DATA_SET }
-      .forEach { source ->
-        assertFalse(
-          v23.contains(MoneySourceCopy.labelOf(source)),
-          "v23 may name no money publisher: [${source.value}]",
-        )
-      }
-    assertFalse(v23.contains("College Scorecard"), "the Scorecard attribution is gone from the served body")
-    assertFalse(v23.contains("U.S. Department of Education"), "and so is the bare department name")
-
-    // 3. What must NOT have moved. The Common Data Set rules are about a
-    //    different corpus and are true; the six status sentences are recited by
-    //    the IMMUTABLE v19 row and can never be reworded.
-    assertTrue(v23.contains("Common Data Set"), "the admissions and aid_policy citation rules are untouched")
-    assertTrue(v23.contains(FIGURE_STATUS_OPENER), "v19's figure-status paragraph must survive the edit")
-    FigureStatus.entries.forEach { status ->
-      val spoken = FigureStatusCopy.agentlessStatementOf(status) ?: return@forEach
-      assertTrue(v23.contains(spoken), "v23 must still recite the SHIPPING sentence for [${status.value}]: [$spoken]")
-    }
-
-    // The standing guards, over the two spans v23 actually rewrites.
-    val edited = money + residency
-    assertFalse(edited.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(edited.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(edited.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(edited),
-      "every mention of subtracting in the new copy must forbid it",
-    )
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(edited), "the new copy must transcribe no source codebook")
-  }
 
   /**
    * The rollback RFC 177 documents is one env var
@@ -1736,86 +1608,54 @@ class SystemPromptCatalogTest {
   /** The served v21 body, read from the catalog so the migration stays the one home of the copy. */
   private fun v21Body(): String = SystemPromptsDao.findByNameAndVersion(session, "coach", "v21").getOrThrow().body
 
-  /** The v20 need-and-forms paragraph: everything v20 appends to the v19 body. The guards are [appendedParagraph]'s. */
-  private fun needAndFormsParagraph(): String = appendedParagraph(base = "v19", revised = "v20")
+  private fun needAndFormsParagraph(): String = paragraphAt(CoachParagraph.NEED_AND_FORMS)
 
   /**
-   * The 0090 seed's structural contract (RFC 175). v21 is ADDITIVE like every
-   * coach seed since 0047 except v19: the whole v20 body byte-identical as a
-   * prefix, joined by a single space to exactly one appended paragraph -- the
-   * borrowing instruction. The paragraph's markers are asserted, not its full
-   * copy: the seed migration is the single home of the approved wording.
+   * The borrowing paragraph (RFC 175), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v21 is v20 plus one appended borrowing paragraph`() {
-    val appended = borrowingParagraph()
+  fun `the served borrowing paragraph never presents a debt figure as a price`() {
+    val paragraph = borrowingParagraph()
 
+    assertTrue(paragraph.contains(BorrowingWire.KEY), "the paragraph must name the section it routes to")
     assertTrue(
-      appended.startsWith(" Borrowing is a different question from price"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    assertTrue(appended.contains(BorrowingWire.KEY), "the paragraph must name the section it routes to")
-    assertTrue(
-      appended.contains(CollegeCostChatTool.BORROWING_AVAILABILITY_KEY),
+      paragraph.contains(CollegeCostChatTool.BORROWING_AVAILABILITY_KEY),
       "the paragraph must name the key that says why a school has no section",
     )
     // D8: the cohort is a named graduating class, said with its year.
     assertTrue(
-      appended.contains("GRADUATED from that school in the year the section names"),
+      paragraph.contains("GRADUATED from that school in the year the section names"),
       "the cohort must be named, not left to be inferred",
     )
     assertTrue(
-      appended.contains("not this year's freshmen"),
+      paragraph.contains("not this year's freshmen"),
       "and it must be told apart from the two cohorts it is most often confused with",
     )
     // D10: a Common Data Set figure is the school's own claim.
     assertTrue(
-      appended.contains("so name the school as the one saying it"),
+      paragraph.contains("so name the school as the one saying it"),
       "RFC 175 D10: a self-reported figure is attributed, never said in the flat voice",
     )
     // D3: loan types are never summed and none of them is a total.
     assertTrue(
-      appended.contains("Never add two kinds of loan together"),
+      paragraph.contains("Never add two kinds of loan together"),
       "RFC 175 D3: the loan types overlap and may not be added",
     )
     assertTrue(
-      appended.contains("say plainly when the private figure is not in that school's filing"),
+      paragraph.contains("say plainly when the private figure is not in that school's filing"),
       "a missing private figure is said, not left as federal standing for everything",
     )
     // Brief 0003, without exception: a debt is never a price.
     assertTrue(
-      appended.contains("never present a debt figure as a cost"),
+      paragraph.contains("never present a debt figure as a cost"),
       "a debt figure is never presented as a price",
     )
     // The standing money guards still sweep the appended span, so a relaxation
     // is reported as v21's own rather than as the catalog's.
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertParagraphKeepsTheStandingCopyRules("the borrowing paragraph", paragraph)
     // No bare CDS field id may reach the model, and the prompt is context too.
-    assertFalse(Regex("H\\.\\d").containsMatchIn(appended), "a CDS field id must never appear in the prompt")
-  }
-
-  /**
-   * Every word of v20 must survive RFC 175's append, asserted as ONE equality
-   * for the reason the v20 test states: it is strictly stronger than any list
-   * of `contains` checks, so every ban and every citation rule v20 carried
-   * survives by construction or this fails.
-   */
-  @Test
-  fun `coach v21 keeps the whole v20 body, byte for byte, as its prefix`() {
-    val v20 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v20").getOrThrow().body
-    val v21 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v21").getOrThrow().body
-
-    assertTrue(v21.startsWith(v20), "v21 must carry the whole v20 body unchanged before what it appends")
-    assertEquals(v20 + borrowingParagraph(), v21, "v21 is v20 and exactly one appended paragraph, nothing else")
+    assertFalse(Regex("H\\.\\d").containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
   }
 
   /**
@@ -1840,177 +1680,9 @@ class SystemPromptCatalogTest {
     )
   }
 
-  /** The v21 borrowing paragraph: everything v21 appends to the v20 body. The guards are [appendedParagraph]'s. */
-  private fun borrowingParagraph(): String = appendedParagraph(base = "v20", revised = "v21")
+  private fun borrowingParagraph(): String = paragraphAt(CoachParagraph.BORROWING)
 
-  /** The v18 share-nudge paragraph: everything v18 appends to the v17 body. The guards are [appendedParagraph]'s. */
-  private fun shareNudgeParagraph(): String = appendedParagraph(base = "v17", revised = "v18")
-
-  /**
-   * The 0086 seed's structural contract (RFC 166), and it is a DIFFERENT shape
-   * from every coach test above it. 0047 (v2->v3) through 0082 (v17->v18) were
-   * all "the whole prior body as a byte-identical prefix plus one appended
-   * paragraph", which [appendedParagraph] checks. v19 is the first that is not:
-   * it EDITS two interior blocks — the residency offer gains the in-district
-   * tier, the living-arrangement block gains the at-home assumption — and
-   * appends a third for the six figure statuses.
-   *
-   * So the contract is stated as an EQUALITY: v19 with those three spans taken
-   * back out must be v18, byte for byte. That is strictly stronger than a list
-   * of `contains` assertions, because it is what says the edits added copy and
-   * weakened nothing — every ban v18 carried (the net-price arithmetic, the
-   * cross-vintage sum, the no-partial-total rule, the source-jargon sentence)
-   * survives by construction or this fails. The spans themselves are located
-   * from the served body at runtime, so the migration stays the one home of the
-   * copy; each is asserted to be absent from v18 first, or "removing" it would
-   * be a silent no-op and the equality would hold vacuously.
-   */
-  @Test
-  fun `coach v19 is v18 with the residency and at-home blocks edited and one status paragraph appended`() {
-    val v18 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v18").getOrThrow().body
-    val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow().body
-
-    // The convention, broken deliberately: a clean v18 prefix would mean the
-    // two interior edits never landed and v19 was an append after all.
-    assertFalse(v19.startsWith(v18), "v19 EDITS v18's interior, so v18 must not survive as a byte-identical prefix")
-    assertFalse(v18.contains(IN_DISTRICT_OPENER), "the in-district span must be new, or its removal below is a no-op")
-    assertFalse(v18.contains(AT_HOME_OPENER), "the at-home assumption must be new, or its removal below is a no-op")
-    assertFalse(v18.contains(FIGURE_STATUS_OPENER), "the figure-status paragraph must be new, or the append is vacuous")
-
-    val inDistrict = insertedSpan(v19, IN_DISTRICT_OPENER, IN_DISTRICT_SUCCESSOR)
-    val atHome = insertedSpan(v19, AT_HOME_OPENER, AT_HOME_SUCCESSOR)
-    val appendedAt = v19.indexOf(FIGURE_STATUS_OPENER)
-    assertTrue(appendedAt > 0, "v19 must carry the figure-status paragraph: [$FIGURE_STATUS_OPENER]")
-    val statuses = v19.substring(appendedAt)
-
-    assertEquals(
-      v18,
-      v19.removeRange(appendedAt, v19.length).replace(inDistrict, "").replace(atHome, ""),
-      "v19 must be v18 with exactly these three spans added and nothing else changed",
-    )
-
-    // 1. The third tier, and the district that is never asked about (D4).
-    assertTrue(
-      inDistrict.contains("never as the tuition and fees line inside a total"),
-      "the in-district figure is a labelled tier, never the tuition line inside a total",
-    )
-    assertTrue(
-      inDistrict.contains("never present an in-state figure as an in-district one"),
-      "RFC 161's open item: a figure keeps the label its publisher gave it",
-    )
-    assertTrue(
-      inDistrict.contains("Never ask which district a family lives in"),
-      "no new question: residency_state cannot select in-district, and a state answer does not answer a district",
-    )
-    assertTrue(
-      inDistrict.contains("does not separate an in-district price, say so in words"),
-      "where the tier is not published, the coach says what we do not know rather than guessing",
-    )
-
-    // 2. The at-home zero, in words, and ours (gate-2 D17).
-    assertTrue(atHome.contains(AT_HOME_ASSUMPTION), "the assumption must be said in the exact words the report says: [$atHome]")
-    assertTrue(
-      atHome.contains("zero is ours rather than the school's") && atHome.contains("never say the school reported it"),
-      "the zero is a unicoach assumption and is never attributed to the school",
-    )
-    // v14's "Living at home is never something you assume quietly" governs the
-    // PLAN; this governs the FIGURE. Both stand, so the older rule is asserted
-    // present rather than replaced.
-    assertTrue(
-      v19.contains(livingPlanParagraph()),
-      "v14's living-plan paragraph, and its never-assume-quietly rule, must survive byte-for-byte",
-    )
-
-    // 3. The six statuses, each with the sentence to say, and which one is OURS.
-    assertTrue(
-      statuses.startsWith(FIGURE_STATUS_OPENER),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
-    // The key is READ from the tool, never typed: the paragraph tells the coach
-    // to read an array off the payload, and a literal here would keep passing
-    // after a rename, leaving the prompt naming a key the tool does not emit.
-    assertTrue(
-      statuses.contains(CollegeCostChatTool.FIGURE_STATUSES_KEY),
-      "the paragraph must name the shipping key [${CollegeCostChatTool.FIGURE_STATUSES_KEY}]: [$statuses]",
-    )
-    // EXHAUSTIVE over the vocabulary, and read from the SHIPPING sentence: the
-    // paragraph tells the coach to say the entry's own sentence, and the entry
-    // carries whatever [FigureStatusCopy.statementOf] returns. Pinned with
-    // literals, a reword there shipped sentence A in the payload while the
-    // prompt enumerated sentence B, with nothing failing -- the seed, this test
-    // and the prompt all still agreed with each other and only the shipping
-    // surface had moved. Exhaustive, so a SEVENTH status also fails here rather
-    // than reaching the coach unspoken.
-    FigureStatus.entries.forEach { status ->
-      // REPORTED carries no sentence at all -- a plainly reported figure is
-      // given plainly -- and the paragraph says exactly that, below.
-      val spoken = FigureStatusCopy.agentlessStatementOf(status) ?: return@forEach
-      assertTrue(
-        statuses.contains(spoken),
-        "v19 must recite the SHIPPING sentence for [${status.value}]: [$spoken] in [$statuses]",
-      )
-    }
-    assertTrue(
-      statuses.contains("A figure that is simply reported needs none of these sentences"),
-      "reported is the sixth status: the number is given plainly, with no sentence beside it",
-    )
-    // The OURS/THEIRS split is keyed on the SENTENCE, so the sentence and the
-    // attribution are asserted TOGETHER: the shipping words for
-    // `not_collected_by_us`, immediately followed by the claim that they are
-    // ours. Reworded in [FigureStatusCopy] and only half-updated here, the
-    // paragraph would recite our gap among the school's own silences -- the
-    // misattribution RFC 149 D-B exists against.
-    val ours = assertNotNull(FigureStatusCopy.agentlessStatementOf(FigureStatus.NOT_COLLECTED_BY_US))
-    assertTrue(
-      statuses.contains("$ours That last sentence is ours and not the school's"),
-      "the sentence that is OURS must be attributed as ours where it is said: [$statuses]",
-    )
-    assertTrue(
-      statuses.contains("it is our gap, so never tell a family the school failed to report"),
-      "D-B reused: a status that is OURS is never spoken as the school's failure",
-    )
-
-    // The standing guards, swept over the three spans v19 actually adds, so a
-    // relaxation is reported as v19's own rather than as the catalog's.
-    val added = inDistrict + atHome + statuses
-    assertFalse(added.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(added.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(added.contains("award"), "a financial aid offer, never an award (RFC 141)")
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(added),
-      "every mention of subtracting in the new copy must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(added), "the new copy must transcribe no source codebook")
-    // v6's ban on source-internal names still governs, so the new copy names a
-    // PAYLOAD key and no source column: no CHG code, no canonical table name.
-    assertTrue(v19.contains(sourceJargonSentence()), "v6's source-jargon sentence must survive the edits byte-for-byte")
-    assertFalse(added.contains("price_figures"), "a canonical table name is never said to a family")
-    assertFalse(added.contains("CHG"), "an IPEDS charge code is never said to a family")
-  }
-
-  /**
-   * One span [v19] inserts into the v18 body, located by its opening words and
-   * bounded by the v18 words it was inserted in front of.
-   *
-   * Both boundaries are asserted before the substring is taken: `indexOf`
-   * returns -1 rather than failing, and a span whose right edge was not found
-   * would otherwise run to the end of the body and swallow the rest of the
-   * prompt into the "added" copy — which would make the equality above pass
-   * while v19 had in fact deleted everything after it.
-   */
-  private fun insertedSpan(
-    body: String,
-    opener: String,
-    successor: String,
-  ): String {
-    val start = body.indexOf(opener)
-    assertTrue(start >= 0, "the served body must contain [$opener]")
-    val end = body.indexOf(successor, start)
-    assertTrue(end > start, "the served body must contain [$successor] after it, or the span is unbounded")
-    return body.substring(start, end)
-  }
+  private fun shareNudgeParagraph(): String = paragraphAt(CoachParagraph.SHARE_NUDGE)
 
   /**
    * The rollback RFC 166 documents is one env var
@@ -2032,164 +1704,94 @@ class SystemPromptCatalogTest {
 
     assertTrue(v18.body.isNotEmpty(), "the v18 body must be the copy it was seeded with, not an empty row")
     assertTrue(v18.body != v19, "v18 and v19 must be different bodies, or the pin bought nothing")
-    assertTrue(v18.body.contains(sourceJargonSentence()), "v18 must still carry v6's source-jargon sentence byte-for-byte")
+    assertTrue(
+      v18.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      "v18 must still carry the source-jargon rule it was approved with",
+    )
     assertTrue(v18.body.contains(STOP_OFFERS_TOOL_NAME), "v18 must still carry RFC 160's opt-out copy")
     assertFalse(v18.body.contains(IN_DISTRICT_OPENER), "the rollback target must not already carry v19's in-district tier")
     assertFalse(v18.body.contains(AT_HOME_OPENER), "nor v19's at-home assumption")
-    assertFalse(v18.body.contains(FIGURE_STATUS_OPENER), "nor v19's figure-status paragraph")
+    assertFalse(v18.body.contains(openerOf(CoachParagraph.FIGURE_STATUS)), "nor v19's figure-status paragraph")
   }
 
-  /** The v16 residency-basis paragraph: everything v16 appends to the v15 body. The guards are [appendedParagraph]'s. */
-  private fun residencyBasisParagraph(): String = appendedParagraph(base = "v15", revised = "v16")
+  private fun residencyBasisParagraph(): String = paragraphAt(CoachParagraph.RESIDENCY_BASIS)
+
+  private fun costReportParagraph(): String = paragraphAt(CoachParagraph.COST_REPORT)
+
+  private fun livingPlanParagraph(): String = paragraphAt(CoachParagraph.LIVING_PLAN)
+
+  private fun comparisonParagraph(): String = paragraphAt(CoachParagraph.COMPARISON)
 
   /**
-   * Everything [revised] appends to the [base] coach body — the ONE extractor
-   * behind every "vN is vN-1 plus one paragraph" test in this class.
-   *
-   * The two guards are the whole point and are why this is a function rather
-   * than a `removePrefix` at each site. `removePrefix` is a SILENT NO-OP when
-   * the affix does not match, so a seed that changed the body instead of
-   * appending to it would hand every caller the WHOLE revised prompt and let
-   * each of their `contains` assertions pass vacuously. The prefix is therefore
-   * asserted before it is removed, and an empty remainder — a revision that
-   * appended nothing — is refused too. Seven hand-written copies of that pair
-   * is seven chances to drop one.
-   */
-  private fun appendedParagraph(
-    base: String,
-    revised: String,
-  ): String {
-    val baseBody = SystemPromptsDao.findByNameAndVersion(session, "coach", base).getOrThrow().body
-    val revisedBody = SystemPromptsDao.findByNameAndVersion(session, "coach", revised).getOrThrow().body
-    assertTrue(revisedBody.startsWith(baseBody), "the [$base] prefix must be byte-identical, so the new paragraph is the only change")
-    val appended = revisedBody.removePrefix(baseBody)
-    assertTrue(appended.isNotEmpty(), "[$revised] must actually append something; an empty remainder means it equals [$base]")
-    return appended
-  }
-
-  /** The v15 cost-report paragraph: everything v15 appends to the v14 body. The guards are [appendedParagraph]'s. */
-  private fun costReportParagraph(): String = appendedParagraph(base = "v14", revised = "v15")
-
-  /** The v14 living-plan paragraph: everything v14 appends to the v13 body. The guards are [appendedParagraph]'s. */
-  private fun livingPlanParagraph(): String = appendedParagraph(base = "v13", revised = "v14")
-
-  /** The v11 comparison paragraph: everything v11 appends to the v10 body. The guards are [appendedParagraph]'s. */
-  private fun comparisonParagraph(): String = appendedParagraph(base = "v10", revised = "v11")
-
-  /**
-   * The 0068 seed's structural contract (RFC 154). v12 is ADDITIVE like every
-   * coach seed since 0047: the whole v11 body byte-identical as a prefix, joined
-   * by a single space to exactly one appended paragraph — the name-lookup
-   * routing rule. The paragraph's markers are asserted, not its full copy: the
-   * seed migration is the single home of the approved wording.
+   * The name-lookup paragraph (RFC 154), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v12 is v11 plus one appended name-lookup paragraph`() {
-    val appended = nameLookupParagraph()
+  fun `the served name-lookup paragraph copies an id and never constructs one`() {
+    val paragraph = nameLookupParagraph()
 
-    assertTrue(
-      appended.startsWith(" When the student names a school in words"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
     // Seeded copy versus SHIPPING tool names, both read from the tools: a
     // literal here would keep passing after a rename, leaving the prompt naming
     // a tool the registry does not serve.
     assertTrue(
-      appended.contains(FIND_COLLEGE_TOOL_NAME),
+      paragraph.contains(FIND_COLLEGE_TOOL_NAME),
       "the paragraph must name the lookup tool the registry serves",
     )
     assertTrue(
-      appended.contains(COLLEGE_SEARCH_TOOL_NAME),
+      paragraph.contains(COLLEGE_SEARCH_TOOL_NAME),
       "and the structured search it routes the OTHER kind of question to",
     )
     assertTrue(
-      appended.contains(CollegeListChatTool.TOOL_NAME) &&
-        appended.contains(CollegeCostChatTool.TOOL_NAME) &&
-        appended.contains(ADMISSIONS_TOOL_NAME),
+      paragraph.contains(CollegeListChatTool.TOOL_NAME) &&
+        paragraph.contains(CollegeCostChatTool.TOOL_NAME) &&
+        paragraph.contains(ADMISSIONS_TOOL_NAME),
       "the id is carried to every tool that takes one, each named as it ships",
     )
     assertTrue(
-      appended.contains("college_id"),
+      paragraph.contains("college_id"),
       "the id travels between tools under the one word the tool schemas use",
     )
     assertTrue(
-      appended.contains("never build an id yourself") &&
-        appended.contains("never guess one") &&
-        appended.contains("never ask the student"),
+      paragraph.contains("never build an id yourself") &&
+        paragraph.contains("never guess one") &&
+        paragraph.contains("never ask the student"),
       "RFC 154: an id is copied from a lookup, never constructed, guessed, or requested",
     )
     assertTrue(
-      appended.contains("the name is ambiguous") && appended.contains("city and state"),
+      paragraph.contains("the name is ambiguous") && paragraph.contains("city and state"),
       "several matches is a question to the student, told apart by the fields the lookup returns",
     )
     assertTrue(
-      appended.contains("temporarily unavailable") && appended.contains("never tell them the school does not exist"),
+      paragraph.contains("temporarily unavailable") && paragraph.contains("never tell them the school does not exist"),
       "an unbuilt index is a deployment state, never an empty world (RFC 154 D-C)",
     )
     // RFCs 141/142 money language: the paragraph names no retired term, which is
     // what keeps the appended span assertable by absence.
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
     // The served-body guard below sweeps the WHOLE prompt; this says the rule
     // holds inside the span v12 actually adds, so a relaxation here is reported
     // as v12's own rather than as the catalog's.
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertParagraphKeepsTheStandingCopyRules("the name-lookup paragraph", paragraph)
   }
 
-  /**
-   * RFC 142's source-jargon sentence, RFC 141's glossary pairs and RFC 151's
-   * comparison paragraph must survive RFC 154's append. They do so by
-   * construction — v12 keeps the whole v11 body as a prefix — but they are the
-   * copy six prior versions have already had to preserve, so they are asserted
-   * rather than assumed. All are extracted at runtime, never retyped here.
-   */
-  @Test
-  fun `coach v12 preserves the source-jargon sentence, the money paragraph and the comparison paragraph verbatim`() {
-    val sentence = sourceJargonSentence()
-    val v12 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v12").getOrThrow().body
-
-    assertTrue(
-      v12.contains(sentence),
-      "v12 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
-    )
-    assertTrue(v12.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-    assertTrue(v12.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
-  }
-
-  /** The v12 name-lookup paragraph: everything v12 appends to the v11 body. The guards are [appendedParagraph]'s. */
-  private fun nameLookupParagraph(): String = appendedParagraph(base = "v11", revised = "v12")
+  private fun nameLookupParagraph(): String = paragraphAt(CoachParagraph.NAME_LOOKUP)
 
   /**
-   * The 0069 seed's structural contract (RFC 153). v13 is ADDITIVE like every
-   * coach seed since 0047: the whole v12 body byte-identical as a prefix,
-   * joined by a single space to exactly one appended paragraph — the
-   * similar-colleges instruction. The paragraph's markers are asserted, not its
-   * full copy: the seed migration is the single home of the approved wording.
+   * The similar-colleges paragraph (RFC 153), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v13 is v12 plus one appended similar-colleges paragraph`() {
-    val appended = similarCollegesParagraph()
+  fun `the served similar-colleges paragraph says the axes it used and the axes it dropped`() {
+    val paragraph = similarCollegesParagraph()
 
-    assertTrue(
-      appended.startsWith(" When a student names one school"),
-      "the paragraph must open with the single space that joins it to the paragraph before it",
-    )
     // The tool is named from the CONSTANT, never typed: a literal would keep
     // passing after the tool was renamed, leaving the seeded prompt telling the
     // model to call a tool that no longer exists.
     assertTrue(
-      appended.contains(SIMILAR_TOOL_NAME),
-      "the paragraph must name the shipping tool [$SIMILAR_TOOL_NAME]: [$appended]",
+      paragraph.contains(SIMILAR_TOOL_NAME),
+      "the paragraph must name the shipping tool [$SIMILAR_TOOL_NAME]: [$paragraph]",
     )
     assertTrue(
-      appended.contains("rather than naming peers from memory"),
+      paragraph.contains("rather than naming peers from memory"),
       "D62: similarity is decided by the call, not by a list the model imagines it knows",
     )
     // The THIRD tool role, and only the third: this paragraph routes an anchor
@@ -2197,15 +1799,15 @@ class SystemPromptCatalogTest {
     // find_college the one name-to-id door and two doors would teach the coach
     // that either will do.
     assertTrue(
-      appended.contains("college_id") && appended.contains(FIND_COLLEGE_TOOL_NAME),
-      "the anchor is a college_id, and [$FIND_COLLEGE_TOOL_NAME] is what turns a name into one: [$appended]",
+      paragraph.contains("college_id") && paragraph.contains(FIND_COLLEGE_TOOL_NAME),
+      "the anchor is a college_id, and [$FIND_COLLEGE_TOOL_NAME] is what turns a name into one: [$paragraph]",
     )
     assertTrue(
-      appended.contains("which axes the answer ranked on") && appended.contains("had to drop"),
+      paragraph.contains("which axes the answer ranked on") && paragraph.contains("had to drop"),
       "D67: the axes used AND the axes dropped are both said, with the reason",
     )
     assertTrue(
-      appended.contains("a silence is never a no"),
+      paragraph.contains("a silence is never a no"),
       "D67 again: an unreported figure was not judged, and is not a failure",
     )
     // The pairing under test is SEEDED COPY versus SHIPPING PAYLOAD, so the key
@@ -2213,64 +1815,30 @@ class SystemPromptCatalogTest {
     // constant, and renaming the key would otherwise leave the shipped prompt
     // telling the coach to read a field the tool no longer emits.
     assertTrue(
-      appended.contains(SimilarCollegesTool.AXES_SCORED_KEY),
-      "the paragraph must name the shipping key [${SimilarCollegesTool.AXES_SCORED_KEY}]: [$appended]",
+      paragraph.contains(SimilarCollegesTool.AXES_SCORED_KEY),
+      "the paragraph must name the shipping key [${SimilarCollegesTool.AXES_SCORED_KEY}]: [$paragraph]",
     )
     assertTrue(
-      appended.contains("rank aid") && appended.contains("Never say it as a percentage"),
+      paragraph.contains("rank aid") && paragraph.contains("Never say it as a percentage"),
       "D70: distance is never rendered as a percentage or as a quality score",
     )
     // RFCs 141/142 money language: the paragraph names no retired term, which is
     // what keeps the appended span assertable by absence.
-    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
-    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
-    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
     // The served-body guard below sweeps the WHOLE prompt; this says the rule
     // holds inside the span v13 actually adds.
-    assertEquals(
-      emptyList(),
-      listSubtractionsNotForbidden(appended),
-      "every mention of subtracting in the new paragraph must forbid it",
-    )
-    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
-    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+    assertParagraphKeepsTheStandingCopyRules("the similar-colleges paragraph", paragraph)
   }
 
-  /**
-   * RFC 142's source-jargon sentence, RFC 141's glossary pairs, RFC 151's
-   * comparison paragraph and RFC 154's name-lookup paragraph must survive RFC
-   * 153's append. They do so by construction — v13 keeps the whole v12 body as
-   * a prefix — but they are the copy seven prior versions have already had to
-   * preserve, so they are asserted rather than assumed. All are extracted at
-   * runtime, never retyped here.
-   */
-  @Test
-  fun `coach v13 preserves the source-jargon sentence, the money paragraph, the comparison and the name-lookup paragraphs verbatim`() {
-    val v13 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v13").getOrThrow().body
+  private fun similarCollegesParagraph(): String = paragraphAt(CoachParagraph.SIMILAR_COLLEGES)
 
-    assertTrue(
-      v13.contains(sourceJargonSentence()),
-      "v13 must carry v6's source-jargon sentence byte-for-byte",
-    )
-    assertTrue(v13.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
-    assertTrue(v13.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
-    assertTrue(v13.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
-  }
-
-  /** The v13 similar-colleges paragraph: everything v13 appends to the v12 body. The guards are [appendedParagraph]'s. */
-  private fun similarCollegesParagraph(): String = appendedParagraph(base = "v12", revised = "v13")
-
-  /** The v9 living-arrangement paragraph: everything v9 appends to the v8 body. The guards are [appendedParagraph]'s. */
-  private fun livingArrangementParagraph(): String = appendedParagraph(base = "v8", revised = "v9")
+  private fun livingArrangementParagraph(): String = paragraphAt(CoachParagraph.LIVING_ARRANGEMENT)
 
   /**
-   * The 0065 seed's structural contract (RFC 150 D58): v10 is the v9 body
-   * byte-identical plus exactly one appended paragraph, the additive shape
-   * every coach seed since 0047 has used. Extracted at runtime, so the
-   * migration stays the one home of the copy.
+   * The search paragraph (RFC 150), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
    */
   @Test
-  fun `coach v10 is the v9 body verbatim plus one appended search paragraph`() {
+  fun `the served search paragraph teaches the subject word and the honest count`() {
     val paragraph = searchParagraph()
 
     // Search by SUBJECT, never by a code the model guessed at.
@@ -2288,15 +1856,113 @@ class SystemPromptCatalogTest {
     assertTrue(paragraph.contains("subtract loans"), "loans are never taken off a price: [$paragraph]")
   }
 
+  private fun searchParagraph(): String = paragraphAt(CoachParagraph.SEARCH)
+
+  /**
+   * The six figure statuses (RFC 166), asserted in the body the runtime is
+   * SERVED — the paragraph that tells the coach to say the entry's own sentence
+   * when a figure has no amount.
+   *
+   * Lifted, when RFC 181 retired the v19-versus-v18 reconstruction test, from
+   * that test's third section: the reconstruction was ancestry, but WHICH
+   * sentences the prompt recites is copy that still ships, and it is checked
+   * here against [FigureStatusCopy] rather than against literals.
+   */
   @Test
-  fun `coach v10 preserves the source-jargon sentence and the money paragraph verbatim`() {
-    val v10 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v10").getOrThrow().body
-    assertTrue(v10.contains(sourceJargonSentence()), "v10 must carry v6's source-jargon sentence byte-for-byte")
-    assertTrue(v10.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+  fun `the served figure-status paragraph recites every shipping status sentence`() {
+    val statuses = paragraphAt(CoachParagraph.FIGURE_STATUS)
+
+    // The key is READ from the tool, never typed: the paragraph tells the coach
+    // to read an array off the payload, and a literal here would keep passing
+    // after a rename, leaving the prompt naming a key the tool does not emit.
+    assertTrue(
+      statuses.contains(CollegeCostChatTool.FIGURE_STATUSES_KEY),
+      "the paragraph must name the shipping key [${CollegeCostChatTool.FIGURE_STATUSES_KEY}]: [$statuses]",
+    )
+    // EXHAUSTIVE over the vocabulary, and read from the SHIPPING sentence: a
+    // reword in FigureStatusCopy would otherwise ship sentence A in the payload
+    // while the prompt enumerated sentence B, with nothing failing. Exhaustive,
+    // so a SEVENTH status also fails here rather than reaching the coach unspoken.
+    FigureStatus.entries.forEach { status ->
+      // REPORTED carries no sentence at all — a plainly reported figure is
+      // given plainly — and the paragraph says exactly that, below.
+      val spoken = FigureStatusCopy.agentlessStatementOf(status) ?: return@forEach
+      assertTrue(
+        statuses.contains(spoken),
+        "the served prompt must recite the SHIPPING sentence for [${status.value}]: [$spoken] in [$statuses]",
+      )
+    }
+    assertTrue(
+      statuses.contains("A figure that is simply reported needs none of these sentences"),
+      "reported is the sixth status: the number is given plainly, with no sentence beside it",
+    )
+    // The OURS/THEIRS split is keyed on the SENTENCE, so the sentence and the
+    // attribution are asserted TOGETHER: reworded in FigureStatusCopy and only
+    // half-updated here, the paragraph would recite our gap among the school's
+    // own silences — the misattribution RFC 149 D-B exists against.
+    val ours = assertNotNull(FigureStatusCopy.agentlessStatementOf(FigureStatus.NOT_COLLECTED_BY_US))
+    assertTrue(
+      statuses.contains("$ours That last sentence is ours and not the school's"),
+      "the sentence that is OURS must be attributed as ours where it is said: [$statuses]",
+    )
+    assertTrue(
+      statuses.contains("it is our gap, so never tell a family the school failed to report"),
+      "D-B reused: a status that is OURS is never spoken as the school's failure",
+    )
+
+    assertFalse(statuses.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(statuses.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(statuses),
+      "every mention of subtracting in this paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(statuses), "this paragraph must transcribe no source codebook")
   }
 
-  /** The v10 search paragraph: everything v10 appends to the v9 body. The guards are [appendedParagraph]'s. */
-  private fun searchParagraph(): String = appendedParagraph(base = "v9", revised = "v10")
+  /**
+   * The two interior rules RFC 166 added — the in-district tier and the at-home
+   * assumption — asserted in the body the runtime is SERVED.
+   *
+   * Lifted from the retired v19-versus-v18 reconstruction test for the same
+   * reason as the figure statuses above: what the rules SAY still ships, and it
+   * is stated here as a property of the shipped prompt rather than as a
+   * subtraction against a previous version's body.
+   */
+  @Test
+  fun `the served coach prompt states the in-district tier and the at-home assumption`() {
+    val served = servedBody()
+
+    // 1. The third tier, and the district that is never asked about (RFC 166 D4).
+    assertTrue(served.contains(IN_DISTRICT_OPENER), "the served prompt must carry the in-district tier: [$IN_DISTRICT_OPENER]")
+    assertTrue(
+      served.contains("never as the tuition and fees line inside a total"),
+      "the in-district figure is a labelled tier, never the tuition line inside a total",
+    )
+    assertTrue(
+      served.contains("never present an in-state figure as an in-district one"),
+      "RFC 161's open item: a figure keeps the label its publisher gave it",
+    )
+    assertTrue(
+      served.contains("Never ask which district a family lives in"),
+      "no new question: residency_state cannot select in-district, and a state answer does not answer a district",
+    )
+    assertTrue(
+      served.contains("does not separate an in-district price, say so in words"),
+      "where the tier is not published, the coach says what we do not know rather than guessing",
+    )
+
+    // 2. The at-home zero, in words, and ours (gate-2 D17). The sentence is read
+    // from the shipping constant, so a reword there fails here rather than
+    // leaving the prompt and the report saying two different things.
+    assertTrue(served.contains(AT_HOME_OPENER), "the served prompt must carry the at-home assumption: [$AT_HOME_OPENER]")
+    assertTrue(served.contains(AT_HOME_ASSUMPTION), "the assumption must be said in the exact words the report says")
+    assertTrue(
+      served.contains("zero is ours rather than the school's") && served.contains("never say the school reported it"),
+      "the zero is a unicoach assumption and is never attributed to the school",
+    )
+  }
 
   /**
    * The 0061 seed's structural contract (RFC 147). Unlike every coach seed
@@ -2377,58 +2043,17 @@ class SystemPromptCatalogTest {
     assertEquals(emptyList(), offenders, "a seeded prompt is transcribing a codebook again")
   }
 
-  /** The v8 admissions paragraph: everything v8 appends to the v7 body. The guards are [appendedParagraph]'s. */
-  private fun admissionsParagraph(): String = appendedParagraph(base = "v7", revised = "v8")
+  private fun admissionsParagraph(): String = paragraphAt(CoachParagraph.ADMISSIONS)
 
   /**
-   * The v7 money paragraph: the paragraph v7 puts where v6's money paragraph
-   * was, extracted through the guarded [revisedMiddle].
+   * The source-jargon sentence, as the served body carries it: the tail of the
+   * money paragraph, from its own opening words to the college-list paragraph.
    */
-  private fun v7MoneyParagraph(): String = revisedMiddle(base = "v6", revised = "v7", prefixOpener = COST_PARAGRAPH_OPENER)
+  private fun sourceJargonSentence(): String = paragraphAt(CoachParagraph.SOURCE_JARGON)
 
   /**
-   * The v6 source-jargon sentence: the sentence v6 inserts at the end of v5's
-   * money paragraph, extracted through the guarded [revisedMiddle].
+   * The money paragraph, as the served body carries it: from its opening words
+   * to the source-jargon sentence that closes it.
    */
-  private fun sourceJargonSentence(): String = revisedMiddle(base = "v5", revised = "v6", prefixOpener = LIST_PARAGRAPH_OPENER)
-
-  /**
-   * The v5 money paragraph: the paragraph v5 puts where v4's cost paragraph
-   * was, extracted through the guarded [revisedMiddle].
-   */
-  private fun moneyParagraph(): String = revisedMiddle(base = "v4", revised = "v5", prefixOpener = COST_PARAGRAPH_OPENER)
-
-  /**
-   * The one guarded extractor behind [moneyParagraph] and
-   * [sourceJargonSentence]: the middle of the [revised] coach prompt, with the
-   * [base] version's byte-identical prefix (everything up to [prefixOpener])
-   * and its byte-identical college-list suffix removed. Both boundaries are
-   * located from the [base] body at runtime, so the seed migration stays the
-   * single home of the approved copy.
-   *
-   * Shared rather than cloned per version because every guard here is about the
-   * MECHANISM, not the copy: each extraction primitive degrades SILENTLY —
-   * `substringBefore` returns the whole receiver when the delimiter is missing,
-   * and `removePrefix`/`removeSuffix` are no-ops when the affix does not match —
-   * and `prefix + suffix` is the whole of [base], so a [revised] that changed
-   * nothing would hand back the empty string and every `contains` downstream
-   * would still be reached and still pass. A duplicated copy of this drifts
-   * (one grew the emptiness check, the other did not); one copy cannot.
-   */
-  private fun revisedMiddle(
-    base: String,
-    revised: String,
-    prefixOpener: String,
-  ): String {
-    val baseBody = SystemPromptsDao.findByNameAndVersion(session, "coach", base).getOrThrow().body
-    val revisedBody = SystemPromptsDao.findByNameAndVersion(session, "coach", revised).getOrThrow().body
-    val prefix = baseBody.substringBefore(prefixOpener)
-    val suffix = LIST_PARAGRAPH_OPENER + baseBody.substringAfter(LIST_PARAGRAPH_OPENER)
-    assertTrue(prefix != baseBody, "$base must contain the opener [$prefixOpener], or the extraction is vacuous")
-    assertTrue(revisedBody.startsWith(prefix), "everything before the opener must be $base byte-for-byte")
-    assertTrue(revisedBody.endsWith(suffix), "$base's college-list paragraph must survive as a byte-identical suffix")
-    val middle = revisedBody.removePrefix(prefix).removeSuffix(suffix)
-    assertTrue(middle.isNotEmpty(), "$revised must actually change the middle; an empty extraction means it equals $base")
-    return middle
-  }
+  private fun moneyParagraph(): String = paragraphAt(CoachParagraph.COST)
 }
