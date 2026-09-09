@@ -1,33 +1,35 @@
 {
-  "fetched_at": "2026-09-08T06:08:28+00:00",
+  "fetched_at": "2026-09-09T16:52:41+00:00",
   "source": "network",
   "anon_key_source": "scraped",
   "corpus": {
-    "manifest_rows": 4799,
-    "cds_fields_rows": 19086,
-    "documents_selected": 448,
+    "manifest_rows": 4806,
+    "cds_fields_rows": 19085,
+    "documents_selected": 446,
     "dropped": {
       "by_reason": {
-        "aid_policy_flag_junk": 32,
+        "aid_policy_flag_junk": 31,
+        "aid_policy_freshmen_vs_ipeds_implausible": 7,
         "aid_policy_h2_contradictory": 1,
-        "aid_policy_h5_average_over_no_borrowers": 169,
-        "aid_policy_h5_contradictory": 16,
-        "aid_policy_value_junk": 12,
+        "aid_policy_h5_average_over_no_borrowers": 173,
+        "aid_policy_h5_contradictory": 15,
+        "aid_policy_value_junk": 13,
         "deadline_date_unparseable": 36,
-        "deadline_flag_junk": 25,
+        "deadline_flag_junk": 26,
         "factor_rating_junk": 16,
         "field_status_not_applicable": 17,
         "field_status_parse_error": 50,
+        "filing_attributed_to_multiple_units": 35,
         "manifest_docs_unusable_no_canonical_year": 35,
         "manifest_docs_unusable_no_ipeds_id": 149,
         "manifest_docs_unusable_sub_institutional": 3,
-        "merit_int_junk": 22
+        "merit_freshmen_vs_ipeds_implausible": 15,
+        "merit_int_junk": 21
       },
       "samples": {
         "aid_policy_flag_junk": [
           "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] fact=[fafsa_required] field_id=[H.801] kind=[text] num=[None] bool=[None] text=[Response 'x']",
           "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] fact=[other_institutional_form_required] field_id=[H.807] kind=[text] num=[None] bool=[None] text=[Response Text]",
-          "unit_id=[145637] document_id=[9d28b4a1-6012-465e-a461-fc4d440ef562] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[2025-02-15 00:00:00]",
           "unit_id=[153384] document_id=[30bcb610-7e0b-4c33-8d25-0adcc4b03f14] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Response Text]",
           "unit_id=[153384] document_id=[30bcb610-7e0b-4c33-8d25-0adcc4b03f14] fact=[other_institutional_form_required] field_id=[H.807] kind=[text] num=[None] bool=[None] text=[Other (specify):]",
           "unit_id=[164076] document_id=[9932de75-fd04-457f-b36a-c11d5f056f5b] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Response Text]",
@@ -44,39 +46,48 @@
           "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[institutional_form_required] field_id=[H.802] kind=[text] num=[None] bool=[None] text=[Not Selected]",
           "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[css_profile_required] field_id=[H.803] kind=[text] num=[None] bool=[None] text=[Not Selected]",
           "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[state_aid_form_required] field_id=[H.804] kind=[text] num=[None] bool=[None] text=[Not Selected]",
-          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[noncustodial_css_profile_required] field_id=[H.805] kind=[text] num=[None] bool=[None] text=[Not Selected]"
+          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[noncustodial_css_profile_required] field_id=[H.805] kind=[text] num=[None] bool=[None] text=[Not Selected]",
+          "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] fact=[business_farm_supplement_required] field_id=[H.806] kind=[text] num=[None] bool=[None] text=[Not Selected]"
+        ],
+        "aid_policy_freshmen_vs_ipeds_implausible": [
+          "unit_id=[145637] document_id=[9d28b4a1-6012-465e-a461-fc4d440ef562] aid_awarded=[14731] ipeds_scfa1n=[7946] ratio=[1.85]",
+          "unit_id=[175272] document_id=[ef0474ac-72c5-400e-9125-97160e443eda] aid_awarded=[2747] ipeds_scfa1n=[1157] ratio=[2.37]",
+          "unit_id=[184603] document_id=[9ece97f5-8807-4579-8f33-234648ee1c95] aid_awarded=[843] ipeds_scfa1n=[514] ratio=[1.64]",
+          "unit_id=[184694] document_id=[40df167c-f911-4e9d-ac74-85cbdcb22bbf] aid_awarded=[843] ipeds_scfa1n=[461] ratio=[1.83]",
+          "unit_id=[377555] document_id=[53541e18-b3ea-4222-a796-bf5feab45887] aid_awarded=[2548] ipeds_scfa1n=[947] ratio=[2.69]",
+          "unit_id=[377555] document_id=[812505fd-f7fb-4934-b24e-b0528635de7b] aid_awarded=[2536] ipeds_scfa1n=[947] ratio=[2.68]",
+          "unit_id=[377564] document_id=[d5cec390-df79-4f8f-8536-cbcd4c6fafbc] aid_awarded=[2548] ipeds_scfa1n=[596] ratio=[4.28]"
         ],
         "aid_policy_h2_contradictory": [
           "unit_id=[166027] document_id=[9030eb3f-36ed-49ca-946a-d4a91e9f8da2] need_fully_met=[936] aid_awarded=[932]"
         ],
         "aid_policy_h5_average_over_no_borrowers": [
-          "unit_id=[105330] document_id=[414cc632-a33e-4338-9178-0b1279f24a0e] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[105330] document_id=[414cc632-a33e-4338-9178-0b1279f24a0e] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[110361] document_id=[ba31e6aa-b457-4f37-9ff3-27a5296072d0] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[110361] document_id=[ba31e6aa-b457-4f37-9ff3-27a5296072d0] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[110404] document_id=[e3a03667-8e1c-4a4d-8920-b01b5dffe465] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[110592] document_id=[ba8b9dee-2927-47d3-b955-bf074311eeab] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[111948] document_id=[22c8aab8-4fad-48e2-a5f2-d2d4384768c7] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[112260] document_id=[4b7c4222-6ac5-44d6-abcf-e67370d1a2f7] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[115409] document_id=[838ae3ae-34fd-48fb-ab9b-e8733ea924fb] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[122931] document_id=[cf47c0a3-55cd-40c7-8255-b98e36864ceb] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[122931] document_id=[cf47c0a3-55cd-40c7-8255-b98e36864ceb] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[125727] document_id=[a889cc8d-9968-4c24-8288-f3e701a5c2a0] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[128771] document_id=[df79729b-36e6-47fe-a68a-4a72c7fe456a] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[128771] document_id=[df79729b-36e6-47fe-a68a-4a72c7fe456a] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[128902] document_id=[5c9cc96e-dc1a-43dc-871d-99bf7716f07a] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[128902] document_id=[5c9cc96e-dc1a-43dc-871d-99bf7716f07a] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[130314] document_id=[18c308a8-9c6f-4976-ae24-6f0ddf0f7052] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[130314] document_id=[18c308a8-9c6f-4976-ae24-6f0ddf0f7052] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]",
-          "unit_id=[137546] document_id=[54a326f5-d136-4877-8403-3ca4c5252226] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] institutional_loan_borrower_count=[0]",
-          "unit_id=[137546] document_id=[54a326f5-d136-4877-8403-3ca4c5252226] fact=[state_loan_debt_avg_usd] source_variable=[H.514] state_loan_borrower_count=[0]"
+          "unit_id=[105330] document_id=[414cc632-a33e-4338-9178-0b1279f24a0e] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[105330] document_id=[414cc632-a33e-4338-9178-0b1279f24a0e] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[110361] document_id=[ba31e6aa-b457-4f37-9ff3-27a5296072d0] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[110361] document_id=[ba31e6aa-b457-4f37-9ff3-27a5296072d0] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[110404] document_id=[e3a03667-8e1c-4a4d-8920-b01b5dffe465] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[110592] document_id=[ba8b9dee-2927-47d3-b955-bf074311eeab] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[111948] document_id=[22c8aab8-4fad-48e2-a5f2-d2d4384768c7] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[112260] document_id=[4b7c4222-6ac5-44d6-abcf-e67370d1a2f7] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[115409] document_id=[838ae3ae-34fd-48fb-ab9b-e8733ea924fb] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[122931] document_id=[cf47c0a3-55cd-40c7-8255-b98e36864ceb] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[122931] document_id=[cf47c0a3-55cd-40c7-8255-b98e36864ceb] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[125727] document_id=[a889cc8d-9968-4c24-8288-f3e701a5c2a0] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[128771] document_id=[df79729b-36e6-47fe-a68a-4a72c7fe456a] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[128771] document_id=[df79729b-36e6-47fe-a68a-4a72c7fe456a] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[128902] document_id=[5c9cc96e-dc1a-43dc-871d-99bf7716f07a] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[128902] document_id=[5c9cc96e-dc1a-43dc-871d-99bf7716f07a] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[130314] document_id=[18c308a8-9c6f-4976-ae24-6f0ddf0f7052] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[130314] document_id=[18c308a8-9c6f-4976-ae24-6f0ddf0f7052] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]",
+          "unit_id=[137546] document_id=[54a326f5-d136-4877-8403-3ca4c5252226] fact=[institutional_loan_debt_avg_usd] source_variable=[H.513] count_fact=[institutional_loan_borrower_count] borrowers=[0]",
+          "unit_id=[137546] document_id=[54a326f5-d136-4877-8403-3ca4c5252226] fact=[state_loan_debt_avg_usd] source_variable=[H.514] count_fact=[state_loan_borrower_count] borrowers=[0]"
         ],
         "aid_policy_h5_contradictory": [
           "unit_id=[100751] document_id=[26375a50-83f9-4f72-9738-e7ee237eb687] fact=[any_loan_borrower_count] borrowers=[2334] graduating_class=[2025]",
           "unit_id=[123961] document_id=[95989e1b-b46f-4abb-a969-72cb65b148c5] fact=[federal_loan_borrower_count] borrowers=[1386] any_loan_borrowers=[1334]",
           "unit_id=[134130] document_id=[32052985-7c91-4e85-832b-8661aa05dbef] fact=[any_loan_borrower_count] borrowers=[1056] graduating_class=[29]",
           "unit_id=[139755] document_id=[afafadc6-324d-464e-9542-f34a35b7764b] fact=[any_loan_borrower_count] borrowers=[1186] graduating_class=[25]",
-          "unit_id=[145637] document_id=[9d28b4a1-6012-465e-a461-fc4d440ef562] fact=[any_loan_borrower_count] borrowers=[2923] graduating_class=[356]",
           "unit_id=[148131] document_id=[18cedfdf-7f88-47b3-b9cb-97af00c678b1] fact=[any_loan_borrower_count] borrowers=[121] graduating_class=[111]",
           "unit_id=[162928] document_id=[4a844d1d-241a-475a-b0d9-0b14374c0640] fact=[any_loan_borrower_count] borrowers=[263] graduating_class=[28]",
           "unit_id=[165015] document_id=[88e42711-54ec-46ce-ade2-4366ac428e6d] fact=[private_loan_borrower_count] borrowers=[50] any_loan_borrowers=[33]",
@@ -91,6 +102,7 @@
         ],
         "aid_policy_value_junk": [
           "unit_id=[110635] document_id=[ff9aaa6b-958c-405c-87e8-5124a6b348ce] fact=[any_loan_debt_avg_usd] field_id=[H.511] kind=[text] num=[None] bool=[None] text=[Average in $]",
+          "unit_id=[128106] document_id=[57386648-a202-465a-b635-985098762dc6] fact=[private_loan_borrower_count] field_id=[H.505] kind=[number] num=[6.85] bool=[None] text=[6.85]",
           "unit_id=[168430] document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] fact=[aid_awarded_freshmen_count] field_id=[H.204] kind=[number] num=[3126429.42] bool=[None] text=[3126429.42]",
           "unit_id=[168430] document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] fact=[private_loan_debt_avg_usd] field_id=[H.515] kind=[text] num=[None] bool=[None] text=[Less Than Full-time Undergrad]",
           "unit_id=[173258] document_id=[83625ee3-be46-423d-9ed0-39982b37306f] fact=[avg_need_based_grant_usd] field_id=[H.211] kind=[text] num=[None] bool=[None] text=[Nearest $1]",
@@ -206,6 +218,28 @@
           "document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] field_id=[H.209]",
           "document_id=[4a3d7b48-ce16-4896-a667-970c466e1966] field_id=[H.505]"
         ],
+        "filing_attributed_to_multiple_units": [
+          "unit_id=[167358] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+          "unit_id=[167899] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+          "unit_id=[225511] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+          "unit_id=[229407] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+          "unit_id=[231970] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+          "unit_id=[232982] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+          "unit_id=[237057] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+          "unit_id=[475273] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+          "unit_id=[482705] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+          "unit_id=[167358] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+          "unit_id=[167899] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+          "unit_id=[168421] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+          "unit_id=[231970] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+          "unit_id=[232982] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+          "unit_id=[237057] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+          "unit_id=[475273] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+          "unit_id=[482705] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+          "unit_id=[167358] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+          "unit_id=[168421] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+          "unit_id=[225511] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]"
+        ],
         "manifest_docs_unusable_no_canonical_year": [
           "document_id=[06541549-da8d-496c-9965-7e3f524a8c1b]",
           "document_id=[07bd0dbe-322a-46a8-8ec6-05591f6c5911]",
@@ -255,6 +289,23 @@
           "document_id=[6456e48a-e6b3-44ff-b62a-3f9cd74f9e36]",
           "document_id=[9dc325ce-eeba-47ba-874a-f31c414d65a5]"
         ],
+        "merit_freshmen_vs_ipeds_implausible": [
+          "unit_id=[127556] document_id=[59440700-4604-476e-b0ae-70e02d943a8b] freshmen=[4543] ipeds_scfa1n=[1632] ratio=[2.78]",
+          "unit_id=[134130] document_id=[32052985-7c91-4e85-832b-8661aa05dbef] freshmen=[32857] ipeds_scfa1n=[6594] ratio=[4.98]",
+          "unit_id=[145637] document_id=[9d28b4a1-6012-465e-a461-fc4d440ef562] freshmen=[33994] ipeds_scfa1n=[7946] ratio=[4.28]",
+          "unit_id=[168254] document_id=[21819bc6-0ea9-4fa2-926c-7ba689382210] freshmen=[892] ipeds_scfa1n=[589] ratio=[1.51]",
+          "unit_id=[168421] document_id=[72d29513-4382-4a48-b1fc-d6f494c88061] freshmen=[390] ipeds_scfa1n=[1354] ratio=[0.29]",
+          "unit_id=[175272] document_id=[ef0474ac-72c5-400e-9125-97160e443eda] freshmen=[5793] ipeds_scfa1n=[1157] ratio=[5.01]",
+          "unit_id=[184603] document_id=[9ece97f5-8807-4579-8f33-234648ee1c95] freshmen=[1057] ipeds_scfa1n=[514] ratio=[2.06]",
+          "unit_id=[184694] document_id=[40df167c-f911-4e9d-ac74-85cbdcb22bbf] freshmen=[1057] ipeds_scfa1n=[461] ratio=[2.29]",
+          "unit_id=[184782] document_id=[a4bcfebf-61b6-41ed-a41c-92679dd80f81] freshmen=[14181] ipeds_scfa1n=[2574] ratio=[5.51]",
+          "unit_id=[189088] document_id=[738de6c4-200a-4253-9204-0400d863cab9] freshmen=[710] ipeds_scfa1n=[444] ratio=[1.60]",
+          "unit_id=[203845] document_id=[df722e4e-84eb-40ae-bd2c-4db099a8c3d2] freshmen=[204] ipeds_scfa1n=[320] ratio=[0.64]",
+          "unit_id=[206589] document_id=[571a135e-ea1f-4dae-a778-24e9fa01a451] freshmen=[372] ipeds_scfa1n=[578] ratio=[0.64]",
+          "unit_id=[206604] document_id=[2f06aa84-ee78-48c7-a17f-08c02f72d16d] freshmen=[249] ipeds_scfa1n=[1235] ratio=[0.20]",
+          "unit_id=[377555] document_id=[53541e18-b3ea-4222-a796-bf5feab45887] freshmen=[7121] ipeds_scfa1n=[947] ratio=[7.52]",
+          "unit_id=[377564] document_id=[d5cec390-df79-4f8f-8536-cbcd4c6fafbc] freshmen=[7121] ipeds_scfa1n=[596] ratio=[11.95]"
+        ],
         "merit_int_junk": [
           "unit_id=[107558] document_id=[d529dd95-5e84-4236-937e-209dee6c0f6f] field_id=[H.2A02] value=[12758.62]",
           "unit_id=[110538] document_id=[ca78ae9f-6758-4aa0-b41f-aa0e2574a553] field_id=[H.201] value=[2.151]",
@@ -270,12 +321,12 @@
           "unit_id=[178387] document_id=[e5297b46-d1c7-4208-b98d-2864ab2fc605] field_id=[H.2A02] value=[2984.42]",
           "unit_id=[178420] document_id=[b912b9ef-c7a3-4a5b-bae3-b04049be9810] field_id=[H.2A02] value=[6206.78]",
           "unit_id=[194578] document_id=[4221049b-0d5d-4c4c-923f-9c49b4757f4d] field_id=[H.2A02] value=[21746.7575381264]",
-          "unit_id=[203845] document_id=[df722e4e-84eb-40ae-bd2c-4db099a8c3d2] field_id=[H.2A02] value=[30139.71]",
           "unit_id=[208646] document_id=[bd96b258-11c2-4257-827f-4c104e56127d] field_id=[H.2A02] value=[2950.01]",
           "unit_id=[209612] document_id=[a2f2159c-dafd-402b-b251-7778da6c8f8f] field_id=[H.2A02] value=[33040.1515151515]",
           "unit_id=[210669] document_id=[83950eb0-0ddb-467b-b848-c5a004ff533d] field_id=[H.2A02] value=[36327.6]",
           "unit_id=[217864] document_id=[02fe8632-c79b-4cfc-9240-669c394676a1] field_id=[H.2A02] value=[9317.0576]",
-          "unit_id=[218724] document_id=[b0842f39-baee-48fc-bab3-d2ac0a3162dc] field_id=[H.2A02] value=[6413.11]"
+          "unit_id=[218724] document_id=[b0842f39-baee-48fc-bab3-d2ac0a3162dc] field_id=[H.2A02] value=[6413.11]",
+          "unit_id=[233921] document_id=[73678f3f-d50d-4340-8888-ebc60ef20a4d] field_id=[H.2A02] value=[3288.33]"
         ]
       },
       "by_group": {
@@ -283,7 +334,8 @@
           "by_reason": {
             "documents_skipped": 17,
             "fell_back_to_older_doc": 17,
-            "passed_over": 100,
+            "filing_attributed_to_multiple_units": 8,
+            "passed_over": 101,
             "unreported_in_every_doc": 65
           },
           "samples": {
@@ -305,6 +357,16 @@
               "unit_id=[231624] document_id=[74388eac-dcb7-46fe-ac60-c14b918ec21e]",
               "unit_id=[240444] document_id=[a749b443-d224-40db-a646-008fe26616a3]",
               "unit_id=[482680] document_id=[938e69ba-4da2-4a8b-adba-a2a6af1254bb]"
+            ],
+            "filing_attributed_to_multiple_units": [
+              "unit_id=[167358] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+              "unit_id=[167899] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+              "unit_id=[168421] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+              "unit_id=[231970] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[232982] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[237057] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+              "unit_id=[475273] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+              "unit_id=[482705] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]"
             ],
             "passed_over": [
               "unit_id=[109651] document_id=[239bc884-621d-4eb1-8969-5284d25f6eec] reasons=[nothing_reported]",
@@ -354,10 +416,11 @@
         },
         "aid_policy": {
           "by_reason": {
-            "documents_skipped": 9,
-            "fell_back_to_older_doc": 9,
-            "passed_over": 76,
-            "unreported_in_every_doc": 61
+            "documents_skipped": 10,
+            "fell_back_to_older_doc": 10,
+            "filing_attributed_to_multiple_units": 10,
+            "passed_over": 83,
+            "unreported_in_every_doc": 66
           },
           "samples": {
             "fell_back_to_older_doc": [
@@ -369,7 +432,20 @@
               "unit_id=[165015] document_id=[c7dfe2c1-244d-4b90-9f3d-33bb97a9673e]",
               "unit_id=[166027] document_id=[0e482995-83a3-4dcf-92f1-296ca4e8cf94]",
               "unit_id=[217420] document_id=[6bca036d-98a7-4592-b9c7-b68c48566e6d]",
-              "unit_id=[219602] document_id=[1d3f9717-72a2-4137-a9ca-d74c1b10b76a]"
+              "unit_id=[219602] document_id=[1d3f9717-72a2-4137-a9ca-d74c1b10b76a]",
+              "unit_id=[377564] document_id=[636cbd35-731f-4769-ade9-4f4235509a89]"
+            ],
+            "filing_attributed_to_multiple_units": [
+              "unit_id=[167358] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+              "unit_id=[167899] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+              "unit_id=[168421] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+              "unit_id=[225511] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+              "unit_id=[229407] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+              "unit_id=[231970] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[232982] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[237057] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+              "unit_id=[475273] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+              "unit_id=[482705] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]"
             ],
             "passed_over": [
               "unit_id=[102094] document_id=[cd34785d-8734-4b24-8401-1906fdc2e4bb] reasons=[nothing_reported]",
@@ -413,7 +489,7 @@
               "unit_id=[140252]",
               "unit_id=[141334]",
               "unit_id=[145600]",
-              "unit_id=[162584]"
+              "unit_id=[145637]"
             ]
           }
         },
@@ -421,6 +497,7 @@
           "by_reason": {
             "documents_skipped": 2,
             "fell_back_to_older_doc": 2,
+            "filing_attributed_to_multiple_units": 8,
             "passed_over": 143,
             "unreported_in_every_doc": 128
           },
@@ -428,6 +505,16 @@
             "fell_back_to_older_doc": [
               "unit_id=[100751] document_id=[2522dd85-cab4-4b37-9a7a-e591cee417e6]",
               "unit_id=[182290] document_id=[3bf3a448-7286-4c50-b07b-e0de299d7432]"
+            ],
+            "filing_attributed_to_multiple_units": [
+              "unit_id=[167358] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+              "unit_id=[168421] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+              "unit_id=[225511] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+              "unit_id=[229407] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+              "unit_id=[231970] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[232982] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[237057] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+              "unit_id=[482705] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]"
             ],
             "passed_over": [
               "unit_id=[100751] document_id=[26375a50-83f9-4f72-9738-e7ee237eb687] reasons=[nothing_reported]",
@@ -477,21 +564,37 @@
         },
         "merit_aid": {
           "by_reason": {
-            "documents_skipped": 8,
-            "fell_back_to_older_doc": 8,
-            "passed_over": 87,
-            "unreported_in_every_doc": 70
+            "documents_skipped": 12,
+            "fell_back_to_older_doc": 12,
+            "filing_attributed_to_multiple_units": 9,
+            "passed_over": 102,
+            "unreported_in_every_doc": 81
           },
           "samples": {
             "fell_back_to_older_doc": [
+              "unit_id=[134130] document_id=[aac6fa39-cc4c-417b-9d54-c78539b2ddbf]",
               "unit_id=[142115] document_id=[aa506b16-209a-4837-9766-c1c80997acd1]",
               "unit_id=[143084] document_id=[b4bf4751-c54d-4e6b-983b-5d540acc5d4d]",
+              "unit_id=[168254] document_id=[95c2f673-fc49-42bb-9635-3e92e4949977]",
               "unit_id=[168430] document_id=[a13d0329-d149-4354-a711-444916db7bd3]",
               "unit_id=[169716] document_id=[2e06a561-2775-4bbd-8f05-46938efe1f66]",
               "unit_id=[196200] document_id=[44cb5199-f772-4d58-80fa-71d258b7d145]",
               "unit_id=[211440] document_id=[4fea1316-20cf-4875-ab27-ee557b1239cd]",
               "unit_id=[219602] document_id=[1d3f9717-72a2-4137-a9ca-d74c1b10b76a]",
-              "unit_id=[222983] document_id=[d0fcff58-331d-4e7e-b1d6-4d58ec15f9b7]"
+              "unit_id=[222983] document_id=[d0fcff58-331d-4e7e-b1d6-4d58ec15f9b7]",
+              "unit_id=[377555] document_id=[812505fd-f7fb-4934-b24e-b0528635de7b]",
+              "unit_id=[377564] document_id=[636cbd35-731f-4769-ade9-4f4235509a89]"
+            ],
+            "filing_attributed_to_multiple_units": [
+              "unit_id=[167358] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]",
+              "unit_id=[167899] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+              "unit_id=[225511] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+              "unit_id=[229407] source_year=[2025] source_url=[https://www.uh.edu/ir/reports/common-data-sets/cds-data/common_data_set_2025-2026_final.xlsx] units=[225511,229407]",
+              "unit_id=[231970] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[232982] source_year=[2025] source_url=[https://www.odu.edu/sites/default/files/2026/documents/cds-2025-2026.pdf] units=[231970,232982]",
+              "unit_id=[237057] source_year=[2024] source_url=[https://drive.usercontent.google.com/download?id=1IPdvZGD-gzDYjb8QUWKuj8UgZk-wgpFr&export=download] units=[168421,237057]",
+              "unit_id=[475273] source_year=[2024] source_url=[https://springfield.edu/sites/default/files/springfield-college-2024-25-common-data-set-usnews-v4.pdf] units=[167899,475273]",
+              "unit_id=[482705] source_year=[2024] source_url=[http://uds.northeastern.edu/wp-content/uploads/2026/03/CDS-2024-25.pdf] units=[167358,482705]"
             ],
             "passed_over": [
               "unit_id=[109651] document_id=[239bc884-621d-4eb1-8969-5284d25f6eec] reasons=[nothing_reported]",
@@ -505,15 +608,15 @@
               "unit_id=[117946] document_id=[c0f11f94-5e90-47f6-83cb-288bc7122b66] reasons=[nothing_reported]",
               "unit_id=[121345] document_id=[7da3f8d7-7cf0-47a3-8761-5724a1ccaedf] reasons=[nothing_reported]",
               "unit_id=[127200] document_id=[d57ecc9e-4b6f-4e78-9f81-5d7df94baafc] reasons=[nothing_reported]",
+              "unit_id=[127556] document_id=[59440700-4604-476e-b0ae-70e02d943a8b] reasons=[merit_freshmen_vs_ipeds_implausible]",
               "unit_id=[127741] document_id=[8a832c58-29c8-4ffa-bc6f-1511a71ba8cf] reasons=[nothing_reported]",
               "unit_id=[133881] document_id=[bc073508-c771-4c11-bf23-09ea9426e0c4] reasons=[nothing_reported]",
               "unit_id=[133951] document_id=[5547814b-7b28-4383-a345-db8de786da76] reasons=[nothing_reported]",
+              "unit_id=[134130] document_id=[32052985-7c91-4e85-832b-8661aa05dbef] reasons=[merit_freshmen_vs_ipeds_implausible]",
               "unit_id=[137078] document_id=[4f964bc3-874f-40be-92f0-d28987e6ef79] reasons=[nothing_reported]",
               "unit_id=[139940] document_id=[1f914464-1f2c-4668-8717-61dcd8a808d0] reasons=[nothing_reported]",
               "unit_id=[140252] document_id=[0b1183e9-272e-4cdd-acbc-40449e1ff314] reasons=[nothing_reported]",
-              "unit_id=[142115] document_id=[d2981bd1-078d-4230-b1e3-78be4987d5b7] reasons=[nothing_reported]",
-              "unit_id=[143084] document_id=[33d77798-ea16-4f89-ad7d-832eac59fa8d] reasons=[nothing_reported]",
-              "unit_id=[145600] document_id=[db73b984-fe13-4508-bfa9-f931635561e1] reasons=[nothing_reported]"
+              "unit_id=[142115] document_id=[d2981bd1-078d-4230-b1e3-78be4987d5b7] reasons=[nothing_reported]"
             ],
             "unreported_in_every_doc": [
               "unit_id=[109651]",
@@ -526,6 +629,7 @@
               "unit_id=[117946]",
               "unit_id=[121345]",
               "unit_id=[127200]",
+              "unit_id=[127556]",
               "unit_id=[127741]",
               "unit_id=[133881]",
               "unit_id=[133951]",
@@ -533,25 +637,32 @@
               "unit_id=[139940]",
               "unit_id=[140252]",
               "unit_id=[145600]",
-              "unit_id=[152318]",
-              "unit_id=[152390]",
-              "unit_id=[155511]"
+              "unit_id=[145637]",
+              "unit_id=[152318]"
             ]
           }
         }
       }
     }
   },
+  "cross_source": {
+    "ipeds_freshmen": {
+      "ran": true,
+      "units": 3328,
+      "compared": 310,
+      "unreadable_rows": 0
+    }
+  },
   "rows": {
-    "merit-aid.csv": 368,
-    "admission-factors.csv": 373,
-    "deadlines.csv": 846,
-    "aid_policy.csv": 3568
+    "merit-aid.csv": 352,
+    "admission-factors.csv": 369,
+    "deadlines.csv": 831,
+    "aid_policy.csv": 3496
   },
   "sha256": {
-    "merit-aid.csv": "b551a82ed25dd7911c166ca78c1ef420b7771805fe5ff4e949b294a8ca1832dc",
-    "admission-factors.csv": "98811ebcab2d1bae3628cc5db21bc6068e070b33705d3b1aba90affa34ec1525",
-    "deadlines.csv": "6d32f9c9d952d0bd29429d5d39c54b0b1301b1eea025f4d22ac1cce05c4e4618",
-    "aid_policy.csv": "fa8bdb3958a507d8d540a43c3427df308116aa624a3efac13f168e9e562097da"
+    "merit-aid.csv": "fc19c011b423a0780d9b0b460b40d34a5d6c9bff42959df6c2612351e5c1379c",
+    "admission-factors.csv": "5e35377954d53a882a3fb14fab7a6dc673dd72a9d572137aebc93ed9412f28be",
+    "deadlines.csv": "3f86fc6190a3faa192d985c01b5ebde4022b7bcee12958e19d5df5a052eb3750",
+    "aid_policy.csv": "f7378a0bac4c4682dcc4703dac73a0fa8747f984453eb80af55cf99c84942bb6"
   }
 }

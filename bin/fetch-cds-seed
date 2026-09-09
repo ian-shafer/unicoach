@@ -28,7 +28,7 @@ of the offending documents so a count is traceable without re-fetching.
 
 Stdlib-only (dev-shell python3), no dependencies. Usage:
 
-    fetch-cds-seed [-o <outdir>] [-F <fixtures-dir>] [-K <jwt>]
+    fetch-cds-seed [-o <outdir>] [-F <fixtures-dir>] [-K <jwt>] [-I <ipeds-dir>]
 
     -o DIR    output directory (default: db/seed/cds under the repo root)
     -F DIR    offline mode for tests: read <dir>/manifest.json and
@@ -37,6 +37,12 @@ Stdlib-only (dev-shell python3), no dependencies. Usage:
               Falls back to $COLLEGEDATA_ANON_KEY, then to scraping the
               corpus's own API page. PROVENANCE.json records which route
               a run used, so the credential is auditable.
+    -I DIR    directory holding the IPEDS sfa2223.csv this run checks CDS
+              freshman counts against (default: db/seed/ipeds under the repo
+              root, where bin/fetch-ipeds writes it). The IPEDS CSVs are not
+              committed, so an ABSENT default file is not an error: the check
+              is not run and PROVENANCE.json says so. A -I named explicitly
+              and holding no sfa2223.csv is a usage mistake (22).
     -h        help
 
 Options are parsed by the stdlib getopt module, the same short-option grammar
@@ -86,6 +92,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
     EXIT_INVALID_ARG_VALUE,
+    decode as shared_decode,
     fatal as shared_fatal,
     log_info,
     HTTP_ERROR_BODY_PREVIEW_BYTES,
@@ -112,6 +119,42 @@ from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "cds"
+
+# RFC 182 rule 1: the CDS freshman count (H.201) checked against the federal
+# file's own cohort count for the same institution. bin/fetch-ipeds writes
+# sfa2223.csv here; it is deliberately NOT committed (db/seed/ipeds keeps only
+# PROVENANCE.json and FETCH-NOTES.md), so this default may legitimately be
+# absent and the check is then not run rather than fatal.
+DEFAULT_IPEDS_DIR = REPO_ROOT / "db" / "seed" / "ipeds"
+IPEDS_SFA_FILE = "sfa2223.csv"
+IPEDS_SFA_UNIT_COLUMN = "UNITID"
+# SCFA1N: full-time first-time degree/certificate-seeking undergraduates -- the
+# cohort section H of the CDS is filed over, so the like-for-like of H.201.
+IPEDS_SFA_COHORT_COLUMN = "SCFA1N"
+
+# RFC 182 rule 1 at H.201. How far a CDS freshman count may sit from the federal
+# cohort count before the H2A block is refused, in EITHER direction. SFA2223 is
+# one to two cohort years behind the filings we hold and real year-on-year drift
+# is a few per cent, so 1.5x is slack an honest filing never needs. Two-sided
+# because a count 50x too SMALL is as unreadable as one 5x too large -- the
+# worst row the corpus has held (Penn State, 185 freshmen against a cohort of
+# 9,181) was on the low side, and a one-sided rule would never have seen it.
+IPEDS_FRESHMEN_MAX_RATIO = 1.5
+IPEDS_FRESHMEN_MIN_RATIO = 1 / IPEDS_FRESHMEN_MAX_RATIO
+
+# RFC 182 rule 1 at H.204, ONE-SIDED and so a bound of its own. Freshmen AWARDED
+# aid are a SUBSET of the cohort, so only a count larger than the cohort that
+# contains it is evidence; a low count is the normal filing. Named apart from
+# the H2A band because tuning that band must not silently retune this refusal.
+IPEDS_AWARDED_FRESHMEN_MAX_RATIO = 1.5
+
+# Enough of a wrong file's header to recognise it (the wrong survey, an HTML
+# error page, a renamed column), without pasting a 400-column survey row.
+IPEDS_HEADER_PREVIEW_COLUMNS = 12
+
+# How many unreadable SFA rows the warning names before it stops: enough to see
+# WHICH column moved, bounded so a survey-wide format change is one line.
+IPEDS_UNREADABLE_SAMPLE = 5
 
 API_PAGE_URL = "https://www.collegedata.fyi/api"
 REST_BASE = "https://api.collegedata.fyi/rest/v1"
@@ -214,26 +257,29 @@ FACTOR_COLUMNS = [
     ("applicant_interest", "C.718"),
 ]
 
-MERIT_HEADER = [
+# TUPLES, not lists: these are shared module-level values carried by reference
+# on the FACT_GROUPS records, and a header a caller can append to is a header
+# that can be changed under the table that describes it.
+MERIT_HEADER = (
     "unit_id", "source_year", "freshmen_ft_total", "no_need_merit_count",
     "no_need_merit_avg", "source_url", "archive_url",
-]
-FACTORS_HEADER = (
+)
+FACTORS_HEADER = tuple(
     ["unit_id", "source_year"] + [c for c, _ in FACTOR_COLUMNS] + ["source_url", "archive_url"]
 )
-DEADLINES_HEADER = [
+DEADLINES_HEADER = (
     "unit_id", "source_year", "round", "offered", "closing_month", "closing_day",
     "notification_month", "notification_day", "source_url", "archive_url",
-]
+)
 # One row per (college, cycle, fact). Unlike the three tables above, this one
 # carries a per-cell STATUS: the CDS need figures are the first place a cell the
 # corpus HAS but could not extract must survive as a fact about OUR gap
 # (RFC 170, D7) rather than as a drop counter. `value` is empty exactly when the
 # status bears no value.
-AID_POLICY_HEADER = [
+AID_POLICY_HEADER = (
     "unit_id", "source_year", "fact", "value", "status", "source_variable",
     "source_url", "archive_url",
-]
+)
 
 # The figure_statuses slugs this seed writes; the vocabulary is unicoach's
 # (db/data/money-vocabulary.json), and these three are the only readings the
@@ -480,6 +526,14 @@ STICKY_DROPS = frozenset(
         # Sticky for the same reason as its H2 sibling -- it describes the
         # DOCUMENT, so it stays visible even when an older filing covered for it.
         "aid_policy_h5_contradictory",
+        # RFC 182 rule 1: a freshman count the federal file contradicts. Sticky
+        # for the same reason as its H2A sibling above -- it describes the
+        # DOCUMENT, so it stays in the ledger even when an older filing covered
+        # for it.
+        "merit_freshmen_vs_ipeds_implausible",
+        # RFC 182 rule 1 at H.204, the same freshman cohort at its second
+        # address in the aid-policy group. Sticky for the same reason.
+        "aid_policy_freshmen_vs_ipeds_implausible",
         # The CORPUS's own status vocabulary drifting -- the same kind of fact
         # deadline_schema_unmapped is sticky for. Without this, a document that
         # yields no aid-policy rows takes the count and the sample with it, and
@@ -688,6 +742,238 @@ def load_corpus(fixtures, anon_key_argument):
     anon_key, source = resolve_anon_key(anon_key_argument)
     manifest, fields = fetch_corpus(anon_key)
     return manifest, fields, source
+
+
+class IpedsFreshmen:
+    """UNITID -> SCFA1N, the federal cohort count RFC 182's two cross-source
+    rules compare a CDS freshman count against, plus the colleges this run
+    actually compared and the survey rows it could not read.
+
+    The tally is kept HERE rather than counted afterwards because the checks run
+    per document attempt, inside the per-group fallback: "how many colleges did
+    this run compare?" is answerable only by the thing that answered the
+    questions. A refusal count of zero and a check that never ran are different
+    facts, and PROVENANCE.json has to be able to tell them apart -- as is a
+    check that ran over a federal file half of whose rows we could not read."""
+
+    ran = True
+
+    def __init__(self, cohorts, unreadable_rows=0):
+        self.cohorts = cohorts
+        self.unreadable_rows = unreadable_rows
+        self.compared_units = set()
+
+    def get_cohort(self, unit_id):
+        """The federal cohort count for this college, or None when there is
+        nothing to compare against -- no SFA row at all, or a cohort of zero,
+        which is a denominator no ratio exists over.
+
+        A PURE lookup: asking is not comparing, so a guard that asks and then
+        decides not to compare does not move the ledger."""
+        return self.cohorts.get(unit_id)
+
+    def record_comparison(self, unit_id):
+        """This run compared that college against the federal file. Said
+        explicitly by the caller, because only the caller knows whether the
+        cohort it asked for was actually used."""
+        self.compared_units.add(unit_id)
+
+    def as_json(self):
+        return {
+            "ran": True,
+            "units": len(self.cohorts),
+            "compared": len(self.compared_units),
+            # Published, not just warned about: a survey we could read only half
+            # of narrows rule 1 to whatever survived, and a ledger that says
+            # only "ran" would spell that as "nothing was wrong".
+            "unreadable_rows": self.unreadable_rows,
+        }
+
+
+class IpedsFreshmenUnavailable:
+    """The other half of the same outcome: a run with no federal cohort table to
+    check against, because this checkout has no sfa2223.csv (the IPEDS CSVs are
+    gitignored, and bin/fetch-external-data imposes no order between the two
+    fetchers).
+
+    It answers every question the loaded lookup answers -- no cohort for any
+    college, and the PROVENANCE block that says the check did not run -- so no
+    caller has to know which of the two it is holding, and the two shapes the
+    ledger key can take are written side by side rather than 1,200 lines
+    apart."""
+
+    ran = False
+
+    def __init__(self, reason, path):
+        self.reason = reason
+        self.path = path
+
+    def get_cohort(self, unit_id):
+        """Nothing to compare against, for every college."""
+        return None
+
+    def record_comparison(self, unit_id):
+        """Never called -- a comparison needs a cohort -- and defined so the two
+        variants answer the same questions."""
+
+    def as_json(self):
+        # The PATH, because -I makes it a choice: a reader of a committed
+        # PROVENANCE.json can otherwise not tell a checkout with no IPEDS data
+        # from a run pointed at a mistyped directory.
+        return {"ran": False, "reason": self.reason, "path": str(self.path)}
+
+
+def decode(body, filename):
+    """The shared guarded decode (bin/pyfunctions.py), named for this script.
+
+    utf-8-sig strips the BOM some IPEDS members carry and is plain UTF-8 where
+    there is none; the cp1252 fallback is WARNED about and, when even that
+    fails, refused. The local alternative -- errors="replace" -- would read a
+    mangled cohort table as if it were the survey."""
+    return shared_decode(body, filename, SCRIPT_NAME)
+
+
+def parse_count(cell):
+    """A whole number from one federal CSV cell, or None when it is not one.
+
+    `int` is the parser, not `str.isdigit`: "9\u00b2".isdigit() is True while
+    int("9\u00b2") raises, and \u00b2 is exactly what `decode`'s cp1252 fallback
+    produces from a mis-encoded byte. Asking the parser is the only way the
+    answer and the acceptance test cannot disagree."""
+    try:
+        return int(str(cell or "").strip())
+    except ValueError:
+        return None
+
+
+def read_sfa_survey(path):
+    """The federal SFA CSV at `path` as (column names, rows), or a refusal
+    naming it.
+
+    A file this run can SEE but cannot READ or PARSE is a fault of this script's
+    inputs, so it is reported the way every other refusal here is -- one
+    sentence naming the file and the fix -- rather than as the stdlib traceback
+    an unguarded read or row loop would put in front of the operator."""
+    try:
+        rows = csv.DictReader(io.StringIO(decode(path.read_bytes(), path.name), newline=""))
+        return tuple(rows.fieldnames or ()), list(rows)
+    except OSError as error:
+        fatal(
+            f"[{path}] is present but unreadable [{error}]; re-run bin/fetch-ipeds, "
+            f"or remove the file to skip the check deliberately"
+        )
+    except csv.Error as error:
+        fatal(
+            f"[{path}] is present but does not parse as CSV [{error}]; re-run "
+            f"bin/fetch-ipeds, or remove the file to skip the check deliberately"
+        )
+
+
+def require_sfa_layout(path, fieldnames):
+    """Refuses a present file that is not the federal SFA layout.
+
+    The columns are the SURVEY's, not ours. Without this, csv.DictReader hands
+    back None for every row of a renamed or truncated member, every filing goes
+    uncompared, and the ledger says the check ran. The header actually read is
+    the evidence, so the message carries it: "not the SFA layout" is the
+    conclusion an operator cannot act on alone."""
+    missing = [
+        column
+        for column in (IPEDS_SFA_UNIT_COLUMN, IPEDS_SFA_COHORT_COLUMN)
+        if column not in fieldnames
+    ]
+    if not missing:
+        return
+    found = ", ".join(fieldnames[:IPEDS_HEADER_PREVIEW_COLUMNS]) or "no header row"
+    fatal(
+        f"[{path}] carries no [{', '.join(missing)}]; it has [{len(fieldnames)}] columns "
+        f"beginning [{found}], so it is not the SFA survey layout bin/fetch-ipeds writes "
+        f"and no CDS freshman count could be checked against it"
+    )
+
+
+def get_sfa_cohorts(path, rows):
+    """(UNITID -> SCFA1N, the rows carrying text we could not read, the first
+    row that yielded no cohort) from the survey.
+
+    Only a POSITIVE cohort is kept: a zero SCFA1N is not a denominator. A BLANK
+    cell is the survey saying nothing about that college -- an honest absence,
+    and a third of SFA2223's rows are exactly that -- so it is skipped in
+    silence. A cell that carries TEXT we cannot read is a different fact: the
+    survey has started writing "1,234", "NA" or an imputation code, and those
+    colleges leave the check while the ledger would still say it ran over the
+    whole file. Those are counted, warned about, and published.
+
+    A UNITID listed twice is refused outright: the SFA survey is one row per
+    institution, and last-wins would judge a college against whichever cohort
+    the file happened to list last."""
+    cohorts = {}
+    unreadable = []
+    rejected = None
+    for row in rows:
+        unit_cell = str(row.get(IPEDS_SFA_UNIT_COLUMN) or "").strip()
+        cohort_cell = str(row.get(IPEDS_SFA_COHORT_COLUMN) or "").strip()
+        unit = parse_count(unit_cell)
+        cohort = parse_count(cohort_cell)
+        pair = f"{IPEDS_SFA_UNIT_COLUMN}=[{unit_cell}] {IPEDS_SFA_COHORT_COLUMN}=[{cohort_cell}]"
+        if unit is None or cohort is None or cohort <= 0:
+            if rejected is None:
+                rejected = pair
+            if (unit_cell and unit is None) or (cohort_cell and cohort is None):
+                unreadable.append(pair)
+            continue
+        if unit in cohorts:
+            fatal(
+                f"[{path}] lists [{IPEDS_SFA_UNIT_COLUMN}]=[{unit}] more than once; the SFA "
+                f"survey is one row per institution, so no single cohort count could be "
+                f"checked against -- re-run bin/fetch-ipeds"
+            )
+        cohorts[unit] = cohort
+    if unreadable:
+        log_warning(
+            f"[{path}]: [{len(unreadable)}] row(s) carry an unreadable "
+            f"[{IPEDS_SFA_UNIT_COLUMN}]/[{IPEDS_SFA_COHORT_COLUMN}] pair and were not "
+            f"compared against, e.g. [{'] ['.join(unreadable[:IPEDS_UNREADABLE_SAMPLE])}]"
+        )
+    return cohorts, unreadable, rejected
+
+
+def require_usable_cohorts(path, cohorts, scanned, rejected):
+    """Refuses a present file that yielded no cohort at all.
+
+    Truncated, or the survey moved -- the two read identically at the call site,
+    so the message carries what separates them: how many rows were read, and the
+    first pair that was rejected."""
+    if cohorts:
+        return
+    fatal(
+        f"[{path}] carries no usable [{IPEDS_SFA_UNIT_COLUMN}]/[{IPEDS_SFA_COHORT_COLUMN}] "
+        f"rows: [{scanned}] rows read, first rejected is "
+        f"[{rejected or 'none -- the file has no data rows'}]; "
+        f"re-run bin/fetch-ipeds, or remove the file to skip the check deliberately"
+    )
+
+
+def load_ipeds_freshmen(ipeds_dir):
+    """The federal cohort lookup from <dir>/sfa2223.csv: absent -> the
+    unavailable variant, present -> read, require the layout, parse, require
+    content.
+
+    An ABSENT file is a check not run -- a fresh checkout has no IPEDS CSVs at
+    all -- but a file that is PRESENT and unreadable is a fault. A truncated
+    download or a survey that renamed its columns would otherwise load zero
+    cohorts, compare nothing, and have the ledger say the check ran: exactly the
+    "nothing was refused" that reads as a pass. `is_file`, not `exists`, for the
+    same reason parse_args asks it of a typed -I: a directory named
+    sfa2223.csv is not a survey."""
+    path = ipeds_dir / IPEDS_SFA_FILE
+    if not path.is_file():
+        return IpedsFreshmenUnavailable("no_sfa2223_csv", path)
+    fieldnames, rows = read_sfa_survey(path)
+    require_sfa_layout(path, fieldnames)
+    cohorts, unreadable, rejected = get_sfa_cohorts(path, rows)
+    require_usable_cohorts(path, cohorts, len(rows), rejected)
+    return IpedsFreshmen(cohorts, len(unreadable))
 
 
 # ---------------------------------------------------------------------------
@@ -1078,7 +1364,11 @@ def date_cell(row, component, drops):
 
 
 def map_merit_rows(unit_id, doc, doc_fields, unreported, drops):
-    """The H2A merit-aid row for one document, as a 0-or-1 element list."""
+    """The H2A merit-aid row for one document, as a 0-or-1 element list.
+
+    A pure document-to-rows mapper, like the three beside it: what THIS filing
+    says, plus the judgements that read only this filing. What a second source
+    says about it is map_checked_merit_rows's business."""
     total = get_int_field(doc_fields, "H.201", drops, "merit_int_junk")
     count = get_int_field(doc_fields, "H.2A01", drops, "merit_int_junk")
     avg = get_int_field(doc_fields, "H.2A02", drops, "merit_int_junk")
@@ -1105,8 +1395,64 @@ def map_merit_rows(unit_id, doc, doc_fields, unreported, drops):
     ]
 
 
-def map_factors_rows(unit_id, doc, doc_fields, unreported, drops):
-    """The C7 factor-grid row for one document, as a 0-or-1 element list."""
+def map_checked_merit_rows(unit_id, doc, doc_fields, unreported, drops, ipeds_freshmen):
+    """`map_merit_rows`, refused when RFC 182 rule 1 contradicts the freshman
+    count it read. This is the builder FACT_GROUPS names; the mapper above stays
+    a pure reading of one document."""
+    rows = map_merit_rows(unit_id, doc, doc_fields, unreported, drops)
+    if not rows:
+        return rows
+    if len(rows) != 1:
+        # The mapper's contract is a 0-or-1 element list, and the refusal below
+        # judges the whole group on ONE freshman count. A second row is a bug in
+        # the mapper, not a shape to serve half-judged.
+        fatal(
+            f"[{doc_subject(unit_id, doc)}] produced [{len(rows)}] H2A merit rows; the merit "
+            f"group is one row per (college, cycle) and rule 1 judges the freshman count on it"
+        )
+    if merit_freshmen_vs_ipeds_implausible(unit_id, rows[0], ipeds_freshmen, drops):
+        return []
+    return rows
+
+
+def merit_freshmen_vs_ipeds_implausible(unit_id, row, ipeds_freshmen, drops):
+    """True when this filing's H.201 contradicts the federal cohort count it is
+    reported over -- RFC 182 rule 1, the sibling of
+    h2_freshmen_vs_ipeds_implausible below.
+
+    The SFA survey counts the same cohort section H is filed over. A count that
+    disagrees with it by more than half in EITHER direction is our extractor
+    having read the wrong number -- the whole undergraduate body, another
+    college's figure -- and the H2A block rides on it, since the merit count is
+    reported as a share OF this denominator. So the block goes exactly as a
+    self-contradictory one does, and an older filing may cover for it.
+
+    TWO-sided, unlike its H.204 sibling: H.201 IS the cohort, so a count far
+    below SCFA1N is as wrong as one far above it, and the worst row the corpus
+    has held was on the low side."""
+    freshmen = row["freshmen_ft_total"]
+    if freshmen is None:
+        return False
+    cohort = ipeds_freshmen.get_cohort(unit_id)
+    if cohort is None:
+        return False
+    ipeds_freshmen.record_comparison(unit_id)
+    ratio = freshmen / cohort
+    if IPEDS_FRESHMEN_MIN_RATIO <= ratio <= IPEDS_FRESHMEN_MAX_RATIO:
+        return False
+    drops.record(
+        "merit_freshmen_vs_ipeds_implausible",
+        f"freshmen=[{freshmen}] ipeds_scfa1n=[{cohort}] ratio=[{ratio:.2f}]",
+    )
+    return True
+
+
+def map_factors_rows(unit_id, doc, doc_fields, unreported, drops, ipeds_freshmen):
+    """The C7 factor-grid row for one document, as a 0-or-1 element list.
+
+    `ipeds_freshmen` is accepted and unused, exactly as `unreported` is: one
+    builder signature is what lets FACT_GROUPS stay a plain table of callables
+    rather than a table with an exception beside it."""
     row = {
         "unit_id": unit_id,
         "source_year": doc_source_year(doc),
@@ -1295,9 +1641,11 @@ def render_deadline_row(unit_id, doc, round_name, offered, closing, notification
     }
 
 
-def map_deadline_rows(unit_id, doc, doc_fields, unreported, drops):
+def map_deadline_rows(unit_id, doc, doc_fields, unreported, drops, ipeds_freshmen):
     """The per-round rows for one document: schema -> extraction -> per-round
-    policy -> rendering."""
+    policy -> rendering.
+
+    `ipeds_freshmen` is accepted and unused: one builder signature, as above."""
     style = get_schema_style(doc_fields, drops)
     if style is None:
         return []
@@ -1416,6 +1764,43 @@ def h2_is_contradictory(rows, drops):
     return True
 
 
+def h2_freshmen_vs_ipeds_implausible(rows, unit_id, ipeds_freshmen, drops):
+    """True when H.204's count of aid-awarded freshmen contradicts the federal
+    cohort the filing is made over -- RFC 182 rule 1 at the freshman count's
+    SECOND address.
+
+    `H.201` in the merit block and `H.204` here are the same cohort, read from
+    the same filings, so refusing a wrong number in one file while serving it
+    from the other is incoherent: two committed rows failed this test at
+    colleges whose merit block rule 1 had already refused.
+
+    ONE-SIDED, unlike its H2A sibling: freshmen who were AWARDED aid are a
+    subset of the cohort, so a count far below SCFA1N is the normal case -- most
+    colleges award to a fraction of their intake -- and refusing it would throw
+    away honest filings. Only a count larger than the cohort that contains it is
+    evidence, and the whole H2 block goes with it, exactly as
+    h2_is_contradictory's does, so an older filing may cover for it."""
+    counts = {row["fact"]: row["value"] for row in rows if row["status"] == STATUS_REPORTED}
+    awarded = counts.get("aid_awarded_freshmen_count")
+    if awarded is None:
+        return False
+    cohort = ipeds_freshmen.get_cohort(unit_id)
+    if cohort is None:
+        return False
+    ipeds_freshmen.record_comparison(unit_id)
+    # int(), not a no-op: read_int_cell renders a headcount as the STRING the
+    # seed spells it with, so this row's value is text until something says
+    # otherwise -- which is why h2_is_contradictory casts on the same values.
+    ratio = int(awarded) / cohort
+    if ratio <= IPEDS_AWARDED_FRESHMEN_MAX_RATIO:
+        return False
+    drops.record(
+        "aid_policy_freshmen_vs_ipeds_implausible",
+        f"aid_awarded=[{awarded}] ipeds_scfa1n=[{cohort}] ratio=[{ratio:.2f}]",
+    )
+    return True
+
+
 def get_borrowing_headcounts(rows):
     """The H4/H5 headcounts this document REPORTS, as whole numbers.
 
@@ -1516,13 +1901,13 @@ def drop_averages_over_no_borrowers(rows, drops):
     return kept
 
 
-def map_aid_policy_rows(unit_id, doc, doc_fields, unreported, drops):
+def map_aid_policy_rows(unit_id, doc, doc_fields, unreported, drops, ipeds_freshmen):
     """Every H2 need figure, H4/H5 borrowing figure and H8 form this document
-    carries, one row each -- unless the H2 block contradicts itself, in which
-    case the document reports nothing for this group, or the borrowing block
-    does, in which case that block alone is withheld (RFC 175 D6). Whatever
-    survives that, one last per-CELL refusal: an average over a loan type
-    nobody borrowed is a placeholder, not a figure."""
+    carries, one row each -- unless the H2 block contradicts itself or the
+    federal file, in which case the document reports nothing for this group, or
+    the borrowing block contradicts itself, in which case that block alone is
+    withheld (RFC 175 D6). Whatever survives that, one last per-CELL refusal: an
+    average over a loan type nobody borrowed is a placeholder, not a figure."""
     rows = []
     for fact, field_id, read_cell in AID_POLICY_FIGURES:
         rows.extend(
@@ -1532,22 +1917,249 @@ def map_aid_policy_rows(unit_id, doc, doc_fields, unreported, drops):
         rows.extend(map_aid_policy_form(unit_id, doc, doc_fields, unreported, drops, fact, field_id))
     if h2_is_contradictory(rows, drops):
         return []
+    if h2_freshmen_vs_ipeds_implausible(rows, unit_id, ipeds_freshmen, drops):
+        return []
     if h5_is_contradictory(rows, drops):
         return [row for row in rows if row["fact"] not in AID_POLICY_BORROWING_FACTS]
     return drop_averages_over_no_borrowers(rows, drops)
 
 
-# The four fact groups, in output order: (name, seed filename, CSV header, row
-# builder). One table drives selection, the CSV writes and PROVENANCE. Every
-# builder takes the same (unit_id, doc, doc_fields, unreported, drops): the
-# `unreported` map is the corpus's own non-reported statuses, which only the
-# aid-policy group reads (RFC 170, D7).
+
+class FactGroup(NamedTuple):
+    """One seed table, end to end: what it is called, the file it lands in, its
+    CSV header, the builder that maps one document to its rows, and the three
+    facts RFC 182 rule 2 needs -- whether this file is judged at all, the
+    columns a value signature is built from, and the subset of those the
+    cardinality guard counts as evidence.
+
+    ONE table drives selection, the CSV writes, PROVENANCE and both rule-2
+    passes: a per-group fact carried anywhere else is a second table that agrees
+    with this one only by convention, and a group renamed on one side but not
+    the other would silently retire a refusal.
+
+    Every builder takes the same (unit_id, doc, doc_fields, unreported, drops,
+    ipeds_freshmen): `unreported` is the corpus's own non-reported statuses,
+    which only the aid-policy group reads (RFC 170, D7), and `ipeds_freshmen` is
+    the run's federal cohort lookup, which only the two groups carrying a
+    freshman count read (RFC 182). A builder ignoring an input it has no use for
+    is what keeps this a plain table of uniform callables."""
+
+    name: str
+    filename: str
+    header: tuple
+    build: object
+    # Scope is STATED, not inferred from an empty column list: this file is or
+    # is not judged by rule 2, and the reader of a row can see which.
+    judged_by_duplicate_signature: bool
+    # An ALLOWLIST, never "the header minus the identity columns": a per-filing
+    # column added to a header later (a document_id, a fetched_at) would
+    # otherwise become a value by default, make every signature unique and
+    # retire the rule with no test failing.
+    duplicate_signature_columns: tuple
+    duplicate_counted_columns: tuple
+
+
+# The two categorical files are judged by nobody: admission-factors.csv alone
+# produces 19 duplicate clusters and deadlines.csv 25, because dozens of
+# colleges legitimately rate all 18 C7 factors `very_important` or share a
+# 1 January deadline. Byte-identical categorical or date tuples are not evidence
+# of a misattributed filing; byte-identical five-figure dollar amounts are. They
+# are out of scope as EVIDENCE, never as consequence -- see
+# without_duplicate_signatures.
 FACT_GROUPS = [
-    ("merit_aid", "merit-aid.csv", MERIT_HEADER, map_merit_rows),
-    ("admission_factors", "admission-factors.csv", FACTORS_HEADER, map_factors_rows),
-    ("deadlines", "deadlines.csv", DEADLINES_HEADER, map_deadline_rows),
-    ("aid_policy", "aid_policy.csv", AID_POLICY_HEADER, map_aid_policy_rows),
+    FactGroup(
+        name="merit_aid",
+        filename="merit-aid.csv",
+        header=MERIT_HEADER,
+        build=map_checked_merit_rows,
+        judged_by_duplicate_signature=True,
+        duplicate_signature_columns=(
+            "freshmen_ft_total", "no_need_merit_count", "no_need_merit_avg",
+        ),
+        duplicate_counted_columns=(
+            "freshmen_ft_total", "no_need_merit_count", "no_need_merit_avg",
+        ),
+    ),
+    FactGroup(
+        name="admission_factors",
+        filename="admission-factors.csv",
+        header=FACTORS_HEADER,
+        build=map_factors_rows,
+        judged_by_duplicate_signature=False,
+        duplicate_signature_columns=(),
+        duplicate_counted_columns=(),
+    ),
+    FactGroup(
+        name="deadlines",
+        filename="deadlines.csv",
+        header=DEADLINES_HEADER,
+        build=map_deadline_rows,
+        judged_by_duplicate_signature=False,
+        duplicate_signature_columns=(),
+        duplicate_counted_columns=(),
+    ),
+    FactGroup(
+        name="aid_policy",
+        filename="aid_policy.csv",
+        header=AID_POLICY_HEADER,
+        build=map_aid_policy_rows,
+        judged_by_duplicate_signature=True,
+        # Long form -- one row per fact -- so the signature is every cell of
+        # every row of the filing, while only the `value` cells COUNT: the fact
+        # names beside them are repeated by every filing in the corpus.
+        duplicate_signature_columns=("fact", "value", "status", "source_variable"),
+        duplicate_counted_columns=("value",),
+    ),
 ]
+
+
+# How many values a shared signature must carry before it is evidence. Below
+# this the rule fires on coincidence: Williams and Georgia Gwinnett share a 2025
+# signature whose only value is a merit count of 0, which two colleges may
+# honestly both report.
+DUPLICATE_SIGNATURE_MIN_VALUES = 3
+
+
+def render_cell(row, column):
+    """One cell as a COMPARABLE string: a null column is the empty string.
+
+    Not csv.DictWriter's rendering -- no quoting, because nothing here writes
+    these strings out. Both filings' signatures are built through this one
+    function, so two colleges' rows cannot compare unequal for a reason neither
+    of them stated."""
+    return "" if row[column] is None else str(row[column])
+
+
+def get_signature(rows, value_columns):
+    """The byte-for-byte value signature of one (college, cycle) in one file:
+    every value column of every row, rendered as a comparable string and ordered
+    deterministically so two colleges' rows compare regardless of the order the
+    builders happened to emit them in."""
+    return tuple(
+        sorted(tuple(render_cell(row, column) for column in value_columns) for row in rows)
+    )
+
+
+def list_duplicate_signature_clusters(rows, value_columns, counted_columns):
+    """Every (source_year, (unit_id, ...)) whose filings share one byte-identical
+    value signature and carry enough values to be evidence rather than
+    coincidence.
+
+    Presence is the row's own null, never the empty string a CSV renders one as:
+    the cardinality guard is the only thing standing between this rule and a
+    coincidence refusal, so a column that happens to render empty must not be
+    able to deflate it.
+
+    Detection only: what a cluster costs its members is the caller's
+    decision."""
+    filings = defaultdict(list)
+    for row in rows:
+        filings[(row["unit_id"], row["source_year"])].append(row)
+    units_by_signature = defaultdict(set)
+    values_by_signature = {}
+    for (unit_id, source_year), filing_rows in filings.items():
+        key = (source_year, get_signature(filing_rows, value_columns))
+        units_by_signature[key].add(unit_id)
+        # Written once per member of a cluster, and last-write-wins is safe:
+        # the members of a key render identically over the counted columns, and
+        # no builder emits the empty STRING (an absent value is None), so a
+        # rendered "" is a null for every member and each counts the same.
+        values_by_signature[key] = sum(
+            1
+            for row in filing_rows
+            for column in counted_columns
+            if row[column] is not None
+        )
+    return sorted(
+        (key[0], tuple(sorted(units)))
+        for key, units in units_by_signature.items()
+        if len(units) > 1 and values_by_signature[key] >= DUPLICATE_SIGNATURE_MIN_VALUES
+    )
+
+
+def get_refused_duplicate_filings(seed):
+    """(unit_id, source_url) -> (source_year, the cluster's members) for every
+    filing a rule-2 cluster proved misattributed.
+
+    Evidence comes from the judged files only; what it costs is the caller's
+    decision. The members stay a TUPLE of unit_ids -- a delimited string is a
+    diagnostic, and this is a lookup."""
+    refused = {}
+    for fact_group in FACT_GROUPS:
+        if not fact_group.judged_by_duplicate_signature:
+            continue
+        rows = seed[fact_group.name]
+        for source_year, units in list_duplicate_signature_clusters(
+            rows,
+            fact_group.duplicate_signature_columns,
+            fact_group.duplicate_counted_columns,
+        ):
+            for row in rows:
+                if row["unit_id"] in units and row["source_year"] == source_year:
+                    refused[(row["unit_id"], row["source_url"])] = (source_year, units)
+    return refused
+
+
+def record_refused_filings(fact_group, rows, refused, drops):
+    """One drop per (unit_id, filing) this group loses: the same document is
+    counted once in each table it fed.
+
+    The FILE is recorded as the ledger's own group dimension rather than welded
+    into the message, and the message names the `source_url` the refusal is
+    keyed on -- without it two distinct filings for one (college, cycle) render
+    as byte-identical samples."""
+    lost = sorted(
+        {
+            (row["unit_id"], row["source_url"])
+            for row in rows
+            if (row["unit_id"], row["source_url"]) in refused
+        }
+    )
+    for unit_id, source_url in lost:
+        source_year, units = refused[(unit_id, source_url)]
+        members = ",".join(str(unit) for unit in units)
+        detail = (
+            f"unit_id=[{unit_id}] source_year=[{source_year}] "
+            f"source_url=[{source_url}] units=[{members}]"
+        )
+        drops.record("filing_attributed_to_multiple_units", detail)
+        drops.record_group(fact_group.name, "filing_attributed_to_multiple_units", detail)
+
+
+def without_refused_filings(rows, refused):
+    """`rows` less every row a refused filing fed, keyed by the filing itself so
+    a group that selected a DIFFERENT document keeps its own rows."""
+    return [row for row in rows if (row["unit_id"], row["source_url"]) not in refused]
+
+
+def without_duplicate_signatures(seed, drops):
+    """RFC 182 rule 2: one filing attributed to several colleges. A NEW seed,
+    less every row a misattributed filing fed.
+
+    A value signature repeating byte-for-byte across different unit_ids in the
+    same source_year is one PDF mapped onto two UNITIDs, not two colleges
+    coinciding on five-figure dollar amounts. EVERY member of the cluster loses
+    the rows that document fed -- we know one of the filings is misattributed
+    and there is no evidence inside the seed that says which, so keeping the
+    largest campus would be a guess rendered as a fact.
+
+    The EVIDENCE comes from the two numeric files only, but the CONSEQUENCE
+    covers all four: a document proved to be filed under the wrong college is
+    the wrong college's document in every group it fed, and leaving its
+    deadlines and admission factors behind ships the same defect half-fixed.
+
+    Unlike every other refusal here this one cannot fall back: it needs all the
+    colleges at once, so it runs after the per-document selection has already
+    chosen, and it REMOVES rows rather than making a document unreported. A
+    fallback would need a second mapping pass to be honest, which is more
+    machinery than a 15-college problem earns."""
+    refused = get_refused_duplicate_filings(seed)
+    kept = {}
+    for fact_group in FACT_GROUPS:
+        rows = seed[fact_group.name]
+        record_refused_filings(fact_group, rows, refused, drops)
+        kept[fact_group.name] = without_refused_filings(rows, refused)
+    return kept
 
 
 def has_reported_value(rows):
@@ -1563,7 +2175,7 @@ def has_reported_value(rows):
     return any(row.get("status", STATUS_REPORTED) == STATUS_REPORTED for row in rows)
 
 
-def find_newest_reporting(group, build, unit_id, candidates, drops):
+def find_newest_reporting(group, build, unit_id, candidates, drops, ipeds_freshmen):
     """The rows from the newest of `candidates` (newest first) that actually
     reports this fact group, and empty when none does. Only the winning
     document's drop counters are folded into `drops` -- a document the fallback
@@ -1579,7 +2191,7 @@ def find_newest_reporting(group, build, unit_id, candidates, drops):
     valueless = None
     for skipped, (doc, doc_fields, unreported) in enumerate(candidates):
         attempt = Drops(doc_subject(unit_id, doc))
-        rows = build(unit_id, doc, doc_fields, unreported, attempt)
+        rows = build(unit_id, doc, doc_fields, unreported, attempt, ipeds_freshmen)
         if rows and has_reported_value(rows):
             drops.merge(attempt)
             if skipped:
@@ -1607,7 +2219,7 @@ def find_newest_reporting(group, build, unit_id, candidates, drops):
     return []
 
 
-def build_seed(manifest, fields):
+def build_seed(manifest, fields, ipeds_freshmen):
     """The four seed tables (keyed by group name) + the drop ledger from raw
     corpus rows. Each group is taken from the newest document that reports it,
     independently of the other two: each table's natural key carries its own
@@ -1617,15 +2229,27 @@ def build_seed(manifest, fields):
     documents = select_documents(manifest, drops)
     fields_by_doc, unreported_by_doc = group_fields(fields, drops)
 
-    seed = {group: [] for group, _, _, _ in FACT_GROUPS}
+    seed = {fact_group.name: [] for fact_group in FACT_GROUPS}
     for unit_id in sorted(documents):
         candidates = [
             (doc, fields_by_doc[doc["document_id"]], unreported_by_doc.get(doc["document_id"], {}))
             for doc in documents[unit_id]
             if fields_by_doc.get(doc["document_id"])
         ]
-        for group, _, _, build in FACT_GROUPS:
-            seed[group].extend(find_newest_reporting(group, build, unit_id, candidates, drops))
+        for fact_group in FACT_GROUPS:
+            seed[fact_group.name].extend(
+                find_newest_reporting(
+                    fact_group.name,
+                    fact_group.build,
+                    unit_id,
+                    candidates,
+                    drops,
+                    ipeds_freshmen,
+                )
+            )
+    # After selection, never during it: this rule compares colleges with each
+    # other, so it can only run once every college's filing has been chosen.
+    seed = without_duplicate_signatures(seed, drops)
     seed["deadlines"].sort(key=lambda r: (r["unit_id"], r["source_year"], r["round"]))
     seed["aid_policy"].sort(key=lambda r: (r["unit_id"], r["source_year"], r["fact"]))
     return seed, drops
@@ -1668,7 +2292,7 @@ def require_plausible_seed(outdir, seed, manifest, fields):
     corpus's size, so main calls require_aid_policy_coverage only for a network
     run. The guards here describe the seed's own shape and apply to every
     run."""
-    empty = [name for group, name, _, _ in FACT_GROUPS if not seed[group]]
+    empty = [g.filename for g in FACT_GROUPS if not seed[g.name]]
     if empty:
         fatal(
             f"corpus produced no rows for [{', '.join(empty)}]; "
@@ -1684,10 +2308,10 @@ def require_plausible_seed(outdir, seed, manifest, fields):
     except (OSError, ValueError) as error:
         fatal(f"[{previous_path}] is unreadable [{error}]; move it aside to regenerate from scratch")
     shrunk = [
-        f"[{name}]: [{len(seed[group])}] now, [{previous[name]}] committed"
-        for group, name, _, _ in FACT_GROUPS
-        if isinstance(previous.get(name), int)
-        and len(seed[group]) < SEED_SHRINK_FLOOR * previous[name]
+        f"[{g.filename}]: [{len(seed[g.name])}] now, [{previous[g.filename]}] committed"
+        for g in FACT_GROUPS
+        if isinstance(previous.get(g.filename), int)
+        and len(seed[g.name]) < SEED_SHRINK_FLOOR * previous[g.filename]
     ]
     if shrunk:
         fatal(
@@ -1737,12 +2361,13 @@ def require_aid_policy_coverage(outdir, rows):
 def build_seed_files(outdir, seed):
     """[(path, bytes)] for one CSV per fact group, in FACT_GROUPS order."""
     return [
-        (outdir / name, build_csv(header, seed[group]))
-        for group, name, header, _ in FACT_GROUPS
+        (outdir / g.filename, build_csv(g.header, seed[g.name])) for g in FACT_GROUPS
     ]
 
 
-def build_provenance(outdir, bodies, seed, drops, manifest, fields, source, anon_key_source):
+def build_provenance(
+    outdir, bodies, seed, drops, manifest, fields, source, anon_key_source, ipeds_freshmen
+):
     """The regenerable-seed manifest AS BYTES: when and from where the seed was built,
     the corpus it was built from, every value dropped as unreported (with a
     bounded sample of the offending documents, and the per-fact-group counters
@@ -1759,7 +2384,15 @@ def build_provenance(outdir, bodies, seed, drops, manifest, fields, source, anon
             ),
             "dropped": drops.as_json(),
         },
-        "rows": {name: len(seed[group]) for group, name, _, _ in FACT_GROUPS},
+        # RFC 182: the checks made against a source OUTSIDE the corpus, and
+        # whether each one ran at all. A refusal count of zero and a check that
+        # never ran are different facts; without this block the next reader of
+        # this file has no way to tell which of the two they are looking at.
+        # Both shapes of this key -- the check that ran and the one that could
+        # not -- are rendered by the lookup itself, so the manifest assembler
+        # holds none of a cross-source check's vocabulary.
+        "cross_source": {"ipeds_freshmen": ipeds_freshmen.as_json()},
+        "rows": {g.filename: len(seed[g.name]) for g in FACT_GROUPS},
         "sha256": {name: sha256_of(body) for name, body in bodies.items()},
     }
     return (json.dumps(provenance, indent=2) + "\n").encode("utf-8")
@@ -1777,11 +2410,12 @@ SCRIPT_NAME = "fetch-cds-seed"
 # a hand-run operator tool with no callers in the tree, so the long option is
 # replaced rather than aliased. $COLLEGEDATA_ANON_KEY and the API-page scrape are
 # the two fallbacks and are unchanged.
-GETOPT_SPEC = "o:F:K:h"
+GETOPT_SPEC = "o:F:K:I:h"
 
 
 def parse_args(argv):
-    """(outdir, fixtures, anon_key) from argv, fataling on a malformed option.
+    """(outdir, fixtures, anon_key, ipeds_dir) from argv, fataling on a
+    malformed option.
 
     The grammar, the -h answer and every value-shape guard getopt cannot make --
     a repeated option, an empty value (which for -K is an unusable credential the
@@ -1804,17 +2438,45 @@ def parse_args(argv):
             f"[manifest.json] and [fields.json] from inside it",
             status=EXIT_INVALID_ARG_VALUE,
         )
+    # RFC 182: -I is where sfa2223.csv is looked for. The DEFAULT may be absent
+    # -- the IPEDS CSVs are gitignored and bin/fetch-external-data imposes no
+    # order between the two fetchers -- and that is a skipped check, not a
+    # fault. A -I the operator TYPED is different: they asked for the check, so
+    # a directory that is not one, or that holds no sfa2223.csv, is a mistake in
+    # the command rather than a check to quietly not run.
+    ipeds_dir = Path(given["-I"]) if "-I" in given else DEFAULT_IPEDS_DIR
+    if "-I" in given and not (ipeds_dir / IPEDS_SFA_FILE).is_file():
+        fatal(
+            f"option [-I] names [{ipeds_dir}], which holds no [{IPEDS_SFA_FILE}]; "
+            f"bin/fetch-ipeds writes it, and omitting -I skips the check instead",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
     # The key stays a STRING, never a Path: it is a credential, not a location.
     anon_key = given.get("-K")
-    return outdir, fixtures, anon_key
+    return outdir, fixtures, anon_key, ipeds_dir
+
+
+def log_skipped_ipeds_check(ipeds_freshmen):
+    """Says out loud that this run made no cross-source check, when it made
+    none. PROVENANCE.json records the same fact durably; this is for the
+    operator watching the run, who would otherwise read a clean summary as a
+    corpus that had nothing wrong with it."""
+    if ipeds_freshmen.ran:
+        return
+    log_warning(
+        f"no [{ipeds_freshmen.path}]: CDS freshman counts are NOT checked against IPEDS "
+        f"in this run (run bin/fetch-ipeds first to enable it)"
+    )
 
 
 def main(argv):
-    outdir, fixtures, anon_key = parse_args(argv)
+    outdir, fixtures, anon_key, ipeds_dir = parse_args(argv)
     outdir.mkdir(parents=True, exist_ok=True)
 
     manifest, fields, anon_key_source = load_corpus(fixtures, anon_key)
-    seed, drops = build_seed(manifest, fields)
+    ipeds_freshmen = load_ipeds_freshmen(ipeds_dir)
+    log_skipped_ipeds_check(ipeds_freshmen)
+    seed, drops = build_seed(manifest, fields, ipeds_freshmen)
     require_plausible_seed(outdir, seed, manifest, fields)
     # A recorded fixture is a few schools by design, so the per-fact coverage
     # floors are asked of a NETWORK run only. main knows which this is; a
@@ -1835,14 +2497,16 @@ def main(argv):
     bodies = {path.name: body for path, body in files}
     files.append((
         outdir / "PROVENANCE.json",
-        build_provenance(outdir, bodies, seed, drops, manifest, fields, source, anon_key_source),
+        build_provenance(
+            outdir, bodies, seed, drops, manifest, fields, source, anon_key_source, ipeds_freshmen
+        ),
     ))
     write_atomically(files, SCRIPT_NAME)
 
     # Every value in brackets, and the drop ledger rendered rather than
     # interpolated: a dict interpolates as a Python repr, whose quotes are a
     # second wrapper this project's messages do not use.
-    counts = " ".join(f"{name}=[{len(seed[group])}]" for group, name, _, _ in FACT_GROUPS)
+    counts = " ".join(f"{g.filename}=[{len(seed[g.name])}]" for g in FACT_GROUPS)
     dropped = " ".join(f"{reason}=[{count}]" for reason, count in drops.summary().items())
     log_info(f"seed written to [{outdir}]: {counts} dropped: {dropped or '[none]'}")
     return 0

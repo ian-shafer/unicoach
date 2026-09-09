@@ -2220,8 +2220,19 @@ assert_failure "ingest-colleges fatals on a nonexistent CDS seed path" test_inge
 # the graduating class, so only that arm can catch it), iota (the placeholder
 # average rule: a zero average beside a zero borrower count, a zero average with
 # no borrower count at all, and -- the control -- a zero average over borrowers
-# who really exist). Wrapped in a function, per this file's
-# convention: fixture data is detail, not top-level script body.
+# who really exist).
+#
+# RFC 182 adds the cross-source colleges: kappa/lambda (a freshman count 5x and
+# one 0.02x the federal cohort), mu (a cohort of zero, compared against
+# nothing), nu (an implausible NEWEST filing an older one covers for), xi +
+# omicron (one filing under two colleges, with omicron's DEADLINES taken from a
+# different, older document that survives the refusal), pi + rho (the same
+# values in different cycles), sigma + tau (a one-value shared signature, below
+# the cardinality guard), upsilon + phi (byte-identical categorical rows, out of
+# the rule's scope), chi + psi (a shared aid-policy signature), omega (H.204
+# above the cohort) and digamma (H.204 far BELOW it, which is the normal case
+# and must stand). Wrapped in a function, per this file's convention: fixture
+# data is detail, not top-level script body.
 write_cds_fixtures() {
   local dir="$1"
   cat > "$dir/manifest.json" << 'EOF'
@@ -2258,7 +2269,61 @@ write_cds_fixtures() {
    "source_url": "https://theta.example.edu/cds-2025-26.pdf"},
   {"document_id": "doc-iota", "school_id": "iota", "ipeds_id": "999999",
    "canonical_year": "2025-26", "sub_institutional": null,
-   "source_url": "https://iota.example.edu/cds-2025-26.pdf"}
+   "source_url": "https://iota.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-kappa", "school_id": "kappa", "ipeds_id": "121212",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://kappa.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-lambda", "school_id": "lambda", "ipeds_id": "131313",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://lambda.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-mu", "school_id": "mu", "ipeds_id": "141414",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://mu.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-nu-old", "school_id": "nu", "ipeds_id": "151515",
+   "canonical_year": "2024-25", "sub_institutional": null,
+   "source_url": "https://nu.example.edu/cds-2024-25.pdf"},
+  {"document_id": "doc-nu-new", "school_id": "nu", "ipeds_id": "151515",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://nu.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-xi", "school_id": "xi", "ipeds_id": "161616",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://xi.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-omicron", "school_id": "omicron", "ipeds_id": "171717",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://omicron.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-omicron-old", "school_id": "omicron", "ipeds_id": "171717",
+   "canonical_year": "2024-25", "sub_institutional": null,
+   "source_url": "https://omicron.example.edu/cds-2024-25.pdf"},
+  {"document_id": "doc-pi", "school_id": "pi", "ipeds_id": "181818",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://pi.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-rho", "school_id": "rho", "ipeds_id": "191919",
+   "canonical_year": "2024-25", "sub_institutional": null,
+   "source_url": "https://rho.example.edu/cds-2024-25.pdf"},
+  {"document_id": "doc-sigma", "school_id": "sigma", "ipeds_id": "202020",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://sigma.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-tau", "school_id": "tau", "ipeds_id": "212121",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://tau.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-upsilon", "school_id": "upsilon", "ipeds_id": "232323",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://upsilon.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-phi", "school_id": "phi", "ipeds_id": "242424",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://phi.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-chi", "school_id": "chi", "ipeds_id": "252525",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://chi.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-psi", "school_id": "psi", "ipeds_id": "262626",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://psi.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-omega", "school_id": "omega", "ipeds_id": "272727",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://omega.example.edu/cds-2025-26.pdf"},
+  {"document_id": "doc-digamma", "school_id": "digamma", "ipeds_id": "282828",
+   "canonical_year": "2025-26", "sub_institutional": null,
+   "source_url": "https://digamma.example.edu/cds-2025-26.pdf"}
 ]
 EOF
   cat > "$dir/fields.json" << 'EOF'
@@ -2408,8 +2473,131 @@ EOF
   {"document_id": "doc-iota", "field_id": "H.514", "schema_version": "2025-26",
    "value_status": "reported", "value_text": "0", "value_num": 0},
   {"document_id": "doc-iota", "field_id": "H.515", "schema_version": "2025-26",
-   "value_status": "reported", "value_text": "0", "value_num": 0}
+   "value_status": "reported", "value_text": "0", "value_num": 0},
+  {"document_id": "doc-kappa", "field_id": "H.201", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "5000", "value_num": 5000},
+  {"document_id": "doc-kappa", "field_id": "H.2A01", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "100", "value_num": 100},
+  {"document_id": "doc-kappa", "field_id": "H.2A02", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "$4,000", "value_num": null},
+  {"document_id": "doc-lambda", "field_id": "H.201", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "20", "value_num": 20},
+  {"document_id": "doc-lambda", "field_id": "H.2A02", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "$2,000", "value_num": null},
+  {"document_id": "doc-mu", "field_id": "H.201", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "500", "value_num": 500},
+  {"document_id": "doc-nu-old", "field_id": "H.201", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "1050", "value_num": 1050},
+  {"document_id": "doc-nu-old", "field_id": "H.2A01", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "80", "value_num": 80},
+  {"document_id": "doc-nu-old", "field_id": "H.2A02", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "$7,000", "value_num": null},
+  {"document_id": "doc-nu-new", "field_id": "H.201", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "9000", "value_num": 9000},
+  {"document_id": "doc-nu-new", "field_id": "H.2A01", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "90", "value_num": 90},
+  {"document_id": "doc-nu-new", "field_id": "H.2A02", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "$8,000", "value_num": null},
+  {"document_id": "doc-xi", "field_id": "H.201", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "700", "value_num": 700},
+  {"document_id": "doc-xi", "field_id": "H.2A01", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "50", "value_num": 50},
+  {"document_id": "doc-xi", "field_id": "H.2A02", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "$3,000", "value_num": null},
+  {"document_id": "doc-xi", "field_id": "C.701", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Important", "value_num": null},
+  {"document_id": "doc-xi", "field_id": "C.2101", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Yes", "value_num": null},
+  {"document_id": "doc-xi", "field_id": "C.2102", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "12", "value_num": null},
+  {"document_id": "doc-xi", "field_id": "C.2103", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "1", "value_num": null},
+  {"document_id": "doc-omicron", "field_id": "H.201", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "700", "value_num": 700},
+  {"document_id": "doc-omicron", "field_id": "H.2A01", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "50", "value_num": 50},
+  {"document_id": "doc-omicron", "field_id": "H.2A02", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "$3,000", "value_num": null},
+  {"document_id": "doc-omicron", "field_id": "C.701", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Important", "value_num": null},
+  {"document_id": "doc-omicron-old", "field_id": "C.1401", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "Yes", "value_num": null},
+  {"document_id": "doc-omicron-old", "field_id": "C.1402", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "2", "value_num": null},
+  {"document_id": "doc-omicron-old", "field_id": "C.1403", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "10", "value_num": null},
+  {"document_id": "doc-pi", "field_id": "H.201", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "800", "value_num": 800},
+  {"document_id": "doc-pi", "field_id": "H.2A01", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "60", "value_num": 60},
+  {"document_id": "doc-pi", "field_id": "H.2A02", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "$4,000", "value_num": null},
+  {"document_id": "doc-rho", "field_id": "H.201", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "800", "value_num": 800},
+  {"document_id": "doc-rho", "field_id": "H.2A01", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "60", "value_num": 60},
+  {"document_id": "doc-rho", "field_id": "H.2A02", "schema_version": "2024-25",
+   "value_status": "reported", "value_text": "$4,000", "value_num": null},
+  {"document_id": "doc-sigma", "field_id": "H.2A01", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "0", "value_num": 0},
+  {"document_id": "doc-tau", "field_id": "H.2A01", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "0", "value_num": 0},
+  {"document_id": "doc-upsilon", "field_id": "C.701", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Considered", "value_num": null},
+  {"document_id": "doc-upsilon", "field_id": "C.2101", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Yes", "value_num": null},
+  {"document_id": "doc-upsilon", "field_id": "C.2102", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "11", "value_num": null},
+  {"document_id": "doc-upsilon", "field_id": "C.2103", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "15", "value_num": null},
+  {"document_id": "doc-phi", "field_id": "C.701", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Considered", "value_num": null},
+  {"document_id": "doc-phi", "field_id": "C.2101", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "Yes", "value_num": null},
+  {"document_id": "doc-phi", "field_id": "C.2102", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "11", "value_num": null},
+  {"document_id": "doc-phi", "field_id": "C.2103", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "15", "value_num": null},
+  {"document_id": "doc-chi", "field_id": "H.204", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "300", "value_num": 300},
+  {"document_id": "doc-chi", "field_id": "H.208", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "200", "value_num": 200},
+  {"document_id": "doc-chi", "field_id": "H.211", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "15000", "value_num": null},
+  {"document_id": "doc-psi", "field_id": "H.204", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "300", "value_num": 300},
+  {"document_id": "doc-psi", "field_id": "H.208", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "200", "value_num": 200},
+  {"document_id": "doc-psi", "field_id": "H.211", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "15000", "value_num": null},
+  {"document_id": "doc-omega", "field_id": "H.204", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "3000", "value_num": 3000},
+  {"document_id": "doc-omega", "field_id": "H.211", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "12000", "value_num": null},
+  {"document_id": "doc-digamma", "field_id": "H.204", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "100", "value_num": 100},
+  {"document_id": "doc-digamma", "field_id": "H.211", "schema_version": "2025-26",
+   "value_status": "reported", "value_text": "9000", "value_num": null}
 ]
+EOF
+  # RFC 182 rule 1's other input: the federal cohort count, as bin/fetch-ipeds
+  # writes it. Only UNITID and SCFA1N are read. 141414 files a cohort of ZERO --
+  # a denominator no ratio exists over, so that college is compared against
+  # nothing -- and 666666 has no row here at all, the other skip. 303030 is in
+  # no CDS document at all: the federal file covers thousands of colleges this
+  # corpus has never filed for, so the table's SIZE and the number of colleges
+  # actually COMPARED are two different figures, and this row is what makes the
+  # ledger's two counters distinguishable.
+  cat > "$dir/sfa2223.csv" << 'EOF'
+UNITID,SCFA1N,SCFA2DG
+111111,900,3600
+121212,1000,4000
+131313,1000,4000
+141414,0,2000
+151515,1000,4000
+272727,1000,4000
+282828,1000,4000
+303030,1500,6000
 EOF
 }
 
@@ -2419,8 +2607,13 @@ CDS_FIXTURES="$(mktemp -d)"
 # failure aborts the run and leaks two mktemp dirs, which is acceptable.
 CDS_OUT="$(mktemp -d)"
 write_cds_fixtures "$CDS_FIXTURES"
+# -I names the same directory: write_cds_fixtures put an sfa2223.csv beside the
+# recorded corpus, so RFC 182's cross-source check runs against a KNOWN cohort
+# table rather than against whatever this checkout happens to have downloaded
+# into db/seed/ipeds. Without it every assertion below would depend on a
+# gitignored file.
 assert_success "fetch-cds-seed runs offline from fixtures" \
-  bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$CDS_OUT" > /dev/null
+  bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$CDS_OUT" -I "$CDS_FIXTURES" > /dev/null
 
 # The bin/ rule: this script's product is FILES, so a normal run writes nothing
 # at all to stdout -- the closing summary is a diagnostic and goes to stderr
@@ -2468,14 +2661,23 @@ if actual != int(sys.argv[4]):
     sys.exit(f"dropped.{sys.argv[2]}.{sys.argv[3]} is {actual}, expected {sys.argv[4]}")
 PY
 }
-cds_drop_sample_has() {
+# The samples of one drop reason that contain a fragment, as a COUNT on stdout,
+# read by the assertion below. Counts per FILE are not taken from here: the
+# ledger carries the fact group as its own dimension, and cds_group_drop_count
+# asks it rather than parsing a human diagnostic.
+cds_drop_sample_matches() {
   python3 - "$CDS_OUT/PROVENANCE.json" "$1" "$2" << 'PY'
 import json, sys
 samples = json.load(open(sys.argv[1]))["corpus"]["dropped"]["samples"].get(sys.argv[2], [])
-if not any(sys.argv[3] in entry for entry in samples):
-    sys.exit(f"no sample for {sys.argv[2]} contains [{sys.argv[3]}]: {samples}")
+print(sum(1 for entry in samples if sys.argv[3] in entry))
 PY
 }
+cds_drop_sample_has() {
+  local actual
+  actual="$(cds_drop_sample_matches "$1" "$2")" || return 1
+  [ "$actual" -gt 0 ] || { log-error "no [$1] sample contains [$2]"; return 1; }
+}
+
 cds_group_sample_has() {
   python3 - "$CDS_OUT/PROVENANCE.json" "$1" "$2" "$3" << 'PY'
 import json, sys
@@ -2519,8 +2721,10 @@ assert_success "merit aid falls back to an older doc that reports it" \
   seed_has '^333333,2024,,,5000,https://gamma.example.edu/cds-2024-25.pdf' merit-aid.csv
 assert_success "the same school's factors still come from its newest doc" \
   seed_has '^333333,2025,considered,' admission-factors.csv
+# Two fallbacks now: gamma's newest doc reports no merit block at all, and nu's
+# newest doc is REFUSED by the RFC 182 IPEDS check below.
 assert_success "the fallback is counted under its fact group in PROVENANCE.json" \
-  cds_group_drop_count merit_aid fell_back_to_older_doc 1
+  cds_group_drop_count merit_aid fell_back_to_older_doc 2
 assert_success "the passed-over document is named, with why it was passed over" \
   cds_group_sample_has merit_aid passed_over 'document_id=[doc-gamma-new]'
 
@@ -2812,6 +3016,346 @@ assert_success "the missing-count arm says the count was missing, not zero" \
   cds_drop_sample_has aid_policy_h5_average_over_no_borrowers \
     'fact=[private_loan_debt_avg_usd] source_variable=[H.515] count_fact=[private_loan_borrower_count] borrowers=[None]'
 
+# ── RFC 182: the two CROSS-SOURCE refusals ───────────────────────────────────
+# Rule 1 compares a filing against the federal file; rule 2 compares filings
+# against each other. Every check before this one lives inside a single filing.
+
+# The cross_source block: whether a check RAN at all, which a count of zero
+# cannot say. ONE HELPER PER SHAPE -- the ran block carries counts, the skipped
+# block carries a reason and the path searched -- so neither is called with a
+# blank standing in for the other's fields, and an impossible expectation
+# ("ran, with a reason") cannot be written.
+cds_ipeds_ran() {
+  python3 - "$1" "$2" "$3" "$4" << 'PY'
+import json, sys
+ipeds_freshmen = json.load(open(sys.argv[1])).get("cross_source", {}).get("ipeds_freshmen")
+expected = {
+    "ran": True,
+    "units": int(sys.argv[2]),
+    "compared": int(sys.argv[3]),
+    "unreadable_rows": int(sys.argv[4]),
+}
+if ipeds_freshmen != expected:
+    sys.exit(f"cross_source.ipeds_freshmen is {ipeds_freshmen}, expected {expected}")
+PY
+}
+cds_ipeds_skipped() {
+  python3 - "$1" "$2" "$3" << 'PY'
+import json, sys
+from pathlib import Path
+
+ipeds_freshmen = json.load(open(sys.argv[1])).get("cross_source", {}).get("ipeds_freshmen")
+# The script resolves REPO_ROOT, so the expected path is resolved too: on macOS
+# a mktemp root under /var is /private/var once symlinks are followed, and
+# comparing the two spellings would fail on the platform rather than on a defect.
+expected = {"ran": False, "reason": sys.argv[2], "path": str(Path(sys.argv[3]).resolve())}
+if ipeds_freshmen != expected:
+    sys.exit(f"cross_source.ipeds_freshmen is {ipeds_freshmen}, expected {expected}")
+PY
+}
+
+
+# A freshman count 5x the federal cohort is our extractor having read the wrong
+# number (typically the whole undergraduate body), and the H2A block is reported
+# OVER it -- so the block goes in full, exactly as a self-contradictory one does.
+assert_success "a freshman count 5x the IPEDS cohort emits no merit row at all" \
+  seed_lacks '^121212,' merit-aid.csv
+assert_success "the implausible freshman count is counted in PROVENANCE.json" \
+  cds_drop_count merit_freshmen_vs_ipeds_implausible 3
+assert_success "the drop names both counts it compared" \
+  cds_drop_sample_has merit_freshmen_vs_ipeds_implausible \
+    'freshmen=[5000] ipeds_scfa1n=[1000]'
+# The LOW side, which the slice text's wording would have missed: 20 freshmen
+# against a cohort of 1,000 is as unreadable as 5,000 against it, and the worst
+# row in the live corpus (Penn State, 0.02x) is on this side. This assertion is
+# what fails if anyone makes the rule one-sided.
+assert_success "a freshman count 50x too SMALL is refused by the same rule" \
+  seed_lacks '^131313,' merit-aid.csv
+assert_success "the low-side drop names its own two counts" \
+  cds_drop_sample_has merit_freshmen_vs_ipeds_implausible \
+    'freshmen=[20] ipeds_scfa1n=[1000]'
+# Inside the band, nothing happens: alpha files 1,000 against a cohort of 900.
+assert_success "a filing within the band keeps its merit row untouched" \
+  seed_has '^111111,2025,1000,100,12000,' merit-aid.csv
+# The two skips, which are not passes: a college with no SFA row at all (666666)
+# and one whose cohort is zero (141414) are compared against NOTHING, and their
+# rows stand. The reason's total of 3 above is the proof they were not refused.
+assert_success "a college with no IPEDS SFA row keeps its merit row" \
+  seed_has '^666666,2025,1200,,,' merit-aid.csv
+assert_success "a college whose IPEDS cohort is zero keeps its merit row" \
+  seed_has '^141414,2025,500,,,' merit-aid.csv
+# Sticky, like its H2A sibling: the refusal describes the DOCUMENT, so an older
+# filing covers for it AND the drop stays visible in the ledger.
+assert_success "an older filing covers for the refused document" \
+  seed_has '^151515,2024,1050,80,7000,https://nu.example.edu/cds-2024-25.pdf' merit-aid.csv
+assert_success "the refused newer document is still counted, though it was passed over" \
+  cds_drop_sample_has merit_freshmen_vs_ipeds_implausible 'document_id=[doc-nu-new]'
+# The ledger says the check RAN, and over how much. A refusal count of zero and
+# a check that never ran are different facts.
+assert_success "PROVENANCE.json records that the IPEDS check ran, and over how many colleges" \
+  cds_ipeds_ran "$CDS_OUT/PROVENANCE.json" 7 6 0
+
+# A throwaway PROJECT_ROOT holding copies of the named bin/ scripts plus the
+# module they all import. REPO_ROOT is resolved from a script's own location, so
+# a copied script sees THIS root's db/seed rather than the checkout's. Echoes
+# the root, like make_gen_env_root.
+make_bin_root() {
+  local root entry; root="$(mktemp -d)"
+  mkdir -p "$root/bin"
+  for entry in "$@"; do
+    cp "$PROJECT_ROOT/bin/$entry" "$root/bin/"
+  done
+  cp "$PROJECT_ROOT/bin/pyfunctions.py" "$root/bin/"
+  printf '%s\n' "$root"
+}
+
+# The file is gitignored, so a fresh checkout has none and the two fetchers have
+# no ordering between them: an ABSENT default is a check not run, never a silent
+# pass and never a fault. Run from a copied root because that is the only way to
+# reach the absent DEFAULT without deleting this checkout's IPEDS data.
+test_cds_ipeds_absent_is_a_skip_not_a_pass() (
+  local root out err status
+  root="$(make_bin_root fetch-cds-seed)"; out="$(mktemp -d)"; err="$(mktemp)"
+  trap 'rm -rf "$root" "$out" "$err"' EXIT
+  "$root/bin/fetch-cds-seed" -F "$CDS_FIXTURES" -o "$out" >/dev/null 2> "$err"
+  status=$?
+  # stderr is KEPT: this script says everything on it, so throwing it away one
+  # line before the handler that needs it leaves an integer and no reason.
+  [ "$status" -eq 0 ] \
+    || { log-error "a run with no sfa2223.csv exited [$status]: [$(cat "$err")]"; return 1; }
+  # ... and the skipped check is ANNOUNCED, not merely recorded.
+  grep -q "CDS freshman counts are NOT checked against IPEDS" "$err" \
+    || { log-error "the skipped check was not announced: [$(cat "$err")]"; return 1; }
+  # ... and with the check not run, the two refused filings above are seeded.
+  grep -q '^121212,' "$out/merit-aid.csv" \
+    || { log-error "the merit row was refused by a check that had no data"; return 1; }
+  cds_ipeds_skipped "$out/PROVENANCE.json" no_sfa2223_csv "$root/db/seed/ipeds/sfa2223.csv"
+)
+
+
+assert_success "an absent sfa2223.csv skips the check and says so in PROVENANCE.json" \
+  test_cds_ipeds_absent_is_a_skip_not_a_pass
+# An -I the operator TYPED is the opposite case: they asked for the check, so a
+# directory without the file is a mistake in the command, not a check to quietly
+# not run.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-cds-seed refuses a -I holding no sfa2223.csv (22)" \
+  bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$CDS_OUT" -I "$(mktemp -d)"
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-cds-seed -I without a value exits 11" \
+  bin/fetch-cds-seed -I
+# A file that is PRESENT and unreadable is the opposite of an absent one: a
+# truncated download or a survey that renamed its columns would load zero
+# cohorts, compare nothing, and have the ledger say the check RAN -- the
+# "nothing was refused" that reads as a pass. Both shapes are faults.
+# The MESSAGE is the assertion, not the exit code: a traceback, an unrelated
+# refusal and the fault under test all exit non-zero, and only one of them is
+# this script's contract. Modelled on ipeds_zip_variant_refused.
+cds_ipeds_fault_says() {
+  local dir="$1" expected="$2" out err status
+  out="$(mktemp -d)"; err="$(mktemp)"
+  bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$out" -I "$dir" >/dev/null 2> "$err"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    log-error "the run was NOT refused: [$(cat "$err")]"; rm -rf "$out" "$err"; return 1
+  fi
+  if ! grep -qF -- "$expected" "$err"; then
+    log-error "the refusal does not say [$expected]: [$(cat "$err")]"
+    rm -rf "$out" "$err"; return 1
+  fi
+  # A stdlib traceback is the failure mode this whole cluster exists to remove.
+  if grep -q "Traceback (most recent call last)" "$err"; then
+    log-error "the refusal is a python traceback: [$(cat "$err")]"; rm -rf "$out" "$err"; return 1
+  fi
+  rm -rf "$out" "$err"
+  return 0
+}
+test_cds_ipeds_wrong_columns_is_a_fault() (
+  local dir; dir="$(mktemp -d)"
+  trap 'rm -rf "$dir"' EXIT
+  printf 'UNITID,SCFA1X\n111111,900\n' > "$dir/sfa2223.csv"
+  # The header it READ is the evidence an operator acts on -- wrong survey,
+  # HTML error page, renamed column -- so the fault must show it.
+  cds_ipeds_fault_says "$dir" "carries no [SCFA1N]; it has [2] columns beginning [UNITID, SCFA1X]"
+)
+assert_success "an sfa2223.csv without SCFA1N is refused, naming the header it read" \
+  test_cds_ipeds_wrong_columns_is_a_fault
+test_cds_ipeds_no_usable_rows_is_a_fault() (
+  local dir; dir="$(mktemp -d)"
+  trap 'rm -rf "$dir"' EXIT
+  printf 'UNITID,SCFA1N\n111111,\n121212,0\n' > "$dir/sfa2223.csv"
+  # Truncated and "the survey moved" read identically at the call site, so the
+  # fault carries what separates them: rows read, and the first pair rejected.
+  cds_ipeds_fault_says "$dir" "[2] rows read, first rejected is [UNITID=[111111] SCFA1N=[]]"
+)
+assert_success "an sfa2223.csv carrying no usable cohort row is refused, with what it read" \
+  test_cds_ipeds_no_usable_rows_is_a_fault
+test_cds_ipeds_repeated_unitid_is_a_fault() (
+  local dir; dir="$(mktemp -d)"
+  trap 'rm -rf "$dir"' EXIT
+  printf 'UNITID,SCFA1N\n111111,900\n111111,4000\n' > "$dir/sfa2223.csv"
+  # Last-wins would judge a college against whichever cohort the file happened
+  # to list last -- the one shape problem that otherwise passes silently.
+  cds_ipeds_fault_says "$dir" "lists [UNITID]=[111111] more than once"
+)
+assert_success "a repeated UNITID in the federal file is refused, not resolved last-wins" \
+  test_cds_ipeds_repeated_unitid_is_a_fault
+# A row carrying TEXT we cannot read is COUNTED, not silently skipped: a survey
+# that starts writing "1,234" or an imputation code would otherwise narrow rule
+# 1 to whatever survived while the ledger said it ran over the whole file. The
+# first junk row here is also what `str.isdigit` would have admitted and `int()`
+# then raised on. A BLANK cohort is NOT counted -- that is the survey saying
+# nothing about a college, which a third of its real rows do.
+test_cds_ipeds_unreadable_rows_are_counted() (
+  local dir out err; dir="$(mktemp -d)"; out="$(mktemp -d)"; err="$(mktemp)"
+  trap 'rm -rf "$dir" "$out" "$err"' EXIT
+  printf 'UNITID,SCFA1N\n111111,900\n222222,1\u00b2,\n333333,N/A\n444444,\n' > "$dir/sfa2223.csv"
+  bin/fetch-cds-seed -F "$CDS_FIXTURES" -o "$out" -I "$dir" >/dev/null 2> "$err" \
+    || { log-error "a survey with two junk rows was not read at all: [$(cat "$err")]"; return 1; }
+  grep -qF -- "row(s) carry an unreadable [UNITID]/[SCFA1N] pair" "$err" \
+    || { log-error "the unreadable rows were not announced: [$(cat "$err")]"; return 1; }
+  cds_ipeds_ran "$out/PROVENANCE.json" 1 1 2
+)
+assert_success "unreadable federal rows are counted in PROVENANCE.json, not silently skipped" \
+  test_cds_ipeds_unreadable_rows_are_counted
+
+
+# RFC 182 rule 1 reads db/seed/ipeds/sfa2223.csv, but bin/fetch-ipeds OWNS that
+# directory and that member name. An aid-year bump there renames the file, and
+# an absent file is deliberately a SKIPPED check -- so the rule would stop
+# running for good with nothing failing. This is what fails instead.
+test_cds_ipeds_input_is_what_fetch_ipeds_writes() {
+  python3 - "$PROJECT_ROOT/bin" << 'PY'
+import ast, sys
+from pathlib import Path
+
+
+def constant(path, name):
+    """The value assigned to a module-level constant, as normalised source.
+
+    `ast` is the parser, not a regex: a mention of the name in a comment or a
+    docstring is not a definition, and a constant that has been renamed or
+    deleted produces the sentence below rather than an AttributeError."""
+    for node in ast.parse(path.read_text(), filename=str(path)).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return ast.unparse(node.value)
+    sys.exit(f"[{path}] no longer defines [{name}]")
+
+
+bin_dir = Path(sys.argv[1])
+reader = bin_dir / "fetch-cds-seed"
+writer = bin_dir / "fetch-ipeds"
+wanted = ast.literal_eval(constant(reader, "IPEDS_SFA_FILE"))
+# The file name is matched as a string VALUE in fetch-ipeds's own source, so a
+# comment naming the old member cannot satisfy this.
+written = {
+    node.value
+    for node in ast.walk(ast.parse(writer.read_text(), filename=str(writer)))
+    if isinstance(node, ast.Constant) and isinstance(node.value, str)
+}
+if wanted not in written:
+    sys.exit(f"bin/fetch-cds-seed reads [{wanted}], which bin/fetch-ipeds no longer writes")
+read_dir = constant(reader, "DEFAULT_IPEDS_DIR")
+write_dir = constant(writer, "DEFAULT_OUTDIR")
+if read_dir != write_dir:
+    sys.exit(f"bin/fetch-cds-seed reads [{read_dir}], bin/fetch-ipeds writes [{write_dir}]")
+PY
+}
+assert_success "the IPEDS file rule 1 reads is the one bin/fetch-ipeds writes" \
+  test_cds_ipeds_input_is_what_fetch_ipeds_writes
+
+# RFC 182 rule 1 at H.204: the same freshman cohort at its second address. The
+# whole H2 block goes, exactly as a self-contradictory one does.
+assert_success "an aid-awarded freshman count above the federal cohort emits no aid-policy row" \
+  seed_lacks '^272727,' aid_policy.csv
+assert_success "the implausible H.204 is counted in PROVENANCE.json" \
+  cds_drop_count aid_policy_freshmen_vs_ipeds_implausible 1
+assert_success "the drop names the two counts it compared" \
+  cds_drop_sample_has aid_policy_freshmen_vs_ipeds_implausible \
+    'aid_awarded=[3000] ipeds_scfa1n=[1000] ratio=[3.00]'
+# ... and ONE-SIDED, which this college proves: freshmen who were AWARDED aid
+# are a subset of the cohort, so 100 of 1,000 is what most filings look like and
+# refusing it would throw away honest numbers.
+assert_success "an aid-awarded count far BELOW the cohort is normal and stands" \
+  seed_has '^282828,2025,aid_awarded_freshmen_count,100,reported,H.204,' aid_policy.csv
+
+# Rule 2: one filing attributed to several colleges. 161616 and 171717 carry a
+# byte-identical three-value merit signature in the same cycle -- one PDF mapped
+# onto two UNITIDs. BOTH lose the row: we know one attribution is wrong and
+# nothing in the seed says which, so keeping the bigger campus would be a guess
+# rendered as a fact.
+assert_success "the first member of a duplicate-signature cluster loses its row" \
+  seed_lacks '^161616,' merit-aid.csv
+assert_success "and so does the second, rather than one being kept as a winner" \
+  seed_lacks '^171717,' merit-aid.csv
+assert_success "one drop is recorded per unit_id of the merit cluster" \
+  cds_group_drop_count merit_aid filing_attributed_to_multiple_units 2
+# The FILING the refusal is keyed on is named: without source_url, two distinct
+# documents for one (college, cycle) render as byte-identical samples.
+assert_success "the drop names the filing and every college the signature was shared with" \
+  cds_drop_sample_has filing_attributed_to_multiple_units \
+    'unit_id=[161616] source_year=[2025] source_url=[https://xi.example.edu/cds-2025-26.pdf] units=[161616,171717]'
+# The long-form file is in scope too, where a signature is the value cells of
+# all its rows: 252525 and 262626 file identical H2 need figures.
+assert_success "a duplicated aid-policy filing loses its rows on both sides" \
+  seed_lacks '^252525,' aid_policy.csv
+assert_success "the second aid-policy member goes with it" \
+  seed_lacks '^262626,' aid_policy.csv
+assert_success "one drop is recorded per unit_id of the aid-policy cluster" \
+  cds_group_drop_count aid_policy filing_attributed_to_multiple_units 2
+# The signature is per CYCLE: the same values in different source_years are two
+# filings that happen to agree, which is what a college reporting the same
+# numbers two years running looks like.
+assert_success "identical values in DIFFERENT source_years are both kept (first)" \
+  seed_has '^181818,2025,800,60,4000,' merit-aid.csv
+assert_success "identical values in DIFFERENT source_years are both kept (second)" \
+  seed_has '^191919,2024,800,60,4000,' merit-aid.csv
+# The cardinality guard: two colleges sharing ONE value -- a merit count of zero,
+# which many honestly report -- is coincidence, not a shared filing.
+assert_success "a one-value shared signature keeps the first college's row" \
+  seed_has '^202020,2025,,0,,' merit-aid.csv
+assert_success "a one-value shared signature keeps the second college's row" \
+  seed_has '^212121,2025,,0,,' merit-aid.csv
+# The two categorical files are out of scope as EVIDENCE, never as CONSEQUENCE:
+# a document proved to be filed under the wrong college is the wrong college's
+# document in every group it fed, so xi's and omicron's factor grids -- and xi's
+# deadlines -- go with the merit rows the cluster was detected in.
+assert_success "the refused filing loses its admission-factors row too (first member)" \
+  seed_lacks '^161616,' admission-factors.csv
+assert_success "the refused filing loses its admission-factors row too (second member)" \
+  seed_lacks '^171717,2025,' admission-factors.csv
+assert_success "and its deadlines, from the same document" \
+  seed_lacks '^161616,' deadlines.csv
+# ... and ONLY that document's rows: omicron's deadlines were selected from an
+# older filing, which nothing proved misattributed, so they stand. Removal is
+# keyed by (unit_id, source_url), not by the college.
+assert_success "a group that selected a DIFFERENT filing keeps its own rows" \
+  seed_has '^171717,2024,regular,true,2,10,,,https://omicron.example.edu/cds-2024-25.pdf' deadlines.csv
+# The file each removal came out of is the ledger's own group dimension, not a
+# token in a human diagnostic that a test has to parse back out.
+assert_success "the categorical rows the consequence removed are counted too" \
+  cds_group_drop_count admission_factors filing_attributed_to_multiple_units 2
+assert_success "and the deadlines of the one member that lost them" \
+  cds_group_drop_count deadlines filing_attributed_to_multiple_units 1
+
+# Scope, asserted rather than assumed: byte-identical CATEGORICAL and DATE rows
+# are not EVIDENCE of anything. Dozens of colleges legitimately rate a factor
+# the same way or share a 1 January deadline, and the rule fires on 19 and 25
+# clusters respectively if it is let near these two files, so nothing here is
+# detected from them.
+assert_success "byte-identical admission-factors rows are kept (first)" \
+  seed_has '^232323,2025,considered,' admission-factors.csv
+assert_success "byte-identical admission-factors rows are kept (second)" \
+  seed_has '^242424,2025,considered,' admission-factors.csv
+assert_success "byte-identical deadline rows are kept (first)" \
+  seed_has '^232323,2025,early_decision_1,true,11,15,,,' deadlines.csv
+assert_success "byte-identical deadline rows are kept (second)" \
+  seed_has '^242424,2025,early_decision_1,true,11,15,,,' deadlines.csv
+# 2 merit + 2 aid-policy filings detected, and the same documents' 2 factor
+# grids and 1 deadline set removed as the consequence.
+assert_success "every row of every refused filing is counted, in whichever file it sat" \
+  cds_drop_count filing_attributed_to_multiple_units 7
+
 # group_fields' two silent skips are counted: a non-'reported' status (an
 # extraction failure an operator needs a number for) and a duplicate field row
 # (a corpus disagreeing with itself must not look clean).
@@ -2886,6 +3430,12 @@ for name, digest in provenance["sha256"].items():
     rows = sum(1 for _ in csv.DictReader(io.StringIO(body.decode())))
     if rows != provenance["rows"][name]:
         sys.exit(f"{name}: {rows} rows, PROVENANCE.json says {provenance['rows'][name]}")
+# RFC 182: the committed seed is the product of a run that HAD the federal file.
+# The IPEDS CSVs are gitignored, so a regeneration on a checkout without
+# sfa2223.csv silently restores every refused row -- and the digests above would
+# still agree with it, because they describe whatever was written.
+if not provenance["cross_source"]["ipeds_freshmen"]["ran"]:
+    sys.exit("PROVENANCE.json: the committed seed was built without the IPEDS check")
 PY
 }
 assert_success "the committed CDS seed matches PROVENANCE.json (sha256 + row counts)" \
@@ -2982,6 +3532,8 @@ test_cds_help_exits_zero_on_stdout() {
     || { log-error "-h printed no help: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
   grep -q -- "-K JWT" "$out" \
     || { log-error "-h does not document -K"; rm -f "$out" "$err"; return 1; }
+  grep -q -- "-I DIR" "$out" \
+    || { log-error "-h does not document -I"; rm -f "$out" "$err"; return 1; }
   if grep -q -- "--anon-key" "$out"; then
     log-error "-h still documents the retired --anon-key"; rm -f "$out" "$err"; return 1
   fi
