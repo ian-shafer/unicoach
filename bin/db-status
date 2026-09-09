@@ -5,70 +5,199 @@ help() {
   cat << 'EOF'
 db-status [options]
 
-Outputs the application state of all available database migration scripts.
-Automatically provisions the database and tracking tables if missing (via
-db-create; assumes db-bootstrap has already created the cluster and role).
+Outputs the application state of all available database migration scripts, in
+the order db/schema/ORDER declares (RFC 180). Automatically provisions the
+database and tracking tables if missing (via db-create; assumes db-bootstrap has
+already created the cluster and role).
+
+Never refuses a corpus. bin/db-migrate is the writer and refuses; db-status is
+the diagnostic run to SEE what it refused, so a disagreement between ORDER, the
+schema directory and schema_migrations is reported as payload and exits 0.
+
+The human format (the default) prints one bracketed row per migration:
+
+  [APPLIED]    listed in ORDER and recorded in schema_migrations.
+  [PENDING]    listed in ORDER, on disk, not yet applied — db-migrate will run it.
+  [MISSING]    listed in ORDER, not applied, and no such file on disk. It cannot
+               be applied; the ORDER line or the file is wrong.
+  [UNORDERED]  a *.sql in the schema directory that no ORDER line names. Append
+               it to ORDER, in the order it should be applied.
+  [UNKNOWN]    a filename schema_migrations records that neither ORDER nor the
+               schema directory knows — a deleted or renamed migration. The
+               value is printed in brackets because it is raw database content.
+
+An APPLIED migration whose file has since been deleted is still APPLIED: it is
+listed as such, and the missing file is named in the warning on stderr.
+
+The machine formats emit BARE FILENAMES, one per line, and nothing else: a drift
+row on that stdout would be read by the caller as a migration. Every
+disagreement is reported by a warning on stderr in those formats.
+
+Exit status is 0 for anything the CORPUS says: every disagreement between
+ORDER, the schema directory and schema_migrations is payload, never a refusal.
+It is not 0 when this script cannot get that far — a missing schema directory,
+or a failed db-create, is a fatal (status 1), and a failure to reach the
+database is bin/db-query's status, passed through (2 when the cluster is
+unreachable).
 
 Options:
-  -f <type>: Format output. Valid values: applied-only, unapplied-only.
+  -f <type>: Format output. Valid values: applied-only, unapplied-only, human
+             (the default).
   -h:        Help
 EOF
   exit 0
 }
 
-format=""
+# The human format is a VALUE, not the absence of one. Inferring it from an
+# empty $format made `-f ""` skip validation entirely and put bracketed drift
+# rows on a machine caller's stdout.
+FORMAT_HUMAN="human"
+FORMAT_APPLIED="applied-only"
+FORMAT_UNAPPLIED="unapplied-only"
+VALID_FORMATS=("$FORMAT_APPLIED" "$FORMAT_UNAPPLIED" "$FORMAT_HUMAN")
 
-while getopts ":f:h" opt; do
-  case "$opt" in
-  f) format="$OPTARG" ;;
-  h) help ;;
-  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
-  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
-  esac
-done
-shift $((OPTIND-1))
+format="$FORMAT_HUMAN"
 
-if [ "$#" -gt 0 ]; then
-  fatal -s "$EXIT_UNEXPECTED_ARG" "db-status does not accept positional arguments: $*"
-fi
+# ── 1. Parse and validate the caller's request ────────────────────────────────
+parse_options() {
+  local OPTIND OPTARG opt valid v
+  while getopts ":f:h" opt; do
+    case "$opt" in
+    f) format="$OPTARG" ;;
+    h) help ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+    :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND-1))
 
-VALID_FORMATS=("applied-only" "unapplied-only")
-if [[ -n "$format" ]]; then
+  if [ "$#" -gt 0 ]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "db-status does not accept positional arguments: [$*]"
+  fi
+
   valid=false
   for v in "${VALID_FORMATS[@]}"; do
-    if [[ "$format" == "$v" ]]; then
+    if [ "$format" = "$v" ]; then
       valid=true
       break
     fi
   done
   if ! $valid; then
-    fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid format type: $format. Must be one of: ${VALID_FORMATS[*]}."
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid format type: [$format]. Must be one of: ${VALID_FORMATS[*]}."
   fi
-fi
+}
 
-# Redirect db-create output to stderr so it doesn't artificially pollute the db-status stdout formatting
-"$PROJECT_ROOT/bin/db-create" 1>&2
+# ── 2. Provision ──────────────────────────────────────────────────────────────
+# The database and its tracking table have to exist before anything can be asked
+# what is applied, and this script provisions them (help() says so). db-create's
+# output is a diagnostic, so it goes to stderr — this script's stdout is the
+# report and nothing else.
+provision_database() {
+  "$PROJECT_ROOT/bin/db-create" 1>&2
+}
 
-[ -d "$DB_SCHEMA_DIR" ] || fatal "Schema directory not found: $DB_SCHEMA_DIR"
+# ── 3. Read the two sources of truth ──────────────────────────────────────────
+# The same declared order db-migrate applies in, through the same checks in
+# bin/common (RFC 180 D3): the reporting face of the corpus cannot be a second,
+# disagreeing source of truth about what the order IS.
+#
+# It is a second source of truth about what a disagreement COSTS, deliberately.
+# db-migrate is the writer and refuses. db-status is the diagnostic a human runs
+# to SEE a corpus that db-migrate has just refused, so it reports the drift as
+# payload — [UNORDERED], [MISSING], [UNKNOWN] — warns on stderr, and exits 0. A
+# reporter that refuses to report is no help at exactly the moment it is needed.
+read_corpus() {
+  applied_filenames=$(schema_applied_files)
 
-applied_raw=$(echo "SELECT filename FROM schema_migrations ORDER BY version_id ASC;" | "$PROJECT_ROOT/bin/db-query" -r)
-
-for file in "$DB_SCHEMA_DIR"/*.sql; do
-  # Handles the case where zero schema files exist, which evaluates the loop variable to the literal glob string
-  [ -e "$file" ] || continue
-  base=$(basename "$file")
-
-  if echo "$applied_raw" | grep -q "^$base$"; then
-    if [[ "$format" == "applied-only" ]]; then
-      echo "$base"
-    elif [[ -z "$format" ]]; then
-      echo "[APPLIED] $base"
-    fi
-  else
-    if [[ "$format" == "unapplied-only" ]]; then
-      echo "$base"
-    elif [[ -z "$format" ]]; then
-      echo "[PENDING] $base"
-    fi
+  schema_order_scan "$DB_SCHEMA_DIR"
+  if schema_order_has_drift; then
+    log-warning "the migration corpus in [$DB_SCHEMA_DIR] disagrees with [$SCHEMA_ORDER_FILE]. bin/db-migrate REFUSES this corpus; the lines below report it.
+$(schema_order_drift_report)"
   fi
-done
+}
+
+# One migration row. The machine formats are a LIST OF FILENAMES a caller pipes
+# onward, so they carry the bare name, and only for the format that asked for it.
+print_row() {
+  local label="$1" base="$2" machine_format="$3"
+  if [ "$format" = "$FORMAT_HUMAN" ]; then
+    printf '%s %s\n' "$label" "$base"
+  elif [ "$format" = "$machine_format" ]; then
+    printf '%s\n' "$base"
+  fi
+}
+
+# A drift row belongs to no machine format: it is not a filename to apply.
+print_drift_row() {
+  local label="$1" value="$2"
+  [ "$format" = "$FORMAT_HUMAN" ] || return 0
+  printf '%s %s\n' "$label" "$value"
+}
+
+# ── 4. The declared corpus, in declared order ─────────────────────────────────
+# APPLIED is tested FIRST. The file-on-disk test used to come first and
+# `continue`, so an APPLIED migration whose file had since been deleted vanished
+# from `-f applied-only` altogether — the format whose whole job is to say what
+# this database has already run. Deleting a file cannot un-apply it.
+report_declared_migrations() {
+  local base
+  for base in "${SCHEMA_ORDER_LISTED[@]}"; do
+    if schema_file_is_applied "$base" "$applied_filenames"; then
+      print_row "[APPLIED]" "$base" "$FORMAT_APPLIED"
+      continue
+    fi
+    # Not applied and not on disk: it cannot be applied, so it is drift rather
+    # than something `-f unapplied-only` may hand to a caller. The warning above
+    # already names it under "listed but not on disk".
+    if [ ! -f "$DB_SCHEMA_DIR/$base" ]; then
+      print_drift_row "[MISSING]" "$base"
+      continue
+    fi
+    print_row "[PENDING]" "$base" "$FORMAT_UNAPPLIED"
+  done
+}
+
+# ── 5. Files ORDER never placed ───────────────────────────────────────────────
+report_unordered_files() {
+  local base
+  for base in "${SCHEMA_ORDER_UNORDERED[@]}"; do
+    print_drift_row "[UNORDERED]" "$base"
+  done
+}
+
+# ── 6. Applied rows the corpus no longer knows ────────────────────────────────
+# What is left in schema_migrations after everything ORDER or the disk names is
+# an applied migration whose file the corpus dropped — a deleted or renamed one,
+# which reads as "fully migrated" everywhere else.
+#
+# The warning is UNCONDITIONAL, and it is the only report this kind gets in the
+# machine formats: schema_order_scan compares ORDER against DISK and never sees
+# schema_migrations, so schema_order_has_drift is false for a corpus whose
+# only disagreement is this one. The row is bracketed because it is raw database
+# content — an empty or whitespace filename is otherwise invisible.
+report_unknown_applied_rows() {
+  local base
+  local -A known=()
+  local unknown=()
+
+  for base in "${SCHEMA_ORDER_LISTED[@]}" "${SCHEMA_ORDER_ON_DISK[@]}"; do
+    known["$base"]=1
+  done
+
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    [ -n "${known[$base]:-}" ] && continue
+    unknown+=("$base")
+    print_drift_row "[UNKNOWN]" "[$base]"
+  done <<< "$applied_filenames"
+
+  [ "${#unknown[@]}" -eq 0 ] && return 0
+  log-warning "schema_migrations in database [$POSTGRES_DB] records [${#unknown[@]}] applied migration(s) that neither [$SCHEMA_ORDER_FILE] nor [$DB_SCHEMA_DIR] names: $(join_comma_bracketed "${unknown[@]}"). They were applied by an older corpus; this checkout cannot say what they did."
+}
+
+parse_options "$@"
+provision_database
+read_corpus
+report_declared_migrations
+report_unordered_files
+report_unknown_applied_rows

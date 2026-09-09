@@ -5,8 +5,12 @@ help() {
   cat << 'EOF'
 db-migrate [options]
 
-Executes all pending database migrations in strict lexicographical order.
+Executes all pending database migrations in the order declared by
+$DB_SCHEMA_DIR/ORDER, skipping the ones schema_migrations already records.
+Refuses, before applying anything, when ORDER and the schema directory disagree.
 Halts immediately upon any query execution failure.
+Automatically provisions the database and tracking tables if missing (via
+db-create; assumes db-bootstrap has already created the cluster and role).
 
 Options:
   -h:    Help
@@ -24,35 +28,86 @@ done
 shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
-  fatal -s "$EXIT_UNEXPECTED_ARG" "db-migrate does not accept positional arguments: $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-migrate does not accept positional arguments: [$*]"
 fi
 
-# Extract only pending migrations
-pending_files=$("$PROJECT_ROOT/bin/db-status" -f unapplied-only || true)
+# The database has to exist before it can be asked what it has applied. db-status
+# used to do this on db-migrate's behalf; the ORDER walk reads the corpus itself,
+# so the provisioning step is explicit here. Its chatter is a diagnostic, and the
+# line below names the DATABASE it is about to provision, because db-create's own
+# output is the only other place that name appears in a deploy log.
+log-info "Provisioning database [$POSTGRES_DB] if it is not already provisioned."
+"$PROJECT_ROOT/bin/db-create" 1>&2
 
-if [ -z "$pending_files" ]; then
+# What is still pending, in the declared order (RFC 180), computed by bin/common
+# so that db-migrate and db-status cannot disagree about it. schema_pending_files
+# fatals — naming EVERY offending file, one section per kind of disagreement —
+# when ORDER and $DB_SCHEMA_DIR disagree, and it does so BEFORE the first BEGIN
+# below, so a corpus that disagrees with itself never half-applies. The filename
+# grammars are part of that pre-flight check, so an illegal name at pending #12
+# can no longer abort a run that has already committed eleven migrations.
+# `|| exit $?` is not decoration: `set -e` does not reliably abort on a command
+# substitution whose subshell died inside a function, and a swallowed refusal here
+# would read as "nothing pending" — a silent no-op on a corpus that should have
+# stopped the run. The status it carries is not only the corpus refusal
+# (EXIT_SCHEMA_ORDER_DRIFT): schema_pending_files also queries the database
+# through bin/db-query and PASSES THAT STATUS THROUGH, so an unreachable cluster
+# arrives here as EXIT_POSTGRES_UNREACHABLE. Both are re-raised verbatim, which
+# is why this is `exit $?` and not `exit 1`.
+pending_lines=$(schema_pending_files "$DB_SCHEMA_DIR") || exit $?
+
+pending_files=()
+while IFS= read -r base; do
+  [ -n "$base" ] || continue
+  pending_files+=("$base")
+done <<< "$pending_lines"
+
+if [ "${#pending_files[@]}" -eq 0 ]; then
   log-info "Database is fully migrated."
   exit 0
 fi
 
-for base in $pending_files; do
-  file="$DB_SCHEMA_DIR/$base"
-  if [[ ! "$base" =~ ^[0-9]{4}\.([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])\.sql$ ]]; then
-    fatal "Invalid migration filename [$base]"
-  fi
+# One migration, in one transaction: its SQL and the row that records it commit
+# together or not at all. Extracted so the walk below reads as the ORDER walk it
+# is, instead of inlining a BEGIN/cat/INSERT/COMMIT pipeline inside a loop.
+apply_migration() {
+  local base="${1:?apply_migration requires a migration filename as an argument}"
+  local file="$DB_SCHEMA_DIR/$base"
 
-  log-info "Migrating: $base"
-  
-  if ! (
+  # A cheap assertion, not the check: the corpus validator above already refused
+  # every illegal name. It stays because the next line interpolates $base into
+  # SQL, and an interpolation site should not have to trust a caller three
+  # functions away.
+  schema_filename_is_valid "$base" \
+    || fatal "Invalid migration filename [$base] reached the apply loop; the corpus check in bin/common should have refused it."
+
+  log-info "Migrating: [$base]"
+
+  (
     echo "BEGIN;"
     cat "$file"
     echo ""
-    version_id="${base:0:4}"
-    echo "INSERT INTO schema_migrations (version_id, filename) VALUES ('$version_id', '$base');"
+    echo "INSERT INTO schema_migrations (filename) VALUES ('$base');"
     echo "COMMIT;"
-  ) | "$PROJECT_ROOT/bin/db-write"; then
-    fatal "Migration failed: $base. Halting."
+  ) | "$PROJECT_ROOT/bin/db-write"
+}
+
+# Each migration is its OWN transaction, so a failure at pending #5 of 12 leaves
+# four COMMITTED and seven unattempted. The old message named the failing file
+# and nothing else, so the state of the database after the halt — the one thing
+# an operator needs — was stated nowhere. db-write's status is carried too:
+# collapsing it to fatal's flat 1 made an unreachable cluster
+# (EXIT_POSTGRES_UNREACHABLE) indistinguishable from bad SQL in a migration.
+committed=0
+total="${#pending_files[@]}"
+for index in "${!pending_files[@]}"; do
+  base="${pending_files[$index]}"
+  status=0
+  apply_migration "$base" || status=$?
+  if [ "$status" -ne 0 ]; then
+    fatal -s "$status" "Migration failed: [$base]. Halting. [$committed] of [$total] pending migration(s) already COMMITTED; [$(( total - index - 1 ))] not attempted. The committed ones are recorded in schema_migrations, so re-running bin/db-migrate after fixing [$base] resumes from it."
   fi
+  committed=$(( committed + 1 ))
 done
 
-log-info "All migrations applied successfully."
+log-info "All [$total] migration(s) applied successfully."

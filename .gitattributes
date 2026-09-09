@@ -1,0 +1,6 @@
+# ORDER is APPEND-only, so union — two runs each appending their own line merge
+# without a conflict, which is the one case this rule exists for. The cost: union
+# NEVER reports a conflict, so it can silently duplicate a line or interleave two
+# appends. Nothing here validates the result; bin/db-migrate (via bin/common) and
+# .prime/agent/skills/ship/scripts/ship-order are the validators that do.
+db/schema/ORDER merge=union

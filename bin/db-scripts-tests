@@ -6,6 +6,13 @@
 # worktrees share. The private cluster is torn down and deleted on exit.
 set -euo pipefail
 
+# The hook that runs this harness exports GIT_DIR and GIT_INDEX_FILE, and both
+# outrank `git -C`. Unset here for the throwaway `git init` fixture below; it
+# escaped once and re-initialised the REAL checkout, rewriting .git/config with
+# core.bare=true (which broke `git check-ignore` in every worktree) plus this
+# harness's test identity, and failing an unrelated pre-commit test.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 THIS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Private env: throwaway data dir, a PID-derived port (dynamic/private range) to
@@ -282,14 +289,19 @@ test_db_status_formats() {
   bin/db-create
 
   export DB_SCHEMA_DIR="/tmp/test_migrations_status_$$"
+  rm -rf "$DB_SCHEMA_DIR"
   mkdir -p "$DB_SCHEMA_DIR"
+  # A migration is a FILE PLUS ITS LINE IN ORDER (RFC 180) — db-status and
+  # db-migrate both refuse a *.sql that ORDER does not name.
   echo "CREATE TABLE s1 (id INT);" > "$DB_SCHEMA_DIR/0001.s1.sql"
+  echo "0001.s1.sql" > "$DB_SCHEMA_DIR/ORDER"
 
   # Forward migration (applies 0001.s1.sql)
   bin/db-migrate
 
   # Creates another schema file
   echo "CREATE TABLE s2 (id INT);" > "$DB_SCHEMA_DIR/0002.s2.sql"
+  echo "0002.s2.sql" >> "$DB_SCHEMA_DIR/ORDER"
 
   # Test that -f applied-only only outputs a single, correct line
   applied_out=$(bin/db-status -f applied-only)
@@ -327,11 +339,21 @@ reset_database_with_schema_dir() {
   mkdir -p "$DB_SCHEMA_DIR"
 }
 
+# A migration in a scratch corpus is a FILE PLUS ITS LINE IN db/schema/ORDER
+# (RFC 180): apply order is declared, not globbed, and a *.sql that ORDER does
+# not name is a refusal. Writing both here keeps every fixture below honest and
+# leaves the ORDER-vs-disk disagreements to the tests that assert them.
+add_migration() {
+  local base="$1" sql="$2"
+  printf '%s\n' "$sql" > "$DB_SCHEMA_DIR/$base"
+  printf '%s\n' "$base" >> "$DB_SCHEMA_DIR/ORDER"
+}
+
 setup_dump_restore_test() {
   mkdir -p "$DUMP_DIR"
   rm -f "$DUMP_DIR"/*.dump
   reset_database_with_schema_dir "$PRIVATE_ROOT/dump_schema"
-  echo "CREATE TABLE dump_rows (id INT PRIMARY KEY, val TEXT);" > "$DB_SCHEMA_DIR/0001.dump-test.sql"
+  add_migration "0001.dump-test.sql" "CREATE TABLE dump_rows (id INT PRIMARY KEY, val TEXT);"
   bin/db-migrate >/dev/null
   bin/db-run rw "INSERT INTO dump_rows (id, val) VALUES (1, 'kept');" >/dev/null
 }
@@ -959,17 +981,52 @@ test_db_restore_malformed_dump_dir_is_refused() {
 # db-restore deliberately does not run migrations, so a dump taken before a newer
 # migration leaves this checkout quietly behind. The success log must state the
 # level it landed at and name bin/db-migrate as the remedy — without running it.
+# The probe asks "what did this database land at", and the answer is the LAST
+# APPLIED migration — `applied_at DESC`, never a filename sort (RFC 180 D4). One
+# migration cannot tell the two apart, so the fixture applies a SECOND one whose
+# filename sorts EARLIER: `0000.applied-second.sql` is applied last, so
+# applied_at DESC names it and any filename ordering names 0001.dump-test.sql.
+# The two assertions below therefore disagree under the wrong ORDER BY.
 test_db_restore_success_log_names_the_migration_level() {
   setup_dump_restore_test
+  add_migration "0000.applied-second.sql" "CREATE TABLE level_probe_second (id INT);"
+  bin/db-migrate >/dev/null 2>&1
   bin/db-dump -o "$DUMP_DIR/level.dump" >/dev/null 2>&1
   local err="$DUMP_DIR/level.err"
   bin/db-restore -y "$DUMP_DIR/level.dump" >/dev/null 2> "$err"
-  if ! grep -q "migration level \[0001.dump-test.sql\]" "$err"; then
-    fail_test "the success log did not name the migration level. Got: $(cat "$err")"
+  if ! grep -q "migration level \[0000.applied-second.sql\]" "$err"; then
+    fail_test "the success log did not name the LAST APPLIED migration. Got: $(cat "$err")"
+    return 1
+  fi
+  if grep -q "migration level \[0001.dump-test.sql\]" "$err"; then
+    fail_test "the level probe ordered by filename, not applied_at. Got: $(cat "$err")"
     return 1
   fi
   if ! grep -q "bin/db-migrate" "$err"; then
     fail_test "the success log did not name bin/db-migrate as the remedy. Got: $(cat "$err")"
+    return 1
+  fi
+  return 0
+}
+
+# `applied_at` is NULLABLE (bin/db-create sets only a DEFAULT), and in PostgreSQL
+# `DESC` is NULLS FIRST — so a single unstamped row sorts ahead of every real one
+# and gets reported as the level. Such a row is ordinary: a hand-repaired
+# tracking table, or a database restored from a dump older than the DEFAULT. The
+# probe must name the last STAMPED migration, and this case fails under the plain
+# `applied_at DESC` ordering.
+test_db_restore_level_probe_ignores_a_null_applied_at() {
+  setup_dump_restore_test
+  bin/db-write "INSERT INTO schema_migrations (filename, applied_at) VALUES ('0002.null-stamp.sql', NULL);" >/dev/null
+  bin/db-dump -o "$DUMP_DIR/nullstamp.dump" >/dev/null 2>&1
+  local err="$DUMP_DIR/nullstamp.err"
+  bin/db-restore -y "$DUMP_DIR/nullstamp.dump" >/dev/null 2> "$err"
+  if grep -q "migration level \[0002.null-stamp.sql\]" "$err"; then
+    fail_test "the level probe reported the row with a NULL applied_at (DESC is NULLS FIRST). Got: $(cat "$err")"
+    return 1
+  fi
+  if ! grep -q "migration level \[0001.dump-test.sql\]" "$err"; then
+    fail_test "the level probe did not report the last STAMPED migration. Got: $(cat "$err")"
     return 1
   fi
   return 0
@@ -1001,6 +1058,7 @@ assert_success "db-dump -D writes \$POSTGRES_DUMP_DIR/dev.dump and db-restore re
 assert_success "db-dump -D without a usable POSTGRES_DUMP_DIR exits 22" test_db_dump_D_without_a_usable_dump_dir_exits_22
 assert_success "db-restore refuses a malformed POSTGRES_DUMP_DIR instead of building //dev.dump" test_db_restore_malformed_dump_dir_is_refused
 assert_success "a successful db-restore logs the migration level it landed at" test_db_restore_success_log_names_the_migration_level
+assert_success "the db-restore level probe ignores a NULL applied_at row" test_db_restore_level_probe_ignores_a_null_applied_at
 
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "db-dump -z exits 10" bin/db-dump -z
 assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "db-dump -o (no value) exits 11" bin/db-dump -o
@@ -1030,8 +1088,8 @@ teardown_migration_test() {
 test_db_migrate_forward() {
   setup_migration_test
 
-  echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
-  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  add_migration "0002.m2.sql" "CREATE TABLE m2 (id INT);"
 
   status_out=$(bin/db-status)
   if ! echo "$status_out" | grep -q "\[PENDING\] 0001.m1.sql"; then
@@ -1072,8 +1130,8 @@ test_db_migrate_forward() {
 test_db_migrate_idempotent() {
   setup_migration_test
 
-  echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
-  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  add_migration "0002.m2.sql" "CREATE TABLE m2 (id INT);"
   bin/db-migrate
 
   if ! bin/db-migrate >/dev/null 2>&1; then
@@ -1097,7 +1155,7 @@ test_db_migrate_transaction_rollback() {
   setup_migration_test
 
   # 0001.m1.sql contains valid then invalid SQL
-  echo "CREATE TABLE good_table (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
+  add_migration "0001.m1.sql" "CREATE TABLE good_table (id INT);"
   echo "GARBAGE SQL;" >> "$DB_SCHEMA_DIR/0001.m1.sql"
 
   if bin/db-migrate >/dev/null 2>&1; then
@@ -1124,15 +1182,19 @@ test_db_migrate_transaction_rollback() {
   return 0
 }
 
+# Halting keeps its meaning under a DECLARED order: the broken migration is
+# listed BEFORE m4 in ORDER, so m4 is what must stay unapplied. Nothing here
+# depends on `0003` sorting before `0004` any more — the two ORDER lines are the
+# only thing that decides.
 test_db_migrate_halts_on_error() {
   setup_migration_test
 
-  echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
-  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  add_migration "0002.m2.sql" "CREATE TABLE m2 (id INT);"
   bin/db-migrate
 
-  echo "GARBAGE SQL SYNTAX;" > "$DB_SCHEMA_DIR/0003.bad.sql"
-  echo "CREATE TABLE m4 (id INT);" > "$DB_SCHEMA_DIR/0004.m4.sql"
+  add_migration "0003.bad.sql" "GARBAGE SQL SYNTAX;"
+  add_migration "0004.m4.sql" "CREATE TABLE m4 (id INT);"
 
   if bin/db-migrate >/dev/null 2>&1; then
     fail_test "db-migrate did not fail on broken SQL"
@@ -1157,10 +1219,954 @@ test_db_migrate_halts_on_error() {
   return 0
 }
 
+# ── RFC 180: the apply order is a declared file ───────────────────────────────
+
+# The acceptance criterion for an ALREADY-MIGRATED database: re-running
+# db-migrate changes nothing. Asserted on count(*) as well as the exit status and
+# the log line, because a second INSERT would still exit 0 while doubling the
+# table.
+test_db_migrate_no_op_on_a_current_database() {
+  setup_migration_test
+
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  add_migration "0002.m2.sql" "CREATE TABLE m2 (id INT);"
+  bin/db-migrate
+
+  local before after out
+  before=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+  if ! out=$(bin/db-migrate 2>&1); then
+    fail_test "db-migrate failed on an already-migrated database: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -q "fully migrated"; then
+    fail_test "db-migrate did not report a current database as fully migrated. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  after=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$before" != "$after" ] || [ "$after" != "2" ]; then
+    fail_test "re-running db-migrate changed schema_migrations (before=$before after=$after, expected 2)"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# The production upgrade path, and the one thing local green cannot prove: every
+# run of bin/test db-resets, so the suite only ever sees a COLD database, while a
+# real one already has schema_migrations and a bare CREATE TABLE IF NOT EXISTS is
+# a no-op against it. So the pre-RFC-180 shape is rebuilt here on purpose and
+# db-create is asked to upgrade it in place.
+test_db_create_reshapes_a_legacy_schema_migrations() {
+  setup_migration_test
+
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  bin/db-write "DROP TABLE schema_migrations;
+    CREATE TABLE schema_migrations (
+      version_id VARCHAR(4)   PRIMARY KEY,
+      filename   VARCHAR(255) NOT NULL,
+      applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    INSERT INTO schema_migrations (version_id, filename) VALUES ('0001', '0001.m1.sql');" >/dev/null
+
+  local out legacy_col pkey_col rows count
+  if ! out=$(bin/db-create 2>&1); then
+    fail_test "db-create failed against a pre-RFC-180 schema_migrations: $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  legacy_col=$(bin/db-query -r "SELECT count(*) FROM information_schema.columns WHERE table_name = 'schema_migrations' AND column_name = 'version_id';" | tr -d '[:space:]')
+  if [ "$legacy_col" != "0" ]; then
+    fail_test "db-create left version_id on schema_migrations"
+    teardown_migration_test
+    return 1
+  fi
+
+  pkey_col=$(bin/db-query -r "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'schema_migrations'::regclass AND i.indisprimary;" | tr -d '[:space:]')
+  if [ "$pkey_col" != "filename" ]; then
+    fail_test "schema_migrations' primary key is [$pkey_col], not filename"
+    teardown_migration_test
+    return 1
+  fi
+
+  rows=$(bin/db-query -r "SELECT filename FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$rows" != "0001.m1.sql" ]; then
+    fail_test "the reshape lost the existing rows. Got: [$rows]"
+    teardown_migration_test
+    return 1
+  fi
+
+  # The point of preserving them: the migration they record is not re-applied.
+  if ! out=$(bin/db-migrate 2>&1); then
+    fail_test "db-migrate failed after the reshape: $out"
+    teardown_migration_test
+    return 1
+  fi
+  count=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$count" != "1" ]; then
+    fail_test "db-migrate was not a no-op after the reshape (schema_migrations has $count rows, expected 1)"
+    teardown_migration_test
+    return 1
+  fi
+
+  # And it is idempotent: a second db-create on the already-new shape does nothing.
+  if ! out=$(bin/db-create 2>&1); then
+    fail_test "db-create is not idempotent after the reshape: $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# The four refusals share a shape: a corpus that disagrees with itself, a
+# db-migrate that must fail BEFORE the first BEGIN, a message that NAMES the
+# offender, and a database that gained nothing. Run against an already-migrated
+# corpus so "nothing applied" is a count that a half-run would visibly move.
+assert_migrate_refuses() {
+  local what="$1" expected_count="$2"
+  shift 2
+  local out status=0 count
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "db-migrate accepted $what. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  # -F: the needles are LITERAL message text, and several now carry the [ ]
+  # brackets the bin/ convention puts around an interpolated value. As a BRE,
+  # "[2]" is a character class that matches a bare 2, so the very brackets the
+  # assertion exists to pin would go unchecked.
+  local needle
+  for needle in "$@"; do
+    if ! echo "$out" | grep -qF -- "$needle"; then
+      fail_test "db-migrate's refusal of $what did not name [$needle]. Got: $out"
+      teardown_migration_test
+      return 1
+    fi
+  done
+  count=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$count" != "$expected_count" ]; then
+    fail_test "db-migrate applied something while refusing $what (schema_migrations has $count rows, expected $expected_count)"
+    teardown_migration_test
+    return 1
+  fi
+  return 0
+}
+
+# The RFC 169 defect, now loud: a migration on disk that ORDER never placed. Two
+# of them, to prove the message collects every offender rather than the first.
+test_db_migrate_refuses_a_file_absent_from_order() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  echo "CREATE TABLE unordered_a (id INT);" > "$DB_SCHEMA_DIR/0002.unordered-a.sql"
+  echo "CREATE TABLE unordered_b (id INT);" > "$DB_SCHEMA_DIR/0003.unordered-b.sql"
+
+  assert_migrate_refuses "a migration absent from ORDER" 1 \
+    "0002.unordered-a.sql" "0003.unordered-b.sql" || return 1
+  if bin/db-query "SELECT * FROM unordered_a;" >/dev/null 2>&1; then
+    fail_test "db-migrate applied an unordered migration before refusing"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+test_db_migrate_refuses_an_order_line_absent_from_disk() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  printf '%s\n' "0002.never-written.sql" >> "$DB_SCHEMA_DIR/ORDER"
+
+  assert_migrate_refuses "an ORDER line with no file" 1 "0002.never-written.sql" || return 1
+  teardown_migration_test
+  return 0
+}
+
+# Two migrations can no longer share a position, because a position IS a line and
+# a repeated line is refused.
+test_db_migrate_refuses_a_duplicate_order_line() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  add_migration "0002.m2.sql" "CREATE TABLE m2 (id INT);"
+  printf '%s\n' "0002.m2.sql" >> "$DB_SCHEMA_DIR/ORDER"
+
+  assert_migrate_refuses "a duplicated ORDER line" 0 "0002.m2.sql" || return 1
+  teardown_migration_test
+  return 0
+}
+
+test_db_migrate_refuses_a_missing_or_empty_order() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+
+  rm -f "$DB_SCHEMA_DIR/ORDER"
+  assert_migrate_refuses "a missing ORDER beside a migration" 0 "0001.m1.sql" "ORDER" || return 1
+
+  : > "$DB_SCHEMA_DIR/ORDER"
+  assert_migrate_refuses "an empty ORDER beside a migration" 0 "0001.m1.sql" "ORDER" || return 1
+
+  teardown_migration_test
+  return 0
+}
+
+# The whole point of the file. Lexicographically `a-first.sql` sorts first; ORDER
+# says otherwise and ORDER wins. Proven twice over: the second-listed migration
+# INSERTs into a table only the first-listed one creates (so the wrong order
+# cannot even run), and applied_at records the sequence.
+test_db_migrate_applies_in_declared_not_lexicographic_order() {
+  setup_migration_test
+
+  add_migration "b-second.sql" "CREATE TABLE declared_order_marker (id INT);"
+  add_migration "a-first.sql" "INSERT INTO declared_order_marker (id) VALUES (1);"
+
+  local out sequence
+  if ! out=$(bin/db-migrate 2>&1); then
+    fail_test "db-migrate failed on a corpus whose ORDER contradicts lexicographic order: $out"
+    teardown_migration_test
+    return 1
+  fi
+  sequence=$(bin/db-query -r "SELECT string_agg(filename, ',' ORDER BY applied_at ASC) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$sequence" != "b-second.sql,a-first.sql" ]; then
+    fail_test "migrations were applied in [$sequence], not the declared [b-second.sql,a-first.sql]"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# New migrations carry a slug and no number (RFC 180 D5), and schema_migrations
+# records the filename VERBATIM — there is nothing left to derive it from.
+test_db_migrate_records_slug_filenames_verbatim() {
+  setup_migration_test
+
+  add_migration "add-users-timezone.sql" "CREATE TABLE slug_named (id INT);"
+  add_migration "x.sql" "CREATE TABLE slug_single_char (id INT);"
+  bin/db-migrate
+
+  local recorded objects
+  recorded=$(bin/db-query -r "SELECT string_agg(filename, ',' ORDER BY applied_at ASC) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$recorded" != "add-users-timezone.sql,x.sql" ]; then
+    fail_test "slug filenames were not recorded verbatim. Got: [$recorded]"
+    teardown_migration_test
+    return 1
+  fi
+
+  # A row in schema_migrations only says the file was RECORDED. What makes a
+  # slug migration "apply" is its SQL having run, so ask the catalogue for the
+  # tables each one creates rather than reading exit 0 as proof.
+  objects=$(bin/db-query -r "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname = 'public' AND tablename IN ('slug_named', 'slug_single_char');" | tr -d '[:space:]')
+  if [ "$objects" != "slug_named,slug_single_char" ]; then
+    fail_test "the slug migrations were recorded but their SQL did not run (tables found: [$objects])"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# Both grammars stay STRICT, because the filename is interpolated into the
+# INSERT. Uppercase, a space and a single quote are each still refused, and the
+# refusal happens before any SQL is generated.
+test_db_migrate_refuses_a_bad_filename() {
+  local bad
+  for bad in "0001.Upper.sql" "has space.sql" "quote'.sql" "0001..sql" "-leading.sql"; do
+    setup_migration_test
+    add_migration "$bad" "CREATE TABLE never_created (id INT);"
+
+    local out status=0 count
+    out=$(bin/db-migrate 2>&1) || status=$?
+    if [ "$status" -eq 0 ]; then
+      fail_test "db-migrate accepted the invalid migration filename [$bad]. Got: $out"
+      teardown_migration_test
+      return 1
+    fi
+    if ! echo "$out" | grep -q "Invalid migration filename"; then
+      fail_test "db-migrate's refusal of [$bad] was not the filename check. Got: $out"
+      teardown_migration_test
+      return 1
+    fi
+    count=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+    if [ "$count" != "0" ]; then
+      fail_test "db-migrate recorded something while refusing the filename [$bad]"
+      teardown_migration_test
+      return 1
+    fi
+  done
+
+  teardown_migration_test
+  return 0
+}
+
+# The name check is a property of the CORPUS, not of one apply step. Put the bad
+# name LAST and the difference is visible: the loop-local check refused it only
+# after the earlier migrations had COMMITTED, leaving a half-applied database and
+# contradicting db-migrate's own "never half-applies" promise. Nothing may be
+# applied here.
+test_db_migrate_refuses_a_bad_filename_at_a_later_position() {
+  setup_migration_test
+
+  add_migration "0001.good-first.sql" "CREATE TABLE good_first (id INT);"
+  add_migration "0002.good-second.sql" "CREATE TABLE good_second (id INT);"
+  add_migration "0003.Bad-Third.sql" "CREATE TABLE never_created_late (id INT);"
+
+  local out status=0 count
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "db-migrate accepted an invalid filename at a later position. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -q "0003.Bad-Third.sql"; then
+    fail_test "db-migrate's refusal did not name the offending filename. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  count=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$count" != "0" ]; then
+    fail_test "db-migrate applied the earlier migrations before refusing the later bad name ($count rows recorded)"
+    teardown_migration_test
+    return 1
+  fi
+  if bin/db-query "SELECT * FROM good_first;" >/dev/null 2>&1; then
+    fail_test "db-migrate half-applied the corpus: good_first exists although the run was refused"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# db-migrate no longer routes through db-status, so it no longer inherits
+# db-status's provisioning as a side effect: it calls bin/db-create itself
+# (bin/db-migrate:36). Nothing else in this suite reaches db-migrate with the
+# tracking table absent — every other fixture runs db-create first — so without
+# this case a dropped `bin/db-create` line stays green here and fails only on the
+# deploy path, which is the one place it is unattended.
+test_db_migrate_provisions_a_missing_schema_migrations() {
+  setup_migration_test
+
+  add_migration "0001.provisioned.sql" "CREATE TABLE provisioned (id INT);"
+
+  # (a) the database is there, the tracking table is not.
+  bin/db-write "DROP TABLE schema_migrations;" >/dev/null
+  local out count
+  if ! out=$(bin/db-migrate 2>&1); then
+    fail_test "db-migrate failed against a database with no schema_migrations: $out"
+    teardown_migration_test
+    return 1
+  fi
+  count=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$count" != "1" ]; then
+    fail_test "db-migrate did not re-provision and apply (schema_migrations has $count rows, expected 1)"
+    teardown_migration_test
+    return 1
+  fi
+
+  # (b) the whole database is gone. Same call, same answer: db-create makes both.
+  bin/db-drop -y >/dev/null 2>&1
+  if ! out=$(bin/db-migrate 2>&1); then
+    fail_test "db-migrate failed against a missing database: $out"
+    teardown_migration_test
+    return 1
+  fi
+  count=$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')
+  if [ "$count" != "1" ]; then
+    fail_test "db-migrate did not provision a missing database (schema_migrations has $count rows, expected 1)"
+    teardown_migration_test
+    return 1
+  fi
+  if ! bin/db-query "SELECT * FROM provisioned;" >/dev/null 2>&1; then
+    fail_test "db-migrate recorded the migration but its table is missing"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# The fourth shape ORDER can be corrupt in (bin/common's blank-line refusal). A
+# blank line is not a migration and must not become a phantom entry, and the
+# message carries the LINE NUMBER because a blank line has no other name.
+test_db_migrate_refuses_a_blank_order_line() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  printf '%s\n\n%s\n' "0001.m1.sql" "0002.m2.sql" > "$DB_SCHEMA_DIR/ORDER"
+
+  assert_migrate_refuses "a blank line in ORDER" 1 "blank line(s) at: [2]" || return 1
+  if bin/db-query "SELECT * FROM m2;" >/dev/null 2>&1; then
+    fail_test "db-migrate applied a migration past the blank line before refusing"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# D3: db-status enumerates through the SAME corpus checks db-migrate uses (one
+# owner in bin/common), but it does NOT share db-migrate's refusal. db-migrate is
+# the writer and refuses; db-status is the diagnostic a human reaches for once
+# db-migrate has refused, so a corpus that disagrees with itself is exactly the
+# corpus it must still describe. It reports each disagreement as a payload row,
+# warns on stderr, and exits 0.
+#
+# All three drift kinds at once, because they are computed in three different
+# places: a *.sql on disk ORDER never names, an ORDER line with no file, and an
+# applied row for a migration the corpus no longer knows about (a deleted or
+# renamed migration, which every other reader shows as "fully migrated").
+test_db_status_reports_drift_as_payload_and_exits_zero() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  echo "CREATE TABLE unordered_status (id INT);" > "$DB_SCHEMA_DIR/0002.unordered-status.sql"
+  printf '%s\n' "0003.never-written.sql" >> "$DB_SCHEMA_DIR/ORDER"
+  bin/db-write "INSERT INTO schema_migrations (filename) VALUES ('0009.forgotten.sql');" >/dev/null
+
+  local out status=0 err
+  err="$PRIVATE_ROOT/db-status-drift.err"
+  out=$(bin/db-status 2> "$err") || status=$?
+  if [ "$status" -ne 0 ]; then
+    fail_test "db-status refused a disagreeing corpus (exit $status) instead of reporting it. Got: $out $(cat "$err")"
+    teardown_migration_test
+    return 1
+  fi
+
+  local needle
+  for needle in "[APPLIED] 0001.m1.sql" "[UNORDERED] 0002.unordered-status.sql" \
+    "[MISSING] 0003.never-written.sql" "[UNKNOWN] [0009.forgotten.sql]"; do
+    if ! echo "$out" | grep -qF -- "$needle"; then
+      fail_test "db-status did not report [$needle] in its payload. Got: $out"
+      teardown_migration_test
+      return 1
+    fi
+  done
+
+  if ! grep -q "WARNING" "$err"; then
+    fail_test "db-status reported drift on stdout without warning on stderr. Got: $(cat "$err")"
+    teardown_migration_test
+    return 1
+  fi
+
+  # The machine formats are a list of FILENAMES a caller pipes onward, so a drift
+  # row on their stdout would be read as a migration to apply.
+  local applied_out unapplied_out
+  applied_out=$(bin/db-status -f applied-only 2>/dev/null)
+  if [ "$applied_out" != "0001.m1.sql" ]; then
+    fail_test "db-status -f applied-only leaked drift rows. Got: [$applied_out]"
+    teardown_migration_test
+    return 1
+  fi
+  unapplied_out=$(bin/db-status -f unapplied-only 2>/dev/null)
+  if [ -n "$unapplied_out" ]; then
+    fail_test "db-status -f unapplied-only leaked drift rows. Got: [$unapplied_out]"
+    teardown_migration_test
+    return 1
+  fi
+  # Captured to a FILE, not piped into grep: the harness runs under `pipefail`,
+  # and `grep -q` exits on its first match, so the SIGPIPE it delivers to a
+  # db-status that still has warnings to write would fail the pipeline while the
+  # assertion itself succeeded.
+  bin/db-status -f unapplied-only >/dev/null 2> "$err"
+  if ! grep -qF -- "0002.unordered-status.sql" "$err"; then
+    fail_test "db-status -f unapplied-only hid the drift entirely instead of warning on stderr. Got: $(cat "$err")"
+    teardown_migration_test
+    return 1
+  fi
+
+  # The hard refusal stays with the WRITER, on the same corpus.
+  local migrate_status=0
+  bin/db-migrate >/dev/null 2>&1 || migrate_status=$?
+  if [ "$migrate_status" -eq 0 ]; then
+    fail_test "db-migrate accepted the corpus db-status only warned about"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+
+# And it ENUMERATES through ORDER: same lines as before, now in declared order.
+# `a-first.sql` sorts before `b-second.sql`, so a glob-order db-status prints
+# them the other way round from the order db-migrate applies them in.
+test_db_status_emits_in_declared_order() {
+  setup_migration_test
+
+  add_migration "b-second.sql" "CREATE TABLE status_order_marker (id INT);"
+  add_migration "a-first.sql" "INSERT INTO status_order_marker (id) VALUES (1);"
+
+  local pending applied
+  pending=$(bin/db-status | tr -s '[:space:]' ' ' | sed 's/ $//')
+  if [ "$pending" != "[PENDING] b-second.sql [PENDING] a-first.sql" ]; then
+    fail_test "db-status listed pending migrations in [$pending], not the declared order"
+    teardown_migration_test
+    return 1
+  fi
+
+  bin/db-migrate
+  applied=$(bin/db-status -f applied-only | tr -s '[:space:]' ' ' | sed 's/ $//')
+  if [ "$applied" != "b-second.sql a-first.sql" ]; then
+    fail_test "db-status listed applied migrations in [$applied], not the declared order"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
 assert_success "migration engine forward migration" test_db_migrate_forward
 assert_success "migration engine restricts idempotency" test_db_migrate_idempotent
 assert_success "migration engine rolls back failed transactions" test_db_migrate_transaction_rollback
 assert_success "migration engine halts on error" test_db_migrate_halts_on_error
+assert_success "db-migrate is a no-op on an already-migrated database" test_db_migrate_no_op_on_a_current_database
+assert_success "db-create reshapes a pre-RFC-180 schema_migrations in place" test_db_create_reshapes_a_legacy_schema_migrations
+assert_success "db-migrate refuses a migration absent from ORDER, naming every one" test_db_migrate_refuses_a_file_absent_from_order
+assert_success "db-migrate refuses an ORDER line with no file on disk" test_db_migrate_refuses_an_order_line_absent_from_disk
+assert_success "db-migrate refuses a duplicated ORDER line" test_db_migrate_refuses_a_duplicate_order_line
+assert_success "db-migrate refuses a missing or empty ORDER beside migrations" test_db_migrate_refuses_a_missing_or_empty_order
+assert_success "db-migrate applies in ORDER's order, not lexicographic order" test_db_migrate_applies_in_declared_not_lexicographic_order
+assert_success "db-migrate records slug filenames verbatim" test_db_migrate_records_slug_filenames_verbatim
+assert_success "db-migrate still refuses a malformed migration filename" test_db_migrate_refuses_a_bad_filename
+assert_success "db-migrate refuses a bad filename at a LATER position, applying nothing" test_db_migrate_refuses_a_bad_filename_at_a_later_position
+assert_success "db-migrate provisions a missing database and schema_migrations itself" test_db_migrate_provisions_a_missing_schema_migrations
+assert_success "db-migrate refuses a blank line in ORDER, naming the line number" test_db_migrate_refuses_a_blank_order_line
+assert_success "db-status reports corpus drift as payload and exits 0" test_db_status_reports_drift_as_payload_and_exits_zero
+
+# WHAT THE ORDER FILE IS is enforced in bin/common; WHAT WRITES IT at land is
+# .prime/agent/skills/ship/scripts/ship-order, which deliberately does not source
+# bin/functions (the ship scripts stay independent of repo internals). Two
+# implementations of one grammar that never meet are two grammars, so this case
+# makes them meet: run the REAL ship-order against a throwaway git fixture and
+# feed the file it writes straight through the reader that db-migrate uses.
+test_ship_order_output_is_accepted_by_schema_order_files() {
+  local ship_order="$PROJECT_ROOT/.prime/agent/skills/ship/scripts/ship-order"
+  if [ ! -x "$ship_order" ]; then
+    fail_test "ship-order is not executable at [$ship_order]"
+    return 1
+  fi
+
+  local root="$PRIVATE_ROOT/ship_order_fixture"
+  rm -rf "$root"
+  mkdir -p "$root/db/schema"
+  git -C "$root" init -q -b main >/dev/null 2>&1
+  git -C "$root" config user.email "tests@example.invalid"
+  git -C "$root" config user.name "db-scripts-tests"
+  git -C "$root" config commit.gpgsign false
+
+  # The base branch: two migrations that already landed.
+  echo "CREATE TABLE so_a (id INT);" > "$root/db/schema/0001.so-a.sql"
+  echo "CREATE TABLE so_b (id INT);" > "$root/db/schema/0002.so-b.sql"
+  printf '%s\n%s\n' "0001.so-a.sql" "0002.so-b.sql" > "$root/db/schema/ORDER"
+  git -C "$root" add -A >/dev/null
+  git -C "$root" commit -qm "base" >/dev/null
+  local base_sha
+  base_sha=$(git -C "$root" rev-parse HEAD)
+
+  # This run's own migration, appended during implementation.
+  echo "CREATE TABLE so_mine (id INT);" > "$root/db/schema/add-so-mine.sql"
+  printf '%s\n' "add-so-mine.sql" >> "$root/db/schema/ORDER"
+
+  local scratch="$root/run-scratch"
+  mkdir -p "$scratch"
+  printf 'CODEBASE_ROOT=%s\nBASE_SHA=%s\n' "$root" "$base_sha" > "$scratch/state"
+
+  local out status=0
+  out=$("$ship_order" -s "$scratch" 2> "$root/ship-order.err") || status=$?
+  if [ "$status" -ne 0 ]; then
+    fail_test "ship-order failed on a valid fixture (exit $status): $(cat "$root/ship-order.err")"
+    return 1
+  fi
+  if [ -n "$out" ]; then
+    fail_test "ship-order wrote to stdout on a normal run. Got: $out"
+    return 1
+  fi
+
+  local files reader_status=0
+  files=$(schema_order_files "$root/db/schema" 2> "$root/reader.err") || reader_status=$?
+  if [ "$reader_status" -ne 0 ]; then
+    fail_test "bin/common refused the ORDER that ship-order wrote (exit $reader_status): $(cat "$root/reader.err")"
+    return 1
+  fi
+  local expected
+  expected=$(printf '%s\n%s\n%s' "0001.so-a.sql" "0002.so-b.sql" "add-so-mine.sql")
+  if [ "$files" != "$expected" ]; then
+    fail_test "the order bin/common read back is [$files], not the land order [$expected]"
+    return 1
+  fi
+
+  rm -rf "$root"
+  return 0
+}
+
+assert_success "bin/common accepts the ORDER that the ship skill's ship-order writes" test_ship_order_output_is_accepted_by_schema_order_files
+
+# The number matters as much as the refusal: a corrupt CORPUS is not a usage
+# error and not a failed migration, and a caller can only tell them apart if they
+# carry different exit codes.
+setup_migration_test
+add_migration "0001.drift-code.sql" "CREATE TABLE drift_code (id INT);"
+echo "CREATE TABLE drift_unordered (id INT);" > "$DB_SCHEMA_DIR/0002.drift-unordered.sql"
+assert_exit_code "$EXIT_SCHEMA_ORDER_DRIFT" "db-migrate exits EXIT_SCHEMA_ORDER_DRIFT on a corpus that disagrees with ORDER" bin/db-migrate
+assert_exit_code 0 "db-status exits 0 on the very corpus db-migrate refuses" bin/db-status
+teardown_migration_test
+
+assert_success "db-status enumerates in ORDER's order, not lexicographic order" test_db_status_emits_in_declared_order
+
+# ── Tier-2 review fixes (RFC 180) ─────────────────────────────────────────────
+
+# Deleting a migration file cannot UN-APPLY it. The file-on-disk test used to run
+# before the applied test and `continue`, so an applied migration whose file had
+# since been deleted vanished from `-f applied-only` — the machine format whose
+# only job is to say what this database has already run. A caller diffing that
+# list against a fresh checkout would re-apply it.
+test_db_status_still_lists_an_applied_migration_whose_file_was_deleted() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  add_migration "0002.m2.sql" "CREATE TABLE m2 (id INT);"
+  bin/db-migrate
+
+  rm -f "$DB_SCHEMA_DIR/0001.m1.sql"
+
+  local applied_out human_out
+  applied_out=$(bin/db-status -f applied-only 2>/dev/null)
+  if ! echo "$applied_out" | grep -qxF -- "0001.m1.sql"; then
+    fail_test "db-status -f applied-only dropped an APPLIED migration whose file was deleted. Got: [$applied_out]"
+    teardown_migration_test
+    return 1
+  fi
+  human_out=$(bin/db-status 2>/dev/null)
+  if ! echo "$human_out" | grep -qF -- "[APPLIED] 0001.m1.sql"; then
+    fail_test "the human format called an applied-but-deleted migration something other than APPLIED. Got: $human_out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# An [UNKNOWN] applied row is the ONE drift kind schema_order_scan cannot see: it
+# compares ORDER against DISK and never reads schema_migrations, so
+# schema_order_has_drift is false and the corpus warning never fires. In the
+# machine formats the row is dropped from stdout by design, so before this fix
+# the state was reported NOWHERE — while a comment claimed the warning covered it.
+test_db_status_warns_about_unknown_applied_rows_in_every_format() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  # The ONLY disagreement in this corpus: ORDER and disk agree exactly.
+  bin/db-write "INSERT INTO schema_migrations (filename) VALUES ('0009.forgotten.sql');" >/dev/null
+
+  local err="$PRIVATE_ROOT/db-status-unknown.err" out fmt
+  for fmt in "" "-f applied-only" "-f unapplied-only"; do
+    # shellcheck disable=SC2086
+    out=$(bin/db-status $fmt 2> "$err")
+    if ! grep -qF -- "0009.forgotten.sql" "$err"; then
+      fail_test "db-status [$fmt] did not warn about an applied row the corpus no longer names. stderr: $(cat "$err")"
+      teardown_migration_test
+      return 1
+    fi
+    if ! grep -qF -- "$POSTGRES_DB" "$err"; then
+      fail_test "the [UNKNOWN] warning did not name the database. stderr: $(cat "$err")"
+      teardown_migration_test
+      return 1
+    fi
+    if ! grep -qF -- "schema_migrations" "$err"; then
+      fail_test "the [UNKNOWN] warning did not name schema_migrations. stderr: $(cat "$err")"
+      teardown_migration_test
+      return 1
+    fi
+    if [ -n "$fmt" ] && echo "$out" | grep -qF -- "0009.forgotten.sql"; then
+      fail_test "db-status [$fmt] leaked an [UNKNOWN] row onto machine stdout. Got: $out"
+      teardown_migration_test
+      return 1
+    fi
+  done
+
+  # The value is BRACKETED in the payload: it is raw database content, and an
+  # empty or whitespace filename is otherwise invisible.
+  out=$(bin/db-status 2>/dev/null)
+  if ! echo "$out" | grep -qF -- "[UNKNOWN] [0009.forgotten.sql]"; then
+    fail_test "the [UNKNOWN] payload row did not bracket the raw value. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# The reshape guard asks information_schema a question about ONE table, but every
+# ALTER it then runs resolves that name through the search path. Without a
+# `table_schema = current_schema()` filter an unrelated legacy table in ANOTHER
+# schema keeps the guard true forever — and the first ALTER then fails on EVERY
+# db-create, which is every db-migrate and every db-status.
+test_db_create_reshape_guard_is_scoped_to_this_schema() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  bin/db-write "CREATE SCHEMA IF NOT EXISTS legacy_probe;
+    CREATE TABLE legacy_probe.schema_migrations (
+      version_id VARCHAR(4)   PRIMARY KEY,
+      filename   VARCHAR(255) NOT NULL
+    );" >/dev/null
+
+  local out status=0
+  out=$(bin/db-create 2>&1) || status=$?
+  bin/db-write "DROP SCHEMA legacy_probe CASCADE;" >/dev/null 2>&1 || true
+  if [ "$status" -ne 0 ]; then
+    fail_test "db-create failed because a legacy schema_migrations exists in ANOTHER schema (exit $status): $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# 255 was a bound stated only in this DDL. schema_filename_is_valid (bin/common)
+# has no length rule, so nothing else in the tree knew about it: a long but
+# perfectly legal slug would pass the pre-BEGIN corpus gate and then die on the
+# INSERT, mid-run, after earlier migrations had COMMITTED. TEXT and VARCHAR(n)
+# are the same storage in PostgreSQL, so the bound bought nothing to lose. (The
+# filesystem's own 255-byte NAME_MAX is why this is asserted on the COLUMN TYPE
+# as well as on a long name: a filename can no longer reach the old limit.)
+test_schema_migrations_filename_is_text_and_takes_a_long_slug() {
+  setup_migration_test
+
+  local slug
+  slug="$(printf 'a%.0s' {1..200})"
+  add_migration "0001.first.sql" "CREATE TABLE long_slug_first (id INT);"
+  add_migration "$slug.sql" "CREATE TABLE long_slug_second (id INT);"
+
+  local out status=0 column_type recorded
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -ne 0 ]; then
+    fail_test "db-migrate refused a legal 200-character slug filename (exit $status): $out"
+    teardown_migration_test
+    return 1
+  fi
+  column_type=$(bin/db-query -r "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'schema_migrations' AND column_name = 'filename';" | tr -d '[:space:]')
+  if [ "$column_type" != "text" ]; then
+    fail_test "schema_migrations.filename is [$column_type], not text — a length bound no other reader knows about"
+    teardown_migration_test
+    return 1
+  fi
+  recorded=$(bin/db-query -r "SELECT count(*) FROM schema_migrations WHERE filename = '$slug.sql';" | tr -d '[:space:]')
+  if [ "$recorded" != "1" ]; then
+    fail_test "the long slug migration was not recorded verbatim"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# A line of spaces is not a migration name. `[ -z "$line" ]` accepted one, and it
+# was then reported in two wrong sections with an invisible payload — while
+# ship-order, the writer, strips exactly these. The two now agree.
+test_db_migrate_treats_a_whitespace_only_order_line_as_blank() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  printf '%s\n   \n%s\n' "0001.m1.sql" "0002.m2.sql" > "$DB_SCHEMA_DIR/ORDER"
+
+  assert_migrate_refuses "a whitespace-only ORDER line" 1 "blank line(s) at: [2]" || return 1
+
+  local out status=0
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if echo "$out" | grep -q "Invalid migration filename"; then
+    fail_test "a whitespace-only ORDER line was reported as a migration NAME. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# An illegally named file on disk used to be reported only as "[UNORDERED] …
+# append it, in the order it should be applied" — advice that produces a corpus
+# the very next run refuses for a different reason. The grammar applies to what
+# is on disk, not only to what ORDER lists.
+test_db_migrate_refuses_an_illegally_named_file_on_disk() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  bin/db-migrate
+
+  echo "CREATE TABLE never_created_disk (id INT);" > "$DB_SCHEMA_DIR/0002.Bad Name.sql"
+
+  assert_migrate_refuses "an illegally named file on disk" 1 "Invalid migration filename" "0002.Bad Name.sql" || return 1
+
+  local out status=0
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if echo "$out" | grep -q "Append each one"; then
+    fail_test "an illegally named file was offered as something to append to ORDER. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# Every offender is named with the LINE it sits on. The remedy is "edit that
+# line", and the line number was known at detection and thrown away, leaving the
+# reader to search the whole file by eye.
+test_db_migrate_refusals_name_the_order_line_number() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  add_migration "0002.m2.sql" "CREATE TABLE m2 (id INT);"
+  printf '%s\n' "0002.m2.sql" >> "$DB_SCHEMA_DIR/ORDER"
+
+  assert_migrate_refuses "a duplicate without a line number" 0 "line 3, first at line 2" || return 1
+  teardown_migration_test
+
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+  printf '%s\n' "0002.never-written.sql" >> "$DB_SCHEMA_DIR/ORDER"
+
+  assert_migrate_refuses "an absent file without a line number" 0 "[0002.never-written.sql] (line 2)" || return 1
+  teardown_migration_test
+  return 0
+}
+
+# ORDER can be present and still unusable. A DIRECTORY called ORDER was reported
+# as "not found" — advice that cannot be followed — and an unreadable ORDER died
+# on the read redirect with a bare status 1, where the caller expects the corpus
+# code.
+test_db_migrate_refuses_an_unusable_order_file() {
+  setup_migration_test
+  add_migration "0001.m1.sql" "CREATE TABLE m1 (id INT);"
+
+  rm -f "$DB_SCHEMA_DIR/ORDER"
+  mkdir -p "$DB_SCHEMA_DIR/ORDER"
+  assert_migrate_refuses "a directory named ORDER" 0 "is not a regular file" || return 1
+  local status=0
+  bin/db-migrate >/dev/null 2>&1 || status=$?
+  if [ "$status" -ne "$EXIT_SCHEMA_ORDER_DRIFT" ]; then
+    fail_test "a directory named ORDER exited $status, not EXIT_SCHEMA_ORDER_DRIFT"
+    teardown_migration_test
+    return 1
+  fi
+  rmdir "$DB_SCHEMA_DIR/ORDER"
+
+  # An unreadable ORDER is a third state again: its contents are unknown, so no
+  # order can be reported. root ignores the mode bits, so the case would be
+  # about the test runner rather than the script.
+  if [ "$(id -u)" -ne 0 ]; then
+    printf '%s\n' "0001.m1.sql" > "$DB_SCHEMA_DIR/ORDER"
+    chmod 000 "$DB_SCHEMA_DIR/ORDER"
+    status=0
+    local out
+    out=$(bin/db-migrate 2>&1) || status=$?
+    chmod 644 "$DB_SCHEMA_DIR/ORDER"
+    if [ "$status" -ne "$EXIT_SCHEMA_ORDER_DRIFT" ]; then
+      fail_test "an unreadable ORDER exited $status, not EXIT_SCHEMA_ORDER_DRIFT. Got: $out"
+      teardown_migration_test
+      return 1
+    fi
+    if ! echo "$out" | grep -q "not readable"; then
+      fail_test "the refusal of an unreadable ORDER did not say it could not be read. Got: $out"
+      teardown_migration_test
+      return 1
+    fi
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# Each migration is its own transaction, so a halt at pending #2 of 2 leaves one
+# COMMITTED and the rest unattempted. That state — the only thing an operator
+# needs after a failure — used to be stated nowhere: the message named the file
+# and stopped.
+test_db_migrate_failure_states_what_was_committed() {
+  setup_migration_test
+  add_migration "0001.good.sql" "CREATE TABLE halt_good (id INT);"
+  add_migration "0002.bad.sql" "GARBAGE SQL SYNTAX;"
+
+  local out status=0
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "db-migrate did not fail on broken SQL. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -qF -- "[1] of [2] pending migration(s) already COMMITTED"; then
+    fail_test "the halt message did not state how many migrations had already committed. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -q "not attempted"; then
+    fail_test "the halt message did not state how many migrations were left unattempted. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# The SCHEMA_ORDER_* globals are a SCAN's return channel. They used to default to
+# "" — a value, and a value answers questions: a reader called before any scan
+# was told the corpus is CLEAN, about a corpus nothing had read.
+test_schema_order_readers_refuse_an_unscanned_corpus() {
+  local out status=0
+  out=$(bash -c 'source bin/common; schema_order_has_drift' 2>&1) || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "schema_order_has_drift reported a CLEAN corpus before any scan ran"
+    return 1
+  fi
+  if ! echo "$out" | grep -q "before schema_order_scan"; then
+    fail_test "the misuse was not reported as a call before schema_order_scan. Got: $out"
+    return 1
+  fi
+  return 0
+}
+
+assert_success "db-status still lists an APPLIED migration whose file was deleted" test_db_status_still_lists_an_applied_migration_whose_file_was_deleted
+assert_success "db-status warns about [UNKNOWN] applied rows in every format" test_db_status_warns_about_unknown_applied_rows_in_every_format
+assert_success "db-create's reshape guard ignores a legacy schema_migrations in another schema" test_db_create_reshape_guard_is_scoped_to_this_schema
+assert_success "schema_migrations.filename is TEXT and takes a long slug" test_schema_migrations_filename_is_text_and_takes_a_long_slug
+assert_success "db-migrate treats a whitespace-only ORDER line as blank" test_db_migrate_treats_a_whitespace_only_order_line_as_blank
+assert_success "db-migrate refuses an illegally named file on disk" test_db_migrate_refuses_an_illegally_named_file_on_disk
+assert_success "db-migrate's refusals name the ORDER line number" test_db_migrate_refusals_name_the_order_line_number
+assert_success "db-migrate refuses an ORDER that is a directory or unreadable" test_db_migrate_refuses_an_unusable_order_file
+assert_success "db-migrate's halt states what committed and what was not attempted" test_db_migrate_failure_states_what_was_committed
+assert_success "bin/common's corpus readers refuse a call before any scan" test_schema_order_readers_refuse_an_unscanned_corpus
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-status -f with an empty value exits 22" bin/db-status -f ""
+assert_exit_code 0 "db-status accepts the explicit -f human format" bin/db-status -f human
+
 
 echo ""
 echo "==== Testing roles and database ownership (RFC 174) ===="

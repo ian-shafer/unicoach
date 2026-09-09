@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# ship-order — re-place this run's db/schema/ORDER lines at land (RFC 180).
+#
+# WHY THIS EXISTS. `db/schema/ORDER` is the declared apply order of the
+# migration corpus, and the only moment the true order is a FACT rather than a
+# prediction is the moment this run lands. The implementing run must still
+# append its line early — its own tests migrate a database and would refuse an
+# unordered file — so by land time the line sits wherever the run happened to
+# put it, ahead of migrations that landed while the run was open.
+#
+# This script re-places it: ORDER becomes the BASE BRANCH's ORDER verbatim,
+# then this run's own lines in the run's own order. The result is derived, so
+# re-running it changes nothing, and a phase-6 fix loop is free.
+#
+# WHY BETWEEN ship-rebase AND ship-squash. The base copy must be read AFTER the
+# final rebase (before that it is stale) and BEFORE the squash and the commit,
+# so the rewritten line joins this run's staged diff and lands INSIDE the
+# hook-verified tree. Appending it in ship-land instead would need a
+# --no-verify commit and a doc-glob exemption for db/schema/ORDER — a hole in
+# the one gate this design exists to protect.
+#
+# It never REMOVES a base line: doing so is not an append, it is landed history
+# being rewritten, and this script refuses rather than guessing. For the same
+# reason it never INVENTS one: an unordered *.sql on disk is refused, not placed
+# at a guessed position.
+#
+# WHO OWNS THE FORMAT. `bin/common`'s `schema_order_files` is the OWNER of the
+# ORDER contract — one filename per line, no blanks, no duplicates, every line
+# on disk and every *.sql listed — and `bin/db-migrate` is the refusal that
+# enforces it. Nothing here is a second grammar: this script only re-places
+# lines, strips a blank line that a merge may have introduced (a normalisation
+# at land time, never a new rule), and refuses the same disagreements bin/common
+# would, earlier and with a message that names the fix.
+#
+# EVERY refusal is reported in ONE pass. A corpus can hold a deletion, a
+# duplicate and an unordered file at once; reporting the first and exiting would
+# cost the operator one land-time run — and one full hook — per kind.
+set -euo pipefail
+
+# `git -C <dir>` is NOT authoritative while GIT_DIR is set: the environment wins
+# and -C is silently ignored. Git hooks export GIT_DIR and GIT_INDEX_FILE, and
+# phase 6 runs this script beside the hook, so every `git -C "$CODEBASE_ROOT"`
+# below would answer about the HOOK's repository rather than the run's — the
+# base copy of ORDER read from the wrong history. Same strip, same reason, as
+# ship-lock. This script uses git for nothing else, so it is done once, here.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
+# The diagnostic band, copied from bin/functions WITH THE SAME WORDING rather
+# than sourced — the same note the exit codes below carry. ALL logging goes to
+# stderr, and every message in this script goes through one of these: a
+# hand-rolled `echo "[FATAL] ..." >&2` beside a fatal() is how one script ends
+# up with two diagnostic formats.
+log-info() { echo "$@" >&2; }
+log-warning() { echo "[WARNING] $@" >&2; }
+fatal() {
+  local status_code=1
+  local OPTIND OPTARG opt
+  # The two getopts failures are DIFFERENT faults and are reported separately:
+  # a `*)` catch-all answered "bad option to fatal: -s" when -s was a perfectly
+  # good option that simply arrived without its value.
+  while getopts ":s:" opt; do
+    case "$opt" in
+      s) status_code="$OPTARG" ;;
+      \?) echo "[FATAL] Unknown option to fatal function: -$OPTARG" >&2; exit 1 ;;
+      :) echo "[FATAL] Option to fatal function requires a value: -$OPTARG" >&2; exit 1 ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  echo "[FATAL] $*" >&2
+  exit "$status_code"
+}
+
+# The reserved usage-error exit codes, copied from bin/functions WITH THE SAME
+# VALUES rather than sourced — see the same note in ship-lock. A caller that
+# invoked this script wrongly is reported exactly as any bin/ script would.
+EXIT_UNKNOWN_OPTION=10
+EXIT_OPTION_REQUIRES_VALUE=11
+EXIT_UNEXPECTED_ARG=20
+EXIT_MISSING_REQUIRED_ARG=21
+EXIT_INVALID_ARG_VALUE=22
+
+# Script-specific, outside that band because it is not a usage error: -n found
+# work to do. Distinct from 1 (a refusal) so a caller can tell "ORDER is stale"
+# from "ORDER is corrupt". ship-land copies the VALUE under its own name,
+# SHIP_ORDER_WOULD_CHANGE — deliberately not this one, because over there the 3
+# is a FOREIGN script's exit code and the name has to say so. Grep for both.
+EXIT_ORDER_WOULD_CHANGE=3
+
+# ORDER lives inside the schema directory, which for a real checkout is always
+# db/schema — the shell harnesses' DB_SCHEMA_DIR override is a bin/ concern and
+# never applies to a landing worktree.
+SCHEMA_REL="db/schema"
+
+help() {
+  cat << 'EOF'
+ship-order -s <run-scratch> [-n]
+
+Rewrites <codebase>/db/schema/ORDER as the deterministic land-time order:
+
+  BASE_SHA's copy of the file, verbatim
+  + this run's own lines, in the order the worktree lists them
+
+Idempotent: a second run changes nothing, and a run that added no migration
+changes nothing.
+
+Refuses, without writing anything, and reports EVERY kind it found in one pass:
+  - a line present in the base copy deleted from the worktree copy — that is
+    landed history being rewritten, not an append;
+  - a duplicated line — merge=union keeps both sides and never reports a
+    conflict, so a repeated line arrives silently;
+  - a db/schema/*.sql on disk that no line names — an unordered migration,
+    which bin/db-migrate refuses; its position is the author's to declare;
+  - a line that is not a legal migration filename, or names no file on disk.
+
+Call it between ship-rebase and ship-squash, so the line lands inside the
+hook-verified tree.
+
+  -s   run-scratch directory; its state file supplies CODEBASE_ROOT and BASE_SHA
+  -n   dry run: write nothing, and exit 3 if ORDER WOULD change
+  -h   this help
+
+Reports what it appended on stderr. Stdout stays empty on a normal run.
+
+Exit codes:
+  0    ORDER is correct (rewritten, or already correct)
+  1    refused: deletion, duplicate, unordered *.sql, or an illegal line
+  3    -n only: ORDER would change — run ship-order and re-commit
+  10, 11, 20, 21, 22   usage errors (bin/functions' reserved band)
+EOF
+  exit "${1:-0}"
+}
+
+# ── Step 1: what the caller asked for ─────────────────────────────────────────
+RUN_SCRATCH=""
+DRY_RUN=0
+parse_args() {
+  local OPTIND OPTARG opt
+  while getopts ":s:nh" opt; do
+    case "$opt" in
+      s) RUN_SCRATCH="$OPTARG" ;;
+      n) DRY_RUN=1 ;;
+      h) help 0 ;;
+      \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+      :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  [ "$#" -eq 0 ] || fatal -s "$EXIT_UNEXPECTED_ARG" "ship-order takes no positional arguments: [$*]"
+  [ -n "$RUN_SCRATCH" ] || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a run-scratch (-s) is required"
+  [ -d "$RUN_SCRATCH" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "run-scratch [$RUN_SCRATCH] is not a directory"
+  [ -f "$RUN_SCRATCH/state" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "no state file at [$RUN_SCRATCH/state] — not a run scratch"
+}
+
+# ── Step 2: the run's own state ───────────────────────────────────────────────
+# Sourced, not parsed in a subshell: that is the house style of ship-land and
+# ship-rebase, and one script reading the state file differently is worse than
+# the risk (RFC 180 tier-2 E4).
+load_state() {
+  # shellcheck disable=SC1090
+  . "$RUN_SCRATCH/state"
+  [ -n "${CODEBASE_ROOT:-}" ] || fatal "state has no CODEBASE_ROOT"
+  [ -n "${BASE_SHA:-}" ] || fatal "state has no BASE_SHA"
+  [ -d "$CODEBASE_ROOT" ] || fatal "CODEBASE_ROOT [$CODEBASE_ROOT] is not a directory"
+
+  SCHEMA_DIR="$CODEBASE_ROOT/$SCHEMA_REL"
+  ORDER="$SCHEMA_DIR/ORDER"
+  [ -d "$SCHEMA_DIR" ] || fatal "no schema directory at [$SCHEMA_DIR]"
+}
+
+# ── Text helpers ──────────────────────────────────────────────────────────────
+# THE TRAILING-NEWLINE CONVENTION every helper below depends on: each of these
+# multi-line strings either is EMPTY or ends in a newline, so one line is always
+# one "<name>\n". `$(cat file)` and `$(git show ...)` both STRIP the trailing
+# newline, which is why the readers add it back — and it is what makes
+# write_order's `[ "$LAND_ORDER" = "$DISK_ORDER" ]` a correct idempotence test
+# rather than a comparison of one string against the same string minus a byte.
+
+# awk, not `wc -l`: wc counts NEWLINES, so a final line with no trailing newline
+# is not counted at all and every count here would be one short — including the
+# blank-line arithmetic in strip_blanks, which would then report nothing dropped.
+count_lines() { printf '%s' "$1" | awk 'END { print NR }'; }
+
+# The `[ -n "$1" ]` guard is not a micro-optimisation. `printf '%s\n' ""` prints
+# ONE EMPTY LINE, and `grep -qxF -- ""` matches it, so an EMPTY haystack would
+# answer "yes, it contains that line" for a query it has never seen — which
+# would make an empty base copy look as though it already held this run's line.
+has_line() { # has_line <haystack> <line>
+  [ -n "$1" ] && printf '%s\n' "$1" | grep -qxF -- "$2"
+}
+
+# A blank line is not a migration; ORDER's format forbids them (RFC 180 D1) and
+# a stray one must not become a phantom entry here. grep answers 1 when it
+# selected nothing — an all-blank file, which is a legitimate empty ORDER — and
+# >= 2 on a REAL error. Absorbing the second (`|| true`) would report an
+# unreadable ORDER as "the run deleted every base line", so only 1 is tolerated.
+strip_blanks() { # strip_blanks <label> <text>
+  local label="$1" text="$2" out="" status=0 dropped
+  out="$(printf '%s' "$text" | grep -v '^[[:space:]]*$')" || status=$?
+  [ "$status" -le 1 ] || fatal "could not read [$label]: grep failed (status [$status])"
+  dropped=$(( $(count_lines "$text") - $(count_lines "$out") ))
+  # A WARNING, not progress: this REWRITES what the run committed. A line
+  # disappearing from a manifest is worth a raised eyebrow even when it is the
+  # right thing to do.
+  [ "$dropped" -le 0 ] || log-warning "normalised away [$dropped] blank line(s) in [$label]"
+  printf '%s' "$out"
+}
+
+# The two filename grammars a migration may use, copied from bin/common's
+# schema_filename_is_valid WITH THE SAME RULE rather than sourced: the ship
+# scripts deliberately do not depend on repo internals (RFC 180 D2), and the
+# copy is asserted against the real reader end to end in bin/db-scripts-tests.
+filename_is_valid() {
+  local base="${1-}"
+  [[ "$base" =~ ^[0-9]{4}\.([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])\.sql$ ]] \
+    || [[ "$base" =~ ^([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])\.sql$ ]]
+}
+
+# ── Step 3: the two copies of ORDER ───────────────────────────────────────────
+# THE BASE COPY IS LOAD-BEARING: every refusal below is stated relative to it,
+# so an empty one that is really a git FAILURE (a pruned or bad BASE_SHA, a
+# directory that is not a repo) would disable the append-only deletion refusal
+# entirely and let ship-land's -n gate pass a mis-ordered ORDER. So git is asked
+# the two real questions — is BASE_SHA a commit, and does the path exist in it —
+# and only the missing-path answer is tolerated. Missing is the honest empty
+# case: the very run that ADDS ORDER has no base copy to preserve.
+read_order_copies() {
+  local git_err="" obj_type=""
+
+  git_err="$(git -C "$CODEBASE_ROOT" rev-parse --verify "$BASE_SHA^{commit}" 2>&1 > /dev/null)" ||
+    fatal "BASE_SHA [$BASE_SHA] is not a commit in [$CODEBASE_ROOT]${git_err:+: $git_err}"
+
+  if obj_type="$(git -C "$CODEBASE_ROOT" cat-file -t "$BASE_SHA:$SCHEMA_REL/ORDER" 2>&1)"; then
+    [ "$obj_type" = "blob" ] ||
+      fatal "[$SCHEMA_REL/ORDER] at [$BASE_SHA] is a [$obj_type], not a file"
+    BASE_RAW="$(git -C "$CODEBASE_ROOT" show "$BASE_SHA:$SCHEMA_REL/ORDER")" ||
+      fatal "could not read [$SCHEMA_REL/ORDER] at [$BASE_SHA] — git show failed"
+  else
+    # git words the same answer two ways: "does not exist in <rev>" when the
+    # path is nowhere, "exists on disk, but not in <rev>" when the worktree has
+    # it and the base commit does not — which is the run that ADDS ORDER.
+    case "$obj_type" in
+      *"does not exist in"* | *"exists on disk, but not in"*) BASE_RAW="" ;;
+      *) fatal "could not ask git for [$SCHEMA_REL/ORDER] at [$BASE_SHA]: [$obj_type]" ;;
+    esac
+  fi
+
+  BASE_TEXT="$(strip_blanks "the base copy of ORDER at $BASE_SHA" "$BASE_RAW")"
+  WORK_LINES=""
+  if [ -f "$ORDER" ]; then
+    WORK_LINES="$(strip_blanks "$ORDER" "$(cat "$ORDER")")"
+  fi
+}
+
+# ── Step 4: the order this run would write ────────────────────────────────────
+# LAND_ORDER is the base copy verbatim plus RUN_LINES — this run's own lines, in
+# the run's own order. DISK_ORDER is what the worktree holds right now, read back
+# with the trailing newline `$(cat)` strips, so that the one comparison in
+# write_order compares like with like.
+generate_new_order() {
+  RUN_LINES=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if has_line "$BASE_TEXT" "$line"; then continue; fi
+    RUN_LINES="$RUN_LINES$line"$'\n'
+  done <<< "$WORK_LINES"
+
+  LAND_ORDER=""
+  if [ -n "$BASE_TEXT" ]; then LAND_ORDER="$BASE_TEXT"$'\n'; fi
+  LAND_ORDER="$LAND_ORDER$RUN_LINES"
+
+  DISK_ORDER=""
+  if [ -f "$ORDER" ] && [ -s "$ORDER" ]; then DISK_ORDER="$(cat "$ORDER")"$'\n'; fi
+}
+
+# ── Step 5: the refusals, all of them, in one pass ────────────────────────────
+# Each kind is collected, and a single fatal prints one section per kind that
+# fired. The operator fixes the corpus once instead of once per kind, which at
+# land time is once per full hook run.
+list_deleted_lines() {
+  # REFUSE ON DELETION, do not silently restore. A worktree missing a base line
+  # is either a rebase resolved wrongly or a run editing landed history; both
+  # are a human's decision, and quietly writing the line back would hide the
+  # first.
+  DELETED=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    has_line "$WORK_LINES" "$line" || DELETED="$DELETED  $line"$'\n'
+  done <<< "$BASE_TEXT"
+}
+
+list_duplicate_lines() {
+  # REFUSE A DUPLICATE. `db/schema/ORDER` is merge=union, and union NEVER
+  # reports a conflict: two runs appending the same filename, or a rebase
+  # replaying an append already landed, both arrive as a silently repeated
+  # line. This script is what makes the final order deterministic, so it must
+  # not copy one through — bin/common refuses a duplicate, and finding it here
+  # names the file while the operator still has the worktree in front of them.
+  DUPLICATES=""
+  if [ -n "$LAND_ORDER" ]; then DUPLICATES="$(printf '%s' "$LAND_ORDER" | sort | uniq -d)"; fi
+}
+
+list_unordered_lines() {
+  # REFUSE AN UNORDERED MIGRATION, do not guess its position. An *.sql on disk
+  # that no line names is exactly the corpus rule bin/common's
+  # schema_order_files enforces and bin/db-migrate refuses on — so this state
+  # cannot reach land at all: phase 5 already failed on it. Placing it here at a
+  # guessed position would also contradict the deletion refusal above, which
+  # exists because this script does not decide where a migration belongs.
+  #
+  # A glob, not `find` — the same form bin/common uses. `find` in a redirection
+  # cannot report its failure (a command substitution there does not set the
+  # compound command's status, so set -e never fires) and a newline in a
+  # filename would split one entry into two.
+  local path base
+  UNORDERED=""
+  for path in "$SCHEMA_DIR"/*.sql; do
+    [ -e "$path" ] || continue
+    base="$(basename "$path")"
+    if has_line "$LAND_ORDER" "$base"; then continue; fi
+    UNORDERED="$UNORDERED  $base"$'\n'
+  done
+}
+
+list_invalid_lines() {
+  # VALIDATE WHAT IT WOULD WRITE. Everything above asks where a line belongs;
+  # this asks whether it is a line at all. A `# comment`, a trailing space, or
+  # `hello world` survives every check above and would be WRITTEN, landed, and
+  # only then refused by bin/db-migrate against a live database.
+  local line
+  INVALID_NAMES=""
+  ABSENT_FROM_DISK=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if ! filename_is_valid "$line"; then
+      INVALID_NAMES="$INVALID_NAMES  $line"$'\n'
+    elif [ ! -f "$SCHEMA_DIR/$line" ]; then
+      ABSENT_FROM_DISK="$ABSENT_FROM_DISK  $line"$'\n'
+    fi
+  done <<< "$LAND_ORDER"
+}
+
+assert_order_is_landable() {
+  local report line
+  list_deleted_lines
+  list_duplicate_lines
+  list_unordered_lines
+  list_invalid_lines
+
+  if [ -z "$DELETED" ] && [ -z "$DUPLICATES" ] && [ -z "$UNORDERED" ] &&
+    [ -z "$INVALID_NAMES" ] && [ -z "$ABSENT_FROM_DISK" ]; then
+    return 0
+  fi
+
+  # ONE fatal, through this script's own fatal() — the message is built up
+  # first, one section per kind that fired, so the operator fixes the corpus
+  # once instead of once per land attempt (and, at land time, once per full
+  # hook run).
+  report="db/schema/ORDER is not a landable manifest — [$ORDER]"
+  if [ -n "$DELETED" ]; then
+    report+=$'\n\n'"  Deletes lines that are already landed at [$BASE_SHA]:"$'\n'
+    report+="$DELETED"
+    report+="        ORDER is append-only — a landed migration keeps its position forever."$'\n'
+    report+="        Restore those lines."$'\n'
+  fi
+  if [ -n "$DUPLICATES" ]; then
+    report+=$'\n\n'"  Lists the same migration more than once:"$'\n'
+    report+="$(printf '%s\n' "$DUPLICATES" | while IFS= read -r line; do echo "  $line"; done)"$'\n'
+    report+="        ORDER names each migration exactly once — a position is a line."$'\n'
+    report+="        merge=union keeps both sides of an append and never reports a"$'\n'
+    report+="        conflict, so a repeat is normally a merge, not an edit."$'\n'
+    report+="        Delete the repeated line(s)."$'\n'
+  fi
+  if [ -n "$UNORDERED" ]; then
+    report+=$'\n\n'"  db/schema/*.sql files that no ORDER line names:"$'\n'
+    report+="$UNORDERED"
+    report+="        Every migration must be ordered explicitly — bin/db-migrate"$'\n'
+    report+="        refuses an unordered file, so this corpus does not migrate."$'\n'
+    report+="        Add each line where it belongs."$'\n'
+  fi
+  if [ -n "$INVALID_NAMES" ]; then
+    report+=$'\n\n'"  Lines that are not a legal migration filename:"$'\n'
+    report+="$INVALID_NAMES"
+    report+="        A migration is <slug>.sql (or the legacy NNNN.<slug>.sql),"$'\n'
+    report+="        lower-case, digits and hyphens. ORDER holds filenames only —"$'\n'
+    report+="        no comments, no blank payload, no trailing spaces."$'\n'
+  fi
+  if [ -n "$ABSENT_FROM_DISK" ]; then
+    report+=$'\n\n'"  Lines that name no file in [$SCHEMA_DIR]:"$'\n'
+    report+="$ABSENT_FROM_DISK"
+    report+="        bin/db-migrate refuses an ORDER line with no file."$'\n'
+    report+="        Restore the file, or remove the line if it never landed."$'\n'
+  fi
+  # The re-run command is NOT bracketed: it is meant to be pasted, and a bracket
+  # inside it corrupts the command.
+  report+=$'\n'"        Fix the above, then re-run: ship-order -s $RUN_SCRATCH"
+  fatal "$report"
+}
+
+# ── Step 6: write it — no-op, dry-run verdict, or the rewrite ─────────────────
+# The no-op test is a STRING COMPARISON of the whole file, which is only correct
+# because both sides follow the trailing-newline convention documented with the
+# text helpers: DISK_ORDER re-adds the newline `$(cat)` strips, so an already
+# correct ORDER compares equal and is not rewritten.
+write_order() {
+  local verdict
+  if [ "$LAND_ORDER" = "$DISK_ORDER" ]; then
+    if [ -z "$RUN_LINES" ]; then
+      log-info "ORDER unchanged: this run adds no migration"
+    else
+      log-info "ORDER already in land order: nothing to re-place"
+    fi
+    exit 0
+  fi
+
+  # -n: the enforcement half. Phase 6 calling this script is prose, and a run
+  # that skips it still lands cleanly — ORDER's line exists, only its POSITION
+  # is wrong, which is the defect RFC 180 exists to remove. ship-land runs `-n`
+  # before its fast-forward, so a stale ORDER is a refusal rather than a silent
+  # mis-ordering. It is also the branch most likely to fire, from INSIDE
+  # ship-land with the land lock held, so it reports the state it refused —
+  # not just the verdict — and the exact command that fixes it. ship-land adds
+  # no second [FATAL] header of its own: this is the one report of this event.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    verdict="db/schema/ORDER is NOT in land order — [$ORDER]"
+    verdict+=$'\n\n'"  on disk now:"$'\n'
+    verdict+="$(printf '%s' "$DISK_ORDER" | while IFS= read -r line; do echo "    $line"; done)"$'\n'
+    verdict+="  land order would be:"$'\n'
+    verdict+="$(printf '%s' "$LAND_ORDER" | while IFS= read -r line; do echo "    $line"; done)"$'\n'
+    if [ -n "$RUN_LINES" ]; then
+      verdict+="  this run's own line(s), which move to the end:"$'\n'
+      verdict+="$(printf '%s' "$RUN_LINES" | while IFS= read -r line; do echo "    $line"; done)"$'\n'
+    fi
+    # Unbracketed on purpose: the last line is meant to be pasted.
+    verdict+=$'\n'"        Re-place it, re-commit through the hook, and re-run ship-land:"$'\n'
+    verdict+="          scripts/ship-order -s $RUN_SCRATCH"
+    fatal -s "$EXIT_ORDER_WOULD_CHANGE" "$verdict"
+  fi
+
+  printf '%s' "$LAND_ORDER" > "$ORDER"
+
+  log-info "ORDER re-placed in [$ORDER]"
+  log-info "  base [$BASE_SHA]: [$(count_lines "$BASE_TEXT")] line(s)"
+  if [ -n "$RUN_LINES" ]; then
+    log-info "  appended by this run:"
+    printf '%s' "$RUN_LINES" | while IFS= read -r line; do log-info "    $line"; done
+  fi
+}
+
+main() {
+  parse_args "$@"
+  load_state
+  read_order_copies
+  generate_new_order
+  assert_order_is_landable
+  write_order
+}
+
+main "$@"

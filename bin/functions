@@ -45,6 +45,12 @@ conventional_dump_path() {
 # unreachable is one outcome with one number, so every script that attaches to a
 # running cluster reports it identically (bin/db-run, bin/db-repl, bin/db-dump).
 : "${EXIT_POSTGRES_UNREACHABLE:=2}"     # the cluster is not answering; run bin/postgres-up
+# The declared migration order (db/schema/ORDER) disagrees with the schema
+# directory -- a corrupt CORPUS, which is neither a usage error (10-29) nor a
+# cluster fault, and neither a missing schema directory nor a migration that
+# FAILED (both plain status 1). A caller that scripts around bin/db-migrate can
+# tell the cases apart only if they carry different numbers (RFC 180).
+: "${EXIT_SCHEMA_ORDER_DRIFT:=9}"       # ORDER and $DB_SCHEMA_DIR disagree; run bin/db-status
 
 log-info() {
   echo "$@" >&2

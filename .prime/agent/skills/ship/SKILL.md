@@ -50,6 +50,7 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-recover -s <rs> [-c sha|-n back]   # reset to a checkpoint
     scripts/ship-rebase  -s <rs> [-N]               # catch up with a moved base
     scripts/ship-verify-scope -s <rs> -f <sha> [-d deny]... [allow]...
+    scripts/ship-order   -s <rs> [-n]               # land-time db/schema/ORDER
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
     scripts/ship-verified record|check|assert       # the CI stand-in
     scripts/ship-lock    -s <rs> acquire|release|status  # the land gate
@@ -276,16 +277,51 @@ other long command — and, for any UI change, screenshots as artifacts (see
 
     scripts/ship-lock   -s <rs> acquire   # ← enter the critical section
     scripts/ship-rebase -s <rs>          # no-op if nothing moved since verify
+    scripts/ship-order  -s <rs>          # re-place this run's ORDER lines
     scripts/ship-squash -s <rs>
     nix develop -c bin/format
     nix develop -c git commit            # code — through the FULL hook. The gate.
     nix develop -c git commit --no-verify  # RFC markdown only, lane A
     scripts/ship-land -s <rs>            # ff-merge, then releases  ← exit
 
+`ship-order` is not optional: `ship-land` re-runs it as `ship-order -s <rs> -n`
+(dry run — writes nothing, exit 3 when `ORDER` would change) before the
+fast-forward and REFUSES, exiting with `ship-order`'s OWN status (3 stale, 1
+corrupt) rather than a flat 1. Skipping it in the block above therefore does not
+land; it stops at the very end, after the gate, and the fix is to run
+`ship-order`, re-commit through the hook, and re-run `ship-land`. The check is
+there because a skipped `ship-order` is otherwise invisible: the run's `ORDER`
+line exists, only its POSITION is wrong.
+
 Run that block as ONE foreground sequence, and report the fast-forward in the
 same turn it returns — see "Long commands run in a subagent; landing reports
 itself". A
 `git commit` that succeeded is not the news; a landed SHA is.
+
+`ship-order` sits between the rebase and the squash, and both edges matter. It
+reads the base branch's `db/schema/ORDER` at `BASE_SHA`, so it must run
+**after** the final rebase, when that copy is the order migrations actually
+landed in rather than a prediction; it rewrites the file, so it must run
+**before** the squash and the commit, so the line joins this run's staged diff
+and lands **inside the hook-verified tree**. Appending it in `ship-land` instead
+would need a `--no-verify` commit and a doc-glob exemption for `db/schema/ORDER`
+— a hole in the one gate phase 6 exists to protect. It is derived and
+idempotent: a run with no migration changes nothing, and a fix loop re-runs it
+for free (RFC 180).
+
+`db/schema/ORDER` is marked `merge=union` in `.gitattributes`. A rebase
+therefore never stops on it: git keeps both sides' lines, with the newly landed
+upstream lines first and this run's line last. Union never fails, so it cannot
+catch two runs appending the same filename — `db-migrate` refuses a duplicate
+line, and `ship-order` is what makes the final order deterministic rather than
+merge-order-dependent. Do not resolve `ORDER` by hand and do not reorder landed
+lines. `ship-order` refuses, without writing anything, a worktree copy that
+deletes a line the base already has, a duplicated line, a line that is not a
+legal migration filename or names no file on disk, or a `db/schema/*.sql` on
+disk that no line names — that last one is an unordered migration, whose
+position is the author's to declare and not this script's to guess. It reports
+every kind it found in ONE pass, so a corpus with three faults costs one
+land-time run and not three.
 
 The lock is repo-wide and serialises the whole sequence, not the `git commit`
 alone: the hook's result is only valid for the base it started on, so the rebase

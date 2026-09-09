@@ -91,13 +91,59 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES  TO "$APP_USER_
 SQL
 
 # ── 4. Create schema_migrations and grant access ──────────────────────────────
+#
+# The table keys on FILENAME (RFC 180 D4). version_id was a copy of an ordering
+# db/schema/ORDER owns, and VARCHAR(4) cannot hold a slug filename in any case.
+#
+# `filename` is TEXT, not VARCHAR(255). A length bound stated only in this DDL is
+# a rule no other reader knows: schema_filename_is_valid (bin/common) has no
+# length rule, so an over-long but perfectly legal slug passes the pre-BEGIN
+# corpus gate and then dies mid-run on the INSERT — the half-applied corpus that
+# gate exists to prevent. TEXT and VARCHAR(n) are the same storage in PostgreSQL,
+# so the bound bought nothing to lose.
+#
+# CREATE TABLE IF NOT EXISTS alone would be a NO-OP on every database that
+# already has the table — production, and every long-lived dev DB — so the old
+# shape would survive there while `bin/test` (which db-resets on every run) stayed
+# green. The guarded DO block below is the upgrade path: it fires only while
+# version_id still exists, and re-running it after that executes nothing.
+#
+# The guard asks about THIS schema (`table_schema = current_schema()`). Without
+# that filter it matches a schema_migrations in ANY schema of this database,
+# while every ALTER below resolves ONE table through the search path: an unrelated
+# legacy table in another schema would hold the guard true forever, and the first
+# ALTER would then fail on every single db-create — which is every db-migrate and
+# every db-status.
+#
+# Duplicate filenames are named rather than left to a bare index violation: the
+# ADD PRIMARY KEY error names the constraint, not the rows an operator has to go
+# and fix.
 log-info "Ensuring schema_migrations table exists..."
 cat << SQL | "$PROJECT_ROOT/bin/db-write"
 CREATE TABLE IF NOT EXISTS schema_migrations (
-  version_id VARCHAR(4)    PRIMARY KEY,
-  filename   VARCHAR(255)  NOT NULL,
+  filename   TEXT PRIMARY KEY,
   applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+DO \$\$
+DECLARE
+  duplicates TEXT;
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'schema_migrations'
+               AND column_name = 'version_id') THEN
+    SELECT string_agg(filename, ', ') INTO duplicates
+      FROM (SELECT filename FROM schema_migrations
+            GROUP BY filename HAVING count(*) > 1) d;
+    IF duplicates IS NOT NULL THEN
+      RAISE EXCEPTION 'schema_migrations cannot key on filename: applied more than once [%]. Remove the duplicate row(s), then re-run bin/db-create.', duplicates;
+    END IF;
+    ALTER TABLE schema_migrations DROP CONSTRAINT IF EXISTS schema_migrations_pkey;
+    ALTER TABLE schema_migrations DROP COLUMN version_id;
+    ALTER TABLE schema_migrations ALTER COLUMN filename TYPE TEXT;
+    ALTER TABLE schema_migrations ADD PRIMARY KEY (filename);
+  END IF;
+END \$\$;
 SQL
 
 log-info "Database [$POSTGRES_DB] provisioned."

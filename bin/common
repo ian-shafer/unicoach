@@ -104,3 +104,336 @@ export_derived_env
 # `.claude/` (skill/agent markdown) is listed explicitly. Defined once here so
 # the writer and the checker can never target different sets of files.
 MARKDOWN_FMT_PATHS=("**/*.md" ".claude")
+
+# ── The declared migration apply order (RFC 180) ───────────────────────────────
+# `<schema dir>/ORDER` is a plain list of migration filenames, one per line, in
+# apply order. It replaces shell glob order, which was emergent, declared nowhere
+# and derived from a filename prefix no run can keep honest.
+#
+# This section is the ONE owner of that contract: what the order is, what a legal
+# migration filename is, what counts as a disagreement between ORDER and disk,
+# and which of the corpus files are still pending. bin/db-migrate (the writer)
+# and bin/db-status (the reporter) both read it from here, so the two cannot
+# drift apart, and `.prime/agent/skills/ship/scripts/ship-order` writes a file
+# these checks must accept (asserted end to end in bin/db-scripts-tests).
+#
+# Every function below takes the schema directory as an EXPLICIT argument.
+# $DB_SCHEMA_DIR is a caller's variable, not a routing channel: both shell
+# harnesses point it at scratch corpora, and a helper that silently read the
+# global would run against whatever the caller happened to have exported.
+
+# The two filename grammars a migration may use (RFC 180 D5): the legacy
+# `NNNN.<slug>.sql` files listed in db/schema/ORDER, immutable, and the
+# `<slug>.sql` files written from now on. Both are strict enough to keep the
+# filename safe to interpolate into db-migrate's INSERT, which is the reason
+# this predicate exists at all.
+#
+# The argument is REQUIRED: a missing one used to read as an empty filename and
+# answer "invalid" for a call that never named a file, which is a caller bug
+# wearing a plausible answer.
+schema_filename_is_valid() {
+  local base="${1:?schema_filename_is_valid requires a migration filename as an argument}"
+  [[ "$base" =~ ^[0-9]{4}\.([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])\.sql$ ]] \
+    || [[ "$base" =~ ^([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])\.sql$ ]]
+}
+
+# Everything schema_order_scan learns about one corpus. Globals rather than a
+# return value because bash cannot return arrays, and the two readers want
+# different halves of the answer: db-migrate refuses on any disagreement,
+# db-status reports the disagreements as payload and keeps going.
+#
+# SCHEMA_ORDER_DIR and SCHEMA_ORDER_FILE — the directory that was scanned and
+# the ORDER file inside it — are part of the same return channel: every message
+# below names them, so a reader never has to recompute the path it is reporting
+# on. Both are deliberately left UNSET until a scan runs. SCHEMA_ORDER_DIR used
+# to default to "", which is a value, and a value answers questions: every
+# predicate below would then report a CLEAN corpus to a caller that had never
+# read one. Unset is the honest state, and schema_order_scanned turns reading it
+# early into a loud caller bug instead of a wrong answer.
+SCHEMA_ORDER_LISTED=()           # the ORDER lines, in declared order
+SCHEMA_ORDER_ON_DISK=()          # every *.sql in the schema directory
+SCHEMA_ORDER_BLANK_LINES=()      # line numbers of blank (or whitespace-only) ORDER lines
+SCHEMA_ORDER_DUPLICATES=()       # "[<filename>] (line N)" for a filename ORDER lists twice
+SCHEMA_ORDER_ABSENT_FROM_DISK=() # "[<filename>] (line N)" for an ORDER line with no file
+SCHEMA_ORDER_UNORDERED=()        # *.sql on disk that ORDER never names
+SCHEMA_ORDER_INVALID_NAMES=()    # names, listed or on disk, that are not a legal filename
+SCHEMA_ORDER_MISSING=0           # ORDER missing while *.sql files exist
+SCHEMA_ORDER_NOT_REGULAR=0       # ORDER exists but is not a regular file (a directory)
+SCHEMA_ORDER_UNREADABLE=0        # ORDER is a regular file this process cannot read
+SCHEMA_ORDER_EMPTY=0             # ORDER empty while *.sql files exist
+
+# Fatals when a reader is called before any corpus has been scanned. The message
+# names the CALLER, because that is where the misuse is and the stack is not
+# otherwise visible. The name is taken from the call stack, not from a string
+# the caller passes: a literal argument survives a rename of the function that
+# passes it, and the message then names a function that no longer exists.
+schema_order_scanned() {
+  local caller="${1:-${FUNCNAME[1]}}"
+  [ -n "${SCHEMA_ORDER_DIR:-}" ] \
+    || fatal "[$caller] was called before schema_order_scan; there is no corpus to report on."
+}
+
+# Reads the corpus and records EVERY disagreement of EVERY kind. It never fails
+# on a disagreement — the two callers disagree about what a disagreement should
+# cost, so the cost is theirs to choose. A missing schema DIRECTORY is different:
+# that is an infrastructure fault with no corpus to describe, and it fatals here
+# (status 1) rather than being reported as drift.
+schema_order_scan() {
+  local schema_dir="${1:?schema_order_scan requires the schema directory as an argument}"
+  local order_file="$schema_dir/ORDER"
+  local file base line lineno=0
+  local -A seen=() lineno_of=() flagged_bad=()
+
+  [ -d "$schema_dir" ] || fatal "Schema directory not found [$schema_dir]."
+
+  SCHEMA_ORDER_DIR="$schema_dir"
+  SCHEMA_ORDER_FILE="$order_file"
+  SCHEMA_ORDER_LISTED=()
+  SCHEMA_ORDER_ON_DISK=()
+  SCHEMA_ORDER_BLANK_LINES=()
+  SCHEMA_ORDER_DUPLICATES=()
+  SCHEMA_ORDER_ABSENT_FROM_DISK=()
+  SCHEMA_ORDER_UNORDERED=()
+  SCHEMA_ORDER_INVALID_NAMES=()
+  SCHEMA_ORDER_MISSING=0
+  SCHEMA_ORDER_NOT_REGULAR=0
+  SCHEMA_ORDER_UNREADABLE=0
+  SCHEMA_ORDER_EMPTY=0
+
+  for file in "$schema_dir"/*.sql; do
+    # Zero schema files evaluates the loop variable to the literal glob string.
+    [ -e "$file" ] || continue
+    SCHEMA_ORDER_ON_DISK+=("$(basename "$file")")
+  done
+
+  # ORDER can be absent, present-but-not-a-file, or present-but-unreadable, and
+  # the three are different corpus states. Only the first was distinguished: a
+  # DIRECTORY named ORDER was reported as "not found" (advice that cannot be
+  # followed), and an unreadable one died on the redirect below with status 1 —
+  # a shell fault where the caller expects EXIT_SCHEMA_ORDER_DRIFT.
+  if [ ! -e "$order_file" ]; then
+    [ "${#SCHEMA_ORDER_ON_DISK[@]}" -eq 0 ] || SCHEMA_ORDER_MISSING=1
+  elif [ ! -f "$order_file" ]; then
+    SCHEMA_ORDER_NOT_REGULAR=1
+  elif [ ! -r "$order_file" ]; then
+    SCHEMA_ORDER_UNREADABLE=1
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      lineno=$((lineno + 1))
+      # A line of spaces, or a lone CR from a CRLF checkout, is not a migration
+      # name. `[ -z "$line" ]` accepted it as one, and it was then reported in
+      # two wrong sections with an invisible payload. ship-order strips exactly
+      # these, so the writer and the reader now agree on what a blank line is.
+      if [[ "$line" =~ ^[[:space:]]*$ ]]; then
+        SCHEMA_ORDER_BLANK_LINES+=("$lineno")
+        continue
+      fi
+      if [ -n "${seen[$line]:-}" ]; then
+        SCHEMA_ORDER_DUPLICATES+=("[$line] (line $lineno, first at line ${lineno_of[$line]})")
+      else
+        seen["$line"]=1
+        lineno_of["$line"]="$lineno"
+        SCHEMA_ORDER_LISTED+=("$line")
+      fi
+    done < "$order_file"
+
+    if [ "${#SCHEMA_ORDER_LISTED[@]}" -eq 0 ] && [ "${#SCHEMA_ORDER_ON_DISK[@]}" -gt 0 ]; then
+      SCHEMA_ORDER_EMPTY=1
+    fi
+  fi
+
+  # Every offender is reported with the LINE NUMBER it sits on. The remedy for
+  # all of these is "edit that line", and the line number is known here — it was
+  # simply thrown away, leaving the reader to search the whole file by eye.
+  for base in "${SCHEMA_ORDER_LISTED[@]}"; do
+    [ -f "$schema_dir/$base" ] \
+      || SCHEMA_ORDER_ABSENT_FROM_DISK+=("[$base] (line ${lineno_of[$base]})")
+    # Checked HERE, over the whole corpus, and not inside db-migrate's apply
+    # loop: an illegal name at pending #12 used to abort the run after eleven
+    # migrations had already COMMITTED, which is exactly the half-applied corpus
+    # the pre-BEGIN refusal exists to prevent.
+    if ! schema_filename_is_valid "$base"; then
+      flagged_bad["$base"]=1
+      SCHEMA_ORDER_INVALID_NAMES+=("[$base] (line ${lineno_of[$base]})")
+    fi
+  done
+
+  # The ON-DISK names are held to the same grammar. A file called `Bad Name.sql`
+  # used to be reported only as "[UNORDERED] … append it, in the order it should
+  # be applied" — advice that produces a corpus the very NEXT run refuses for a
+  # different reason. It is an illegal migration filename now, and is not also
+  # offered as something to append.
+  for base in "${SCHEMA_ORDER_ON_DISK[@]}"; do
+    [ -n "${seen[$base]:-}" ] && continue
+    if schema_filename_is_valid "$base"; then
+      SCHEMA_ORDER_UNORDERED+=("$base")
+    elif [ -z "${flagged_bad[$base]:-}" ]; then
+      SCHEMA_ORDER_INVALID_NAMES+=("[$base] (on disk, not in [$(basename "$order_file")])")
+    fi
+  done
+}
+
+# True when the last scan found any disagreement.
+schema_order_has_drift() {
+  schema_order_scanned
+  [ "$SCHEMA_ORDER_MISSING" -eq 1 ] && return 0
+  [ "$SCHEMA_ORDER_NOT_REGULAR" -eq 1 ] && return 0
+  [ "$SCHEMA_ORDER_UNREADABLE" -eq 1 ] && return 0
+  [ "$SCHEMA_ORDER_EMPTY" -eq 1 ] && return 0
+  [ "${#SCHEMA_ORDER_BLANK_LINES[@]}" -gt 0 ] && return 0
+  [ "${#SCHEMA_ORDER_DUPLICATES[@]}" -gt 0 ] && return 0
+  [ "${#SCHEMA_ORDER_ABSENT_FROM_DISK[@]}" -gt 0 ] && return 0
+  [ "${#SCHEMA_ORDER_UNORDERED[@]}" -gt 0 ] && return 0
+  [ "${#SCHEMA_ORDER_INVALID_NAMES[@]}" -gt 0 ] && return 0
+  return 1
+}
+
+# A ", "-joined list for a report line. `${array[*]}` can only join on ONE
+# character, and the entries now carry their own line numbers ("[m1.sql] (line
+# 3)"), so a space-joined list reads as twice as many items as it has. It joins
+# whatever it is given and knows nothing about migrations — the entries above
+# arrive already bracketed.
+join_comma() {
+  local out="" item
+  for item in "$@"; do
+    [ -z "$out" ] || out+=", "
+    out+="$item"
+  done
+  printf '%s' "$out"
+}
+
+# The same join for RAW values — a filename, a line number — which are values
+# interpolated into a message and so are bracketed, per the bin/ convention. A
+# whitespace-only or empty name is invisible without it, and that is exactly the
+# name a drift report is most likely to be carrying.
+join_comma_bracketed() {
+  local item args=()
+  for item in "$@"; do
+    args+=("[$item]")
+  done
+  join_comma ${args[@]+"${args[@]}"}
+}
+
+# The last scan's disagreements as text, ONE SECTION PER KIND, on stdout. Every
+# kind is reported in one pass: a corpus with a blank line AND three unordered
+# files must say so once, not three runs later, so no check may short-circuit
+# another.
+schema_order_drift_report() {
+  schema_order_scanned
+  local out=""
+  if [ "$SCHEMA_ORDER_MISSING" -eq 1 ]; then
+    out+="  migration order file not found [$SCHEMA_ORDER_FILE], but [${#SCHEMA_ORDER_ON_DISK[@]}] migration file(s) exist in [$SCHEMA_ORDER_DIR]: $(join_comma_bracketed "${SCHEMA_ORDER_ON_DISK[@]}")"$'\n'
+  fi
+  if [ "$SCHEMA_ORDER_NOT_REGULAR" -eq 1 ]; then
+    out+="  migration order file [$SCHEMA_ORDER_FILE] is not a regular file. ORDER is a plain list of migration filenames, one per line."$'\n'
+  fi
+  if [ "$SCHEMA_ORDER_UNREADABLE" -eq 1 ]; then
+    out+="  migration order file [$SCHEMA_ORDER_FILE] is not readable by this process. Its contents are unknown, so no order can be reported."$'\n'
+  fi
+  if [ "$SCHEMA_ORDER_EMPTY" -eq 1 ]; then
+    out+="  migration order file [$SCHEMA_ORDER_FILE] is empty, but [${#SCHEMA_ORDER_ON_DISK[@]}] migration file(s) exist in [$SCHEMA_ORDER_DIR]: $(join_comma_bracketed "${SCHEMA_ORDER_ON_DISK[@]}")"$'\n'
+  fi
+  if [ "${#SCHEMA_ORDER_BLANK_LINES[@]}" -gt 0 ]; then
+    out+="  blank line(s) at: $(join_comma_bracketed "${SCHEMA_ORDER_BLANK_LINES[@]}"). Every line names one migration."$'\n'
+  fi
+  if [ "${#SCHEMA_ORDER_DUPLICATES[@]}" -gt 0 ]; then
+    out+="  listed more than once: $(join_comma "${SCHEMA_ORDER_DUPLICATES[@]}"). A position is a line, so a duplicate is two migrations claiming one position."$'\n'
+  fi
+  if [ "${#SCHEMA_ORDER_ABSENT_FROM_DISK[@]}" -gt 0 ]; then
+    out+="  listed but not on disk in [$SCHEMA_ORDER_DIR]: $(join_comma "${SCHEMA_ORDER_ABSENT_FROM_DISK[@]}")"$'\n'
+  fi
+  # Redundant when ORDER is missing, empty or unusable: those sections already
+  # name every file on disk, or say that nothing could be read.
+  if [ "${#SCHEMA_ORDER_UNORDERED[@]}" -gt 0 ] \
+    && [ "$SCHEMA_ORDER_MISSING" -eq 0 ] && [ "$SCHEMA_ORDER_EMPTY" -eq 0 ] \
+    && [ "$SCHEMA_ORDER_NOT_REGULAR" -eq 0 ] && [ "$SCHEMA_ORDER_UNREADABLE" -eq 0 ]; then
+    out+="  on disk in [$SCHEMA_ORDER_DIR] but absent from [$SCHEMA_ORDER_FILE]: $(join_comma_bracketed "${SCHEMA_ORDER_UNORDERED[@]}"). Append each one, in the order it should be applied."$'\n'
+  fi
+  if [ "${#SCHEMA_ORDER_INVALID_NAMES[@]}" -gt 0 ]; then
+    out+="  Invalid migration filename(s): $(join_comma "${SCHEMA_ORDER_INVALID_NAMES[@]}"). A migration is <slug>.sql, or a legacy NNNN.<slug>.sql, where <slug> is lowercase [a-z0-9] with interior hyphens."$'\n'
+  fi
+  printf '%s' "$out"
+}
+
+# Scans, and REFUSES a corpus that disagrees with itself: one fatal, one section
+# per kind of disagreement, naming every offending file. The status is
+# EXIT_SCHEMA_ORDER_DRIFT — a corrupt corpus is neither a usage error nor a
+# cluster fault nor a failed migration, and a caller that scripts around
+# bin/db-migrate can only tell them apart by number.
+#
+# It SCANS, so it also refreshes every SCHEMA_ORDER_* global — the return channel
+# schema_order_scan documents. Called inside `$( )` that refresh happens in the
+# subshell and is lost to the caller, which is fine for a caller that only wants
+# the refusal.
+#
+# The scan's results stay in this shell, so a caller that wants BOTH the refusal
+# and the file lists gets them without a subshell. That matters: `set -e` does
+# not reliably abort a caller when a fatal happens two levels of command
+# substitution down, so nothing below nests one.
+schema_order_assert_clean() {
+  local schema_dir="${1:?schema_order_assert_clean requires the schema directory as an argument}"
+  schema_order_scan "$schema_dir"
+  if schema_order_has_drift; then
+    fatal -s "$EXIT_SCHEMA_ORDER_DRIFT" \
+      "the migration corpus in [$schema_dir] disagrees with [$SCHEMA_ORDER_FILE]:"$'\n'"$(schema_order_drift_report)"$'\n'"  Fix [$SCHEMA_ORDER_FILE] and the files in [$schema_dir], then re-run. \`bin/db-status\` reports the same corpus without refusing it."
+  fi
+}
+
+# Emits the ordered migration filenames on stdout, one per line, or fatals as
+# above. It scans too, with the same effect on the SCHEMA_ORDER_* globals that
+# schema_order_assert_clean describes.
+#
+# Called as `files=$(schema_order_files "$DB_SCHEMA_DIR")`: the fatal runs in the
+# command substitution's subshell, so the caller sees EXIT_SCHEMA_ORDER_DRIFT and
+# `set -e` aborts it, with the message already on the shared stderr. Do not wrap
+# the call in `|| true`.
+schema_order_files() {
+  local schema_dir="${1:?schema_order_files requires the schema directory as an argument}"
+  schema_order_assert_clean "$schema_dir"
+  [ "${#SCHEMA_ORDER_LISTED[@]}" -eq 0 ] || printf '%s\n' "${SCHEMA_ORDER_LISTED[@]}"
+}
+
+# The filenames schema_migrations records, one per line. Membership only — the
+# ORDER file, not this query, decides what runs next, so the query asks for no
+# ordering at all.
+#
+# FAILURE CONTRACT: it does not map bin/db-query's status onto one of its own —
+# it PASSES IT THROUGH. An unreachable cluster is EXIT_POSTGRES_UNREACHABLE (2)
+# and any other psql failure is psql's own status, in both callers
+# (bin/db-migrate, bin/db-status). There is no answer to "what is applied" when
+# the database cannot be asked, and inventing one here would make an unreachable
+# cluster read as "nothing is applied" — a corpus that db-migrate would then
+# re-apply from the top.
+schema_applied_files() {
+  echo "SELECT filename FROM schema_migrations;" | "$PROJECT_ROOT/bin/db-query" -r
+}
+
+# Is this migration already recorded? `grep -qxF --` because a filename is a
+# LITERAL, not a pattern: `^0001.m1.sql$` matched `0001Xm1.sql` too, and a name
+# beginning with `-` was read as an option.
+#
+# Both arguments are required. `${2-}` turned a caller that forgot the applied
+# list into "nothing is applied", which is a wrong ANSWER rather than a reported
+# fault; `${2?}` (not `${2:?}`) still accepts the legitimately EMPTY list of a
+# database with no applied migrations.
+schema_file_is_applied() {
+  local base="${1:?schema_file_is_applied requires a migration filename as its first argument}"
+  local applied="${2?schema_file_is_applied requires the applied-filename list as its second argument}"
+  printf '%s\n' "$applied" | grep -qxF -- "$base"
+}
+
+# The ordered migrations schema_migrations does not yet record, in apply order —
+# the ONE answer to "what is pending", so db-migrate (which applies them) and any
+# other reader cannot compute it differently. Refuses, through
+# schema_order_assert_clean, before naming a single pending file: a corpus that
+# disagrees with itself has no trustworthy answer to give — and, through it,
+# refreshes the SCHEMA_ORDER_* globals as described above.
+schema_pending_files() {
+  local schema_dir="${1:?schema_pending_files requires the schema directory as an argument}"
+  local applied base
+  schema_order_assert_clean "$schema_dir"
+  applied="$(schema_applied_files)"
+  for base in "${SCHEMA_ORDER_LISTED[@]}"; do
+    schema_file_is_applied "$base" "$applied" || printf '%s\n' "$base"
+  done
+}

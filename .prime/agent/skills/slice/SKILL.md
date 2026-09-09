@@ -5,8 +5,7 @@ description: >-
   updated product docs: resolves the slice in product/NNNN-*/spec.md, gates on
   its `Needs:` dependency edges (BLOCKS refuses, PREFER asks once, CONFLICTS
   only warns), assembles a /ship instruction from the slice text plus the
-  standing product decisions plus RFC and migration numbers claimed live from
-  the repo, runs /ship, and then writes the brief ledger line and
+  standing product decisions plus the RFC number claimed live from the repo, runs /ship, and then writes the brief ledger line and
   product/STATUS.md. Use when Ian names a slice ID — "start work on
   search/04/similar-colleges", "do money/02", "run first-value/05" — or invokes
   /skill:slice. Sits between chart and ship: chart decides what the slice is,
@@ -46,8 +45,9 @@ is delegation between peers, not containment.
    _assemble_ — slice text, standing decisions, live numbers — never re-specify.
    (Same reason chart holds product judgement at SPEC & SLICE: 0001 D12.)
 3. **A BLOCKS edge refuses. A PREFER edge never refuses.** See the gate below.
-4. **Numbers are claimed at run time, never copied from a doc.** RFC numbers and
-   migration numbers move under you while parallel runs are open.
+4. **Numbers are claimed at run time, never copied from a doc.** RFC numbers
+   move under you while parallel runs are open. Migrations have no number at all
+   (RFC 180) — a slug filename and a line in `db/schema/ORDER`.
 5. **A run that lands code without updating `product/**` is NOT finished.** The
    ledger and `product/STATUS.md` are part of the deliverable, not paperwork.
 6. **This skill never lands code itself.** No worktree, no RFC, no commit — that
@@ -220,19 +220,23 @@ number read once at kickoff and used at commit is a collision.
     git branch -a --format='%(refname:short)' | grep -Eo 'rfc-[0-9]+' | sort -t- -k2 -n
     git worktree list
 
-    # next free migration number
-    ls db/schema | grep -Eo '^[0-9]+' | sort -n | tail -1
-
 Next free RFC = **one more than the highest of** the RFC files and any
-`pipeline/rfc-<n>` branch or worktree (a claimed branch has no file yet). Next
-free migration = highest file + 1, zero-padded to four digits. /ship's
-`ship-claim` claims the RFC branch atomically and will bump on a collision — the
-number in the instruction is a starting point, and the report states the number
-that was actually claimed.
+`pipeline/rfc-<n>` branch or worktree (a claimed branch has no file yet).
+/ship's `ship-claim` claims the RFC branch atomically and will bump on a
+collision — the number in the instruction is a starting point, and the report
+states the number that was actually claimed.
 
 > Worked example, **as of 2026-08-30 only** — recompute, never copy: highest RFC
-> file 148, branch `pipeline/rfc-147` live → next free RFC **149**; highest
-> migration `0059` → next free **0060**.
+> file 148, branch `pipeline/rfc-147` live → next free RFC **149**.
+
+**There is no migration number to claim** (RFC 180). A new migration is
+`<kebab-slug>.sql` — no prefix — and its apply order is a line appended to
+`db/schema/ORDER` at land time by `ship-order`. Uniqueness is the slug: two runs
+that pick the same name collide in git as an add/add conflict a human reads,
+where two runs picking `0094` used to merge clean into a corrupt corpus. So the
+slice instruction names no migration number; it names the migration's slug, or
+leaves the name to the run. The numbered files that predate RFC 180 are
+historical and are never renamed.
 
 ### 4. SHIP
 
@@ -279,8 +283,7 @@ on Ian's call, 2026-08-31").
 **b. `product/STATUS.md`**, five edits, all of them:
 
 - the **TL;DR** — rewritten, most important first, never "see below";
-- the **`Updated:` line** — date, what landed, and the new next-free RFC and
-  migration numbers;
+- the **`Updated:` line** — date, what landed, and the new next-free RFC number;
 - the **work table** — this slice's row, and the next slice's honest state;
 - the landed feature's **user-manual entry** under "The product today", which
   **names its door** (how a real user reaches it), what it does, how it
@@ -305,7 +308,7 @@ not a surprise at its kickoff.
 - [ ] Instruction carried the slice text, acceptance criteria, the door, the
       standing decisions (reachability, value-before-ask, DDL-at-gate), and live
       numbers.
-- [ ] RFC and migration numbers recomputed immediately before the commit.
+- [ ] RFC number recomputed immediately before the commit.
 - [ ] /ship landed: code SHA and doc SHA in hand, `PHASE=complete`.
 - [ ] Brief ledger line appended.
 - [ ] `product/STATUS.md`: TL;DR, `Updated:` line, work table, user-manual entry

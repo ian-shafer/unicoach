@@ -125,7 +125,7 @@ Logs are written to `var/log/<service>.log`. PIDs are tracked in
 ```sh
 bin/db-bootstrap           # ONCE per machine: idempotent cluster init + application role
 bin/db-create              # idempotent: create the database, grants, and schema_migrations
-bin/db-migrate             # applies all pending SQL migrations in lexicographical order
+bin/db-migrate             # applies all pending SQL migrations in db/schema/ORDER order
 bin/db-reset               # drop + create + migrate: a clean, fully-migrated database
 bin/db-status              # shows applied / unapplied migrations
 bin/db-repl                # opens a psql session against the application database
@@ -136,8 +136,26 @@ bin/db-drop                # drops the application database (requires --yes-i-re
 `bin/db-create`, and `bin/db-reset` operate on a single database and are cheap
 to run often (e.g. `bin/test` runs `db-reset` every invocation).
 
-Migration files live in `db/schema/` and must follow the naming convention
-`NNNN.<slug>.sql` (e.g. `0001.create-users.sql`).
+Migration files live in `db/schema/`, and **`db/schema/ORDER` is the single
+source of apply order** — a plain list of filenames, one per line, in the order
+they are applied. `bin/db-migrate` and `bin/db-status` both walk it.
+`db-migrate` refuses before touching the database when it disagrees with the
+directory — a `*.sql` file missing from `ORDER`, an `ORDER` line missing from
+disk, or a duplicate line — and `db-status` reports the same disagreements.
+
+A new migration is `<kebab-slug>.sql` with **no number** (e.g.
+`add-users-timezone.sql`); its line is appended to `ORDER`, and `/ship`
+re-places that line at land time so the recorded order is the landed order. The
+numbered `NNNN.<slug>.sql` files are the historical corpus and are never
+renamed. Applied migrations are tracked in `schema_migrations`, keyed on
+`filename` (there is no `version_id`).
+
+`ORDER` is marked `merge=union` in `.gitattributes`: git merges it by keeping
+**both** sides' lines and never reports a conflict, so two branches appending
+one line each just work — but git will therefore also let a **duplicate** line
+through in silence. `db-migrate`'s duplicate refusal and `/ship`'s `ship-order`
+are what catch that. See [`db/schema/INVARIANTS.md`](db/schema/INVARIANTS.md)
+before editing `ORDER` by hand.
 
 ### Queue utilities
 

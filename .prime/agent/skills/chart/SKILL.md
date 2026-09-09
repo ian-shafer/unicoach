@@ -176,16 +176,15 @@ briefs inherit them without re-asking.
 
 One run per slice, dispatched by the **`slice` skill** — "start work on
 `search/04/similar-colleges`" — which resolves the ID, enforces the `Needs:`
-edges, claims the live RFC/migration numbers, runs /ship, and writes the ledger
-and `STATUS.md` back. Slices in the **same wave of `STATUS.md`'s wave board are
-safe to run in parallel**; a CONFLICTS pair may still share a wave, it just
-rebases. The kickoff is the slice instruction from `spec.md`, dispatched by ID
-or pasted verbatim. In each run, Ian (or this session) is /ship's approval gate;
-product questions that surface mid-run come back to the brief as appended
-decisions or new slices. After each land: update the ledger line and
-`product/STATUS.md` (work table + the landed feature's manual entry), and
-re-check the next slice's instruction against what actually landed (the code
-wins over the spec).
+edges, claims the live RFC number, runs /ship, and writes the ledger and
+`STATUS.md` back. Slices in the **same wave of `STATUS.md`'s wave board are safe
+to run in parallel**; a CONFLICTS pair may still share a wave, it just rebases.
+The kickoff is the slice instruction from `spec.md`, dispatched by ID or pasted
+verbatim. In each run, Ian (or this session) is /ship's approval gate; product
+questions that surface mid-run come back to the brief as appended decisions or
+new slices. After each land: update the ledger line and `product/STATUS.md`
+(work table + the landed feature's manual entry), and re-check the next slice's
+instruction against what actually landed (the code wins over the spec).
 
 ### LEARN
 

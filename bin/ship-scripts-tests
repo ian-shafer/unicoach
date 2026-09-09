@@ -69,20 +69,29 @@ LOCK_DIR="$REPO/var/run/ship-land.lock"
 # RUN_ID differs, which is the whole point: the operation name IS the run id, so
 # no two runs ever match and a second lander waits instead of being told it
 # already holds the lock.
+# make_run <run-id> [repo] [base-sha]
+#
+# The repo defaults to $REPO (the lock fixture); the ship-order cases pass their
+# own throwaway repo and the BASE_SHA that script reads the landed ORDER from.
+# A run-scratch state file is the whole interface of every ship script, so one
+# writer serves both sections.
 make_run() {
   # Two statements, not one `local a=… b=…`: bash creates every name in a
   # single `local` before assigning any of them, so `b="$a"` reads an UNSET a
   # and aborts under `set -u`.
   local run_id="$1"
+  local repo="${2:-$REPO}"
+  local base_sha="${3:-}"
   local rs="$FIXTURE_DIR/$run_id"
   mkdir -p "$rs"
   {
     echo "RUN_ID=$run_id"
     echo "LANE=quick"
     echo "BRANCH=ship/$run_id"
-    echo "CODEBASE_ROOT=$REPO"
-    echo "ORIGINAL_CHECKOUT=$REPO"
+    echo "CODEBASE_ROOT=$repo"
+    echo "ORIGINAL_CHECKOUT=$repo"
     echo "BASE_BRANCH=main"
+    [ -n "$base_sha" ] && echo "BASE_SHA=$base_sha"
     echo "RUN_SCRATCH=$rs"
     echo "PHASE=landing"
   } > "$rs/state"
@@ -309,5 +318,319 @@ echo "$land_err" | grep -q "run-b" ||
   fail_test "ship-land did not name the foreign holder; said [$land_err]"
 pass_test "ship-land refuses a lock held by another run, naming the holder"
 clear_lock
+
+echo ""
+echo "==== ship-order: land-time re-placement of db/schema/ORDER ===="
+
+# ship-order is the other half of the land gate (RFC 180 D6): db/schema/ORDER is
+# the DECLARED apply order of the migration corpus, and the only moment the true
+# order is a fact rather than a prediction is the moment a run lands. The run
+# appended its line early — its own tests refuse an unordered migration — so at
+# land the line sits wherever the run happened to put it, possibly AHEAD of
+# migrations that landed while it was open. Every assertion below is about that
+# re-placement, and, like the lock assertions, needs nothing but a throwaway git
+# repo and a fabricated run-scratch state file.
+SHIP_ORDER="$SHIP_SCRIPTS/ship-order"
+[ -x "$SHIP_ORDER" ] || fail_test "ship-order is missing or not executable [$SHIP_ORDER]"
+
+# ship-order's exit vocabulary, named once and used at every site below: 1 is a
+# REFUSAL (the corpus is corrupt), 3 is the -n verdict "ORDER would change".
+# ship-land tells the two apart and reports them differently, so these
+# assertions name them too rather than testing bare numbers.
+SHIP_ORDER_REFUSED=1
+SHIP_ORDER_WOULD_CHANGE=3
+
+order_err="$FIXTURE_DIR/order.err"
+order_status=0
+
+# Records BOTH halves of the answer: stderr in $order_err and the exit status in
+# $order_status. A refusal assertion that discards the status (`... || true`)
+# and greps only stderr passes on a ship-order that printed the refusal and
+# exited 0 — a test that cannot fail. Every refusal case below asserts both.
+run_ship_order() {
+  order_status=0
+  "$SHIP_ORDER" "$@" 2> "$order_err" || order_status=$?
+}
+
+ORDER_REPO="$FIXTURE_DIR/order-repo"
+ORDER_SCHEMA="$ORDER_REPO/db/schema"
+mkdir -p "$ORDER_SCHEMA"
+git init -q "$ORDER_REPO"
+# The fixture commits, and a commit needs an identity. Set it on the throwaway
+# repo rather than trusting whatever global config the running machine has.
+git -C "$ORDER_REPO" config user.email "ship-scripts-tests@example.invalid"
+git -C "$ORDER_REPO" config user.name "ship-scripts-tests"
+
+write_order() { printf '%s\n' "$@" > "$ORDER_SCHEMA/ORDER"; }
+add_sql() { echo "-- $1" > "$ORDER_SCHEMA/$1"; }
+order_lines() { tr '\n' ' ' < "$ORDER_SCHEMA/ORDER"; }
+
+# The base branch: two migrations that have already landed, in that order.
+add_sql "0001.a.sql"
+add_sql "0002.b.sql"
+write_order "0001.a.sql" "0002.b.sql"
+git -C "$ORDER_REPO" add -A
+git -C "$ORDER_REPO" commit -q -m "base corpus"
+ORDER_BASE_SHA="$(git -C "$ORDER_REPO" rev-parse HEAD)"
+RS_ORDER="$(make_run run-order "$ORDER_REPO" "$ORDER_BASE_SHA")"
+
+# 1. THE CASE THE SCRIPT EXISTS FOR. This run's line is written in the MIDDLE —
+# exactly what happens when the run appended it, then 0002.b.sql landed under it
+# and the rebase replayed the append. Re-placement must put the landed lines
+# first, in their landed order, and this run's line last.
+add_sql "mine.sql"
+write_order "0001.a.sql" "mine.sql" "0002.b.sql"
+order_out="$("$SHIP_ORDER" -s "$RS_ORDER" 2> "$order_err")" ||
+  fail_test "ship-order failed on a plain append: $(cat "$order_err")"
+[ "$(order_lines)" = "0001.a.sql 0002.b.sql mine.sql " ] ||
+  fail_test "ship-order produced [$(order_lines)], expected the base order then mine.sql last"
+pass_test "ship-order re-places this run's line LAST and keeps the base order"
+
+# 1b. bin/ rule: the caller asked for a rewritten file, not for prose, so the
+# report is a diagnostic and belongs on stderr — and it has to say what it did,
+# or a wrong re-placement is invisible in the run log.
+[ -z "$order_out" ] || fail_test "ship-order wrote to stdout: [$order_out]"
+grep -q "mine.sql" "$order_err" || fail_test "ship-order did not name the line it appended; said [$(cat "$order_err")]"
+pass_test "ship-order writes NOTHING to stdout and names the appended line on stderr"
+
+# 2. Derived, so re-runnable: phase 6 fix loops re-enter and run it again, and a
+# second pass that appended mine.sql twice would be caught only by db-migrate's
+# duplicate refusal, one merge later.
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.after-first"
+"$SHIP_ORDER" -s "$RS_ORDER" 2> "$order_err" ||
+  fail_test "the second ship-order run failed: $(cat "$order_err")"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.after-first" ||
+  fail_test "a second ship-order run changed the file: [$(order_lines)]"
+pass_test "a second ship-order run is a byte-for-byte no-op"
+
+# 3. Most runs touch no migration at all, and phase 6 calls ship-order on every
+# one of them. Such a run must leave the file exactly as committed — a rewrite
+# here would put db/schema/ORDER in the diff of a run that never touched db/.
+write_order "0001.a.sql" "0002.b.sql"
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.no-migration"
+rm -f "$ORDER_SCHEMA/mine.sql"
+"$SHIP_ORDER" -s "$RS_ORDER" 2> "$order_err" ||
+  fail_test "ship-order failed on a run that adds no migration: $(cat "$order_err")"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.no-migration" ||
+  fail_test "a run with no migration had its ORDER rewritten: [$(order_lines)]"
+pass_test "a run that adds no migration leaves ORDER byte-identical, exit 0"
+
+# 4. A base line missing from the worktree is not an append — it is landed
+# history being rewritten, most likely a rebase conflict resolved the wrong way.
+# Silently writing the line back would hide exactly that, so it refuses, and it
+# must not half-write the file on the way out.
+write_order "0002.b.sql"
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.deleted"
+assert_failure "ship-order REFUSES a worktree ORDER that deletes a landed line" \
+  "$SHIP_ORDER" -s "$RS_ORDER"
+run_ship_order -s "$RS_ORDER"
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "the deletion refusal exited $order_status, expected $SHIP_ORDER_REFUSED"
+grep -q "0001.a.sql" "$order_err" ||
+  fail_test "the deletion refusal did not name the deleted line; said [$(cat "$order_err")]"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.deleted" ||
+  fail_test "the refused run modified ORDER anyway: [$(order_lines)]"
+pass_test "the refusal names the deleted line and leaves ORDER untouched"
+
+# 5. An *.sql on disk that no ORDER line names is the RFC 169 defect, and it is
+# REFUSED, not placed. This script does not decide where a migration belongs —
+# the refusal four cases above says exactly that about a deleted line — and the
+# state cannot reach land anyway: bin/db-migrate refuses an unordered file, so
+# phase 5 already failed on it. Guessing a position would only hide that.
+write_order "0001.a.sql" "0002.b.sql"
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.unordered"
+add_sql "0003.c.sql"
+assert_failure "ship-order REFUSES a db/schema/*.sql that no ORDER line names" \
+  "$SHIP_ORDER" -s "$RS_ORDER"
+run_ship_order -s "$RS_ORDER"
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "the unordered-file refusal exited $order_status, expected $SHIP_ORDER_REFUSED"
+grep -q "0003.c.sql" "$order_err" ||
+  fail_test "the unordered-file refusal did not name the file; said [$(cat "$order_err")]"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.unordered" ||
+  fail_test "the refused run modified ORDER anyway: [$(order_lines)]"
+pass_test "the unordered-file refusal names the file and leaves ORDER untouched"
+rm -f "$ORDER_SCHEMA/0003.c.sql"
+
+# 6. A DUPLICATE line. db/schema/ORDER is merge=union, and union never reports a
+# conflict, so two appends of the same filename arrive silently. ship/SKILL.md
+# claims this script is what makes the final order deterministic, so it must not
+# copy a duplicate through. (A line the BASE copy already has is not a
+# duplicate: it is dropped by the derivation, which is where union's replayed
+# append lands.)
+add_sql "mine.sql"
+write_order "0001.a.sql" "0002.b.sql" "mine.sql" "mine.sql"
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.duplicate"
+assert_failure "ship-order REFUSES a duplicated line merge=union can produce" \
+  "$SHIP_ORDER" -s "$RS_ORDER"
+run_ship_order -s "$RS_ORDER"
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "the duplicate refusal exited $order_status, expected $SHIP_ORDER_REFUSED"
+grep -q "mine.sql" "$order_err" ||
+  fail_test "the duplicate refusal did not name the repeated line; said [$(cat "$order_err")]"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.duplicate" ||
+  fail_test "the refused run modified ORDER anyway: [$(order_lines)]"
+pass_test "the duplicate refusal names the repeated line and leaves ORDER untouched"
+
+# 7. -n, the ENFORCEMENT half (RFC 180 / ship-land). Phase 6 calling this script
+# is prose, and a run that skips it still lands cleanly — the ORDER line exists,
+# only its POSITION is wrong. ship-land runs `-n` before the fast-forward, so
+# dry-run must answer that question without writing anything.
+write_order "0001.a.sql" "mine.sql" "0002.b.sql"
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.stale"
+run_ship_order -s "$RS_ORDER" -n
+[ "$order_status" -eq "$SHIP_ORDER_WOULD_CHANGE" ] ||
+  fail_test "ship-order -n on a stale ORDER exited $order_status, expected $SHIP_ORDER_WOULD_CHANGE"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.stale" ||
+  fail_test "ship-order -n WROTE to ORDER: [$(order_lines)]"
+pass_test "ship-order -n exits 3 on an ORDER that would change, and writes nothing"
+
+# 7b. And the other verdict: after the real run, -n must pass, or ship-land
+# could never land a run that did the right thing.
+"$SHIP_ORDER" -s "$RS_ORDER" 2> "$order_err" ||
+  fail_test "ship-order failed re-placing the stale ORDER: $(cat "$order_err")"
+"$SHIP_ORDER" -s "$RS_ORDER" -n 2> "$order_err" ||
+  fail_test "ship-order -n refused an ORDER already in land order: $(cat "$order_err")"
+pass_test "ship-order -n exits 0 once ORDER is in land order"
+
+# 7c. -n is a dry run, not a downgrade: a CORRUPT corpus is still a refusal, and
+# it must be distinguishable from the stale-order verdict, since ship-land
+# reports the two differently. Each refusal, under -n, exits 1 rather than 3.
+write_order "0002.b.sql" "mine.sql"
+assert_failure "ship-order -n still REFUSES a deleted landed line" \
+  "$SHIP_ORDER" -s "$RS_ORDER" -n
+write_order "0001.a.sql" "0002.b.sql" "mine.sql" "mine.sql"
+run_ship_order -s "$RS_ORDER" -n
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "ship-order -n on a duplicate exited $order_status, expected $SHIP_ORDER_REFUSED (a refusal, not $SHIP_ORDER_WOULD_CHANGE)"
+write_order "0001.a.sql" "0002.b.sql" "mine.sql"
+add_sql "0004.d.sql"
+run_ship_order -s "$RS_ORDER" -n
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "ship-order -n on an unordered *.sql exited $order_status, expected $SHIP_ORDER_REFUSED (a refusal, not $SHIP_ORDER_WOULD_CHANGE)"
+rm -f "$ORDER_SCHEMA/0004.d.sql"
+pass_test "ship-order -n reports each refusal as 1, never as the stale-order 3"
+
+# 7d. The -n REFUSAL IS THE BRANCH MOST LIKELY TO FIRE, and it fires from inside
+# ship-land with the land lock HELD. A verdict with no state is not actionable
+# there: the operator sees "not in land order" and has to reconstruct what
+# ORDER holds, what it should hold, and how to fix it, from a script they did
+# not run. So the report must show both orders and the exact re-run command.
+write_order "0001.a.sql" "mine.sql" "0002.b.sql"
+run_ship_order -s "$RS_ORDER" -n
+[ "$order_status" -eq "$SHIP_ORDER_WOULD_CHANGE" ] ||
+  fail_test "the -n stale verdict exited $order_status, expected $SHIP_ORDER_WOULD_CHANGE"
+grep -q "ship-order -s $RS_ORDER" "$order_err" ||
+  fail_test "the -n refusal did not print the re-run command; said [$(cat "$order_err")]"
+grep -q "0002.b.sql" "$order_err" ||
+  fail_test "the -n refusal did not print the order it would write; said [$(cat "$order_err")]"
+pass_test "the -n refusal prints both orders and the exact ship-order re-run command"
+
+# 7e. EVERY refusal in ONE pass. A corpus can hold a deletion, a duplicate and
+# an unordered file at once, and this check runs at land time: reporting the
+# first kind and exiting costs the operator one more land attempt — and one more
+# full hook run — per kind.
+write_order "0002.b.sql" "mine.sql" "mine.sql"
+add_sql "0005.e.sql"
+run_ship_order -s "$RS_ORDER"
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "the three-fault corpus exited $order_status, expected $SHIP_ORDER_REFUSED"
+grep -q "0001.a.sql" "$order_err" ||
+  fail_test "the combined refusal did not report the DELETED line; said [$(cat "$order_err")]"
+grep -q "mine.sql" "$order_err" ||
+  fail_test "the combined refusal did not report the DUPLICATE line; said [$(cat "$order_err")]"
+grep -q "0005.e.sql" "$order_err" ||
+  fail_test "the combined refusal did not report the UNORDERED file; said [$(cat "$order_err")]"
+pass_test "one run reports the deletion, the duplicate AND the unordered file"
+rm -f "$ORDER_SCHEMA/0005.e.sql"
+
+# 7f. It must validate what it would WRITE. A `# comment`, a trailing space or
+# `hello world` survives every check above — no line is deleted, nothing is
+# duplicated, no *.sql is unnamed — so it would be written, committed, landed,
+# and refused only later by bin/db-migrate against a live database.
+write_order "0001.a.sql" "0002.b.sql" "mine.sql" "# a comment"
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.badline"
+run_ship_order -s "$RS_ORDER"
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "an ORDER line that is not a filename exited $order_status, expected $SHIP_ORDER_REFUSED"
+grep -q "a comment" "$order_err" ||
+  fail_test "the illegal-line refusal did not name the line; said [$(cat "$order_err")]"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.badline" ||
+  fail_test "the refused run modified ORDER anyway: [$(order_lines)]"
+pass_test "an ORDER line that is not a legal migration filename is REFUSED, not written"
+
+# 7g. A line that names NO FILE is the mirror of the unordered case, and it
+# reaches the same reader: bin/db-migrate refuses an ORDER line with no file.
+write_order "0001.a.sql" "0002.b.sql" "mine.sql" "0009.ghost.sql"
+run_ship_order -s "$RS_ORDER"
+[ "$order_status" -eq "$SHIP_ORDER_REFUSED" ] ||
+  fail_test "an ORDER line naming no file exited $order_status, expected $SHIP_ORDER_REFUSED"
+grep -q "0009.ghost.sql" "$order_err" ||
+  fail_test "the missing-file refusal did not name the line; said [$(cat "$order_err")]"
+pass_test "an ORDER line that names no file on disk is REFUSED"
+
+# 7h. THE BASE COPY IS LOAD-BEARING. Every refusal above is stated relative to
+# the ORDER at BASE_SHA, so an empty base copy that is really a GIT FAILURE — a
+# pruned or wrong BASE_SHA, a state file pointing at another repo — disables the
+# append-only deletion refusal entirely: the deleted line reads as "not in the
+# base", the corpus reads as clean, and ship-land's -n gate passes a mis-ordered
+# ORDER. Asking git for the file and treating "" as "no base copy" cannot tell
+# the two apart, so a bad BASE_SHA must be a fatal, not an empty answer.
+GHOST_SHA="0000000000000000000000000000000000000000"
+RS_GHOST="$(make_run run-order-ghost-sha "$ORDER_REPO" "$GHOST_SHA")"
+write_order "0002.b.sql" "mine.sql"
+cp "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.ghost"
+run_ship_order -s "$RS_GHOST"
+[ "$order_status" -ne 0 ] ||
+  fail_test "a BASE_SHA that is not a commit was treated as 'no base copy' and exited 0"
+grep -q "$GHOST_SHA" "$order_err" ||
+  fail_test "the bad-BASE_SHA fatal did not name the sha; said [$(cat "$order_err")]"
+cmp -s "$ORDER_SCHEMA/ORDER" "$FIXTURE_DIR/order.ghost" ||
+  fail_test "the run with a bad BASE_SHA wrote ORDER anyway: [$(order_lines)]"
+pass_test "a BASE_SHA git cannot resolve is a FATAL, never a silently empty base copy"
+write_order "0001.a.sql" "0002.b.sql" "mine.sql"
+
+# 8. The run that INTRODUCES the file has no base copy to preserve, and asking
+# git for it fails rather than returning empty. Missing at the base sha is the
+# honest empty case, not an error.
+NEW_REPO="$FIXTURE_DIR/order-repo-new"
+mkdir -p "$NEW_REPO/db/schema"
+git init -q "$NEW_REPO"
+git -C "$NEW_REPO" config user.email "ship-scripts-tests@example.invalid"
+git -C "$NEW_REPO" config user.name "ship-scripts-tests"
+echo "-- 0001.first.sql" > "$NEW_REPO/db/schema/0001.first.sql"
+git -C "$NEW_REPO" add -A
+git -C "$NEW_REPO" commit -q -m "no ORDER yet"
+NEW_BASE_SHA="$(git -C "$NEW_REPO" rev-parse HEAD)"
+RS_NEW="$(make_run run-order-new "$NEW_REPO" "$NEW_BASE_SHA")"
+printf '%s\n' "0001.first.sql" > "$NEW_REPO/db/schema/ORDER"
+"$SHIP_ORDER" -s "$RS_NEW" 2> "$order_err" ||
+  fail_test "ship-order failed when ORDER is absent at the base sha: $(cat "$order_err")"
+[ "$(tr '\n' ' ' < "$NEW_REPO/db/schema/ORDER")" = "0001.first.sql " ] ||
+  fail_test "ORDER absent at the base sha was not treated as empty; got [$(cat "$NEW_REPO/db/schema/ORDER")]"
+pass_test "ORDER absent at the base sha is treated as empty, and this run's line stands"
+
+# 9. THE ESCAPE. `git -C <dir>` loses to GIT_DIR, and a git hook exports GIT_DIR
+# and GIT_INDEX_FILE — and phase 6 runs ship-order beside the hook. Without the
+# strip in ship-order, every `git -C "$CODEBASE_ROOT"` in it answers about the
+# HOOK's repository instead of the run's: the base copy of ORDER is read from
+# the wrong history, so the append-only refusals are stated against a corpus
+# this run never touched. That is the same trap ship-lock carries a comment for,
+# and the same one that let bin/db-scripts-tests re-`git init` the REAL checkout.
+# The exported values are what a hook really sets, so this fails on a ship-order
+# that trusts the environment over its argument.
+ESCAPE_GIT_DIR="$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir)"
+REAL_ORDER_BEFORE="$(cksum < "$PROJECT_ROOT/db/schema/ORDER")"
+write_order "0001.a.sql" "mine.sql" "0002.b.sql"
+order_status=0
+GIT_DIR="$ESCAPE_GIT_DIR" GIT_INDEX_FILE="$ESCAPE_GIT_DIR/index" \
+  "$SHIP_ORDER" -s "$RS_ORDER" 2> "$order_err" || order_status=$?
+[ "$order_status" -eq 0 ] ||
+  fail_test "GIT_DIR overrode the run's own repo: ship-order exited $order_status, said [$(cat "$order_err")]"
+[ "$(order_lines)" = "0001.a.sql 0002.b.sql mine.sql " ] ||
+  fail_test "under GIT_DIR ship-order produced [$(order_lines)], expected the fixture's land order"
+[ "$(cksum < "$PROJECT_ROOT/db/schema/ORDER")" = "$REAL_ORDER_BEFORE" ] ||
+  fail_test "ship-order under GIT_DIR wrote to the REAL repo's db/schema/ORDER"
+pass_test "GIT_DIR from a hook cannot move ship-order off the run's own repo"
 
 end_tests

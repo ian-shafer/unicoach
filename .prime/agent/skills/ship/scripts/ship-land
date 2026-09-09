@@ -24,6 +24,9 @@ Asserts HEAD is hook-verified (modulo doc-only commits), fast-forwards the base
 branch onto the run branch from the original checkout, removes the worktree, and
 deletes the merged branch. Refuses on uncommitted changes or a non-fast-forward.
 
+Also refuses a db/schema/ORDER that is not in land order — `ship-order -n` — so
+a run that skipped ship-order in phase 6 cannot land a mis-ordered manifest.
+
 Refuses a land lock (see ship-lock) held by another run, acquires a free one for
 the fast-forward, and releases a lock it holds — including on any failure AFTER
 it has taken or confirmed it. A fatal before that point (a dirty worktree) leaves
@@ -99,6 +102,44 @@ trap release_lock EXIT
 
 # 3. The gate. Nothing lands that the hook never saw.
 "$SCRIPT_DIR/ship-verified" assert "${DOC_ARGS[@]+"${DOC_ARGS[@]}"}"
+
+# 3b. db/schema/ORDER is in land order (RFC 180). Phase 6 calling ship-order is
+# prose, and a run that skipped it lands CLEANLY — its ORDER line exists, only
+# its POSITION is wrong, which is precisely the silent mis-ordering RFC 180
+# exists to remove. So the check is here, in the only path to the base branch.
+#
+# `-n` writes nothing: SHIP_ORDER_WOULD_CHANGE means ORDER would change, and
+# any other non-zero is ship-order's own refusal (a deleted line, a duplicate,
+# an unordered *.sql, an illegal line), already reported on stderr. Either way
+# this run does not land.
+#
+# ship-order's status is PASSED THROUGH rather than collapsed into fatal's flat
+# 1, so a scripted caller can tell "ORDER is stale, re-run ship-order" from
+# "ORDER is corrupt" and from a dirty worktree. Both exits below run under the
+# EXIT trap installed in step 2, so they release the land lock exactly as every
+# other post-acquire refusal does.
+#
+# Copied from ship-order WITH THE SAME VALUE rather than sourced — the same
+# note ship-lock carries about bin/functions' reserved band. ship-order spells
+# it EXIT_ORDER_WOULD_CHANGE, because there the 3 is that script's OWN exit
+# code; here it names a foreign script's, so the name carries the owner. The
+# two spellings are intentional — grep for both when the value moves.
+SHIP_ORDER_WOULD_CHANGE=3
+ORDER_STATUS=0
+"$SCRIPT_DIR/ship-order" -s "$RUN_SCRATCH" -n || ORDER_STATUS=$?
+# ONE [FATAL] header per cause. ship-order has already printed its own, naming
+# the file and the exact remedy; a second header here reports one event as two
+# faults. So this states what happens NEXT and nothing else, and the copy-
+# pasteable command is left unbracketed on purpose — brackets corrupt a command
+# meant to be pasted.
+if [ "$ORDER_STATUS" -eq "$SHIP_ORDER_WOULD_CHANGE" ]; then
+  log-info "        This run does not land. Re-place ORDER, re-commit through the hook, and re-run ship-land:"
+  log-info "          scripts/ship-order -s $RUN_SCRATCH"
+  exit "$ORDER_STATUS"
+elif [ "$ORDER_STATUS" -ne 0 ]; then
+  log-info "        ship-order refused this run's db/schema/ORDER (status [$ORDER_STATUS], reported above). This run does not land: fix the corpus, re-commit through the hook, and re-run ship-land."
+  exit "$ORDER_STATUS"
+fi
 
 TIP="$(git rev-parse HEAD)"
 

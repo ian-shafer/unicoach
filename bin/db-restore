@@ -340,8 +340,18 @@ restore_into_fresh_database
 report_migration_level() {
   local level=
   local status=0
+  # ORDERING DEPENDS ON TWO PROPERTIES OF schema_migrations (bin/db-create).
+  # (1) `applied_at` is NULLABLE and DESC is NULLS FIRST in PostgreSQL, so one
+  # row with a NULL stamp — a hand-inserted row, or a restore of a database
+  # whose rows predate the DEFAULT NOW() — would win every comparison and be
+  # reported as the level. NULLS LAST puts the stamped rows first, where the
+  # answer is. (2) rows written inside one transaction share NOW() to the
+  # microsecond, so db-migrate's batch ties; `filename DESC` breaks the tie
+  # deterministically instead of leaving it to the scan order.
+  # The probe describes the RESTORED database, so it deliberately does NOT
+  # consult this checkout's db/schema/ORDER: the dump may predate or postdate it.
   level="$("$PROJECT_ROOT/bin/db-query" -r \
-    "SELECT filename FROM schema_migrations ORDER BY version_id DESC LIMIT 1;" \
+    "SELECT filename FROM schema_migrations ORDER BY applied_at DESC NULLS LAST, filename DESC LIMIT 1;" \
     < /dev/null | head -n 1 | tr -d '[:space:]')" || status=$?
   if [ "$status" -ne 0 ]; then
     log-warning "THE RESTORE ITSELF SUCCEEDED: database [$POSTGRES_DB] was restored from [$SOURCE_LABEL] and nothing below undoes that. Only the migration-level probe failed [status=$status] (its own diagnostic is above), so the level is UNKNOWN, not empty. Check it with bin/db-status."
