@@ -330,7 +330,7 @@ object BorrowingWire {
     loanType: LoanType,
     source: CdsCitation,
   ): String =
-    "${source.collegeName}'s ${CdsCitation.cycleLabel(source.sourceYear)} Common Data Set answers what its " +
+    "${source.citedAs} answers what its " +
       "graduates borrowed in ${loanType.spoken}, and WE could not read that answer out of it -- say that the " +
       "figure is missing from our data, never that this school does not report it"
 
@@ -355,10 +355,50 @@ object BorrowingWire {
         notReadByUsLabel(loanType, source)
       }
 
-      else -> {
-        "${source.collegeName}'s ${CdsCitation.cycleLabel(source.sourceYear)} Common Data Set answers what its " +
+      // The two statuses whose silence is SOMEONE ELSE's: the publisher
+      // withheld the cell, or the source itself says the question does not
+      // apply here. Named rather than caught by an `else`, so a seventh status
+      // must be decided here instead of inheriting a sentence written for these
+      // two.
+      FigureStatus.SUPPRESSED_BY_PUBLISHER, FigureStatus.NOT_APPLICABLE -> {
+        // Resolved inside the `when`, never by interpolation:
+        // [FigureStatusCopy.agentlessStatementOf] is null for
+        // [FigureStatus.REPORTED], and interpolating a nullable splices the
+        // literal text `null` into family-facing coach copy. Neither arm above is REPORTED,
+        // so this never fires; it fires LOUDLY rather than silently if a status
+        // with no sentence is ever routed here.
+        val statement =
+          checkNotNull(FigureStatusCopy.agentlessStatementOf(status)) {
+            "a borrowing gap is spoken and this status has no sentence: " +
+              "loan_type=[${loanType.slug}] status=[${status.value}] cited_as=[${source.citedAs}]"
+          }
+        // [CdsCitation.citedAs], not a hand-typed "<school>'s <cycle> Common
+        // Data Set": the publisher's spoken name is derived at its one home --
+        // here and at the three sibling sentences in this object -- so none of
+        // them can drift off the citation beside it (RFC 177). Byte-identical
+        // output, four fewer places that type a publisher.
+        //
+        // AGENTLESS on purpose (RFC 177), with a publisher in hand: this
+        // sentence's own frame already names the school's Common Data Set as
+        // the publisher, so passing MoneySource.COMMON_DATA_SET would name the
+        // same document twice in one sentence ("... Common Data Set answers
+        // ... The school's own Common Data Set withholds ...").
+        "${source.citedAs} answers what its " +
           "graduates borrowed in ${loanType.spoken} and no figure is shown here: " +
-          "${FigureStatusCopy.statementOf(status)} Say it that way, never that this school does not report it."
+          "$statement Say it that way, never that this school does not report it."
+      }
+
+      // NOT a gap sentence at all, and refused rather than worded. The first two
+      // are value-bearing -- the figure itself is rendered ([gapKey] emits no
+      // key for them) -- and the third is the SCHOOL's own silence, which this
+      // sentence explicitly promises never to say. [listSentencesFor] and
+      // [objectOf] already filter all three through [gapKey]; this makes the
+      // filter the type's rule rather than each caller's.
+      FigureStatus.REPORTED, FigureStatus.IMPUTED_BY_PUBLISHER, FigureStatus.NOT_REPORTED_BY_INSTITUTION -> {
+        error(
+          "this status is not someone else's silence at a loan type, so it has no gap sentence: " +
+            "loan_type=[${loanType.slug}] status=[${status.value}] cited_as=[${source.citedAs}]",
+        )
       }
     }
 
@@ -369,7 +409,7 @@ object BorrowingWire {
    * having reported nothing.
    */
   fun graduatingClassNotReadByUsLabel(source: CdsCitation): String =
-    "${source.collegeName}'s ${CdsCitation.cycleLabel(source.sourceYear)} Common Data Set reports the size of " +
+    "${source.citedAs} reports the size of " +
       "its graduating class and WE could not read that answer out of it, so no share of graduates who borrowed " +
       "can be given here -- say that the figure is missing from our data, never that this school does not " +
       "report it"
@@ -380,7 +420,7 @@ object BorrowingWire {
    * its graduates borrowed no private money. No source publishes a negative.
    */
   fun privateNotFiledLabel(source: CdsCitation): String =
-    "${source.collegeName}'s ${CdsCitation.cycleLabel(source.sourceYear)} Common Data Set reports no average " +
+    "${source.citedAs} reports no average " +
       "for private loans, so these figures are not the whole of what its graduates borrowed"
 
   /**

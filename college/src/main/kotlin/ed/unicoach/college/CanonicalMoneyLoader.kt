@@ -1116,8 +1116,14 @@ class CanonicalMoneyLoader internal constructor(
      * statistics neither carries. Nothing is averaged.
      *
      * This list, not the [MoneySource] declaration order, is precedence.
+     *
+     * PUBLIC rather than `internal` (RFC 177): `MoneySourceCopy` in `:service`
+     * speaks publishers in this order, so that the publisher answering for most
+     * cells is named first, and `internal` left it restating the list from
+     * memory with nothing able to check it. It is read, never mutated -- a
+     * `listOf` on a `MoneySource` enum.
      */
-    internal val ORDERED_SOURCES = listOf(MoneySource.IPEDS_SFA, MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD)
+    val ORDERED_SOURCES = listOf(MoneySource.IPEDS_SFA, MoneySource.IPEDS_IC_AY, MoneySource.SCORECARD)
 
     /**
      * The sources whose canonical rows another phase writes, and which

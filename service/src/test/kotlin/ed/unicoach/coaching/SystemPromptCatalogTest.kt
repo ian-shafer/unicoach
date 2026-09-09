@@ -10,6 +10,7 @@ import ed.unicoach.coaching.costs.BorrowingWire
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.costs.PrecisionOffer
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.fitlens.FitLensConfig
 import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
@@ -25,6 +26,7 @@ import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.RESIDENCY_TIERS_KEY
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -1582,6 +1584,135 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The v22 wording of the two spans RFC 177 rewrites, quoted from the IMMUTABLE
+   * `db/schema/0092` row.
+   *
+   * Literals, and safe as literals for exactly one reason: they are the copy of
+   * a row that can never be updated in place (`db/schema/0007`'s triggers), so
+   * they cannot drift. They are asserted PRESENT in v22 before they are used to
+   * reconstruct it, or the reconstruction below would hold vacuously.
+   */
+  private val v22MoneyAttribution =
+    "Always attribute cost figures to the U.S. Department of Education College Scorecard, and when a " +
+      "school doesn't report a figure, say that plainly rather than estimating."
+
+  private val v22ResidencyPublisher = "and the U.S. Department of Education publishes them on that basis."
+
+  /** The v23 openers, and the unchanged v22 words each edited span was written in front of. */
+  private val moneyAttributionOpener = "Always attribute each cost figure"
+
+  private val moneyAttributionSuccessor = " Never name a data source's internal buckets"
+
+  private val residencyPublisherOpener = "and the source the tool names publishes"
+
+  private val residencyPublisherSuccessor = " Never offer either of those two figures"
+
+  /**
+   * RFC 177's seed (`db/schema/0093`): v23 is v22 with exactly the two
+   * publisher-naming sentences about MONEY figures rewritten, and nothing else
+   * touched.
+   *
+   * An INTERIOR EDIT, so it follows 0086's shape and not the additive one, and
+   * the contract is proved by RECONSTRUCTION rather than by a list of `contains`
+   * checks: put each new span back to its v22 wording and the whole body must be
+   * v22 again, byte for byte. Every other paragraph -- the six figure statuses,
+   * the Common Data Set citation rules for admissions and aid_policy, the
+   * federal-aid attribution, the search rulers -- survives by construction or
+   * this fails.
+   *
+   * The rewrite itself is not cosmetic. The prompt told the coach to attribute
+   * EVERY cost figure to the College Scorecard while the loader ranks both IPEDS
+   * surveys above it, so the instruction was wrong for most figures, and the
+   * payload now names its own publishers.
+   */
+  @Test
+  fun `coach v23 is v22 with exactly the two money publisher-naming sentences rewritten`() {
+    val v22 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v22").getOrThrow().body
+    val v23 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v23").getOrThrow().body
+
+    // The convention, broken deliberately: a clean v22 prefix would mean the two
+    // interior edits never landed and v23 was an append after all.
+    assertFalse(v23.startsWith(v22), "v23 EDITS v22's interior, so v22 must not survive as a byte-identical prefix")
+    assertTrue(v22.contains(v22MoneyAttribution), "the v22 attribution rule must be there to be rewritten")
+    assertTrue(v22.contains(v22ResidencyPublisher), "the v22 residency publisher clause must be there to be rewritten")
+
+    val money = insertedSpan(v23, moneyAttributionOpener, moneyAttributionSuccessor)
+    val residency = insertedSpan(v23, residencyPublisherOpener, residencyPublisherSuccessor)
+
+    assertEquals(
+      v22,
+      v23.replace(money, v22MoneyAttribution).replace(residency, v22ResidencyPublisher),
+      "v23 must be v22 with exactly these two spans rewritten and nothing else changed",
+    )
+
+    // 1. The attribution is now agnostic, and points at the payload.
+    assertTrue(
+      money.contains("the source the tool names beside it"),
+      "the coach must attribute each figure to the source the payload names: [$money]",
+    )
+    assertTrue(
+      money.contains("say that plainly rather than estimating"),
+      "the never-estimate half of the same sentence is unchanged: [$money]",
+    )
+    assertTrue(
+      residency.contains("the source the tool names publishes them on that basis"),
+      "the residency basis is published by the source the tool names: [$residency]",
+    )
+
+    // 2. NO publisher of a money figure is named anywhere in v23 any more.
+    MoneySource.entries
+      .filterNot { it == MoneySource.COMMON_DATA_SET }
+      .forEach { source ->
+        assertFalse(
+          v23.contains(MoneySourceCopy.labelOf(source)),
+          "v23 may name no money publisher: [${source.value}]",
+        )
+      }
+    assertFalse(v23.contains("College Scorecard"), "the Scorecard attribution is gone from the served body")
+    assertFalse(v23.contains("U.S. Department of Education"), "and so is the bare department name")
+
+    // 3. What must NOT have moved. The Common Data Set rules are about a
+    //    different corpus and are true; the six status sentences are recited by
+    //    the IMMUTABLE v19 row and can never be reworded.
+    assertTrue(v23.contains("Common Data Set"), "the admissions and aid_policy citation rules are untouched")
+    assertTrue(v23.contains(FIGURE_STATUS_OPENER), "v19's figure-status paragraph must survive the edit")
+    FigureStatus.entries.forEach { status ->
+      val spoken = FigureStatusCopy.agentlessStatementOf(status) ?: return@forEach
+      assertTrue(v23.contains(spoken), "v23 must still recite the SHIPPING sentence for [${status.value}]: [$spoken]")
+    }
+
+    // The standing guards, over the two spans v23 actually rewrites.
+    val edited = money + residency
+    assertFalse(edited.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(edited.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(edited.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertEquals(
+      emptyList(),
+      listSubtractionsNotForbidden(edited),
+      "every mention of subtracting in the new copy must forbid it",
+    )
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(edited), "the new copy must transcribe no source codebook")
+  }
+
+  /**
+   * The rollback RFC 177 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v22`), which is only real if the v22 row is
+   * still in the insert-only catalog and still carries the copy it was approved
+   * with -- including the Scorecard attribution v23 removes.
+   */
+  @Test
+  fun `coach v22 stays selectable as v23's rollback target`() {
+    val v22 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v22").getOrThrow()
+
+    assertEquals("v22", v22.version, "the rollback target must still be selectable by name and version")
+    assertTrue(v22.body.contains(v22MoneyAttribution), "v22 must still carry the copy it was approved with")
+    assertFalse(
+      v22.body.contains(moneyAttributionOpener),
+      "the rollback target must not already carry the v23 attribution copy",
+    )
+  }
+
+  /**
    * The rollback RFC 169 documents is one env var
    * (`COACHING_SYSTEM_PROMPT_VERSION=v21`), which is only real if the v21 row is
    * still in the insert-only catalog, still carries the copy it was approved
@@ -1813,7 +1944,7 @@ class SystemPromptCatalogTest {
     FigureStatus.entries.forEach { status ->
       // REPORTED carries no sentence at all -- a plainly reported figure is
       // given plainly -- and the paragraph says exactly that, below.
-      val spoken = FigureStatusCopy.statementOf(status) ?: return@forEach
+      val spoken = FigureStatusCopy.agentlessStatementOf(status) ?: return@forEach
       assertTrue(
         statuses.contains(spoken),
         "v19 must recite the SHIPPING sentence for [${status.value}]: [$spoken] in [$statuses]",
@@ -1829,7 +1960,7 @@ class SystemPromptCatalogTest {
     // ours. Reworded in [FigureStatusCopy] and only half-updated here, the
     // paragraph would recite our gap among the school's own silences -- the
     // misattribution RFC 149 D-B exists against.
-    val ours = assertNotNull(FigureStatusCopy.statementOf(FigureStatus.NOT_COLLECTED_BY_US))
+    val ours = assertNotNull(FigureStatusCopy.agentlessStatementOf(FigureStatus.NOT_COLLECTED_BY_US))
     assertTrue(
       statuses.contains("$ours That last sentence is ours and not the school's"),
       "the sentence that is OURS must be attributed as ours where it is said: [$statuses]",

@@ -39,6 +39,7 @@ import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.LlmRequestId
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.PriceRuler
@@ -818,7 +819,9 @@ class FitLensService(
    *    is OUR silence and never the school's.
    */
   private fun netPriceDigest(stat: DatedStat?): String {
-    if (stat == null) return statusFields(FigureStatus.NOT_COLLECTED_BY_US)
+    // No row, so no publisher: the status sentence names nobody, which is right
+    // -- the gap is OURS (RFC 177).
+    if (stat == null) return agentlessStatusFields(FigureStatus.NOT_COLLECTED_BY_US)
 
     val amount = stat.amountUsd
     val figure =
@@ -826,7 +829,7 @@ class FitLensService(
         "netPricePerYearUsd=[$amount] "
       } else {
         // No dollars, so no dollar key: the status IS the answer.
-        statusFields(stat.status) + " "
+        statusFields(stat.status, stat.source) + " "
       }
     return figure +
       "netPriceBasis=[${stat.residencyScope.value}] " +
@@ -835,15 +838,36 @@ class FitLensService(
 
   /**
    * A missing figure's status as the digest states it: the stable CODE, plus the
-   * sentence a coach may say where there is one.
+   * sentence a coach may say where there is one, NAMING the publisher whose row
+   * this cell came from (RFC 177).
    *
    * [FigureStatusCopy.statementOf] answers null only for
    * [FigureStatus.REPORTED], which is value-bearing and so never reaches here;
    * [NOT_REPORTED] keeps the field non-empty if a future status is added
    * value-less and wordless.
    */
-  private fun statusFields(status: FigureStatus): String =
-    "netPriceStatus=[${status.value}] netPriceNote=[${FigureStatusCopy.statementOf(status) ?: NOT_REPORTED}]"
+  private fun statusFields(
+    status: FigureStatus,
+    source: MoneySource,
+  ): String = statusLine(status, FigureStatusCopy.statementOf(status, source))
+
+  /**
+   * The same two fields with NO publisher in hand: there is no row, so there is
+   * nobody to name, and the sentence says so agentlessly.
+   *
+   * Its own name rather than a null [MoneySource] (RFC 177): the one caller is
+   * the no-row branch, and a caller that HAS a publisher cannot reach the
+   * agentless sentence by leaving an argument off.
+   */
+  private fun agentlessStatusFields(status: FigureStatus): String = statusLine(status, FigureStatusCopy.agentlessStatementOf(status))
+
+  /** The two fields themselves, once, whichever of the two sentences above the caller chose. */
+  private fun statusLine(
+    status: FigureStatus,
+    statement: String?,
+  ): String =
+    "netPriceStatus=[${status.value}] " +
+      "netPriceNote=[${statement ?: NOT_REPORTED}]"
 
   private fun buildReasonRequest(
     ready: ReadPhase.Ready,

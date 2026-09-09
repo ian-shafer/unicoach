@@ -2,8 +2,8 @@ package ed.unicoach.coaching.costs.canonical
 
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.common.util.AcademicYear
-import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.MoneySource
 
 /**
  * One college's canonical figures AT the ONE academic year this answer serves
@@ -76,11 +76,20 @@ class ServedFigures(
    */
   fun amountOf(field: CostField): Int? = figureOf(field)?.amountUsd
 
-  /** The canonical status behind this field -- [CollegeFigures.statusOf], with the year already bound. */
+  /**
+   * The canonical status behind this field, and the publisher that answered for
+   * it -- [CollegeFigures.statusOf], with the year already bound.
+   */
   fun statusOf(
     field: CostField,
     band: IncomeBand?,
-  ): FigureStatus? = figures.statusOf(field, academicYear, band)
+  ): FigureProvenance? = figures.statusOf(field, academicYear, band)
+
+  /**
+   * The distinct publishers behind the figures this college serves at this band
+   * -- [CollegeFigures.servedSourcesOf], with the year already bound (RFC 177 D5).
+   */
+  fun servedSourcesOf(band: IncomeBand?): List<MoneySource> = figures.servedSourcesOf(academicYear, band)
 
   /** This address's price row at the served year -- [CollegeFigures.priceAt], with the year already bound. */
   fun priceAt(address: PriceAddress): DatedFigure? = figures.priceAt(address, academicYear)

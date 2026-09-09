@@ -12,7 +12,6 @@ import ed.unicoach.coaching.costs.ComparisonBasis
 import ed.unicoach.coaching.costs.ComponentRole
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.CostLine
-import ed.unicoach.coaching.costs.CostSources
 import ed.unicoach.coaching.costs.LineOrigin
 import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.MoneyProfileStatuses
@@ -22,10 +21,12 @@ import ed.unicoach.coaching.costs.SingleSchoolBasis
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.WithheldReason
 import ed.unicoach.coaching.costs.applicableTuitionFor
+import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.ResidencyTierBasis
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
@@ -258,7 +259,11 @@ suspend fun ApplicationCall.respondCostReportPage(profile: CollegeCostProfile) {
           profile.comparisonBasis?.let { summaryTable(profile, it) }
           profile.colleges.forEach { schoolSection(it, residencyBases.getValue(it.collegeId)) }
         }
-        sourcesSection()
+        // The publishers of the figures THIS page carries, never a constant:
+        // a page with no IPEDS figure on it may not claim an IPEDS source, and
+        // the constant this replaced claimed the Scorecard for every figure
+        // (RFC 177 D5).
+        sourcesSection(profile.moneySources)
       }
     }
   }
@@ -1013,13 +1018,39 @@ private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
   p("report-source") { +"Source: ${borrowing.source.citedAs}." }
 }
 
-/** Where every figure came from, and the sentence the whole page exists to keep honest. */
-private fun FlowContent.sourcesSection() {
+/**
+ * Where every figure came from, and the sentence the whole page exists to keep
+ * honest.
+ *
+ * [sources] are the publishers that actually won the canonical money figures on
+ * THIS page (RFC 177 D5), so the first sentence is derived rather than typed. It
+ * used to name the College Scorecard for every figure while the loader ranks
+ * both IPEDS surveys above it -- a false attribution on a parent-facing page.
+ * With no such figure at all the sentence is omitted: there is no publisher to
+ * name.
+ *
+ * The sentence says "cost, price and federal debt" because that is what the set
+ * covers: `CollegeFigures.servedSourcesOf` walks every `CostField`, and
+ * `MEDIAN_DEBT_AT_COMPLETION_USD` is one of them. Said as "cost and price" it
+ * named a Scorecard that published only the debt figure as a publisher of this
+ * school's prices -- the same shape of false attribution, one size smaller.
+ *
+ * The merit-and-borrowing sentence stays hand-written and stays true: those
+ * figures are not canonical money rows, they carry no [MoneySource], and each
+ * one is already cited to its own school's Common Data Set beside it.
+ */
+private fun FlowContent.sourcesSection(sources: List<MoneySource>) {
   section("report-sources") {
     h2 { +"Sources and what this is not" }
     p {
+      // ABSENT, never an empty string spliced into the paragraph: with no money
+      // figure on the page there is no publisher to name (RFC 177). The
+      // nullable reaches its point of use, so the sentence is EMITTED or not,
+      // and nothing here restores the `""` sentinel `spokenListOf` returns null
+      // instead of.
+      moneyAttributionSentence(sources)?.let { +it }
       +(
-        "The cost and price figures come from the ${CostSources.SCORECARD_ATTRIBUTION}. The merit and " +
+        "The merit and " +
           "borrowing figures come from each school's own Common Data Set, cited beside them. The federal " +
           "debt figure and the school's own borrowing figures are different measures from different " +
           "publishers over different groups of students, so they are never added together and never " +
@@ -1040,3 +1071,18 @@ private fun FlowContent.sourcesSection() {
     }
   }
 }
+
+/**
+ * The attribution sentence for this page's money figures, or NULL where there is
+ * no publisher to name (RFC 177 D5).
+ *
+ * Composition, kept out of [sourcesSection]: the renderer lays the section out
+ * and this decides what it SAYS. The trailing space is part of the sentence,
+ * because the paragraph continues with the merit-and-borrowing sentence right
+ * after it.
+ *
+ * Null rather than an empty string, all the way from `MoneySourceCopy.spokenListOf`
+ * to the emit: absence has one representation on this path.
+ */
+private fun moneyAttributionSentence(sources: List<MoneySource>): String? =
+  MoneySourceCopy.spokenListOf(sources)?.let { "The cost, price and federal debt figures come from $it. " }

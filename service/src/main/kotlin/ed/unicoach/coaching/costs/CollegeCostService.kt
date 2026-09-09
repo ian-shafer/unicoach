@@ -7,6 +7,7 @@ import ed.unicoach.coaching.costs.canonical.CohortAddress
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.FigureAddress
+import ed.unicoach.coaching.costs.canonical.FigureProvenance
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.ServedFigures
 import ed.unicoach.coaching.costs.canonical.figureAddress
@@ -36,6 +37,7 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
@@ -286,6 +288,20 @@ data class CollegeCost(
    * because the school never reported it, or because we have not collected it.
    */
   val figureStatuses: List<FigureStatusNote>,
+  /**
+   * The distinct publishers behind the money figures this answer SERVES for this
+   * college, latest-precedence first (RFC 177 D5).
+   *
+   * The page and the payload name these and nothing else. Before it existed both
+   * cited one hand-typed constant -- the College Scorecard -- for every figure,
+   * while the loader ranks the two IPEDS surveys above the Scorecard, so the
+   * publisher we named was usually not the publisher that won.
+   *
+   * Derived from the SERVED addresses ([ServedFigures.servedSourcesOf]), never
+   * from every row the store holds: a source whose figure nobody was shown is
+   * not a source of this answer.
+   */
+  val moneySources: List<MoneySource>,
   /**
    * The net-price answer AS PUBLISHED, and private for the same reason: what
    * this family may be shown is [netPrice], which is a [NetPrice.Withheld] when
@@ -701,6 +717,21 @@ data class FigureStatusNote(
   /** The sentence a coach says this status in; never null here, because a plainly reported figure has no note. */
   val statement: String,
   /**
+   * The publisher whose row won this figure (RFC 177 D4).
+   *
+   * The note is already the carrier of "a code and its sentence travelling
+   * together", and WHO published the figure is the third fact of the same shape:
+   * the sentence in [statement] names this publisher where the status is about
+   * the publisher's own act, and a renderer that re-derived the name from
+   * anywhere else is how one hand-typed constant came to contradict the data.
+   *
+   * NON-NULL: both construction sites read the publisher off a row that exists
+   * -- the row the status came from ([figureStatusesOf]) or the row we hold for
+   * another year ([yearGapOf]). A cell no loader ever wrote produces no note at
+   * all, so a null here would be a state nothing can build.
+   */
+  val source: MoneySource,
+  /**
    * The academic year this school's price is quoted at, and the year we hold
    * THIS figure for -- both non-null for a YEAR GAP and both null for every
    * other note (RFC 166 §3).
@@ -790,6 +821,19 @@ data class CollegeCostProfile(
    * it applies ([PrecisionOffer.appliesTo]).
    */
   fun precisionOffersFor(college: CollegeCost): List<PrecisionOffer> = PrecisionOffer.entries.filter { it.appliesTo(moneyProfile, college) }
+
+  /**
+   * The distinct publishers behind the figures THIS answer carries (RFC 177 D5)
+   * -- derived, never stored, and the profile-level twin of
+   * [CollegeCost.moneySources].
+   *
+   * One home rather than a fold at each surface: "who published what this answer
+   * shows" is a fact about the profile, not a chore the chat payload and the
+   * report page each repeat -- and repeated, the two drifted apart on the empty
+   * case. Empty for an answer with no money figure on it, which is a page or a
+   * payload with no publisher to name.
+   */
+  val moneySources: List<MoneySource> get() = colleges.flatMap { it.moneySources }.distinct()
 }
 
 /**
@@ -1251,6 +1295,7 @@ class CollegeCostService(
       blendedAverageAcademicYear = served.blendedAverageVintage(band)?.label,
       residencyTiers = residencyTiersOf(served),
       figureStatuses = figureStatusesOf(served, published, band),
+      moneySources = served.servedSourcesOf(band),
       publishedNetPrice = published,
       medianDebtAtCompletionUsd = served.cohortOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, band = null)?.amountUsd,
       medianEarnings10yAfterEntryUsd =
@@ -1430,7 +1475,7 @@ class CollegeCostService(
           served.yearGapOf(field) != null ||
             // band = null: every component of an arrangement is a published
             // price, and no price address is band-selected.
-            statusOf(field, served, band = null)?.let(FigureStatusCopy::noTotalReasonOf) ==
+            statusOf(field, served, band = null)?.status?.let(FigureStatusCopy::noTotalReasonOf) ==
             NoTotalReason.PART_NOT_COLLECTED_BY_US
         }
     return if (ours) NoTotalReason.PART_NOT_COLLECTED_BY_US else NoTotalReason.PART_NOT_PUBLISHED
@@ -1452,7 +1497,11 @@ class CollegeCostService(
   ) {
     if (!CostBreakdown.publishedOnCampusContradictsFlag(served, offersOnCampusHousing)) return
     logger.warn(
-      "college=[{}] ipeds_unit_id=[{}] IPEDS offers_housing=false but the Scorecard publishes on-campus " +
+      // The two lines below name both publishers on purpose, and carry the
+      // exemption marker the D7 sweep reads: this is an OPERATOR log line about
+      // the IPEDS/Scorecard housing disagreement, not family-facing money copy.
+      "college=[{}] ipeds_unit_id=[{}] IPEDS offers_housing=false " + // money-attribution-exempt: operator log
+        "but the Scorecard publishes on-campus " + // money-attribution-exempt: operator log
         "figures [{}]; rendering the published on-campus arrangement and reporting the flag beside it",
       college.id.value,
       college.ipedsUnitId,
@@ -1879,13 +1928,20 @@ fun figureStatusesOf(
     // FIRST, because such a field has no row at the served year and would
     // otherwise fall out of every list this function walks.
     yearGapOf(field, served)?.let { return@mapNotNull it }
-    val status = statusOf(field, served, band) ?: return@mapNotNull null
+    val provenance = statusOf(field, served, band) ?: return@mapNotNull null
+    val status = provenance.status
     val shown = !isNotReported(field, served, computed)
     // A shown figure needs a note only when its status qualifies the number
     // itself -- an imputed figure is the publisher's estimate, and a family
     // reading it as the school's own would be reading it wrong.
     if (shown && status != FigureStatus.IMPUTED_BY_PUBLISHER) return@mapNotNull null
-    FigureStatusCopy.statementOf(status)?.let { FigureStatusNote(field, status, it) }
+    // The two-argument form (RFC 177 D3): where the sentence is about the
+    // PUBLISHER's own act it names the publisher that actually published this
+    // cell, instead of the agentless "the publisher" every surface used to
+    // resolve by hand to one guessed name.
+    FigureStatusCopy
+      .statementOf(status, provenance.source)
+      ?.let { FigureStatusNote(field, status, it, provenance.source) }
   }
 }
 
@@ -1909,6 +1965,10 @@ private fun yearGapOf(
     field = field,
     status = FigureStatusCopy.YEAR_GAP_STATUS,
     statement = FigureStatusCopy.yearGapStatementOf(servedYear, held.academicYear.label),
+    // The publisher of the row we DO hold. The sentence is ours and names
+    // nobody -- the gap is ours -- but the fact of who published the figure we
+    // are not showing is still data about it (RFC 177 D4).
+    source = held.source,
     // The two years travel as DATA as well as inside the sentence: they are the
     // fact that distinguishes this case from a cell we have never collected,
     // and a consumer that can only reach them by parsing our English cannot
@@ -1934,7 +1994,7 @@ private fun statusOf(
   field: CostField,
   served: ServedFigures,
   band: IncomeBand?,
-): FigureStatus? = served.statusOf(field, band)
+): FigureProvenance? = served.statusOf(field, band)
 
 /**
  * Whether this field's blank is the SCHOOL's own silence, and so nameable in
@@ -1949,7 +2009,7 @@ private fun isSchoolsOwnSilence(
   served: ServedFigures,
   band: IncomeBand?,
 ): Boolean {
-  val status = statusOf(field, served, band) ?: return true
+  val status = statusOf(field, served, band)?.status ?: return true
   return FigureStatusCopy.isSchoolsOwnSilence(status)
 }
 

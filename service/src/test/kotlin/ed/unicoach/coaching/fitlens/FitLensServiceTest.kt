@@ -1228,7 +1228,8 @@ class FitLensServiceTest {
       assertTrue(
         call2Text.contains(
           "netPriceStatus=[suppressed_by_publisher] " +
-            "netPriceNote=[This figure is withheld by the publisher for privacy.]",
+            "netPriceNote=[The U.S. Department of Education College Scorecard withholds this figure to protect " +
+            "students' privacy.]",
         ),
         "a suppressed figure must ride as a status CODE with its sentence beside it, message=[$call2Text]",
       )

@@ -28,6 +28,7 @@ import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
@@ -205,7 +206,15 @@ class CollegeCostServiceTest {
 
     val suppressed = assertNotNull(byField[CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD])
     assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, suppressed.status)
-    assertEquals("This figure is withheld by the publisher for privacy.", suppressed.statement)
+    // The PUBLISHER is named, because the suppression is the publisher's own act
+    // (RFC 177 D3). This college's price rows are IPEDS IC_AY, so "the
+    // publisher" is that survey and the sentence says which.
+    assertEquals(MoneySource.IPEDS_IC_AY, suppressed.source)
+    assertEquals(
+      "The U.S. Department of Education's IPEDS survey of college costs withholds this figure to protect " +
+        "students' privacy.",
+      suppressed.statement,
+    )
     assertFalse(
       CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD in cost.notReported,
       "the PUBLISHER's suppression is not the school's silence, so `data_availability` may not claim it",
@@ -245,7 +254,15 @@ class CollegeCostServiceTest {
         "the store holds the reason, and the payload must carry it: [${cost.figureStatuses}]",
       )
     assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, note.status)
-    assertEquals("This figure is withheld by the publisher for privacy.", note.statement)
+    // The net price is a COHORT row and this one is the Scorecard's, so the
+    // sentence names the Scorecard where the price rows above name IPEDS -- one
+    // college, two publishers, which is exactly what a single hand-typed
+    // attribution could not say (RFC 177).
+    assertEquals(MoneySource.SCORECARD, note.source)
+    assertEquals(
+      "The U.S. Department of Education College Scorecard withholds this figure to protect students' privacy.",
+      note.statement,
+    )
     assertFalse(
       CostField.NET_PRICE in cost.notReported,
       "the publisher's suppression may not be published as the school's silence: [${cost.notReported}]",
@@ -301,9 +318,10 @@ class CollegeCostServiceTest {
     assertFalse(CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD in cost.notReported)
     val note = assertNotNull(cost.figureStatuses.singleOrNull { it.field == CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD })
     assertEquals(
-      "This is the publisher's own estimate for this school, not a figure the school reported.",
+      "The U.S. Department of Education's IPEDS survey of college costs estimated this for the school; the " +
+        "school did not report it.",
       note.statement,
-      "an imputed figure is still a figure -- shown, with the sentence that says whose estimate it is",
+      "an imputed figure is still a figure -- shown, with the sentence that says WHICH publisher's estimate it is",
     )
   }
 
@@ -1332,7 +1350,11 @@ class CollegeCostServiceTest {
     // 1. The publisher's sentence is spoken, and it is NOT a year-gap note.
     val suppressed = assertNotNull(byField[CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD])
     assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, suppressed.status)
-    assertEquals("This figure is withheld by the publisher for privacy.", suppressed.statement)
+    assertEquals(
+      "The U.S. Department of Education's IPEDS survey of college costs withholds this figure to protect " +
+        "students' privacy.",
+      suppressed.statement,
+    )
     assertFalse(suppressed.isYearGap, "we hold no figure for that year either, so there is no gap of ours to name")
     assertNull(suppressed.heldAcademicYear)
     assertFalse(

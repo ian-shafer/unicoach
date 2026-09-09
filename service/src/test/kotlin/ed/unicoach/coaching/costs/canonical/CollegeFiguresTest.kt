@@ -435,7 +435,10 @@ class CollegeFiguresTest {
           reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
         ),
       )
-    assertEquals(FigureStatus.SUPPRESSED_BY_PUBLISHER, figures.statusOf(CostField.NET_PRICE, AcademicYear(2023), band = null))
+    assertEquals(
+      FigureStatus.SUPPRESSED_BY_PUBLISHER,
+      figures.statusOf(CostField.NET_PRICE, AcademicYear(2023), band = null)?.status,
+    )
     assertNull(
       figures.figureOf(CostField.NET_PRICE, AcademicYear(2023)),
       "the price door still answers nothing for a cohort figure -- a statistic takes no published-price year",
@@ -529,7 +532,7 @@ class CollegeFiguresTest {
         )
         assertEquals(
           absence.status,
-          figures.statusOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, year, band = null),
+          figures.statusOf(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, year, band = null)?.status,
           "and the row's own status is what the field says instead: [${absence.status.value}]",
         )
       }
@@ -601,7 +604,7 @@ class CollegeFiguresTest {
   @Test
   fun `every status but reported ships with words`() {
     FigureStatus.entries.forEach { status ->
-      val statement = FigureStatusCopy.statementOf(status)
+      val statement = FigureStatusCopy.agentlessStatementOf(status)
       if (status == FigureStatus.REPORTED) {
         assertNull(statement, "a plainly reported figure is shown plainly")
       } else {
@@ -641,7 +644,7 @@ class CollegeFiguresTest {
     assertEquals(0, fees.amountUsd)
     assertEquals(
       "This is the publisher's own estimate for this school, not a figure the school reported.",
-      FigureStatusCopy.statementOf(fees.status),
+      FigureStatusCopy.agentlessStatementOf(fees.status),
     )
   }
 

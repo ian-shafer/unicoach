@@ -14,6 +14,7 @@ import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.PriceFigure
 import ed.unicoach.db.models.ResidencyBasis
@@ -301,6 +302,20 @@ val CostField.figureGroup: FigureGroup?
 data class DatedFigure(
   val academicYear: AcademicYear,
   val reading: FigureReading<Int>,
+  /**
+   * The publisher whose row won this cell (RFC 177).
+   *
+   * NON-NULL, because a [DatedFigure] IS a row: `price_figures.source` is a
+   * required column and `PriceFigure.source` is non-null, so a figure with no
+   * publisher is not a state this surface can be in. "No publisher" is the
+   * ABSENCE of a figure -- no [DatedFigure] at all -- never one carrying a null.
+   *
+   * It rides on the figure because it was dropped here: this index used to keep
+   * only the reading, so nothing above the domain layer could know whether a
+   * price came from IPEDS or from the Scorecard, and every surface that wanted
+   * to say it typed one publisher's name by hand.
+   */
+  val source: MoneySource,
 ) {
   /** The dollars, or null when the reading bears no value. */
   val amountUsd: Int? get() = (reading as? FigureReading.Present)?.value
@@ -327,11 +342,31 @@ data class DatedStat(
   val vintage: AcademicYear?,
   val residencyScope: CohortResidencyScope,
   val reading: FigureReading<Int>,
+  /** The publisher whose row won this cell (RFC 177) -- the cohort twin of [DatedFigure.source], and non-null for the same reason. */
+  val source: MoneySource,
 ) {
   val amountUsd: Int? get() = (reading as? FigureReading.Present)?.value
 
   val status: FigureStatus get() = reading.status
 }
+
+/**
+ * One figure's canonical STATUS and the publisher it came from, travelling
+ * together (RFC 177).
+ *
+ * A pair rather than a widened return tuple at eight call sites: the status is
+ * the reason beside a blank and the source is who owes us that reason, and a
+ * caller that reads one without the other is exactly how a Scorecard name ended
+ * up beside an IPEDS figure.
+ *
+ * Both fields come off ONE row, so [source] is non-null: where no row answers --
+ * the assumed at-home line, or a cell no publisher ever wrote -- [statusOf]
+ * returns no provenance at all rather than a provenance with nothing in it.
+ */
+data class FigureProvenance(
+  val status: FigureStatus,
+  val source: MoneySource,
+)
 
 /**
  * The resolved canonical figure set for ONE college -- the type that replaces
@@ -365,10 +400,15 @@ class CollegeFigures(
    * this object about a field once per field per arrangement per college, and
    * a college carries ~48 price rows.
    */
-  private val pricesByAddress: Map<PriceAddress, Map<AcademicYear, FigureReading<Int>>> =
+  private val pricesByAddress: Map<PriceAddress, Map<AcademicYear, DatedFigure>> =
     priceFigures
       .groupBy { PriceAddress(it.priceConcept, it.residencyBasis, it.arrangement) }
-      .mapValues { (_, rows) -> rows.associate { it.academicYear to it.reading } }
+      // The whole served figure, not the bare reading: the row's own
+      // [PriceFigure.source] is the publisher that won this cell, and keeping
+      // only the reading here is where it used to die (RFC 177).
+      .mapValues { (_, rows) ->
+        rows.associate { it.academicYear to DatedFigure(it.academicYear, it.reading, it.source) }
+      }
 
   /**
    * The cohort rows, keyed by their FULL canonical address -- measure,
@@ -427,6 +467,9 @@ class CollegeFigures(
           vintage = vintage,
           residencyScope = row.residencyScope,
           reading = row.reading.toWholeDollars(),
+          // The winning row is in hand on this line, and its publisher used to
+          // be dropped from it (RFC 177).
+          source = row.source,
         )
       }
 
@@ -546,7 +589,7 @@ class CollegeFigures(
     field: CostField,
     year: AcademicYear?,
     band: IncomeBand?,
-  ): FigureStatus? =
+  ): FigureProvenance? =
     when (val address = field.figureAddress) {
       // The row at the served year answers; when this college has none, a
       // VALUE-FREE row at another year still does. That row is not a year gap
@@ -555,11 +598,76 @@ class CollegeFigures(
       // a publisher's suppression one year over would be spoken as this
       // school's own silence. A VALUE-BEARING row at another year is left to
       // [yearGapOf], so exactly one door speaks for each.
-      is FigureAddress.Price -> priceAt(address.address, year)?.status ?: latestValuelessPriceOf(field)?.status
+      is FigureAddress.Price -> {
+        (priceAt(address.address, year) ?: latestValuelessPriceOf(field))
+          ?.let { FigureProvenance(it.status, it.source) }
+      }
 
-      is FigureAddress.Cohort -> cohortOf(address.address, selectedBandOf(address.address, band))?.status
+      is FigureAddress.Cohort -> {
+        cohortOf(address.address, selectedBandOf(address.address, band))
+          ?.let { FigureProvenance(it.status, it.source) }
+      }
 
-      FigureAddress.AssumedByUnicoach -> null
+      FigureAddress.AssumedByUnicoach -> {
+        null
+      }
+    }
+
+  /**
+   * The distinct publishers behind the figures this college SERVES at [year] and
+   * [band] -- what a page or a payload may honestly name as its sources (RFC 177
+   * D5).
+   *
+   * VALUE-BEARING ONLY. A publisher enters this list when a figure of its own,
+   * with a number in it, is shown at the served year and band -- never because a
+   * row of its exists. A suppressed, not-applicable or not-reported cell is a
+   * row and not a figure, and a value-free row at ANOTHER year ([statusOf]'s
+   * fall-through) is not even at this year: naming its publisher would tell a
+   * family "the cost, price and federal debt figures come from X" about an X
+   * that published no figure they can see, which is the false attribution this
+   * whole seam exists to delete, one size smaller. Such a row still speaks in
+   * its OWN sentence, through [statusOf] -- that sentence names the publisher of
+   * that cell, and is right to.
+   *
+   * It walks the same closed set of addresses the surfaces render, so a college
+   * with no IPEDS figure on it never names IPEDS. Never a fold over every row
+   * the store carries.
+   */
+  fun servedSourcesOf(
+    year: AcademicYear?,
+    band: IncomeBand?,
+  ): List<MoneySource> =
+    CostField.entries
+      .mapNotNull { servedPublisherOf(it, year, band) }
+      .distinct()
+
+  /**
+   * The publisher of this field's SHOWN figure at [year] and [band], or null
+   * where no figure with a number in it is shown.
+   *
+   * Dispatched on the sealed [FigureAddress] with no `else`, exactly as
+   * [statusOf] and [cohortOf] are: a fourth address must decide whether it
+   * serves a figure before it compiles. The price arm reads the row at the
+   * SERVED year only -- a value-bearing row at another year is a year gap, which
+   * this answer deliberately does not show ([yearGapOf]).
+   */
+  private fun servedPublisherOf(
+    field: CostField,
+    year: AcademicYear?,
+    band: IncomeBand?,
+  ): MoneySource? =
+    when (val address = field.figureAddress) {
+      is FigureAddress.Price -> {
+        priceAt(address.address, year)?.takeIf { it.amountUsd != null }?.source
+      }
+
+      is FigureAddress.Cohort -> {
+        cohortOf(address.address, selectedBandOf(address.address, band))?.takeIf { it.amountUsd != null }?.source
+      }
+
+      FigureAddress.AssumedByUnicoach -> {
+        null
+      }
     }
 
   /** This field's price row at [year] specifically, or null when this college has none. */
@@ -568,8 +676,7 @@ class CollegeFigures(
     year: AcademicYear?,
   ): DatedFigure? {
     if (year == null) return null
-    val reading = pricesByAddress[address]?.get(year) ?: return null
-    return DatedFigure(year, reading)
+    return pricesByAddress[address]?.get(year)
   }
 
   /**
@@ -619,7 +726,7 @@ class CollegeFigures(
     val address = (field.figureAddress as? FigureAddress.Price)?.address ?: return null
     val byYear = pricesByAddress[address] ?: return null
     val year = byYear.keys.maxOrNull() ?: return null
-    return DatedFigure(year, byYear.getValue(year))
+    return byYear.getValue(year)
   }
 
   /**

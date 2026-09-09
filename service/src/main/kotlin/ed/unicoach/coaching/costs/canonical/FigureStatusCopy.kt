@@ -2,6 +2,7 @@ package ed.unicoach.coaching.costs.canonical
 
 import ed.unicoach.coaching.costs.NoTotalReason
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.MoneySource
 
 /**
  * WHOSE gap a missing figure is (RFC 166 §6) -- the OURS/THEIRS split RFC 149
@@ -40,11 +41,19 @@ enum class FigureGapOwner {
  */
 object FigureStatusCopy {
   /**
-   * What a family is told about a figure with this status, or null for
-   * [FigureStatus.REPORTED] -- a plainly reported figure is shown plainly and
-   * needs no sentence beside it.
+   * What a family is told about a figure with this status when NO publisher is
+   * in hand, or null for [FigureStatus.REPORTED] -- a plainly reported figure is
+   * shown plainly and needs no sentence beside it.
+   *
+   * AGENTLESS by name (RFC 177), not by arity. These six sentences say "the
+   * publisher" and name nobody, which is the hedge this seam exists to remove,
+   * so a caller that HOLDS a [MoneySource] must not be able to reach them by
+   * dropping an argument: the two forms used to differ only in how many
+   * arguments were typed, and the agentless one compiled, formatted and passed
+   * everywhere the naming one was meant. Only a caller with genuinely no
+   * publisher -- no row answers for the cell -- says this.
    */
-  fun statementOf(status: FigureStatus): String? =
+  fun agentlessStatementOf(status: FigureStatus): String? =
     when (status) {
       FigureStatus.REPORTED -> {
         null
@@ -68,6 +77,75 @@ object FigureStatusCopy {
 
       FigureStatus.NOT_COLLECTED_BY_US -> {
         "We have not collected this figure yet."
+      }
+    }
+
+  /**
+   * What a family is told about a figure with this status, naming the publisher
+   * that actually published it where the sentence is about the PUBLISHER's own
+   * act (RFC 177 D3).
+   *
+   * A second function rather than a widened one, and
+   * [agentlessStatementOf] is byte-frozen (D2): `SystemPromptCatalogTest`
+   * asserts that the IMMUTABLE v19 prompt row recites the shipping sentence for
+   * every status, so rewording the six would fail against a row no new seed can
+   * fix.
+   *
+   * Three arms name the publisher and three deliberately do not. The rule is
+   * [ownerOf]: a sentence about what the PUBLISHER did says which publisher did
+   * it, and a sentence about the SCHOOL's silence or about OUR own gap does not
+   * -- naming a publisher there would hand our gap, or the school's, to somebody
+   * who never had it. Those three arms delegate to [agentlessStatementOf], which
+   * is what they say and where they say it from.
+   *
+   * [source] is NON-NULL: every canonical money row carries its publisher
+   * (`PriceFigure.source`, `CohortMoneyStat.source`), so a figure this function
+   * speaks for always has one. Where no row answers at all there is no figure
+   * and no provenance -- the caller holds nothing and says
+   * [agentlessStatementOf] instead.
+   */
+  fun statementOf(
+    status: FigureStatus,
+    source: MoneySource,
+  ): String? =
+    when (status) {
+      // The arm that is null agentless. A plainly reported figure needs no
+      // qualification, but WHO published it is a fact about it that a family
+      // could not learn anywhere else on the surface.
+      FigureStatus.REPORTED -> {
+        "This figure comes from ${MoneySourceCopy.labelOf(source)}."
+      }
+
+      // The publisher's own act, so the publisher is named: "the publisher"
+      // estimated nothing -- IPEDS did, or the Scorecard did.
+      FigureStatus.IMPUTED_BY_PUBLISHER -> {
+        "${MoneySourceCopy.openingLabelOf(source)} estimated this for the school; the school did not report it."
+      }
+
+      // The publisher's own act again, and the one a family most often reads as
+      // the school hiding something.
+      FigureStatus.SUPPRESSED_BY_PUBLISHER -> {
+        "${MoneySourceCopy.openingLabelOf(source)} withholds this figure to protect students' privacy."
+      }
+
+      // The SCHOOL's silence. The publisher published faithfully what it was
+      // given, and naming it here would read as the publisher's failure.
+      FigureStatus.NOT_REPORTED_BY_INSTITUTION -> {
+        agentlessStatementOf(status)
+      }
+
+      // The school's answer, relayed. "the source says so" is already the
+      // publisher, agentlessly, and the fact is that the cell does not apply --
+      // not that any publisher decided anything.
+      FigureStatus.NOT_APPLICABLE -> {
+        agentlessStatementOf(status)
+      }
+
+      // OURS, and the gap is not the publisher's doing even though one is in
+      // hand -- naming it would misattribute our own gap, which is the lie this
+      // whole seam exists to remove.
+      FigureStatus.NOT_COLLECTED_BY_US -> {
+        agentlessStatementOf(status)
       }
     }
 

@@ -14,6 +14,7 @@ import ed.unicoach.coaching.costs.CostsTestDb.declineBand
 import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AbsenceStatus
@@ -24,6 +25,7 @@ import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.LoanType
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ResidencyTierBasis
@@ -283,7 +285,21 @@ class CollegeCostChatToolTest {
     assertEquals("college_cost_profile", tool.name)
     assertEquals("college_cost_profile", tool.definition["name"]!!.jsonPrimitive.content)
     val description = tool.definition["description"]!!.jsonPrimitive.content
-    assertTrue(description.contains("College Scorecard"), "the source must be named")
+    // NO publisher is named here any more (RFC 177). The description used to
+    // tell the model to attribute every figure to the College Scorecard, while
+    // the loader ranks both IPEDS surveys above it -- so the instruction was
+    // wrong for most figures. It now points at the payload's own key.
+    assertTrue(
+      description.contains(CollegeCostChatTool.SOURCE_KEY),
+      "the description must send the model to the key that names this payload's own publishers: [$description]",
+    )
+    MoneySource.entries.forEach { source ->
+      assertFalse(
+        description.contains(MoneySourceCopy.labelOf(source)),
+        "the description may name no publisher: [${source.value}]",
+      )
+    }
+    assertFalse(description.contains("College Scorecard"), "the hand-typed attribution is gone: [$description]")
     assertTrue(description.contains("never estimate"), "the no-invented-numbers rule must ride the description")
     assertTrue(description.contains("never re-raise"), "the decline etiquette must ride the description")
     assertTrue(description.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
@@ -573,7 +589,10 @@ class CollegeCostChatToolTest {
     val profile = result.getValue("money_profile").jsonObject
     assertEquals("unanswered", profile["income_band_status"]!!.jsonPrimitive.content)
     assertEquals("unanswered", profile["residency_status"]!!.jsonPrimitive.content)
-    assertEquals("U.S. Department of Education College Scorecard", result.getValue("source").jsonPrimitive.content)
+    // An EMPTY read names no publisher (RFC 177): absent, never empty, exactly
+    // like every other key here. The constant this replaced attributed a result
+    // that carried no figure at all to the College Scorecard.
+    assertNull(result[CollegeCostChatTool.SOURCE_KEY], "no figure, no publisher to name")
     assertNull(result["unknown_college_ids"], "no filter, no unknowns")
   }
 
@@ -2025,8 +2044,15 @@ class CollegeCostChatToolTest {
 
     // The payload attribution stops claiming an ingest year (RFC 149 D-E):
     // updated_at was WHEN WE LOADED THE FILE, never the year of the figures.
-    val source = payload.getValue("source").jsonPrimitive.content
-    assertEquals(CollegeCostChatTool.SOURCE_ATTRIBUTION, source)
+    val source = payload.getValue(CollegeCostChatTool.SOURCE_KEY).jsonPrimitive.content
+    // DERIVED from the rows that won, never a constant (RFC 177). This fixture's
+    // price rows are IPEDS IC_AY and its blended rows are the Scorecard, so the
+    // payload names BOTH -- where the constant this replaced named only the
+    // Scorecard, for figures IPEDS published.
+    assertEquals(
+      "${MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)} and ${MoneySourceCopy.labelOf(MoneySource.SCORECARD)}",
+      source,
+    )
     assertFalse(source.contains("ingested"), "the ingest year was never a vintage: [$source]")
   }
 
@@ -2380,6 +2406,54 @@ class CollegeCostChatToolTest {
     )
   }
 
+  /**
+   * THE LIVE DEFECT, pinned on the chat payload (RFC 177).
+   *
+   * `CanonicalMoneyLoader.ORDERED_SOURCES` ranks IPEDS SFA and IPEDS IC_AY ABOVE
+   * the Scorecard, so a price cell IPEDS published wins. This payload attributed
+   * every figure in it to the College Scorecard, from one hand-typed constant --
+   * a false statement about a named publisher, and one no test could see,
+   * because the constant only ever agreed with itself.
+   *
+   * Both halves are asserted: the payload-level attribution names the publisher
+   * whose rows won, and the sentence beside an IPEDS figure names IPEDS. Fails
+   * on the code as it stood before this slice.
+   */
+  @Test
+  fun `a figure IPEDS published is never attributed to the College Scorecard`() {
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "IPEDS Priced U")
+    // A cell the PUBLISHER suppressed, on the IPEDS side: the one status whose
+    // sentence is about the publisher's own act and so must name it.
+    CostsTestDb.seedPriceFigure(
+      collegeId = collegeId,
+      field = CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD,
+      reading = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+      source = MoneySource.IPEDS_IC_AY,
+    )
+
+    val result = execute(student)
+    val source = result.getValue(CollegeCostChatTool.SOURCE_KEY).jsonPrimitive.content
+
+    assertTrue(
+      source.contains(MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)),
+      "the publisher whose price rows won must be named: [$source]",
+    )
+    val statuses = figureStatusesOf(collegesOf(result).single())
+    val entry = assertNotNull(statuses[CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD.wireName], "[$statuses]")
+    val statement = statementOf(entry)
+    assertEquals(
+      "The U.S. Department of Education's IPEDS survey of college costs withholds this figure to protect " +
+        "students' privacy.",
+      statement,
+      "an IPEDS suppression is IPEDS', said by name",
+    )
+    assertFalse(
+      statement.contains("College Scorecard"),
+      "a figure IPEDS published may never be attributed to the Scorecard: [$statement]",
+    )
+  }
+
   @Test
   fun `the six figure statuses are spoken, and only the school's own silence joins data_availability`() {
     // One fixture, one cell per status. The cells chosen are the ones the
@@ -2430,11 +2504,17 @@ class CollegeCostChatToolTest {
         CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD.wireName to FigureStatus.NOT_APPLICABLE,
         CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD.wireName to FigureStatus.NOT_REPORTED_BY_INSTITUTION,
       )
+    // Every field here is a PRICE field, and this fixture's price rows are
+    // IPEDS IC_AY -- so the sentence the wire carries is the DERIVED one, which
+    // names that survey wherever the status is about the publisher's own act
+    // (RFC 177 D3). Stated as the source rather than as five literals: the
+    // sentence is still the domain's own and is still never re-worded here.
+    val source = MoneySource.IPEDS_IC_AY
     expected.forEach { (field, status) ->
       val entry = assertNotNull(statuses[field], "[$field] must say why it has no number: [$statuses]")
       assertEquals(status.value, entry.getValue("status").jsonPrimitive.content, "[$field]")
       assertEquals(
-        FigureStatusCopy.statementOf(status),
+        FigureStatusCopy.statementOf(status, source),
         statementOf(entry),
         "the sentence is the domain's own, never re-worded on the wire: [$field]",
       )

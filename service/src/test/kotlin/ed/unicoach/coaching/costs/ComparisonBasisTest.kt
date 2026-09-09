@@ -144,6 +144,9 @@ class ComparisonBasisTest {
       blendedAverageAcademicYear = null,
       residencyTiers = ResidencyTierBasis.SINGLE_PUBLISHED_PRICE,
       figureStatuses = emptyList(),
+      // This fixture is about the ASSEMBLY of a comparison basis, which reads no
+      // figure and so names no publisher (RFC 177).
+      moneySources = emptyList(),
       publishedNetPrice = NetPrice.OverallAverage(null),
       medianDebtAtCompletionUsd = null,
       medianEarnings10yAfterEntryUsd = null,

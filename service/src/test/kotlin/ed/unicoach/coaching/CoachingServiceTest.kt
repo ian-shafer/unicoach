@@ -2196,6 +2196,11 @@ class CoachingServiceTest {
           .toString()
       assertTrue(toolResult.contains("count"), "got $toolResult")
       assertTrue(toolResult.contains("income_band_status"), "the money-profile block must ride the result")
-      assertTrue(toolResult.contains("College Scorecard"), "the attribution must ride the result")
+      // NO attribution rides an EMPTY read (RFC 177): the payload names the
+      // publishers of its OWN figures, and a student with no school on their
+      // list has none. The constant this replaced named the College Scorecard
+      // here, over a result carrying no figure at all.
+      assertFalse(toolResult.contains("College Scorecard"), "an empty read attributes nothing: [$toolResult]")
+      assertFalse(toolResult.contains("\"source\""), "absent, never empty -- this payload's convention: [$toolResult]")
     }
 }

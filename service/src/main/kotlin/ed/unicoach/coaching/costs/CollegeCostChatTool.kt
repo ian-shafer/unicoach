@@ -6,6 +6,7 @@ import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.canonical.FigureGapOwner
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.coaching.putCollegeIdsSchema
 import ed.unicoach.db.models.FigureStatus
@@ -86,7 +87,10 @@ class CollegeCostChatTool(
       // two or more colleges -- an absent key, never an empty object, so its
       // mere presence tells the model a side-by-side is being made.
       profile.comparisonBasis?.let { put(COMPARISON_BASIS_KEY, comparisonBasisObject(it)) }
-      put("source", SOURCE_ATTRIBUTION)
+      // ABSENT, never empty, exactly like every other key here: a payload with
+      // no money figure on it has no publisher to name, and the constant this
+      // replaced named one anyway (RFC 177).
+      MoneySourceCopy.spokenListOf(profile.moneySources)?.let { put(SOURCE_KEY, it) }
     }
 
   /**
@@ -744,6 +748,11 @@ class CollegeCostChatTool(
       put("field", note.field.wireName)
       put("status", note.status.value)
       put(STATEMENT_KEY, note.statement)
+      // The publisher whose row won this cell, as a CODE beside the sentence
+      // (RFC 177 D4). `imputed_by_publisher` and `suppressed_by_publisher` are
+      // acts of a publisher, so a reader that needs to know which one acted must
+      // not have to re-parse [STATEMENT_KEY]'s English to find out.
+      put(FIGURE_SOURCE_KEY, note.source.value)
       // A YEAR GAP: this school DID publish the figure, at a year that is not
       // the one its price is quoted at. Absent on every other note, so its
       // PRESENCE is the fact -- `status` cannot carry it, because a year gap and
@@ -1202,18 +1211,22 @@ class CollegeCostChatTool(
     const val TOOL_NAME = "college_cost_profile"
 
     /**
-     * The attribution the coach must quote when using these numbers — unchanged
-     * on the wire, and now a delegating alias for [CostSources], which is where
-     * the fact actually lives. A parent-facing page cites the same source and
-     * must not couple to this chat boundary to do it.
+     * The wire key naming the publishers this answer's own figures came from
+     * (RFC 177).
+     *
+     * It used to be a CONSTANT -- one hand-typed publisher's name for every
+     * figure in every payload, which the loader's own precedence order
+     * contradicted for most of them. It is now derived from the rows that
+     * actually won ([CollegeCost.moneySources]), so the payload cannot name a
+     * publisher whose figure it does not carry.
      *
      * It names the source and nothing else (RFC 149 D-E). It used to append
      * "(data ingested 2026)", which was `colleges.updated_at` -- WHEN WE LOADED
      * THE FILE, not the year of the figures -- and the coach read it aloud as a
-     * vintage. The real vintage now rides per college, beside the figures it
+     * vintage. The real vintage rides per college, beside the figures it
      * governs, as a per-college academic-year label grouped by [FigureGroup].
      */
-    const val SOURCE_ATTRIBUTION = CostSources.SCORECARD_ATTRIBUTION
+    const val SOURCE_KEY = "source"
 
     /** The wire key carrying the per-arrangement price split (RFC 149). */
     const val BREAKDOWN_KEY = "cost_by_living_arrangement"
@@ -1280,6 +1293,23 @@ class CollegeCostChatTool(
      * place for it to be wrong.
      */
     const val HELD_ACADEMIC_YEAR_KEY = "held_academic_year"
+
+    /**
+     * WHOSE row this figure's status came from -- the publisher's own code
+     * ([MoneySource.value]), inside a [FIGURE_STATUSES_KEY] entry (RFC 177 D4).
+     *
+     * The code beside the sentence, the `income_band` + `income_band_label`
+     * convention this payload has followed since RFC 151 D-D. Two of the six
+     * statuses are the PUBLISHER's own act -- it estimated the figure, or it
+     * withheld it -- so which publisher acted is the fact of the entry, and
+     * without this key a reader could recover it only by parsing the English in
+     * [STATEMENT_KEY].
+     *
+     * Note the top-level source phrase stays PROSE and gains no parallel code
+     * array (D5): it is what the coach reads aloud, and one figure's publisher
+     * is a different question from the page's source list.
+     */
+    const val FIGURE_SOURCE_KEY = "source"
 
     /** The wire names one vintage dates, so no reader infers membership from a naming convention. */
     const val DATED_FIGURES_KEY = "figures"
@@ -1642,8 +1672,9 @@ class CollegeCostChatTool(
     val DESCRIPTION =
       "Read the real cost facts for the colleges on the student's list: sticker cost, tuition, " +
         "the net price their family would actually pay, median debt and median earnings. " +
-        "Data comes from the U.S. Department of Education College Scorecard - always attribute figures " +
-        "to it, and when a field appears in $DATA_AVAILABILITY_KEY there is no number for it in this result: " +
+        "Every result names the publishers its own figures came from in \"$SOURCE_KEY\" - attribute figures " +
+        "to the source this payload names, never to one you assume, and when a field appears in " +
+        "$DATA_AVAILABILITY_KEY there is no number for it in this result: " +
         "say so plainly, never estimate. That happens for one of two reasons, and they are not the same fact - " +
         "either the college does not report the field, or it is a figure that does not describe this family and " +
         "was withheld, which a $WITHHELD_FIGURES_KEY entry names and explains. Never say a school reported " +
@@ -1691,7 +1722,7 @@ class CollegeCostChatTool(
         "money_profile.living_plan_status the authority on whether to raise the living plan: " +
         "declined means the student said no - never re-raise it yourself; answered means the field is already on file. " +
         "A college result may also carry ${MeritAidWire.KEY}, from that school's own Common Data Set and cited " +
-        "separately from the Scorecard figures: ${MeritAidWire.SHARE_KEY} is a share of ALL full-time freshmen " +
+        "separately from the cost figures: ${MeritAidWire.SHARE_KEY} is a share of ALL full-time freshmen " +
         "at that school - never a share of the students with no financial need, which no school reports - and " +
         "${MeritAidWire.AVERAGE_KEY} is what last year's recipients averaged, not an offer to this student, so " +
         "never subtract it from any price here. Its absence means only that this school does not report it. " +
@@ -1771,14 +1802,17 @@ class CollegeCostChatTool(
         "there. When the state the family lives in is not on file, both figures ARE shown: say what basis they " +
         "are on and never gate an answer on the question. Aid applies to the whole price and not to any one part of it, so never " +
         "subtract ${CostField.NET_PRICE.wireName} from tuition or from any of these components, or one from the " +
-        "other. When a college carries \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": false, IPEDS reports that school has no " +
+        "other. When a college carries \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": false, " +
+        "IPEDS reports that school has no " + // money-attribution-exempt: IPEDS housing flag, not a money figure
         "residence halls: say so, and do not treat the absent ${LivingArrangement.ON_CAMPUS.value} arrangement as " +
         "unreported data. If that college nevertheless carries an ${LivingArrangement.ON_CAMPUS.value} " +
         "arrangement, the school published those figures itself and the two sources disagree: quote the published " +
         "figures and say the school reports no on-campus housing, never one fact without the other. " +
-        "\"$OFFERS_ON_CAMPUS_HOUSING_KEY\": true means IPEDS reports the school does have on-campus housing, so a " +
+        "\"$OFFERS_ON_CAMPUS_HOUSING_KEY\": true means " +
+        "IPEDS reports the school does have on-campus housing, so a " + // money-attribution-exempt: the same flag
         "missing ${LivingArrangement.ON_CAMPUS.value} arrangement there is unreported cost data rather than the " +
-        "absence of dorms. When the key is absent altogether IPEDS does not say either way - never read a present or " +
+        "absence of dorms. When the key is absent altogether " +
+        "IPEDS does not say either way - never read a present or " + // money-attribution-exempt: the same flag, absent
         "missing ${LivingArrangement.ON_CAMPUS.value} arrangement as the answer. " +
         "A college result may also carry $CHOSEN_ARRANGEMENT_KEY: the one way of living the family has said " +
         "they plan on at this school. Lead with it, name it in the student's own words from its " +

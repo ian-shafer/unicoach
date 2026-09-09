@@ -240,6 +240,16 @@ fun costFixture(
    * point of it -- and the served year holds no row for the field at all.
    */
   heldOnlyInOtherYear: Map<CostField, Int> = emptyMap(),
+  /**
+   * The publisher whose rows won this school's PRICE cells (RFC 177).
+   *
+   * A parameter because it is the whole point of the seam: the loader ranks the
+   * two IPEDS surveys above the Scorecard, so most real price rows are IPEDS,
+   * and the page used to cite the Scorecard for every one of them. The cohort
+   * rows stay the Scorecard's, because that is where the blended averages
+   * really come from -- one school with two publishers is the ordinary case.
+   */
+  priceSource: MoneySource = MoneySource.SCORECARD,
 ): CollegeCost {
   val collegeId = CollegeId(UUID.randomUUID())
   val figures =
@@ -260,7 +270,7 @@ fun costFixture(
           // what makes it a gap rather than a silence -- so it keeps only its
           // row at the other year.
           .filterNot { (field, _) -> field in heldOnlyInOtherYear }
-          .mapNotNull { (field, amountUsd) -> priceRow(collegeId, field, amountUsd, absenceStatuses) } +
+          .mapNotNull { (field, amountUsd) -> priceRow(collegeId, field, amountUsd, absenceStatuses, source = priceSource) } +
           heldOnlyInOtherYear.mapNotNull { (field, amountUsd) -> yearGapRow(collegeId, field, amountUsd) },
       cohortStats = cohortRows(collegeId, control, publishedPrice, netPrice, medianDebt, absenceStatuses),
     )
@@ -291,6 +301,11 @@ fun costFixture(
     blendedAverageAcademicYear = served.blendedAverageVintage(band = null)?.label,
     residencyTiers = residencyTiersOf(served),
     figureStatuses = figureStatusesOf(served, netPrice, (netPrice as? NetPrice.BandSpecific)?.band),
+    // The SERVICE's own derivation, exactly like every line around it: the page
+    // names the publishers its own figures came from (RFC 177 D5), and a
+    // fixture that hand-listed them could not fail for naming a publisher the
+    // read never served.
+    moneySources = served.servedSourcesOf((netPrice as? NetPrice.BandSpecific)?.band),
     publishedNetPrice = netPrice,
     medianDebtAtCompletionUsd = medianDebt,
     medianEarnings10yAfterEntryUsd = null,
@@ -333,6 +348,7 @@ private fun priceRow(
   amountUsd: Int?,
   absenceStatuses: Map<CostField, AbsenceStatus> = emptyMap(),
   academicYear: AcademicYear = FIXTURE_PRICE_YEAR,
+  source: MoneySource = MoneySource.SCORECARD,
 ): PriceFigure? {
   val address = (field.figureAddress as? FigureAddress.Price)?.address ?: return null
   return PriceFigure(
@@ -342,7 +358,7 @@ private fun priceRow(
     arrangement = address.arrangement,
     academicYear = academicYear,
     reading = readingOf(amountUsd, absenceStatuses[field] ?: AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
-    source = MoneySource.SCORECARD,
+    source = source,
     sourceVariable = field.wireName,
     publisherFlag = null,
   )

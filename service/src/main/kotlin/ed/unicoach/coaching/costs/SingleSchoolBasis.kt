@@ -211,16 +211,3 @@ sealed interface MoneyBasis {
       }
   }
 }
-
-/**
- * Where the cost and price figures come from.
- *
- * A NEUTRAL home in the cost domain rather than a constant on one boundary
- * class: the chat tool and the parent-facing report page both cite this source,
- * and a page reaching into a chat tool for its attribution couples a family's
- * web page to the shape of the model's tool surface. The tool keeps a
- * delegating alias, so its own wire contract is unchanged.
- */
-object CostSources {
-  const val SCORECARD_ATTRIBUTION = "U.S. Department of Education College Scorecard"
-}

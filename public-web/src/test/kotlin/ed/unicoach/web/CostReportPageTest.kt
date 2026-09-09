@@ -11,6 +11,7 @@ import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AbsenceStatus
@@ -20,6 +21,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LoanType
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.web.render.NOT_REPORTED
 import io.ktor.client.request.get
@@ -336,13 +338,185 @@ class CostReportPageTest {
   fun `the page names its sources and says what it is not`() {
     val body = render(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
 
-    assertTrue(body.contains("U.S. Department of Education College Scorecard"), "missing the Scorecard attribution")
+    // DERIVED from the rows the page actually served (RFC 177 D5). These two
+    // fixtures publish Scorecard-sourced rows, so the Scorecard is what the page
+    // names -- and the IPEDS test below proves it is read off the data rather
+    // than typed.
+    assertTrue(
+      body.contains("The cost, price and federal debt figures come from ${MoneySourceCopy.labelOf(MoneySource.SCORECARD)}."),
+      "missing the derived cost attribution",
+    )
     assertTrue(body.contains("Common Data Set"), "missing the CDS attribution")
     assertTrue(body.contains("They are not an offer"), "the page must say these are not an offer")
     assertTrue(
       body.contains("Only a school's own financial aid offer is a price for this family"),
       "the page must say what a price actually is",
     )
+  }
+
+  /**
+   * THE LIVE DEFECT, pinned (RFC 177). `CanonicalMoneyLoader.ORDERED_SOURCES`
+   * ranks IPEDS SFA and IPEDS IC_AY above the Scorecard, so most price cells in
+   * production are IPEDS'. This page attributed every one of them to the College
+   * Scorecard, from a constant, and no test could see it because the constant
+   * agreed with itself.
+   *
+   * Fails on the code as it stood before this slice: the page's sentence was the
+   * Scorecard's name whatever the rows said.
+   */
+  @Test
+  fun `a school whose price rows are IPEDS is never attributed to the Scorecard`() {
+    val ipedsSchool =
+      costFixture(
+        name = "IPEDS Priced U",
+        control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+        tuitionInState = 12000,
+        tuitionOutOfState = 34000,
+        housingAndFoodOnCampus = 11000,
+        booksAndSupplies = 1200,
+        otherExpensesOnCampus = 2500,
+        priceSource = MoneySource.IPEDS_IC_AY,
+      )
+
+    val body = render(costProfile(listOf(ipedsSchool), answeredMoney()))
+
+    // Its PRICE rows are IPEDS', and this school publishes no blended figure at
+    // all -- it names no published price, no net price and no median debt -- so
+    // every Scorecard row it carries is value-free. D5 names the publisher of a
+    // figure a family can SEE, so IPEDS is the whole list here, exactly, and the
+    // Scorecard is correctly absent from it. The two-publisher sentence is
+    // pinned by the test below, on a school that really does show a Scorecard
+    // figure.
+    assertTrue(
+      body.contains(
+        "The cost, price and federal debt figures come from ${MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)}.",
+      ),
+      "the page must name the publisher whose rows actually won: [$body]",
+    )
+    assertFalse(
+      body.contains("The cost, price and federal debt figures come from ${MoneySourceCopy.labelOf(MoneySource.SCORECARD)}."),
+      "the sentence this slice deletes: every price figure attributed to the Scorecard, from a constant",
+    )
+    assertFalse(
+      body.contains("come from ${MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)} and ${MoneySourceCopy.labelOf(MoneySource.SCORECARD)}"),
+      "this school shows no Scorecard figure, so the Scorecard may not join the sentence",
+    )
+  }
+
+  /**
+   * The other half of the same rule (RFC 177 D5): two publishers, one sentence.
+   *
+   * This school is the ordinary shape of a real one -- its price cells are
+   * IPEDS', and it also shows a Scorecard figure with a number in it, the median
+   * federal debt at completion. Both publishers therefore published a figure on
+   * this page, so both are named, joined by "and" and ranked as
+   * `CanonicalMoneyLoader.ORDERED_SOURCES` ranks them: IPEDS before the
+   * Scorecard.
+   *
+   * Asserted on a rendered page rather than only in the projection's own unit
+   * tests, because the joiner and the order are what a parent reads.
+   */
+  @Test
+  fun `a school with figures from two publishers names both, in the loader's own order`() {
+    val twoPublisherSchool =
+      costFixture(
+        name = "Two Publisher University",
+        control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+        tuitionInState = 12000,
+        housingAndFoodOnCampus = 11000,
+        booksAndSupplies = 1200,
+        otherExpensesOnCampus = 2500,
+        // The Scorecard's row, and it bears a value -- so the Scorecard really
+        // is a publisher of a figure this family can see.
+        medianDebt = 21000,
+        priceSource = MoneySource.IPEDS_IC_AY,
+      )
+
+    val body = render(costProfile(listOf(twoPublisherSchool), answeredMoney()))
+
+    assertTrue(
+      body.contains(
+        "The cost, price and federal debt figures come from ${MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)} and " +
+          "${MoneySourceCopy.labelOf(MoneySource.SCORECARD)}.",
+      ),
+      "both publishers of a shown figure must be named, in the loader's order: [$body]",
+    )
+    assertTrue(body.contains("\$21,000 in federal loans"), "the Scorecard figure that earns it a place must be on the page")
+    assertFalse(
+      body.contains("come from ${MoneySourceCopy.labelOf(MoneySource.SCORECARD)} and ${MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)}"),
+      "the Scorecard is ranked below IPEDS, so it may never be named first",
+    )
+  }
+
+  /**
+   * D5's rule is VALUE-BEARING, not row-bearing (RFC 177, tier-2 fix).
+   *
+   * This school's price figures are IPEDS'. Every Scorecard row it carries is
+   * value-free -- one of them SUPPRESSED for privacy -- so the Scorecard
+   * published no figure this family can see, and the sentence "the cost, price
+   * and federal debt figures come from ..." may not name it. That sentence is a
+   * claim about figures ON THE PAGE; naming a publisher of none of them is the
+   * same false attribution this slice exists to delete, one size smaller.
+   *
+   * The suppressed figure's OWN sentence still names the Scorecard, and must:
+   * there the publisher IS the fact -- it is who withheld the number.
+   *
+   * Fails on the code as it stood before the fix: `servedSourcesOf` asked whether
+   * a ROW answered, so a suppressed cell put its publisher in the page's source
+   * list.
+   */
+  @Test
+  fun `a publisher whose only row bears no figure is not named as a source of the figures`() {
+    val ipedsPricedScorecardSilent =
+      costFixture(
+        name = "Suppressed Debt College",
+        control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+        tuitionInState = 12000,
+        housingAndFoodOnCampus = 11000,
+        booksAndSupplies = 1200,
+        otherExpensesOnCampus = 2500,
+        // Every cohort row -- the Scorecard's -- carries no amount, and the debt
+        // row carries the publisher's own suppression.
+        publishedPrice = null,
+        netPrice = NetPrice.OverallAverage(null),
+        medianDebt = null,
+        absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+        priceSource = MoneySource.IPEDS_IC_AY,
+      )
+
+    val body = render(costProfile(listOf(ipedsPricedScorecardSilent), answeredMoney()))
+
+    assertTrue(
+      body.contains(
+        "The cost, price and federal debt figures come from ${MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)}.",
+      ),
+      "only the publisher of a figure this page shows may be named: [$body]",
+    )
+    assertFalse(
+      body.contains("come from ${MoneySourceCopy.labelOf(MoneySource.IPEDS_IC_AY)} and ${MoneySourceCopy.labelOf(MoneySource.SCORECARD)}"),
+      "a publisher whose every row is value-free published no figure on this page",
+    )
+    assertTrue(
+      body.contains(
+        requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER, MoneySource.SCORECARD)),
+      ),
+      "the suppressed figure's own sentence still names who withheld it: [$body]",
+    )
+  }
+
+  /**
+   * The other half of D5: a page with no price figure at all names no publisher.
+   * The sentence is omitted rather than emitted with an empty name, because
+   * there is nothing to say.
+   */
+  @Test
+  fun `a page with no price figure names no publisher at all`() {
+    val body = render(costProfile(emptyList(), answeredMoney()))
+
+    assertFalse(body.contains("The cost, price and federal debt figures come from"), "no figure, no publisher to name")
+    MoneySource.entries.forEach { source ->
+      assertFalse(body.contains(MoneySourceCopy.labelOf(source)), "[${source.value}] must not be claimed: [$source]")
+    }
   }
 
   @Test
@@ -664,8 +838,10 @@ class CostReportPageTest {
       )
 
     assertTrue(
-      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER))),
-      "the blank says whose gap it is, in the domain's own words: [$body]",
+      body.contains(
+        requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER, MoneySource.SCORECARD)),
+      ),
+      "the blank says whose gap it is, in the domain's own words, and NAMES the publisher (RFC 177): [$body]",
     )
     assertFalse(
       body.contains(NOT_REPORTED),
@@ -684,7 +860,7 @@ class CostReportPageTest {
       )
 
     assertTrue(
-      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.NOT_COLLECTED_BY_US))),
+      body.contains(requireNotNull(FigureStatusCopy.agentlessStatementOf(FigureStatus.NOT_COLLECTED_BY_US))),
       "our own gap is ours to own: [$body]",
     )
     assertFalse(body.contains(NOT_REPORTED), "the school never carries our gap")
@@ -1027,8 +1203,10 @@ class CostReportPageTest {
       )
 
     assertTrue(
-      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER))),
-      "the privacy suppression is stated: [$body]",
+      body.contains(
+        requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER, MoneySource.SCORECARD)),
+      ),
+      "the privacy suppression is stated, and the publisher that withheld it is named (RFC 177): [$body]",
     )
     assertFalse(
       body.contains("This school does not report the federal loan debt"),
