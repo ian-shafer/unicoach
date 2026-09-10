@@ -378,7 +378,7 @@ class CostReportPageTest {
         housingAndFoodOnCampus = 11000,
         booksAndSupplies = 1200,
         otherExpensesOnCampus = 2500,
-        priceCell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "CHG2AY3"),
+        pricePublisher = PublishedCell.Survey.IC_AY,
       )
 
     val body = render(costProfile(listOf(ipedsSchool), answeredMoney()))
@@ -432,7 +432,7 @@ class CostReportPageTest {
         // The Scorecard's row, and it bears a value -- so the Scorecard really
         // is a publisher of a figure this family can see.
         medianDebt = 21000,
-        priceCell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "CHG2AY3"),
+        pricePublisher = PublishedCell.Survey.IC_AY,
       )
 
     val body = render(costProfile(listOf(twoPublisherSchool), answeredMoney()))
@@ -484,7 +484,7 @@ class CostReportPageTest {
         netPrice = NetPrice.OverallAverage(null),
         medianDebt = null,
         absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
-        priceCell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "CHG2AY3"),
+        pricePublisher = PublishedCell.Survey.IC_AY,
       )
 
     val body = render(costProfile(listOf(ipedsPricedScorecardSilent), answeredMoney()))

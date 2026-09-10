@@ -694,8 +694,12 @@ class CanonicalMoneyLoader internal constructor(
         recordStaleCharge(charge, ChargeDrift.UNMAPPED_CHARGE_VARIABLE, charge.chargeVariable, ignored)
         continue
       }
-      val suffix = IpedsChargeVocabulary.SUFFIX_BY_ACADEMIC_YEAR[charge.academicYear]
-      if (suffix == null) {
+      // Membership, not the suffix itself: the string is spelled below by the
+      // vocabulary. This guard is the loader's own POLICY -- a staged year the
+      // window cannot decode is drift to be counted and skipped, not a fatal
+      // run -- and it must be applied before the vocabulary is asked, because
+      // `sourceVariableOf` refuses such a year outright.
+      if (charge.academicYear !in IpedsChargeVocabulary.SUFFIX_BY_ACADEMIC_YEAR) {
         recordStaleCharge(charge, ChargeDrift.UNDECODABLE_ACADEMIC_YEAR, charge.academicYear.label, ignored)
         continue
       }
@@ -708,9 +712,9 @@ class CanonicalMoneyLoader internal constructor(
         IpedsImputationFlag.fromCode(charge.imputationFlag)
           ?: throw CorruptStagedChargeException(charge, charge.imputationFlag)
       matched += charge.collegeId
-      // The REAL published column, year suffix restored: a reader who greps
-      // IPEDS for `CHG2AY` finds a stem, `CHG2AY3` finds the figure.
-      val sourceVariable = "${charge.chargeVariable}$suffix"
+      // The REAL published column, year suffix restored -- spelled by the
+      // vocabulary that owns the rule, not concatenated here.
+      val sourceVariable = IpedsChargeVocabulary.sourceVariableOf(charge.chargeVariable, charge.academicYear)
       val figure =
         priceFigure(
           collegeId = charge.collegeId,

@@ -25,6 +25,18 @@ dependencies {
   // 179), so it compiles against the store's vocabulary -- `api` because
   // :public-web's report-page test reads that signature.
   testFixturesApi(project(":db"))
+  // IPEDS fixture column names are DERIVED from `IpedsChargeVocabulary` rather
+  // than typed (RFC 184): nothing validates an IC_AY `source_variable`, so a
+  // copy would rot silently when the pinned survey year moves. :service main
+  // already depends on :college -- this adds no module coupling, only the
+  // fixtures source set, which does not inherit main's `implementation` deps.
+  // `implementation`, not `api`: the fixture hands out a String.
+  testFixturesImplementation(project(":college"))
+  // With it, `:common`: the vocabulary's year decoder is keyed by
+  // [ed.unicoach.common.util.AcademicYear], and the fixture asks that decoder
+  // which suffix means the pinned survey year. :service main already depends on
+  // it too; only the fixtures source set was missing it.
+  testFixturesImplementation(project(":common"))
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)

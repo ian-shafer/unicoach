@@ -8,6 +8,7 @@ import ed.unicoach.coaching.costs.NoTotalReason
 import ed.unicoach.coaching.costs.ScorecardVariableNames
 import ed.unicoach.coaching.costs.components
 import ed.unicoach.coaching.costs.isAssumedByUnicoach
+import ed.unicoach.coaching.costs.publishedPriceOf
 import ed.unicoach.coaching.costs.reportedComponentsOf
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
@@ -23,7 +24,6 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MeasureUnit
 import ed.unicoach.db.models.MoneyMeasure
-import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
 import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
@@ -703,10 +703,12 @@ class CollegeFiguresTest {
     // institutions "re-labelling it in-district on a guess would trade one wrong
     // label for another". AN IN-STATE FIGURE IS NEVER PRESENTED AS AN IN-DISTRICT
     // PRICE.
+    // `publisher = null` is the SCORECARD, the publisher that does not separate
+    // the in-district tier at all -- which is the case under test.
     val figures =
       figuresOf(
-        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2022), 12000, source = MoneySource.SCORECARD),
-        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2022), 30000, source = MoneySource.SCORECARD),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, AcademicYear(2022), 12000, publisher = null),
+        price(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, AcademicYear(2022), 30000, publisher = null),
       )
     val basis = residencyTiersOf(figures.servedAt(AcademicYear(2022)))
     assertEquals(ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT, basis)
@@ -933,7 +935,13 @@ class CollegeFiguresTest {
     academicYear: AcademicYear,
     amountUsd: Int? = null,
     reading: FigureReading<Int>? = null,
-    source: MoneySource = MoneySource.IPEDS_IC_AY,
+    /**
+     * WHICH survey published this row, or null for the SCORECARD -- the one
+     * fixture parameter whose publisher is genuinely a choice. IC_AY by
+     * default, because the loader ranks the surveys above the Scorecard and
+     * most real price rows are IC_AY's.
+     */
+    publisher: PublishedCell.Survey? = PublishedCell.Survey.IC_AY,
   ): PriceFigure {
     val address =
       requireNotNull((field.figureAddress as? FigureAddress.Price)?.address) {
@@ -949,50 +957,16 @@ class CollegeFiguresTest {
         reading
           ?: amountUsd?.let { FigureReading.Present(it, ValueBearingStatus.REPORTED) }
           ?: FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
-      // The published cell (RFC 184), built through the ONE decoder rather than
-      // paired by hand: the Scorecard arm is keyed on the variable and refuses
-      // a name no tier answers for, so a fixture that types `FIXTURE` under
-      // that publisher would seed a row the production read declines. The
-      // Scorecard's REAL price column comes from the one home that names them.
-      cell = fixturePriceCellOf(source, field),
+      // The published cell (RFC 184), named for THIS field by THIS row's
+      // publisher, from the ONE home that dispatches between the two naming
+      // vocabularies -- the same one `:public-web`'s report-page fixture uses.
+      // This suite used to type `FIXTURE` on its IPEDS rows, which is a name no
+      // survey publishes; the tier answers for the whole source, so nothing
+      // refused it, and the copy of the rule here drifted from the copy there.
+      cell = publishedPriceOf(field, publisher, fixtureLocation),
       publisherFlag = null,
     )
   }
-
-  /**
-   * The published cell a fixture PRICE row stands for -- the one fixture whose
-   * publisher is genuinely a parameter.
-   *
-   * Only the Scorecard arm needs a real published name -- the other three
-   * answer for the whole source whatever the variable is -- so every other
-   * fixture row keeps saying `FIXTURE`, which is what it is. Nothing in this
-   * suite reads the variable back; what it reads is the publisher and, through
-   * it, the served figure.
-   *
-   * The Scorecard name is asked for INSIDE the branch that uses it:
-   * [ScorecardVariableNames] fails loudly for a field the Scorecard publishes
-   * no column for, and this suite drives plenty of such fields under IPEDS.
-   */
-  private fun fixturePriceCellOf(
-    source: MoneySource,
-    field: CostField,
-  ): PublishedCell =
-    when (source) {
-      MoneySource.SCORECARD -> {
-        PublishedCell.ScorecardCell.of(ScorecardVariableNames.priceOf(field), fixtureLocation)
-      }
-
-      // The three publishers whose tier answers for the WHOLE source, named one
-      // by one and with no `else`: RFC 184's guard is that a fifth publisher
-      // must decide what kind of number it produces, and an `else` here would
-      // fixture it under a name no tier answers for without stopping the build.
-      MoneySource.IPEDS_SFA,
-      MoneySource.IPEDS_IC_AY,
-      MoneySource.COMMON_DATA_SET,
-      -> {
-        PublishedCell.of(source, "FIXTURE", fixtureLocation)
-      }
-    }
 
   /**
    * A cohort row at the FULL canonical address of [field] -- population and aid

@@ -105,6 +105,30 @@ object IpedsChargeVocabulary {
   val PRICE_CELLS: Set<PriceCoordinate> = CELLS.values.toSet()
 
   /**
+   * [CELLS] read the other way round: WHICH stem fills one canonical address.
+   *
+   * DERIVED here like [STEMS] and [PRICE_CELLS], because the address grid has
+   * ONE home whichever end a caller enters it from. `:service`'s IPEDS fixture
+   * names a price row's column by the address the row was read from, and a
+   * private inversion there would be a second view of this map in another
+   * module -- the split the object exists to prevent.
+   *
+   * Grouped rather than inverted straight: a plain `associate` keeps the LAST
+   * stem for a repeated cell and drops the other in SILENCE, and a caller would
+   * then name rows after whichever stem this map happened to list last.
+   */
+  val STEM_BY_PRICE_CELL: Map<PriceCoordinate, String> =
+    CELLS.entries
+      .groupBy({ (_, coordinate) -> coordinate }, { (stem, _) -> stem })
+      .mapValues { (coordinate, stems) ->
+        stems.singleOrNull()
+          ?: error(
+            "IpedsChargeVocabulary stages [$stems] for the single cell [$coordinate], so no one column names " +
+              "it and no caller can choose between them",
+          )
+      }
+
+  /**
    * IC_AY's year suffix decoder for [SURVEY_YEAR]: suffix `3` is the survey
    * year itself, `0` the three-years-back edge of the window. The suffix is a
    * POSITION, not a year, so the academic year rides on the row (RFC 158 P5) —
@@ -122,6 +146,36 @@ object IpedsChargeVocabulary {
    */
   val SUFFIX_BY_ACADEMIC_YEAR: Map<AcademicYear, String> =
     ACADEMIC_YEAR_BY_SUFFIX.entries.associate { (suffix, year) -> year to suffix }
+
+  /**
+   * The REAL published column for one charge [stem] at [academicYear] -- the
+   * stem plus the suffix this window decodes for that year. A reader who greps
+   * IPEDS for `CHG2AY` finds a stem; `CHG2AY3` finds the figure.
+   *
+   * The ONE place the suffix is appended. "Stem plus year suffix" is a
+   * publisher fact about how IC_AY spells a column, and it was typed out three
+   * times -- in the canonical fill, in the tier-closure test, and in
+   * `:service`'s IPEDS fixture -- so a window change had to be reasoned about
+   * in three files, only one of which failed loudly.
+   *
+   * FATAL for a year the window does not carry, naming the year asked for and
+   * the window searched: the suffix is a POSITION in a moving four-year window,
+   * so a year outside it has no published column at all, and a caller that
+   * answered anyway would name a column for someone else's year.
+   */
+  fun sourceVariableOf(
+    stem: String,
+    academicYear: AcademicYear,
+  ): String {
+    val suffix =
+      SUFFIX_BY_ACADEMIC_YEAR[academicYear]
+        ?: error(
+          "IC_AY [$SURVEY_YEAR] carries no column for [${academicYear.label}]: its window is " +
+            "[${ACADEMIC_YEAR_BY_SUFFIX.values.first().label}]..[${ACADEMIC_YEAR_BY_SUFFIX.values.last().label}], " +
+            "the [0-$LAST_SUFFIX] suffixes, so no published variable names [$stem] at that year",
+        )
+    return "$stem$suffix"
+  }
 
   /**
    * Refuses a run whose IPEDS survey year is not the one this vocabulary

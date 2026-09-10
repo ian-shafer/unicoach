@@ -65,13 +65,18 @@ class AssuranceTierClosureTest {
 
   @Test
   fun `every IC_AY charge variable the loader can build resolves, and to the compelled-survey tier`() {
-    // Stem x suffix, exactly as `CanonicalMoneyLoader` builds the string. The
-    // suffix is a POSITION in the file's four-year window and not a year, so
-    // bumping `SURVEY_YEAR` does not move this set.
+    // Stem x window year, spelled by the SAME function `CanonicalMoneyLoader`
+    // spells a staged row's `source_variable` with -- not a second copy of the
+    // rule, which would let this walk stay green over strings the loader no
+    // longer writes. The suffix is a POSITION in the file's four-year window
+    // and not a year, so bumping `SURVEY_YEAR` does not move this set.
     val variables =
       IpedsChargeVocabulary.CELLS.keys
-        .flatMap { stem -> IpedsChargeVocabulary.SUFFIX_BY_ACADEMIC_YEAR.values.map { suffix -> "$stem$suffix" } }
-        .toSet()
+        .flatMap { stem ->
+          IpedsChargeVocabulary.SUFFIX_BY_ACADEMIC_YEAR.keys.map { year ->
+            IpedsChargeVocabulary.sourceVariableOf(stem, year)
+          }
+        }.toSet()
     assertEquals(48, variables.size, "twelve stems over a four-year window")
     for (variable in variables) {
       assertEquals(

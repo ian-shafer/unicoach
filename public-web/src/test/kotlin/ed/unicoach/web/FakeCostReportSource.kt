@@ -22,6 +22,7 @@ import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.residencyTiersOf
 import ed.unicoach.coaching.costs.figureStatusesOf
 import ed.unicoach.coaching.costs.notReportedOf
+import ed.unicoach.coaching.costs.publishedPriceOf
 import ed.unicoach.coaching.costs.reportedOf
 import ed.unicoach.coaching.costs.tuitionLineOf
 import ed.unicoach.common.util.AcademicYear
@@ -246,8 +247,8 @@ fun costFixture(
    */
   heldOnlyInOtherYear: Map<CostField, Int> = emptyMap(),
   /**
-   * The published CELL this school's PRICE rows stand for (RFC 184), or null
-   * for the Scorecard's own column for each field.
+   * WHICH IPEDS survey published this school's PRICE rows, or null for the
+   * Scorecard.
    *
    * A parameter because it is the whole point of the seam: the loader ranks the
    * two IPEDS surveys above the Scorecard, so most real price rows are IPEDS,
@@ -255,14 +256,16 @@ fun costFixture(
    * rows stay the Scorecard's, because that is where the blended averages
    * really come from -- one school with two publishers is the ordinary case.
    *
-   * A CELL and not a bare publisher: a fixture that named the source on its own
-   * kept the variable from [ScorecardVariableNames] whatever it said, so an
-   * IPEDS school here really seeded `(IPEDS_IC_AY, "TUITIONFEE_IN")` -- a
-   * Scorecard column under a survey, the exact pairing RFC 184 exists to close,
-   * reproduced in our own fixture. Naming the cell makes the publisher and its
-   * own column travel together.
+   * The PUBLISHER, and the publisher's own naming home then supplies the column
+   * PER FIELD ([publishedPriceOf]) -- never one cell handed to every row. Naming a
+   * bare source was wrong for one reason (it kept a [ScorecardVariableNames]
+   * column under a survey, the exact pairing RFC 184 exists to close), and
+   * naming one cell was wrong for another: it applied the in-state tuition
+   * column's name to the books-and-supplies row as well. A [PublishedCell.Survey]
+   * cannot be the Scorecard, and every row is then named by the survey's own
+   * vocabulary.
    */
-  priceCell: PublishedCell? = null,
+  pricePublisher: PublishedCell.Survey? = null,
 ): CollegeCost {
   val collegeId = CollegeId(UUID.randomUUID())
   val figures =
@@ -283,8 +286,12 @@ fun costFixture(
           // what makes it a gap rather than a silence -- so it keeps only its
           // row at the other year.
           .filterNot { (field, _) -> field in heldOnlyInOtherYear }
-          .mapNotNull { (field, amountUsd) -> priceRow(collegeId, field, amountUsd, absenceStatuses, cell = priceCell) } +
-          heldOnlyInOtherYear.mapNotNull { (field, amountUsd) -> yearGapRow(collegeId, field, amountUsd) },
+          .mapNotNull { (field, amountUsd) ->
+            priceRow(collegeId, field, amountUsd, absenceStatuses, publisher = pricePublisher)
+          } +
+          heldOnlyInOtherYear.mapNotNull { (field, amountUsd) ->
+            yearGapRow(collegeId, field, amountUsd, publisher = pricePublisher)
+          },
       cohortStats = cohortRows(collegeId, control, publishedPrice, netPrice, medianDebt, absenceStatuses),
     )
   // Every derivation below is the SERVICE's own, published for exactly this
@@ -361,7 +368,7 @@ private fun priceRow(
   amountUsd: Int?,
   absenceStatuses: Map<CostField, AbsenceStatus> = emptyMap(),
   academicYear: AcademicYear = FIXTURE_PRICE_YEAR,
-  cell: PublishedCell? = null,
+  publisher: PublishedCell.Survey? = null,
 ): PriceFigure? {
   val address = (field.figureAddress as? FigureAddress.Price)?.address ?: return null
   return PriceFigure(
@@ -371,14 +378,8 @@ private fun priceRow(
     arrangement = address.arrangement,
     academicYear = academicYear,
     reading = readingOf(amountUsd, absenceStatuses[field] ?: AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
-    // The published cell this row stands for (RFC 184). A caller that names no
-    // cell gets the SCORECARD's own column for this field, from the same one
-    // home as the cohort names below -- exhaustive over [CostField] there, so a
-    // new price field must decide at the BUILD rather than at some later run
-    // (RFC 179). A caller that wants another publisher names that publisher's
-    // OWN cell, which is why this is a cell and not a loose source: the source
-    // could never be handed this Scorecard column again.
-    cell = cell ?: PublishedCell.ScorecardCell.of(ScorecardVariableNames.priceOf(field), FIXTURE_LOCATION),
+    // RFC 184: every price row names a real published cell, never a bare source.
+    cell = publishedPriceOf(field, publisher, FIXTURE_LOCATION),
     publisherFlag = null,
   )
 }
@@ -389,12 +390,18 @@ private fun priceRow(
  *
  * The served year gets no row at all for it, which is exactly the store's shape:
  * the school published the figure, and we hold it only for another year.
+ *
+ * It takes the school's [publisher] like every other price row. The gap row is one
+ * of THIS school's published rows, so leaving it on the default would name it from
+ * the Scorecard's vocabulary while the school's other rows carry a survey's --
+ * rebuilding, in the one branch, the cross-publisher pairing RFC 184 closes.
  */
 private fun yearGapRow(
   collegeId: CollegeId,
   field: CostField,
   amountUsd: Int,
-): PriceFigure? = priceRow(collegeId, field, amountUsd, academicYear = FIXTURE_YEAR_GAP_YEAR)
+  publisher: PublishedCell.Survey? = null,
+): PriceFigure? = priceRow(collegeId, field, amountUsd, academicYear = FIXTURE_YEAR_GAP_YEAR, publisher = publisher)
 
 /**
  * The cohort rows behind the two blended figures and the undated debt figure,
