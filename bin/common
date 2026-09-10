@@ -101,9 +101,12 @@ export_derived_env
 
 # Markdown targets for deno fmt, shared by bin/format (rewrites in place) and
 # bin/pre-commit (--check, read-only). deno's `**` glob skips hidden dirs, so
-# `.claude/` (skill/agent markdown) is listed explicitly. Defined once here so
-# the writer and the checker can never target different sets of files.
-MARKDOWN_FMT_PATHS=("**/*.md" ".claude")
+# every hidden directory carrying markdown is listed explicitly: `.claude/` (the
+# Claude Code skill/agent markdown) and `.prime/` (the Prime Agent skills --
+# ship, slice, chart, principle, and ship's references). Defined once here so
+# the writer and the checker can never target different sets of files, and so a
+# hidden dir cannot be inside one and outside the other.
+MARKDOWN_FMT_PATHS=("**/*.md" ".claude" ".prime")
 
 # ── The declared migration apply order (RFC 180) ───────────────────────────────
 # `<schema dir>/ORDER` is a plain list of migration filenames, one per line, in

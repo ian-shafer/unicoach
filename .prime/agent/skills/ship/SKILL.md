@@ -159,10 +159,10 @@ subagent that runs it and replies. Four reasons, and the second is the important
 one:
 
 - The wake-up is free. A message resumes the session; a shell job cannot.
-- **Ian can watch it without asking.** A child's session is in the harness, live,
-  under the same view as everything else. A `nohup` log is a path he would have
-  to know and `tail` himself. This is the difference between a wait he can see
-  and a wait he has to interrupt.
+- **Ian can watch it without asking.** A child's session is in the harness,
+  live, under the same view as everything else. A `nohup` log is a path he would
+  have to know and `tail` himself. This is the difference between a wait he can
+  see and a wait he has to interrupt.
 - Context hygiene: a 1300-line Gradle log lands in the child's context, and four
   lines land in this one. Over a run that gap is large.
 - A child can REACT — capture the failing assertion verbatim, check whether it
@@ -176,24 +176,26 @@ Four conditions, each from a real failure:
 2. **The child logs to disk as well as replying**, so a stall still leaves
    evidence and `agent_observe` shows where it stopped.
 3. **The tree is frozen while a child runs a gate.** Editing a file a child is
-   executing invalidates its run: bash reads a script incrementally, and that run
-   has to be thrown away. Whoever runs the gate owns the tree until it reports.
-4. **A green result is valid only for the commit it ran on.** The reply names the
-   SHA; check it has not moved — the same reasoning as the land lock.
+   executing invalidates its run: bash reads a script incrementally, and that
+   run has to be thrown away. Whoever runs the gate owns the tree until it
+   reports.
+4. **A green result is valid only for the commit it ran on.** The reply names
+   the SHA; check it has not moved — the same reasoning as the land lock.
 
-**Foreground** stays right for anything short (under about a minute), and for the
-case where waiting is the only work left. **`nohup` is not banned** — it suits
-fire-and-forget work whose result the run does not need — but a detached job owns
-its poll, and a single poll that finds the job still running means a wake-up is
-now required before the turn ends.
+**Foreground** stays right for anything short (under about a minute), and for
+the case where waiting is the only work left. **`nohup` is not banned** — it
+suits fire-and-forget work whose result the run does not need — but a detached
+job owns its poll, and a single poll that finds the job still running means a
+wake-up is now required before the turn ends.
 
 **Landing is the case that must report itself.** Announce the wait before it
 starts, run the post-lock sequence — squash, format, `git commit`, `ship-land` —
 as ONE unit rather than a turn per command, and make the report the next thing
 generated after it returns. A `git commit` that succeeded is not the news; a
-landed SHA is. The same holds for a failure inside the lock: release, then report
-at once. "Landed", "failed" and "blocked" are terminal outcomes, and a terminal
-outcome is announced the moment it is known, ahead of any other content.
+landed SHA is. The same holds for a failure inside the lock: release, then
+report at once. "Landed", "failed" and "blocked" are terminal outcomes, and a
+terminal outcome is announced the moment it is known, ahead of any other
+content.
 
 ### 1. claim
 
@@ -308,8 +310,7 @@ line exists, only its POSITION is wrong.
 
 Run that block as ONE foreground sequence, and report the fast-forward in the
 same turn it returns — see "Long commands run in a subagent; landing reports
-itself". A
-`git commit` that succeeded is not the news; a landed SHA is.
+itself". A `git commit` that succeeded is not the news; a landed SHA is.
 
 `ship-order` sits between the rebase and the squash, and both edges matter. It
 reads the base branch's `db/schema/ORDER` at `BASE_SHA`, so it must run
@@ -330,10 +331,10 @@ and rewrites it from the source. So it must run **after** the final rebase, or
 the label is a prediction of a tip that has since moved, and **before** the
 squash and the commit, so the regenerated seed lands inside the hook-verified
 tree. A run that touched no prompt regenerates the same bytes and changes
-nothing, so it is safe to run on every land, exactly like `ship-order`.
-**Pass `-b` explicitly.** The default base is `main`, and a run claimed against
-any other base would then classify the PARENT branch's landed coach seed as its
-own generated file and delete it — the one file this script must never touch.
+nothing, so it is safe to run on every land, exactly like `ship-order`. **Pass
+`-b` explicitly.** The default base is `main`, and a run claimed against any
+other base would then classify the PARENT branch's landed coach seed as its own
+generated file and delete it — the one file this script must never touch.
 `ship-land` re-runs it as
 `bin/prompt-seed -b "$BASE_SHA" -d "$CODEBASE_ROOT/db/schema" -n` before the
 fast-forward and refuses with that script's own status (3 = regenerate, anything

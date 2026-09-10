@@ -60,11 +60,11 @@ each scene is constructed, not arrived at. `bin/screenshot-ios` remains the tool
 for the running app.
 
 Two rasterizing traps, both paid for with phantom defect reports, are recorded
-in `SnapshotHost.swift` and must not be re-derived: **`ImageRenderer` is banned**
-(it does not rasterize `ScrollView` content and ignores a SwiftUI `colorScheme`
-override for asset colours), and **`layer.render(in:)` silently drops iOS 26's
-Liquid Glass navigation chrome** (a title renders as its raw white mask —
-correct on a dark capture, invisible on the light one). Use
+in `SnapshotHost.swift` and must not be re-derived: **`ImageRenderer` is
+banned** (it does not rasterize `ScrollView` content and ignores a SwiftUI
+`colorScheme` override for asset colours), and **`layer.render(in:)` silently
+drops iOS 26's Liquid Glass navigation chrome** (a title renders as its raw
+white mask — correct on a dark capture, invisible on the light one). Use
 `drawHierarchy(in:afterScreenUpdates:)` on a window attached to a live scene.
 
 ## Judging
