@@ -50,6 +50,29 @@ _(one line per landed slice: ID, RFC, SHAs, one-line what.)_
        by three separate review lenses; it crosses four modules and wants its own
        slice.
 
+    soft/04/two-more-ingest-refusals LANDED as RFC 182 (main@6b7586cf + 3787f936,
+       2026-09-09) — the first CDS checks that compare a filing against something
+       outside itself. Rule 1: refuse a merit block whose H.201 differs from IPEDS
+       SCFA1N by more than 50% EITHER WAY (built two-sided; the slice text worded
+       it one-sided), plus an H.204 sibling on the aid-policy doc. Rule 2: refuse a
+       value signature repeating byte-for-byte across different unit_ids in one
+       source_year. IPEDS arrives by a new -I option; an absent sfa2223.csv skips
+       the check and says so in PROVENANCE.json, a present-but-unreadable one is a
+       fault. Counts: merit_freshmen_vs_ipeds_implausible 15,
+       aid_policy_freshmen_vs_ipeds_implausible 7, filing_attributed_to_multiple_
+       units 35. Seed rows merit-aid 368->352, aid_policy 3,568->3,496,
+       admission-factors 373->369, deadlines 846->831. No table, no migration, no
+       family-visible flag (D4, D7). Four spec corrections returned to /chart: the
+       "8 colleges" is 3 today (UIUC 145637, Florida 134130, Rowan 184782) because
+       five were fixed upstream in the 2026-09-08 fetch; rule 1's spec wording is
+       one-sided but its own measurement is two-sided; "a main campus's PDF mapped
+       onto branch UNITIDs" is wrong for one of the seven clusters (WPI + Whitman
+       are unrelated); and a live extractor defect owned by no slice — Boston
+       University and Carnegie Mellon both report graduating_class_count = 2025,
+       the class YEAR read as a headcount, landed by shape/07b.
+       Close-out written 2026-09-09, after the fact: RFC 182's run landed the code
+       but never wrote this line, which is why slice-board read soft/04 as READY.
+
 ## The question
 
 The canonical money store (RFC 158) already models **why a figure is absent**:
