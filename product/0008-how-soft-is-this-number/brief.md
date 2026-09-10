@@ -73,6 +73,39 @@ _(one line per landed slice: ID, RFC, SHAs, one-line what.)_
        Close-out written 2026-09-09, after the fact: RFC 182's run landed the code
        but never wrote this line, which is why slice-board read soft/04 as READY.
 
+    soft/03/the-year-we-cite LANDED as RFC 183 (main@b981fff9 + 886dee52,
+       2026-09-09) — Scorecard figures now carry the year the publisher says they
+       describe: PUBLISHED_PRICE_YEAR 2022->2024, BLENDED_AVERAGE_VINTAGE
+       2021->2023, both wrong by TWO years, pinned per column against a committed
+       transcription of the dictionary's own cohort map (a new most_recent_cohort
+       column on db/seed/scorecard/dictionary-variable-sources.csv). 19,780
+       income-band net-price rows that a false SFA 2021-22 collision suppressed are
+       freed. The slice's stated CAUSE was wrong and the RFC says so: IC_AY carries
+       2020-21..2023-24, so RFC 161's displacement FIRED on 29,704 rows with the
+       wrong IPEDS year, and correcting the vintage STOPS it (0) rather than
+       starting it — the publishers are one year apart and cannot contend. RFC 161's
+       "92.1% agreement" restated honestly: 20.3%, median ratio 1.0262 against
+       IPEDS's own year-over-year 1.0265. Ian approved (G7) the price changes, and
+       ALSO approved D1, which the slice did not foresee: correcting the year makes
+       the Scorecard the newest published price, so its COLLAPSED residency pair
+       would displace IPEDS's three tiers and understate the true in-state price at
+       246 colleges (median $1,800, max $16,778; Austin CC by $6,030) — the exact
+       collapse RFC 161 removed. The fill now WITHHOLDS the Scorecard in-state cell
+       where IPEDS filed both tiers at its newest year and they differ, and the
+       existing latest-complete-year rule falls the family back to IPEDS with no
+       read-side change. So 2,368 colleges' in-state price moves (median +$517, one
+       year of inflation), 0 lose their in-district figure, and 0 are understated.
+       The rule is TOLD its evidence and fails closed; three counters
+       (inStateTuitionWithheld / Unevidenced / WrittenUnmeasured) reach the operator
+       summary and each refusal logs the figures that decided it. No migration, and
+       no DDL (G6) — but a full re-ingest is required for any of it to reach a
+       database, and the run's own seed regeneration bumped the coach prompt to v26
+       with a body byte-identical to v25 (RFC 181's land contract, not a prompt
+       change). Open for /chart: PCTPELL is dated by the publisher and stamped
+       undated by the fill (D3, declared and pinned, deliberately not fixed); and
+       nobody has measured how many WrittenUnmeasured colleges are district-based,
+       which is the same understatement risk one door along.
+
 ## The question
 
 The canonical money store (RFC 158) already models **why a figure is absent**:
