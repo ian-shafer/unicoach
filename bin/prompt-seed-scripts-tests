@@ -8,8 +8,8 @@
 # deleting its single line in bin/shell-tests would have silently disabled every
 # assertion below, and with them the land gate they cover, with nothing failing.
 #
-# The subject is the generator that turns prompts/coach-system-prompt.txt into
-# db/schema/seed-coach-system-prompt-vN.sql. Two of its properties cannot be
+# The subject is the generator that turns prompts/coach-system-prompt.md into
+# db/schema/seed-coach-system-prompt-vN.sql. Three of its properties cannot be
 # eyeballed and are the reason this file exists:
 #
 #   1. The label is computed from <base-ref>, so a run whose base MOVED must
@@ -17,6 +17,11 @@
 #      that wrong lands a duplicate version, or a version that already exists.
 #   2. `-n` must answer "the tree is stale" with exit 3 and write nothing, since
 #      ship-land runs it as the last gate before the fast-forward.
+#   3. The body is the source file VERBATIM (RFC 185) — every byte, including the
+#      Markdown a `.md` file exists to carry, the blank lines, and the trailing
+#      spaces nothing strips any more. "Verbatim" is a claim about bytes, and the
+#      only way to check it is to read the body back out of the generated SQL and
+#      compare it with the file.
 #
 # It also demonstrates the change's whole point: two branches editing DIFFERENT
 # paragraphs of the source file merge with no conflict, and the regenerated seed
@@ -83,7 +88,7 @@ trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
 
 REPO="$FIXTURE_DIR/repo"
 SCHEMA="$REPO/db/schema"
-SOURCE="$REPO/prompts/coach-system-prompt.txt"
+SOURCE="$REPO/prompts/coach-system-prompt.md"
 PIN="$REPO/service/src/main/resources/service.conf"
 
 seed_err="$FIXTURE_DIR/seed.err"
@@ -105,21 +110,105 @@ run_seed() {
 
 git_repo() { git -C "$REPO" "$@"; }
 
+# Commit the fixture worktree as the base a run below is given, and print the SHA
+# of it — so each caller is one assignment rather than a re-typed four-line
+# incantation. `-B main` is re-pointed on every call because the base a test
+# names has to be the tip of a real branch: prompt-seed refuses a base that is
+# behind its upstream, and it is the easiest of the four lines to leave out.
+commit_fixture() { # commit_fixture <message>
+  local message="${1:?commit_fixture requires a commit message}"
+  git_repo add -A
+  git_repo commit -q -m "$message"
+  git_repo checkout -q -B main
+  git_repo rev-parse HEAD
+}
+
+# The whole claim of RFC 185, asserted as bytes: the body <seed file> inserts is
+# <source file>, verbatim.
+#
+# The one byte added back is the source's FINAL LINE TERMINATOR. The generator
+# emits one fragment per awk RECORD, and a record does not carry the newline that
+# ends it, so the body is the file's lines joined by chr(10) — the file minus its
+# last newline. Adding it back here is what makes the comparison a `cmp` against
+# the real file rather than against a second copy of the rule, which is the only
+# kind of comparison that can catch the rule being wrong. (Every fixture below
+# ends with a newline, as `printf '%s\n'` and every editor produce.)
+assert_body_is_source() { # assert_body_is_source <seed file> <what it is>
+  body_of "$1" > "$FIXTURE_DIR/body.actual" ||
+    fail_test "$2: the body could not be read back out of [$1]"
+  printf '\n' >> "$FIXTURE_DIR/body.actual"
+  cmp -s "$FIXTURE_DIR/body.actual" "$SOURCE" ||
+    fail_test "$2: the seeded body is not the source file byte for byte [$(cmp "$FIXTURE_DIR/body.actual" "$SOURCE" 2>&1)]"
+}
+
 # The pinned version the fixture's service.conf currently carries, read back
 # through the same line shape bin/prompt-seed rewrites.
 pin_version_of() { sed -nE 's/^[[:space:]]*systemPromptVersion[[:space:]]*=[[:space:]]*"(v[0-9]+)".*/\1/p' "$PIN"; }
+
+# How many coach seeds the worktree carries that <base ref> does NOT — i.e. how
+# many versions this run has minted. Counting the files in the directory would
+# count the LANDED tip too and answer 2 for a run that minted one.
+count_minted_seeds() { # count_minted_seeds <base ref>
+  local base="${1:?count_minted_seeds requires a base ref}"
+  local landed path minted=0
+  landed="$(git_repo ls-tree --name-only "$base" -- "db/schema/" | sed 's#.*/##')"
+  for path in "$SCHEMA"/*.sql; do
+    [ -e "$path" ] || continue
+    case "${path##*/}" in
+    *seed-coach-system-prompt*) ;;
+    *) continue ;;
+    esac
+    printf '%s\n' "$landed" | grep -Fxq "${path##*/}" || minted=$((minted + 1))
+  done
+  printf '%s' "$minted"
+}
+
+# A LANDED seed, in the shape a generator emits, carrying the given lines as its
+# body. A fixture cannot land `echo "-- landed"` any more: the tip's BODY is what
+# decides whether a run owes a version at all (RFC 185 D6), so a seed that is not
+# one is now a refusal rather than a backdrop.
+#
+# Deliberately NOT the same emitter as bin/prompt-seed's, and deliberately not a
+# call to it. The script reads these files with an awk transliteration of
+# `body_of` below; writing them from a third, independently laid-out dialect is
+# what makes that reader's claim — that it reads the BODY and not a layout —
+# something this harness can actually fail.
+write_landed_seed() { # write_landed_seed <file> <version> <body line>...
+  local file="$1" version="$2"
+  shift 2
+  printf '%s\n' "$@" > "$FIXTURE_DIR/landed.body"
+  python3 - "$file" "$version" "$FIXTURE_DIR/landed.body" << 'PY'
+import sys
+
+path, version, body_path = sys.argv[1:4]
+with open(body_path, encoding="utf-8") as source:
+    body = source.read()
+if body.endswith("\n"):
+    body = body[:-1]
+fragments = ["'" + line.replace("'", "''") + "'" for line in body.split("\n")]
+with open(path, "w", encoding="utf-8") as out:
+    out.write("-- a landed seed, as the test harness writes them.\n\n")
+    out.write("INSERT INTO system_prompts (name, version, body)\n")
+    out.write("VALUES (\n  'coach', '%s',\n" % version)
+    out.write("  " + "\n    || chr(10) || ".join(fragments) + "\n);\n")
+PY
+}
 
 # A fresh fixture repository: a base commit carrying a v3 coach seed (so the tip
 # is a fact read from git, not a guess), an ORDER file, and a three-line source.
 # It pins `v3`, matching that landed seed, so a fixture that has had no run yet
 # is self-consistent, exactly as the real checkout is.
+#
+# The landed v3 says something the source does NOT say, so every run below starts
+# from a tree where a human HAS authored something and a version is genuinely
+# owed. The nothing-authored case is its own fixture, further down.
 reset_fixture() {
   rm -rf "$REPO"
   mkdir -p "$SCHEMA" "$REPO/prompts" "$REPO/service/src/main/resources"
   git init -q "$REPO"
   git_repo config user.email "prompt-seed-tests@example.invalid"
   git_repo config user.name "prompt-seed-tests"
-  echo "-- landed" > "$SCHEMA/0003.seed-coach-system-prompt-v3.sql"
+  write_landed_seed "$SCHEMA/0003.seed-coach-system-prompt-v3.sql" "v3" "A landed sentence."
   printf '%s\n' "0003.seed-coach-system-prompt-v3.sql" > "$SCHEMA/ORDER"
   printf '%s\n' "First sentence." "Second sentence." "Third sentence." > "$SOURCE"
   # Enough of service.conf to carry the pin and its operator override, plus a
@@ -133,25 +222,112 @@ reset_fixture() {
     echo '  systemPromptVersion = ${?COACHING_SYSTEM_PROMPT_VERSION}'
     echo "}"
   } > "$PIN"
-  git_repo add -A
-  git_repo commit -q -m "base corpus"
-  git_repo checkout -q -B main
-  BASE_SHA="$(git_repo rev-parse HEAD)"
+  BASE_SHA="$(commit_fixture "base corpus")"
 }
 
-# The body a seed would insert: every SQL fragment after the version literal,
-# re-joined, '' unescaped. Read the way a reader of the file would read it, so a
-# change in the generator's LAYOUT does not silently change what this harness
-# believes the body is.
+# The body a seed would insert: the SQL expression after the version literal,
+# EVALUATED. Read the way Postgres would read it, so a change in the generator's
+# LAYOUT does not silently change what this harness believes the body is.
+#
+# It has to evaluate rather than concatenate, because the body's line breaks are
+# not in the file as bytes: they are `chr(10)` calls between two fragments
+# (RFC 185 D5, and 0011:1-7's rule that a literal newline in a diff is
+# indistinguishable from layout). A helper that pasted the fragments together
+# would read every version of this prompt as one unbroken line and pass while the
+# generator emitted no separator at all.
+#
+# stdout carries the body and nothing else, so the caller can compare it with a
+# file byte for byte; a malformed seed is a fault on stderr and a non-zero exit,
+# never an empty body that reads as "the generator produced nothing".
 body_of() { # body_of <seed file>
   python3 - "$1" << 'PY'
 import re
 import sys
 
-text = open(sys.argv[1], encoding="utf-8").read()
-fragments = re.findall(r"'((?:[^']|'')*)'", text[text.index("VALUES ("):])
-# name, version, then the body fragments.
-print("".join(f.replace("''", "'") for f in fragments[2:]), end="")
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    text = source.read()
+
+# The one seed shape this reader evaluates, and the only layout it tolerates
+# between fragments. The awk transliteration in bin/prompt-seed names the same
+# four constants, so neither dialect carries a retyped literal.
+HEADER = "INSERT INTO system_prompts (name, version, body)\nVALUES ("
+JOINER = "chr(10)"
+HEADER_TOKENS = 2  # the prompt name and the version literal, then the body
+LAYOUT = " \t\n,|();"
+VERSION_LABEL = re.compile(r"^v[1-9][0-9]*$")
+EXCERPT_WIDTH = 60
+
+
+def fail(reason):
+    sys.exit("body_of: [%s] %s" % (path, reason))
+
+
+def excerpt(text, at):
+    """A short single-line window on the offending input, so a refusal says WHERE."""
+    return text[at:at + EXCERPT_WIDTH].replace("\n", " ")
+
+
+def read_quoted_string(expression, i):
+    """The single-quoted string opening at expression[i], and the index just past it."""
+    opened, chunk, i = i, [], i + 1
+    while i < len(expression):
+        if expression[i] == "'":
+            if expression[i + 1:i + 2] != "'":
+                return "".join(chunk), i + 1
+            chunk.append("'")
+            i += 2
+            continue
+        chunk.append(expression[i])
+        i += 1
+    fail("has an unterminated SQL string opening at character [%d] of the VALUES expression: [%s]"
+         % (opened + 1, excerpt(expression, opened)))
+
+
+start = text.find(HEADER)
+if start < 0:
+    fail("carries no [INSERT INTO system_prompts (name, version, body)] ... [VALUES (] header, "
+         "so the VALUES columns are not the ones this reader would name; it begins [%s]" % excerpt(text, 0))
+expression = text[start + len(HEADER):]
+second = expression.find("INSERT ")
+if second >= 0:
+    fail("carries a second INSERT after the row this reader evaluates, at character [%d]: [%s]; "
+         "a coach seed inserts exactly one row" % (second + 1, excerpt(expression, second)))
+
+# A tiny scanner over the two token kinds the generator emits: a single-quoted
+# SQL string (with '' for an embedded quote) and the chr(10) joiner. Between
+# them only the NAMED layout bytes are allowed; everything else is refused
+# rather than skipped, because skipping is how both dialects used to read a
+# chr(9), an uppercase CHR(10) or an SQL comment as a body nobody wrote.
+parts, i, n = [], 0, len(expression)
+while i < n:
+    char = expression[i]
+    if char == "'":
+        chunk, i = read_quoted_string(expression, i)
+        parts.append(chunk)
+        if len(parts) == 1 and chunk != "coach":
+            fail("names [%s] as its first VALUES literal, not the coach prompt name" % chunk)
+        if len(parts) == 2 and not VERSION_LABEL.match(chunk):
+            fail("names [%s] as its second VALUES literal, not a vNN catalog label" % chunk)
+    elif expression.startswith(JOINER, i):
+        if len(parts) < HEADER_TOKENS:
+            fail("carries a [%s] joiner where the prompt name or the version literal belongs, "
+                 "at character [%d] of the VALUES expression" % (JOINER, i + 1))
+        parts.append("\n")
+        i += len(JOINER)
+    elif expression.startswith("--", i):
+        fail("carries an SQL comment inside the VALUES clause, at character [%d] of the VALUES "
+             "expression: [%s]; this reader cannot separate its text from body text"
+             % (i + 1, excerpt(expression, i)))
+    elif char in LAYOUT:
+        i += 1
+    else:
+        fail("carries an unreadable token at character [%d] of the VALUES expression: [%s]; "
+             "this is not a seed this generator wrote" % (i + 1, excerpt(expression, i)))
+
+if len(parts) <= HEADER_TOKENS:
+    fail("carries no body fragments after the name and version")
+sys.stdout.write("".join(parts[HEADER_TOKENS:]))
 PY
 }
 
@@ -201,11 +377,13 @@ grep -q 'COACHING_SYSTEM_PROMPT_VERSION' "$PIN" ||
   fail_test "the repin ate the operator override line beside the pin"
 pass_test "the repin leaves the comment log and the operator override untouched"
 
-# 2. The body is the join rule, exactly: stripped lines, blanks dropped, one
-# space between them. If this drifts, every version ships a body nobody wrote.
-[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
-  fail_test "the generated body is [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
-pass_test "the body is the source's lines joined with one space"
+# 2. THE RULE, WHICH IS THAT THERE IS NO RULE (RFC 185): the body is the source
+# file, verbatim. If this drifts, every version ships a body nobody wrote.
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "the baseline seed"
+pass_test "the body is the source file, byte for byte"
+grep -q "|| chr(10) ||" "$SCHEMA/seed-coach-system-prompt-v4.sql" ||
+  fail_test "the generated seed joins its fragments with something other than chr(10): [$(cat "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
+pass_test "the line break between two fragments is written as chr(10), never as a literal newline"
 
 # 4. bin/ rule: the caller asked for a file, not for prose. Progress and the
 # closing summary are diagnostics and belong on stderr.
@@ -259,7 +437,7 @@ echo "==== prompt-seed: the moved base ===="
 # edited in place would land a second v4 and a UNIQUE violation at migrate time.
 git_repo add -A
 git_repo commit -q -m "this run's v4, as if it were landed by someone else"
-echo "-- landed by another run" > "$SCHEMA/seed-coach-system-prompt-v4.sql"
+write_landed_seed "$SCHEMA/seed-coach-system-prompt-v4.sql" "v4" "A sentence landed by another run."
 git_repo add -A
 git_repo commit -q -m "another run's v4 lands"
 git_repo checkout -q -B main
@@ -276,8 +454,7 @@ pass_test "the landed seed present in the base is left untouched"
 grep -Fxq "seed-coach-system-prompt-v5.sql" "$SCHEMA/ORDER" ||
   fail_test "the relabelled seed has no ORDER line: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
 pass_test "the relabelled seed's ORDER line is present"
-[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v5.sql")" = "First sentence. Second sentence. Third sentence. A fourth, from this run." ] ||
-  fail_test "the relabelled body is [$(body_of "$SCHEMA/seed-coach-system-prompt-v5.sql")]"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v5.sql" "the relabelled seed"
 pass_test "the relabelled seed carries this run's edited source"
 [ "$(pin_version_of)" = "v5" ] ||
   fail_test "the relabel left service.conf pinning [$(pin_version_of)]; the pin must follow the label"
@@ -323,7 +500,7 @@ printf '%s\n' "First sentence." "Second sentence." "Third sentence." "A fourth, 
 # ship-land runs -n exactly here, before the fast-forward.
 git_repo add -A
 git_repo commit -q -m "this run's v5"
-echo "-- landed by yet another run" > "$SCHEMA/seed-coach-system-prompt-v5.sql"
+write_landed_seed "$SCHEMA/seed-coach-system-prompt-v5.sql" "v5" "A sentence landed by yet another run."
 git_repo add -A
 git_repo commit -q -m "another run's v5 lands"
 git_repo checkout -q -B main
@@ -379,47 +556,420 @@ pass_test "-n exits 3 when the seed is not declared in ORDER"
 
 
 echo ""
-echo "==== prompt-seed: refusals ===="
+echo "==== prompt-seed: a version only when a human authored one ===="
+
+# 33. THE DEFECT THIS RULE EXISTS FOR, and the regression test for it: A LAND
+# THAT AUTHORED NOTHING MUST MINT NOTHING.
+#
+# Phase 6 of the ship SKILL runs this script at EVERY land, and it used to
+# generate tip+1 unconditionally — it never asked whether a human had written
+# anything. Commit 3398491c is the proof on main: an IPEDS test-fixture change
+# that never opened prompts/ added db/schema/seed-coach-system-prompt-v25.sql,
+# byte-identical in body to v24, moved the live pin onto it, and recorded no
+# comment-log entry because its author never knew it had happened. One immutable
+# row per land, forever, each one saying exactly what the row before it said,
+# with convo_requests foreign keys pinning real traffic to it. It happened AGAIN
+# at b981fff9 (RFC 183, a Scorecard money change), which minted v26 the same way
+# while RFC 185 was in review — twice now, so this test is not a museum piece.
+#
+# The tip here is the seed THIS generator wrote on the previous land, which is
+# the shape the real case has.
+reset_fixture
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+LANDED_SHA="$(commit_fixture "the previous land: v4 is cut and lands")"
+cp "$SCHEMA/ORDER" "$FIXTURE_DIR/order.landed"
+cp "$PIN" "$FIXTURE_DIR/pin.landed"
+
+run_seed -b "$LANDED_SHA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a run that authored nothing exited [$seed_status] instead of 0: $(cat "$seed_err")"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v5.sql" ] ||
+  fail_test "a run that authored nothing minted v5 anyway; the schema dir holds: $(ls "$SCHEMA")"
+cmp -s "$FIXTURE_DIR/order.landed" "$SCHEMA/ORDER" ||
+  fail_test "a run that authored nothing appended to ORDER: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+cmp -s "$FIXTURE_DIR/pin.landed" "$PIN" ||
+  fail_test "a run that authored nothing moved the pin: [$(diff "$FIXTURE_DIR/pin.landed" "$PIN")]"
+[ "$(pin_version_of)" = "v4" ] ||
+  fail_test "the pin left the landed tip; it says [$(pin_version_of)]"
+pass_test "a land that authored nothing mints NO version: no seed, no ORDER line, no repin, exit 0"
+
+# 33b. And it SAYS so, rather than exiting 0 in silence: an operator reading the
+# land log has to be able to tell "nothing to do" from "did nothing".
+grep -q "nothing was authored" "$seed_err" ||
+  fail_test "the no-op run did not say that nothing was authored; said [$(cat "$seed_err")]"
+pass_test "the no-op run says plainly that nothing was authored"
+
+# 33c. AND `-n` MUST ANSWER ON THAT TREE. ship-land re-checks with -n inside the
+# land lock, and on a land that authored nothing there is no new seed for it to
+# find — demanding one would refuse every such land.
+run_seed -b "$LANDED_SHA" -n
+[ "$seed_status" -eq 0 ] ||
+  fail_test "-n on a nothing-authored tree exited [$seed_status] instead of 0: $(cat "$seed_err")"
+pass_test "-n on a nothing-authored tree exits 0 and does not demand a seed"
+
+# 33e. AND IT MUST REFUSE THE TREE THAT DOES CARRY ONE. The case above passes on
+# any tree where the precondition is simply absent, so on its own it says nothing
+# about the branch that matters: a tree holding a seed nobody authored is the
+# state D6 exists to stop, and ship-land's -n is the last gate against it. An
+# inverted comparison, a list_run_owned_seeds that returns nothing here, or a
+# fatal demoted to a warning would all keep the case above green.
+cp "$SCHEMA/0003.seed-coach-system-prompt-v3.sql" "$SCHEMA/seed-coach-system-prompt-v5.sql"
+printf '%s\n' "seed-coach-system-prompt-v5.sql" >> "$SCHEMA/ORDER"
+run_seed -b "$LANDED_SHA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on a nothing-authored tree holding a seed exited [$seed_status], expected [$EXIT_SEED_WOULD_CHANGE]"
+grep -q "no new version may be cut" "$seed_err" ||
+  fail_test "the refusal did not say why the seed must not exist; said [$(cat "$seed_err")]"
+grep -q "seed-coach-system-prompt-v5.sql" "$seed_err" ||
+  fail_test "the refusal did not name the seed; said [$(cat "$seed_err")]"
+pass_test "-n exits 3 when nothing was authored and the tree still carries a seed"
+rm -f "$SCHEMA/seed-coach-system-prompt-v5.sql"
+cp "$FIXTURE_DIR/order.landed" "$SCHEMA/ORDER"
+
+# 33f. THE PIN IS THE OTHER HALF, and it is independent of the seed: a run that
+# cut v5, repinned, and then had its edit reverted by hand leaves the runtime
+# pointing at a row no migration creates. This branch is reached through
+# assert_nothing_authored_tree_is_current asking for the TIP, not the authored
+# path's asking for this run's label, so the stale-pin case further up does not
+# cover it.
+sed -i.bak 's/"v4"/"v5"/' "$PIN"
+rm -f "$PIN.bak"
+run_seed -b "$LANDED_SHA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n with the pin off the tip exited [$seed_status], expected [$EXIT_SEED_WOULD_CHANGE]"
+grep -q "the row to serve is the tip \[v4\]" "$seed_err" ||
+  fail_test "the refusal did not name the tip the pin belongs on; said [$(cat "$seed_err")]"
+pass_test "-n exits 3 when nothing was authored and the pin has left the tip"
+cp "$FIXTURE_DIR/pin.landed" "$PIN"
+
+# 33d. THE REVERT, which is what makes the rule CONVERGE rather than merely
+# decline. A run that cut v5 and then had its prompt edit backed out — or that
+# rebased onto a base already carrying the same body — is holding a seed, an
+# ORDER line and a pin for a version that must not exist. Leaving them would keep
+# exactly the churn the rule exists to prevent, so this run's own seed is taken
+# back out and the pin goes back onto the tip. Run it twice, get the same tree.
+printf '%s\n' "First sentence." "Second sentence, briefly edited." "Third sentence." > "$SOURCE"
+run_seed -b "$LANDED_SHA"
+[ -f "$SCHEMA/seed-coach-system-prompt-v5.sql" ] ||
+  fail_test "the setup edit minted nothing: $(ls "$SCHEMA")"
+printf '%s\n' "First sentence." "Second sentence." "Third sentence." > "$SOURCE"
+run_seed -b "$LANDED_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "the reverting run failed: $(cat "$seed_err")"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v5.sql" ] ||
+  fail_test "a reverted edit left its seed behind: $(ls "$SCHEMA")"
+cmp -s "$FIXTURE_DIR/order.landed" "$SCHEMA/ORDER" ||
+  fail_test "a reverted edit left its ORDER line: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ "$(pin_version_of)" = "v4" ] ||
+  fail_test "a reverted edit left the pin on [$(pin_version_of)] instead of the tip v4"
+pass_test "reverting the edit takes this run's seed, its ORDER line and its pin back out"
+
+# 34. ONE EDITED SENTENCE, ONE VERSION — and only one. The rule must not cost the
+# authoring case anything, and a run must not answer an edit with two rows.
+printf '%s\n' "First sentence." "Second sentence, edited." "Third sentence." > "$SOURCE"
+run_seed -b "$LANDED_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "an authored edit was refused: $(cat "$seed_err")"
+[ -f "$SCHEMA/seed-coach-system-prompt-v5.sql" ] ||
+  fail_test "an edited sentence minted no version; the schema dir holds: $(ls "$SCHEMA")"
+minted="$(count_minted_seeds "$LANDED_SHA")"
+[ "$minted" -eq 1 ] ||
+  fail_test "an edited sentence minted [$minted] seeds, expected exactly 1: $(ls "$SCHEMA")"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v5.sql" "the edited source"
+pass_test "editing one sentence mints exactly one version, carrying the edit"
+
+# 34b. Re-running it is still the same one version, not a second.
+run_seed -b "$LANDED_SHA"
+minted="$(count_minted_seeds "$LANDED_SHA")"
+[ "$minted" -eq 1 ] ||
+  fail_test "re-running after an authored edit left [$minted] minted seeds: $(ls "$SCHEMA")"
+pass_test "re-running an authored edit does not mint a second version"
+
+# 35. LAYOUT IS NOT BODY. The rule is stated over the BODY, and the two cheap
+# tests it could have been stated over are both wrong: `did the source file
+# change` and `do the two SQL files differ byte for byte`. This is the second
+# one. The tip below says exactly what the source says and is laid out
+# differently — a foreign dialect here, a change to this generator's own
+# emitter in real life — and a byte comparison of the two files would answer
+# "different" and mint a version for a body nobody touched.
+reset_fixture
+write_landed_seed "$SCHEMA/0003.seed-coach-system-prompt-v3.sql" "v3" \
+  "First sentence." "Second sentence." "Third sentence."
+LAYOUT_SHA="$(commit_fixture "a tip whose SQL layout is not this generator's")"
+run_seed -b "$LAYOUT_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "the layout-only fixture was refused: $(cat "$seed_err")"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "a tip laid out differently but saying the same thing minted a version: $(ls "$SCHEMA")"
+pass_test "a tip with the same body in a different SQL layout mints no version"
+
+# 36. AND THE FIRST WRONG TEST — `did the source file change` — is what THIS
+# RFC would have been refused by. RFC 185 renames the source .txt -> .md with
+# IDENTICAL contents while genuinely changing the body: under RFC 181 the body
+# was the file's lines joined with SPACES, and it is now the file verbatim, with
+# the newlines in it. The source below is not touched at all — asserted against
+# the base — and a version is still owed.
+reset_fixture
+write_landed_seed "$SCHEMA/0003.seed-coach-system-prompt-v3.sql" "v3" \
+  "First sentence. Second sentence. Third sentence."
+JOINED_SHA="$(commit_fixture "a v3 whose body is the source's lines joined with spaces")"
+[ -z "$(git_repo diff --name-only "$JOINED_SHA" -- prompts)" ] ||
+  fail_test "the fixture edited the source; this assertion needs it untouched"
+run_seed -b "$JOINED_SHA"
+[ "$seed_status" -eq 0 ] || fail_test "the joined-body fixture was refused: $(cat "$seed_err")"
+[ -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "the body changed from joined-with-spaces to verbatim and no version was minted: $(ls "$SCHEMA")"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "the RFC 185 body change"
+[ "$(pin_version_of)" = "v4" ] ||
+  fail_test "the minted version did not move the pin; it says [$(pin_version_of)]"
+pass_test "an unchanged source whose BODY changed still mints a version (this RFC's own case)"
+
+# 37. A TIP IT CANNOT READ IS A REFUSAL, LOUDLY. "Nothing was authored" is a
+# claim about the tip's body, so a tip whose body cannot be read supports no
+# claim at all — and the failure that costs the most is the silent one, where an
+# unreadable tip reads as "identical" and the version a human authored is never
+# cut.
+reset_fixture
+echo "-- not a seed at all" > "$SCHEMA/0003.seed-coach-system-prompt-v3.sql"
+UNREADABLE_SHA="$(commit_fixture "a tip that is not a seed")"
+run_seed -b "$UNREADABLE_SHA"
+[ "$seed_status" -ne 0 ] ||
+  fail_test "an unparseable tip was accepted, and the run minted: $(ls "$SCHEMA")"
+grep -q "0003.seed-coach-system-prompt-v3.sql" "$seed_err" ||
+  fail_test "the unreadable-tip refusal did not name the tip; said [$(cat "$seed_err")]"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "the refused run left a seed behind: $(ls "$SCHEMA")"
+pass_test "a tip seed whose body cannot be read is refused by name, not silently treated as identical"
+
+# 37b. AND A BASE WITH NO COACH SEED AT ALL, the other half of the same rule:
+# "nothing was authored" is a claim about the tip's body, so a base with no tip
+# supports no claim either. Refused before anything is written, naming the reason
+# — never read as "the catalog is empty, so start again at v1", which would mint
+# a duplicate of a version the catalog already holds.
+reset_fixture
+rm -f "$SCHEMA/0003.seed-coach-system-prompt-v3.sql"
+: > "$SCHEMA/ORDER"
+SEEDLESS_SHA="$(commit_fixture "a base carrying no coach seed")"
+run_seed -b "$SEEDLESS_SHA"
+[ "$seed_status" -ne 0 ] ||
+  fail_test "a base with no coach seed was accepted, and the run minted: $(ls "$SCHEMA")"
+grep -q "carries no coach system-prompt seed" "$seed_err" ||
+  fail_test "the seedless-base refusal did not say why; said [$(cat "$seed_err")]"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v1.sql" ] ||
+  fail_test "the refused run wrote a seed anyway: $(ls "$SCHEMA")"
+pass_test "a base carrying no coach seed is refused, never restarted at v1"
+
+# 37c. AND IT NAMES WHAT IT SCANNED. `seed-coach-system-prompt-v08.sql` is a
+# near miss COACH_SEED_RE rejects on purpose (v08 is an octal literal to
+# `$(( ))`), so "carries no coach seed" is a refusal an operator meets with the
+# offending file in front of them. The listing the scan already read is the whole
+# content of the failure.
+reset_fixture
+rm -f "$SCHEMA/0003.seed-coach-system-prompt-v3.sql"
+write_landed_seed "$SCHEMA/seed-coach-system-prompt-v08.sql" "v8" "A landed sentence."
+printf '%s\n' "seed-coach-system-prompt-v08.sql" > "$SCHEMA/ORDER"
+NEAR_MISS_SHA="$(commit_fixture "a base whose only seed is named almost right")"
+run_seed -b "$NEAR_MISS_SHA"
+[ "$seed_status" -ne 0 ] ||
+  fail_test "a base whose only coach seed is named v08 was accepted: $(ls "$SCHEMA")"
+grep -qF "seed-coach-system-prompt-v08.sql" "$seed_err" ||
+  fail_test "the seedless-base refusal did not name the near miss it scanned past; said [$(cat "$seed_err")]"
+pass_test "the seedless-base refusal names the entries it did scan, so a rejected near miss is visible"
+
+
+echo ""
+echo "==== prompt-seed: the body reader refuses a seed it was not given ===="
+
+# THE READER DECIDES WHETHER A VERSION IS CUT AT ALL, so what it does with a seed
+# it does not understand is a correctness question, not a parsing nicety. It used
+# to recognise two token kinds and treat EVERY other byte as layout — so a
+# construct it could not evaluate was silently dropped, and the body it returned
+# was one no author ever wrote. Both outcomes are defects with no error anywhere:
+# a version minted from prose nobody typed, or an authored edit that ships
+# nothing because the mis-read body compared equal.
+#
+# Each case below was verified to exit 0 with a WRONG body under the old reader.
+# The layout bytes are named now (` \t\n,|();`) and everything else is refused.
+#
+# Asserted against BOTH dialects, deliberately. The harness's `body_of` is the
+# cross-check on the awk reader, and it was a transliteration of the same
+# algorithm — so it was blind in exactly the same way and the cross-check proved
+# nothing about this class. A case that passes here only when both refuse is what
+# keeps the two honest.
+TIP_SEED="$SCHEMA/0003.seed-coach-system-prompt-v3.sql"
+
+assert_tampered_tip_is_refused() { # assert_tampered_tip_is_refused <tampering done to it> <the phrase the refusal must carry>
+  local tampering="${1:?assert_tampered_tip_is_refused requires the tampering done to the tip}"
+  local phrase="${2:?assert_tampered_tip_is_refused requires the phrase the refusal must carry}"
+  local sha
+  sha="$(commit_fixture "a tip carrying $tampering")"
+  run_seed -b "$sha"
+  [ "$seed_status" -ne 0 ] ||
+    fail_test "a tip carrying $tampering was read as a body and the run minted: $(ls "$SCHEMA")"
+  grep -qF "$phrase" "$seed_err" ||
+    fail_test "the refusal of a tip carrying $tampering did not say [$phrase]; said [$(cat "$seed_err")]"
+  [ ! -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+    fail_test "the run refused a tip carrying $tampering and still left a seed behind: $(ls "$SCHEMA")"
+  if body_of "$TIP_SEED" > /dev/null 2>&1; then
+    fail_test "body_of read a tip carrying $tampering without complaint, so the two dialects are blind the same way again"
+  fi
+  pass_test "a tip carrying $tampering is refused by both readers, never read as a body nobody wrote"
+}
+
+# 38. AN SQL COMMENT AFTER THE STATEMENT. An operator's note appended to a seed.
+# With an EVEN number of apostrophes in it the old reader returned the real body
+# with `'s note: don'` spliced onto the end, exit 0; with an odd number it exited
+# 1 blaming "an unterminated SQL string", which names the wrong cause at the land
+# gate. A comment's text cannot be separated from body text by a reader that only
+# knows quotes, so it is refused rather than skipped.
+reset_fixture
+printf -- "-- an operator's note: don't edit\n" >> "$TIP_SEED"
+assert_tampered_tip_is_refused "an operator's note appended after the statement" \
+  "an SQL comment inside the VALUES clause"
+
+# 39. AND AN SQL COMMENT INSIDE THE VALUES CLAUSE, which is the same defect where
+# it does the most damage: the old reader scanned the comment for quotes, so
+# `-- run A's note and run B's note` became a body fragment and was spliced into
+# the middle of the prompt with exit 0.
+reset_fixture
+awk '{ print } /^VALUES \($/ { print "  -- run A'"'"'s note and run B'"'"'s note" }' "$TIP_SEED" > "$FIXTURE_DIR/tampered.sql"
+mv "$FIXTURE_DIR/tampered.sql" "$TIP_SEED"
+assert_tampered_tip_is_refused "a comment inside its VALUES clause" \
+  "an SQL comment inside the VALUES clause"
+
+# 40. A JOINER THAT IS NOT THE JOINER. `chr(9)` is valid SQL and Postgres would
+# store a TAB; the old reader skipped it character by character and returned a
+# body with the tab simply gone.
+reset_fixture
+write_landed_seed "$TIP_SEED" "v3" "A landed sentence." "A second landed sentence."
+sed 's/chr(10)/chr(9)/' "$TIP_SEED" > "$FIXTURE_DIR/tampered.sql"
+mv "$FIXTURE_DIR/tampered.sql" "$TIP_SEED"
+assert_tampered_tip_is_refused "a chr(9) where the joiner belongs" \
+  "an unreadable token"
+
+# 41. AND THE SAME TOKEN IN THE OTHER CASE. `CHR(10)` is the identical SQL —
+# Postgres folds it — and the old reader, which matched the joiner as a
+# lowercase literal, dropped the line break silently. Two bodies that Postgres
+# stores identically then read as different, which is a version minted for a
+# change nobody made.
+reset_fixture
+write_landed_seed "$TIP_SEED" "v3" "A landed sentence." "A second landed sentence."
+sed 's/chr(10)/CHR(10)/' "$TIP_SEED" > "$FIXTURE_DIR/tampered.sql"
+mv "$FIXTURE_DIR/tampered.sql" "$TIP_SEED"
+assert_tampered_tip_is_refused "an uppercase CHR(10) joiner" \
+  "an unreadable token"
+
+# 42. A SECOND INSERT. Whichever row Postgres would serve, a file that inserts
+# two is not one this generator wrote, and reading the first and ignoring the
+# second is a body that describes neither.
+reset_fixture
+cat >> "$TIP_SEED" << 'SQL'
+
+INSERT INTO system_prompts (name, version, body)
+VALUES ('coach', 'v99', 'a row nobody authored');
+SQL
+assert_tampered_tip_is_refused "a second INSERT statement" \
+  "a second INSERT"
+
+# 43. A FOURTH VALUES LITERAL. "The first two tokens are the name and the
+# version" was an ASSUMPTION about the emitter's column layout, never a check —
+# so an extra leading literal shifted the whole body by one fragment and the
+# reader returned it with a straight face. The layout is verified now.
+reset_fixture
+sed "s/  'coach', 'v3',/  'extra', 'coach', 'v3',/" "$TIP_SEED" > "$FIXTURE_DIR/tampered.sql"
+mv "$FIXTURE_DIR/tampered.sql" "$TIP_SEED"
+assert_tampered_tip_is_refused "a fourth VALUES literal ahead of the name" \
+  "not the coach prompt name"
+
+# 44. AND THE READER STILL READS EVERY SEED THIS GENERATOR HAS EVER WRITTEN. The
+# tightening above is only worth having if it changed nothing about what the
+# reader ACCEPTS: the harness's own fixture dialect — laid out differently from
+# bin/prompt-seed's emitter on purpose — must still read back byte for byte.
+reset_fixture
+run_seed -b "$BASE_SHA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "the tightened reader refused an ordinary run: $(cat "$seed_err")"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "after the reader was tightened"
+pass_test "the tightened reader still reads both dialects' seeds back byte for byte"
+
+echo ""
+echo "==== prompt-seed: what is body now, and what is still refused ===="
 
 reset_fixture
 
-# 14. A TAB does not survive `strip -> join with one space`, so a source carrying
-# one would generate a body the author cannot reproduce from their own file.
+# 14. A TAB IS ORDINARY TEXT NOW. Under RFC 181's join it was refused, because
+# `strip -> join with one space` collapsed it and the author could not reproduce
+# the seeded body from their own file. Nothing collapses it any more, so refusing
+# it would be refusing a byte the generator handles perfectly — and a tab is how
+# a fenced code block indents.
 printf '%s\n' "First sentence." $'Second\tsentence.' "Third sentence." > "$SOURCE"
 run_seed
-[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
-  fail_test "a tabbed source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
-grep -q "line(s) \[2\]" "$seed_err" ||
-  fail_test "the tab refusal did not name line 2; said [$(cat "$seed_err")]"
-pass_test "a tab in the source is refused, naming the line"
+[ "$seed_status" -eq 0 ] || fail_test "a tabbed source was refused: $(cat "$seed_err")"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "a tabbed source"
+pass_test "a tab is body text, kept exactly where the author put it"
 
-# 15. Interior double spaces, same reason — and EVERY offending line is named in
-# one pass, so a five-line fix is one run, not five.
-printf '%s\n' "First  sentence." "Second sentence." "Third  sentence." > "$SOURCE"
+# 15. INTERIOR DOUBLE SPACES, same story and for the same reason: the join used
+# one space and could not round-trip two, so two were refused. Verbatim
+# round-trips any number of them.
+printf '%s\n' "First  sentence." "Second sentence." "Third   sentence." > "$SOURCE"
 run_seed
-[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
-  fail_test "a double-spaced source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
-grep -q "line(s) \[1 3\]" "$seed_err" ||
-  fail_test "the double-space refusal did not name BOTH lines 1 and 3; said [$(cat "$seed_err")]"
-pass_test "interior double spaces are refused, naming every offending line in one pass"
+[ "$seed_status" -eq 0 ] || fail_test "a double-spaced source was refused: $(cat "$seed_err")"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "a double-spaced source"
+pass_test "interior double spaces are body text, kept exactly as authored"
 
-# 16. TRAILING whitespace is NOT a refusal: it is stripped. A stray space at
-# end-of-line is not worth a failed land, and it round-trips perfectly.
+# 16. TRAILING WHITESPACE IS CONTENT and is NOT stripped. This is the reversal
+# worth stating loudly: RFC 181 stripped it, which was right for a rule that
+# joined lines and wrong the moment the body became the file. In Markdown two
+# trailing spaces are a hard line break, so stripping them would silently edit
+# the author's prose.
 printf '%s\n' "First sentence.   " "  Second sentence." "Third sentence." > "$SOURCE"
 run_seed
 [ "$seed_status" -eq 0 ] || fail_test "trailing whitespace was refused: $(cat "$seed_err")"
-[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
-  fail_test "stripping produced [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
-pass_test "leading and trailing whitespace is stripped, not refused"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "a source with padding"
+pass_test "leading and trailing whitespace is preserved, neither stripped nor refused"
 
-# 17. Blank lines are permitted and dropped, so a later author may paragraph the
-# file at zero cost and with no effect on the body.
+# 17. A BLANK LINE SURVIVES AS A BLANK LINE, which is what makes a paragraph a
+# paragraph. RFC 181 dropped them, so the file could be paragraphed at "zero
+# cost and with no effect on the body" — that no-effect is exactly the defect
+# RFC 185 exists to fix.
 printf '%s\n' "First sentence." "" "Second sentence." "" "Third sentence." > "$SOURCE"
 run_seed
 [ "$seed_status" -eq 0 ] || fail_test "blank lines were refused: $(cat "$seed_err")"
-[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
-  fail_test "blank lines changed the body: [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
-pass_test "blank lines are dropped and do not change the body"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "a paragraphed source"
+pass_test "a blank line survives as a blank line, so a paragraph reaches the model as one"
+
+# 17c. THE POINT OF CALLING IT `.md`. A heading, a bullet list, an ordered list,
+# a table and a fenced code block are all constructs whose LINE BREAK is load
+# bearing: joined into surrounding prose they do not degrade, they become
+# nonsense the model is served and no reader downstream can see. Every one of
+# them goes through here byte for byte.
+#
+# Single quotes throughout: a fenced block is delimited by backticks, which the
+# shell would otherwise run as a command substitution.
+{
+  echo '# Heading'
+  echo ''
+  echo 'A paragraph before the list.'
+  echo ''
+  echo '- first bullet'
+  echo '- second bullet'
+  echo ''
+  echo '1. first step'
+  echo '2. second step'
+  echo ''
+  echo '| Column | Meaning |'
+  echo '| --- | --- |'
+  echo '| a | the first |'
+  echo ''
+  echo '```sql'
+  echo "SELECT 'quoted', chr(10);"
+  echo '```'
+  echo ''
+  echo '> A block quote, with an em dash — and an apostrophe'"'"'s worth of trouble.'
+} > "$SOURCE"
+run_seed
+[ "$seed_status" -eq 0 ] || fail_test "a Markdown source was refused: $(cat "$seed_err")"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "a Markdown source"
+pass_test "a heading, both list kinds, a table, a fenced block and a quote survive intact"
+
 
 # 17b. A source file that is not there at all, and one that is there and empty.
 # Both are the same mistake to the caller — there is no body to seed — and both
@@ -429,7 +979,7 @@ rm -f "$SOURCE"
 run_seed
 [ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
   fail_test "a missing source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
-grep -q "coach-system-prompt.txt" "$seed_err" ||
+grep -q "coach-system-prompt.md" "$seed_err" ||
   fail_test "the missing-source refusal did not name the file; said [$(cat "$seed_err")]"
 pass_test "a missing source file is refused with EXIT_INVALID_ARG_VALUE, naming the file"
 
@@ -437,7 +987,7 @@ pass_test "a missing source file is refused with EXIT_INVALID_ARG_VALUE, naming 
 run_seed
 [ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
   fail_test "an empty source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
-grep -q "coach-system-prompt.txt" "$seed_err" ||
+grep -q "coach-system-prompt.md" "$seed_err" ||
   fail_test "the empty-source refusal did not name the file; said [$(cat "$seed_err")]"
 pass_test "an empty source file is refused with EXIT_INVALID_ARG_VALUE, naming the file"
 
@@ -501,28 +1051,30 @@ grep -q "service.conf" "$seed_err" ||
 pass_test "a missing service.conf is refused, naming the file"
 
 echo ""
-echo "==== prompt-seed: one whitespace class ===="
+echo "==== prompt-seed: every byte is body, whatever kind of space it is ===="
 
-# 23. THE THREE-IMPLEMENTATION TRAP, pinned. The join rule is implemented here
-# (awk, LC_ALL=C), and again in Kotlin as deliberate double entry. They only work
-# if they agree on what WHITESPACE is. They did not: a leading U+2000 EN QUAD
-# passed the old bash locale trim, was KEPT by the C-locale emitter, and was
-# TRIMMED by Kotlin's String.trim() — so the build failed telling the operator to
-# regenerate a seed whose regeneration was byte-identical. Unfixable without
-# editing a test.
+# 23. THE THREE-IMPLEMENTATION TRAP, retired rather than pinned. RFC 181's join
+# rule was implemented three times — the shell validator, the awk emitter, and a
+# Kotlin restatement — and the three had to agree on what WHITESPACE was. They
+# did not: a leading U+2000 EN QUAD passed the old bash locale trim, was KEPT by
+# the C-locale emitter, and was TRIMMED by Kotlin's String.trim(), so the build
+# failed telling the operator to regenerate a seed whose regeneration was
+# byte-identical. Unfixable without editing a test.
 #
-# The one class is ASCII whitespace. This asserts the generator's half of it with
-# a REAL non-ASCII space: U+2000 is body text, not padding, and survives the join
-# untouched at both ends.
+# There is no rule left to disagree about (RFC 185): every byte is body, and a
+# U+2000 needs no special case because nothing has a case. The fixture stays,
+# because the assertion it makes is now the strongest one available — this
+# character reaches the row unchanged, at both ends of a line, where a
+# Char.isWhitespace-shaped trim would still eat it.
 reset_fixture
 printf '%s\n' "First sentence." $'\u2000Second sentence, en-quadded.\u2000' "Third sentence." > "$SOURCE"
 run_seed
 [ "$seed_status" -eq 0 ] || fail_test "a source carrying U+2000 was refused: $(cat "$seed_err")"
-[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = $'First sentence. \u2000Second sentence, en-quadded.\u2000 Third sentence.' ] ||
-  fail_test "U+2000 did not survive the join: [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
+assert_body_is_source "$SCHEMA/seed-coach-system-prompt-v4.sql" "a source carrying U+2000"
 pass_test "a non-ASCII space is body text, kept at both ends of a line"
 
 echo ""
+
 echo "==== prompt-seed: a refusal never leaves the tree half-written ===="
 
 # 24. THE EMPTINESS CHECK USED TO LIVE IN THE EMITTER'S END RULE, which runs
@@ -540,7 +1092,7 @@ printf '%s\n' "" "   " "" > "$SOURCE"
 run_seed
 [ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
   fail_test "an all-blank source exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
-grep -q "no content lines" "$seed_err" ||
+grep -q "has no content" "$seed_err" ||
   fail_test "the all-blank refusal did not say what was wrong; said [$(cat "$seed_err")]"
 pass_test "an all-blank source is refused with EXIT_INVALID_ARG_VALUE"
 cmp -s "$FIXTURE_DIR/v4.before-blank" "$SCHEMA/seed-coach-system-prompt-v4.sql" ||
@@ -576,33 +1128,41 @@ pass_test "a CR-terminated ORDER line is refused by name, not silently duplicate
 echo ""
 echo "==== prompt-seed: a byte that no two readers agree on ===="
 
-# 26. THE THIRD UNFIXABLE BUILD of the U+2000 family, refused rather than
-# accommodated. A bare CR inside a line is an ORDINARY BYTE to the C-locale
-# emitter and a LINE BREAK to Kotlin's String.lines(), so the seed would carry
-# it and the assertion that compares them would split on it: the build fails
-# saying "regenerate the seed" and regeneration is byte-identical.
+# 26. THE ONE REFUSAL LEFT ABOUT A CHARACTER (RFC 185 D4), and it survives
+# because it is the one byte two readers still cannot agree on. `awk` splits
+# records on LF alone, so a CR is an ORDINARY BYTE it carries into the fragment;
+# Kotlin's String.lines() splits on CR, CRLF and LF alike. Verbatim also means
+# the CR would be SERVED to the model — a character nobody authored, invisible in
+# every diff.
 reset_fixture
 printf 'First sentence.\nSecond\rsentence.\nThird sentence.\n' > "$SOURCE"
 run_seed
 [ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
   fail_test "a source with a bare CR exited $seed_status, expected $EXIT_INVALID_ARG_VALUE"
-grep -q "control character on line(s) \[2\]" "$seed_err" ||
-  fail_test "the control-character refusal did not name line 2; said [$(cat "$seed_err")]"
+grep -q "carriage return on line(s) \[2\]" "$seed_err" ||
+  fail_test "the carriage-return refusal did not name line 2; said [$(cat "$seed_err")]"
 [ ! -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
   fail_test "the refused run wrote a seed anyway"
 pass_test "a bare CR in the source is refused, naming the line"
 
-# 26b. And the check is on the TRIMMED line, so an ordinary CRLF checkout is
-# not refused for a byte the join strips anyway. Refusing it would turn a
-# whitespace convention into a failed land.
+# 26b. AND A WHOLE CRLF CHECKOUT IS REFUSED TOO — the reversal RFC 185 makes
+# here, stated as its own case. RFC 181 stripped the trailing CR along with every
+# other trailing byte, so a CRLF checkout was a whitespace convention and not
+# worth a failed land. Verbatim strips nothing, so that same checkout would put a
+# `\r` at the end of all 158 lines of the prompt. Every line is named, so the
+# operator sees a checkout setting rather than one mysterious line.
 printf 'First sentence.\r\nSecond sentence.\r\nThird sentence.\r\n' > "$SOURCE"
 run_seed
-[ "$seed_status" -eq 0 ] || fail_test "a CRLF source was refused: $(cat "$seed_err")"
-[ "$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")" = "First sentence. Second sentence. Third sentence." ] ||
-  fail_test "a CRLF source produced [$(body_of "$SCHEMA/seed-coach-system-prompt-v4.sql")]"
-pass_test "a CRLF checkout is stripped, not refused"
+[ "$seed_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a CRLF source exited [$seed_status], expected [$EXIT_INVALID_ARG_VALUE]"
+grep -q "carriage return on line(s) \[1 2 3\]" "$seed_err" ||
+  fail_test "the CRLF refusal did not name every line; said [$(cat "$seed_err")]"
+[ ! -f "$SCHEMA/seed-coach-system-prompt-v4.sql" ] ||
+  fail_test "the refused CRLF run wrote a seed anyway"
+pass_test "a CRLF checkout is refused, naming every line, not silently stripped"
 
 echo ""
+
 echo "==== prompt-seed: labels the version arithmetic can survive ===="
 
 # 27. A LEADING-ZERO LABEL IS OCTAL to $(( )). `seed-coach-system-prompt-v08.sql`
@@ -733,7 +1293,7 @@ reset_fixture
 run_seed
 git_repo add -A
 git_repo commit -q -m "this run's v4"
-echo "-- landed by another run" > "$SCHEMA/seed-coach-system-prompt-v4.sql"
+write_landed_seed "$SCHEMA/seed-coach-system-prompt-v4.sql" "v4" "A sentence landed by another run."
 git_repo add -A
 git_repo commit -q -m "another run's v4 lands"
 git_repo checkout -q -B main
@@ -748,6 +1308,73 @@ if grep -vE '^[[:space:]]*#' "$PROMPT_SEED" | grep -q 'ORDER_FILE\.tmp'; then
   fail_test "bin/prompt-seed stages the ORDER rewrite as ORDER.tmp beside ORDER again; it belongs in the directory the cleanup trap owns"
 fi
 pass_test "the ORDER rewrite is never staged as a file beside ORDER"
+
+echo ""
+echo "==== the prompt is excluded from deno fmt ===="
+
+# 32. `deno fmt` MUST NOT TOUCH THE PROMPT, and with the file renamed to `.md`
+# that is no longer true by accident. RFC 181 relied on the `.txt` extension
+# keeping it out of the `**/*.md` glob — protection nobody declared and the
+# rename removed. `deno.json` sets `proseWrap: "always"` at `lineWidth: 80`, so a
+# formatter run RE-WRAPS sentences across lines; under RFC 185 line breaks are
+# BODY, so a reflow silently rewrites the prompt and mints a version nobody
+# authored. `prompts/` is therefore in `fmt.exclude`, and this is the assertion
+# that says so.
+#
+# Run over a COPY of the real deno.json and the real prompt in a temp directory,
+# not by formatting the checkout: `deno fmt` writes in place, and a harness that
+# reformats the operator's working tree to prove it does not reformat it has
+# already lost. An exclude path in deno.json is relative to the config file, so
+# the copy reproduces the rule exactly.
+#
+# deno is a dev-shell tool and bin/shell-tests runs inside it; the guard is for a
+# bare-shell invocation, where the honest answer is that this case was not run.
+if command -v deno > /dev/null 2>&1; then
+  FMT_DIR="$FIXTURE_DIR/fmt"
+  mkdir -p "$FMT_DIR/prompts"
+  cp "$PROJECT_ROOT/deno.json" "$FMT_DIR/deno.json"
+  cp "$PROJECT_ROOT/prompts/coach-system-prompt.md" "$FMT_DIR/prompts/coach-system-prompt.md"
+  cp "$PROJECT_ROOT/prompts/coach-system-prompt.md" "$FIXTURE_DIR/prompt.pristine"
+
+  # THE POSITIVE CONTROL, formatted by the SAME run. The same deno.json, the same
+  # prose, at a path `fmt.exclude` does not name: if deno leaves THIS copy alone
+  # it has stopped re-wrapping, and the assertion above passes for a reason that
+  # has nothing to do with the exclusion. A guard that cannot fire and a rule
+  # that is being obeyed are indistinguishable.
+  #
+  # A COPY outside `prompts/`, not an edited deno.json: stripping the exclusion
+  # meant reading JSONC with `json.loads` after one regex swept whole-line `//`
+  # comments, which is a hand-rolled parser that knows one comment form. A legal
+  # trailing `// keep` or a `/* */` block in the file this repo hand-maintains
+  # makes it raise, and the harness dies mid-suite with a bare traceback and no
+  # test name. There is no JSONC reader to reuse here, so the answer is not to
+  # parse at all.
+  mkdir -p "$FMT_DIR/control"
+  cp "$FIXTURE_DIR/prompt.pristine" "$FMT_DIR/control/coach-system-prompt.md"
+
+  # The invocation bin/format itself makes: the exclude has to hold against the
+  # explicit path arguments the repo's own gate passes, not only against deno's
+  # bare config-driven discovery. MARKDOWN_FMT_PATHS comes from bin/common, so
+  # the two cannot drift.
+  #
+  # deno's own output is KEPT and quoted into whichever assertion fails. `deno
+  # fmt` exits non-zero when it REFORMATTED something, which is a verdict both
+  # assertions read from the files themselves — so the status is not asserted
+  # here — but with the output discarded twice a deno that never ran at all is
+  # indistinguishable from one that formatted and changed nothing, and the
+  # control below would then blame the exclusion for deno's failure.
+  fmt_err="$FIXTURE_DIR/deno-fmt.err"
+  (cd "$FMT_DIR" && deno fmt "${MARKDOWN_FMT_PATHS[@]}" > "$fmt_err" 2>&1) || true
+
+  cmp -s "$FIXTURE_DIR/prompt.pristine" "$FMT_DIR/prompts/coach-system-prompt.md" ||
+    fail_test "deno fmt rewrote the coach prompt under the real deno.json: [$(diff "$FIXTURE_DIR/prompt.pristine" "$FMT_DIR/prompts/coach-system-prompt.md" | head -4)]; deno said [$(cat "$fmt_err")]"
+  pass_test "deno fmt leaves prompts/coach-system-prompt.md byte for byte alone"
+
+  if cmp -s "$FIXTURE_DIR/prompt.pristine" "$FMT_DIR/control/coach-system-prompt.md"; then
+    fail_test "deno fmt left the same prose alone at [control/coach-system-prompt.md], a path fmt.exclude does not name, so the exclusion assertion above proves nothing; deno said [$(cat "$fmt_err")]"
+  fi
+  pass_test "and outside that exclusion it re-wraps the same prose, so the assertion is not vacuous"
+fi
 
 echo ""
 echo "==== prompt-seed: the merge this change exists for ===="

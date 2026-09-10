@@ -2,6 +2,12 @@
   "fmt": {
     "lineWidth": 80,
     "proseWrap": "always",
-    "exclude": ["build/", ".gradle/", "var/", ".idea/", ".gemini/"]
+    // `prompts/` is the coach system prompt, whose line breaks are BODY: the
+    // seed is the file verbatim, byte for byte (RFC 185). `proseWrap: "always"`
+    // re-wraps sentences across lines, which would silently rewrite the prompt
+    // and mint a new version on the next land. RFC 181 relied on the `.txt`
+    // extension keeping it out of a `**/*.md` glob; that protection ended with
+    // the rename, so it is declared here.
+    "exclude": ["build/", ".gradle/", "var/", ".idea/", ".gemini/", "prompts/"]
   }
 }

@@ -1,20 +1,58 @@
 #!/usr/bin/env bash
 # prompt-seed — generate the coach system-prompt seed migration from the file a
-# human actually edits, prompts/coach-system-prompt.txt (RFC 181).
+# human actually edits, prompts/coach-system-prompt.md (RFC 181, RFC 185).
 #
 # The prompt body used to be AUTHORED inside the seed migration: ~412 hand-wrapped
 # `|| '...'` fragments of one 25 KB line, retyped in full for every version. Two
 # runs that both touched the prompt therefore produced two unrelated file ADDS of
 # the same logical thing, which git cannot merge. Here the body is a line-based
-# text file that git merges like any other source, and the seed is a GENERATED
+# Markdown file that git merges like any other source, and the seed is a GENERATED
 # artifact: deleted and rewritten from the source file, at land, after the final
 # rebase, so its version label is the tree that is actually landing.
+#
+# THE BODY IS THE FILE (RFC 185). There is no transform: no trim, no join, no
+# dropped blank line, no wrap. One source line becomes one SQL fragment, and the
+# fragments are joined by `chr(10)`, so the seed's diff is the source's diff line
+# for line and the round trip is reversible by construction. RFC 181's join rule
+# — strip, drop blanks, join with one space — made a line break unrepresentable,
+# which made Markdown unrepresentable; the three whitespace classes it needed
+# (the tab refusal, the interior-double-space refusal, the U+2000 trap) were all
+# consequences of a lossy transform having to be reversible, and they go with it.
+#
+# The one thing the body is NOT is the file's final line terminator. awk reads
+# records without it, so the body is the file's LINES joined by newline — the
+# text minus at most one trailing newline. That terminator ends the last line;
+# it is not a line of its own, and whether an editor leaves one is invisible in
+# every diff, so making it body text would make an unreviewable byte load
+# bearing. The Kotlin oracle states the same thing from its own side, with
+# `readText().removeSuffix("\n")`, which is this rule's exact inverse.
 #
 # It also owns the PIN. The version label is computed at land, so a literal
 # nobody moves in service.conf drifts from it the moment a second run lands
 # between this run's generation and its own: the seed says v25 and the pin still
 # says v24, which serves last week's body from a row nobody meant to pin. The
 # label and the pin are one fact, so one writer writes both.
+#
+# IT GENERATES ONLY WHEN A HUMAN AUTHORED SOMETHING (RFC 185 D6). Phase 6 of the
+# ship SKILL runs this at EVERY land, and it used to mint tip+1 unconditionally —
+# so a run that never opened prompts/ still added an immutable catalog row whose
+# body was byte-identical to the row before it, moved the live pin onto that row,
+# and left no comment-log entry because its author never knew. Commit 3398491c,
+# an IPEDS test-fixture change, is the proof: it added
+# db/schema/seed-coach-system-prompt-v25.sql, identical to v24. The rule now is
+# the one the title says: a new version IF AND ONLY IF the authored BODY differs
+# from the BODY of the catalog tip. Otherwise no seed, no ORDER line, no repin.
+#
+# It has now fired TWICE: b981fff9 (RFC 183), a Scorecard money change, minted
+# v26 the same way while THIS RFC was in review. Not a one-off.
+#
+# At the level of the BODY, and not of the file. A cheaper test — did the source
+# file change, or do the two SQL files differ byte for byte — answers the wrong
+# question in both directions: RFC 185 itself renames the source with IDENTICAL
+# contents while genuinely changing the body (joined-with-spaces becomes
+# verbatim-with-newlines), and a change to this generator's own LAYOUT would mint
+# a version for a body nobody touched. So both sides are read back to text
+# through the same reader and compared as bodies.
 #
 # The only seed this script deletes is one that is absent from <base-ref> — i.e.
 # one this run generated itself. That inference is only sound while <base-ref>
@@ -37,19 +75,6 @@ source "$(dirname "$0")/common"
 # of the corpus this run is generating.
 strip_git_hook_env
 
-# The generated fragment width, measured in body BYTES under LC_ALL=C, BEFORE
-# `'` is escaped as `''` and before the joining space is appended. So a fragment
-# with no apostrophe closes on column 72-73 (`  || '` is six columns plus the
-# closing quote), and one carrying apostrophes closes a little further right —
-# the emitted column is an output of the rule, not the rule itself.
-#
-# Bytes, not characters, because gawk's length() counts CHARACTERS and most
-# other awks count bytes: measuring bytes under LC_ALL=C is what makes the same
-# source wrap identically on every machine, which is the property `-n` compares
-# locally and at land. Breaks happen at spaces only, so a multi-byte character
-# (an em dash) is never split across two fragments.
-FRAGMENT_WIDTH=65
-
 # The pin this script rewrites, relative to the repository root.
 PIN_REL="service/src/main/resources/service.conf"
 
@@ -58,15 +83,20 @@ help() {
 prompt-seed [options]
 
 Generates <schema-dir>/seed-coach-system-prompt-v<N>.sql from the authored source
-file prompts/coach-system-prompt.txt, appends its ORDER line, and rewrites the
+file prompts/coach-system-prompt.md, appends its ORDER line, and rewrites the
 `systemPromptVersion = "vNN"` pin in service/src/main/resources/service.conf to
 the label it just generated.
 
-The body is the source file's lines, each stripped, blank ones dropped, joined
-with a single space. A hand-edited seed, a hand-edited source or a stale seed
-fails the build: `-n` refuses a tree that differs from what this run generates,
-and a Kotlin test compares the SERVED row's body against the same join of the
-same file.
+ONLY IF SOMETHING WAS AUTHORED. When the source file's body is byte-identical to
+the body of the catalog tip in <base-ref>, there is no new version to cut: this
+writes no seed, appends no ORDER line, leaves the pin on the tip, and exits 0.
+This runs at every land, and a land that changed no prose must not add a row.
+
+The body IS the source file, verbatim: one SQL fragment per source line, joined
+by chr(10), with nothing trimmed, dropped or re-wrapped (RFC 185). A hand-edited
+seed, a hand-edited source or a stale seed fails the build: `-n` refuses a tree
+that differs from what this run generates, and a Kotlin test compares the SERVED
+row's body against the file itself.
 
 <N> is one past the highest coach seed present in <base-ref>. A coach seed in
 the worktree that <base-ref> does NOT have is this run's own, previously
@@ -84,11 +114,13 @@ Options:
   -d: The schema directory to generate into (default: $PROJECT_ROOT/db/schema).
       The repository, the source file and the pin are derived from it.
   -n: Dry run. Writes nothing; exits 3 if the tree differs from what a real
-      run would generate, 0 if it is already correct.
+      run would generate, 0 if it is already correct — including the case where
+      nothing was authored and the correct tree is one with no new seed in it.
   -h: Help
 
 Exit codes:
-  0   the seed, its ORDER line and the pin are correct, or were written
+  0   the seed, its ORDER line and the pin are correct, or were written; or
+      nothing was authored, so there is nothing to write
   1   refused: the corpus or the base ref is not usable
   3   -n only: the tree differs from what would be generated
   9   refused: <schema-dir>/ORDER is corrupt and cannot be appended to
@@ -160,36 +192,10 @@ resolve_corpus() {
   *) fatal "[$SCHEMA_DIR] is not under its own repository root [$REPO_ROOT]" ;;
   esac
 
-  SOURCE_FILE="$REPO_ROOT/prompts/coach-system-prompt.txt"
+  SOURCE_FILE="$REPO_ROOT/prompts/coach-system-prompt.md"
   ORDER_FILE="$SCHEMA_DIR/ORDER"
   PIN_FILE="$REPO_ROOT/$PIN_REL"
 }
-
-# ── The one whitespace class of the join rule ──────────────────────────────────
-# The rule is `strip -> drop blanks -> join with one space`, and it has three
-# implementations: this validator, the emitter below, and the Kotlin assertion
-# in SystemPromptCatalogTest that the shipped row equals the file. Three
-# implementations only work if they agree on what WHITESPACE is, and they did
-# not: a leading U+2000 EN QUAD passed a bash locale trim, was KEPT by the
-# C-locale awk emitter, and was TRIMMED by Kotlin's String.trim() (which is
-# Char.isWhitespace()). The build then failed telling the operator to
-# "regenerate the seed", while regeneration produced byte-identical output —
-# unfixable without editing a test.
-#
-# The one class is ASCII whitespace: space, tab, CR, LF, VT, FF, and nothing
-# else. It is expressed here ONCE, as an awk function under LC_ALL=C where
-# [[:space:]] is exactly those six bytes, and both awk programs below are built
-# on top of it — so the validator and the emitter are not two implementations
-# that agree, they are one implementation used twice. Kotlin's copy stays
-# deliberate double entry and trims the same six characters, pinned by its own
-# test.
-JOIN_RULE_AWK='
-function authored_trim(s) {
-  sub(/^[[:space:]]+/, "", s)
-  sub(/[[:space:]]+$/, "", s)
-  return s
-}
-'
 
 # ── The source file ────────────────────────────────────────────────────────────
 assert_source_exists() {
@@ -199,75 +205,83 @@ assert_source_exists() {
 }
 
 # Every question about the source file, answered in ONE pass and reported as
-# machine-readable records on stdout: `tab <line>`, `control <line>`,
-# `double <line>`, `content`. One pass because a validator that stops at the
-# first offender turns a five-line fix into five runs, and one PROGRAM because it
-# shares authored_trim with the emitter.
+# machine-readable records on stdout: `cr <line>`, `content`. One pass because a
+# validator that stops at the first offender turns a five-line fix into five
+# runs.
+#
+# Two questions, and no more (RFC 185 D4). There is no transform left to
+# protect, so the tab, the interior double space and the U+2000 case are no
+# longer refusals: nothing collapses them, so they round-trip as the ordinary
+# text they are. Trailing whitespace is likewise CONTENT now, kept rather than
+# stripped, and visible in review like any other character.
+#
+# `cr` is the one byte two readers still cannot agree on, and it is refused
+# rather than accommodated. awk splits records on LF alone, so a CR is an
+# ORDINARY BYTE it carries into the fragment; Kotlin's String.lines() splits on
+# CR, CRLF and LF alike. Verbatim therefore means a CRLF checkout puts a `\r`
+# into the prompt the model is served — a byte nobody authored, invisible in
+# every diff. Any CR is named by line number, whether it terminates the line or
+# sits inside it: a CRLF checkout is a fixable local setting, and a prompt is
+# not the place to discover it.
 #
 # `content` is here, up front, and not in the emitter's END rule where it used to
 # live. There it fired AFTER the delete loop had already removed this run's seed
 # and its ORDER line — so an all-blank source exited 1 having left a zero-byte
 # seed on disk and absent from ORDER. A refusal that destroys state is not a
 # refusal.
-#
-# `control` is the third unfixable-build trap of the same family as the U+2000
-# one above, and it is refused rather than accommodated: a bare CR (or any other
-# C0 byte) mid-line is an ORDINARY BYTE to this C-locale emitter and a LINE BREAK
-# to Kotlin's String.lines(), so the seed would carry it and the test would split
-# on it. The build then fails saying "regenerate the seed" while regeneration is
-# byte-identical — the exact state that is unfixable without editing a test. It
-# is asked of the TRIMMED line, so the trailing CR of a CRLF checkout is stripped
-# like any other trailing whitespace rather than refused for nothing.
 VALIDATE_AWK='
 {
-  if (index($0, "\t") > 0) print "tab " NR
-  line = authored_trim($0)
-  # A tab IS a control character and already has its own refusal above, so it is
-  # taken out of this probe rather than reported twice under two names.
-  probe = line
-  gsub(/\t/, "", probe)
-  if (match(probe, /[[:cntrl:]]/)) print "control " NR
-  if (index(line, "  ") > 0) print "double " NR
-  if (line != "") content = 1
+  if (index($0, "\r") > 0) print "cr " NR
+  if ($0 ~ /[^[:space:]]/) content = 1
 }
 END { if (content) print "content" }
 '
 
-# The join rule is only REVERSIBLE for a file that carries no tab and no interior
-# double space: either would be collapsed on the way in and unrecoverable on the
-# way out. Trailing whitespace is NOT refused — it is stripped, which is what a
-# stray space at end-of-line deserves.
+# The two refusals of RFC 185 D4, reported together so one run names every line
+# that has to be fixed.
+#
+# The emptiness arm is stated over the BODY this file would produce, and it is
+# deliberately a little wider than the database's own
+# `length(trim(body)) > 0`: a file of nothing but blank lines passes that CHECK
+# and is still a prompt with nothing in it, which no author intends and no
+# reviewer would spot in a diff of whitespace. Refusing it here costs a real
+# authoring case nothing and buys a message that names the file.
 assert_source_is_usable() {
-  local kind number tabs="" controls="" doubles="" content=""
+  local kind number crs="" content="" report status=0
+  # Read into a variable BEFORE the loop consumes it. `set -e` does not see the
+  # status of a command substitution used as a redirection word, so an awk that
+  # could not OPEN the file produced no records, left `content` empty, and the
+  # run told the author to fix prose in a file nothing had read — "has no
+  # content, every character is whitespace" about an unreadable file.
+  report="$(LC_ALL=C awk "$VALIDATE_AWK" "$SOURCE_FILE")" || status=$?
+  [ "$status" -eq 0 ] ||
+    fatal "could not read the prompt source file [$SOURCE_FILE]: awk exited [$status], reported above. Nothing has been decided about its content."
+
   while read -r kind number; do
+    # A here-string on an EMPTY report is still one empty line, and an empty
+    # record is not an unknown kind: it is the shape "this file has no content"
+    # arrives in, which the refusal below is what answers.
+    [ -n "$kind" ] || continue
     case "$kind" in
-    tab) tabs="$tabs $number" ;;
-    control) controls="$controls $number" ;;
-    double) doubles="$doubles $number" ;;
+    cr) crs="$crs $number" ;;
     content) content=1 ;;
+    *) fatal "[$SOURCE_FILE]'s validator emitted a record this reader does not know [$kind $number]; the emitter and the consumer have drifted." ;;
     esac
-  done <<< "$(LC_ALL=C awk "$JOIN_RULE_AWK$VALIDATE_AWK" "$SOURCE_FILE")"
+  done <<< "$report"
 
   local refused=""
-  if [ -n "$tabs" ]; then
-    log-error "[$SOURCE_FILE] has a tab character on line(s) [${tabs# }] — a tab does not survive the join, so it may not be authored."
-    refused=1
-  fi
-  if [ -n "$controls" ]; then
-    log-error "[$SOURCE_FILE] has a control character on line(s) [${controls# }] — a bare CR or other C0 byte is an ordinary byte to the generator and a LINE BREAK to the Kotlin assertion, so the seed and the test could never agree and regenerating would not fix it."
-    refused=1
-  fi
-  if [ -n "$doubles" ]; then
-    log-error "[$SOURCE_FILE] has interior double spaces on line(s) [${doubles# }] — the join uses a single space, so a double space does not round-trip."
+  if [ -n "$crs" ]; then
+    log-error "[$SOURCE_FILE] has a carriage return on line(s) [${crs# }] — the body is this file verbatim, so a CR would be served to the model as part of the prompt, and awk and Kotlin do not even agree on whether it is a line break. Check the file out with LF endings."
     refused=1
   fi
   if [ -z "$content" ]; then
-    log-error "[$SOURCE_FILE] has no content lines — every line is blank, so there is no body to seed."
+    log-error "[$SOURCE_FILE] has no content — every character is whitespace, so there is no body to seed and system_prompts.body must not be blank."
     refused=1
   fi
   [ -z "$refused" ] ||
     fatal -s "$EXIT_INVALID_ARG_VALUE" "prompt source file is not usable; fix the line(s) reported above and re-run."
 }
+
 
 # ── The pin ────────────────────────────────────────────────────────────────────
 # The `systemPromptVersion = "vNN"` line, and only that line: the second
@@ -281,14 +295,16 @@ PIN_LINE_RE='^([[:space:]]*systemPromptVersion[[:space:]]*=[[:space:]]*)"v[0-9]+
 # the count EMPTY, and `[ "" -ne 1 ]` does not evaluate to "refuse": it errors
 # with status 2, which `if` reads as false, so the one gate that lets this
 # script rewrite service.conf would be SKIPPED on the way to rewriting it.
-# The count is read in the FUNCTION rather than through `PIN_COUNT="$(pin_lines)"`:
+# The count is read in the FUNCTION rather than through `count="$(pin_lines)"`:
 # a `fatal` inside a command substitution exits the subshell, and the refusal
 # then depends on `set -e` noticing the substitution's status to stop the run.
 read_pin() {
-  local status=0
+  # `count` is this function's own scratch, not part of what it hands back:
+  # read_pin's declared return channel is PINNED_VERSION and nothing else.
+  local status=0 count
   [ -f "$PIN_FILE" ] ||
     fatal "the version pin file is not there [$PIN_FILE]; the label this script computes has nothing to write to"
-  PIN_COUNT="$(grep -cE "$PIN_LINE_RE" "$PIN_FILE")" || status=$?
+  count="$(grep -cE "$PIN_LINE_RE" "$PIN_FILE")" || status=$?
   [ "$status" -le 1 ] ||
     fatal "could not read the version pin file [$PIN_FILE]: grep exited [$status], reported above"
   # grep prints nothing when it could not read the file, so the count is
@@ -297,11 +313,11 @@ read_pin() {
   # cannot say so — it errors with status 2, which `if` reads as FALSE, so the
   # one gate that lets this script rewrite service.conf would be skipped on the
   # way to rewriting it.
-  if [[ ! "$PIN_COUNT" =~ ^[0-9]+$ ]]; then
-    fatal "could not count the coach version pin lines in [$PIN_FILE]: grep said [$PIN_COUNT]"
+  if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+    fatal "could not count the coach version pin lines in [$PIN_FILE]: grep said [$count]"
   fi
-  if [ "$PIN_COUNT" -ne 1 ]; then
-    fatal "[$PIN_FILE] has [$PIN_COUNT] lines matching the coach version pin; exactly one is required, because this script rewrites it"
+  if [ "$count" -ne 1 ]; then
+    fatal "[$PIN_FILE] has [$count] lines matching the coach version pin; exactly one is required, because this script rewrites it"
   fi
 
   PINNED_VERSION="$(sed -nE 's/'"$PIN_LINE_RE"'/&/p' "$PIN_FILE" | sed -nE 's/.*"(v[0-9]+)".*/\1/p')"
@@ -332,11 +348,23 @@ assert_base_ref_is_usable() {
 # The suppression here is the one case it is right: "this ref tracks nothing" is
 # the ORDINARY answer for a SHA or a local-only branch, not a fault, and git
 # still writes a message for it.
-  BASE_UPSTREAM="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REF@{upstream}" 2> /dev/null)" || BASE_UPSTREAM=""
-  if [ -n "$BASE_UPSTREAM" ] &&
-    [ "$(git -C "$REPO_ROOT" rev-list --count "$BASE_REF..$BASE_UPSTREAM")" -ne 0 ]; then
-    fatal -s "$EXIT_INVALID_ARG_VALUE" \
-      "base ref [$BASE_REF] is behind its upstream, so a coach seed absent from it may be another run's LANDED migration rather than this run's own — and this script would delete it. Update it (git fetch && git merge --ff-only) and re-run."
+# --abbrev-ref, so the upstream is named as `origin/main` rather than as a SHA:
+# it is the thing the remedy command below operates on, and it is still a
+# revision rev-list accepts.
+  BASE_UPSTREAM="$(git -C "$REPO_ROOT" rev-parse --verify --quiet --abbrev-ref "$BASE_REF@{upstream}" 2> /dev/null)" || BASE_UPSTREAM=""
+  if [ -n "$BASE_UPSTREAM" ]; then
+    # git's status and the SHAPE of its answer are both asserted before the
+    # comparison. `[ "" -ne 0 ]` does not evaluate to "not behind": it errors
+    # with status 2, which `if` reads as FALSE, so an unreadable count would
+    # SKIP the one refusal standing between a stale base and the delete loop.
+    local behind
+    behind="$(git -C "$REPO_ROOT" rev-list --count "$BASE_REF..$BASE_UPSTREAM")" ||
+      fatal "could not count how far base ref [$BASE_REF] is behind its upstream [$BASE_UPSTREAM]; git's own error is above. Nothing has been deleted."
+    [[ "$behind" =~ ^[0-9]+$ ]] ||
+      fatal "could not count how far base ref [$BASE_REF] is behind its upstream [$BASE_UPSTREAM]: git said [$behind], which is not a count."
+    [ "$behind" -eq 0 ] ||
+      fatal -s "$EXIT_INVALID_ARG_VALUE" \
+        "base ref [$BASE_REF] is [$behind] commit(s) behind its upstream [$BASE_UPSTREAM], so a coach seed absent from it may be another run's LANDED migration rather than this run's own — and this script would delete it. Update it (git fetch && git merge --ff-only $BASE_UPSTREAM) and re-run."
   fi
 }
 
@@ -372,25 +400,61 @@ coach_seed_version() {
   fi
 }
 
-# The label this run owes: one past the highest coach seed <base-ref> carries.
-resolve_target_version() {
-  local base version
-  LANDED_SEEDS="$(git -C "$REPO_ROOT" ls-tree --name-only "$BASE_REF" -- "$SCHEMA_REL/" | while IFS= read -r path; do
-    base="${path##*/}"
+# The coach seeds <base-ref> carries, one filename per line. The mirror of
+# list_run_owned_seeds: that one asks the disk, this one asks git.
+list_landed_seeds() { # list_landed_seeds <the tree's entry names, one per line>
+  local entries="${1?list_landed_seeds requires the tree entries to filter}"
+  local base
+  printf '%s\n' "$entries" | while IFS= read -r base; do
+    [ -n "$base" ] || continue
     if is_coach_seed "$base"; then printf '%s\n' "$base"; fi
+  done
+}
+
+# The catalog tip in <base-ref>: the highest coach seed it carries, and the path
+# resolve_authorship reads that seed's body out of.
+resolve_catalog_tip() {
+  # `entries` is this function's own scratch, not a return: LANDED_SEEDS, TIP,
+  # TIP_NAME, TIP_VERSION and TIP_PATH are what resolve_catalog_tip hands back.
+  local base version path entries
+  # The whole listing is kept, not only the names that pass the grammar: the
+  # refusal below is met on a corpus whose seed is named ALMOST right —
+  # `seed-coach-system-prompt-v08.sql`, which COACH_SEED_RE rejects on purpose —
+  # and "carries no coach seed" is unanswerable while the near miss sits in the
+  # listing the scan just read and threw away.
+  entries="$(git -C "$REPO_ROOT" ls-tree --name-only "$BASE_REF" -- "$SCHEMA_REL/" | while IFS= read -r path; do
+    printf '%s\n' "${path##*/}"
   done)"
+  LANDED_SEEDS="$(list_landed_seeds "$entries")"
 
   TIP=0
+  TIP_NAME=""
   while IFS= read -r base; do
     [ -n "$base" ] || continue
     version="$(coach_seed_version "$base")"
-    if [ "$version" -gt "$TIP" ]; then TIP="$version"; fi
+    if [ "$version" -gt "$TIP" ]; then
+      TIP="$version"
+      TIP_NAME="$base"
+    fi
   done <<< "$LANDED_SEEDS"
 
+  # Refused, and NOT read as "nothing has been authored yet". The authorship rule
+  # below decides by comparing against the tip's body, so a base with no tip has
+  # no body to compare with — and treating that as "identical" would make the
+  # FIRST seed the one run this script silently declined to generate.
   if [ "$TIP" -eq 0 ]; then
-    fatal "[$BASE_REF] carries no coach system-prompt seed under [$SCHEMA_REL/], so there is no version to follow"
+    fatal "[$BASE_REF] carries no coach system-prompt seed under [$SCHEMA_REL/], so there is no version to follow; the names it does carry are [$(printf '%s' "$entries" | tr '\n' ' ')], and a label like [v0] or [v08] is rejected on purpose."
   fi
 
+  TIP_VERSION="v$TIP"
+  TIP_PATH="$SCHEMA_REL/$TIP_NAME"
+}
+
+# The label this run owes if it owes one: one past the tip. Pure arithmetic on
+# what resolve_catalog_tip read, and split from it because "what does the catalog
+# already hold?" and "what would this run add?" are two questions — one of which
+# every nothing-authored run answers and then never uses.
+resolve_target_version() {
   NEXT=$((TIP + 1))
   TARGET_NAME="seed-coach-system-prompt-v$NEXT.sql"
   TARGET_FILE="$SCHEMA_DIR/$TARGET_NAME"
@@ -398,16 +462,25 @@ resolve_target_version() {
 }
 
 # This run's own seeds: present on disk, absent from the base.
+#
+# "Is this seed landed?" is a THREE-valued question — grep matched, grep did not
+# match, grep could not read — and `if !` gives it two answers, filing the fault
+# under "absent from <base-ref>", which is the branch whose caller runs `rm -f`.
+# The status is split here the same way read_pin and drop_order_line already
+# split it, because this is the site that DELETES MIGRATIONS.
 list_run_owned_seeds() {
-  local path base
+  local path base status
   for path in "$SCHEMA_DIR"/*.sql; do
     [ -e "$path" ] || continue
     base="${path##*/}"
     is_coach_seed "$base" || continue
-    if ! printf '%s\n' "$LANDED_SEEDS" | grep -Fxq "$base"; then
-      printf '%s\n' "$base"
-    fi
+    status=0
+    printf '%s\n' "$LANDED_SEEDS" | grep -Fxq "$base" || status=$?
+    [ "$status" -le 1 ] ||
+      fatal "could not decide whether [$base] is landed in [$BASE_REF]: grep exited [$status], reported above. Nothing has been deleted."
+    [ "$status" -eq 0 ] || printf '%s\n' "$base"
   done
+  return 0
 }
 
 # ── The ORDER contract, read through its owner ─────────────────────────────────
@@ -432,10 +505,18 @@ assert_order_is_appendable() {
 }
 
 # ── Generation ─────────────────────────────────────────────────────────────────
-# The emitted file is deliberately the SAME SHAPE as the 23 hand-written seeds
-# before it: one INSERT, the body as `||`-joined single-quoted fragments with ''
-# escaping, no newline in the body itself. A reader diffing it against 0093 sees
-# the same file.
+# The emitted file keeps the SHAPE of every coach seed before it: one
+# INSERT, the body as `||`-joined single-quoted fragments with '' escaping. What
+# changed (RFC 185) is where a fragment ENDS. It used to be a wrap column, so the
+# fragment boundary was arithmetic and one edited sentence re-flowed the file
+# below it; it is now the SOURCE'S OWN LINE, so the seed's diff is the source's
+# diff, line for line — the property this whole line of work has been chasing.
+#
+# The joiner is `chr(10)` and not a literal newline inside a quoted fragment. A
+# literal newline in a diff is indistinguishable from layout, which is exactly
+# the lesson 0011:1-7 already recorded about `||` being "layout only"; written as
+# chr(10) the one thing a reader must not miss — that this newline is BODY — is
+# the one thing on the line.
 #
 # Read into a variable through a plain heredoc rather than `$(cat << 'AWK' ...)`:
 # bash 3.2, which ship-land runs under, cannot parse a heredoc inside a command
@@ -443,33 +524,22 @@ assert_order_is_appendable() {
 # nothing but unbalanced quotes. `read -d ''` stops at EOF and reports 1 for it,
 # hence the `|| true` under `set -e`.
 IFS='' read -r -d '' SEED_AWK << 'AWK' || true
-function emit(text, suffix,   escaped) {
-  escaped = text
-  gsub(/'/, "''", escaped)
-  if (first_done) {
-    printf "  || '%s'%s\n", escaped, suffix
-  } else {
-    printf "  '%s'%s\n", escaped, suffix
-    first_done = 1
-  }
-}
-
-{
-  line = authored_trim($0)
-  if (line == "") next
-  body = (body == "") ? line : body " " line
-}
-END {
+# The header is printed from BEGIN, not from END, because it depends only on the
+# version: the record rules can then STREAM one fragment per line with nothing
+# buffered, and the source file is never held in memory as an array.
+BEGIN {
   print "-- GENERATED FILE. DO NOT EDIT."
   print "--"
-  print "-- Written by bin/prompt-seed (RFC 181) from prompts/coach-system-prompt.txt,"
-  print "-- which is the file to edit. This seed is deleted and regenerated at land,"
-  print "-- after the final rebase, so a hand edit here is lost without warning; the"
-  print "-- body-equality test in SystemPromptCatalogTest is what fails the build for it."
+  print "-- Written by bin/prompt-seed (RFC 181, RFC 185) from"
+  print "-- prompts/coach-system-prompt.md, which is the file to edit. This seed is"
+  print "-- deleted and regenerated at land, after the final rebase, so a hand edit here"
+  print "-- is lost without warning; the body-equality test in SystemPromptCatalogTest"
+  print "-- is what fails the build for it."
   print "--"
-  print "-- The body is the source file's lines, stripped, blanks dropped, joined with"
-  print "-- one space; the || fragments are layout only, exactly as in every seed since"
-  print "-- 0011, and no newline enters the body."
+  print "-- The body IS that file, verbatim: one fragment per source line, nothing"
+  print "-- trimmed, dropped or re-wrapped. The || is layout, exactly as in every seed"
+  print "-- since 0011; the chr(10) between two fragments is BODY -- the source's own"
+  print "-- line break, which the model is served."
   print "--"
   print "-- Rollback is COACHING_SYSTEM_PROMPT_VERSION=v" (version - 1) " -- that row is"
   print "-- immutable and stays selectable in the catalog."
@@ -478,34 +548,260 @@ END {
   print "VALUES ("
   print "  'coach',"
   printf "  'v%s',\n", version
-
-  # Wrap at SPACES only, greedily, to at most `width` body bytes per fragment.
-  # Never mid-character: awk runs under LC_ALL=C here so length() is bytes on
-  # every implementation (gawk counts characters otherwise, which would make the
-  # same source wrap differently on two machines), and a space is the one byte
-  # that cannot be part of a multi-byte character. A word longer than the width
-  # takes a fragment of its own rather than being cut.
-  count = split(body, words, " ")
-  chunk = ""
-  for (w = 1; w <= count; w++) {
-    if (chunk == "") {
-      chunk = words[w]
-    } else if (length(chunk) + 1 + length(words[w]) <= width) {
-      chunk = chunk " " words[w]
-    } else {
-      emit(chunk " ", "")
-      chunk = words[w]
-    }
-  }
-  emit(chunk, "")
-  print ");"
 }
+
+{
+  escaped = $0
+  gsub(/'/, "''", escaped)
+  if (first_done) {
+    printf "  || chr(10) || '%s'\n", escaped
+  } else {
+    printf "  '%s'\n", escaped
+    first_done = 1
+  }
+}
+
+END { print ");" }
 AWK
 
 generate_seed() { # generate_seed <outfile>
-  LC_ALL=C awk -v version="$NEXT" -v width="$FRAGMENT_WIDTH" \
-    "$JOIN_RULE_AWK$SEED_AWK" "$SOURCE_FILE" > "$1" ||
+  LC_ALL=C awk -v version="$NEXT" "$SEED_AWK" "$SOURCE_FILE" > "$1" ||
     fatal "could not generate the seed for [$TARGET_NAME] from [$SOURCE_FILE]; awk's own error is above. Nothing has been moved into [$SCHEMA_DIR]."
+}
+
+
+# ── Reading a body back out of a seed ──────────────────────────────────────────
+# The inverse of the emitter above: given a seed file, the BODY it inserts.
+#
+# It is the reason the authorship rule can be stated over bodies rather than over
+# files. Two seeds that say the same thing may not share a byte — v25 was emitted
+# by RFC 181's generator, which wrapped at column 65 and had no chr(10) at all —
+# so the only comparison that answers "did a human author something" is one made
+# after both sides are read back to text.
+#
+# It is a transliteration of `body_of` in bin/prompt-seed-scripts-tests, which is
+# the same scanner in Python: two token kinds (a single-quoted SQL string with
+# `''` for an embedded quote, and the `chr(10)` joiner), and a NAMED set of
+# layout bytes between them — whitespace, the commas, the `||` operators, the
+# parentheses and the closing semicolon. Everything else is REFUSED. The harness
+# builds its landed fixtures with one dialect and this reads them with the other,
+# so a disagreement between the two fails the harness rather than hiding.
+#
+# The refusal is the load-bearing half, and it is why "everything else is layout"
+# was not good enough. Both dialects skipped what they did not recognise, so both
+# were blind the SAME way and the cross-check proved nothing about it: a `chr(9)`
+# or an uppercase `CHR(10)` vanished silently, and an SQL comment was scanned for
+# quotes, so `-- run A's note and run B's note` was spliced into the body with
+# status 0. A body this reader mis-reads is a version minted from prose nobody
+# authored, or an authored edit that ships nothing.
+#
+# awk and not python3, deliberately. ship-land invokes this script OUTSIDE the
+# Nix dev shell, where the only interpreters guaranteed present are the ones this
+# script already uses; a `python3` that is a Command Line Tools stub would turn
+# the land gate into an install prompt. Same reason the file must parse under
+# bash 3.2.
+#
+# A seed it cannot read is a FAULT on stderr and a non-zero exit, never an empty
+# body — an empty body would compare equal to nothing and read as "a human
+# authored something", or worse, equal to another unreadable seed and read as
+# "nothing was authored".
+IFS='' read -r -d '' BODY_AWK << 'AWK' || true
+# The shape this reader evaluates, and the layout it tolerates, stated once as
+# named constants: every number below is derived from one of them, so the
+# emitter and the reader cannot drift apart through a retyped literal.
+BEGIN {
+  # The emitter prints these two lines, in this order, and the token positions
+  # below depend on that column layout -- so it is VERIFIED rather than assumed.
+  HEADER = "INSERT INTO system_prompts (name, version, body)\nVALUES ("
+  JOINER = "chr(10)"
+  # The name and the version literal, which the emitter prints before the body.
+  HEADER_TOKENS = 2
+  # The only LAYOUT a generated seed carries between fragments: SPACE, TAB and
+  # NEWLINE, the argument commas, the || operators, and the parentheses and
+  # semicolon that close the clause. Anything else -- an SQL comment, a second
+  # statement, a chr(9), an ON CONFLICT clause -- is a construct this reader does
+  # not evaluate, and reading it as layout would answer "a human authored
+  # something" for text no author ever wrote. It is refused, loudly, instead of
+  # skipped.
+  #
+  # This is NOT the ASCII whitespace class, and must not be "completed" into one.
+  # CR, FF and VT are absent ON PURPOSE: this emitter never writes them, so a CR
+  # between fragments means a landed seed was checked out CRLF -- exactly what
+  # assert_source_is_usable refuses on the source side -- and tolerating it here
+  # would read a corrupted tip as a body and compare it against the author's.
+  LAYOUT = " \t\n,|();"
+  EXCERPT_WIDTH = 60
+}
+
+# The refusal channel. Its stderr is CAPTURED by read_body and re-emitted line by
+# line through log-error, so a self-authored refusal reaches the operator with the
+# same [ERROR] prefix every other diagnostic in this script carries.
+function fail(reason) {
+  print reason > "/dev/stderr"
+  exit 1
+}
+
+# A short, single-line window on the offending input, so a refusal names WHERE
+# in a 180-line seed the reader stopped rather than only what it disliked.
+function get_excerpt(text, at,   piece) {
+  piece = substr(text, at, EXCERPT_WIDTH)
+  gsub(/\n/, " ", piece)
+  return piece
+}
+
+# The SQL expression the seed's VALUES clause carries, once the statement around
+# it has been checked: one INSERT, with the three columns in the order the token
+# scan below reads them.
+function get_value_expression(text,   start, rest) {
+  start = index(text, HEADER)
+  if (start == 0) {
+    fail("no [INSERT INTO system_prompts (name, version, body)] ... [VALUES (] header, so the VALUES columns are not the ones this reader would name; the file begins [" get_excerpt(text, 1) "]")
+  }
+  rest = substr(text, start + length(HEADER))
+  if (index(rest, "INSERT ") > 0) {
+    fail("a second INSERT after the row this reader evaluates, at character [" index(rest, "INSERT ") "]: [" get_excerpt(rest, index(rest, "INSERT ")) "]; a coach seed inserts exactly one row")
+  }
+  return rest
+}
+
+# One single-quoted SQL string, read from CURSOR (which sits on its opening
+# quote), with '' as an embedded quote. CURSOR is left just past the closing
+# quote. awk cannot return a value and an advanced position at once, so the
+# position is one named global rather than an out-parameter threaded through
+# both readers.
+function read_quoted_string(expression, n,   chunk, character, opened) {
+  opened = CURSOR
+  CURSOR++
+  chunk = ""
+  while (CURSOR <= n) {
+    character = substr(expression, CURSOR, 1)
+    if (character == "'") {
+      if (substr(expression, CURSOR + 1, 1) != "'") {
+        CURSOR++
+        return chunk
+      }
+      chunk = chunk "'"
+      CURSOR += 2
+      continue
+    }
+    chunk = chunk character
+    CURSOR++
+  }
+  fail("an unterminated SQL string opening at character [" opened "] of the VALUES expression: [" get_excerpt(expression, opened) "]")
+}
+
+# The whole file, slurped into one string. This reader CANNOT stream: the token
+# scan needs the VALUES expression whole, so a fragment split across records is
+# not a thing it can resume from -- unlike the emitter 160 lines above, which
+# buffers nothing.
+#
+# And it is awk's RECORD semantics, not a byte read: $0 never carries the record
+# terminator, so the file's final newline is dropped and what END sees is the
+# file's LINES joined by "\n". That is this script's load-bearing rule from the
+# header -- the body is the text minus at most one trailing newline -- and it
+# holds here by construction rather than by a strip nobody wrote.
+{ text = text separator $0; separator = "\n" }
+
+END {
+  expression = get_value_expression(text)
+  n = length(expression)
+  CURSOR = 1
+  tokens = 0
+  body = ""
+  while (CURSOR <= n) {
+    character = substr(expression, CURSOR, 1)
+    if (character == "'") {
+      chunk = read_quoted_string(expression, n)
+      tokens++
+      # The column layout the two dropped tokens depend on, asserted rather than
+      # assumed: a seed whose first literals are not the coach name and a vNN
+      # label is one whose BODY starts somewhere else.
+      if (tokens == 1 && chunk != "coach") {
+        fail("the first VALUES literal is [" chunk "], not the coach prompt name")
+      }
+      if (tokens == 2 && chunk !~ /^v[1-9][0-9]*$/) {
+        fail("the second VALUES literal is [" chunk "], not a vNN catalog label")
+      }
+      if (tokens > HEADER_TOKENS) body = body chunk
+    } else if (substr(expression, CURSOR, length(JOINER)) == JOINER) {
+      tokens++
+      if (tokens <= HEADER_TOKENS) {
+        fail("a [" JOINER "] joiner where the prompt name or the version literal belongs, at character [" CURSOR "] of the VALUES expression")
+      }
+      body = body "\n"
+      CURSOR += length(JOINER)
+    } else if (substr(expression, CURSOR, 2) == "--") {
+      # NOT skipped as layout: an SQL comment is text this reader cannot
+      # separate from body text -- its apostrophes open and close fragments, so
+      # `-- run A''s note` reads as a body fragment and is spliced into the body
+      # with status 0. This emitter never writes one inside VALUES, so a seed
+      # that carries one is not a generated seed.
+      fail("an SQL comment inside the VALUES clause, at character [" CURSOR "] of the VALUES expression: [" get_excerpt(expression, CURSOR) "]; this reader cannot separate its text from body text")
+    } else if (index(LAYOUT, character) > 0) {
+      CURSOR++
+    } else {
+      fail("an unreadable token at character [" CURSOR "] of the VALUES expression: [" get_excerpt(expression, CURSOR) "]; this is not a seed this generator wrote")
+    }
+  }
+
+  # The first two tokens are the name and the version literal; the body is
+  # everything after them, and a seed with no token past them is not one.
+  if (tokens <= HEADER_TOKENS) {
+    fail("no body fragments after the name and version")
+  }
+  printf "%s", body
+}
+AWK
+
+# awk's stderr is CAPTURED rather than passed through: the reader's own refusals
+# are diagnostics of this script, and every diagnostic in bin/ reaches the
+# operator through bin/functions' helpers. `2>&1 > "$2"` sends stderr to the
+# command substitution and stdout — the body — to the file, in that order.
+read_body() { # read_body <seed file> <outfile> <what it is>
+  local complaint line status=0
+  complaint="$(LC_ALL=C awk "$BODY_AWK" "$1" 2>&1 > "$2")" || status=$?
+  [ "$status" -eq 0 ] || {
+    # A here-string on an EMPTY complaint is still one empty line, and an awk
+    # that died without saying anything has no line to re-emit.
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      log-error "$line"
+    done <<< "$complaint"
+    fatal "could not read the prompt body out of $3 [$1]: awk exited [$status], for the reason reported above. This script will not guess whether a version is owed from a seed it cannot read."
+  }
+}
+
+# ── Was anything authored? ─────────────────────────────────────────────────────
+# The one question that decides whether this run owes a version at all: does the
+# body the author's file produces differ from the body already in the catalog?
+#
+# Both sides go through read_body, including THIS run's own candidate seed, which
+# it would be shorter to skip by joining the source file's lines here. Reading the
+# candidate back is what makes the comparison symmetric: the reader is applied to
+# both operands, so it cannot report a difference that exists only in the reading.
+#
+# The tip is read from <base-ref> rather than from the worktree. A coach seed in
+# the worktree may be this run's own, and comparing the authored body against a
+# body this run just generated would answer "identical" every time.
+resolve_authorship() {
+  git -C "$REPO_ROOT" show "$BASE_REF:$TIP_PATH" > "$WORK_DIR/tip.sql" ||
+    fatal "could not read the catalog tip [$TIP_PATH] out of [$BASE_REF]; git's own error is above. Without it there is no body to compare the authored prompt against."
+
+  read_body "$WORK_DIR/tip.sql" "$WORK_DIR/tip.body" "the catalog tip [$TIP_NAME] in [$BASE_REF]"
+  read_body "$CANDIDATE_SEED" "$WORK_DIR/authored.body" "the seed this run generates"
+
+  # cmp's status is THREE-valued: 0 is "the same", 1 is "they differ" — the two
+  # verdicts — and 2-or-above is cmp failing to READ a body, which is a fault in
+  # the comparison and not an answer about authorship. `if cmp -s` collapses it
+  # to two and files the fault under "the bodies differ", so a comparison that
+  # never ran mints the unauthored version D6 exists to prevent. The same rule
+  # this script already argues for at assert_target_seed_is_generated, where cmp
+  # is deliberately run WITHOUT -s.
+  local status=0
+  cmp "$WORK_DIR/tip.body" "$WORK_DIR/authored.body" > /dev/null || status=$?
+  [ "$status" -le 1 ] ||
+    fatal "could not compare the authored prompt body against the body of [$TIP_NAME] in [$BASE_REF]: cmp exited [$status], reported above. This script will not mint a version from a comparison that did not run."
+  if [ "$status" -eq 0 ]; then AUTHORED=""; else AUTHORED=1; fi
 }
 
 # service.conf with the pin line rewritten to <version>. The rest of the file —
@@ -533,14 +829,22 @@ generate_pin() { # generate_pin <outfile> <version>
 # The leading dot and the `.sql`-less name keep it outside every glob the corpus
 # is read with, and the trap owns it, so no scratch file is ever left beside
 # ORDER for a later `git add db/schema` to commit.
-generate_candidates() {
+#
+# Created as its own step, and not as a side effect of generating the seed: TWO
+# phases write in here — the candidate seed, and the two bodies resolve_authorship
+# compares — so the staging area outlives either of them and its lifetime belongs
+# to the flow, not to whichever phase happened to need it first.
+#
+# The repinned service.conf is NOT staged here either: which version this run owes
+# — the label it is cutting, or the tip it is staying on because nothing was
+# authored — is not known until the bodies have been compared. update_pin
+# generates it for the version it is about to install, and only when the pin
+# actually has to move.
+create_work_dir() {
   WORK_DIR="$(mktemp -d "$SCHEMA_DIR/.prompt-seed.XXXXXX")"
   trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
   CANDIDATE_SEED="$WORK_DIR/seed.sql"
   CANDIDATE_PIN="$WORK_DIR/pin.conf"
-
-  generate_seed "$CANDIDATE_SEED"
-  generate_pin "$CANDIDATE_PIN" "$TARGET_VERSION"
 }
 
 # ── -n: the enforcement half ───────────────────────────────────────────────────
@@ -549,15 +853,46 @@ generate_candidates() {
 # fast-forward, so the dry run must answer without writing anything.
 # Each assert_* REPORTS its own complaint and returns 1; the verdict collects
 # them, so one run names every reason the tree is not current and refuses once.
-assert_no_stale_run_owned_seed() {
-  local base stale=0
+#
+# The two gates below are the mirror of the two writers further down, and each
+# pair has TWO names rather than one name and a mode smuggled into its value
+# slot. `assert_no_run_owned_seed_but none` read as a filename that happens to be
+# spelled `none`, so the destructive reading of the line depended on recalling
+# that no real seed can be called that. The mode is in the NAME now, and no
+# sentinel exists to type. <reason> is the half that genuinely differs: a stale
+# LABEL and a version that must not exist AT ALL are two different things to tell
+# an operator about the same file.
+#
+# The keep-nothing worker is the private one: its `<keep>` is data only, and the
+# required-argument discipline lives on the public entry point, where a caller
+# that drops the argument must not silently select the wider mode.
+report_run_owned_seeds_other_than() { # report_run_owned_seeds_other_than <keep> <reason>
+  local keep="$1"
+  local reason="$2"
+  local base owned stale=0
+  # Assigned, not spliced straight into the here-string: `set -e` does not see
+  # the status of a command substitution used as a redirection word, so a
+  # producer that died halfway would hand this loop a TRUNCATED list of run-owned
+  # seeds and the gate would report a clean tree.
+  owned="$(list_run_owned_seeds)"
   while IFS= read -r base; do
     [ -n "$base" ] || continue
-    if [ "$base" = "$TARGET_NAME" ]; then continue; fi
-    log-error "[$SCHEMA_DIR/$base] is this run's own seed but is not [$TARGET_NAME]: the base moved, so the label is stale."
+    if [ -n "$keep" ] && [ "$base" = "$keep" ]; then continue; fi
+    log-error "[$SCHEMA_DIR/$base] is this run's own seed, but $reason."
     stale=1
-  done <<< "$(list_run_owned_seeds)"
+  done <<< "$owned"
   return "$stale"
+}
+
+assert_no_run_owned_seed_except() { # assert_no_run_owned_seed_except <keep> <reason it may not be there>
+  local keep="${1:?assert_no_run_owned_seed_except requires the seed that may be there}"
+  local reason="${2:?assert_no_run_owned_seed_except requires the reason any other seed may not be there}"
+  report_run_owned_seeds_other_than "$keep" "$reason"
+}
+
+assert_no_run_owned_seed_at_all() { # assert_no_run_owned_seed_at_all <reason none may be there>
+  local reason="${1:?assert_no_run_owned_seed_at_all requires the reason no seed may be there}"
+  report_run_owned_seeds_other_than "" "$reason"
 }
 
 # Only the comparison genuinely depends on the file existing, so only IT is
@@ -592,22 +927,54 @@ assert_target_is_ordered() {
 # can only compare the pin against the catalog it can SEE. It cannot know the
 # label this run owes, which is the one thing that moves when another run lands
 # first — and that is exactly the case ship-land calls this to catch.
-assert_pin_names_target() {
-  [ "$PINNED_VERSION" = "$TARGET_VERSION" ] && return 0
-  log-error "[$PIN_FILE] pins systemPromptVersion [$PINNED_VERSION], but this run's seed is [$TARGET_VERSION]: the label and the pin disagree, so the runtime would serve a body this run did not generate."
+#
+# <version> is the row this run leaves the runtime serving: the label it cut, or
+# the tip it stayed on because nothing was authored. One comparison for both,
+# taking the same parameter update_pin takes, so the gate and the writer cannot
+# disagree about which row that is; <role> is only how to say it.
+assert_pin_names() { # assert_pin_names <version> <what that version is to this run>
+  local want="${1:?assert_pin_names requires the version the pin must carry}"
+  local role="${2:?assert_pin_names requires what that version is to this run}"
+  [ "$PINNED_VERSION" = "$want" ] && return 0
+  log-error "[$PIN_FILE] pins systemPromptVersion [$PINNED_VERSION], but the row to serve is $role [$want]: the label and the pin disagree, so the runtime would serve a body this run did not generate."
   return 1
+}
+
+# One refusal for both -n paths. They differ in WHAT they check, never in how a
+# tree that fails is answered, so the exit code ship-land reads and the remedy an
+# operator is given have a single writer.
+refuse_stale_tree() { # refuse_stale_tree <what is wrong with the tree>
+  local complaint="${1:?refuse_stale_tree requires what is wrong with the tree}"
+  fatal -s "$EXIT_SEED_WOULD_CHANGE" "$complaint Re-run: bin/prompt-seed -b $BASE_REF"
+}
+
+# The -n half of the nothing-authored path. "Current" here is the tree with NO
+# new seed in it: any run-owned seed is a version that must not be cut, and the
+# pin belongs on the tip. This exists because ship-land's re-check must be able
+# to answer without a seed existing at all — demanding one would refuse every
+# land that changed no prose, which is exactly the case the rule makes ordinary.
+assert_nothing_authored_tree_is_current() {
+  local stale=""
+  assert_no_run_owned_seed_at_all \
+    "[$SOURCE_FILE] is byte for byte the body of [$TIP_NAME] in [$BASE_REF]: nothing was authored, so no new version may be cut" || stale=1
+  assert_pin_names "$TIP_VERSION" "the tip" || stale=1
+
+  [ -z "$stale" ] ||
+    refuse_stale_tree "nothing was authored against [$BASE_REF], so the tree must carry no new coach seed."
+
+  log-info "prompt-seed: nothing was authored against [$BASE_REF] — [$SOURCE_FILE] is byte for byte the body of [$TIP_NAME] — and [$PIN_REL] pins [$TIP_VERSION]; nothing to do."
 }
 
 assert_tree_is_current() {
   local stale=""
-  assert_no_stale_run_owned_seed || stale=1
+  assert_no_run_owned_seed_except "$TARGET_NAME" \
+    "it is not [$TARGET_NAME]: the base moved, so the label is stale" || stale=1
   assert_target_seed_is_generated || stale=1
   assert_target_is_ordered || stale=1
-  assert_pin_names_target || stale=1
+  assert_pin_names "$TARGET_VERSION" "this run's seed" || stale=1
 
-  if [ -n "$stale" ]; then
-    fatal -s "$EXIT_SEED_WOULD_CHANGE" "the coach prompt seed is not what [$BASE_REF] plus prompts/coach-system-prompt.txt generates. Re-run: bin/prompt-seed -b $BASE_REF"
-  fi
+  [ -z "$stale" ] ||
+    refuse_stale_tree "the coach prompt seed is not what [$BASE_REF] plus prompts/coach-system-prompt.md generates."
 
   log-info "prompt-seed: [$TARGET_NAME] is current against [$BASE_REF] and [$PIN_REL] pins it; nothing to do."
 }
@@ -637,15 +1004,44 @@ drop_order_line() { # drop_order_line <migration filename>
 # behind. (It is the same set either way — the installed target is run-owned by
 # construction — so the skip is what makes the order safe, not an exception to
 # it.)
-delete_superseded_seeds() {
-  local base
+#
+# Two entry points, and no sentinel between them. `delete_superseded_seeds none`
+# put a MODE in a slot whose every other value is a filename, so the line that
+# deletes every seed this run owns read as the line that keeps one — and the
+# difference was a magic word a nine-line comment had to explain. The name
+# carries the mode now.
+#
+# The keep-nothing worker is private and its `<keep>` is data only; the
+# required-argument discipline stays on the public entry point, because a caller
+# that drops the argument must not thereby delete the seed it had just installed
+# and exit 0, reporting success for a corpus with no coach seed in it.
+delete_run_owned_seeds_keeping() { # delete_run_owned_seeds_keeping <keep, or empty for none>
+  local keep="$1"
+  local base owned
+  # Assigned, not spliced straight into the here-string below: `set -e` does not
+  # see the status of a command substitution used as a redirection word, so a
+  # producer that died halfway would hand this loop a TRUNCATED list and the run
+  # would delete part of what it owns and report success.
+  owned="$(list_run_owned_seeds)"
   while IFS= read -r base; do
     [ -n "$base" ] || continue
-    if [ "$base" = "$TARGET_NAME" ]; then continue; fi
+    if [ -n "$keep" ] && [ "$base" = "$keep" ]; then continue; fi
     rm -f "$SCHEMA_DIR/$base"
     drop_order_line "$base"
     log-info "prompt-seed: removed this run's previous seed [$base] (it is not in [$BASE_REF])."
-  done <<< "$(list_run_owned_seeds)"
+  done <<< "$owned"
+}
+
+# Every run-owned seed except <keep>, which is the one just installed.
+delete_run_owned_seeds_except() { # delete_run_owned_seeds_except <keep>
+  local keep="${1:?delete_run_owned_seeds_except requires the seed to keep}"
+  delete_run_owned_seeds_keeping "$keep"
+}
+
+# Every run-owned seed, with nothing kept: this run owes no version, so each seed
+# it previously generated is churn to be taken back out.
+delete_every_run_owned_seed() {
+  delete_run_owned_seeds_keeping ""
 }
 
 append_target_order_line() {
@@ -657,19 +1053,58 @@ append_target_order_line() {
   log-info "prompt-seed: appended [$TARGET_NAME] to [$ORDER_FILE]."
 }
 
-update_pin() {
-  [ "$PINNED_VERSION" = "$TARGET_VERSION" ] && return 0
+update_pin() { # update_pin <version>
+  local want="${1:?update_pin requires the version to pin as an argument}"
+  [ "$PINNED_VERSION" = "$want" ] && return 0
+  generate_pin "$CANDIDATE_PIN" "$want"
   mv "$CANDIDATE_PIN" "$PIN_FILE"
-  log-info "prompt-seed: repinned [$PIN_REL] systemPromptVersion from [$PINNED_VERSION] to [$TARGET_VERSION]."
+  log-info "prompt-seed: repinned [$PIN_REL] systemPromptVersion from [$PINNED_VERSION] to [$want]."
   return 0
 }
 
 write_generated_tree() {
   mv "$CANDIDATE_SEED" "$TARGET_FILE"
-  delete_superseded_seeds
+  delete_run_owned_seeds_except "$TARGET_NAME"
   append_target_order_line
-  update_pin
+  update_pin "$TARGET_VERSION"
   log-info "prompt-seed: wrote [$TARGET_FILE] from [$SOURCE_FILE], following [v$TIP] in [$BASE_REF]."
+}
+
+# Nothing was authored, so this run owes NO version — and the tree has to say so.
+# Not quite "do nothing": a run that generated a seed and then had its prompt
+# edit reverted, or rebased onto a base that already carries the same body, is
+# holding a seed and a pin for a version that must not exist. Taking them back
+# out is what makes the rule converge — run it twice, get the same tree — rather
+# than leaving the churn it exists to prevent.
+#
+# Only ever this run's own seeds (absent from <base-ref>, the same inference the
+# stale-base refusal protects), and the pin only ever moves back onto the tip,
+# which is the row that will be served.
+write_nothing_authored_tree() {
+  delete_every_run_owned_seed
+  update_pin "$TIP_VERSION"
+  log-info "prompt-seed: nothing was authored — [$SOURCE_FILE] is byte for byte the body of [$TIP_NAME] in [$BASE_REF] — so no version was cut and [$PIN_REL] stays on [$TIP_VERSION]."
+}
+
+# What this run owes the tree, once both questions are answered: did a human
+# author anything, and is this a dry run? Four cases, one router, and the detail
+# of each case stays behind its own name — so main reads as a list of named steps
+# end to end rather than ending in an inlined 2x2 with a mid-function return.
+handle_tree() {
+  if [ -z "$AUTHORED" ]; then
+    if [ -n "$DRY_RUN" ]; then
+      assert_nothing_authored_tree_is_current
+    else
+      write_nothing_authored_tree
+    fi
+    return 0
+  fi
+
+  if [ -n "$DRY_RUN" ]; then
+    assert_tree_is_current
+  else
+    write_generated_tree
+  fi
 }
 
 # ── Top-level flow ────────────────────────────────────────────────────────────
@@ -677,18 +1112,17 @@ main() {
   parse_args "$@"            # getopts; -b/-d non-empty; no positional arguments
   resolve_corpus             # -d -> SCHEMA_DIR, REPO_ROOT, SOURCE_FILE, ORDER_FILE, PIN_FILE
   assert_source_exists       # the authored file is there and is not empty
-  assert_source_is_usable    # tabs, control bytes, interior double spaces, an all-blank file
+  assert_source_is_usable    # a carriage return, and a source with no content at all
   read_pin                   # PINNED_VERSION, refusing anything but exactly one pin line
   assert_base_ref_is_usable  # -b names a commit, and is not behind its upstream
-  resolve_target_version     # LANDED_SEEDS, TIP, NEXT, TARGET_NAME/FILE/VERSION
+  resolve_catalog_tip        # LANDED_SEEDS, TIP, TIP_NAME/VERSION/PATH
+  resolve_target_version     # NEXT, TARGET_NAME/FILE/VERSION
   assert_order_is_appendable # scan_order, then refuse a corpus db-migrate would refuse
-  generate_candidates        # the seed and the repinned service.conf, in $WORK_DIR
+  create_work_dir              # the staging area, and the trap that owns its lifetime
+  generate_seed "$CANDIDATE_SEED" # the seed this run would write, staged
+  resolve_authorship         # AUTHORED: does the authored body differ from the tip's?
 
-  if [ -n "$DRY_RUN" ]; then
-    assert_tree_is_current
-  else
-    write_generated_tree
-  fi
+  handle_tree                # -n asserts the tree; a real run writes it
 }
 
 main "$@"

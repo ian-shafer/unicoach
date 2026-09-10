@@ -246,16 +246,17 @@ is surfaced at review as scope creep and consciously kept or reverted -- silent
 blocking loses a real insight, silent acceptance compounds drift.
 
 **A change to the coach system prompt is an edit to
-`prompts/coach-system-prompt.txt`, and to nothing else** (RFC 181). The seed
-migration under `db/schema/` is a GENERATED artifact that phase 6 rewrites from
-that file: a hand-written seed is overwritten, and a hand-edited one is refused.
-Author it **one sentence per line** -- that line granularity is the whole reason
-two runs editing different paragraphs now merge without a conflict. It is `.txt`
-and NOT `.md` deliberately, so `bin/format`'s `**/*.md` glob cannot reflow the
-body under the author; do not rename it, and do not introduce a tab or an
-interior double space, which `bin/prompt-seed` refuses because they would not
-survive the round trip. Do not touch the `systemPromptVersion` pin either --
-phase 6 owns it, because the version label is only knowable at land.
+`prompts/coach-system-prompt.md`, and to nothing else** (RFC 181, RFC 185). The
+seed migration under `db/schema/` is a GENERATED artifact that phase 6 rewrites
+from that file: a hand-written seed is overwritten, and a hand-edited one is
+refused. The body IS that file, verbatim -- no trim, no join, no re-wrap -- so
+Markdown works and a line break is body text. Author it **one sentence per
+line**: that line granularity is the whole reason two runs editing different
+paragraphs now merge without a conflict. `prompts/` is excluded from `deno fmt`
+in `deno.json`, because a reflow would silently rewrite the prompt; keep it
+excluded. A tab and an interior double space are ordinary text now. Do not touch
+the `systemPromptVersion` pin -- phase 6 owns it, because the version label is
+only knowable at land.
 
 ### 5. verify
 
@@ -324,18 +325,20 @@ idempotent: a run with no migration changes nothing, and a fix loop re-runs it
 for free (RFC 180).
 
 `bin/prompt-seed` sits at the same seam and for the same two reasons (RFC 181).
-The coach system prompt is authored as `prompts/coach-system-prompt.txt` and its
+The coach system prompt is authored as `prompts/coach-system-prompt.md` and its
 seed migration is a GENERATED file: the script deletes this run's own seed,
 recomputes the version label as one past the highest coach seed in `BASE_SHA`,
 and rewrites it from the source. So it must run **after** the final rebase, or
 the label is a prediction of a tip that has since moved, and **before** the
 squash and the commit, so the regenerated seed lands inside the hook-verified
-tree. A run that touched no prompt regenerates the same bytes and changes
-nothing, so it is safe to run on every land, exactly like `ship-order`. **Pass
-`-b` explicitly.** The default base is `main`, and a run claimed against any
-other base would then classify the PARENT branch's landed coach seed as its own
-generated file and delete it — the one file this script must never touch.
-`ship-land` re-runs it as
+tree. A run that touched no prompt writes NOTHING -- no seed, no `ORDER` line,
+no repin -- because a version is cut only when the authored body differs from
+the catalog tip's (RFC 185 D6). That is what makes it safe to run on every land,
+exactly like `ship-order`; it used to mint a new immutable row at every land
+instead, whether or not a word was authored. **Pass `-b` explicitly.** The
+default base is `main`, and a run claimed against any other base would then
+classify the PARENT branch's landed coach seed as its own generated file and
+delete it — the one file this script must never touch. `ship-land` re-runs it as
 `bin/prompt-seed -b "$BASE_SHA" -d "$CODEBASE_ROOT/db/schema" -n` before the
 fast-forward and refuses with that script's own status (3 = regenerate, anything
 else = the corpus or the source file is refused). The fix is
@@ -343,13 +346,15 @@ else = the corpus or the source file is refused). The fix is
 re-commit through the hook, re-run `ship-land`.
 
 It also owns the **pin**: it rewrites `systemPromptVersion = "vNN"` in
-`service/src/main/resources/service.conf` to the label it just generated. The
-label is computed at land, so a literal nobody moves drifts from it the moment
-another run lands first — the seed says `v25` while the pin still says `v24`,
-and the runtime is served a row this run did not generate. The append-only
-comment log above that pin is still the **author's** to write; the script
-rewrites the one assignment line and passes every other byte of the file
-through.
+`service/src/main/resources/service.conf` to the row this land leaves the
+runtime serving — the label it just generated, or the catalog TIP when it
+generated none, which moves the pin BACKWARD off a version an earlier run cut
+and a later edit reverted. The label is computed at land, so a literal nobody
+moves drifts from it the moment another run lands first — the seed says `v25`
+while the pin still says `v24`, and the runtime is served a row this run did not
+generate. The append-only comment log above that pin is still the **author's**
+to write; the script rewrites the one assignment line and passes every other
+byte of the file through.
 
 `db/schema/ORDER` is marked `merge=union` in `.gitattributes`. A rebase
 therefore never stops on it: git keeps both sides' lines, with the newly landed

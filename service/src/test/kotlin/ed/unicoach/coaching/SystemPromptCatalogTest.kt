@@ -28,6 +28,7 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.RESIDENCY_TIERS_KEY
+import ed.unicoach.db.models.SystemPrompt
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -60,27 +61,6 @@ import kotlin.test.fail
 class SystemPromptCatalogTest {
   companion object {
     /**
-     * The ONE whitespace class the authoring join rule knows: ASCII space, tab,
-     * newline, vertical tab, form feed, carriage return. Nothing else is
-     * whitespace to this rule.
-     *
-     * It is spelled out rather than left to [String.trim] because `String.trim`
-     * is `Char.isWhitespace`, which strips the Unicode spaces too — U+2000 EN
-     * QUAD and its family. The generator does not: `bin/prompt-seed` measures
-     * bytes under `LC_ALL=C`, where a U+2000 is three ordinary bytes and stays
-     * exactly where the author put it.
-     *
-     * The join rule has three implementations — the shell validator, the awk
-     * emitter, and this test — and three implementations of one rule only work
-     * if they agree on the class. The failure mode of disagreeing is the worst
-     * kind: a leading U+2000 in the source file is KEPT by the generator and
-     * TRIMMED here, so this suite fails telling the operator to regenerate the
-     * seed while regeneration produces byte-identical output. An unfixable
-     * build. Hence: ASCII only, on all three sides.
-     */
-    private const val ASCII_WHITESPACE = " \t\n\u000B\u000C\r"
-
-    /**
      * The ONLY prefix that may precede the word "subtract" in coach copy: the
      * rule has to be stated as a prohibition, never as a licence.
      */
@@ -108,25 +88,78 @@ class SystemPromptCatalogTest {
     private val VERSION_LABEL = Regex("^v([1-9][0-9]*)$")
 
     /**
-     * The single space `bin/prompt-seed` joins two authored lines with, and
+     * The byte that separates two authored lines in the SERVED body, and
      * therefore the one byte that makes an opener match the START of a sentence
-     * in the served body rather than a phrase inside one.
+     * rather than a phrase inside one.
+     *
+     * It is a newline from v27 on (RFC 185): the body is
+     * `prompts/coach-system-prompt.md` verbatim, so the file's own line breaks
+     * are what the model is served. Under RFC 181 it was a single space, because
+     * the generator joined the lines with one — see [LEGACY_JOIN_SPACE], which is
+     * still what the pre-v27 rows in the catalog carry.
      *
      * Named and applied in [openerOf], not typed into each literal below: a
-     * leading space inside a string literal is invisible and load-bearing at
+     * leading separator inside a string literal is invisible and load-bearing at
      * once, so an author adding a paragraph could not see the rule, and the
-     * drift guard had to trim the space back off to compare the opener with the
-     * file it came from. The literals are the copy; the join is this constant.
+     * drift guard had to trim it back off to compare the opener with the file it
+     * came from. The literals are the copy; the separator is this constant.
      */
-    private const val JOIN_SPACE = " "
+    private const val BODY_LINE_BREAK = "\n"
+
+    /**
+     * The single space every coach row UP TO v26 has between two authored
+     * sentences, kept for the rollback assertions that read those immutable rows.
+     *
+     * `system_prompts` is insert-only, so v14 through v26 are still exactly the
+     * one-long-line bodies RFC 181's join rule produced, and an opener looked for
+     * in them has to carry the separator THEY were written with — which is why
+     * [CoachBody] pairs a body with its own separator rather than letting a
+     * caller pick one. Sharing one
+     * constant with [BODY_LINE_BREAK] would make every rollback assertion look
+     * for a newline in a row that has none — a silent pass turning into a silent
+     * failure, depending on which way the shared value went.
+     */
+    private const val LEGACY_JOIN_SPACE = " "
+
+    /**
+     * The last coach version whose body is its authored lines JOINED WITH ONE
+     * SPACE (RFC 181). v27 on carry `prompts/coach-system-prompt.md` verbatim,
+     * so their authored lines are separated by [BODY_LINE_BREAK] (RFC 185).
+     *
+     * `system_prompts` is insert-only, so this boundary is a fact about rows
+     * that already exist, and it never moves again.
+     */
+    private const val LAST_SPACE_JOINED_VERSION = 26
+
+    /**
+     * A catalog row's body together with the separator THAT ROW was written
+     * with, so an opener is always looked for in the dialect of the body it is
+     * looked for in.
+     *
+     * The pairing is DERIVED from the row's version by [bodyOf] and never
+     * chosen by a caller. Two interchangeable `String` producers made the
+     * dialect a naming convention: picking the pre-v27 one for a v27 body, or
+     * the other way round, compiles and — on an `assertFalse`, which is most of
+     * the rollback assertions here — passes vacuously forever. There is no
+     * spelling of that mistake left to write.
+     */
+    private class CoachBody(
+      private val text: String,
+      private val lineSeparator: String,
+    ) {
+      /** Whether this body carries [paragraph], matched at the START of a line rather than inside a sentence. */
+      fun contains(paragraph: CoachParagraph): Boolean = text.contains(lineSeparator + paragraph.openingWords)
+    }
 
     /**
      * Every paragraph of the served coach prompt, each named by its opening
      * words.
      *
-     * The body is one continuous run of text with no paragraph marker in it, so
-     * a paragraph's END is the next paragraph's beginning, and this set is what
-     * says where those are. It exists to keep a paragraph-scoped assertion
+     * The body is one line per sentence with no paragraph marker in it, so a
+     * paragraph's END is the next paragraph's beginning, and this set is what
+     * says where those are. (A line break is not a paragraph marker: every
+     * sentence sits on its own line, so a break separates two sentences of one
+     * paragraph as often as it separates two paragraphs.) It exists to keep a paragraph-scoped assertion
      * SCOPED: "this paragraph never says room and board" is a true and useful
      * rule that the whole body fails, because the glossary paragraph says the
      * words in order to retire them.
@@ -166,10 +199,10 @@ class SystemPromptCatalogTest {
     }
 
     /**
-     * [paragraph]'s opening words as they appear in the SERVED body: the join
-     * space, then the copy. The one place the two are put together.
+     * [paragraph]'s opening words as they appear in the SERVED body: the line
+     * break, then the copy. The one place the two are put together.
      */
-    private fun openerOf(paragraph: CoachParagraph): String = JOIN_SPACE + paragraph.openingWords
+    private fun openerOf(paragraph: CoachParagraph): String = BODY_LINE_BREAK + paragraph.openingWords
 
     /**
      * The admissions tool the v8 paragraph names (RFC 148), read from the tool
@@ -331,8 +364,8 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The file a human edits (RFC 181): `prompts/coach-system-prompt.txt`, one
-   * sentence per line, from which `bin/prompt-seed` GENERATES the seed
+   * The file a human edits (RFC 181, RFC 185): `prompts/coach-system-prompt.md`,
+   * one sentence per line, from which `bin/prompt-seed` GENERATES the seed
    * migration.
    *
    * Resolved relative to the module directory, which is the working directory of
@@ -342,50 +375,75 @@ class SystemPromptCatalogTest {
    * A root walk looking for `settings.gradle.kts` would be a second way of
    * answering a question this suite already answers one way.
    */
-  private val promptSourceFile = File("../prompts/coach-system-prompt.txt")
+  private val promptSourceFile = File("../prompts/coach-system-prompt.md")
 
   /**
-   * `bin/prompt-seed`'s join rule, restated: strip each line, drop the blank
-   * ones, join what is left with a single space.
+   * The body the file says the row must carry: the file itself (RFC 185).
    *
-   * Restated rather than shelled out to, because the point of the assertion is
-   * that the SHIPPED ROW equals the file under this rule. Running the generator
-   * would compare it against itself.
+   * There is no rule here any more, and that is the point. RFC 181 restated its
+   * join — strip, drop blanks, join with one space — in a third language, so the
+   * shell validator, the awk emitter and this test were three implementations of
+   * one transform that had to agree on what whitespace was, and did not (the
+   * U+2000 case). A verbatim copy has nothing to drift from.
+   *
+   * `removeSuffix("\n")` is the one adjustment, and it is not a transform of the
+   * body: it is how a text file's FINAL LINE TERMINATOR is spelled. `awk` reads
+   * records without it, so the seed carries the file's lines and not the byte
+   * that ends the last one. Whether an editor leaves that byte is invisible in
+   * every diff, so it is a terminator here and never body. On a file with no
+   * final newline the call is a no-op, which makes it this rule's exact inverse
+   * either way.
    */
-  private fun authoredBody(): String = joinSourceLines(promptSourceFile.readText())
+  private fun authoredBody(): String = promptSourceFile.readText().removeSuffix("\n")
 
   /**
-   * The join rule itself, over a String and nothing else: strip each line of
-   * [ASCII_WHITESPACE], drop the blank ones, join what is left with a single
-   * space.
+   * [this] with the served body's line breaks turned back into the single spaces
+   * a Kotlin literal spells them with.
    *
-   * Pure on purpose — no file, no database — so the rule can be pinned by
-   * example (see the U+2000 regression below) rather than only observed through
-   * a whole seeded catalog. [authoredBody] is this function applied to the
-   * source file.
+   * For the few assertions whose subject spans TWO authored sentences — a rule
+   * and the attribution that must sit beside it, or a shipping constant that is
+   * one string in code and two lines in the file. What those assert is
+   * ADJACENCY in the copy, and adjacency is what the author's line breaks are
+   * free to move: the file is one sentence per line today, and a later author
+   * may join two of them or split one without changing a word. Flattening says
+   * exactly that and no more; every other assertion in this class reads the
+   * served body unflattened, because a single sentence needs no help.
+   *
+   * It is deliberately NOT the reverse of [BODY_LINE_BREAK]: nothing here turns
+   * a space back into a line break, because which spaces were joins is the one
+   * fact RFC 181's rule threw away.
    */
-  private fun joinSourceLines(text: String): String =
-    text
-      .lines()
-      .map { line -> line.trim { c -> c in ASCII_WHITESPACE } }
-      .filter(String::isNotEmpty)
-      .joinToString(" ")
+  private fun String.replaceLineBreaksWithSpaces(): String = replace(BODY_LINE_BREAK, LEGACY_JOIN_SPACE)
 
   /**
    * The text around [index], for a failure that has to show WHERE two long
-   * bodies part. Both bodies are one 25 KB line, so `assertEquals` dumps 50 KB
-   * of prose into the log and locates nothing; the first differing character,
-   * with a window from each side, is the whole finding.
+   * bodies part. Both bodies are 25 KB of prose, so `assertEquals` dumps 50 KB
+   * into the log and locates nothing; the first differing character, with a
+   * window from each side, is the whole finding.
    */
   private fun String.getExcerptAround(index: Int): String = substring((index - 40).coerceAtLeast(0), (index + 40).coerceAtMost(length))
 
   /**
-   * The pinned row as `coach/v24` — the identity every failure about that row
+   * The pinned row as `coach/v27` — the identity every failure about that row
    * carries. "The pinned coach row" is not an identifier: `bin/prompt-seed`
    * moves the label at land, so the reader of a CI log would have to open
    * `service.conf` to learn which row the failure is about.
    */
   private fun pinnedRowLabel(): String = "${coaching.systemPromptName}/${coaching.systemPromptVersion}"
+
+  /**
+   * [row]'s body, tagged with the separator the row's OWN version was seeded
+   * with: the RFC 181 join space up to [LAST_SPACE_JOINED_VERSION], the source
+   * file's line break from v27 on.
+   *
+   * Every paragraph assertion over a catalog row goes through this, so no call
+   * site names a separator and none can name the wrong one.
+   */
+  private fun bodyOf(row: SystemPrompt): CoachBody =
+    CoachBody(
+      row.body,
+      if (versionNumberOf(row.version) <= LAST_SPACE_JOINED_VERSION) LEGACY_JOIN_SPACE else BODY_LINE_BREAK,
+    )
 
   /**
    * The number in a `vNN` catalog label, refusing anything else.
@@ -432,6 +490,25 @@ class SystemPromptCatalogTest {
       .body
 
   /**
+   * The `coach` row labelled [version], failing with the PAIR it looked for.
+   *
+   * `getOrThrow()` on a missing row raises `NotFoundException`, whose message is
+   * the bare "Record not found" — and the versions read through here are derived
+   * from a constant rather than typed at the call site, so nothing else in the
+   * log would name the row that is missing.
+   */
+  private fun coachBodyAt(version: String): String =
+    SystemPromptsDao
+      .findByNameAndVersion(session, coaching.systemPromptName, version)
+      .getOrElse {
+        fail(
+          "system_prompts has no row [${coaching.systemPromptName}/$version]; it is one of the two rows the " +
+            "RFC 185 transition is stated over, and the table is insert-only, so every version it has ever cut stays " +
+            "selectable. Re-migrate: nix develop -c bin/test",
+        )
+      }.body
+
+  /**
    * One paragraph of the served body: from [paragraph]'s opening words to the
    * next paragraph's, or to the end of the prompt when nothing follows it.
    *
@@ -440,12 +517,12 @@ class SystemPromptCatalogTest {
    * paragraph, so an assertion made over the returned text is about THAT
    * paragraph's copy and not about the whole prompt. What a paragraph says is
    * the subject; which version introduced it is git's business now, in the diff
-   * of prompts/coach-system-prompt.txt (RFC 181).
+   * of prompts/coach-system-prompt.md (RFC 181).
    *
    * This replaces the version-diffing extractors RFC 181 retired
    * (`appendedParagraph`, `insertedSpan`, `revisedMiddle`). They answered
    * "what did version N add to version N-1?", which is a question about
-   * ancestry, and ancestry is now `git diff prompts/coach-system-prompt.txt`.
+   * ancestry, and ancestry is now `git diff prompts/coach-system-prompt.md`.
    * What is left is the question those extractors were only ever a means to:
    * does the copy we SHIP say what it must? So the paragraph is located in the
    * shipped body, and no previous version's wording is quoted anywhere.
@@ -514,9 +591,10 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * RFC 181's central assertion, and the one that replaces the retired
-   * byte-identical-prefix family: the body the runtime is SERVED is exactly the
-   * file a human edits, under the documented join rule.
+   * The central assertion of RFC 181 and RFC 185, and the one that replaced the
+   * retired byte-identical-prefix family: the body the runtime is SERVED is
+   * exactly the file a human edits — verbatim, byte for byte, with no rule
+   * between them.
    *
    * The old tests pinned version N against version N-1's wording quoted as a
    * Kotlin literal, and left the file on disk unchecked. This pins the shipped
@@ -552,34 +630,63 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The acceptance test for "this slice changed no wording" (RFC 181 D5).
+   * The acceptance test for "this slice changed no wording" (RFC 185 D2).
    *
-   * The new row exists to prove the generator produces a real one, not to say
-   * anything new: the source file was extracted FROM its predecessor, so the two
-   * bodies must be equal byte for byte. It is also what makes the rollback in
-   * `service.conf` free — `COACHING_SYSTEM_PROMPT_VERSION=v<pinned - 1>` serves
-   * the identical text.
+   * The transition row changes what the model is served: every sentence-joining
+   * space becomes a newline, because the body is now the source file verbatim
+   * instead of its lines joined with one space. That is a real change to a real
+   * artifact, so it gets a real version — and this states exactly how far the
+   * change goes. No word, no sentence and no ordering changed: the diff is
+   * WHITESPACE ONLY, and the proof is that the row with every newline replaced
+   * by a space is its predecessor byte for byte.
    *
-   * Both labels are DERIVED from the pin rather than written as `"v24"` and
-   * `"v23"`, for the same reason the pin itself is no longer a literal:
-   * `bin/prompt-seed` computes the version at land, so a second run landing
-   * first renumbers this row and a hardcoded pair then names a version that does
-   * not exist. The RELATION — this row is its predecessor with no wording
-   * changed — is what the slice promised, and it survives any renumbering.
+   * The replacement runs one way only, and that is deliberate. Going the other
+   * way — turning the predecessor's spaces into newlines — would need to know
+   * WHICH spaces were joins, which is the very information RFC 181's join threw
+   * away.
+   *
+   * BOTH LABELS ARE THE TRANSITION'S OWN, read from [LAST_SPACE_JOINED_VERSION],
+   * and NEITHER is the pin. They used to be `pin` and `pin - 1`, which read as
+   * renumbering-proof and was in fact the opposite: it restated the RFC 185
+   * relation about WHATEVER version is pinned, so the next authored prose edit —
+   * a v28 whose predecessor v27 already carries line breaks — would fail this
+   * test with "RFC 185 changed the mechanism, never a word" about a slice that
+   * did change words. `system_prompts` is insert-only, so the pair this test is
+   * about is a permanent fact and reading it by label is what makes the claim
+   * hold forever.
+   *
+   * A LATER SLICE THEREFORE LEAVES THIS TEST ALONE: authoring prose adds a
+   * version above the pair and says nothing about it. The one thing that moves
+   * the pair is THIS slice being renumbered by another run landing first, which
+   * moves [LAST_SPACE_JOINED_VERSION] — the constant that owns that fact for
+   * every assertion in this file, not just for this one.
    */
   @Test
-  fun `the pinned coach prompt is byte-identical to its predecessor, because RFC 181 changed no wording`() {
-    val pinned = versionNumberOf(coaching.systemPromptVersion)
-    assertTrue(pinned > 1, "the pinned coach version [${coaching.systemPromptVersion}] has no predecessor to be identical to")
-    val predecessor = "v${pinned - 1}"
+  fun `the line-broken coach prompt differs from its space-joined predecessor in whitespace only, never a word`() {
+    val predecessor = "v$LAST_SPACE_JOINED_VERSION"
+    val transition = "v${LAST_SPACE_JOINED_VERSION + 1}"
 
-    val before = SystemPromptsDao.findByNameAndVersion(session, "coach", predecessor).getOrThrow().body
-    val pinnedBody = servedBody()
+    val before = coachBodyAt(predecessor)
+    val after = coachBodyAt(transition)
+
+    // A vacuous pass is the failure mode worth naming: if the transition body
+    // carried no newline at all, the replacement below would be the identity and
+    // this test would assert nothing beyond the predecessor test it replaced.
+    assertTrue(
+      after.contains(BODY_LINE_BREAK),
+      "[$transition] must carry the source file's line breaks (RFC 185), or the comparison below is the identity",
+    )
+
+    val flattened = after.replaceLineBreaksWithSpaces()
+    val divergence = flattened.commonPrefixWith(before).length
 
     assertEquals(
       before,
-      pinnedBody,
-      "the pinned coach row is the FILE-AUTHORED [$predecessor]: the mechanism changed, the copy did not",
+      flattened,
+      "[$transition] is [$predecessor] with the joins turned into line breaks and NOTHING else: " +
+        "flattened, they first differ at character [$divergence] — [$predecessor] says " +
+        "[${before.getExcerptAround(divergence)}], [$transition] says [${flattened.getExcerptAround(divergence)}]. " +
+        "RFC 185 changed the mechanism and the whitespace, never a word",
     )
   }
 
@@ -588,35 +695,27 @@ class SystemPromptCatalogTest {
    *
    * The openers are the only thing that says where a paragraph of the served
    * body ENDS, and they are Kotlin literals. If an author rewords the first
-   * sentence of a paragraph in `prompts/coach-system-prompt.txt` — which RFC 181
+   * sentence of a paragraph in `prompts/coach-system-prompt.md` — which RFC 181
    * exists to make easy — a stale opener does not fail loudly: [paragraphOf]
    * would run on to the NEXT opener, quietly widening someone else's
    * paragraph-scoped negative until it scopes nothing at all. Every opener is
-   * therefore pinned to a real sentence start of the file, and to exactly one
+   * therefore pinned to a real line start of the file, and to exactly one
    * position in the served body, so the index cannot drift in silence.
    *
-   * The line trim is the authoring class ([ASCII_WHITESPACE]), not
-   * `String.trim`, for the reason that constant gives: the served body is what
-   * the C-locale generator emitted, so a test that trimmed a wider class than
-   * the generator would compare two different strings and blame the author.
-   * The openers themselves need no trim any more — they carry no padding, and
-   * [openerOf] is where the join space is added for the search over the served
-   * body.
+   * The lines are read with no trim at all (RFC 185): the body is the file
+   * verbatim, so a line of the file is a line of the served body, and trimming
+   * one side would compare two strings the shipped artifact never contains.
+   * Blank lines are dropped only because no opener can start one.
    */
   @Test
-  fun `every paragraph opener still starts a sentence of the authored source file`() {
-    val sentences =
-      promptSourceFile
-        .readText()
-        .lines()
-        .map { line -> line.trim { c -> c in ASCII_WHITESPACE } }
-        .filter(String::isNotEmpty)
+  fun `every paragraph opener still starts a line of the authored source file`() {
+    val sentences = promptSourceFile.readText().lines().filter(String::isNotEmpty)
     val body = servedBody()
 
     CoachParagraph.entries.forEach { paragraph ->
       assertTrue(
         sentences.any { it.startsWith(paragraph.openingWords) },
-        "[CoachParagraph.$paragraph] names [${paragraph.openingWords}], which no line of prompts/coach-system-prompt.txt starts with; the index has drifted from the file",
+        "[CoachParagraph.$paragraph] names [${paragraph.openingWords}], which no line of prompts/coach-system-prompt.md starts with; the index has drifted from the file",
       )
       assertEquals(
         1,
@@ -624,26 +723,6 @@ class SystemPromptCatalogTest {
         "the opener [${paragraph.openingWords}] must locate exactly one paragraph of the served body, or paragraphOf is scoping by luck",
       )
     }
-  }
-
-  /**
-   * The whitespace class the join rule runs under, pinned by example.
-   *
-   * U+2000 EN QUAD is whitespace to `Char.isWhitespace` and therefore to
-   * `String.trim`, and is NOT whitespace to `LC_ALL=C` awk, which is what
-   * `bin/prompt-seed` emits the seed with. If [joinSourceLines]
-   * used `String.trim`, a leading U+2000 in `prompts/coach-system-prompt.txt`
-   * would be kept by the generator and dropped here, and
-   * `the pinned coach prompt body is exactly the authored source file` would
-   * fail telling the operator to regenerate a seed that regeneration would not
-   * change. This test is what stops that being possible.
-   */
-  @Test
-  fun `the authoring join rule keeps a non-ASCII space, because the generator does`() {
-    assertEquals(
-      "\u2000leading kept trailing\u2000",
-      joinSourceLines("  \u2000leading kept trailing\u2000  \n\n"),
-    )
   }
 
   /**
@@ -1185,10 +1264,10 @@ class SystemPromptCatalogTest {
     assertTrue(v14.body.isNotEmpty(), "the v14 body must be the copy it was seeded with, not an empty row")
     assertTrue(v14.body != v15, "v14 and v15 must be different bodies, or the pin bought nothing")
     assertTrue(
-      v14.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      bodyOf(v14).contains(CoachParagraph.SOURCE_JARGON),
       "v14 must still carry the source-jargon rule it was approved with",
     )
-    assertTrue(v14.body.contains(openerOf(CoachParagraph.COST)), "v14 must still carry the money paragraph it was approved with")
+    assertTrue(bodyOf(v14).contains(CoachParagraph.COST), "v14 must still carry the money paragraph it was approved with")
     assertFalse(v14.body.contains(SHARE_REPORT_TOOL_NAME), "the rollback target must not already name the v15 share tool")
   }
 
@@ -1267,10 +1346,10 @@ class SystemPromptCatalogTest {
     assertTrue(v15.body.isNotEmpty(), "the v15 body must be the copy it was seeded with, not an empty row")
     assertTrue(v15.body != v16, "v15 and v16 must be different bodies, or the pin bought nothing")
     assertTrue(
-      v15.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      bodyOf(v15).contains(CoachParagraph.SOURCE_JARGON),
       "v15 must still carry the source-jargon rule it was approved with",
     )
-    assertTrue(v15.body.contains(openerOf(CoachParagraph.COST)), "v15 must still carry the money paragraph it was approved with")
+    assertTrue(bodyOf(v15).contains(CoachParagraph.COST), "v15 must still carry the money paragraph it was approved with")
     assertFalse(
       v15.body.contains("students paying in-state tuition and fees"),
       "the rollback target must not already carry v16's residency-basis rule",
@@ -1409,10 +1488,10 @@ class SystemPromptCatalogTest {
     assertTrue(v16.body.isNotEmpty(), "the v16 body must be the copy it was seeded with, not an empty row")
     assertTrue(v16.body != v17, "v16 and v17 must be different bodies, or the pin bought nothing")
     assertTrue(
-      v16.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      bodyOf(v16).contains(CoachParagraph.SOURCE_JARGON),
       "v16 must still carry the source-jargon rule it was approved with",
     )
-    assertTrue(v16.body.contains(openerOf(CoachParagraph.COST)), "v16 must still carry the money paragraph it was approved with")
+    assertTrue(bodyOf(v16).contains(CoachParagraph.COST), "v16 must still carry the money paragraph it was approved with")
     assertFalse(
       v16.body.contains(FEDERAL_AID_TOOL_NAME),
       "the rollback target must not already name the v17 federal-aid tool",
@@ -1480,7 +1559,7 @@ class SystemPromptCatalogTest {
     val v19 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v19").getOrThrow()
 
     assertEquals("v19", v19.version, "the rollback target must still be selectable by name and version")
-    assertTrue(v19.body.contains(openerOf(CoachParagraph.FIGURE_STATUS)), "v19 must still carry RFC 166's figure-status copy")
+    assertTrue(bodyOf(v19).contains(CoachParagraph.FIGURE_STATUS), "v19 must still carry RFC 166's figure-status copy")
     // NOT a bare `aid_policy` check: v17's paragraph names the
     // `federal_aid_policy` TOOL, which contains that key as a substring. The
     // marker is the phrase the v20 paragraph actually adds.
@@ -1582,6 +1661,38 @@ class SystemPromptCatalogTest {
       v22.body.contains(moneyAttributionOpener),
       "the rollback target must not already carry the v23 attribution copy",
     )
+  }
+
+  /**
+   * The rollback RFC 185 D2 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v26`), which is only real if the v26 row is
+   * still in the insert-only catalog and still carries the pre-RFC-185 body --
+   * the one whose sentences are joined with a single space.
+   *
+   * The label is a LITERAL, on the v14-v22 precedent, and that is the point of
+   * this test rather than an oversight. It names the row RFC 185's rollback
+   * sentence names, and it goes on naming it after the pin moves again. The
+   * whitespace-only test above reads the same row through a label DERIVED from
+   * [LAST_SPACE_JOINED_VERSION], which is a fact about the transition rather
+   * than about the rollback. A rollback target is an immutable row, so nothing
+   * about it moves when the pin does.
+   *
+   * v25 is not named here. It is an equally valid rollback target -- v24, v25
+   * and v26 carry the same space-joined body, because two runs that authored
+   * nothing regenerated the seed at land -- but the version RFC 185's own
+   * rollback sentence documents is the one immediately below the pin, and a
+   * test per identical row would assert the same fact three times.
+   */
+  @Test
+  fun `coach v26 stays selectable so the v27 rollback is real`() {
+    val v26 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v26").getOrThrow()
+
+    assertEquals("v26", v26.version, "the rollback target must still be selectable by name and version")
+    assertFalse(
+      v26.body.contains(BODY_LINE_BREAK),
+      "v26 is a pre-RFC-185 row: its authored lines are joined with one space, never a line break",
+    )
+    assertTrue(bodyOf(v26).contains(CoachParagraph.COST), "v26 must still carry the money paragraph it was approved with")
   }
 
   /**
@@ -1705,13 +1816,13 @@ class SystemPromptCatalogTest {
     assertTrue(v18.body.isNotEmpty(), "the v18 body must be the copy it was seeded with, not an empty row")
     assertTrue(v18.body != v19, "v18 and v19 must be different bodies, or the pin bought nothing")
     assertTrue(
-      v18.body.contains(openerOf(CoachParagraph.SOURCE_JARGON)),
+      bodyOf(v18).contains(CoachParagraph.SOURCE_JARGON),
       "v18 must still carry the source-jargon rule it was approved with",
     )
     assertTrue(v18.body.contains(STOP_OFFERS_TOOL_NAME), "v18 must still carry RFC 160's opt-out copy")
     assertFalse(v18.body.contains(IN_DISTRICT_OPENER), "the rollback target must not already carry v19's in-district tier")
     assertFalse(v18.body.contains(AT_HOME_OPENER), "nor v19's at-home assumption")
-    assertFalse(v18.body.contains(openerOf(CoachParagraph.FIGURE_STATUS)), "nor v19's figure-status paragraph")
+    assertFalse(bodyOf(v18).contains(CoachParagraph.FIGURE_STATUS), "nor v19's figure-status paragraph")
   }
 
   private fun residencyBasisParagraph(): String = paragraphAt(CoachParagraph.RESIDENCY_BASIS)
@@ -1902,7 +2013,7 @@ class SystemPromptCatalogTest {
     // own silences — the misattribution RFC 149 D-B exists against.
     val ours = assertNotNull(FigureStatusCopy.agentlessStatementOf(FigureStatus.NOT_COLLECTED_BY_US))
     assertTrue(
-      statuses.contains("$ours That last sentence is ours and not the school's"),
+      statuses.replaceLineBreaksWithSpaces().contains("$ours That last sentence is ours and not the school's"),
       "the sentence that is OURS must be attributed as ours where it is said: [$statuses]",
     )
     assertTrue(
@@ -1957,7 +2068,10 @@ class SystemPromptCatalogTest {
     // from the shipping constant, so a reword there fails here rather than
     // leaving the prompt and the report saying two different things.
     assertTrue(served.contains(AT_HOME_OPENER), "the served prompt must carry the at-home assumption: [$AT_HOME_OPENER]")
-    assertTrue(served.contains(AT_HOME_ASSUMPTION), "the assumption must be said in the exact words the report says")
+    assertTrue(
+      served.replaceLineBreaksWithSpaces().contains(AT_HOME_ASSUMPTION),
+      "the assumption must be said in the exact words the report says",
+    )
     assertTrue(
       served.contains("zero is ours rather than the school's") && served.contains("never say the school reported it"),
       "the zero is a unicoach assumption and is never attributed to the school",

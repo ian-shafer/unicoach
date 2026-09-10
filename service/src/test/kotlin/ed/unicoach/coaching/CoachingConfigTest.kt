@@ -16,7 +16,7 @@ class CoachingConfigTest {
     assertEquals("coach", coaching.systemPromptName)
     // Only the SHAPE of the pin, never the label. `bin/prompt-seed` OWNS this
     // line as of RFC 181: at land it generates the next coach seed from
-    // prompts/coach-system-prompt.txt and rewrites systemPromptVersion to the
+    // prompts/coach-system-prompt.md and rewrites systemPromptVersion to the
     // label it just generated. A literal "v24" here would therefore be
     // invalidated by the very step that made it wrong, and an assertion whose
     // repair is part of the change it is meant to catch guards nothing.

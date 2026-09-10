@@ -27,7 +27,7 @@ deletes the merged branch. Refuses on uncommitted changes or a non-fast-forward.
 
 Also refuses a db/schema/ORDER that is not in land order — `ship-order -n` — so
 a run that skipped ship-order in phase 6 cannot land a mis-ordered manifest, and
-a coach prompt seed that is not what this base plus prompts/coach-system-prompt.txt
+a coach prompt seed that is not what this base plus prompts/coach-system-prompt.md
 generates — `bin/prompt-seed -n`, when that script exists in the checkout.
 
 Refuses a land lock (see ship-lock) held by another run, acquires a free one for
