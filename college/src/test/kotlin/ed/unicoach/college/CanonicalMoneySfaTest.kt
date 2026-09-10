@@ -49,20 +49,47 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `SFA wins the band series it publishes, one row, never averaged`() {
+  fun `the two publishers' band series coexist, one row per real year, never averaged`() {
     fill()
-    // Portland State, AY2021-22, band 1: the Scorecard snapshot carries
-    // 16,348 (its copy of the PROVISIONAL SFA2122 release); SFA2223 restates
-    // the same cell as 10,311. One row survives, it is the publisher's, and
-    // it says so.
+    // BEHAVIOUR MOVED (RFC 183 D2), and this test is re-pointed rather than
+    // left passing at a key nothing contests any more.
+    //
+    // It used to name a COLLISION: the Scorecard's band figure was mis-stamped
+    // AY2021-22, landing exactly on SFA's suffix-1 aid year, and upstream-wins
+    // suppressed it. That collision was an artefact of the wrong year and it is
+    // gone -- SFA writes 2020/2021/2022, the Scorecard's cohort is 2023-24, and
+    // the two can no longer share a key at all. So the fact worth asserting is
+    // the one the correction produces: BOTH numbers are stored, each under the
+    // year its own publisher states, and neither is blended into the other.
+    // Measured over the pinned artifacts this is 19,780 band rows that were
+    // suppressed and are now served.
+    //
+    // Portland State, band 1: SFA2223 restates AY2021-22 as 10,311; the
+    // Scorecard's own cell is 16,348 and describes AY2023-24.
     val rows =
       query(
-        "SELECT cms.value, cms.source, cms.source_variable, cms.publisher_flag FROM cohort_money_stats cms " +
-          "JOIN colleges c ON c.id = cms.college_id " +
+        "SELECT cms.vintage, cms.value, cms.source, cms.source_variable, cms.publisher_flag " +
+          "FROM cohort_money_stats cms JOIN colleges c ON c.id = cms.college_id " +
           "WHERE c.ipeds_unit_id = 209807 AND cms.measure = 'avg_net_price' AND cms.income_band = 'under_30k' " +
-          "AND cms.vintage = 2021",
-      ) { rs -> listOf(rs.getBigDecimal(1).toInt().toString(), rs.getString(2), rs.getString(3), rs.getString(4)) }
-    assertEquals(listOf(listOf("10311", "ipeds_sfa", "npis411", "R")), rows)
+          "ORDER BY cms.vintage",
+      ) { rs ->
+        listOf(
+          rs.getInt(1).toString(),
+          rs.getBigDecimal(2).toInt().toString(),
+          rs.getString(3),
+          rs.getString(4),
+          rs.getString(5),
+        )
+      }
+    assertEquals(
+      listOf(
+        listOf("2020", "11840", "ipeds_sfa", "npis410", "R"),
+        listOf("2021", "10311", "ipeds_sfa", "npis411", "R"),
+        listOf("2022", "11558", "ipeds_sfa", "npis412", "R"),
+        listOf("2023", "16348", "scorecard", "NPT41_PUB", null),
+      ),
+      rows,
+    )
   }
 
   @Test
@@ -87,17 +114,32 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
     // The Scorecard's NPT4_PUB is the band-count-weighted mean over the TITLE
     // IV-aided population; NPIST is the GRANT-AIDED one. Overwriting either
     // with the other would be the mistake this pair of rows exists to refuse.
+    //
+    // RE-DATED (RFC 183): the two rows used to sit at one vintage, 2021, and
+    // the aid scope alone kept them apart. The Scorecard's cell is AcadYr
+    // 2023-24, so the query is no longer pinned to one year -- what it still
+    // proves is that the two populations are TWO rows, which the aid scope
+    // decides and the vintage never did.
     val rows =
       query(
-        "SELECT cms.aid_scope, cms.source, cms.source_variable, cms.value FROM cohort_money_stats cms " +
+        "SELECT cms.aid_scope, cms.vintage, cms.source, cms.source_variable, cms.value FROM cohort_money_stats cms " +
           "JOIN colleges c ON c.id = cms.college_id " +
           "WHERE c.ipeds_unit_id = 209807 AND cms.measure = 'avg_net_price' AND cms.income_band IS NULL " +
-          "AND cms.vintage = 2021 ORDER BY cms.aid_scope",
-      ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getBigDecimal(4).toInt().toString()) }
+          "AND cms.vintage IN (2021, ${CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE.firstCalendarYear}) " +
+          "ORDER BY cms.aid_scope",
+      ) { rs ->
+        listOf(
+          rs.getString(1),
+          rs.getInt(2).toString(),
+          rs.getString(3),
+          rs.getString(4),
+          rs.getBigDecimal(5).toInt().toString(),
+        )
+      }
     assertEquals(
       listOf(
-        listOf("federal_aid_receiving", "scorecard", "NPT4_PUB", "17000"),
-        listOf("grant_aided", "ipeds_sfa", "npist1", "12510"),
+        listOf("federal_aid_receiving", "2023", "scorecard", "NPT4_PUB", "17000"),
+        listOf("grant_aided", "2021", "ipeds_sfa", "npist1", "12510"),
       ),
       rows,
     )

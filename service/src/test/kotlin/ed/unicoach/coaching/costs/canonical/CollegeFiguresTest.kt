@@ -140,6 +140,42 @@ class CollegeFiguresTest {
     )
   }
 
+  @Test
+  fun `a year whose in-state tuition was refused cannot be served to an in-state family`() {
+    // RFC 183 D1's READ-SIDE half. The write seam refuses the Scorecard's
+    // `TUITIONFEE_IN` at a college whose in-district and in-state prices really
+    // differ, so the Scorecard's 2024-25 cells are all present EXCEPT in-state
+    // tuition. Without this test the refusal is proved only at the STORE: the
+    // second arm of `publishedPriceYearOf` -- "the latest year bearing ANY
+    // value" -- would still hand an in-state family 2024-25 off the housing and
+    // books cells, and the stored-row assertions in
+    // `ScorecardResidencyCollapseTest` would never see it. What must break if this test is absent: a year that
+    // prices no in-state arrangement being spoken and priced as the family's.
+    val figures =
+      figuresOf(
+        *completeYear(AcademicYear(2023)),
+        // `publisher = null` is this fixture's way of saying THE SCORECARD
+        // (RFC 184): the survey publishers are named, and the Scorecard is the
+        // absence of one. These are its 2024-25 cells, complete EXCEPT in-state
+        // tuition -- exactly the shape RFC 183 D1's write-seam refusal leaves.
+        price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, AcademicYear(2024), 18240, publisher = null),
+        price(CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2024), 18240, publisher = null),
+        price(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, AcademicYear(2024), 1200, publisher = null),
+        price(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD, AcademicYear(2024), 3000, publisher = null),
+        price(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, AcademicYear(2024), 3500, publisher = null),
+        price(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, AcademicYear(2024), 2500, publisher = null),
+      )
+    val year = assertNotNull(chosenYearOf(figures))
+    assertEquals(AcademicYear(2023), year, "a year with no in-state tuition cannot price an in-state family")
+    // And the figure that reaches the family is the coherent IPEDS one, at that
+    // year -- the served value, not merely the stored row.
+    assertEquals(
+      12000,
+      figures.servedAt(year).amountOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
+      "the family is served the in-state price of the year that actually prices them",
+    )
+  }
+
   // ---------------------------------------------------------------------------
   // The cohort side (§8).
   // ---------------------------------------------------------------------------

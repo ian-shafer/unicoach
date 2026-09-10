@@ -435,9 +435,14 @@ data class CollegeCost(
   /**
    * The ONE academic year this school's published-price figures are served at
    * (RFC 166 §3), read off the rows rather than off a Kotlin constant -- so a
-   * Scorecard-only school honestly says 2022-23 where an IC_AY school says
-   * 2023-24. Null when the school publishes no price at all
-   * ([ServedFigures.servesNoPublishedPrice]).
+   * school served from the Scorecard honestly says 2024-25 where a school
+   * served from IC_AY says 2023-24. Null when the school publishes no price at
+   * all ([ServedFigures.servesNoPublishedPrice]).
+   *
+   * The two publishers are ONE YEAR APART and never contend (RFC 183): the
+   * Scorecard's charges are the newer list, IC_AY's window ends at 2023-24, so
+   * which year a school is served at follows which cells completely price the
+   * family's arrangement -- not which publisher outranks which.
    */
   val publishedPriceAcademicYear: String? get() = served.academicYear?.label
 
@@ -445,9 +450,13 @@ data class CollegeCost(
    * The academic year THIS school's figures of [group] describe, or null when it
    * serves none of them (RFC 166 §3 rule 4).
    *
-   * Per college, because the store carries five academic years across two
-   * sources: an IC_AY school says 2023-24 where a Scorecard-only school says
-   * 2022-23, and a single Kotlin constant could only ever have said one of them.
+   * Per college, because the store carries several academic years across two
+   * publishers whose windows do not coincide (RFC 183) -- IC_AY's is derived
+   * from its pinned survey year (`IpedsChargeVocabulary`), the Scorecard's from
+   * its pinned release (`CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR`) -- so one
+   * school is served at one year where the next is served at another, and a
+   * single Kotlin constant could only ever have said one of them. Which years
+   * those are today is those files' own answer, not this comment's.
    */
   fun academicYearOf(group: FigureGroup): String? =
     when (group) {
@@ -763,7 +772,7 @@ data class FigureStatusNote(
    * could learn which year we hold the figure for by substring-matching our own
    * English and no other way -- while the code beside the sentence said
    * `not_collected_by_us`, which reads as "we hold nothing". Carried here, the
-   * payload can say "we hold Berkeley's books allowance for 2021-22" from data,
+   * payload can say "we hold Berkeley's books allowance for 2023-24" from data,
    * and a renderer can give the case its own treatment instead of printing a
    * thirty-word sentence into a table cell.
    */

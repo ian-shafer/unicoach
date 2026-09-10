@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
  *
  * Every fixture row is a VERBATIM subset of the published `ic2023_ay.csv`
  * (Austin Community College District 222992, UC San Diego 110680, Harvard
- * 166027) except the `*-flags-*`, `*-unknown-flag-*`, `*-value-without-status-*`,
+ * 166027, Florida State College at Jacksonville 133702) except the `*-flags-*`, `*-unknown-flag-*`, `*-value-without-status-*`,
  * `*-status-without-value-*` and `*-professional-practice-flag-*` files, which
  * are those same rows with named flag or value cells edited to reach codes and
  * shapes the 2023 file does not happen to contain.
@@ -71,9 +71,9 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     // The whole point of the narrow table: a published year is DATA, so next
     // year's file adds rows and needs no migration.
     val result = load()
-    assertEquals(3, result.seen)
-    assertEquals(3 * 12 * 4, result.loaded)
-    assertEquals(3 * 12 * 4, result.inserted)
+    assertEquals(IC_AY_FIXTURE_RECORDS, result.seen)
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, result.loaded)
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, result.inserted)
     assertEquals(0, result.skipped)
     assertEquals(12, IpedsChargeVocabulary.STEMS.size)
     assertEquals(4, IpedsChargeVocabulary.ACADEMIC_YEAR_BY_SUFFIX.size)
@@ -89,7 +89,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
       },
     )
     assertEquals(
-      listOf(2020, 2021, 2022, 2023).map { AcademicYear(it) to 36 },
+      listOf(2020, 2021, 2022, 2023).map { AcademicYear(it) to IC_AY_FIXTURE_RECORDS * 12 },
       query(
         "SELECT academic_year, count(*) FROM college_ipeds_charges GROUP BY academic_year ORDER BY academic_year",
       ) { rs -> AcademicYear(rs.getInt(1)) to rs.getInt(2) },
@@ -168,22 +168,24 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
   @Test
   fun `the flag distribution over the real fixture is reported by raw code`() {
     val result = load()
-    // 3 records x 12 stems x 4 years = 144 cells. The SPLIT is the operator's
+    // 4 records x 12 stems x 4 years = 192 cells. The SPLIT is the operator's
     // evidence, so it is pinned as counts: a run that swapped every `R` for an
     // `A` would still satisfy a key set and a total. The fixture is fixed
     // bytes, so these numbers are stable.
     assertEquals(
       mapOf(
         IpedsImputationFlag.NOT_APPLICABLE to 19,
-        IpedsImputationFlag.REPORTED to 125,
+        // 173, not 125: RFC 183's fourth institution (133702) publishes all 48
+        // of its cells, so every one of them is an `R`.
+        IpedsImputationFlag.REPORTED to 173,
       ),
       result.cellsByFlag,
     )
     // The tally is keyed by the ENUM, and the published code is what the JSON
     // and log edges render -- so the operator-visible axis is still the raw
     // X-code, and nothing splits a string to read it.
-    assertEquals(mapOf("A" to 19, "R" to 125), result.cellsByFlag.mapKeys { it.key.code })
-    assertEquals(3 * 12 * 4, result.cellsByFlag.values.sum())
+    assertEquals(mapOf("A" to 19, "R" to 173), result.cellsByFlag.mapKeys { it.key.code })
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, result.cellsByFlag.values.sum())
   }
 
   @Test
@@ -385,12 +387,12 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     try {
       val again = runBlocking { loader.load(source("ipeds-ic2023-ay-fixture.csv"), IpedsChargeVocabulary.SURVEY_YEAR) }
       // One row per institution failed; not one RECORD was skipped.
-      assertEquals(3, again.rowFailures)
+      assertEquals(IC_AY_FIXTURE_RECORDS, again.rowFailures)
       assertEquals(0, again.skipped)
-      assertEquals(3 * 12 * 4 - 3, again.loaded)
-      // ...and the three rows the run could not write are gone, rather than
-      // surviving with the amount the first load left.
-      assertEquals(3, again.pruned)
+      assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4 - IC_AY_FIXTURE_RECORDS, again.loaded)
+      // ...and the rows the run could not write -- one per institution -- are
+      // gone, rather than surviving with the amount the first load left.
+      assertEquals(IC_AY_FIXTURE_RECORDS, again.pruned)
       assertEquals(
         emptyList(),
         query(
@@ -398,7 +400,10 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
             "WHERE charge_variable = 'CHG2AY' AND academic_year = 2023",
         ) { it.getInt(1) },
       )
-      assertEquals(3 * 12 * 4 - 3, withSession { count(it, "college_ipeds_charges") })
+      assertEquals(
+        IC_AY_FIXTURE_RECORDS * 12 * 4 - IC_AY_FIXTURE_RECORDS,
+        withSession { count(it, "college_ipeds_charges") },
+      )
     } finally {
       withSession { session ->
         session.prepareStatement("ALTER TABLE college_ipeds_charges DROP CONSTRAINT tmp_reject_one_key").use {
@@ -470,11 +475,13 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
     // the FIRST write per key, those stale rows keep beating the Scorecard.
     // The family would be shown last year's price indefinitely, with nothing
     // saying so.
-    assertEquals(3 * 12 * 4, load().loaded)
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, load().loaded)
     val second = runBlocking { loader.load(source("ipeds-ic2023-ay-departed-fixture.csv"), IpedsChargeVocabulary.SURVEY_YEAR) }
     assertEquals(2, second.seen)
     assertEquals(2 * 12 * 4, second.loaded)
-    assertEquals(12 * 4, second.pruned)
+    // TWO institutions are missing from the departed file now (222992 and the
+    // 133702 RFC 183 added), so a whole institution's rows are pruned twice.
+    assertEquals(2 * 12 * 4, second.pruned)
     assertEquals(
       emptyList(),
       query(
@@ -505,7 +512,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
           stmt.executeUpdate()
         }
     }
-    assertEquals(3 * 12 * 4 + 1, withSession { count(it, "college_ipeds_charges") })
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4 + 1, withSession { count(it, "college_ipeds_charges") })
     val again = runBlocking { loader.load(source("ipeds-ic2023-ay-fixture.csv"), IpedsChargeVocabulary.SURVEY_YEAR) }
     assertEquals(1, again.pruned)
     assertEquals(
@@ -563,7 +570,7 @@ class IpedsChargesLoaderTest : CollegeScorecardTestBase() {
   fun `re-staging the same file is a loudly visible no-op`() {
     load()
     val again = runBlocking { loader.load(source("ipeds-ic2023-ay-fixture.csv"), IpedsChargeVocabulary.SURVEY_YEAR) }
-    assertEquals(3 * 12 * 4, again.unchanged)
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, again.unchanged)
     assertEquals(0, again.inserted)
     assertEquals(0, again.changed)
     assertEquals(0, again.pruned)

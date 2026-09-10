@@ -5,7 +5,6 @@ import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.MoneySource
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
-import java.io.File
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -31,51 +30,21 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
   private val aliasesJson = fixture("college-aliases-fixture.json")
 
-  private fun source(file: File): SourceFile = SourceFile(file, file.path)
-
-  private fun ipedsSources(icAy: String = "ipeds-ic2023-ay-fixture.csv") =
-    IpedsSources(
-      source(fixture("ipeds-hd2023-fixture.csv")),
-      source(fixture("ipeds-ic2023-fixture.csv")),
-      source(fixture("ipeds-adm2023-fixture.csv")),
-      source(fixture("ipeds-c2023-a-fixture.csv")),
-      source(fixture(icAy)),
-      2023,
-    )
-
-  private fun ingest(ipeds: IpedsSources? = ipedsSources()): CollegeScorecardLoader.IngestReport =
+  private fun ingest(ipeds: IpedsSources? = ipedsCorpusSources()): CollegeScorecardLoader.IngestReport =
     runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipeds) }
 
-  private data class Figure(
-    val amountUsd: Int?,
-    val status: String,
-    val source: String,
-    val sourceVariable: String,
-    val publisherFlag: String?,
-  )
-
+  /**
+   * [CollegeScorecardTestBase.figure] at the IC_AY fixture's OWN survey year,
+   * which is the year most of this suite asks about -- stated once here rather
+   * than named at fifteen call sites. The year-bearing form stays available and
+   * is used wherever the subject IS the year.
+   */
   private fun figure(
     ipedsUnitId: Int,
     concept: String,
     residency: String,
     arrangement: String = "not_applicable",
-    academicYear: AcademicYear = AcademicYear(2023),
-  ): Figure? =
-    query(
-      "SELECT p.amount_usd, p.status, p.source, p.source_variable, p.publisher_flag " +
-        "FROM price_figures p JOIN colleges g ON g.id = p.college_id " +
-        "WHERE g.ipeds_unit_id = $ipedsUnitId AND p.price_concept = '$concept' " +
-        "AND p.residency_basis = '$residency' AND p.arrangement = '$arrangement' " +
-        "AND p.academic_year = ${academicYear.firstCalendarYear}",
-    ) { rs ->
-      Figure(
-        amountUsd = rs.getInt(1).takeUnless { rs.wasNull() },
-        status = rs.getString(2),
-        source = rs.getString(3),
-        sourceVariable = rs.getString(4),
-        publisherFlag = rs.getString(5),
-      )
-    }.singleOrNull()
+  ): Figure? = figure(ipedsUnitId, concept, residency, arrangement, AcademicYear(IC_AY_FIXTURE_SURVEY_YEAR))
 
   // ---------------------------------------------------------------------------
   // The slice, in one test
@@ -100,13 +69,18 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
   @Test
   fun `the Scorecard's own in-state number is nowhere in the in-state cell it used to own`() {
     ingest()
-    // The Scorecard writes TUITIONFEE_IN at its published-price year, which
-    // IC_AY also carries, so IPEDS takes that key too. 2,550 survives ONLY
-    // under in_district.
+    // BEHAVIOUR MOVED (RFC 183 D1). This used to hold because the Scorecard's
+    // TUITIONFEE_IN was mis-stamped 2022-23, a year IC_AY also carries, so
+    // IPEDS simply took the key. Honestly dated 2024-25 the Scorecard would
+    // have won that key uncontested -- and served Austin CC's in-DISTRICT
+    // 2,550 as its in-state price. The cell is now REFUSED at the write seam
+    // instead, so the same fact holds for a reason that survives the year
+    // being right: 2,550 exists ONLY under in_district.
     val scorecardYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR
-    val inState = assertNotNull(figure(222992, "tuition_and_fees", "in_state", academicYear = scorecardYear))
-    assertEquals(8580, inState.amountUsd)
-    assertEquals(MoneySource.IPEDS_IC_AY.value, inState.source)
+    assertNull(
+      figure(222992, "tuition_and_fees", "in_state", academicYear = scorecardYear),
+      "no in_state tuition row may exist at the Scorecard's year for a college whose tiers really differ",
+    )
     assertEquals(
       emptyList(),
       query(
@@ -162,17 +136,27 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `for a key both sources carry, the IPEDS row is stored and nothing is averaged`() {
+  fun `the two publishers no longer share a key, so each row is stored at its own year`() {
     ingest()
-    // UCSD's two sources agree on the number and disagree on nothing; the
-    // point is WHICH row is stored, and that there is exactly one.
-    val year = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR
-    val row = assertNotNull(figure(110680, "tuition_and_fees", "in_state", academicYear = year))
-    assertEquals(MoneySource.IPEDS_IC_AY.value, row.source)
-    assertEquals("CHG2AY2", row.sourceVariable)
-    // 14,906 is CHG2AY2; the Scorecard's TUITIONFEE_IN is 15,265. A blend of
-    // the two would be 15,085 and belongs to neither publisher.
-    assertEquals(14906, row.amountUsd)
+    // BEHAVIOUR MOVED (RFC 183). This used to assert that IPEDS TAKES the
+    // Scorecard's key at UCSD, which was only ever true because the Scorecard's
+    // charges were mis-stamped 2022-23 -- inside IC_AY's four-year window. At
+    // the honest 2024-25 the two publishers are ONE YEAR APART and never
+    // contend: each keeps its own key, one row each, and nothing is averaged.
+    // UCSD's in-district and in-state prices are equal, so D1 withholds
+    // nothing here.
+    val ipeds = assertNotNull(figure(110680, "tuition_and_fees", "in_state", academicYear = AcademicYear(2023)))
+    assertEquals(MoneySource.IPEDS_IC_AY.value, ipeds.source)
+    assertEquals("CHG2AY3", ipeds.sourceVariable)
+    assertEquals(15265, ipeds.amountUsd)
+
+    val scorecard =
+      assertNotNull(
+        figure(110680, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+      )
+    assertEquals(MoneySource.SCORECARD.value, scorecard.source)
+    assertEquals("TUITIONFEE_IN", scorecard.sourceVariable)
+    assertEquals(15265, scorecard.amountUsd)
   }
 
   @Test
@@ -209,9 +193,15 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
   @Test
   fun `with an empty staging table the fill is the Scorecard-only result it was before RFC 161`() {
     // The MoneySource retype had to be behaviour-PRESERVING where IC_AY is
-    // absent. With zero `college_ipeds_charges` rows the fill must produce
-    // exactly the pre-161 shape: one source, the Scorecard's own published
-    // year, and Austin CC back on the in-district-collapsed 2,550.
+    // absent: with zero `college_ipeds_charges` rows the fill is still one
+    // source at the Scorecard's own published year.
+    //
+    // BEHAVIOUR MOVED (RFC 183 D1). This used to end by asserting Austin CC
+    // back on the in-district-collapsed 2,550 under `in_state` -- which is the
+    // very number that understates a Texas commuter by $6,030, and which the
+    // corrected year would now make the SERVED one. With no IC_AY staged
+    // nothing evidences that any college charges a single in-* rate, so the
+    // rule fails CLOSED and the cell is withheld everywhere instead.
     val result = ingest(ipeds = null).canonicalMoney
     assertEquals(0, withSession { count(it, "college_ipeds_charges") })
     assertEquals(
@@ -223,13 +213,23 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       query("SELECT DISTINCT academic_year FROM price_figures") { AcademicYear(it.getInt(1)) },
     )
     assertEquals(mapOf(MoneySource.SCORECARD to result.priceFigureRows), result.priceFigureSourceCounts)
-    val inState =
+    assertNull(
+      figure(222992, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+      "with no staged residency evidence the Scorecard's single \"in\" cell is withheld, never guessed",
+    )
+    // Five, not four: RFC 183 added a fifth institution to the Scorecard
+    // fixture (133702), and the refusal is per MATCHED ROW.
+    assertEquals(5, result.inStateTuitionUnevidenced, "one per matched row, counted apart from a measured refusal")
+    assertEquals(0, result.inStateTuitionWithheld)
+    // The out-of-state cell is unambiguous and still writes, so the refusal is
+    // one cell rather than the whole college.
+    val outOfState =
       assertNotNull(
-        figure(222992, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+        figure(222992, "tuition_and_fees", "out_of_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
       )
-    assertEquals(2550, inState.amountUsd)
-    assertEquals("TUITIONFEE_IN", inState.sourceVariable)
-    assertNull(inState.publisherFlag)
+    assertEquals(10590, outOfState.amountUsd)
+    assertEquals("TUITIONFEE_OUT", outOfState.sourceVariable)
+    assertNull(outOfState.publisherFlag)
   }
 
   // ---------------------------------------------------------------------------
@@ -244,6 +244,12 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       // and 2021-22 (10,830 -> 8,580) and has held since. History is stored
       // (D15) even though only the latest year is served today, so a later
       // slice can show the change without a re-ingest.
+      //
+      // STILL FOUR after RFC 183, and that is the point: the Scorecard now
+      // writes a real 2024-25 year, but Austin CC's tiers differ, so its
+      // in-state cell is the one D1 refuses. A fifth entry `2024 to 2550` here
+      // would BE the defect -- the in-district price wearing an in-state label
+      // at the newest year, which is what a family would then be served.
       listOf(2020 to 10830, 2021 to 8580, 2022 to 8580, 2023 to 8580),
       query(
         "SELECT p.academic_year, p.amount_usd FROM price_figures p JOIN colleges g ON g.id = p.college_id " +
@@ -276,7 +282,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
 
   @Test
   fun `an imputed code stores its value under imputed_by_publisher, never reported`() {
-    ingest(ipedsSources("ipeds-ic2023-ay-flags-fixture.csv"))
+    ingest(ipedsCorpusSources("ipeds-ic2023-ay-flags-fixture.csv"))
     val imputed = assertNotNull(figure(110680, "tuition_and_fees", "in_state"))
     assertEquals(15265, imputed.amountUsd)
     assertEquals("imputed_by_publisher", imputed.status)
@@ -295,7 +301,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
 
   @Test
   fun `a blank or do-not-know cell stores no value, and does not fall back to the Scorecard`() {
-    ingest(ipedsSources("ipeds-ic2023-ay-flags-fixture.csv"))
+    ingest(ipedsCorpusSources("ipeds-ic2023-ay-flags-fixture.csv"))
     val blank = assertNotNull(figure(166027, "tuition_and_fees", "in_state"))
     assertNull(blank.amountUsd)
     assertEquals("not_reported_by_institution", blank.status)
@@ -303,6 +309,9 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     // Upstream-wins is about the KEY, not about the value: IPEDS holding the
     // key with an absence is still IPEDS holding it. A fill that let the
     // Scorecard fill the hole would be averaging two publishers by accident.
+    // Since RFC 183 the Scorecard could not fill it in any case -- its rows are
+    // a year later -- but the rule is about what a fill may do, not about
+    // whether anything currently tries.
     assertEquals(MoneySource.IPEDS_IC_AY.value, blank.source)
   }
 

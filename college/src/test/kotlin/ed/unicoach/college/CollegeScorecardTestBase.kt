@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.common.config.AppConfig
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
@@ -21,6 +22,25 @@ import java.sql.ResultSet
  */
 abstract class CollegeScorecardTestBase {
   companion object {
+    /**
+     * The IPEDS survey year the committed IC_AY fixtures transcribe -- the
+     * `IC2023_AY.csv` window `IpedsChargeVocabulary` decodes. Named once here
+     * rather than typed as a bare `2023` beside each fixture list.
+     */
+    const val IC_AY_FIXTURE_SURVEY_YEAR = 2023
+
+    /**
+     * How many institutions the committed IC_AY fixture transcribes: Austin
+     * Community College District (222992), UC San Diego (110680), Harvard
+     * (166027) and Florida State College at Jacksonville (133702).
+     *
+     * Named once, because every staged-row count in the charges suites is a
+     * multiple of it: RFC 183 added the fourth institution -- the real college
+     * whose in-district and in-state tuitions merged -- and a suite that had
+     * typed `3` in nine places had to be re-read nine times to say so.
+     */
+    const val IC_AY_FIXTURE_RECORDS = 4
+
     private lateinit var database: Database
 
     @JvmStatic
@@ -119,6 +139,69 @@ abstract class CollegeScorecardTestBase {
   protected fun seedCodebookReference() = withSession { session -> CodebookReferenceFixture.seed(session) }
 
   protected fun <T> withSession(block: (SqlSession) -> T): T = runBlocking { database.withConnection(block) }
+
+  /** One input file, addressed the way every loader entry point takes it. */
+  protected fun source(file: File): SourceFile = SourceFile(file, file.path)
+
+  /**
+   * The committed IC_AY corpus -- [IC_AY_FIXTURE_RECORDS] real institutions --
+   * as `CollegeScorecardLoader.ingest` takes it: the same six fixtures two
+   * suites had each spelled out.
+   *
+   * Named for the CORPUS rather than `ipedsSources`, because `IpedsIngestTest`
+   * builds a different IPEDS group under that name: two all-defaulted helpers
+   * of one name is a call that silently resolves to the other suite's fixtures.
+   *
+   * [icAy] is the one file a suite varies (the departed/flags/unknown-flag
+   * variants), so it is the one parameter.
+   */
+  protected fun ipedsCorpusSources(icAy: String = "ipeds-ic2023-ay-fixture.csv"): IpedsSources =
+    IpedsSources(
+      source(fixture("ipeds-hd2023-fixture.csv")),
+      source(fixture("ipeds-ic2023-fixture.csv")),
+      source(fixture("ipeds-adm2023-fixture.csv")),
+      source(fixture("ipeds-c2023-a-fixture.csv")),
+      source(fixture(icAy)),
+      IC_AY_FIXTURE_SURVEY_YEAR,
+    )
+
+  /** One `price_figures` row, addressed the way every money suite addresses it. */
+  protected data class Figure(
+    val amountUsd: Int?,
+    val status: String,
+    val source: String,
+    val sourceVariable: String,
+    val publisherFlag: String?,
+  )
+
+  /**
+   * The one `price_figures` row at a cell address, or null when the fill wrote
+   * none. Two money suites had pasted this SELECT, and the copies had already
+   * drifted -- one carried `status` and `publisher_flag`, the other did not --
+   * so a column added to the read reached one suite only.
+   */
+  protected fun figure(
+    ipedsUnitId: Int,
+    concept: String,
+    residency: String,
+    arrangement: String = "not_applicable",
+    academicYear: AcademicYear,
+  ): Figure? =
+    query(
+      "SELECT p.amount_usd, p.status, p.source, p.source_variable, p.publisher_flag " +
+        "FROM price_figures p JOIN colleges g ON g.id = p.college_id " +
+        "WHERE g.ipeds_unit_id = $ipedsUnitId AND p.price_concept = '$concept' " +
+        "AND p.residency_basis = '$residency' AND p.arrangement = '$arrangement' " +
+        "AND p.academic_year = ${academicYear.firstCalendarYear}",
+    ) { rs ->
+      Figure(
+        amountUsd = rs.getInt(1).takeUnless { rs.wasNull() },
+        status = rs.getString(2),
+        source = rs.getString(3),
+        sourceVariable = rs.getString(4),
+        publisherFlag = rs.getString(5),
+      )
+    }.singleOrNull()
 
   /**
    * Every row of an arbitrary read-only query, mapped. Three suites had

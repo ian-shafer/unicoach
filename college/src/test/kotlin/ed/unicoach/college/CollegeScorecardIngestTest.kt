@@ -60,8 +60,6 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
   private val aliasesJson = fixture("college-aliases-fixture.json")
 
-  private fun source(file: File): SourceFile = SourceFile(file, file.path)
-
   private fun ingest(): CollegeScorecardLoader.IngestReport =
     runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
 

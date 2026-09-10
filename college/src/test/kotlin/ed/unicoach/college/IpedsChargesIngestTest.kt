@@ -24,8 +24,6 @@ class IpedsChargesIngestTest : CollegeScorecardTestBase() {
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
   private val aliasesJson = fixture("college-aliases-fixture.json")
 
-  private fun source(file: File): SourceFile = SourceFile(file, file.path)
-
   private fun ipedsSources() =
     IpedsSources(
       source(fixture("ipeds-hd2023-fixture.csv")),
@@ -47,22 +45,22 @@ class IpedsChargesIngestTest : CollegeScorecardTestBase() {
   fun `the charges phase stages one row per variable per year for every matched record`() {
     val report = ingest()
     val charges = assertNotNull(report.ipeds).charges
-    // The IC_AY fixture carries three records; the Scorecard fixture gives all
-    // three a college. 3 records x 12 stems x 4 years.
-    assertEquals(3, charges.seen)
+    // The IC_AY fixture carries four records; the Scorecard fixture gives all
+    // four a college. 4 records x 12 stems x 4 years.
+    assertEquals(IC_AY_FIXTURE_RECORDS, charges.seen)
     assertEquals(0, charges.unmatchedIpedsUnitIds)
-    assertEquals(144, charges.loaded)
-    assertEquals(144, withSession { count(it, "college_ipeds_charges") })
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, charges.loaded)
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, withSession { count(it, "college_ipeds_charges") })
   }
 
   @Test
   fun `re-ingesting the same snapshot is a loudly visible no-op`() {
     ingest()
     val charges = assertNotNull(ingest().ipeds).charges
-    assertEquals(144, charges.unchanged)
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, charges.unchanged)
     assertEquals(0, charges.inserted)
     assertEquals(0, charges.changed)
-    assertEquals(144, withSession { count(it, "college_ipeds_charges") })
+    assertEquals(IC_AY_FIXTURE_RECORDS * 12 * 4, withSession { count(it, "college_ipeds_charges") })
   }
 
   @Test
@@ -84,7 +82,7 @@ class IpedsChargesIngestTest : CollegeScorecardTestBase() {
     val report = ingest()
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     assertTrue(row.rowsIngested.contains("\"ipeds_charges\""), row.rowsIngested)
-    assertTrue(row.rowsIngested.contains("\"rows\": 144"), row.rowsIngested)
+    assertTrue(row.rowsIngested.contains("\"rows\": ${IC_AY_FIXTURE_RECORDS * 12 * 4}"), row.rowsIngested)
     assertTrue(row.rowsIngested.contains("\"cells_by_flag\""), row.rowsIngested)
     assertTrue(row.sources.contains("ipeds-ic2023-ay-fixture.csv"), row.sources)
   }
@@ -148,8 +146,8 @@ class IpedsChargesIngestTest : CollegeScorecardTestBase() {
   @Test
   fun `the summary line names records and rows as different units`() {
     val summary = ingest().humanSummary()
-    assertTrue(summary.contains("ipeds-charges: [3] records seen"), summary)
-    assertTrue(summary.contains("[144] rows"), summary)
+    assertTrue(summary.contains("ipeds-charges: [$IC_AY_FIXTURE_RECORDS] records seen"), summary)
+    assertTrue(summary.contains("[${IC_AY_FIXTURE_RECORDS * 12 * 4}] rows"), summary)
     assertTrue(summary.contains("academic-year universe"), summary)
   }
 

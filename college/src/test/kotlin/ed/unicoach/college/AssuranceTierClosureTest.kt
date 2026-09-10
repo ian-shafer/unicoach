@@ -2,8 +2,6 @@ package ed.unicoach.college
 
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.MoneySource
-import org.apache.commons.csv.CSVFormat
-import org.apache.commons.csv.CSVParser
 import org.junit.jupiter.api.Test
 import java.io.File
 import java.security.MessageDigest
@@ -26,16 +24,6 @@ import kotlin.test.assertTrue
  * walks unnecessary.
  */
 class AssuranceTierClosureTest {
-  /**
-   * The repo's committed Scorecard seed directory, resolved by walking up from
-   * the test's working directory rather than assuming a fixed depth -- the walk
-   * `CdsSeedLoaderTest` already uses for the CDS seed.
-   */
-  private val committedScorecardDir: File =
-    generateSequence(File(".").absoluteFile) { it.parentFile }
-      .map { File(it, "db/seed/scorecard") }
-      .first { it.isDirectory }
-
   /**
    * The Scorecard strings the canonical fill can write, READ OFF THE LOADER'S
    * OWN REGISTRY rather than re-typed here.
@@ -110,17 +98,7 @@ class AssuranceTierClosureTest {
     // The spec's own acceptance criterion, made falsifiable: if NCES re-sources
     // a column, the re-transcription disagrees with the map and this fails --
     // which is the whole point, because the tier is then wrong.
-    val dictionary =
-      CSVParser
-        .parse(
-          File(committedScorecardDir, DICTIONARY_FILE),
-          Charsets.UTF_8,
-          CSVFormat.DEFAULT
-            .builder()
-            .setHeader()
-            .setSkipHeaderRecord(true)
-            .build(),
-        ).use { records -> records.associate { it.get("variable_name").trim() to it.get("source").trim() } }
+    val dictionary = ScorecardDictionaryTranscription.sourceByVariable
 
     assertEquals(scorecardVariables.size, dictionary.size, "one row per string the loader writes")
     assertEquals(AssuranceTier.SCORECARD_TIERS.keys, dictionary.keys, "the transcription and the map name one set")
@@ -143,14 +121,18 @@ class AssuranceTierClosureTest {
   fun `the transcription cannot be edited quietly -- its digest is the one recorded beside it`() {
     // Typed here as well as written into FETCH-NOTES.md, so an undocumented edit
     // of the transcription fails a test rather than moving a tier in silence.
-    val file = File(committedScorecardDir, DICTIONARY_FILE)
+    val file = ScorecardDictionaryTranscription.file
     // The module's own hex primitive (`CsvIngestSupport`, `CollegeScorecardIngestTest`),
     // not a per-byte format string: byte-to-hex is an encoding, and the JDK ships
     // the tested one.
     val digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(file.readBytes()))
-    assertEquals(DICTIONARY_SHA256, digest, "file=[$DICTIONARY_FILE] was edited without updating FETCH-NOTES.md")
+    assertEquals(
+      DICTIONARY_SHA256,
+      digest,
+      "file=[${ScorecardDictionaryTranscription.FILE_NAME}] was edited without updating FETCH-NOTES.md",
+    )
     assertTrue(
-      DICTIONARY_SHA256 in File(committedScorecardDir, "FETCH-NOTES.md").readText(),
+      DICTIONARY_SHA256 in File(ScorecardDictionaryTranscription.directory, "FETCH-NOTES.md").readText(),
       "the hand-authored record in the same directory states the same digest",
     )
   }
@@ -159,9 +141,7 @@ class AssuranceTierClosureTest {
     /** The locator [AssuranceTier.of] requires: this walk resolves the whole key space, row-less. */
     const val ROW = "the assurance-tier closure walk (the loaders' key space)"
 
-    const val DICTIONARY_FILE = "dictionary-variable-sources.csv"
-
     /** The sha256 recorded in `db/seed/scorecard/FETCH-NOTES.md` for the committed transcription. */
-    const val DICTIONARY_SHA256 = "fbabaaa33ed47383c82f999277183c0d8c8c9479eec0572e67e81ec6a9022a2e"
+    const val DICTIONARY_SHA256 = "329f4ec4cc9cb2ff4d941519d50aba46949a46bbb0f6d29f52c862673dbf778b"
   }
 }

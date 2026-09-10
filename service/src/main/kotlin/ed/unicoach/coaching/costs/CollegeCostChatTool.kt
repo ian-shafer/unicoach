@@ -996,9 +996,9 @@ class CollegeCostChatTool(
     FigureGroup.entries.forEach { group ->
       val dated = emitted.filter { it.figureGroup == group }
       // The year is THIS school's, read off the rows it served (RFC 166 §3
-      // rule 4) rather than off a Kotlin constant: a Scorecard-only school says
-      // 2022-23 where an IC_AY school says 2023-24, and one constant could only
-      // ever have said one of them. A group can carry figures and NO year: two
+      // rule 4) rather than off a Kotlin constant: a school served from the
+      // Scorecard says 2024-25 where a school served from IC_AY says 2023-24
+      // (RFC 183), and one constant could only ever have said one of them. A group can carry figures and NO year: two
       // blended rows at different vintages resolve to null rather than to the
       // newer one (RFC 166 §8), and then the figures ride with no label instead
       // of a wrong one.
@@ -1286,7 +1286,7 @@ class CollegeCostChatTool(
     /** The IPEDS housing answer's own key -- emitted whenever the flag is known, true or false (RFC 149 D-B). */
     const val OFFERS_ON_CAMPUS_HOUSING_KEY = "offers_on_campus_housing"
 
-    /** The academic year one vintage names -- a label ("2022-23"), never a bare year. */
+    /** The academic year one vintage names -- a label ("2024-25"), never a bare year. */
     const val ACADEMIC_YEAR_KEY = "academic_year"
 
     /**

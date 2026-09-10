@@ -6,6 +6,7 @@ import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.MoneyMeasure
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
 import kotlinx.coroutines.runBlocking
@@ -32,6 +33,13 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
    * reads the cells that phase writes since RFC 176 -- asks for it by name.
    */
   private val canonicalMoneyLoader = CanonicalMoneyLoader(database)
+
+  /**
+   * The IC_AY staging load, run explicitly for the RFC 157 falsifier: the
+   * in-state price cell it reads is the one RFC 183 D1 withholds when no IPEDS
+   * residency evidence was staged.
+   */
+  private val ipedsChargesLoader = IpedsChargesLoader(database)
   private val institutionCsv = fixture("scorecard-institutions-real-fixture.csv")
   private val fieldsCsv = fixture("scorecard-fields-real-fixture.csv")
 
@@ -230,7 +238,16 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       //
       // Only rows with all seven parts qualify: a row missing an arrangement
       // (Ventura College publishes no on-campus figures) has no span to test.
+      //
+      // The IC_AY charges are STAGED first, and that is a requirement of the
+      // guard rather than colour: since RFC 183 D1 the Scorecard's in-state
+      // tuition cell is written only where IPEDS residency evidence exists to
+      // clear it, and a fill with none withholds that cell at every college --
+      // leaving this span with no in-state tuition to test. The committed IC_AY
+      // fixture files equal in-district and in-state tiers for UC San Diego, so
+      // the cell is cleared rather than merely permitted.
       loader.load(institutionCsv, fieldsCsv)
+      ipedsChargesLoader.load(source(fixture("ipeds-ic2023-ay-fixture.csv")), IpedsChargeVocabulary.SURVEY_YEAR)
       canonicalMoneyLoader.fill(institutionCsv, sfa = null)
 
       val blends = publishedCostBlendsByUnit()
@@ -313,11 +330,17 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   /**
    * `(ipeds_unit_id, concept/residency/arrangement)` -> the published amount;
    * absent when the row bears no value, which is what an `NA` cell becomes.
+   *
+   * SCORECARD rows only. The address is not a year, so a fill that also carries
+   * IPEDS's own rows for the same cell at its own year would put two publishers
+   * on one key and let one silently overwrite the other -- and these guards
+   * assert the SCORECARD's real published columns.
    */
   private fun componentAmountsByUnit(): Map<Pair<Int, String>, Int> =
     query(
       "SELECT c.ipeds_unit_id, p.price_concept, p.residency_basis, p.arrangement, p.amount_usd " +
-        "FROM price_figures p JOIN colleges c ON c.id = p.college_id WHERE p.amount_usd IS NOT NULL",
+        "FROM price_figures p JOIN colleges c ON c.id = p.college_id " +
+        "WHERE p.amount_usd IS NOT NULL AND p.source = '${MoneySource.SCORECARD.value}'",
     ) { rs ->
       val address = rs.getString("price_concept") + "/" + rs.getString("residency_basis") + "/" + rs.getString("arrangement")
       (rs.getInt("ipeds_unit_id") to address) to rs.getInt("amount_usd")

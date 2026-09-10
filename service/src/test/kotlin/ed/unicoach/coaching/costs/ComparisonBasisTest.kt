@@ -521,6 +521,47 @@ class ComparisonBasisTest {
   }
 
   @Test
+  fun `a school served at the corrected Scorecard year is told 2024-25 in words`() {
+    // RFC 183: the corrected constant is only honest if the SENTENCE a parent
+    // reads carries it. The year travels college -> served year -> `DatedFigures`,
+    // and `statement` is the one site that turns it into English -- reused
+    // verbatim by the report page. What must break if this test is absent:
+    // every copy site could be deleted, or could print some other year, and a
+    // constant-and-label assertion would still pass.
+    // A Scorecard school at the corrected year beside an IC_AY school one year
+    // behind it -- the two publishers really are a year apart -- and a basis
+    // needs two schools to exist at all.
+    val scorecard =
+      college(
+        "Corrected Year U",
+        CollegeControl.PrivateNonprofit,
+        publishedPriceAcademicYear = AcademicYear(2024),
+        publishedReported = setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
+      )
+    val ipeds =
+      college(
+        "Ipeds Behind U",
+        CollegeControl.PrivateNonprofit,
+        publishedPriceAcademicYear = AcademicYear(2023),
+        publishedReported = setOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
+      )
+
+    val basis = assertNotNull(ComparisonBasis.of(listOf(scorecard, ipeds), moneyProfile(AnswerStatus.ANSWERED, "CA")))
+    val year = basis.academicYears.single { it.academicYear == "2024-25" }
+    assertTrue(
+      year.statement.contains("come from the 2024-25 academic year"),
+      "the served year is SPOKEN, not merely stored: [${year.statement}]",
+    )
+    assertTrue(
+      year.statement.contains("Corrected Year U"),
+      "and the sentence names the school it is true of: [${year.statement}]",
+    )
+    // The page and the coach render this list and nothing else, so a sentence
+    // that never reaches it is a year a parent never reads.
+    assertTrue(basis.statements.contains(year.statement), "[${basis.statements}]")
+  }
+
+  @Test
   fun `a dated year with no school names the bucket that went subject-less`() {
     // The message is the whole of what an operator sees, and this type is built
     // by a per-year fan-out: without the group and the year, nothing says WHICH

@@ -75,8 +75,6 @@ class CodebookLoaderTest : CollegeScorecardTestBase() {
       "cip_code" to 1710,
     )
 
-  private fun source(file: File) = SourceFile(file, file.path)
-
   /** The committed codebook as mutable JSON, for the one-line-difference cases. */
   private fun codebookJson(): MutableMap<String, JsonElement> =
     (Json.parseToJsonElement(committedCodebook.readText()) as JsonObject).toMutableMap()

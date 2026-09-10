@@ -30,8 +30,6 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   private val hdIpedsUnitIds =
     listOf(161280, 115728, 498979, 447971, 128577, 186131, 102234, 219338, 100690, 100663, 166027, 168342)
 
-  private fun source(file: File): SourceFile = SourceFile(file, file.path)
-
   private fun ipedsSources(
     hd: File = fixture("ipeds-hd-joined-fixture.csv"),
     ic: File = fixture("ipeds-ic-fixture.csv"),

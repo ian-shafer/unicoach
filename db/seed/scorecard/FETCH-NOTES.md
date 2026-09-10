@@ -87,11 +87,24 @@ and both counts unchanged.
 ## The data dictionary, and the transcription beside it
 
 `dictionary-variable-sources.csv` in this directory is a HAND TRANSCRIPTION, not
-a fetched artifact: `variable_name,source` for every Scorecard column this
-corpus loads, each carrying the `SOURCE` value the publisher's own dictionary
-states for it (RFC 179 D4). How many columns that is, is the file's own answer —
-it is stated there and restated nowhere else, so a column added to the loader
-moves one number in one place.
+a fetched artifact: `variable_name,source,most_recent_cohort` for every
+Scorecard column this corpus loads, each carrying the `SOURCE` value the
+publisher's own dictionary states for it (RFC 179 D4) and the year that
+dictionary dates it to (RFC 183). How many columns that is, is the file's own
+answer — it is stated there and restated nowhere else, so a column added to the
+loader moves one number in one place.
+
+`most_recent_cohort` is the `Cohort/Measure in "Most Recent" Datafile` value
+from the workbook's `Most_Recent_Inst_Cohort_Map` sheet, as the publisher writes
+it — which variable carries which year is the CSV's own answer, stated there and
+restated nowhere else, exactly like the column count above. It is EMPTY for the
+two administrative records, because the publisher pools them across cohorts
+(`GRAD_DEBT_MDN` is NSLDS FY2020+FY2021, `MD_EARN_WNE_P10` is a Treasury
+two-cohort measure) and states no academic year for either — an empty cell is
+"no academic year", never "unknown". `ScorecardDictionaryPinTest` asserts the
+loader's two year constants against this column, so a snapshot bump that
+re-dates a variable fails a test instead of quietly re-dating every price we
+serve.
 
 It is transcribed rather than pinned, on the `IpedsImputationFlag` precedent: a
 small table that changes when NCES re-sources a column is authored vocabulary
@@ -114,7 +127,7 @@ The committed transcription's own digest, so an undocumented edit of it fails a
 test rather than moving a tier quietly:
 
 - `dictionary-variable-sources.csv` — sha256
-  `fbabaaa33ed47383c82f999277183c0d8c8c9479eec0572e67e81ec6a9022a2e`
+  `329f4ec4cc9cb2ff4d941519d50aba46949a46bbb0f6d29f52c862673dbf778b`
 
 `AssuranceTier.SCORECARD_TIERS` is asserted against this file column by column,
 and the digest above is typed beside that test. `PROVENANCE.json` deliberately

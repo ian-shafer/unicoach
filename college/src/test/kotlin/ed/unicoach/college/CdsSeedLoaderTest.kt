@@ -630,8 +630,6 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
   // Provenance: the CDS load INSIDE the ingest run (RFC 148, D10)
   // ---------------------------------------------------------------------------
 
-  private fun source(file: File) = SourceFile(file, file.path)
-
   private val cdsSources =
     CdsSources(source(meritCsv), source(factorsCsv), source(deadlinesCsv), source(aidPolicyCsv))
 

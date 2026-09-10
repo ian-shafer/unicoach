@@ -200,6 +200,38 @@ class CanonicalMoneyLoader internal constructor(
     val rowsWithoutCollege: Int,
     /** Matched rows whose CONTROL was missing or unparseable: their control-keyed cohort cells were skipped, never guessed private. */
     val rowsWithoutControl: Int,
+    /**
+     * Matched rows whose in-state tuition cell was REFUSED because IPEDS filed
+     * a real in-district/in-state distinction for that college: the Scorecard's
+     * single "in" tuition is its in-DISTRICT price wearing an in-state label
+     * (RFC 183 D1). A withheld cell is a LOSS this fill counts, like the three
+     * above it.
+     */
+    val inStateTuitionWithheld: Int,
+    /**
+     * Matched rows whose in-state tuition cell was refused for a DIFFERENT
+     * reason: this fill staged no IC_AY residency tier at all, so nothing
+     * clears anybody and the cell is withheld at EVERY college (fail closed).
+     *
+     * Counted apart from [inStateTuitionWithheld] because the two are different
+     * facts about the run: a few hundred measured refusals is the rule working,
+     * and a refusal at every matched row is a run that was never given the
+     * evidence -- supply the IC_AY input.
+     */
+    val inStateTuitionUnevidenced: Int,
+    /**
+     * Matched rows whose in-state tuition cell was WRITTEN although this fill
+     * holds no IPEDS tier pair for that college -- no IC_AY row, a row passed
+     * over as stale, or a tier the publisher filed with no amount (RFC 183 D1).
+     *
+     * The cell is written, because withholding here would strip the in-state
+     * price from every college IPEDS does not cover, in exchange for a risk
+     * nobody has measured. The COUNT is what makes it measurable on the next
+     * ingest: an unmeasured write is a different fact from a write cleared on
+     * evidence, and a regression that silently empties the evidence for half
+     * the corpus must not read like a healthy run.
+     */
+    val inStateTuitionWrittenUnmeasured: Int,
     /** Mechanism A's tally over the status-preserving reads, by cell name. */
     val fieldsCoercedToNull: Map<String, Int>,
     /**
@@ -251,6 +283,9 @@ class CanonicalMoneyLoader internal constructor(
       var sfaFill = SfaFill()
       val matched = mutableSetOf<UUID>()
       var scorecard = ScorecardLosses()
+      // Set by the IC_AY arm below, read by the Scorecard arm: FALSE until an
+      // IPEDS residency tier is actually staged in this fill.
+      var ipedsFiledResidencyTiers = false
       // The `when` is EXHAUSTIVE over the enum, with no catch-all: a member
       // added without a branch is a COMPILE error here, which is a better
       // extension point than the runtime one an `else` could offer -- and the
@@ -263,6 +298,18 @@ class CanonicalMoneyLoader internal constructor(
           // three-tier published charges take every key it carries (P8).
           MoneySource.IPEDS_IC_AY -> {
             val mapping = mapIpedsCharges(stagedCharges.read(session))
+            // Whether D1 has any evidence at all is a fact about THIS run, and
+            // it is stated HERE, by the arm that produced it -- never inferred
+            // later from whatever the shared map happens to hold. A
+            // Scorecard-only run stages no IC_AY row at all, and an inferred
+            // "no college collapses" would be indistinguishable from "nothing
+            // was measured" (RFC 183 D1).
+            //
+            // The evidence D1 reads is a COMPARISON, so it takes BOTH sides and
+            // both must carry an AMOUNT: a staging that filed only in-state
+            // rows, or only value-free ones, can neither evidence nor refute a
+            // collapse at any college, and must not read as though it had.
+            ipedsFiledResidencyTiers = ipedsFiledResidencyTiers || hasIpedsResidencyTierPair(mapping.prices)
             // Upstream-wins (P8) is folded in HERE, at the level that decides
             // precedence, instead of inside a callee handed three of this
             // block's own collections to mutate.
@@ -275,7 +322,12 @@ class CanonicalMoneyLoader internal constructor(
           }
 
           MoneySource.SCORECARD -> {
-            scorecard = mapScorecardCsv(institutionCsv, collegeIds, coercions, prices, stats, matched)
+            // IC_AY has already written its three residency tiers into [prices]
+            // (ORDERED_SOURCES, P8), so the collapse evidence is complete HERE,
+            // at the level that owns source precedence -- never re-derived
+            // inside the pass that only maps a CSV.
+            val residency = ScorecardResidencyEvidence.of(prices, ipedsFiledResidencyTiers)
+            scorecard = mapScorecardCsv(institutionCsv, collegeIds, coercions, prices, stats, matched, residency)
           }
 
           // The IPEDS SFA fill (RFC 162), FIRST in the ordered list: where SFA
@@ -335,49 +387,96 @@ class CanonicalMoneyLoader internal constructor(
           rowsMalformed = scorecard.rowsMalformed,
           rowsWithoutCollege = scorecard.rowsWithoutCollege,
           rowsWithoutControl = scorecard.rowsWithoutControl,
+          inStateTuitionWithheld = scorecard.inStateTuitionWithheld,
+          inStateTuitionUnevidenced = scorecard.inStateTuitionUnevidenced,
+          inStateTuitionWrittenUnmeasured = scorecard.inStateTuitionWrittenUnmeasured,
           fieldsCoercedToNull = coercions.toMap(),
           ipedsChargesIgnored =
             ipedsChargesIgnored.entries
               .sortedBy { it.key.slug }
               .associate { (drift, counts) -> drift to counts.toSortedMap().toMap() },
         )
-      // The per-status breakdown is the operator-visible fact this phase
-      // exists to keep (suppression must SURVIVE the fill), said where every
-      // ingest diagnostic goes: the log, on stderr. Statuses flatten to their
-      // slugs only here, at the edge.
-      logger.info(
-        "Canonical money fill: [{}] price_figures [{}] by source [{}] + [{}] cohort_money_stats [{}] " +
-          "+ [{}] cohort_population_counts [{}] over [{}] college(s); " +
-          "SFA: [{}] staged cell(s) over [{}] college(s), [{}] cell(s) whose flag bears a value but " +
-          "which carried none, [{}] variable(s) this fill read that nothing staged, " +
-          "[{}] institution(s) without a college, [{}] publishing neither net-price family; " +
-          "[{}] malformed row(s); [{}] Scorecard row(s) without a college; " +
-          "[{}] row(s) without a CONTROL (control-keyed cells skipped); " +
-          "coercions [{}]; [{}] staged IC_AY row(s) passed over as stale [{}]",
-        result.priceFigureRows,
-        result.priceFigureStatusCounts.mapKeys { it.key.value },
-        result.priceFigureSourceCounts.mapKeys { it.key.value },
-        result.cohortMoneyStatRows,
-        result.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
-        result.cohortPopulationCountRows,
-        result.cohortPopulationCountStatusCounts.mapKeys { it.key.value },
-        result.collegesMatched,
-        result.sfaCellsRead,
-        result.sfaCollegesMatched,
-        result.sfaCellsWithoutValue,
-        result.sfaCellsNotStaged,
-        result.sfaInstitutionsWithoutCollege,
-        result.sfaInstitutionsWithoutFamily,
-        result.rowsMalformed,
-        result.rowsWithoutCollege,
-        result.rowsWithoutControl,
-        result.fieldsCoercedToNull,
-        result.ipedsChargesIgnoredRows,
-        // Slugs at the edge, like the status and source maps above it.
-        result.ipedsChargesIgnored.mapKeys { it.key.slug },
-      )
+      logFill(result)
       result
     }
+
+  /**
+   * Everything this fill SAYS to an operator, at one altitude: the per-status
+   * tally every run prints, plus the unevidenced warning on the runs where it
+   * fired.
+   *
+   * Extracted because [fill] decides source precedence and persistence, and a
+   * 30-argument log line plus a conditional diagnostic are two levels below
+   * that -- a tail that grew every time a new loss class was counted.
+   */
+  private fun logFill(result: FillResult) {
+    logFillTally(result)
+    if (result.inStateTuitionUnevidenced > 0) warnInStateTuitionUnevidenced(result.inStateTuitionUnevidenced)
+  }
+
+  /**
+   * The per-status breakdown is the operator-visible fact this phase exists to
+   * keep (suppression must SURVIVE the fill), said where every ingest
+   * diagnostic goes: the log, on stderr. Statuses flatten to their slugs only
+   * here, at the edge.
+   */
+  private fun logFillTally(result: FillResult) {
+    logger.info(
+      "Canonical money fill: [{}] price_figures [{}] by source [{}] + [{}] cohort_money_stats [{}] " +
+        "+ [{}] cohort_population_counts [{}] over [{}] college(s); " +
+        "SFA: [{}] staged cell(s) over [{}] college(s), [{}] cell(s) whose flag bears a value but " +
+        "which carried none, [{}] variable(s) this fill read that nothing staged, " +
+        "[{}] institution(s) without a college, [{}] publishing neither net-price family; " +
+        "[{}] malformed row(s); [{}] Scorecard row(s) without a college; " +
+        "[{}] row(s) without a CONTROL (control-keyed cells skipped); " +
+        "[{}] in-state tuition cell(s) withheld (the college's IPEDS residency tiers differ, RFC 183 D1); " +
+        "[{}] withheld for want of any staged IC_AY residency evidence; " +
+        "[{}] in-state tuition cell(s) written with no IPEDS tier pair filed for that college " +
+        "(RFC 183 D1: written, and COUNTED, because it was never measured); " +
+        "coercions [{}]; [{}] staged IC_AY row(s) passed over as stale [{}]",
+      result.priceFigureRows,
+      result.priceFigureStatusCounts.mapKeys { it.key.value },
+      result.priceFigureSourceCounts.mapKeys { it.key.value },
+      result.cohortMoneyStatRows,
+      result.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
+      result.cohortPopulationCountRows,
+      result.cohortPopulationCountStatusCounts.mapKeys { it.key.value },
+      result.collegesMatched,
+      result.sfaCellsRead,
+      result.sfaCollegesMatched,
+      result.sfaCellsWithoutValue,
+      result.sfaCellsNotStaged,
+      result.sfaInstitutionsWithoutCollege,
+      result.sfaInstitutionsWithoutFamily,
+      result.rowsMalformed,
+      result.rowsWithoutCollege,
+      result.rowsWithoutControl,
+      result.inStateTuitionWithheld,
+      result.inStateTuitionUnevidenced,
+      result.inStateTuitionWrittenUnmeasured,
+      result.fieldsCoercedToNull,
+      result.ipedsChargesIgnoredRows,
+      // Slugs at the edge, like the status and source maps above it.
+      result.ipedsChargesIgnored.mapKeys { it.key.slug },
+    )
+  }
+
+  /**
+   * Said SEPARATELY, and as a warning, because it is not the ordinary measured
+   * refusal in the tally above: the fill was asked to write Scorecard tuition
+   * with no IPEDS residency evidence staged, so it withheld the in-state cell
+   * everywhere rather than serve an in-district amount under an in-state
+   * label. The remedy is named, because it is one input away.
+   */
+  private fun warnInStateTuitionUnevidenced(rows: Int) {
+    logger.warn(
+      "Canonical money fill: no staged IC_AY residency tier in this fill, so the Scorecard's in-state " +
+        "tuition was withheld at ALL [{}] matched row(s) (RFC 183 D1 fails CLOSED: an unevidenced " +
+        "college is not a college known to charge one rate). Supply the IC_AY input (the ipeds group's " +
+        "IC*_AY.csv) and re-run to publish those cells",
+      rows,
+    )
+  }
 
   // ---------------------------------------------------------------------------
   // The IPEDS SFA mapping (RFC 162's measure table)
@@ -819,10 +918,12 @@ class CanonicalMoneyLoader internal constructor(
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
     stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
     matched: MutableSet<UUID>,
+    residency: ScorecardResidencyEvidence,
   ): ScorecardLosses {
     var rowsMalformed = 0
     var rowsWithoutCollege = 0
     var rowsWithoutControl = 0
+    val inStateTuitionTally = InStateTuitionTally()
     parseCsv(institutionCsv).use { records ->
       for (record in records) {
         if (!CsvIngestSupport.isWellFormed(record)) {
@@ -837,21 +938,114 @@ class CanonicalMoneyLoader internal constructor(
           continue
         }
         matched += collegeId
-        val controlMissing = mapScorecardRow(record, collegeId, coercions, prices, stats)
+        // The collapse question is answered HERE, once per row, and by name:
+        // what travels down to the cell mapper is a decision about this row,
+        // not a policy set it has to adjudicate.
+        val inStateTuition = residency.inStateTuitionFor(collegeId)
+        inStateTuitionTally.record(collegeId, inStateTuition)
+        val controlMissing = mapScorecardRow(record, collegeId, coercions, prices, stats, inStateTuition)
         if (controlMissing) rowsWithoutControl++
       }
     }
-    return ScorecardLosses(rowsMalformed, rowsWithoutCollege, rowsWithoutControl)
+    return ScorecardLosses(
+      rowsMalformed,
+      rowsWithoutCollege,
+      rowsWithoutControl,
+      inStateTuitionTally.withheldTiersDiffer,
+      inStateTuitionTally.unevidenced,
+      inStateTuitionTally.writtenUnmeasured,
+    )
   }
 
   /**
-   * The Scorecard pass's three loss classes, as one value. Zero for all three
+   * What the Scorecard pass did with the in-state tuition cell, counted by
+   * NAMED outcome and said once per refusal.
+   *
+   * Both halves in one place, on [recordStaleCharge]'s precedent: the COUNTS
+   * reach the fill summary and say HOW MANY, and the per-row DEBUG line says
+   * WHICH college and on what evidence. A count alone names 264 cells out of
+   * 6,000 and no college, which is not something anyone can act on.
+   */
+  private inner class InStateTuitionTally {
+    /** Cells withheld because that college's IPEDS residency tiers really differ (RFC 183 D1). */
+    var withheldTiersDiffer = 0
+      private set
+
+    /** Cells withheld because this fill staged no IC_AY residency evidence at all. */
+    var unevidenced = 0
+      private set
+
+    /** Cells WRITTEN although this fill holds no IPEDS tier pair for that college. */
+    var writtenUnmeasured = 0
+      private set
+
+    /**
+     * Tallies one row's decision, and says it. EXHAUSTIVE over the sealed
+     * outcome with no `else`, so a fifth state is a COMPILE error here rather
+     * than a cell that vanishes from every count.
+     */
+    fun record(
+      collegeId: UUID,
+      inStateTuition: ScorecardResidencyEvidence.InStateTuition,
+    ) {
+      when (inStateTuition) {
+        ScorecardResidencyEvidence.InStateTuition.Write -> {
+          Unit
+        }
+
+        is ScorecardResidencyEvidence.InStateTuition.WithheldTiersDiffer -> {
+          withheldTiersDiffer++
+          logger.debug(
+            "canonical-money withheld the Scorecard's in-state tuition [college_id={}] [source_variable={}]: " +
+              "IPEDS filed [in_state={}] and [in_district={}] at [academic_year={}], so TUITIONFEE_IN is the " +
+              "in-district price under an in-state label (RFC 183 D1)",
+            collegeId,
+            TUITIONFEE_IN,
+            inStateTuition.inState,
+            inStateTuition.inDistrict,
+            inStateTuition.academicYear.label,
+          )
+        }
+
+        is ScorecardResidencyEvidence.InStateTuition.WrittenUnmeasured -> {
+          writtenUnmeasured++
+          logger.debug(
+            "canonical-money wrote the Scorecard's in-state tuition UNMEASURED [college_id={}] " +
+              "[source_variable={}]: this fill holds no IPEDS tier pair for it -- " +
+              "[in_state={}] [in_district={}] at [academic_year={}] (RFC 183 D1)",
+            collegeId,
+            TUITIONFEE_IN,
+            inStateTuition.inState.label,
+            inStateTuition.inDistrict.label,
+            inStateTuition.academicYear?.label ?: "none filed",
+          )
+        }
+
+        // COUNTED, and deliberately NOT said per row: this state is a fact about
+        // the RUN, not about a college, so it fires at every matched row and a
+        // debug line here would be 6,000 copies of one sentence. It is said once
+        // instead, as a warning, by [warnInStateTuitionUnevidenced].
+        ScorecardResidencyEvidence.InStateTuition.WithheldNoEvidence -> {
+          unevidenced++
+        }
+      }
+    }
+  }
+
+  /**
+   * The Scorecard pass's six loss classes, as one value. Zero for all six
    * is also the honest answer when the pass did not run at all.
    */
   private data class ScorecardLosses(
     val rowsMalformed: Int = 0,
     val rowsWithoutCollege: Int = 0,
     val rowsWithoutControl: Int = 0,
+    /** In-state tuition cells withheld because that college's IPEDS residency tiers really differ (RFC 183 D1). */
+    val inStateTuitionWithheld: Int = 0,
+    /** In-state tuition cells withheld because this fill staged NO IC_AY residency evidence at all. */
+    val inStateTuitionUnevidenced: Int = 0,
+    /** In-state tuition cells WRITTEN with no IPEDS tier pair filed for that college -- written, and counted. */
+    val inStateTuitionWrittenUnmeasured: Int = 0,
   )
 
   /**
@@ -869,19 +1063,32 @@ class CanonicalMoneyLoader internal constructor(
     coercions: MutableMap<String, Int>,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
     stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
+    inStateTuition: ScorecardResidencyEvidence.InStateTuition,
   ): Boolean {
-    mapScorecardPrices(record, collegeId, coercions, prices)
+    mapScorecardPrices(record, collegeId, coercions, prices, inStateTuition)
     val control = intOrNull(record, CONTROL)
     mapScorecardStats(record, collegeId, public = control?.let { it == CONTROL_PUBLIC }, coercions, stats)
     return control == null
   }
 
-  /** The eight `price_figures` cells: none of them is control-keyed. */
+  /**
+   * The eight `price_figures` cells: none of them is control-keyed. Seven of
+   * the eight always write; the in-state tuition cell writes exactly when
+   * [inStateTuition] says so.
+   *
+   * The DECISION travels down here, not one bit of it: the outcome is a named
+   * state carrying the evidence that produced it (RFC 183 D1, and see
+   * [ScorecardResidencyEvidence]), and flattening it to a `Boolean` at the
+   * call boundary would leave "the tiers differ" and "nothing was staged"
+   * indistinguishable two frames from where they were decided. This mapper
+   * adjudicates nothing; it reads an answer already given.
+   */
   private fun mapScorecardPrices(
     record: CSVRecord,
     collegeId: UUID,
     coercions: MutableMap<String, Int>,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
+    inStateTuition: ScorecardResidencyEvidence.InStateTuition,
   ) {
     fun price(
       concept: PriceConcept,
@@ -895,7 +1102,10 @@ class CanonicalMoneyLoader internal constructor(
           concept = concept,
           residency = residency,
           arrangement = arrangement,
-          academicYear = PUBLISHED_PRICE_YEAR,
+          // The COLUMN carries the year, through the one map that states it
+          // (RFC 183): a write site that picked a constant by hand could stamp
+          // a charge column with the blended cohort's year and pass every test.
+          academicYear = ScorecardInstitutionColumns.datedYearOf(column),
           reading = grossCell(record, column, coercions).reading(),
           source = MoneySource.SCORECARD,
           // Through the registry, never straight off the constant: the fill may
@@ -913,7 +1123,15 @@ class CanonicalMoneyLoader internal constructor(
 
     // The published tuition pair lands as TWO rows: residency is a key axis,
     // never a pair of sibling columns.
-    price(PriceConcept.TUITION_AND_FEES, ResidencyBasis.IN_STATE, FigureArrangement.NOT_APPLICABLE, TUITIONFEE_IN)
+    //
+    // Except at a college whose two in-* tuitions really differ: there
+    // `TUITIONFEE_IN` is the in-DISTRICT price wearing an in-state label, so
+    // the cell is WITHHELD rather than written under a residency it is not
+    // true of (RFC 183 D1). Only this one cell -- out-of-state below, and every
+    // non-tuition cell, carry no residency ambiguity and write as normal.
+    if (inStateTuition.writes) {
+      price(PriceConcept.TUITION_AND_FEES, ResidencyBasis.IN_STATE, FigureArrangement.NOT_APPLICABLE, TUITIONFEE_IN)
+    }
     price(PriceConcept.TUITION_AND_FEES, ResidencyBasis.OUT_OF_STATE, FigureArrangement.NOT_APPLICABLE, TUITIONFEE_OUT)
     price(PriceConcept.HOUSING_AND_FOOD, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.ON_CAMPUS, ROOMBOARD_ON)
     price(PriceConcept.HOUSING_AND_FOOD, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.OFF_CAMPUS, ROOMBOARD_OFF)
@@ -921,6 +1139,282 @@ class CanonicalMoneyLoader internal constructor(
     price(PriceConcept.OTHER_EXPENSES, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.ON_CAMPUS, OTHEREXPENSE_ON)
     price(PriceConcept.OTHER_EXPENSES, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.OFF_CAMPUS, OTHEREXPENSE_OFF)
     price(PriceConcept.OTHER_EXPENSES, ResidencyBasis.NOT_APPLICABLE, FigureArrangement.WITH_FAMILY, OTHEREXPENSE_FAM)
+  }
+
+  /**
+   * Whether this fill staged the residency evidence D1 READS: BOTH tuition
+   * tiers, each carrying an AMOUNT.
+   *
+   * The evidence is a COMPARISON, and a comparison takes two sides. A staging
+   * that filed only in-state rows -- every in-district row dropped as stale, or
+   * an IC_AY file published without the column -- can neither evidence nor
+   * refute a collapse at any college. Neither can a row the publisher filed
+   * with no value: a KEY is not a filing. Either read alone would clear the
+   * whole corpus and write exactly the in-district-as-in-state cells D1 exists
+   * to refuse.
+   */
+  private fun hasIpedsResidencyTierPair(prices: Map<PriceKey, NewPriceFigure>): Boolean {
+    val filedTiers =
+      prices
+        .asSequence()
+        .filter { (key, figure) ->
+          key.concept == PriceConcept.TUITION_AND_FEES && figure.reading is FigureReading.Present
+        }.mapTo(mutableSetOf()) { (key, _) -> key.residency }
+    return ResidencyBasis.IN_DISTRICT in filedTiers && ResidencyBasis.IN_STATE in filedTiers
+  }
+
+  /**
+   * What this fill's IPEDS rows let the Scorecard say about a college's
+   * residency (RFC 183 D1) -- and the seam that decides, per college, whether
+   * the Scorecard's single "in" tuition may be written at all.
+   *
+   * The Scorecard publishes ONE "in" tuition per college and its dictionary
+   * calls it "In-state tuition and fees"; IPEDS publishes three residency
+   * tiers. Where a college charges a district rate BELOW its state rate, the
+   * Scorecard's single cell carries the DISTRICT amount under the state label.
+   * Measured over the pinned artifacts, 264 colleges are in that position and
+   * 246 of them would be understated -- Austin Community College by $6,030
+   * (2,550 served where the true in-state price is 8,580), Millikin University
+   * by $16,778. That is exactly the collapse RFC 161 landed to remove, and
+   * correcting the Scorecard's academic year (which makes it the NEWEST
+   * published price and so the one a family is served) would have quietly
+   * reintroduced it.
+   *
+   * A TYPE, not a bare `Set<UUID>`, and one whose only factory is the
+   * measurement itself: the write seam sits beside `matched`, another
+   * `Set<UUID>` of college ids that would compile in that argument position --
+   * as would `emptySet()` -- and either would silently withhold every in-state
+   * cell in the corpus or none of them. The guarantee is not left to an
+   * argument's spelling.
+   *
+   * It FAILS CLOSED on the RUN. [ipedsFiledResidencyTiers] is stated by the run
+   * rather than inferred from the shared map: the IPEDS group is optional at
+   * the CLI and a Scorecard-only fill is supported, so "no college collapses"
+   * and "nothing was measured" are indistinguishable in the rows themselves.
+   * With no evidence, no college can be CLEARED, so the cell is withheld
+   * everywhere. A withheld cell degrades to whatever IPEDS already stored,
+   * labelled and dated as its own publisher's row; a wrongly-labelled cell
+   * reaches a family. This brief refuses the second.
+   *
+   * Per COLLEGE it does the opposite, deliberately and by name
+   * ([InStateTuition.WrittenUnmeasured]): a college this fill holds no tier
+   * pair for is written, and COUNTED as unmeasured. Withholding there would
+   * strip the in-state price from every college IPEDS does not cover -- one
+   * not staged in IC_AY at all, one whose row was passed over as stale, one
+   * whose tier the publisher suppressed -- in exchange for a risk nobody has
+   * measured. The counter is what makes it measurable on the next ingest, so
+   * the choice stays a decision rather than a blind spot.
+   */
+  private class ScorecardResidencyEvidence private constructor(
+    private val ipedsFiledResidencyTiers: Boolean,
+    private val byCollege: Map<UUID, InStateTuition>,
+  ) {
+    /**
+     * What the fill may do with one college's `TUITIONFEE_IN` cell -- four
+     * named states, never a bare `if`, each carrying the evidence that decided
+     * it. A refusal an operator cannot read back is a count and nothing else.
+     */
+    sealed interface InStateTuition {
+      /** Whether the fill writes this college's `TUITIONFEE_IN` cell: no caller re-derives this from the state. */
+      val writes: Boolean
+
+      /** IPEDS filed BOTH in-* tuitions for this college at its newest such year and they agree. */
+      data object Write : InStateTuition {
+        override val writes: Boolean get() = true
+      }
+
+      /** IPEDS filed a real distinction here: the Scorecard's "in" cell is the in-DISTRICT price. */
+      data class WithheldTiersDiffer(
+        val academicYear: AcademicYear,
+        val inState: Int,
+        val inDistrict: Int,
+      ) : InStateTuition {
+        override val writes: Boolean get() = false
+      }
+
+      /**
+       * This fill holds no both-tier year for THIS college, so the cell is
+       * written on the rule's default arm rather than on evidence about it --
+       * and counted, because an unmeasured write is not a cleared one.
+       *
+       * [academicYear] is the newest year that carries an in-state tuition key
+       * at all, null when the college has none; the two readings say what was
+       * there instead of an amount, including the publisher's own reason.
+       */
+      data class WrittenUnmeasured(
+        val academicYear: AcademicYear?,
+        val inState: TierReading,
+        val inDistrict: TierReading,
+      ) : InStateTuition {
+        override val writes: Boolean get() = true
+      }
+
+      /** This fill staged no IC_AY residency tier pair at all, so nothing clears anybody. */
+      data object WithheldNoEvidence : InStateTuition {
+        override val writes: Boolean get() = false
+      }
+    }
+
+    /**
+     * One tier as this fill holds it: an amount the publisher filed, a row it
+     * filed with no amount (and its own REASON), or no row at all.
+     *
+     * Three distinguishable states, kept distinguishable: flattened to one
+     * bare `null` the run cannot say whether a college went unmeasured because
+     * IPEDS never covered it or because the publisher SUPPRESSED the tier,
+     * which are different problems with different fixes.
+     */
+    sealed interface TierReading {
+      /** The one line a refusal owes an operator, for this tier. */
+      val label: String
+
+      /** The publisher filed an amount. */
+      data class Filed(
+        val amount: Int,
+      ) : TierReading {
+        override val label: String get() = amount.toString()
+      }
+
+      /** The publisher filed the tier and stated why it bears no value. */
+      data class NoAmount(
+        val absence: AbsenceStatus,
+      ) : TierReading {
+        override val label: String get() = absence.status.value
+      }
+
+      /** This fill holds no row for the tier at that year at all. */
+      data object NoRow : TierReading {
+        override val label: String get() = "no row"
+      }
+    }
+
+    fun inStateTuitionFor(collegeId: UUID): InStateTuition =
+      if (!ipedsFiledResidencyTiers) InStateTuition.WithheldNoEvidence else byCollege[collegeId] ?: NOT_IN_IC_AY
+
+    companion object {
+      /** A college this fill staged no in-state tuition key for at ANY year: measured nowhere, so written unmeasured. */
+      private val NOT_IN_IC_AY =
+        InStateTuition.WrittenUnmeasured(academicYear = null, inState = TierReading.NoRow, inDistrict = TierReading.NoRow)
+
+      /**
+       * Measures the collapse over the prices the upstream IPEDS fills have
+       * already put in [prices] -- ONCE per fill, because the evidence is the
+       * whole IC_AY table and the Scorecard pass walks 6,000+ institutions.
+       *
+       * [ipedsFiledResidencyTiers] is the run's own statement that a value-bearing
+       * IC_AY residency tier PAIR was staged in THIS fill; nothing about it is
+       * read out of [prices], because an empty map is exactly what a
+       * Scorecard-only run and a corpus with no collapsing college have in
+       * common.
+       */
+      fun of(
+        prices: Map<PriceKey, NewPriceFigure>,
+        ipedsFiledResidencyTiers: Boolean,
+      ): ScorecardResidencyEvidence =
+        ScorecardResidencyEvidence(
+          ipedsFiledResidencyTiers,
+          if (ipedsFiledResidencyTiers) verdictsByCollege(prices) else emptyMap(),
+        )
+
+      /**
+       * Every college the IPEDS fills filed an in-state tuition for, with what
+       * this fill may then do with the Scorecard's own "in" cell (RFC 183 D1).
+       *
+       * The evidence is STRUCTURAL, never numeric: does this college charge two
+       * different in-* rates NOW? Read off the NEWEST year that files BOTH
+       * tiers with an amount, and off that year alone. A distinction a college
+       * dropped years ago is not a distinction it has: ORing over every stored
+       * year would keep a merged-tier college from ever taking a newer
+       * Scorecard price again, until its old filings aged out of the corpus. No
+       * amount is compared across publishers, and none is invented (RFC 170):
+       * the fill withholds a cell it cannot label honestly, and the read side
+       * then falls the family back to the coherent IPEDS year on its own.
+       *
+       * Equal tiers is NOT a collapse. An absent distinction is not a
+       * distinction, and withholding there would drop a newer figure for
+       * nothing -- a rule whose arms all return the same answer is not a rule
+       * (RFC 166 anti-vacuity). A year missing either tier's AMOUNT states
+       * nothing either, so it cannot clear the college: no both-tier year at
+       * all is [InStateTuition.WrittenUnmeasured], which is a write and a
+       * COUNT, not silence.
+       *
+       * [prices] is read, not written: the IPEDS fills run ahead of the
+       * Scorecard in [ORDERED_SOURCES] and share this map, so their rows are
+       * already the evidence by the time this is called. `PriceKey` is a TOTAL
+       * key, so the sibling tier is the map's own answer to
+       * `copy(residency = ...)` -- no second index over it is built.
+       */
+      private fun verdictsByCollege(prices: Map<PriceKey, NewPriceFigure>): Map<UUID, InStateTuition> =
+        prices.keys
+          .asSequence()
+          .filter { it.concept == PriceConcept.TUITION_AND_FEES && it.residency == ResidencyBasis.IN_STATE }
+          .groupBy { it.collegeId }
+          .mapValues { (_, inStateKeys) -> verdictOf(prices, inStateKeys) }
+
+      /** One college's answer, read off its newest comparable year -- or the unmeasured state, saying why. */
+      private fun verdictOf(
+        prices: Map<PriceKey, NewPriceFigure>,
+        inStateKeys: List<PriceKey>,
+      ): InStateTuition {
+        // The years themselves are compared, not their first calendar years:
+        // `AcademicYear` IS the order, and unwrapping it here would let a
+        // wall-clock year compile into the same position.
+        val newest = inStateKeys.mapNotNull { comparisonAt(prices, it) }.maxByOrNull { it.academicYear }
+        return when {
+          newest == null -> unmeasuredAt(prices, inStateKeys.maxBy { it.academicYear })
+          newest.tiersDiffer -> InStateTuition.WithheldTiersDiffer(newest.academicYear, newest.inState, newest.inDistrict)
+          else -> InStateTuition.Write
+        }
+      }
+
+      /** Both tiers as the publisher FILED them at one year, or null: an absence states nothing. */
+      private fun comparisonAt(
+        prices: Map<PriceKey, NewPriceFigure>,
+        inStateKey: PriceKey,
+      ): TierComparison? {
+        val inState = filedAmount(prices, inStateKey) ?: return null
+        val inDistrict = filedAmount(prices, inStateKey.copy(residency = ResidencyBasis.IN_DISTRICT)) ?: return null
+        return TierComparison(inStateKey.academicYear, inState, inDistrict)
+      }
+
+      /** The college's newest in-state year said as far as it can be: what each tier held, and why it was not an amount. */
+      private fun unmeasuredAt(
+        prices: Map<PriceKey, NewPriceFigure>,
+        inStateKey: PriceKey,
+      ): InStateTuition.WrittenUnmeasured =
+        InStateTuition.WrittenUnmeasured(
+          academicYear = inStateKey.academicYear,
+          inState = readingAt(prices, inStateKey),
+          inDistrict = readingAt(prices, inStateKey.copy(residency = ResidencyBasis.IN_DISTRICT)),
+        )
+
+      /** The amount the publisher filed at [key], or null where it filed none. */
+      private fun filedAmount(
+        prices: Map<PriceKey, NewPriceFigure>,
+        key: PriceKey,
+      ): Int? = (prices[key]?.reading as? FigureReading.Present)?.value
+
+      /** [key]'s reading with its reason kept: an absence carries the publisher's own [AbsenceStatus]. */
+      private fun readingAt(
+        prices: Map<PriceKey, NewPriceFigure>,
+        key: PriceKey,
+      ): TierReading =
+        when (val reading = prices[key]?.reading) {
+          is FigureReading.Present -> TierReading.Filed(reading.value)
+          is FigureReading.Absent -> TierReading.NoAmount(reading.absence)
+          null -> TierReading.NoRow
+        }
+    }
+
+    /** One college-year's two filed tuition tiers, named rather than a positional triple. */
+    private data class TierComparison(
+      val academicYear: AcademicYear,
+      val inState: Int,
+      val inDistrict: Int,
+    ) {
+      /** The whole question D1 asks: does this college charge two different in-* rates that year? */
+      val tiersDiffer: Boolean get() = inState != inDistrict
+    }
   }
 
   /**
@@ -941,10 +1435,14 @@ class CanonicalMoneyLoader internal constructor(
       address: CohortStatAddress,
       residencyScope: CohortResidencyScope,
       incomeBand: IncomeBand?,
-      vintage: AcademicYear?,
       cell: StatusfulCell<Double>,
       sourceVariable: String,
     ) {
+      // The COLUMN carries the vintage, through the one map that states it
+      // (RFC 183): no call site picks a year, so a column that joins a
+      // different vintage group moves its own rows and cannot be stamped the
+      // other cohort's year by a stale argument.
+      val vintage = ScorecardInstitutionColumns.stampedYearOf(sourceVariable)
       val row =
         cohortStat(
           collegeId = collegeId,
@@ -978,7 +1476,6 @@ class CanonicalMoneyLoader internal constructor(
         address = PUBLISHED_COST_BLEND,
         residencyScope = blendScope,
         incomeBand = null,
-        vintage = BLENDED_AVERAGE_VINTAGE,
         cell = grossCell(record, COSTT4_A, coercions).toDouble(),
         sourceVariable = COSTT4_A,
       )
@@ -995,7 +1492,6 @@ class CanonicalMoneyLoader internal constructor(
           address = CohortAddresses.AVG_NET_PRICE,
           residencyScope = blendScope,
           incomeBand = band,
-          vintage = BLENDED_AVERAGE_VINTAGE,
           cell = statusfulIntCell(record, column).toDouble(),
           sourceVariable = column,
         )
@@ -1011,7 +1507,6 @@ class CanonicalMoneyLoader internal constructor(
       address = CohortAddresses.PELL_SHARE,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
-      vintage = VINTAGE_UNDATED,
       cell = statusfulDoubleCellInDomain(record, PCTPELL, RATE_MIN, RATE_MAX, PCTPELL, coercions),
       sourceVariable = PCTPELL,
     )
@@ -1019,7 +1514,6 @@ class CanonicalMoneyLoader internal constructor(
       address = CohortAddresses.MEDIAN_DEBT_AT_COMPLETION,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
-      vintage = VINTAGE_UNDATED,
       cell = grossCell(record, GRAD_DEBT_MDN, coercions).toDouble(),
       sourceVariable = GRAD_DEBT_MDN,
     )
@@ -1027,7 +1521,6 @@ class CanonicalMoneyLoader internal constructor(
       address = CohortAddresses.MEDIAN_EARNINGS_10Y,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
-      vintage = VINTAGE_UNDATED,
       cell = grossCell(record, MD_EARN_WNE_P10, coercions).toDouble(),
       sourceVariable = MD_EARN_WNE_P10,
     )
@@ -1146,14 +1639,33 @@ class CanonicalMoneyLoader internal constructor(
 
     /**
      * The Scorecard published-price academic year, the stored twin of
-     * `FigureGroup.PUBLISHED_PRICE` in the service cost domain:
-     * the year is a property of the pinned snapshot and rides on every row
-     * (P5), so a snapshot bump edits these two constants together.
+     * `FigureGroup.PUBLISHED_PRICE` in the service cost domain: the year is a
+     * property of the pinned snapshot and rides on every row (P5).
+     *
+     * The publisher's own dictionary dates `TUITIONFEE_IN/OUT`, `ROOMBOARD_*`,
+     * `BOOKSUPPLY` and `OTHEREXPENSE_*` to **AcadYr 2024-25**
+     * (`Most_Recent_Inst_Cohort_Map`, release 06102026). That sentence is
+     * transcribed into `db/seed/scorecard/dictionary-variable-sources.csv` and
+     * `ScorecardDictionaryPinTest` asserts this constant against it, so the two
+     * can no longer drift apart in silence -- which is how both constants came
+     * to be wrong by two years, unchallenged, from the day they were written
+     * (RFC 183).
+     *
+     * It is NOT the same year as [BLENDED_AVERAGE_VINTAGE], and a snapshot bump
+     * does not move the two together by one shared offset: they are two
+     * different publisher cohorts that happen to arrive in one file, and each
+     * is re-read from the dictionary on its own.
      */
-    internal val PUBLISHED_PRICE_YEAR = AcademicYear(2022)
+    internal val PUBLISHED_PRICE_YEAR = AcademicYear(2024)
 
-    /** The blended-average year (`FigureGroup.BLENDED_AVERAGE`): COSTT4_A and the NPT4 family. */
-    internal val BLENDED_AVERAGE_VINTAGE = AcademicYear(2021)
+    /**
+     * The blended-average year (`FigureGroup.BLENDED_AVERAGE`): COSTT4_A and
+     * the NPT4 family, which the dictionary dates to **AcadYr 2023-24** -- one
+     * year BEHIND the charges above, because they describe a cohort that has
+     * already been through a year rather than a price list for the year ahead.
+     * Pinned against the same transcription by `ScorecardDictionaryPinTest`.
+     */
+    internal val BLENDED_AVERAGE_VINTAGE = AcademicYear(2023)
 
     /** COSTT4_A, the blended published price: Title IV-aided undergraduates, whole cohort. */
     val PUBLISHED_COST_BLEND: CohortStatAddress =

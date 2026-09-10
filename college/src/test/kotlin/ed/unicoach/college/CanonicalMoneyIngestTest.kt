@@ -26,8 +26,6 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
 
   private val moneyVocabularyJson: File = MoneyVocabularyFixture.COMMITTED_FILE
 
-  private fun source(file: File): SourceFile = SourceFile(file, file.path)
-
   private fun ingest(): CollegeScorecardLoader.IngestReport =
     runBlocking {
       loader.ingest(
@@ -42,10 +40,14 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
   fun `one ingest fills both fact tables and records counts, statuses and sources`() {
     val report = ingest()
 
-    // The fixture: 5 loaded colleges x 8 mapped price cells and 10 cohort
-    // cells. The vocabulary was pre-seeded by the base fixture (P2), so this
-    // run's own load reports it unchanged.
-    assertEquals(40, report.canonicalMoney.priceFigureRows)
+    // The fixture: 5 loaded colleges x 7 mapped price cells and 10 cohort
+    // cells. The eighth price cell -- the Scorecard's in-state tuition -- is
+    // WITHHELD at every college on this run, because it supplies no IPEDS
+    // group and so stages no residency evidence for the D1 rule to clear
+    // anybody with (RFC 183; `CanonicalMoneyLoaderTest` proves the refusal).
+    // The vocabulary was pre-seeded by the base fixture (P2), so this run's own
+    // load reports it unchanged.
+    assertEquals(35, report.canonicalMoney.priceFigureRows)
     assertEquals(50, report.canonicalMoney.cohortMoneyStatRows)
     val vocabulary = assertNotNull(report.moneyVocabulary, "the supplied vocabulary file is loaded and reported")
     assertEquals(0, vocabulary.inserted)
@@ -55,10 +57,11 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
     // the slice's first-session fact, read from the run's own report.
     assertTrue((report.canonicalMoney.cohortMoneyStatStatusCounts[FigureStatus.SUPPRESSED_BY_PUBLISHER] ?: 0) > 0)
 
-    // The tuition pair is two rows per college; the blends sit in
-    // cohort_money_stats under their true population basis.
+    // The tuition pair is ONE row per college on an IPEDS-less run -- the
+    // out-of-state cell, which carries no residency ambiguity; the blends sit
+    // in cohort_money_stats under their true population basis.
     assertEquals(
-      10,
+      5,
       scalar("SELECT count(*) FROM price_figures WHERE price_concept = 'tuition_and_fees'"),
     )
     assertEquals(
@@ -140,7 +143,9 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
     val report =
       runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
     assertEquals(null, report.moneyVocabulary, "no file, no money-vocabulary phase, no fabricated zeros")
-    assertEquals(40, report.canonicalMoney.priceFigureRows)
+    // 35, not 40: no IPEDS group, so the in-state tuition cell is withheld at
+    // all five colleges (RFC 183 D1 fails closed).
+    assertEquals(35, report.canonicalMoney.priceFigureRows)
     assertEquals(3, report.sources.size, "no vocabulary digest was recorded for a file this run never read")
   }
 

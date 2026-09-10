@@ -48,29 +48,62 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
   @Test
   fun `the tuition pair lands as exactly two rows per college, residency as a key axis`() {
     fill()
-    // Every loaded college gets BOTH tuition rows -- one per residency basis
-    // -- because a pair of sibling columns became a key axis (D2). The
-    // fixture's 5 loaded colleges each report both cells.
+    // Residency is a KEY AXIS, not a pair of sibling columns (D2) -- but which
+    // rows a Scorecard-only fill may write on that axis changed with RFC 183
+    // D1. This fixture stages no IC_AY charge at all, so nothing evidences that
+    // any of these five colleges charges ONE in-* rate, and the in-state cell
+    // is withheld at every one of them: the Scorecard's single "in" tuition is
+    // the in-DISTRICT price at a district-based college, and serving it under
+    // an in-state label at the newest year is the $6,030 understatement D1
+    // exists to refuse. Out-of-state carries no such ambiguity and still writes.
     val rows =
       query(
         "SELECT residency_basis, count(*) FROM price_figures WHERE price_concept = 'tuition_and_fees' " +
           "GROUP BY residency_basis ORDER BY residency_basis",
       ) { rs -> rs.getString(1) to rs.getInt(2) }
-    assertEquals(listOf("in_state" to 5, "out_of_state" to 5), rows)
+    assertEquals(listOf("out_of_state" to 5), rows)
   }
 
   @Test
   fun `every mapped cell writes a row with a value or a status, and only mapped cells write rows`() {
     val result = fill()
-    // 8 price cells x 5 colleges; 10 cohort cells x 5 colleges (P7's domain:
+    // 7 price cells x 5 colleges; 10 cohort cells x 5 colleges (P7's domain:
     // rows for every cell in the mapping, value-bearing or not; NO rows for
     // in_district, fees_only, with-family housing -- no source carries them).
-    assertEquals(40, result.priceFigureRows)
+    // The eighth price cell is the in-state tuition RFC 183 D1 withholds on a
+    // fill with no staged IC_AY residency evidence -- see the test below.
+    assertEquals(35, result.priceFigureRows)
     assertEquals(50, result.cohortMoneyStatRows)
     assertEquals(5, result.collegesMatched)
     assertEquals(1, result.rowsWithoutCollege, "the broken fixture row (empty UNITID) writes nothing")
-    assertEquals(40, result.priceFigureStatusCounts.values.sum())
+    assertEquals(35, result.priceFigureStatusCounts.values.sum())
     assertEquals(50, result.cohortMoneyStatStatusCounts.values.sum())
+  }
+
+  @Test
+  fun `a fill with no staged IC_AY evidence withholds the in-state cell everywhere, and counts it apart`() {
+    val result = fill()
+    // FAIL CLOSED (RFC 183 D1). A Scorecard-only fill is supported -- the IPEDS
+    // group is optional at the CLI and this suite runs exactly that -- and it
+    // stages no residency tier at all. "No college collapses" and "nothing was
+    // measured" look identical in the rows, so the rule refuses to read the
+    // second as the first: with no evidence no college is CLEARED, and the
+    // Scorecard's single "in" cell is withheld at all five matched colleges.
+    // A withheld cell degrades to whatever IPEDS already stored, labelled and
+    // dated by its own publisher; a wrongly-labelled cell reaches a family.
+    assertEquals(5, result.inStateTuitionUnevidenced)
+    // And it is counted APART from the ordinary refusal, which needs evidence
+    // to fire at all: a few hundred measured refusals is the rule working,
+    // every matched row is a run that was never given the evidence.
+    assertEquals(0, result.inStateTuitionWithheld)
+    assertEquals(
+      emptyList(),
+      query(
+        "SELECT source_variable FROM price_figures WHERE price_concept = 'tuition_and_fees' " +
+          "AND residency_basis = 'in_state'",
+      ) { it.getString(1) },
+      "no in-state tuition row may be written from TUITIONFEE_IN with nothing evidencing the label",
+    )
   }
 
   @Test
@@ -148,8 +181,11 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
     // The stored-shape successor of CostBreakdown's mixed-vintage rule: every
     // price row is one real year; the blended stats carry THEIR year; the
     // pooled/undated figures carry NO year rather than borrowing one.
+    // RE-DATED (RFC 183): the Scorecard's published charges describe AcadYr
+    // 2024-25, not 2022-23. This fixture has no IPEDS rows at all, so every
+    // price row here is the Scorecard's and every one moves.
     assertEquals(
-      listOf(AcademicYear(2022)),
+      listOf(AcademicYear(2024)),
       query("SELECT DISTINCT academic_year FROM price_figures") { AcademicYear(it.getInt(1)) },
     )
     val vintages =
@@ -157,12 +193,16 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
         "SELECT DISTINCT measure, vintage FROM cohort_money_stats ORDER BY measure, vintage",
       ) { rs -> rs.getString(1) to rs.getInt(2).takeUnless { rs.wasNull() } }
     assertEquals(
+      // RE-DATED (RFC 183): COSTT4_A and the NPT4 family are the publisher's
+      // AcadYr 2023-24 cohort, one year BEHIND the charges above. The three
+      // undated figures are unchanged -- the publisher pools them, and PCTPELL
+      // stays undated by D3.
       listOf(
-        "avg_net_price" to 2021,
+        "avg_net_price" to 2023,
         "median_debt_at_completion" to null,
         "median_earnings_10y" to null,
         "pell_share" to null,
-        "published_cost_blend" to 2021,
+        "published_cost_blend" to 2023,
       ),
       vintages,
     )
@@ -218,7 +258,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
     assertEquals(first.cohortMoneyStatRows, second.cohortMoneyStatRows)
     assertEquals(first.priceFigureStatusCounts, second.priceFigureStatusCounts)
     assertEquals(first.cohortMoneyStatStatusCounts, second.cohortMoneyStatStatusCounts)
-    assertEquals(40, query("SELECT count(*) FROM price_figures") { it.getInt(1) }.single())
+    assertEquals(35, query("SELECT count(*) FROM price_figures") { it.getInt(1) }.single())
   }
 
   @Test
@@ -240,7 +280,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
     val result = runBlocking { loader.fill(withBlankControl(110100), sfa = null) }
 
     assertEquals(1, result.rowsWithoutControl)
-    assertEquals(40, result.priceFigureRows, "the price cells are not control-keyed and still write")
+    assertEquals(35, result.priceFigureRows, "the price cells are not control-keyed and still write")
     assertEquals(50 - 7, result.cohortMoneyStatRows, "exactly the seven control-keyed cells are skipped")
     val remaining =
       query(

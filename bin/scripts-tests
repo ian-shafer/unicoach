@@ -4488,7 +4488,8 @@ assert_success "PROVENANCE records the offline route, the member taken and its r
                                "IC2023.zip", "IC2023_AY.zip", "SFA2223.zip",
                                "SFA2223_Dict.zip"]
      and all(artifacts[a]["rows"] == 3
-             for a in ["ADM2023.zip", "C2023_A.zip", "HD2023.zip", "IC2023.zip", "IC2023_AY.zip"])
+             for a in ["ADM2023.zip", "C2023_A.zip", "HD2023.zip", "IC2023.zip"])
+     and artifacts["IC2023_AY.zip"]["rows"] == 4
      and artifacts["SFA2223.zip"]["rows"] == 7
      and artifacts["SFA2223_Dict.zip"]["rows"] is None
      and all(a["fetched_at"] == provenance["fetched_at"] for a in artifacts.values())'

@@ -552,7 +552,9 @@ fun main(args: Array<String>) {
       "canonical money: [{}] price_figures [{}] by source [{}]; [{}] cohort_money_stats [{}]; " +
         "[{}] cohort_population_counts [{}]; IPEDS SFA: [{}] staged cell(s) over [{}] college(s); " +
         "[{}] college(s), [{}] malformed row(s), [{}] row(s) without " +
-        "a college, [{}] row(s) without a CONTROL (control-keyed cells skipped)",
+        "a college, [{}] row(s) without a CONTROL (control-keyed cells skipped), " +
+        "[{}] in-state tuition cell(s) withheld (IPEDS residency tiers differ, RFC 183 D1), " +
+        "[{}] withheld for want of any staged IC_AY residency evidence",
       report.canonicalMoney.priceFigureRows,
       report.canonicalMoney.priceFigureStatusCounts.mapKeys { it.key.value },
       report.canonicalMoney.priceFigureSourceCounts.mapKeys { it.key.value },
@@ -566,6 +568,8 @@ fun main(args: Array<String>) {
       report.canonicalMoney.rowsMalformed,
       report.canonicalMoney.rowsWithoutCollege,
       report.canonicalMoney.rowsWithoutControl,
+      report.canonicalMoney.inStateTuitionWithheld,
+      report.canonicalMoney.inStateTuitionUnevidenced,
     )
     val transientSkips =
       report.colleges.transientSkips + report.programs.transientSkips +
