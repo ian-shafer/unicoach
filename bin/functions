@@ -776,7 +776,22 @@ json_string() {
 # is decoded by the CLI, so newlines survive. json_string JSON-encodes the script
 # (quotes + escapes); this wraps it as the single `commands` element. Shared by
 # bin/deploy (multi-line install script) and bin/remote (single-line tool command).
+#
+# $2, WHEN GIVEN, is AWS-RunShellScript's own `executionTimeout` in seconds — how
+# long the instance may spend RUNNING the script. It is a different clock from
+# `aws ssm send-command --timeout-seconds`, which bounds DELIVERY only: the CLI
+# says of that one "If this time is reached and the command hasn't already started
+# running, it won't run". Omitting it takes the document's default of 3600, and a
+# long ingest that overruns is killed mid-phase with no operator-side knob — the
+# reason this parameter exists. Optional so bin/deploy, whose install script runs
+# in ~2 minutes, keeps the default and its call site is unchanged.
 ssm_shell_command_parameters() {
+  local execution_timeout="${2:-}"
+  if [ -n "$execution_timeout" ]; then
+    printf '{"commands":[%s],"executionTimeout":[%s]}' \
+      "$(json_string "$1")" "$(json_string "$execution_timeout")"
+    return 0
+  fi
   printf '{"commands":[%s]}' "$(json_string "$1")"
 }
 

@@ -33,7 +33,13 @@ bin/remote's OPS_TOOLS allowlist.
 
 Options:
   -f <name>:<local-path>   Upload a file and bind it to <name> (repeatable).
-  -t <duration>            SSM command timeout, a duration like 30m/45s (default 30m).
+  -t <duration>            How long the tool may take, a duration like 90m/45s
+                           (default 2h). Bounds BOTH clocks: the send-command
+                           DELIVERY window and AWS-RunShellScript's own
+                           executionTimeout, which is what actually kills a
+                           long-running tool. Left unset, that document default is
+                           3600s -- an ingest of the full college corpus can exceed
+                           it, and the kill lands mid-phase.
   -p <duration>            Poll interval while awaiting completion, a duration like
                            5s/1m (default 3s).
   -h                       Help.
@@ -176,7 +182,7 @@ parse_args() {
   # seconds via parse-duration-to-seconds.
   F_NAMES=()
   F_PATHS=()
-  TIMEOUT_SECONDS="$(parse-duration-to-seconds 30m)"
+  TIMEOUT_SECONDS="$(parse-duration-to-seconds 2h)"
   POLL_INTERVAL_SECONDS="$(parse-duration-to-seconds 3s)"
 
   local OPTIND OPTARG opt
@@ -386,7 +392,7 @@ build_remote_command() {
   for a in ${REWRITTEN_ARGS[@]+"${REWRITTEN_ARGS[@]}"}; do
     REMOTE_COMMAND="$REMOTE_COMMAND $(shell_quote "$a")"
   done
-  PARAMETERS="$(ssm_shell_command_parameters "$REMOTE_COMMAND")"
+  PARAMETERS="$(ssm_shell_command_parameters "$REMOTE_COMMAND" "$TIMEOUT_SECONDS")"
 }
 
 # ── Dispatch to SSM and await the tool's exit ─────────────────────────────────
