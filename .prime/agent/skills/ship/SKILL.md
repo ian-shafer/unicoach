@@ -243,6 +243,18 @@ An opportunistic improvement the design never mandated is not blocked here. It
 is surfaced at review as scope creep and consciously kept or reverted -- silent
 blocking loses a real insight, silent acceptance compounds drift.
 
+**A change to the coach system prompt is an edit to
+`prompts/coach-system-prompt.txt`, and to nothing else** (RFC 181). The seed
+migration under `db/schema/` is a GENERATED artifact that phase 6 rewrites from
+that file: a hand-written seed is overwritten, and a hand-edited one is refused.
+Author it **one sentence per line** -- that line granularity is the whole reason
+two runs editing different paragraphs now merge without a conflict. It is `.txt`
+and NOT `.md` deliberately, so `bin/format`'s `**/*.md` glob cannot reflow the
+body under the author; do not rename it, and do not introduce a tab or an
+interior double space, which `bin/prompt-seed` refuses because they would not
+survive the round trip. Do not touch the `systemPromptVersion` pin either --
+phase 6 owns it, because the version label is only knowable at land.
+
 ### 5. verify
 
 `ship-state -s <rs> set PHASE verifying`, then
