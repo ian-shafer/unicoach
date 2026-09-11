@@ -1,0 +1,670 @@
+# 0009 "Say it once" — spec and slices
+
+Brief handle: **`concise`**. Gate 1 passed 2026-09-09 (Ian: "approve", all eight
+defaults). This file carries DISCOVER's corrections, the slices, and gate 2.
+
+## DISCOVER — what is actually true in the tree
+
+Measured, not assumed. `report-verbosity` rendered the real page in a throwaway
+worktree; `coach-verbosity` measured the prompt and description and
+reconstructed payloads from real strings. Corrections the slices depend on:
+
+1. **Tuition is already school-wide in the domain.** `ARRANGEMENT_COMPONENTS`
+   (`CostBreakdown.kt:44-66`) holds only housing-and-food, books, and other
+   expenses. The repeat is purely `CostReportPage.tuitionRow` printing one
+   figure across the arrangement columns. **No wire change is needed to fix
+   Ian's example (a).**
+2. **Books and supplies has the identical shape** (`$1,200 | $1,200 | $1,200`)
+   and was not in Ian's note. It is in scope.
+3. **A grouped sources section already exists** — `sourcesSection` +
+   `moneyAttributionSentence` (`CostReportPage.kt:1081-1130`). "Cite once" is
+   finishing a shape the page started, not inventing one.
+4. **`wholeSchoolRow` already exists** (`CostReportPage.kt:757`) — the hoist has
+   a render primitive waiting for it.
+5. **RFC 179 minted no prompt version.** Its "say it beside the figure"
+   instruction lives only in the tool DESCRIPTION
+   (`CollegeCostChatTool.kt:1736-1741`), which is ordinary code. D3 is therefore
+   a code change with a code revert, **not** a prompt mint.
+6. **RFC 177's roll-up precedent exists.** RFC 177 D5
+   (`rfc/177-one-hedge-seam.md:255-258`) already ships a once-per-answer "The
+   cost, price and federal debt figures come from …" sentence. D2's chat half is
+   consistent with a decision already committed.
+7. **The payload already carries the source SET.** Top-level `SOURCE_KEY`,
+   emitted absent-never-empty (`CollegeCostChatTool.kt:90-94, 1712`). "Name the
+   set once, name a figure only where it differs" needs **no new wire data**.
+8. **The precedent for conditional per-college keys is in the same file.**
+   `CHOSEN_BY_COLLEGE_KEY` is emitted only when schools differ
+   (`CollegeCostChatTool.kt:266-270`), with a comment saying a second per-school
+   list "would invite the coach to narrate a difference there is none of".
+   `residency.by_college` and `blended_figure_basis.by_college` are written
+   unconditionally (`:174`) and should follow that precedent.
+9. **Nine sentences are byte-frozen.** Six in `FigureStatusCopy`, three in
+   `AssuranceTierCopy`; `SystemPromptCatalogTest` pins them against the
+   immutable **v19** prompt row. ~89 of 158 prompt lines are pinned as string
+   literals, and a `CoachParagraph` opener test fails when a paragraph's
+   **first** sentence is reworded. **Consequence for every slice: compress by
+   deleting whole redundant sentences, never by rewriting one, and never touch a
+   paragraph's opening sentence.**
+10. **No `<details>` element exists anywhere in `public-web/src/main`**
+    (grepped, zero hits). `concise/07` is new chrome, not a reuse.
+11. **No slice in this brief adds a database table, column, migration or seeded
+    row.** Non-negotiable 6 has nothing to gate here. The only versioned
+    artifact is the coach prompt, whose rollback is an env-var flip.
+
+### Standing bars every slice must clear
+
+- **D1 (gate 1):** no figure, status, tier, cited year, publisher or
+  unicoach-owned assumption may become **unreachable**. A restatement may go.
+  Rewording a byte-frozen sentence is not compression.
+- **D5 (gate 1):** never hide behind a disclosure: the `OverallAverage` note
+  ("an overall average across all families, not a figure for this family"), the
+  `report-sources` "this is not an offer" paragraph, or anything band-specific.
+- **RFC 149 D-C:** no total summed from partial parts. **RFC 175 D9:** the two
+  debt publishers are never summed or compared. **RFC 179 D10:** no number,
+  score or rating of how solid a figure is. **RFC 166 §6:** our gap is said as
+  ours, never as the school's silence.
+- **Value before ask:** no slice here adds a question, a step or a gate. Each
+  one removes words from a surface a family already reached. Nothing degrades on
+  decline because there is nothing to decline.
+
+---
+
+## The word budget, honestly
+
+Gate-1 **D4** set "≤ 900 words on a 3-school report". Slicing the work forced me
+to add up what removing **every identified repeat** actually saves:
+
+| Saving                                                                              |   Words |
+| ----------------------------------------------------------------------------------- | ------: |
+| Blended hint hoisted to page level                                                  |     102 |
+| Income-band note said once (`BandSpecific` only)                                    |      72 |
+| Misc repeated one-liners (tier line, no-year, assumption, headers, citation suffix) |      91 |
+| Merit block repeats (heading, hedge, cohort note)                                   |      90 |
+| Residency sentence printed once                                                     |      25 |
+| Assurance tier grouped by tier                                                      |      60 |
+| Borrowing frame grouped per block                                                   |     200 |
+| Tuition + books cells hoisted (12 cells)                                            |      24 |
+| **Total**                                                                           | **664** |
+
+**1,793 − 664 = 1,129.** So D4's 900 is **229 words short of reachable** by
+removing repetition alone. The only way to 900 is converting the merit and debt
+**prose into tables** (option O5), which `report-verbosity` rates **high risk**
+under RFC 175 D9 — a shared table makes two un-summable publishers look
+summable.
+
+Gate decisions are immutable, so D4 is not edited. **D9 below is the new
+decision** that supersedes its number, with this table as its evidence.
+
+---
+
+## Wave board
+
+| Wave | Slices                                   | Why they are safe together                                                                                                                                                                                     |
+| ---- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `concise/01`, `concise/02`, `concise/03` | Disjoint trees: `public-web` render / chat-tool payload builders / tool description + prompt file. `02` and `03` both touch `CollegeCostChatTool.kt` in different regions — CONFLICTS, a rebase, not an order. |
+| 2    | `concise/04`, `concise/05`               | The two judgement calls (D2, D3), each with a clean baseline to measure against.                                                                                                                               |
+| 3    | `concise/06`, `concise/07`               | Answer shape and disclosure, once the payload is already thin.                                                                                                                                                 |
+
+---
+
+## `concise/01/the-page-says-it-once`
+
+**Needs:** — (nothing: every change is inside `CostReportPage.kt`'s own render
+functions; no other slice's output is consumed and no wire type changes.)
+
+**What to build and why.** A parent opening the shared Family Cost Report reads
+1,793 words for three schools, 502 of them exact repeats. This slice deletes the
+repetition that lives purely in the renderer, and fixes two defects found while
+measuring it. Nothing a family can learn today becomes unlearnable.
+
+**Foundations.** `wholeSchoolRow` (`CostReportPage.kt:757`) and
+`schoolWideTuition` (`:483`) already implement the "one figure for the whole
+school" shape for the summary table. `ARRANGEMENT_COMPONENTS`
+(`CostBreakdown.kt:44-66`) is the truth about which fields can vary by
+arrangement.
+
+**Decided here.**
+
+- Hoist **tuition and fees** and **books and supplies** out of the arrangement
+  grid, printed once per school above the columns, still counted in each
+  arrangement total.
+- Hoist `SCHOOL_BLENDED_HINT` (`:228-231`) to **page level**, said once above
+  the school sections.
+- **Defect 1:** emit `BLENDED_IN_STATE_CLAUSE` only where
+  `cost.control is CollegeControl.Public`. It currently prints under private
+  schools, which is simply false there.
+- **Defect 2:** on a one-school report, drop the duplicate residency sentence at
+  `:509`; `SingleSchoolBasis` already says it. On a 2+-school report the
+  per-school line **stays** — there it is the only place a specific school's
+  basis is stated.
+- Say the **`BandSpecific`** income-band note once (summary table or column
+  header), not in every net-price cell.
+
+**Left to /ship's design phase.** Where exactly the hoisted rows sit relative to
+the table (above it, or as a separate two-row block); the markup and CSS for the
+page-level hint; the exact phrasing of the once-said band marker.
+
+**Acceptance criteria.**
+
+- The "one figure for the whole school" test is **derived**, not hard-coded per
+  role: a row is hoisted when its values across arrangements are identical
+  (`distinct().size == 1`), so a future fourth arrangement with its own books
+  field cannot silently collapse two different numbers into one.
+- The **`OverallAverage`** note is untouched and still prints beside its figure.
+  Only the `BandSpecific` note moves. (D5; `CostReportPage.kt:100-118`.)
+- Every arrangement total still equals its parts, and a partial total is still
+  refused (RFC 149 D-C).
+- Labelled blanks, withheld cells and year-gap arms render exactly as today.
+- A test asserts the **rendered word count** of the 3-school fixture page and
+  fails if it rises. Target for this slice alone: **≤ 1,480 words** (from
+  1,793).
+- A test asserts `BLENDED_IN_STATE_CLAUSE` is **absent** from a
+  `PrivateNonprofit` school's section and **present** for a `Public` one.
+- A test asserts the residency sentence appears **exactly once** on a one-school
+  report and once per school on a three-school report.
+- No wire type, no DDL, no prompt version.
+
+**Reachability / the door.** The existing one: the share link a student sends a
+parent, opened in a browser. No new door, no new ask.
+
+**First-session test.** A parent opening a three-school report for the first
+time sees each school's tuition stated once, not four times, and reads no
+sentence about in-state tuition under a private college.
+
+---
+
+## `concise/02/the-payload-says-it-once`
+
+**Needs:**
+
+- CONFLICTS concise/03/one-rule-one-home — both edit `CollegeCostChatTool.kt`,
+  in different regions (payload builders vs. the DESCRIPTION constant). A rebase
+  risk, not an order.
+
+**What to build and why.** The coach is handed ~5,366 bytes of `figure_statuses`
+per college, **75% of it byte-identical**, carrying exactly one distinct
+assurance sentence. The coach then recites what it was handed. Slimming the
+payload removes the _cue_ for half the verbosity before any prompt rule is
+written.
+
+**Foundations.** `figureStatusesOf` (`CollegeCostService.kt:1990+`),
+`figureStatusObject` (`CollegeCostChatTool.kt:752-777`), `comparisonBasisObject`
+(`:102-130`), and the in-file precedent `CHOSEN_BY_COLLEGE_KEY` (`:266-270`).
+
+**Decided here.**
+
+- Emit provenance **once per college** as a default object (assurance tier +
+  source), and emit a `figure_statuses` entry only for a field whose status is
+  not plainly reported **or** whose tier/source differs from that default.
+- Emit `residency.by_college` and `blended_figure_basis.by_college` **only where
+  a school differs** from the call-level basis — the `CHOSEN_BY_COLLEGE_KEY`
+  rule, applied to the two keys that ignore it.
+- Emit each college's tuition figure **once**, not once per arrangement object.
+
+**Left to /ship's design phase.** The key names and object shape of the default;
+whether the three tier sentences ship as a small glossary object or as a code
+the description explains.
+
+**Acceptance criteria.**
+
+- **Every figure still resolves to exactly one tier and exactly one publisher**,
+  mechanically, from default + exceptions. This is D1: nothing unreachable.
+- The default key is **mandatory, never optional** — a reader must never have to
+  guess a missing default. An unresolvable figure is a typed fault, not a guess.
+- Tests cover the cases compression breaks: a **mixed-publisher** college, a
+  **mixed-tier** college, a `not_collected_by_us` field, a `held_academic_year`
+  year gap, and a two-school comparison on **different** residency bases (so
+  `by_college` must still be emitted).
+- A **byte-budget assertion** on a fixed fixture payload: **≥ 60% smaller** per
+  college than today's 5,366 bytes. (Gate-1 D4.)
+- The nine byte-frozen sentences are **unchanged**; only the number of times
+  they are emitted changes.
+- No DDL, no prompt version.
+
+**Reachability / the door.** The existing `college_cost_profile` tool — any
+family asking the coach what a school costs.
+
+**First-session test.** A family asking about three schools gets the same facts;
+the model has ~4,000 fewer tokens of duplicate hedging to parrot.
+
+---
+
+## `concise/03/one-rule-one-home`
+
+**Needs:**
+
+- CONFLICTS concise/02/the-payload-says-it-once — same file
+  (`CollegeCostChatTool.kt`), different regions. Rebase, not order.
+
+**What to build and why.** The tool description is **16,383 bytes** that largely
+restates the system prompt, so the model is told the same rule twice in one
+context window. And the prompt restates itself: the money vocabulary is written
+out at least **four** times, "loans are not a price reduction" **five** times —
+an artifact of the append-only convention (one RFC, one appended paragraph), not
+of the rules. Each rule should exist in exactly one home.
+
+**Foundations.** The prompt-version convention (RFC 181/185): a new seed file
+from `prompts/coach-system-prompt.md` via `bin/prompt-seed`, a
+`systemPromptVersion` bump in `service.conf`, and a comment naming the rollback
+version. `SystemPromptCatalogTest` (2,173 lines) enforces it.
+
+**Decided here.**
+
+- The DESCRIPTION becomes a **schema legend**: what each key means and what
+  values it takes. Every _behavioural_ rule ("say it beside the figure", "say
+  that sentence rather than writing your own") moves to the prompt, or is
+  deleted where the prompt already says it. Target **≤ 4 KB** (from 16,383
+  bytes).
+- The prompt's **internal** restatements are deleted — whole redundant sentences
+  only.
+
+**Left to /ship's design phase.** Which of each duplicated pair survives, and in
+which home; the exact new prompt version number.
+
+**Acceptance criteria.**
+
+- **Deletion only, never rewording** (DISCOVER 9). No paragraph's **opening**
+  sentence is touched, or the `CoachParagraph` opener test fails. No byte-frozen
+  sentence is reworded.
+- Every rule that exists today still exists **somewhere** — a named before/after
+  list of rules in the RFC, each mapped to its surviving home. This is D1
+  applied to instructions rather than to figures.
+- Every prior prompt row stays selectable; the rollback version is named in
+  `service.conf` and in the RFC.
+- Description **≤ 4 KB**, asserted by a test.
+- No DDL.
+
+**Reachability / the door.** Invisible to the family by design — this is the
+same coach, told each rule once. Its effect is measured in the next two slices.
+
+**First-session test.** Identical answers, fewer instructions competing for the
+model's attention.
+
+---
+
+## `concise/04/cite-once-per-block`
+
+**Needs:**
+
+- PREFER concise/01/the-page-says-it-once — product judgement, not technical.
+  `01` establishes the measured page baseline this slice is judged against, and
+  both edit `CostReportPage.kt`. Overridable by Ian.
+
+**What to build and why.** This is the 28% of the page, and Ian's example (b).
+One school's borrowing block is five paragraphs that each restate the school
+name and the cycle: `"2024-25"` appears **21** times across three schools,
+`"reports that"` **12** times. This slice states the claimant **once per block**
+and lets the figures follow.
+
+**This slice supersedes a committed decision.** RFC 175 D10 requires every
+borrowing sentence to attribute its figure to the school, with a test asserting
+it. Gate-1 **D2** chose per-block attribution instead. Per `rfc/INVARIANTS.md`
+the earlier RFC is left as committed and **this slice's RFC carries the
+change**, stating plainly that a scoping header is still attribution and why.
+
+**Foundations.** `BorrowingWire.kt:280-425` (the sentence builders and
+`listSentences`), `CdsCitation.cycleLabel`, `CostReportPage.borrowingParagraphs`
+(**`:1274` after RFC 188** — the `:1037` in this spec's first draft is stale),
+`sourcesSection` (**`:1318`**, was `:1081`) as the existing grouped-citation
+shape, and RFC 177 D5's existing once-per-answer roll-up sentence. **Re-grep
+before relying on any line number here** (SD2).
+
+**Decided here.**
+
+- The report's borrowing block carries **one** attribution header naming the
+  school, the cycle and the Common Data Set; the figures beneath it do not
+  re-name either.
+- In chat, the coach names the payload's top-level `source` **set once per
+  answer**, and names a figure's publisher again **only where it differs from
+  that set**.
+- The **merit** block gets the same treatment, since it shares the shape.
+
+**Left to /ship's design phase.** The exact header wording; whether the figures
+render as a list or a table; whether chat and page share one copy seam or two.
+
+**Acceptance criteria.**
+
+- **Every figure is still covered by exactly one attribution**, and the RFC
+  states the rule that makes a scoping header sufficient. A figure that escapes
+  its block's header is a defect.
+- A **mixed-source** block is handled explicitly: where two publishers appear, a
+  figure whose publisher differs from the block's header **names its own**. A
+  test asserts this — it is the residual risk `coach-verbosity` flagged.
+- **RFC 175 D9 holds:** the two debt publishers stay visibly separate, never
+  summed and never compared, whatever the layout.
+- The **CDS voice survives**: a Common Data Set figure is still spoken as the
+  school's own claim, because the header says so for the block. A test asserts
+  the block cannot render without its header.
+- **RFC 177's correctness rule holds:** the "once" is derived from the payload's
+  own source set, never from a default the model picks.
+- Page word count: **re-derive the ceiling from a fresh measurement (SD1-SD4).**
+  The `≤ 1,230` written here came off the superseded 1,793 chain. The real
+  baseline after RFC 188 is **1,530**, and this slice's own allocation in the
+  budget table (~200 borrowing frame + ~90 merit repeats) lands it near
+  **1,240** — so 1,230 is likely unreachable by about the margin `concise/01`
+  hit. **Measure first, then set the ceiling at the real number**, and report
+  the miss rather than weakening the assertion.
+- **Ratchet the existing `CostReportPageTest.WORD_CEILING` down** (currently
+  `1530`, `CostReportPageTest.kt:1557`). Do **not** add a second word counter —
+  the counter and the three verbose fixtures already exist.
+- `BorrowingWireTest` and `CostReportPageTest.borrowingMarkers` are updated, not
+  deleted; the RFC 175 D10 test is replaced by the new rule's test, and the RFC
+  says so.
+- No DDL. A prompt version only if the chat half needs prompt wording.
+
+**Reachability / the door.** Both existing doors: the shared report link, and
+the coach answering a cost question.
+
+**First-session test.** A parent reads the borrowing figures as a titled block
+and still knows, without ambiguity, that the school said them about itself.
+
+---
+
+## `concise/05/tiers-grouped-not-repeated`
+
+**Needs:**
+
+- BLOCKS concise/02/the-payload-says-it-once — technical. This slice's rule is
+  expressed against the per-college provenance default that `02` introduces;
+  landing it first would mean grouping by a key that does not exist yet.
+
+**What to build and why.** Three distinct sentences are emitted up to 17 times
+per college, and the tool description tells the coach to say each one **beside
+the figure**. Gate-1 **D3**: group by tier, never by figure.
+
+**Foundations.** `AssuranceTierCopy.statementOf` (`:60-76`) — the three
+sentences; `AssuranceTierCopy.kt:29-32` — "a tier sentence and a status sentence
+are always composed as TWO sentences, in that order… never concatenated"; the
+description at `CollegeCostChatTool.kt:1736-1741`. **RFC 179 minted no prompt
+version, so this is an ordinary code change with an ordinary revert.**
+
+**Decided here.** Every figure stays covered by exactly one tier sentence, said
+**verbatim**, composed status-first then tier-second, never concatenated, never
+ranked, never scored. The coach is instructed to say each distinct tier sentence
+once for the set of figures it covers.
+
+**Left to /ship's design phase.** The description's wording for the grouping
+rule; how the report page groups on its own surface.
+
+**Acceptance criteria.**
+
+- Every rendered figure maps to exactly one tier sentence — asserted by walking
+  the figure set, not by restating a list.
+- The three sentences are **byte-identical** to `AssuranceTierCopy`; no
+  rewording (RFC 179, and the v19 pin).
+- **RFC 179 D10 holds:** no number, score, rating or ordering of the tiers
+  appears anywhere.
+- The status sentence and the tier sentence remain two sentences, status first.
+- A mixed-tier college is tested: the grouping must produce two headers, not one
+  wrong one.
+- Report word count: **re-derive from a fresh measurement (SD1-SD4)**; the
+  `≤ 1,170` here came off the superseded 1,793 chain. Ratchet the existing
+  `WORD_CEILING` down; do not add a second counter.
+- No DDL. No prompt version expected; if one proves necessary, name the
+  rollback.
+
+**Reachability / the door.** Both existing doors.
+
+**First-session test.** A family still learns that the median-debt figure is a
+different kind of number from the tuition figure — once, clearly, instead of
+seventeen times.
+
+---
+
+## `concise/06/the-coach-answer-shape`
+
+**Needs:**
+
+- BLOCKS concise/03/one-rule-one-home — technical. Both mint a coach prompt
+  version from the same file; landing them out of order means the second
+  re-writes the first's seed. `03` deletes, `06` adds.
+- PREFER concise/02/the-payload-says-it-once — product judgement. Judging the
+  coach's length against a payload we already know is bloated measures the wrong
+  thing.
+
+**What to build and why.** With the payload thin and each rule in one home, the
+remaining verbosity is delivery. Gate-1 **D7** allows a table. External
+evidence: concise pages measure **58% better** usability and scannable **47%
+better** (NN/g); readers read at most **28%** of words; and only **51.5%** of a
+generative assistant's sentences are citation-supported (arXiv:2304.09848) — so
+fewer sentences is a **correctness** intervention, not only a style one.
+
+**Foundations.** `prompts/coach-system-prompt.md`, the prompt-version
+convention, `SystemPromptCatalogTest`.
+
+**Decided here.** Four rules enter the prompt:
+
+- **Front-load the number.** The first sentence of a money answer contains a
+  figure and whose it is.
+- **Parallel figures go in a table**, one row each, when there are three or more
+  of the same kind.
+- **Units live in the header, once** — "$" and "/yr" belong in the column head,
+  not in every cell.
+- **Hedge where the hedge changes the decision**, once per answer, not per
+  figure.
+
+**Left to /ship's design phase.** The exact prompt wording; whether the table is
+markdown or a structured block the client renders; how the rules interact with
+the existing "same four lines in the same order" instruction (`:48`).
+
+**Acceptance criteria.**
+
+- **Deletion or addition, never rewording** of a pinned line or a paragraph
+  opener.
+- Every gate-1 D1 item is still sayable: an evaluation set of real money
+  questions is answered and checked for the figures, statuses, tiers, years,
+  publishers and the at-home assumption. **A named evaluation, not a vibe
+  check** — the RFC records the question set and the before/after.
+- The at-home `$0` assumption is still stated as **ours** (RFC 166 §7), and
+  loans are still never subtracted from a price (RFC 175).
+- The new prompt version and its rollback version are named in `service.conf`
+  and in the RFC. Rollback is an env-var flip.
+- No DDL.
+
+**Reachability / the door.** The existing coach conversation.
+
+**First-session test.** A family asks what three schools cost and gets the
+number first, a table second, and one caveat — instead of four paragraphs before
+the first dollar.
+
+---
+
+## `concise/07/quiet-provenance`
+
+**Needs:**
+
+- PREFER concise/01/the-page-says-it-once — product judgement. Collapsing text
+  we are about to delete would hide the wrong thing. Overridable.
+- PREFER concise/04/cite-once-per-block — same reason.
+
+**What to build and why. ** Everything above removes words. This removes
+**first-screen load** without removing a single word: standing,
+non-school-specific material goes behind a labelled disclosure. Saving: ~400
+words off the first screen at zero information cost.
+
+**Foundations.** `CostReportPage.assumptions` (`:311`), `sourcesSection`
+(`:1081`), `site.css`. **No `<details>` exists in `public-web/src/main` today**
+— this is new chrome.
+
+**Decided here.** The standing hedges and the sources section may collapse. Two
+things **never** collapse (gate-1 D5, and CFPB's own limit that hidden content
+must not be essential to the task): the `report-sources` "this is not an offer"
+paragraph, and the `OverallAverage` note.
+
+**Left to /ship's design phase.** Open-by-default or closed; the summary label;
+print and share behaviour.
+
+**Acceptance criteria.**
+
+- **Zero words removed** — this slice's word count is unchanged by construction,
+  and a test asserts the collapsed text is present in the DOM.
+- Keyboard and screen-reader reachable; works with no JavaScript.
+- **Printing and "save as PDF" expand everything.** A parent who prints the
+  report must not lose a hedge — asserted via the print stylesheet.
+- The two never-collapse items are asserted absent from any `<details>`.
+
+**Reachability / the door.** The existing share link.
+
+**First-session test.** A parent sees the schools and the numbers on the first
+screen, with the method one click away rather than three scrolls away.
+
+---
+
+## GATE 2 — slices and decisions
+
+Slice order: **`concise/01`, `02`, `03`** (wave 1, parallel) -> **`04`, `05`**
+(wave 2) -> **`06`, `07`** (wave 3).
+
+**D9 — The word target, corrected.** Gate-1 D4 set ≤ 900 words on a 3-school
+report. Adding up every identified repeat gives **1,793 − 664 = 1,129**; 900
+requires turning the merit and debt prose into a shared table, which
+`report-verbosity` rates high risk under RFC 175 D9 (a shared table makes two
+un-summable publishers look summable). _Default:_ **target ≤ 1,150 words**, with
+per-slice budgets (`01` ≤ 1,480, `04` ≤ 1,230, `05` ≤ 1,170), each asserted in
+that slice's test. **Do not merge the merit and debt tables** to chase 900. D4
+stands as committed; D9 supersedes its number.
+
+**D10 — The two defects ride with `concise/01`.** _Default:_ **yes.** Both are
+in `CostReportPage.kt`, both are one-line conditionals, and the private-school
+sentence is found by the same render the slice already measures. A separate
+slice would need its own RFC for two lines.
+
+**D11 — The hoist rule is derived, never hard-coded.** _Default:_ **derived** —
+a row hoists when its values across arrangements are identical. Naming "tuition
+and books" in code would let a future arrangement with its own books field
+silently collapse two different numbers into one.
+
+**D12 — How many new coach prompt versions does this brief mint?** _Default:_
+**two** — one for `concise/03` (pure deletion) and one for `concise/06` (new
+rules). Keeping them separate means the deletion can be rolled back
+independently of the new answer shape; merging them would make one env-var flip
+undo both.
+
+**D13 — Where the measurement lives.** _Default:_ a **rendered word-count
+assertion** in `CostReportPageTest` and a **payload byte-budget assertion** in
+`CollegeCostChatToolTest`, both on fixed fixtures. A budget that only exists in
+an RFC is a number nobody re-checks.
+
+**D14 — `concise/04` writes the RFC that supersedes RFC 175 D10.** _Default:_
+**yes**, in that slice's own RFC, per `rfc/INVARIANTS.md` — the RFC 175 file is
+left as committed, and the new RFC states why a block-scoping header is still
+attribution. The old per-sentence test is **replaced** by the new rule's test,
+never merely deleted.
+
+---
+
+## Gate 2 outcome
+
+**PASSED 2026-09-09.** Ian approved all defaults, verbatim: **"approve"**.
+D9-D14 stand as written. D9 supersedes gate-1 D4's number (D4 itself is
+immutable and left as committed).
+
+## Dispatch log
+
+**2026-09-09 — wave 1 dispatched as TWO slices, not three.**
+
+Live-number check at dispatch (computed, not copied): highest RFC file **185**;
+live `pipeline/rfc-178` (stale, 2d, 28 behind), `rfc-186`, `rfc-187`. Next free
+RFC = **188**.
+
+`ship-status` shows two runs live from **brief 0010** (`when-do-i-test`), both
+in `designing`:
+
+- `rfc-186` = `test/01/the-coach-knows-today`
+- `rfc-187` = `test/02/does-this-school-want-a-score`
+
+Both edit **`prompts/coach-system-prompt.md`** and both mint a coach prompt
+version from it (RFC 185: `bin/prompt-seed` cuts a version at land iff the body
+differs). Brief 0010's spec records them as CONFLICTS with each other for
+exactly this reason.
+
+**`concise/03/one-rule-one-home` is HELD.** It is not blocked by any `Needs:`
+edge in this brief — it is held on a discovered cross-brief collision. The
+hazard is worse than an ordinary rebase: `concise/03`'s whole method is
+**deleting redundant sentences** from that file (DISCOVER 9: deletion only,
+never rewording), while two live runs are **adding** sentences to it and each
+cutting an immutable seed version. Rebasing a deletion pass across two
+concurrent additions risks deleting a sentence that landed minutes earlier, and
+no test would catch it — the added sentence would simply be gone.
+
+`concise/01` (`public-web` render) and `concise/02` (chat-tool payload builders)
+touch neither the prompt file nor the admissions tool, and are dispatched.
+
+This also revises **D12**'s arithmetic in practice: with brief 0010 minting two
+prompt versions, this brief's two (`03`, `06`) are the third and fourth in
+flight. The decision is unchanged; the ordering is now explicit.
+
+---
+
+## Spec defects found during EXECUTE
+
+Append-only. A defect here is a fact about this spec being wrong, recorded so a
+later slice is not written against it.
+
+**SD1 — `concise/01`'s "≤ 1,480 words" criterion was unreachable, and this
+spec's own budget table proves it.** Found 2026-09-09 by the `concise/01` run,
+which measured rather than argued. The budget table above allocates that slice
+102 + 72 + 25 + 24 = **223 words**, while 1,793 -> 1,480 requires **313**. The
+criterion and the table were written in the same document and disagree. The run
+deleted **all three** per-school hints rather than the two budgeted, beat its
+allocation, and still measured **1,530**. Ian accepted 1,530 (D-a, 2026-09-09).
+The remaining ~90 words belong to `concise/04` and `concise/05`; they were never
+this slice's to save.
+
+_Cause, worth naming:_ the same error as gate-1 D4 one level down — a target
+written before the arithmetic, then not re-checked against the arithmetic when
+the arithmetic was added. Both times the fix came from someone measuring.
+`concise/04`'s ≤ 1,230 and `concise/05`'s ≤ 1,170 are inherited from the same
+unchecked chain and **must be re-derived from the real baseline** before either
+run treats them as binding.
+
+**SD2 — the 1,793-word baseline is stale.** The real 3-school render is **1,767
+words** on `main@212fbe89`; `main` moved after the research report was written.
+Every per-slice budget in this spec is quoted against 1,793. Re-measure at the
+start of each remaining slice; do not copy a number from this file.
+
+**SD3 — "the default key is mandatory, never optional" was too absolute.**
+`concise/02` narrowed it: `figure_provenance` is absent when a college holds
+**zero** figure provenance, because a mandatory default over an empty set would
+be an invented value. Accepted 2026-09-09. The invariant that actually matters
+survives and is the one to state in future slices: **exceptions can never exist
+without a default.**
+
+**SD4 — the research report's central payload assumption was wrong, and the byte
+target inherited the error.** `research/coach-verbosity.md` reconstructed
+`figure_statuses` on the assumption of **one** distinct `(tier, publisher)` pair
+per college, giving 5,366 bytes. `concise/02` measured the real harness: **4,980
+bytes** (`Six Statuses U`) and **3,365** (`Plain U`), and found **three**
+distinct pairs per college — the Scorecard both **relays IPEDS cells** and
+**originates two federal administrative records**, so a field could be
+off-default on publisher while its tier was not what differed.
+
+Consequence: the all-three-or-none exception shape this spec assumed reaches
+only 55.3% / 59.5% smaller, missing gate-1 D4's ≥ 60%. The run amended the
+object shape to **per-key resolution** (an entry carries `source` when the
+publisher differs, and the tier code + its sentence **as one inseparable value**
+when the tier differs; any omitted key is the default's). Approved 2026-09-09 —
+it is inside "left to /ship's design phase", and it is a better design
+independent of any byte target: it says what differs, rather than restating
+everything.
+
+_The pattern, now four for four._ SD1, SD2, SD3 and SD4 are all the same
+failure: **a number or an absolute written before it was measured, then
+inherited by everything downstream.** Gate-1 D4's ≥ 60% and ≤ 900, this spec's ≤
+1,480 / ≤ 1,230 / ≤ 1,170, "mandatory, never optional", and the 5,366-byte
+baseline were every one of them authored ahead of evidence. Each was caught by
+an agent that measured rather than complied. **Standing instruction for the
+remaining slices: re-derive every target from a fresh measurement at the start
+of the run, and report the real number rather than weakening an assertion to
+meet mine.**
+
+**SD5 — `concise/04`'s and `concise/05`'s foundations and budgets drifted the
+moment RFC 188 landed.** Reported by the `concise/01` run at close-out,
+corrected in their slice text above the same day: `borrowingParagraphs` moved
+`:1037` -> `:1274` and `sourcesSection` `:1081` -> `:1318`, and both slices'
+word budgets came off the superseded 1,793 chain. Both now say **measure
+first**, and both are directed to **ratchet the existing
+`CostReportPageTest.WORD_CEILING`** rather than add a second counter. This is
+the expected cost of writing seven slices against one snapshot of a moving tree;
+the fix is the instruction to re-grep and re-measure, not a promise to keep the
+numbers fresh in this file.
