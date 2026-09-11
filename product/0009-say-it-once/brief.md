@@ -4,7 +4,8 @@
 
 ## Status
 
-- **Phase:** EXECUTE — wave 1 running; `concise/01` LANDED 2026-09-11
+- **Phase:** EXECUTE — wave 1: `concise/01` and `concise/02` LANDED 2026-09-11;
+  `concise/03` HELD on a cross-brief collision
 - **Gate 1 (prioritisation):** **PASSED 2026-09-09 — Ian approved all defaults,
   verbatim: "approve"**. D1-D8 stand as written below. D8 is `standing`.
 - **Gate 2 (spec):** **PASSED 2026-09-09 — "approve"**; D9-D14 in `spec.md`
@@ -35,6 +36,33 @@
   spec defect against /chart. No wire type, no DDL, no migration, no prompt
   version; the research report's 1,793 baseline is superseded by 1,767, measured
   on today's main.
+
+  concise/02/the-payload-says-it-once LANDED as RFC 189 (main@eed5b148 +
+  9928f121, 2026-09-11) — the `college_cost_profile` payload says each
+  provenance fact once. `figure_provenance` names the (assurance tier,
+  publisher) pair most of a college's figures are on, once per college, and a
+  `figure_statuses` entry exists only for a field with something of its own to
+  say — a status sentence, a year gap, or a tier or publisher off the default —
+  repeating a provenance key only where THAT key differs, so each fact resolves
+  as "this entry's own value, else the default's". The tier code and its
+  sentence ride in one `SpokenAssurance` value and cannot split.
+  `residency.by_college` and `blended_figure_basis.by_college` are emitted only
+  where a school is not fully described by the sentence above it (the
+  `CHOSEN_BY_COLLEGE_KEY` rule, with a uniformity clause as the reachability
+  net), and the breakdown NAMES the top-level tuition key its totals include
+  (`tuition_field_in_totals`) instead of repeating the figure in all three
+  arrangement objects. MEASURED: 4,980 -> 1,864 bytes per college on the
+  `Six Statuses U` fixture (-62.6%), and 3,365 -> 999 on a plain college
+  (-70.3%), asserted as a byte budget in `CollegeCostChatToolTest`. The >= 60%
+  criterion IS met, but only after a design amendment approved mid-run:
+  all-three-or-none exception entries measured 44.7% and missed it, because the
+  research report's reconstruction assumed ONE distinct (tier, publisher) pair
+  per college while the real corpus carries THREE — the Scorecard both relays
+  IPEDS cells and originates two federal administrative records. The 5,366-byte
+  figure in `research/coach-verbosity.md` was reconstructed, never measured;
+  recorded as a spec defect against /chart. No DDL, no migration, no prompt
+  version; the nine byte-frozen sentences are unchanged and
+  `prompts/coach-system-prompt.md` was not touched.
 
 ## The question
 
