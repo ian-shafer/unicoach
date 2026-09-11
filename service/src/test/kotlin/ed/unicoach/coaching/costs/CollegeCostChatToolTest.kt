@@ -46,6 +46,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.UUID
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
@@ -1786,6 +1787,40 @@ class CollegeCostChatToolTest {
   ): JsonObject? = breakdownOf(college)?.get(arrangement.value)?.jsonObject
 
   /**
+   * The arrangement objects inside one breakdown, keyed by arrangement wire name
+   * -- the breakdown MINUS its own scalar keys.
+   *
+   * Its own helper since RFC 189 D3: `cost_by_living_arrangement` now carries
+   * [CollegeCostChatTool.TUITION_FIELD_IN_TOTALS_KEY] beside the three
+   * arrangements, so a test asking "which arrangements are here" must not read
+   * that name as one of them.
+   */
+  private fun arrangementsOf(breakdown: JsonObject): Map<String, JsonObject> =
+    breakdown.filterValues { it is JsonObject }.mapValues { it.value.jsonObject }
+
+  /**
+   * The top-level tuition key every total in this college's breakdown includes
+   * (RFC 189 D3), or null when the breakdown names none.
+   */
+  private fun tuitionFieldInTotalsOf(college: JsonObject): String? =
+    breakdownOf(college)
+      ?.get(CollegeCostChatTool.TUITION_FIELD_IN_TOTALS_KEY)
+      ?.jsonPrimitive
+      ?.content
+
+  /**
+   * The AMOUNT behind [tuitionFieldInTotalsOf], read from the college's own
+   * top-level key -- the one place the payload now states it.
+   */
+  private fun tuitionAmountInTotalsOf(college: JsonObject): Int? =
+    tuitionFieldInTotalsOf(college)?.let {
+      college
+        .getValue(it)
+        .jsonPrimitive.content
+        .toInt()
+    }
+
+  /**
    * The dollar lines of one arrangement, by key.
    *
    * Non-scalar entries are skipped rather than parsed: an arrangement may carry
@@ -1846,14 +1881,13 @@ class CollegeCostChatToolTest {
         LivingArrangement.OFF_CAMPUS.value,
         LivingArrangement.WITH_FAMILY.value,
       ),
-      breakdown.keys.toList(),
+      arrangementsOf(breakdown).keys.toList(),
       "the arrangements ride in the order the coach reads them",
     )
 
     val onCampus = intsOf(assertNotNull(arrangementOf(college, LivingArrangement.ON_CAMPUS)))
     assertEquals(
       setOf(
-        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName,
         CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName,
         CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD.wireName,
         CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD.wireName,
@@ -1862,10 +1896,20 @@ class CollegeCostChatToolTest {
       onCampus.keys,
       "the component keys ARE the CostField wire names, so data_availability names keys the payload has",
     )
+    // RFC 189 D3: the tuition figure is NAMED here and stated once, at the
+    // college's own top-level key, so the total is that amount plus the
+    // components beside it -- still derivable, and no longer repeated three
+    // times.
     assertEquals(
-      onCampus.filterKeys { it != CollegeCostChatTool.TOTAL_KEY }.values.sum(),
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName,
+      tuitionFieldInTotalsOf(college),
+      "the breakdown names the tuition key its totals include: [$breakdown]",
+    )
+    assertEquals(
+      onCampus.filterKeys { it != CollegeCostChatTool.TOTAL_KEY }.values.sum() +
+        assertNotNull(tuitionAmountInTotalsOf(college)),
       onCampus.getValue(CollegeCostChatTool.TOTAL_KEY),
-      "the total is exactly the lines above it",
+      "the total is exactly the named tuition figure plus the lines above it",
     )
 
     val withFamily = intsOf(assertNotNull(arrangementOf(college, LivingArrangement.WITH_FAMILY)))
@@ -2219,6 +2263,43 @@ class CollegeCostChatToolTest {
       ?.associateBy { it.getValue("field").jsonPrimitive.content }
       .orEmpty()
 
+  /**
+   * One college's `figure_provenance` object -- the (tier, publisher) pair its
+   * figures default to (RFC 189 D1), or null where the college holds no figure
+   * provenance at all.
+   */
+  private fun figureProvenanceOf(college: JsonObject): JsonObject? = college[CollegeCostChatTool.FIGURE_PROVENANCE_KEY]?.jsonObject
+
+  /**
+   * The (assurance, source) pair ONE field resolves to, by the payload's own
+   * rule: the field's own entry's pair when its entry carries one, and
+   * `figure_provenance`'s otherwise (RFC 189 D1).
+   *
+   * Written once, here, because it IS the reader's rule -- a test that spelled
+   * the fallback out by hand would be asserting its own spelling rather than the
+   * one the description tells the coach to apply.
+   */
+  private fun resolvedProvenanceOf(
+    college: JsonObject,
+    field: String,
+  ): Triple<String, String, String> {
+    val default = assertNotNull(figureProvenanceOf(college), "no default to resolve against: [$college]")
+    val entry = figureStatusesOf(college)[field]
+
+    fun resolve(key: String): String = (entry?.get(key) ?: default.getValue(key)).jsonPrimitive.content
+
+    // PER KEY (RFC 189 D1), and this helper is the rule itself: the tier and
+    // the publisher vary independently, so each falls back on its own. The two
+    // tier keys are resolved off the SAME carrier by construction -- the
+    // renderer writes them together, and `an entry that differs in tier carries
+    // both` is the test that keeps it true.
+    return Triple(
+      resolve(CollegeCostChatTool.ASSURANCE_KEY),
+      resolve(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY),
+      resolve(CollegeCostChatTool.FIGURE_SOURCE_KEY),
+    )
+  }
+
   @Test
   fun `a community college names three tuition tiers, and the district price is never anyone's tuition line`() {
     val student = createStudent()
@@ -2253,16 +2334,24 @@ class CollegeCostChatToolTest {
     // a state answer cannot select a district price, so the district figure is a
     // labelled tier and nothing more (RFC 166 s4).
     assertEquals("in_state", college.getValue("tuition_applicable").jsonPrimitive.content)
+    // RFC 189 D3: the tuition figure the family's own answer selected is NAMED
+    // once for the whole breakdown rather than written into all three
+    // arrangements, and the name is the in-state key -- never the district one.
+    assertEquals(
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName,
+      tuitionFieldInTotalsOf(college),
+      "the totals are built from the tuition the family's own answer selected: [$college]",
+    )
+    assertEquals(IN_STATE_TUITION_USD, tuitionAmountInTotalsOf(college))
     LivingArrangement.entries.forEach { arrangement ->
       val lines = intsOf(assertNotNull(arrangementOf(college, arrangement), "[$arrangement]"))
-      assertEquals(
-        IN_STATE_TUITION_USD,
-        lines[CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName],
-        "the total is built from the tuition the family's own answer selected: [$lines]",
-      )
       assertNull(
         lines[CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD.wireName],
         "the district price never enters a total: [$lines]",
+      )
+      assertNull(
+        lines[CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName],
+        "and the tuition figure is not repeated inside an arrangement: [$lines]",
       )
     }
     assertTrue(
@@ -2371,23 +2460,25 @@ class CollegeCostChatToolTest {
     seedListedCollege(student, "At Home Total U")
     answerResidency(student, "CA")
 
-    val atHome = intsOf(assertNotNull(arrangementOf(collegesOf(execute(student)).single(), LivingArrangement.WITH_FAMILY)))
+    val college = collegesOf(execute(student)).single()
+    val atHome = intsOf(assertNotNull(arrangementOf(college, LivingArrangement.WITH_FAMILY)))
     assertEquals(
       setOf(
-        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName,
         CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName,
         CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD.wireName,
         CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD.wireName,
         CollegeCostChatTool.TOTAL_KEY,
       ),
       atHome.keys,
-      "three components and the tuition line that applies: [$atHome]",
+      "three components, with the tuition line NAMED once for the whole breakdown (RFC 189 D3): [$atHome]",
     )
     assertEquals(0, atHome.getValue(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName))
     assertEquals(
-      atHome.filterKeys { it != CollegeCostChatTool.TOTAL_KEY }.values.sum(),
+      atHome.filterKeys { it != CollegeCostChatTool.TOTAL_KEY }.values.sum() +
+        assertNotNull(tuitionAmountInTotalsOf(college)),
       atHome.getValue(CollegeCostChatTool.TOTAL_KEY),
-      "the total is exactly the lines above it, and it EXISTS -- the zero is what completes it",
+      "the total is exactly the named tuition figure plus the lines above it, and it EXISTS -- the zero is " +
+        "what completes it",
     )
   }
 
@@ -2520,20 +2611,24 @@ class CollegeCostChatToolTest {
     )
   }
 
-  @Test
-  fun `the six figure statuses are spoken, and only the school's own silence joins data_availability`() {
-    // One fixture, one cell per status. The cells chosen are the ones the
-    // default seeder writes NO row for, because `price_figures` has a natural
-    // key and a second row for the same cell is not writable -- so the statuses
-    // ride on the in-district and fees-only addresses, plus one component the
-    // fixture nulls.
-    val student = createStudent()
+  /**
+   * THE BUDGET FIXTURE (RFC 189 D5): one college with a realistic mix of shown
+   * and blank figures -- five fields with something of their own to say (an
+   * imputed zero, a publisher suppression, our own gap, a not-applicable tier
+   * and the school's own silence) and the rest shown and plainly reported.
+   *
+   * Named once and seeded once, because the byte budget is a BEFORE/AFTER on the
+   * same fixture: a second copy of the seed drifting from this one would move
+   * the "after" without moving the recorded "before".
+   */
+  private fun seedBudgetFixtureCollege(
+    student: StudentId,
+    name: String = "Six Statuses U",
+  ): CollegeId {
     val college =
       CostsTestDb
-        .seedCollege("Six Statuses U", control = 1, otherExpensesOnCampusPerYearUsd = null)
+        .seedCollege(name, control = 1, otherExpensesOnCampusPerYearUsd = null)
         .also { CostsTestDb.addToCollegeList(student, it) }
-    // Value-bearing and SHOWN, with the publisher's-estimate sentence beside it:
-    // the 263 `XFEE2` rows flagged `Z` are real zeros the publisher implied.
     CostsTestDb.seedPriceFigure(
       college,
       PriceConcept.FEES_ONLY,
@@ -2558,6 +2653,18 @@ class CollegeCostChatToolTest {
       ResidencyBasis.IN_DISTRICT,
       reading = FigureReading.Absent(AbsenceStatus.NOT_APPLICABLE),
     )
+    return college
+  }
+
+  @Test
+  fun `the six figure statuses are spoken, and only the school's own silence joins data_availability`() {
+    // One fixture, one cell per status. The cells chosen are the ones the
+    // default seeder writes NO row for, because `price_figures` has a natural
+    // key and a second row for the same cell is not writable -- so the statuses
+    // ride on the in-district and fees-only addresses, plus one component the
+    // fixture nulls.
+    val student = createStudent()
+    seedBudgetFixtureCollege(student)
     answerResidency(student, "CA")
 
     val rendered = collegesOf(execute(student)).single()
@@ -2590,22 +2697,23 @@ class CollegeCostChatToolTest {
     // is, which is the one thing a family could not learn beside a shown dollar
     // amount before. No status prose was invented for it -- the key is absent,
     // and absence has one representation on this payload.
-    val reported = assertNotNull(statuses[CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName])
-    assertEquals(FigureStatus.REPORTED.value, reported.getValue("status").jsonPrimitive.content)
+    val shownPlainly = CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName
     assertNull(
-      reported[CollegeCostChatTool.STATEMENT_KEY],
-      "a shown, plainly reported figure says nothing about its status: [$reported]",
+      statuses[shownPlainly],
+      "a shown, plainly reported figure on the default has NOTHING of its own to say, so it gets no entry " +
+        "at all (RFC 189 D1): [$statuses]",
     )
-    // This fixture's price rows are IPEDS IC_AY: a compelled, edit-checked
-    // survey, whichever variable the cell is.
+    // ...and it is not unreachable: it resolves to the college's default pair,
+    // by the one rule the payload states. This fixture's price rows are IPEDS
+    // IC_AY: a compelled, edit-checked survey, whichever variable the cell is.
     assertEquals(
-      AssuranceTier.MANDATORY_SURVEY.value,
-      reported.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
-    )
-    assertEquals(
-      AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
-      reported.getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY).jsonPrimitive.content,
-      "the tier's sentence is the domain's own, never re-worded on the wire",
+      Triple(
+        AssuranceTier.MANDATORY_SURVEY.value,
+        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+        MoneySource.IPEDS_IC_AY.value,
+      ),
+      resolvedProvenanceOf(rendered, shownPlainly),
+      "the tier and the publisher are said once and still reach every figure: [$rendered]",
     )
     assertEquals(
       CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.toString(),
@@ -2701,6 +2809,386 @@ class CollegeCostChatToolTest {
         .keys
         .toList(),
       "exactly one entry carries the key, and it is the year gap: [$statuses]",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Say it once: the per-college provenance default and its exceptions (RFC 189)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `an entry that differs only in publisher carries source and neither tier key`() {
+    // The commonest exception in the corpus, and the one all-three-or-none was
+    // most expensive for: the College Scorecard RELAYS IPEDS cells, so the tier
+    // is the college's default and only the publisher moved. Restating the tier
+    // sentence here would cost 130 bytes to repeat what the default already
+    // said.
+    val student = createStudent()
+    seedBudgetFixtureCollege(student)
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val default = assertNotNull(figureProvenanceOf(college))
+    assertEquals(MoneySource.IPEDS_IC_AY.value, default.getValue(CollegeCostChatTool.FIGURE_SOURCE_KEY).jsonPrimitive.content)
+    assertEquals(
+      AssuranceTier.MANDATORY_SURVEY.value,
+      default.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
+    )
+
+    val sticker =
+      assertNotNull(
+        figureStatusesOf(college)[CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName],
+        "a field whose publisher is not the default's still has something of its own to say: [$college]",
+      )
+    assertEquals(
+      MoneySource.SCORECARD.value,
+      sticker.getValue(CollegeCostChatTool.FIGURE_SOURCE_KEY).jsonPrimitive.content,
+      "the publisher that differs IS said: [$sticker]",
+    )
+    assertNull(sticker[CollegeCostChatTool.ASSURANCE_KEY], "the tier did not move, so it is not restated: [$sticker]")
+    assertNull(sticker[CollegeCostChatTool.ASSURANCE_STATEMENT_KEY], "[$sticker]")
+    // ...and it is not lost: the tier resolves to the default's, by the rule the
+    // description tells the coach to apply.
+    assertEquals(
+      Triple(
+        AssuranceTier.MANDATORY_SURVEY.value,
+        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+        MoneySource.SCORECARD.value,
+      ),
+      resolvedProvenanceOf(college, CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName),
+    )
+  }
+
+  @Test
+  fun `an entry that differs only in tier carries the code and its sentence together, and no source`() {
+    // The other half of the per-key rule, and the pair that may never split: a
+    // tier code with no sentence, or a sentence that disagreed with the code
+    // beside it, is unconstructible because both come off one [SpokenAssurance].
+    //
+    // This college holds NO price row at all, so its whole provenance is the
+    // Scorecard's cohort figures: the default is (mandatory_survey, scorecard)
+    // -- the tie broken by the earliest field in CostField declaration order --
+    // and the two administrative records differ in tier alone.
+    val student = createStudent()
+    CostsTestDb
+      .seedCollege("Cohort Only U", control = 1, omittedPriceFields = CostField.entries.toSet())
+      .also { CostsTestDb.addToCollegeList(student, it) }
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val default = assertNotNull(figureProvenanceOf(college))
+    assertEquals(
+      MoneySource.SCORECARD.value,
+      default.getValue(CollegeCostChatTool.FIGURE_SOURCE_KEY).jsonPrimitive.content,
+      "the premise: every figure this college has is the Scorecard's: [$college]",
+    )
+    assertEquals(
+      AssuranceTier.MANDATORY_SURVEY.value,
+      default.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
+      "a tie is broken by the earliest field in declaration order, never by map iteration: [$default]",
+    )
+
+    val debt =
+      assertNotNull(
+        figureStatusesOf(college)[CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName],
+        "a federal administrative record is not the college's survey answer: [$college]",
+      )
+    assertEquals(
+      AssuranceTier.ADMINISTRATIVE_RECORD.value,
+      debt.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
+    )
+    assertEquals(
+      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD),
+      debt.getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY).jsonPrimitive.content,
+      "the code never travels without the words for it",
+    )
+    assertNull(debt[CollegeCostChatTool.FIGURE_SOURCE_KEY], "the publisher did not move, so it is not restated: [$debt]")
+    // The pair never splits, anywhere in the payload: an entry carries both tier
+    // keys or neither, and no entry ever carries one.
+    figureStatusesOf(college).forEach { (field, entry) ->
+      assertEquals(
+        entry[CollegeCostChatTool.ASSURANCE_KEY] == null,
+        entry[CollegeCostChatTool.ASSURANCE_STATEMENT_KEY] == null,
+        "the tier code and its sentence travel together or not at all: [$field] [$entry]",
+      )
+    }
+  }
+
+  @Test
+  fun `an entry whose tier AND publisher differ carries all three provenance keys`() {
+    val student = createStudent()
+    seedBudgetFixtureCollege(student)
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val earnings =
+      assertNotNull(figureStatusesOf(college)[CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName], "[$college]")
+    assertEquals(
+      AssuranceTier.ADMINISTRATIVE_RECORD.value,
+      earnings.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
+    )
+    assertEquals(
+      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD),
+      earnings.getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY).jsonPrimitive.content,
+    )
+    assertEquals(
+      MoneySource.SCORECARD.value,
+      earnings.getValue(CollegeCostChatTool.FIGURE_SOURCE_KEY).jsonPrimitive.content,
+      "both facts moved, so both are said: [$earnings]",
+    )
+  }
+
+  @Test
+  fun `a not_collected_by_us figure keeps its entry and its sentence through the compression`() {
+    // The compression drops an entry only where the entry had nothing of its
+    // own to say. A status sentence is something to say, so OUR gap -- the one
+    // a family most often misreads as the school's silence -- survives whole.
+    val student = createStudent()
+    seedBudgetFixtureCollege(student)
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val ours =
+      assertNotNull(
+        figureStatusesOf(college)[CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD.wireName],
+        "our own gap is never compressed away: [$college]",
+      )
+    assertEquals(FigureStatus.NOT_COLLECTED_BY_US.value, ours.getValue("status").jsonPrimitive.content)
+    assertEquals(
+      FigureStatusCopy.statementOf(FigureStatus.NOT_COLLECTED_BY_US, MoneySource.IPEDS_IC_AY),
+      statementOf(ours),
+      "the sentence is the domain's own, never re-worded and never dropped",
+    )
+    // It is on the default pair, so it says nothing about its own provenance --
+    // and resolves to the default all the same.
+    assertNull(ours[CollegeCostChatTool.ASSURANCE_KEY], "[$ours]")
+    assertNull(ours[CollegeCostChatTool.FIGURE_SOURCE_KEY], "[$ours]")
+    assertEquals(
+      Triple(
+        AssuranceTier.MANDATORY_SURVEY.value,
+        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+        MoneySource.IPEDS_IC_AY.value,
+      ),
+      resolvedProvenanceOf(college, CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD.wireName),
+    )
+  }
+
+  @Test
+  fun `every figure in the payload resolves to exactly one tier and exactly one publisher`() {
+    // The property the whole compression rests on, asserted by WALKING the
+    // payload rather than by trusting the emitter: no figure may become
+    // unreachable. Every field this college names -- as a top-level money key or
+    // as a `figure_statuses` entry -- must resolve, mechanically, to one tier in
+    // the domain's vocabulary and one publisher in the domain's vocabulary.
+    //
+    // TWO CLASSES ARE DELIBERATELY OUT OF THE WALK, and the exclusion is
+    // asserted rather than left implicit -- a walk that quietly skipped them
+    // would be the same test with a hole in it, and the DESCRIPTION now names
+    // both:
+    //
+    // 1. a line [CollegeCostChatTool.ASSUMED_BY_UNICOACH_KEY] names is OURS, so
+    //    it is on no publisher's tier. Resolving the at-home `$0` to the default
+    //    would attribute our own assumption to IPEDS (RFC 166 s7).
+    // 2. a field in `data_availability` carries no number anywhere here, so
+    //    there is no figure to put a tier on at all.
+    val student = createStudent()
+    seedBudgetFixtureCollege(student)
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+
+    val assumed =
+      LivingArrangement.entries
+        .mapNotNull { arrangementOf(college, it) }
+        .flatMap { it[CollegeCostChatTool.ASSUMED_BY_UNICOACH_KEY]?.jsonArray.orEmpty() }
+        .map { it.jsonPrimitive.content }
+        .toSet()
+    assertEquals(
+      setOf(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName),
+      assumed,
+      "the premise of exclusion 1: this fixture DOES show a line whose amount is ours: [$college]",
+    )
+    assumed.forEach { field ->
+      assertNull(
+        figureStatusesOf(college)[field],
+        "a figure of OURS holds no publisher's status, so it has no entry to resolve from: [$field]",
+      )
+      assertNull(college[field], "and it is not a top-level published figure either: [$field]")
+    }
+
+    val blanks = dataAvailabilityOf(college)
+    assertTrue(blanks.isNotEmpty(), "the premise of exclusion 2: [$college]")
+    blanks.forEach { field ->
+      assertNull(college[field], "a field in data_availability carries no amount to resolve: [$field]")
+      LivingArrangement.entries.forEach { arrangement ->
+        assertNull(
+          arrangementOf(college, arrangement)?.get(field),
+          "nor inside an arrangement: [$field] [$arrangement]",
+        )
+      }
+    }
+
+    val named =
+      CostField.entries.map { it.wireName }.filter { it in college.keys } +
+        figureStatusesOf(college).keys
+    assertTrue(named.isNotEmpty(), "the walk must have something to walk: [$college]")
+    assertTrue(assumed.none { it in named }, "our own line never enters the walk: [$assumed]")
+    val tiers = AssuranceTier.entries.map { it.value }.toSet()
+    val sources = MoneySource.entries.map { it.value }.toSet()
+    named.distinct().forEach { field ->
+      val (assurance, statement, source) = resolvedProvenanceOf(college, field)
+      assertTrue(assurance in tiers, "[$field] resolved to no tier in the vocabulary: [$assurance]")
+      assertTrue(source in sources, "[$field] resolved to no publisher in the vocabulary: [$source]")
+      assertEquals(
+        AssuranceTierCopy.statementOf(assertNotNull(AssuranceTier.entries.find { it.value == assurance })),
+        statement,
+        "[$field] resolved to a sentence that is not its own tier's",
+      )
+    }
+  }
+
+  @Test
+  fun `the tuition figure is stated once in the college object, and tuition_field_in_totals names it`() {
+    // RFC 189 D3. The one residency-selected tuition figure used to be written
+    // inside all three arrangement objects AND at the top level: the same
+    // number, under the same wire key, four times.
+    val student = createStudent()
+    seedListedCollege(student, "Tuition Once U")
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val named = assertNotNull(tuitionFieldInTotalsOf(college), "a breakdown with totals names its tuition key: [$college]")
+    assertEquals(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName, named)
+    assertEquals(
+      1,
+      keyOccurrencesIn(college, named),
+      "the tuition key is written exactly once in the whole college object: [$college]",
+    )
+    assertEquals(
+      CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+      assertNotNull(tuitionAmountInTotalsOf(college), "the named key must carry an amount: [$college]"),
+    )
+    // ...and the composition of every total stays derivable from the name plus
+    // the components listed beside it.
+    LivingArrangement.entries.forEach { arrangement ->
+      val lines = intsOf(assertNotNull(arrangementOf(college, arrangement), "[$arrangement]"))
+      val total = lines[CollegeCostChatTool.TOTAL_KEY] ?: return@forEach
+      assertEquals(
+        lines.filterKeys { it != CollegeCostChatTool.TOTAL_KEY }.values.sum() +
+          assertNotNull(tuitionAmountInTotalsOf(college)),
+        total,
+        "[$arrangement] total must be the named tuition figure plus its own parts: [$lines]",
+      )
+    }
+  }
+
+  @Test
+  fun `the nine frozen sentences are byte-identical wherever the payload says them`() {
+    // RFC 189 D4: this slice changes HOW MANY TIMES a sentence is emitted and
+    // nothing about its bytes.
+    //
+    // Every sentence the payload emits is checked against the copy object's own
+    // answer FOR THAT OBJECT'S OWN CODE, so a re-worded sentence FAILS. An
+    // earlier version of this test looked each emitted sentence up in the set of
+    // frozen ones and compared the bytes of what it found: selected by equality,
+    // the comparison could not fail, and a re-worded sentence was simply not
+    // found and skipped.
+    val student = createStudent()
+    seedBudgetFixtureCollege(student)
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val default = assertNotNull(figureProvenanceOf(college))
+
+    // The THREE tier sentences, wherever a tier code appears: the per-college
+    // default, and every entry that carries a tier of its own.
+    val tierBearing = listOf(default) + figureStatusesOf(college).values.filter { it[CollegeCostChatTool.ASSURANCE_KEY] != null }
+    assertTrue(tierBearing.size > 1, "the default plus at least one off-default tier: [$college]")
+    val tiersSeen = mutableSetOf<AssuranceTier>()
+    tierBearing.forEach { carrier ->
+      val code = carrier.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content
+      val tier = assertNotNull(AssuranceTier.entries.find { it.value == code }, "[$code] is no tier: [$carrier]")
+      tiersSeen += tier
+      assertContentEquals(
+        AssuranceTierCopy.statementOf(tier).toByteArray(Charsets.UTF_8),
+        carrier
+          .getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY)
+          .jsonPrimitive.content
+          .toByteArray(Charsets.UTF_8),
+        "the sentence beside a tier code is that tier's own, byte for byte: [$carrier]",
+      )
+    }
+    assertEquals(
+      setOf(AssuranceTier.MANDATORY_SURVEY, AssuranceTier.ADMINISTRATIVE_RECORD),
+      tiersSeen,
+      "this fixture says two of the three tiers, and each was checked against its own code: [$college]",
+    )
+
+    // The SIX status sentences, each against [FigureStatusCopy]'s answer for
+    // that entry's own status and that entry's own resolved publisher -- which
+    // is the point of the compression: the publisher an entry inherits from the
+    // default is the one its sentence must name.
+    val statusesSeen = mutableSetOf<FigureStatus>()
+    figureStatusesOf(college).forEach { (field, entry) ->
+      val status = assertNotNull(FigureStatus.fromValue(entry.getValue("status").jsonPrimitive.content), "[$field]")
+      val source = assertNotNull(MoneySource.fromValue(resolvedProvenanceOf(college, field).third), "[$field]")
+      val expected = FigureStatusCopy.statementOf(status, source)
+      val said = entry[CollegeCostChatTool.STATEMENT_KEY]?.jsonPrimitive?.content
+      if (expected == null || said == null) {
+        assertNull(said, "a shown, plainly reported figure says nothing about its status: [$field] [$entry]")
+      } else {
+        statusesSeen += status
+        assertContentEquals(
+          expected.toByteArray(Charsets.UTF_8),
+          said.toByteArray(Charsets.UTF_8),
+          "the status sentence is the domain's own for this status and this publisher, byte for byte: [$field]",
+        )
+      }
+    }
+    assertEquals(
+      setOf(
+        FigureStatus.IMPUTED_BY_PUBLISHER,
+        FigureStatus.SUPPRESSED_BY_PUBLISHER,
+        FigureStatus.NOT_COLLECTED_BY_US,
+        FigureStatus.NOT_APPLICABLE,
+        FigureStatus.NOT_REPORTED_BY_INSTITUTION,
+      ),
+      statusesSeen,
+      "five of the six statuses SAY a sentence here, and each was checked against its own code: [$college]",
+    )
+    // The sixth status IS here -- `reported`, on the two Scorecard entries -- and
+    // the loop asserted the other half of D6 for it: a shown, plainly reported
+    // figure carries no status sentence at all, so its arm is exercised as the
+    // absence it is rather than skipped.
+    assertTrue(
+      figureStatusesOf(college).values.any { it.getValue("status").jsonPrimitive.content == FigureStatus.REPORTED.value },
+      "the sixth status is present, as the silent one: [$college]",
+    )
+  }
+
+  @Test
+  fun `the provenance block is at most forty percent of its pre-RFC size`() {
+    // THE BUDGET (RFC 189 D5), as a test rather than a paragraph.
+    //
+    // [PRE_RFC_PROVENANCE_BYTES] was MEASURED on this branch's base commit, with
+    // this same fixture, by serialising the college's `figure_statuses` value and
+    // taking its UTF-8 length: 4,980 bytes. It is not the 5,366 of brief 0009's
+    // DISCOVER, which was reconstructed from the copy strings and never captured
+    // from a running service.
+    val student = createStudent()
+    seedBudgetFixtureCollege(student)
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val block =
+      (
+        assertNotNull(figureProvenanceOf(college)).toString() +
+          college[CollegeCostChatTool.FIGURE_STATUSES_KEY]?.toString().orEmpty()
+      ).toByteArray(Charsets.UTF_8).size
+    assertTrue(
+      block <= PRE_RFC_PROVENANCE_BYTES * 2 / 5,
+      "the provenance block must be at most 40% of its pre-RFC size: [$block] bytes against a measured " +
+        "baseline of [$PRE_RFC_PROVENANCE_BYTES]",
     )
   }
 
@@ -2942,6 +3430,29 @@ class CollegeCostChatToolTest {
         description.contains("never carry that figure into a total"),
       "the held year must be named as a key to read, not left inside a sentence: [$description]",
     )
+    // RFC 189: the two new keys, and the resolution rule the whole compression
+    // depends on the model applying. A payload that says a fact once is only
+    // safe if the description says WHERE the once is.
+    assertTrue(
+      description.contains(CollegeCostChatTool.FIGURE_PROVENANCE_KEY) &&
+        description.contains("is its own entry's when the entry has one"),
+      "the per-college default and the per-key resolution rule must both be told to the model: [$description]",
+    )
+    assertTrue(
+      description.contains(CollegeCostChatTool.TUITION_FIELD_IN_TOTALS_KEY) &&
+        description.contains("NAMES the top-level key"),
+      "the tuition figure is now named rather than repeated, so the description must say how to read it",
+    )
+    // ...and the two field classes the default must never be read onto (F2).
+    assertTrue(
+      description.contains("${CollegeCostChatTool.ASSUMED_BY_UNICOACH_KEY} is OURS") &&
+        description.contains("on no publisher's tier"),
+      "our own at-home line must never be resolved to the publisher's default: [$description]",
+    )
+    assertTrue(
+      description.contains("has no number here to resolve at all"),
+      "a field in data_availability has no figure to put a tier on: [$description]",
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -2993,6 +3504,65 @@ class CollegeCostChatToolTest {
       ),
       basis.keys,
       "the SIX facts that make a table honest, and nothing else: [$basis]",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // by_college only where a school differs (RFC 189 D2)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `two schools on different residency bases are both named under by_college`() {
+    // The case the array exists for: one public school and one private one, so
+    // the call-level sentence is about two groups and a reader cannot tell which
+    // group a school is in without being told.
+    val student = createStudent()
+    seedListedCollege(student, "Mixed Public U", state = "CA", control = 1)
+    seedListedCollege(student, "Mixed Private U", state = "CA", control = 2)
+    answerResidency(student, "CA")
+
+    val basis = assertNotNull(comparisonBasisOf(execute(student)))
+    val residency = basis.getValue("residency").jsonObject
+    assertEquals(ResidencyScope.MIXED.value, residency.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content)
+    assertEquals(
+      listOf("Mixed Public U", "Mixed Private U"),
+      residency
+        .getValue("by_college")
+        .jsonArray
+        .map {
+          it.jsonObject
+            .getValue("name")
+            .jsonPrimitive.content
+        },
+      "both schools are named where they do not share a basis: [$residency]",
+    )
+  }
+
+  @Test
+  fun `two schools on one residency basis carry no by_college, and no per-school fact is lost`() {
+    // Two private schools: one basis, one sentence, and the array would say the
+    // same thing twice more. `college_id` and `name` are not lost with it --
+    // `colleges[]` carries both -- and neither school has a `source_control` or
+    // a tuition_basis of its own to state.
+    val student = createStudent()
+    seedListedCollege(student, "Same Basis One U", state = "CA", control = 2)
+    seedListedCollege(student, "Same Basis Two U", state = "CA", control = 2)
+    answerResidency(student, "CA")
+
+    val result = execute(student)
+    val basis = assertNotNull(comparisonBasisOf(result))
+    val residency = basis.getValue("residency").jsonObject
+    assertEquals(ResidencyScope.NO_PUBLIC.value, residency.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content)
+    assertNull(residency["by_college"], "one basis everywhere is said once: [$residency]")
+    assertTrue(statementOf(residency).isNotEmpty(), "and the sentence that IS true of every school still rides")
+    assertNull(
+      basis.getValue(CollegeCostChatTool.BLENDED_FIGURE_BASIS_KEY).jsonObject["by_college"],
+      "the blended-figure twin follows the same rule: [$basis]",
+    )
+    assertEquals(
+      listOf("Same Basis One U", "Same Basis Two U"),
+      collegesOf(result).map { it.getValue("name").jsonPrimitive.content },
+      "the schools themselves are never lost with the array",
     )
   }
 
@@ -3053,17 +3623,17 @@ class CollegeCostChatToolTest {
       BlendedFigureScope.RESIDENCY_NOT_ON_FILE.value,
       blended.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
     )
-    blended.getValue("by_college").jsonArray.map { it.jsonObject }.forEach { entry ->
-      assertNull(entry[CollegeCostChatTool.APPLIES_KEY], "an open question is not an answer: [$entry]")
-      // ...and the state itself is still SAID, so the third outcome does not
-      // ride on a key that is not there (RFC 157 tier 2).
-      assertEquals(
-        BlendedFigureApplicability.BASIS_STATED.value,
-        entry.getValue(CollegeCostChatTool.APPLIES_BASIS_KEY).jsonPrimitive.content,
-        "the open question says itself rather than being inferred from an absence: [$entry]",
-      )
-    }
+    // Both schools are in the SAME state here -- one open residency question,
+    // one outcome -- so the call-level sentence is the whole truth about each of
+    // them and no per-school array is written (RFC 189 D2). The fact itself is
+    // not lost: every college object still carries its own
+    // `applies_to_this_family_basis`, asserted below.
+    assertNull(
+      blended["by_college"],
+      "one basis everywhere is said once, never once per school: [$blended]",
+    )
     collegesOf(result).forEach { college ->
+      assertNull(college[CollegeCostChatTool.APPLIES_KEY], "an open question is not an answer: [$college]")
       assertEquals(
         BlendedFigureApplicability.BASIS_STATED.value,
         college.getValue(CollegeCostChatTool.APPLIES_BASIS_KEY).jsonPrimitive.content,
@@ -3423,10 +3993,7 @@ class CollegeCostChatToolTest {
     )
     assertEquals(
       LivingArrangement.entries.map { it.value },
-      rendered
-        .getValue(CollegeCostChatTool.BREAKDOWN_KEY)
-        .jsonObject.keys
-        .toList(),
+      arrangementsOf(rendered.getValue(CollegeCostChatTool.BREAKDOWN_KEY).jsonObject).keys.toList(),
       "a chosen plan leads; it never removes a true fact from the payload (D2)",
     )
   }
@@ -3943,6 +4510,10 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
     // the store's own reason for it.
     CollegeCostChatTool.RESIDENCY_TIERS_KEY,
     CollegeCostChatTool.FIGURE_STATUSES_KEY,
+    // RFC 189: the (tier, publisher) pair most of this college's figures are on,
+    // said once. Present on every college that holds any figure provenance at
+    // all, which the default fixture does, so it is part of the vocabulary.
+    CollegeCostChatTool.FIGURE_PROVENANCE_KEY,
     // RFC 170: the sentence that says why a college carries no aid_policy
     // section. ALWAYS written when the section is absent, which is exactly the
     // case these "unchanged" assertions describe -- a school with no CDS
@@ -3992,3 +4563,33 @@ private fun keysAnywhereIn(element: JsonElement): Set<String> =
     is JsonArray -> element.flatMap { keysAnywhereIn(it) }.toSet()
     else -> emptySet()
   }
+
+/**
+ * How many times [key] is written ANYWHERE in [element], nesting included -- the
+ * counting twin of [keysAnywhereIn], which answers only "is it there".
+ *
+ * RFC 189 D3 is a claim about a COUNT: the one residency-selected tuition figure
+ * used to be written four times under one wire key, and "the key exists" cannot
+ * fail for that.
+ */
+private fun keyOccurrencesIn(
+  element: JsonElement,
+  key: String,
+): Int =
+  when (element) {
+    is JsonObject -> element.count { it.key == key } + element.values.sumOf { keyOccurrencesIn(it, key) }
+    is JsonArray -> element.sumOf { keyOccurrencesIn(it, key) }
+    else -> 0
+  }
+
+/**
+ * The `figure_statuses` block of the RFC 189 budget fixture BEFORE this slice,
+ * in UTF-8 bytes.
+ *
+ * MEASURED, not reconstructed: a temporary test on this branch's base commit
+ * seeded `seedBudgetFixtureCollege`, serialised the college's `figure_statuses`
+ * value and took its byte length. Brief 0009's DISCOVER reported 5,366 bytes for
+ * a college it assembled from the copy strings and never ran, so the budget is a
+ * real before/after rather than a reconstructed one.
+ */
+private const val PRE_RFC_PROVENANCE_BYTES = 4980

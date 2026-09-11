@@ -514,6 +514,60 @@ data class ResidencyBasis(
         else -> ResidencyScope.MIXED
       }
 
+  /**
+   * The schools worth naming one by one, or an EMPTY list when the call-level
+   * [statement] is the whole truth about every school here (RFC 189 D2) -- the
+   * shape [ArrangementBasis.planNamedPerCollege] already established for the
+   * same question.
+   *
+   * The payload used to write one entry per school unconditionally, so with N
+   * schools on one basis the same fact was stated 1 + N times. A school is worth
+   * naming when the call-level sentence is NOT the whole truth about it:
+   *
+   * - the scope is [ResidencyScope.MIXED], where the sentence is about two
+   *   groups and the reader must be told which group a school is in;
+   * - a school is [ComparedTuition.PublishedPriceUnknown], which carries
+   *   `source_control` -- a datum no call-level sentence holds;
+   * - the entries are not uniform in their [ComparedTuition.code].
+   *
+   * The uniformity clause is the safety net, and it is deliberately not
+   * redundant: it is what makes "no per-school fact is lost" a property of the
+   * DATA rather than of the scope table above staying correct. `college_id` and
+   * `name` are not lost with the array either -- `colleges[]` carries both.
+   */
+  val namedPerCollege: List<CollegeResidencyBasis>
+    get() =
+      // EXHAUSTIVE over [scope] with no `else`, like every other `when` over
+      // this vocabulary: a FOURTH scope whose sentence is about more than one
+      // group of schools must fail to compile here rather than silently drop
+      // `by_college` on every call whose entries happen to be uniform. The two
+      // clauses below the scope are nets for DATA drift, never for a new scope.
+      when (scope) {
+        ResidencyScope.MIXED -> {
+          byCollege
+        }
+
+        ResidencyScope.NO_PUBLIC, ResidencyScope.ALL_PUBLIC -> {
+          if (hasUnplaceableSchool || !isUniform) byCollege else emptyList()
+        }
+      }
+
+  /**
+   * True when a school here carries a datum no call-level sentence holds: a
+   * control we could not recognise, whose raw value rides as `source_control`.
+   */
+  private val hasUnplaceableSchool: Boolean
+    get() = byCollege.any { it.tuition is ComparedTuition.PublishedPriceUnknown }
+
+  /**
+   * True when every school here is on the same [ComparedTuition.code], so the
+   * call-level [statement] is the whole truth about each of them.
+   *
+   * Named rather than inlined into one `when` arm, for the reason the sibling in
+   * [BlendedFigureBasis] is: the arm above it must NOT ask this question.
+   */
+  private val isUniform: Boolean get() = byCollege.map { it.tuition.code }.distinct().size == 1
+
   val statement: String
     get() =
       when (scope) {

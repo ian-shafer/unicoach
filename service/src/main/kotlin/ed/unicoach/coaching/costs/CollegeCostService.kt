@@ -498,6 +498,18 @@ data class CollegeCost(
    */
   val publishedTuitionTiers: List<CostField> get() = publishedTuitionTiersOf(served)
 
+  /**
+   * The one provenance default this college's figures are on, and the fields
+   * that are not on it (RFC 189 D1) -- or NULL when this college holds no figure
+   * provenance at all.
+   *
+   * DERIVED from [figureStatuses], never a second list beside it: the complete
+   * note list stays the domain's answer to "what do we hold about each field"
+   * (`public-web`'s report page reads it whole), and this is the same facts said
+   * once. A stored copy would be a second place for the default to be wrong.
+   */
+  val figureProvenance: FigureProvenanceSummary? get() = figureProvenanceSummaryOf(figureStatuses)
+
   /** The published in-state tuition and fees, as this school publishes it. */
   val tuitionAndFeesInStatePerYearUsd: Int? get() = publishedAmountOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD)
 
@@ -823,6 +835,138 @@ data class FigureStatusNote(
    * disagreed would have compiled.
    */
   val assuranceStatement: String get() = AssuranceTierCopy.statementOf(assurance)
+}
+
+/**
+ * A tier and the sentence that says it, as ONE value (RFC 189 D1).
+ *
+ * The tier's code and its words may NEVER be separated -- the `income_band` +
+ * `income_band_label` convention (RFC 151 D-D) made unbreakable. Carried as two
+ * nullable fields on the types below, an entry could hold a code with no
+ * sentence, or a sentence that disagreed with the code beside it, and both
+ * would compile. Here neither state is constructible: [statement] is DERIVED
+ * from [tier] through [AssuranceTierCopy], the sentence's one home, and there is
+ * no second field to pass.
+ *
+ * A `value class`, so saying it this way costs no object: it IS the tier, with
+ * the rule that its words travel with it attached to the type rather than to a
+ * comment.
+ */
+@JvmInline
+value class SpokenAssurance(
+  val tier: AssuranceTier,
+) {
+  /** The sentence that says [tier], from [AssuranceTierCopy] -- never re-worded, never passed in. */
+  val statement: String get() = AssuranceTierCopy.statementOf(tier)
+}
+
+/**
+ * The (tier, publisher) pair most of a college's figures are on, and the fields
+ * that are NOT on it (RFC 189 D1).
+ *
+ * It exists because the payload used to state the same two facts once per field:
+ * seventeen notes, each carrying an `assurance`, an `assurance_statement` and a
+ * `source`, most of them byte-identical to each other. This type says the
+ * repeated facts ONCE and keeps only the fields that have something of their own
+ * to say.
+ *
+ * [default] is NON-NULL, and that is the whole safety of the compression: the
+ * summary as a whole is absent exactly when the college holds no figure
+ * provenance at all, so a reader never meets exceptions with no default to fall
+ * back to. Every figure resolves to exactly one tier and one publisher, each
+ * read as ITS OWN entry's value where the entry carries one and [default]'s
+ * otherwise.
+ */
+data class FigureProvenanceSummary(
+  val default: FigureProvenanceDefault,
+  val exceptions: List<FigureProvenanceException>,
+)
+
+/**
+ * What most of this college's figures are and who published them: the tier with
+ * its own sentence, and the publisher.
+ *
+ * Identity is the PAIR AS THE WIRE CARRIES IT -- [AssuranceTier] plus
+ * [MoneySource] -- and never the [PublishedCell] behind it. Two notes that agree
+ * on those two values rendered byte-identical triples before this RFC, so
+ * collapsing them removes bytes and no facts; keying on the cell instead would
+ * split a default over a distinction the payload never stated.
+ */
+data class FigureProvenanceDefault(
+  val assurance: SpokenAssurance,
+  val source: MoneySource,
+)
+
+/**
+ * One field that is not fully described by [FigureProvenanceDefault] -- the
+ * note, plus ONLY the provenance facts that differ from it (RFC 189 D1).
+ *
+ * The two overrides are INDEPENDENTLY nullable because the two facts vary
+ * independently: the College Scorecard relays IPEDS cells (the same tier, a
+ * different publisher) and also originates two federal administrative records (a
+ * different tier, the same publisher). A rule that made an entry restate both
+ * whenever either moved paid the 172-byte administrative-record sentence on
+ * every entry whose tier was not what differed.
+ *
+ * Null means "the default's", never "unknown": the summary that holds these
+ * holds the default too, in one type, so a reader resolving a null here always
+ * has somewhere to read it from.
+ *
+ * [assurance] is a [SpokenAssurance] rather than an `AssuranceTier?` plus a
+ * `String?`: a code with no sentence is what this type makes unconstructible.
+ */
+data class FigureProvenanceException(
+  val note: FigureStatusNote,
+  val assurance: SpokenAssurance?,
+  val source: MoneySource?,
+)
+
+/**
+ * The default pair for a college's figures and the notes that are not on it, or
+ * NULL when the college holds no figure provenance at all (RFC 189 D1).
+ *
+ * Null rather than an invented default: a mandatory default over an empty set
+ * would name a tier and a publisher for no figure, and an invented value is
+ * worse than an absence. There is no figure to resolve in that case, so nothing
+ * is left unreachable.
+ *
+ * The default is the MOST FREQUENT pair; ties break by the earliest field in
+ * [CostField] declaration order, so the choice is deterministic and never
+ * depends on map iteration.
+ */
+fun figureProvenanceSummaryOf(notes: List<FigureStatusNote>): FigureProvenanceSummary? {
+  if (notes.isEmpty()) return null
+  // Declaration order in, declaration order out: [figureStatusesOf] walks
+  // `CostField.entries`, so the FIRST note carrying a pair is also the earliest
+  // field on it, and `groupBy` preserves first-encounter order. `maxByOrNull`
+  // keeps the first maximal element, so the tie break is the index of the group
+  // and needs no second sort.
+  val byPair = notes.groupBy { it.assurance to it.source }
+  // `maxBy`, not `maxByOrNull` with a sentinel: the list is non-empty by the
+  // early return above, so `groupBy` has at least one group, and an elvis arm
+  // here would be a branch that reads as a real case while being unreachable.
+  val winner = byPair.entries.maxBy { it.value.size }
+  val default =
+    FigureProvenanceDefault(
+      assurance = SpokenAssurance(winner.key.first),
+      source = winner.key.second,
+    )
+  // An exception is a note with something of its OWN to say: a status sentence,
+  // a year gap, a tier that is not the default's, or a publisher that is not the
+  // default's. A note with none of the four is fully described by the default
+  // plus the field's own presence in the payload, so keeping it would restate
+  // what was already said.
+  val exceptions =
+    notes.mapNotNull { note ->
+      val assurance = SpokenAssurance(note.assurance).takeIf { it.tier != default.assurance.tier }
+      val source = note.source.takeIf { it != default.source }
+      if (note.statement == null && note.heldAcademicYear == null && assurance == null && source == null) {
+        null
+      } else {
+        FigureProvenanceException(note = note, assurance = assurance, source = source)
+      }
+    }
+  return FigureProvenanceSummary(default = default, exceptions = exceptions)
 }
 
 /** The money-profile field statuses echoed with every result, so the coach knows the history. */

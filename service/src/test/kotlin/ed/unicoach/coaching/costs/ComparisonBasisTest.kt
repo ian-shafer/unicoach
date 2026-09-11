@@ -594,4 +594,123 @@ class ComparisonBasisTest {
     assertEquals(AnswerStatus.UNANSWERED, ComparedLivingPlan.Unanswered.status)
     assertEquals(AnswerStatus.DECLINED, ComparedLivingPlan.Declined.status)
   }
+
+  // ---------------------------------------------------------------------------
+  // by_college only where a school differs (RFC 189 D2)
+  // ---------------------------------------------------------------------------
+
+  /** One school's residency line, the shortest form: a name and the compared-tuition case. */
+  private fun residencyEntry(
+    name: String,
+    tuition: ComparedTuition,
+  ): CollegeResidencyBasis = CollegeResidencyBasis(collegeId = CollegeId(UUID.randomUUID()), name = name, tuition = tuition)
+
+  @Test
+  fun `a school we cannot place is named per college even though every school shares its code`() {
+    // THE UNIFORMITY CLAUSE EARNING ITS KEEP (RFC 189 D2). Both schools carry
+    // the same `published_price_unknown` code and the scope is `no_public`, so a
+    // rule that watched only the scope would drop the array -- and with it
+    // `source_control`, the raw control value that defeated the residency line,
+    // which no call-level sentence holds. This is also the one case the
+    // DB-backed suite cannot reach: `colleges_control_valid_check` keeps the
+    // stored control in 1..3.
+    val basis =
+      ResidencyBasis(
+        answer = ComparedResidency.Answered("CA"),
+        byCollege =
+          listOf(
+            residencyEntry("Drifted One U", ComparedTuition.PublishedPriceUnknown(CollegeControl.Unrecognized(9))),
+            residencyEntry("Drifted Two U", ComparedTuition.PublishedPriceUnknown(CollegeControl.Unrecognized(9))),
+          ),
+      )
+
+    assertEquals(ResidencyScope.NO_PUBLIC, basis.scope, "the premise: no school here charges by residency")
+    assertEquals(
+      basis.byCollege,
+      basis.namedPerCollege,
+      "a school carrying a datum the sentence cannot hold is named, whatever the scope says",
+    )
+  }
+
+  @Test
+  fun `schools uniform in their tuition basis are not named one by one`() {
+    val basis =
+      ResidencyBasis(
+        answer = ComparedResidency.Answered("CA"),
+        byCollege =
+          listOf(
+            residencyEntry("One Price One U", ComparedTuition.SinglePublishedPrice),
+            residencyEntry("One Price Two U", ComparedTuition.SinglePublishedPrice),
+          ),
+      )
+
+    assertEquals(ResidencyScope.NO_PUBLIC, basis.scope)
+    assertEquals(
+      emptyList(),
+      basis.namedPerCollege,
+      "one basis everywhere is said once, in the statement, never once per school",
+    )
+    assertTrue(basis.statement.isNotEmpty(), "and the sentence that is true of every school still rides")
+  }
+
+  @Test
+  fun `schools that are not uniform in their tuition basis are all named`() {
+    // Two PUBLIC schools, so the scope is `all_public` and says nothing about
+    // the difference between them: one family is in-state at one and
+    // out-of-state at the other. The uniformity clause is what catches it.
+    val basis =
+      ResidencyBasis(
+        answer = ComparedResidency.Answered("CA"),
+        byCollege =
+          listOf(
+            residencyEntry("In State U", ComparedTuition.Public(TuitionApplicable.IN_STATE)),
+            residencyEntry("Out Of State U", ComparedTuition.Public(TuitionApplicable.OUT_OF_STATE)),
+          ),
+      )
+
+    assertEquals(ResidencyScope.ALL_PUBLIC, basis.scope)
+    assertEquals(
+      basis.byCollege,
+      basis.namedPerCollege,
+      "the schools differ in which published price is theirs, so each is named: [${basis.namedPerCollege}]",
+    )
+  }
+
+  @Test
+  fun `the blended-figure basis names its schools only where they differ or the sentence points at them`() {
+    val uniform =
+      BlendedFigureBasis(
+        answer = ComparedResidency.Answered("CA"),
+        byCollege =
+          listOf(
+            CollegeBlendedFigureBasis(CollegeId(UUID.randomUUID()), "Private One U", ComparedTuition.SinglePublishedPrice),
+            CollegeBlendedFigureBasis(CollegeId(UUID.randomUUID()), "Private Two U", ComparedTuition.SinglePublishedPrice),
+          ),
+      )
+    assertEquals(BlendedFigureScope.NO_RESIDENCY_BASIS_HERE, uniform.scope)
+    assertEquals(emptyList(), uniform.namedPerCollege, "one outcome everywhere is said once")
+
+    // `withheld_at_some_schools` says "at SOME schools", so the reader cannot
+    // learn WHICH without the array -- and the two schools are not uniform
+    // either, so both clauses agree here.
+    val withheld =
+      BlendedFigureBasis(
+        answer = ComparedResidency.Answered("WA"),
+        byCollege =
+          listOf(
+            CollegeBlendedFigureBasis(
+              CollegeId(UUID.randomUUID()),
+              "Out Of State Public U",
+              ComparedTuition.Public(TuitionApplicable.OUT_OF_STATE),
+            ),
+            CollegeBlendedFigureBasis(CollegeId(UUID.randomUUID()), "Home Private U", ComparedTuition.SinglePublishedPrice),
+          ),
+      )
+    assertEquals(BlendedFigureScope.WITHHELD_AT_SOME_SCHOOLS, withheld.scope)
+    assertEquals(
+      withheld.byCollege,
+      withheld.namedPerCollege,
+      "a sentence that says 'at some schools' must be followed by which ones",
+    )
+  }
 }

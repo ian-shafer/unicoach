@@ -32,6 +32,7 @@ import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
+import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.ValueBearingStatus
@@ -3447,5 +3448,140 @@ class CollegeCostServiceTest {
 
     /** `NPT45_PUB`: the top band, and the figure a WA family read as theirs against a real ~77,102. */
     private const val UCSD_NPT45_PUB = UcsdScorecardRow.NPT45_PUB
+  }
+
+  // ---------------------------------------------------------------------------
+  // The provenance default and its exceptions (RFC 189 D1)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One note for [field] on the cell a `(source, variable)` pair names -- the
+   * shortest way to hand [figureProvenanceSummaryOf] a college's worth of
+   * provenance without a database.
+   *
+   * The derivation is a pure function of the note list, so these cases are unit
+   * cases: no seed, no read, and the tie break is assertable with two notes
+   * rather than with a fixture contrived to produce one.
+   */
+  private fun note(
+    field: CostField,
+    cell: PublishedCell,
+    statement: String? = null,
+    heldAcademicYear: String? = null,
+  ): FigureStatusNote =
+    FigureStatusNote(
+      field = field,
+      status = if (statement == null) FigureStatus.REPORTED else FigureStatus.NOT_COLLECTED_BY_US,
+      statement = statement,
+      cell = cell,
+      servedAcademicYear = heldAcademicYear?.let { "2024-25" },
+      heldAcademicYear = heldAcademicYear,
+    )
+
+  private val ipedsCell = PublishedCell.Surveyed(PublishedCell.Survey.IC_AY, "CHG2AY3")
+  private val scorecardTuitionCell = PublishedCell.ScorecardCell.of("TUITIONFEE_IN", "test")
+  private val scorecardDebtCell = PublishedCell.ScorecardCell.of("GRAD_DEBT_MDN", "test")
+
+  @Test
+  fun `the default is the pair most of a college's figures are on`() {
+    val summary =
+      assertNotNull(
+        figureProvenanceSummaryOf(
+          listOf(
+            note(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, scorecardDebtCell),
+            note(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, ipedsCell),
+            note(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD, ipedsCell),
+            note(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD, ipedsCell),
+          ),
+        ),
+      )
+    assertEquals(AssuranceTier.MANDATORY_SURVEY, summary.default.assurance.tier)
+    assertEquals(MoneySource.IPEDS_IC_AY, summary.default.source)
+    assertEquals(
+      AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+      summary.default.assurance.statement,
+      "the sentence is derived from the code, so the two can never disagree",
+    )
+    assertEquals(
+      listOf(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD),
+      summary.exceptions.map { it.note.field },
+      "only the field that is NOT on the default is an exception",
+    )
+  }
+
+  @Test
+  fun `a tie for the default is broken by the earliest field in declaration order`() {
+    // Two pairs, one note each. Map iteration must not decide this: the answer
+    // is the pair of the earliest field CostField declares, so the payload is
+    // the same on every run.
+    val summary =
+      assertNotNull(
+        figureProvenanceSummaryOf(
+          listOf(
+            note(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, scorecardTuitionCell),
+            note(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, scorecardDebtCell),
+          ),
+        ),
+      )
+    assertEquals(
+      AssuranceTier.MANDATORY_SURVEY,
+      summary.default.assurance.tier,
+      "the sticker cost is declared first, so its pair wins the tie",
+    )
+    assertEquals(
+      listOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD),
+      summary.exceptions.map { it.note.field },
+    )
+  }
+
+  @Test
+  fun `an exception is kept for a statement, a year gap, or a pair off the default, and for nothing else`() {
+    val summary =
+      assertNotNull(
+        figureProvenanceSummaryOf(
+          listOf(
+            // On the default and silent: nothing of its own to say.
+            note(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, ipedsCell),
+            note(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, ipedsCell),
+            // A status sentence.
+            note(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, ipedsCell, statement = "We have not collected this figure yet."),
+            // A year gap: the year travels as data and must not be dropped.
+            note(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD, ipedsCell, heldAcademicYear = "2021-22"),
+            // The publisher alone differs.
+            note(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, scorecardTuitionCell),
+            // The tier alone differs -- and so does the publisher here.
+            note(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, scorecardDebtCell),
+          ),
+        ),
+      )
+    assertEquals(
+      listOf(
+        CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD,
+        CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
+        CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
+        CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
+      ),
+      summary.exceptions.map { it.note.field }.sortedBy { CostField.entries.indexOf(it) },
+      "the two silent fields on the default are the only ones dropped",
+    )
+    val byField = summary.exceptions.associateBy { it.note.field }
+    // PER KEY: an override is null where that fact is the default's.
+    val statementOnly = assertNotNull(byField[CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD])
+    assertNull(statementOnly.assurance, "a field on the default tier states no tier of its own")
+    assertNull(statementOnly.source, "nor a publisher")
+    val publisherOnly = assertNotNull(byField[CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD])
+    assertNull(publisherOnly.assurance, "the Scorecard relays IPEDS cells: same tier, other publisher")
+    assertEquals(MoneySource.SCORECARD, publisherOnly.source)
+    val both = assertNotNull(byField[CostField.MEDIAN_DEBT_AT_COMPLETION_USD])
+    assertEquals(AssuranceTier.ADMINISTRATIVE_RECORD, assertNotNull(both.assurance).tier)
+    assertEquals(MoneySource.SCORECARD, both.source)
+  }
+
+  @Test
+  fun `a college with no figure provenance at all has no default and no exceptions`() {
+    // The one narrowing (RFC 189 D1): a mandatory default over an empty set
+    // would name a tier and a publisher for no figure. There is nothing to
+    // resolve here, so nothing is left unreachable.
+    assertNull(figureProvenanceSummaryOf(emptyList()))
   }
 }

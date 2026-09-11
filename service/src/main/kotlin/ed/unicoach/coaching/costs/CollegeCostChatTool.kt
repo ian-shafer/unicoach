@@ -142,14 +142,15 @@ class CollegeCostChatTool(
       scope = residency.scope.value,
       answer = residency.answer,
       statement = residency.statement,
-      byCollege = residency.byCollege,
+      namedPerCollege = residency.namedPerCollege,
       objectOfEntry = ::collegeResidencyObject,
     )
 
   /**
    * The shape EVERY residency-answered per-call fact rides in (RFC 151 D-D):
    * the scope code, the family's own answer, the sentence the coach may say, and
-   * one entry per school.
+   * -- only where a school is not fully described by that sentence (RFC 189 D2)
+   * -- one entry per such school.
    *
    * Written ONCE, so a key added here reaches the residency fact and the
    * blended-figure fact together rather than being remembered for one of them.
@@ -158,7 +159,7 @@ class CollegeCostChatTool(
     scope: String,
     answer: ComparedResidency,
     statement: String,
-    byCollege: List<T>,
+    namedPerCollege: List<T>,
     objectOfEntry: (T) -> JsonObject,
   ): JsonObject =
     buildJsonObject {
@@ -172,7 +173,17 @@ class CollegeCostChatTool(
         ComparedResidency.Unanswered, ComparedResidency.Declined -> Unit
       }
       put(STATEMENT_KEY, statement)
-      putJsonArray("by_college") { byCollege.forEach { add(objectOfEntry(it)) } }
+      // CONDITIONAL, the same rule [CHOSEN_BY_COLLEGE_KEY] has carried for the
+      // same shape (RFC 189 D2): the array is written only where a school is not
+      // fully described by the sentence above it. With every school on one
+      // basis, an unconditional array stated the one fact 1 + N times and
+      // invited the coach to narrate a difference there is none of. The DOMAIN
+      // decides which schools those are ([ResidencyBasis.namedPerCollege],
+      // [BlendedFigureBasis.namedPerCollege]), so the renderer never re-derives
+      // the condition -- absent, never empty, like every other list here.
+      if (namedPerCollege.isNotEmpty()) {
+        putJsonArray("by_college") { namedPerCollege.forEach { add(objectOfEntry(it)) } }
+      }
     }
 
   /**
@@ -205,16 +216,17 @@ class CollegeCostChatTool(
    * D-C).
    *
    * The same shape as every other basis fact: a [BASIS_KEY] code, the family's
-   * own answer echoed, the [STATEMENT_KEY] the coach may say, and one entry per
-   * school -- so a reader never has to work out from an absent figure that a
-   * figure was withheld.
+   * own answer echoed, the [STATEMENT_KEY] the coach may say, and -- where the
+   * sentence is not the whole truth about a school -- that school's own entry,
+   * so a reader never has to work out from an absent figure that a figure was
+   * withheld.
    */
   private fun blendedFigureBasisObject(basis: BlendedFigureBasis): JsonObject =
     residencyAnsweredBasisObject(
       scope = basis.scope.value,
       answer = basis.answer,
       statement = basis.statement,
-      byCollege = basis.byCollege,
+      namedPerCollege = basis.namedPerCollege,
       objectOfEntry = ::collegeBlendedFigureObject,
     )
 
@@ -733,19 +745,65 @@ class CollegeCostChatTool(
    * would be reading it wrong.
    *
    * Absent, never empty -- this payload's convention everywhere.
+   *
+   * It writes TWO keys since RFC 189 D1, and they are one fact: the pair most of
+   * this college's figures are on ([FIGURE_PROVENANCE_KEY]) and the fields that
+   * have something of their own to say ([FIGURE_STATUSES_KEY]). One function,
+   * because "an exception can never exist without a default" is the invariant
+   * the compression rests on, and two emitters would be two places for the
+   * default to go missing.
    */
   private fun JsonObjectBuilder.putFigureStatuses(cost: CollegeCost) {
-    if (cost.figureStatuses.isEmpty()) return
-    putJsonArray(FIGURE_STATUSES_KEY) { cost.figureStatuses.forEach { add(figureStatusObject(it)) } }
+    // The default and the exceptions ride in ONE type, and the default field is
+    // non-null (RFC 189 D1), so this is the only branch there is: either both
+    // keys' subject exists or neither does. A payload carrying an exception with
+    // no default is a state the domain cannot build.
+    val provenance = cost.figureProvenance ?: return
+    put(FIGURE_PROVENANCE_KEY, figureProvenanceObject(provenance.default))
+    if (provenance.exceptions.isEmpty()) return
+    putJsonArray(FIGURE_STATUSES_KEY) { provenance.exceptions.forEach { add(figureStatusObject(it)) } }
   }
+
+  /**
+   * The (tier, publisher) pair most of this college's figures are on, said ONCE
+   * (RFC 189 D1) -- the default every [FIGURE_STATUSES_KEY] entry resolves its
+   * unstated provenance keys against.
+   *
+   * ALL THREE KEYS, always, where an entry carries only the ones it differs on:
+   * the default is what the resolution rule falls back to, so a key missing here
+   * would leave a figure with nowhere to resolve from. The tier and its sentence
+   * come off ONE value ([SpokenAssurance]), so this object cannot name a tier
+   * the sentence beside it does not say; and that sentence is
+   * [AssuranceTierCopy]'s own, never re-worded here and never ranked or scored
+   * (RFC 179 D10).
+   */
+  private fun figureProvenanceObject(default: FigureProvenanceDefault): JsonObject =
+    buildJsonObject {
+      put(ASSURANCE_KEY, default.assurance.tier.value)
+      put(ASSURANCE_STATEMENT_KEY, default.assurance.statement)
+      put(FIGURE_SOURCE_KEY, default.source.value)
+    }
 
   /**
    * One field's status: the field, the code, and the DOMAIN's own sentence for
    * it ([FigureStatusCopy]), never re-worded here -- the `income_band` +
    * `income_band_label` convention (RFC 151 D-D) applied to the six statuses.
+   *
+   * An entry exists only for a field with something of its OWN to say (RFC 189
+   * D1), and it repeats a provenance key only where THAT KEY differs from the
+   * default: three keys stated once per college replaced three keys stated once
+   * per field, and the facts are the same ones because each of the two -- the
+   * tier and the publisher -- resolves as "this entry's own value, else the
+   * default's".
+   *
+   * WHICH keys differ is the DOMAIN's answer ([FigureProvenanceException]), not
+   * a comparison redone here: the exception carries the overrides already
+   * narrowed, so this writer cannot disagree with the summary about what the
+   * default is.
    */
-  private fun figureStatusObject(note: FigureStatusNote): JsonObject =
+  private fun figureStatusObject(exception: FigureProvenanceException): JsonObject =
     buildJsonObject {
+      val note = exception.note
       put("field", note.field.wireName)
       put("status", note.status.value)
       // ABSENT rather than empty where the note has no status sentence -- a
@@ -758,13 +816,26 @@ class CollegeCostChatTool(
       // learn which tier a figure is on, and the two keys are read as a PAIR
       // with `status`: an imputed IPEDS cell and a self-reported one are soft in
       // different ways.
-      put(ASSURANCE_KEY, note.assurance.value)
-      put(ASSURANCE_STATEMENT_KEY, note.assuranceStatement)
+      //
+      // PER KEY (RFC 189 D1): an entry carries a provenance key only where it
+      // DIFFERS from [FIGURE_PROVENANCE_KEY], and a key it does not carry IS the
+      // default's. The two facts resolve independently because they vary
+      // independently -- the Scorecard relays IPEDS cells (the same tier, a
+      // different publisher) and also originates federal administrative records
+      // (a different tier, the same publisher).
+      //
+      // The tier's two keys cannot split: they are read off ONE
+      // [SpokenAssurance], whose sentence is derived from its own code, so a
+      // code with no sentence is not a state this writer can be handed.
+      exception.assurance?.let {
+        put(ASSURANCE_KEY, it.tier.value)
+        put(ASSURANCE_STATEMENT_KEY, it.statement)
+      }
       // The publisher whose row won this cell, as a CODE beside the sentence
       // (RFC 177 D4). `imputed_by_publisher` and `suppressed_by_publisher` are
       // acts of a publisher, so a reader that needs to know which one acted must
       // not have to re-parse [STATEMENT_KEY]'s English to find out.
-      put(FIGURE_SOURCE_KEY, note.source.value)
+      exception.source?.let { put(FIGURE_SOURCE_KEY, it.value) }
       // A YEAR GAP: this school DID publish the figure, at a year that is not
       // the one its price is quoted at. Absent on every other note, so its
       // PRESENCE is the fact -- `status` cannot carry it, because a year gap and
@@ -804,7 +875,12 @@ class CollegeCostChatTool(
    */
   private fun JsonObjectBuilder.putBreakdown(breakdown: CostBreakdown): Set<CostField> {
     put(BREAKDOWN_KEY, breakdownObject(breakdown))
-    return breakdown.arrangements.flatMap { it.lines }.mapTo(mutableSetOf()) { it.field }
+    // The COMPONENTS, not `lines`: since RFC 189 D3 this object no longer writes
+    // the tuition figure, it NAMES the top-level key that carries it, and that
+    // key was recorded by [putTuitionTiers] above. Returning the tuition field
+    // from here would have the vintage labels date a figure written by another
+    // step, which is the drift the record-what-you-emit rule exists against.
+    return breakdown.arrangements.flatMap { it.componentLines }.mapTo(mutableSetOf()) { it.field }
   }
 
   /**
@@ -1030,9 +1106,26 @@ class CollegeCostChatTool(
    */
   private fun breakdownObject(breakdown: CostBreakdown): JsonObject =
     buildJsonObject {
+      // The ONE tuition figure every total in this object includes, named rather
+      // than repeated (RFC 189 D3). It used to be written inside all three
+      // arrangement objects AND as the top-level tuition-tier key -- the same
+      // residency-selected figure under the same wire key four times. The figure
+      // stays exactly where [putTuitionTiers] already writes it and the
+      // composition of each total stays derivable: total = this key's amount
+      // plus the components listed beside it.
+      //
+      // MANDATORY whenever any arrangement carries a total: a total is null
+      // unless the tuition line is present ([ArrangementCost.totalPerYearUsd]),
+      // so a total with no tuition field named is a state the domain cannot
+      // build.
+      putTuitionFieldInTotals(breakdown)
       breakdown.arrangements.forEach { arrangement ->
         putJsonObject(arrangement.arrangement.value) {
-          arrangement.lines.forEach { put(it.field.wireName, it.amountUsd) }
+          // The arrangement's OWN parts. The tuition line is excluded by reading
+          // [ArrangementCost.componentLines] rather than by filtering
+          // `lines` against a field list: the type is what decides which line is
+          // the tuition line, and a filter here would be a second answer.
+          arrangement.componentLines.forEach { put(it.field.wireName, it.amountUsd) }
           // Absent whenever any part is missing (RFC 149 D-C): a partial sum is
           // not a total, and neither is a sum that guessed at the student's
           // residency.
@@ -1041,6 +1134,21 @@ class CollegeCostChatTool(
         }
       }
     }
+
+  /**
+   * The top-level tuition key whose amount every total in this breakdown
+   * includes (RFC 189 D3), or nothing when no arrangement here has a tuition
+   * line at all -- and then no arrangement has a total either.
+   *
+   * ONE key for the whole object, not one per arrangement: [CostBreakdown] is
+   * built from a single tuition line ([tuitionLineOf]), the figure the family's
+   * own residency answer selected, so three copies of the name could only ever
+   * have said the same thing three times.
+   */
+  private fun JsonObjectBuilder.putTuitionFieldInTotals(breakdown: CostBreakdown) {
+    val field = breakdown.arrangements.firstNotNullOfOrNull { it.tuitionLine }?.field ?: return
+    put(TUITION_FIELD_IN_TOTALS_KEY, field.wireName)
+  }
 
   /**
    * WHICH lines in this arrangement carry an amount of OURS rather than the
@@ -1242,6 +1350,23 @@ class CollegeCostChatTool(
 
     /** The wire key carrying the per-arrangement price split (RFC 149). */
     const val BREAKDOWN_KEY = "cost_by_living_arrangement"
+
+    /**
+     * The top-level tuition key whose amount every total inside
+     * [BREAKDOWN_KEY] includes (RFC 189 D3).
+     *
+     * A NAME, not a figure: the one residency-selected tuition amount used to be
+     * written inside each of the three arrangement objects as well as at the
+     * top level, so the payload stated it four times. The arrangement objects
+     * keep their own components, their [TOTAL_KEY] and their
+     * [ASSUMED_BY_UNICOACH_KEY], and each total stays derivable as this key's
+     * amount plus the components listed beside it.
+     *
+     * Present whenever any arrangement carries a total, because a total is null
+     * unless the tuition line is present -- so a total with no tuition field
+     * named is a state the domain cannot build.
+     */
+    const val TUITION_FIELD_IN_TOTALS_KEY = "tuition_field_in_totals"
 
     /**
      * The way of living this school's answer leads with (RFC 152) -- absent
@@ -1566,6 +1691,27 @@ class CollegeCostChatTool(
     const val FIGURE_STATUSES_KEY = "figure_statuses"
 
     /**
+     * The (tier, publisher) pair most of this college's figures are on, said
+     * ONCE per college (RFC 189 D1) -- the default a [FIGURE_STATUSES_KEY] entry
+     * with no pair of its own resolves to.
+     *
+     * It carries all three keys ([ASSURANCE_KEY], [ASSURANCE_STATEMENT_KEY],
+     * [FIGURE_SOURCE_KEY]) ALWAYS, where an entry carries only the ones it
+     * differs on, so a reader applies ONE rule per key: a figure's tier is its
+     * own entry's [ASSURANCE_KEY] if the entry has one and this object's
+     * otherwise, and its publisher is its own entry's [FIGURE_SOURCE_KEY] if the
+     * entry has one and this object's otherwise.
+     *
+     * PRESENT whenever this college holds any figure provenance at all, and
+     * absent only where it holds none -- the case with no figure to resolve. A
+     * default over an empty set would name a tier and a publisher for no figure,
+     * and an invented value is worse than an absence. There is no payload with
+     * an exception and no default: the two ride in one type
+     * ([FigureProvenanceSummary]) whose default field is non-null.
+     */
+    const val FIGURE_PROVENANCE_KEY = "figure_provenance"
+
+    /**
      * WHICH tuition tiers this school publishes ([ResidencyTierBasis]) -- the
      * code and the sentence, on every college.
      *
@@ -1716,7 +1862,25 @@ class CollegeCostChatTool(
         "either the college does not report the field, or it is a figure that does not describe this family and " +
         "was withheld, which a $WITHHELD_FIGURES_KEY entry names and explains. Never say a school reported " +
         "nothing when the entry is ours. " +
-        "$FIGURE_STATUSES_KEY says WHY a field has no number, one entry per field, each carrying a status and " +
+        "$FIGURE_PROVENANCE_KEY says what KIND of number this college's figures are and who published them, " +
+        "once for the whole college: its $ASSURANCE_KEY, the $ASSURANCE_STATEMENT_KEY to say that in, and the " +
+        "$FIGURE_SOURCE_KEY that published them. It is the DEFAULT for every figure this college's own " +
+        "publishers reported. " +
+        "$FIGURE_STATUSES_KEY then carries an entry only for a field that has something of its OWN to say - a " +
+        "status sentence, a year we hold the figure for, or a different kind of number or publisher - so a " +
+        "field that CARRIES A NUMBER and has no entry there is shown and plainly reported on the default " +
+        "above. Two kinds of field are NOT on that default and you must never put them there. A line named " +
+        "by $ASSUMED_BY_UNICOACH_KEY is OURS, not a figure any publisher reported: it is on no publisher's " +
+        "tier and has no $FIGURE_SOURCE_KEY at all, so say it as our own assumption and never attribute it to " +
+        "the publisher $FIGURE_PROVENANCE_KEY names. A field listed in $DATA_AVAILABILITY_KEY has no number " +
+        "here to resolve at all - say there is no figure, and never read a tier or a publisher onto it. " +
+        "An entry carries a " +
+        "provenance key only where it DIFFERS from the default, so resolve each of the two facts on its own, " +
+        "the same way every time: a figure's $ASSURANCE_KEY is its own entry's when the entry has one and " +
+        "$FIGURE_PROVENANCE_KEY's otherwise, and its $FIGURE_SOURCE_KEY is its own entry's when the entry has " +
+        "one and $FIGURE_PROVENANCE_KEY's otherwise. $ASSURANCE_KEY and $ASSURANCE_STATEMENT_KEY always " +
+        "travel together - never one without the other. " +
+        "An entry says WHY a field has no number, carrying a status and " +
         "the $STATEMENT_KEY to say it in - say that sentence rather than writing your own. " +
         "\"${FigureStatus.NOT_REPORTED_BY_INSTITUTION.value}\" and \"${FigureStatus.NOT_APPLICABLE.value}\" are " +
         "the school's own answer - it reported nothing, or the figure does not apply there and the source says " +
@@ -1733,11 +1897,12 @@ class CollegeCostChatTool(
         "including when it is a zero. A \"${FigureStatus.REPORTED.value}\" entry that is shown carries no " +
         "$STATEMENT_KEY at all; a plainly reported figure is shown plainly and you say nothing about its " +
         "status. " +
-        "Every entry also carries $ASSURANCE_KEY - what KIND of number the figure is, which is a different " +
+        "$ASSURANCE_KEY is what KIND of number a figure is, which is a different " +
         "fact from who published it and from whether it is blank: a federal administrative record, a survey " +
         "the college was required to file and that is edit-checked, or a figure the college published about " +
-        "itself that nobody checks. $ASSURANCE_STATEMENT_KEY is the sentence to say that in - say it beside " +
-        "the figure, after the $STATEMENT_KEY sentence where there is one, and never re-word it, rank the " +
+        "itself that nobody checks. $ASSURANCE_STATEMENT_KEY is the sentence to say that in - say the tier " +
+        "ONCE for the figures on the default, and name a figure's own tier where its entry carries one, after " +
+        "the $STATEMENT_KEY sentence where there is one. Never re-word that sentence, rank the " +
         "three or turn them into a score. " +
         "Every college carries $APPLIES_BASIS_KEY, which says which of three " +
         "states it is in: ${BlendedFigureApplicability.APPLIES.value} means the published price and the price " +
@@ -1825,9 +1990,13 @@ class CollegeCostChatTool(
         "actually influence, keyed by where the student would live: " +
         "${LivingArrangement.ON_CAMPUS.value}, ${LivingArrangement.OFF_CAMPUS.value}, " +
         "${LivingArrangement.WITH_FAMILY.value}. Each " +
-        "arrangement carries the tuition and fees line that applies to this student and the school's published " +
-        "allowances for that way of living, and $TOTAL_KEY only when every part of it is reported - when there is " +
+        "arrangement carries the school's published allowances for that way of living, and $TOTAL_KEY only when " +
+        "every part of it is reported - when there is " +
         "no $TOTAL_KEY, say the parts and say a part is missing, never add up what is there and call it the total. " +
+        "The tuition and fees figure that applies to this student is NOT repeated inside each arrangement: " +
+        "$BREAKDOWN_KEY carries $TUITION_FIELD_IN_TOTALS_KEY, which NAMES the top-level key of this same " +
+        "college whose amount every $TOTAL_KEY here includes. Read the amount from that named key, and every " +
+        "total is that amount plus the allowances listed beside it. " +
         "${LivingArrangement.WITH_FAMILY.value} carries a " +
         "${CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName} line of 0, and that zero is OURS: " +
         "$AT_HOME_ASSUMPTION_STATEMENT " +
@@ -1894,9 +2063,9 @@ class CollegeCostChatTool(
         "${CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName} describe cohorts rather than one price year - " +
         "so say those numbers without a year rather than borrowing one from another figure. " +
         "When the result carries two or more colleges it also carries $COMPARISON_BASIS_KEY, the assumptions a " +
-        "side-by-side holds constant: who the figures describe, the residency (stated per school under " +
-        "by_college), which residency the blended figures are on ($BLENDED_FIGURE_BASIS_KEY, also stated per " +
-        "school, with $APPLIES_KEY saying whether those two figures are this family's there), the way of living " +
+        "side-by-side holds constant: who the figures describe, the residency, " +
+        "which residency the blended figures are on ($BLENDED_FIGURE_BASIS_KEY, " +
+        "with $APPLIES_KEY saying whether those two figures are this family's there), the way of living " +
         "every school here is priced for, the academic years - each one naming under $DATED_COLLEGES_KEY the " +
         "schools it is true of, by college_id and name, because two schools in one comparison may be served at " +
         "two different years, so match on college_id and never read a year onto a school it does not name - " +
@@ -1904,6 +2073,9 @@ class CollegeCostChatTool(
         "in a net price. Each one carries a $BASIS_KEY code and the $STATEMENT_KEY you may say: say those " +
         "sentences as ordinary copy above the table, never as a footnote under it, and never build a column " +
         "from two different bases - one residency and one way of living per column, or say it as two tables. " +
+        "A by_college array appears inside one of those facts only where the schools differ on it or a school " +
+        "has something of its own to say; where it is absent the $STATEMENT_KEY above it is true of every " +
+        "school in the call, so say it once and never narrate a difference between them. " +
         "Put the tuition and fees line above the estimated living costs and say which block is which. Rows are " +
         "schools; keep the table to three columns and short cells, or say it as a list. When a school does not " +
         "report a part, leave that cell blank and label it as not reported: never a zero, never a neighbour's " +

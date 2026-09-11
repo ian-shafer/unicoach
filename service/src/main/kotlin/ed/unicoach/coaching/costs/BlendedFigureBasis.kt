@@ -417,6 +417,52 @@ data class BlendedFigureBasis(
       }
 
   /**
+   * The schools worth naming one by one, or an EMPTY list when the call-level
+   * [statement] is the whole truth about every school here (RFC 189 D2) -- the
+   * residency fact's twin, in the shape
+   * [ArrangementBasis.planNamedPerCollege] established.
+   *
+   * A school is worth naming when the call-level sentence points the reader at
+   * that school's own line rather than answering for it:
+   *
+   * - [BlendedFigureScope.WITHHELD_AT_SOME_SCHOOLS] and
+   *   [BlendedFigureScope.BASIS_UNKNOWN_AT_SOME_SCHOOLS] both say "at SOME
+   *   schools", so the reader cannot learn which ones without the array;
+   * - the entries are not uniform in their `(code, applies)` pair.
+   *
+   * The uniformity clause is the safety net for exactly the reason the residency
+   * twin's is: nothing a per-school entry carried may become unreachable, and
+   * that must be true of the data rather than of the scope table above.
+   */
+  val namedPerCollege: List<CollegeBlendedFigureBasis>
+    get() =
+      // EXHAUSTIVE over [scope] with no `else`, exactly as [statement] below is
+      // and for the same reason: a SIXTH scope whose sentence also points at a
+      // school's own line must fail to compile here rather than silently drop
+      // `by_college` on every call whose entries happen to be uniform. The
+      // uniformity clause is a net for DATA drift, never for a new scope.
+      when (scope) {
+        BlendedFigureScope.WITHHELD_AT_SOME_SCHOOLS,
+        BlendedFigureScope.BASIS_UNKNOWN_AT_SOME_SCHOOLS,
+        -> byCollege
+
+        BlendedFigureScope.NO_RESIDENCY_BASIS_HERE,
+        BlendedFigureScope.IN_STATE_EVERYWHERE,
+        BlendedFigureScope.RESIDENCY_NOT_ON_FILE,
+        -> if (isUniform) emptyList() else byCollege
+      }
+
+  /**
+   * True when every school here carries the same `(code, applies)` pair, so the
+   * call-level [statement] is the whole truth about each of them.
+   *
+   * Named rather than inlined into one `when` arm: the arm above it must NOT ask
+   * this question, and a predicate written inside the arm reads as though the
+   * scope decided it.
+   */
+  private val isUniform: Boolean get() = byCollege.map { it.code to it.applies }.distinct().size == 1
+
+  /**
    * Exhaustive on purpose: a scope added here must fail to compile until it says
    * itself in words, rather than shipping a code the coach has no sentence for.
    */
