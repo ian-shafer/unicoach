@@ -58,6 +58,12 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.sql.Types
+import java.time.Instant
+import java.time.InstantSource
+import java.time.Month
+import java.time.format.TextStyle
+import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
@@ -139,8 +145,59 @@ class CoachingServiceTest {
 
   private val exhaustedBudget = exhaustedBudgetService(database)
 
-  private fun service(provider: ChatProvider = LogOnlyChatProvider()): CoachingService =
-    CoachingService(database, LlmCallLog(provider, database), config, generousBudget)
+  private fun service(
+    provider: ChatProvider = LogOnlyChatProvider(),
+    clock: InstantSource = InstantSource.system(),
+  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), config, generousBudget, clock = clock)
+
+  /**
+   * The same service with today pinned (RFC 186). The pinned value is an
+   * INSTANT and carries no zone at all: the service's own zone is what turns it
+   * into a date, so a test that pins 02:30Z and expects the previous day is the
+   * assertion that the zone is applied.
+   */
+  private fun serviceAt(
+    instant: Instant,
+    provider: ChatProvider = LogOnlyChatProvider(),
+  ): CoachingService = service(provider, InstantSource.fixed(instant))
+
+  /**
+   * The date block (RFC 186) that every system text now carries, sliced off the
+   * pinned body so an assertion about the block cannot accidentally match a
+   * sentence of the prompt itself.
+   */
+  private fun systemTextBelowBody(system: String?): String {
+    val text = assertNotNull(system, "the provider must have been given a system text")
+    assertTrue(
+      text.startsWith(pinnedCoachBody),
+      "the pinned prompt body must still open the system text, in full and verbatim",
+    )
+    return text.removePrefix(pinnedCoachBody)
+  }
+
+  /**
+   * What `assertEquals(pinnedCoachBody, system)` used to say. RFC 186 replaced
+   * the verbatim-body property with this one: the body is still there in full,
+   * and the ONLY thing below it is the date block -- no commitments, no fit
+   * suggestion, no money profile.
+   */
+  private fun assertBodyThenDateBlockOnly(system: String?) {
+    // The WHOLE remainder, not a probe for the blocks that happen to exist
+    // today: a fourth block added to composeSystem would otherwise ride into
+    // every one of these tests while their names still said nothing else was
+    // there.
+    val below = systemTextBelowBody(system).trim().lines()
+    assertEquals(
+      2,
+      below.size,
+      "below the body there must be the date block and NOTHING else, but this was composed in: $below",
+    )
+    assertTrue(below[0].startsWith("Today's date is "), "the date block rides every system text (RFC 186): [${below[0]}]")
+    assertTrue(
+      below[1].startsWith("The student expects to finish high school "),
+      "the graduation date rides with it: [${below[1]}]",
+    )
+  }
 
   /** The same service as [service], but with every student's allowance already spent. */
   private fun exhaustedService(provider: ChatProvider = LogOnlyChatProvider()): CoachingService =
@@ -247,17 +304,35 @@ class CoachingServiceTest {
 
   private fun commitmentConvo(id: CommitmentId): ConvoId? = CommitmentsDao.findById(sqlSession, id).getOrThrow().disclosedInConvoId
 
-  private fun createStudent(): StudentId {
+  private fun createStudent(
+    graduationYear: Int = 2028,
+    graduationMonth: Int? = null,
+    graduationDay: Int? = null,
+  ): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
       stmt.execute(
         "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'svc-$userId@test.com', 'Svc User', 'ahash')",
       )
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
     }
+    // The graduation date is parameterised (RFC 186) so a test can place the
+    // student in a grade; the default is the year-only 2028 every existing case
+    // was written against, which is also the shape signup records most often.
+    // Bound rather than interpolated: a nullable month and day would otherwise
+    // need this fixture to spell SQL's NULL itself.
+    connection
+      .prepareStatement(
+        "INSERT INTO students (id, user_id, expected_high_school_graduation_year, " +
+          "expected_high_school_graduation_month, expected_high_school_graduation_day) VALUES (?, ?, ?, ?, ?)",
+      ).use { stmt ->
+        stmt.setObject(1, studentId)
+        stmt.setObject(2, userId)
+        stmt.setInt(3, graduationYear)
+        stmt.setObject(4, graduationMonth, Types.SMALLINT)
+        stmt.setObject(5, graduationDay, Types.SMALLINT)
+        stmt.executeUpdate()
+      }
     return StudentId(studentId)
   }
 
@@ -745,7 +820,7 @@ class CoachingServiceTest {
       assertEquals(ChatRole.ASSISTANT, req.messages[1].role)
       assertEquals(ChatRole.USER, req.messages[2].role)
       assertEquals("second", messageText(req.messages[2]))
-      assertEquals(pinnedCoachBody, req.system)
+      assertBodyThenDateBlockOnly(req.system)
       assertEquals(config.maxTokens, req.maxTokens)
     }
 
@@ -1175,7 +1250,7 @@ class CoachingServiceTest {
       drain(started.reply)
 
       // Internal commitment is neither in the prompt nor marked fulfilled.
-      assertEquals(pinnedCoachBody, captured!!.system)
+      assertBodyThenDateBlockOnly(captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(internalId))
     }
 
@@ -1195,7 +1270,7 @@ class CoachingServiceTest {
       val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
       drain(post.reply)
 
-      assertEquals(pinnedCoachBody, captured!!.system)
+      assertBodyThenDateBlockOnly(captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
     }
 
@@ -1211,7 +1286,7 @@ class CoachingServiceTest {
       val started = noSurfaceService(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
       drain(started.reply)
 
-      assertEquals(pinnedCoachBody, captured!!.system)
+      assertBodyThenDateBlockOnly(captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
     }
 
@@ -1298,7 +1373,7 @@ class CoachingServiceTest {
       val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
       drain(post.reply)
 
-      assertEquals(pinnedCoachBody, captured!!.system)
+      assertBodyThenDateBlockOnly(captured!!.system)
       assertEquals(FitSuggestionStatus.OPEN, fitSuggestionStatus(suggestionId))
     }
 
@@ -2100,7 +2175,7 @@ class CoachingServiceTest {
     }
 
   @Test
-  fun `a student without a money profile keeps the prompt body verbatim`() =
+  fun `a student without a money profile gets the prompt body and the date block, and nothing else`() =
     runBlocking {
       val student = createStudent()
       var captured: ChatRequest? = null
@@ -2108,8 +2183,150 @@ class CoachingServiceTest {
         ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
       val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
       assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
-      assertEquals(pinnedCoachBody, captured!!.system)
+      assertBodyThenDateBlockOnly(captured!!.system)
     }
+
+  // ===========================================================================
+  // The date block (RFC 186): today, the graduation date, the year of school
+  // ===========================================================================
+
+  /** An autumn instant well inside one school year, so no test turns on the 1 July rollover. */
+  private val autumnInstant = Instant.parse("2026-09-11T15:00:00Z")
+
+  /**
+   * The date block [student] is given when a conversation is opened at
+   * [instant]: start a convo, drain the reply, slice the body off the captured
+   * system text. Every test below is then its student and its assertions, with
+   * no copy of the capture-drive-slice preamble.
+   */
+  private fun dateBlockFor(
+    student: StudentId,
+    instant: Instant = autumnInstant,
+    opener: String = "hello",
+  ): String =
+    runBlocking {
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = serviceAt(instant, provider).startConvo(student, opener, null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+      systemTextBelowBody(captured?.system)
+    }
+
+  /**
+   * The acceptance criterion of slice `test/01`, and the defect that made it
+   * one: `composeSystem` used to return the body verbatim when there was no
+   * money profile, no commitment and no fit suggestion -- which is every
+   * brand-new student, i.e. exactly the student asking how long she has got.
+   */
+  @Test
+  fun `a brand-new student with nothing on file is still told today and their year of school`() {
+    val below = dateBlockFor(createStudent(graduationYear = 2028), opener = "how long have I got?")
+
+    assertTrue(below.contains("Today's date is 2026-09-11"), "today must be stated: [$below]")
+    assertTrue(below.contains("The student expects to finish high school in 2028"), "the graduation date must be stated")
+    assertTrue(below.contains("their year of school today is grade 11 (junior year)"), "the year of school must be derived")
+  }
+
+  @Test
+  fun `every postTurn carries the date block too, not just the opener`() =
+    runBlocking {
+      val student = createStudent(graduationYear = 2028)
+      val started =
+        serviceAt(autumnInstant)
+          .startConvo(student, "first", null)
+          .getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("r"), terminal = completedTerminal("r"), onRequest = { captured = it })
+      val post =
+        serviceAt(Instant.parse("2026-09-12T15:00:00Z"), provider)
+          .postTurn(student, started.convo.id, "second")
+          .getOrThrow() as PostTurnResult.Started
+      drain(post.reply)
+
+      // The second day, not the day the conversation opened on.
+      val below = systemTextBelowBody(captured?.system)
+      assertTrue(below.contains("Today's date is 2026-09-12"), "postTurn must state the CURRENT date: [$below]")
+      assertTrue(below.contains("grade 11 (junior year)"), "and the year of school with it")
+    }
+
+  @Test
+  fun `today is an Eastern date, not a UTC one`() {
+    // 02:30 UTC on the 11th is 22:30 on the 10th in New York. A coach reading
+    // UTC here would tell a family on the East Coast that tonight's deadline
+    // passed yesterday (brief 0010 D15). The injected source carries no zone at
+    // all, so the date can only come from the service's own.
+    val below = dateBlockFor(createStudent(graduationYear = 2028), Instant.parse("2026-09-11T02:30:00Z"))
+
+    assertTrue(below.contains("Today's date is 2026-09-10"), "the date must be Eastern: [$below]")
+    assertFalse(below.contains("Today's date is 2026-09-11"), "and must not be the UTC date")
+    assertTrue(below.contains("Eastern Time"), "the coach is told which timezone the date is in")
+  }
+
+  @Test
+  fun `a year-only graduation date yields a year of school and names no month`() {
+    val below = dateBlockFor(createStudent(graduationYear = 2029))
+
+    assertTrue(
+      below.contains("in 2029 (only the year is recorded"),
+      "the block must say the precision it has: [$below]",
+    )
+    assertTrue(below.contains("grade 10 (sophomore year)"), "a month-less date still yields a year of school")
+    for (month in Month.entries) {
+      val name = month.getDisplayName(TextStyle.FULL, Locale.US)
+      assertFalse(below.contains(name), "no month may be invented, and [$name] appeared in: [$below]")
+    }
+  }
+
+  @Test
+  fun `a full graduation date is spoken in words, and a month-only date says the day is missing`() {
+    val full = dateBlockFor(createStudent(graduationYear = 2028, graduationMonth = 6, graduationDay = 15))
+    assertTrue(full.contains("finish high school on 15 June 2028"), "a full date is spoken in words: [$full]")
+
+    val monthOnly = dateBlockFor(createStudent(graduationYear = 2028, graduationMonth = 6))
+    assertTrue(
+      monthOnly.contains("finish high school in June 2028 (the day is not recorded)"),
+      "a month-only date says so rather than inventing a day: [$monthOnly]",
+    )
+  }
+
+  /**
+   * Brief 0010 D3: where the record says the student is not a high-school
+   * applicant, the coach must check rather than answer confidently. What is
+   * executed here is that the SIGNAL reaches the model -- no test in this repo
+   * drives a real model, so obedience is the prompt's job, not this test's.
+   */
+  @Test
+  fun `a graduation date already past says so, rather than claiming a grade`() {
+    val below = dateBlockFor(createStudent(graduationYear = 2023), opener = "when should I take the SAT?")
+
+    assertTrue(
+      below.contains("that date has passed, so on our record they are no longer a high-school student"),
+      "a past graduation date is said plainly: [$below]",
+    )
+    assertFalse(
+      below.contains("their year of school today is"),
+      "no year of school is claimed for a student past graduation: [$below]",
+    )
+  }
+
+  @Test
+  fun `the pinned prompt carries the scope refusal and refuses the SAT as the default test`() {
+    // D3 and D13 live in prompts/coach-system-prompt.md, and bin/prompt-seed
+    // cuts the catalog row from it at land: asserting against the SEEDED body
+    // is what makes dropping either sentence fail the build.
+    val body = pinnedCoachBody
+    assertTrue(body.contains("GRE, GMAT or LSAT"), "the scope refusal (D3) must be in the pinned prompt")
+    assertTrue(
+      body.contains("unicoach coaches students applying to US undergraduate study from high school"),
+      "and it must say what unicoach DOES coach",
+    )
+    assertTrue(body.contains("Never treat the SAT as the default test"), "D13: the SAT is never the default noun")
+    assertTrue(body.contains("never in hours left"), "D15: the coach speaks dates and whole days")
+  }
 
   /** A StudentScopedChatTool spy: records the studentId each dispatch carried. */
   private class StudentScopedSpyTool(

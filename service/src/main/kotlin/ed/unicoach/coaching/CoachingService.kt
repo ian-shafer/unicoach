@@ -17,6 +17,7 @@ import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.MoneyProfilesDao
+import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.ArchiveScope
@@ -34,6 +35,7 @@ import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
+import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
@@ -48,6 +50,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+import java.time.InstantSource
+import java.time.LocalDate
+import java.time.Month
+import java.time.ZoneId
+import java.time.format.TextStyle
+import java.util.Locale
 
 /**
  * Coaching domain layer, sibling to AuthService/StudentService: constructor DI,
@@ -80,10 +88,43 @@ class CoachingService(
   private val config: CoachingConfig,
   private val budgetService: BudgetService,
   private val tools: ToolRegistry = ToolRegistry(emptyList()),
+  // The instant "today" is read at (RFC 186). Defaulted like the sibling clock
+  // sites (SynthesisService, FederalAidPolicyService): production passes none
+  // and a test passes a fixed one.
+  //
+  // It is an InstantSource and not a Clock, which those two are, and the
+  // difference is the point: this service takes the INSTANT and supplies the
+  // ZONE itself ([COACH_ZONE]), where they honour their clock's zone. A `Clock`
+  // parameter would advertise a zone it then discarded, and the first draft of
+  // this code did exactly that -- `LocalDate.now(clock)` read the injected
+  // clock's zone, so a test pinning a UTC clock proved the opposite of what it
+  // claimed. A type that carries no zone cannot be read that way.
+  private val clock: InstantSource = InstantSource.system(),
 ) {
   private val logger = LoggerFactory.getLogger(CoachingService::class.java)
 
   companion object {
+    /**
+     * The timezone every date the coach is told is expressed in: the one
+     * College Board and ACT publish and enforce their deadlines in (RFC 186,
+     * brief 0010 D15). Per-student inference from the residency state was
+     * rejected -- it is wrong for the split-timezone states and buys nothing
+     * at date granularity, because the coach speaks dates and never hours.
+     */
+    private val COACH_ZONE: ZoneId = ZoneId.of("America/New_York")
+
+    /**
+     * [COACH_ZONE] in the words the coach says it, DERIVED rather than typed:
+     * "Eastern Time". A literal here would go on claiming Eastern after someone
+     * moved the constant.
+     *
+     * The same words are also written into
+     * `prompts/coach-system-prompt.md`, which no constant can reach: that copy
+     * says the coach talks in dates rather than hours and names the publishers'
+     * timezone, and it has to be edited by hand if this zone ever moves.
+     */
+    private val COACH_ZONE_LABEL: String = COACH_ZONE.getDisplayName(TextStyle.FULL, Locale.US)
+
     const val MESSAGE_MAX_LENGTH = 100_000
     const val NAME_DERIVATION_MAX = 80
     private const val MESSAGE_FIELD = "message"
@@ -270,11 +311,12 @@ class CoachingService(
           val pending = openExplicitCommitments(session, studentId)
           val pendingFits = openFitSuggestions(session, studentId)
           val moneyProfile = activeMoneyProfile(session, studentId)
+          val graduation = graduationDate(session, studentId)
           PreFlight.Ready(
             Prepared(
               convo,
               prompt,
-              composeSystem(prompt, pending, pendingFits, moneyProfile),
+              composeSystem(prompt, graduation, pending, pendingFits, moneyProfile),
               messages,
               pending.map { it.id },
               pendingFits.map { it.id },
@@ -335,8 +377,19 @@ class CoachingService(
           // every turn: what may be used and what must not be re-asked applies
           // mid-conversation too.
           val moneyProfile = activeMoneyProfile(session, studentId)
+          // The date block rides every turn, not only the opener (RFC 186): a
+          // conversation that ran past midnight, or one resumed a week later,
+          // must not be answered against the date it opened on.
+          val graduation = graduationDate(session, studentId)
           PreFlight.Ready(
-            Prepared(owned, prompt, composeSystem(prompt, emptyList(), emptyList(), moneyProfile), messages, emptyList(), emptyList()),
+            Prepared(
+              owned,
+              prompt,
+              composeSystem(prompt, graduation, emptyList(), emptyList(), moneyProfile),
+              messages,
+              emptyList(),
+              emptyList(),
+            ),
           )
         }
       when (preFlight) {
@@ -836,22 +889,66 @@ class CoachingService(
     }
 
   /**
-   * Composes the outgoing system text: the prompt body verbatim when nothing is
-   * pending (identical to today), else the body plus a rendered reflection block
-   * so the coach raises the commitments (RFC 93) and fit-lens suggestions (RFC 98)
-   * naturally in its first reply, plus the money-profile block (RFC 134) once a
-   * profile row exists.
+   * The student's expected high-school graduation date, for the date block
+   * (RFC 186).
+   *
+   * Unlike [activeMoneyProfile] this read is NOT absence-tolerant, and unlike
+   * [openExplicitCommitments] it does not hand the DAO's own failure straight
+   * up: `convos.student_id` is a foreign key, so the turn reached here with an
+   * authenticated student whose row cannot be missing. If it is, the bare
+   * `NotFoundException("Record not found")` would be answered to the caller as
+   * a 404 on the CONVO and logged at debug -- a corrupt database reported as an
+   * ordinary miss. Naming the row makes it the 500 it is, with the student in
+   * the message and the DAO's exception as the cause.
+   */
+  private fun graduationDate(
+    session: ed.unicoach.db.dao.SqlSession,
+    studentId: StudentId,
+  ): PartialDate =
+    StudentsDao
+      // ALL, not the default ACTIVE: the foreign key guarantees the ROW, not
+      // that `deleted_at` is still null, and a student soft-deleted between the
+      // route resolving them and this pre-flight is the boundary's refusal to
+      // make, not a corrupt-database fault. The two sibling student reads
+      // (SynthesisService, FitLensService) read the same way.
+      .findById(session, studentId, ed.unicoach.db.models.SoftDeleteScope.ALL)
+      .getOrElse { cause ->
+        if (cause is ed.unicoach.db.dao.NotFoundException) {
+          throw IllegalStateException(
+            "no students row for student [${studentId.value}] while composing the coach date block, " +
+              "though convos.student_id foreign-keys to it",
+            cause,
+          )
+        }
+        throw cause
+      }.expectedHighSchoolGraduationDate
+
+  /**
+   * Composes the outgoing system text: the prompt body, then the date block
+   * (RFC 186), then a rendered reflection block when the coach has commitments
+   * (RFC 93) or fit-lens suggestions (RFC 98) to raise in its first reply, then
+   * the money-profile block (RFC 134) once a profile row exists.
+   *
+   * The date block is UNCONDITIONAL, and the early return that used to hand
+   * back [SystemPrompt.body] verbatim when nothing was pending is gone with it.
+   * That return is the reason this had to be restructured rather than appended
+   * to: the student with no profile, no commitment and no fit suggestion is
+   * every brand-new student, i.e. precisely the one asking how long she has
+   * got. A block that renders for everyone else and not for her is worse than
+   * no block.
    */
   private fun composeSystem(
     prompt: SystemPrompt,
+    graduation: PartialDate,
     pending: List<Commitment>,
     pendingFits: List<FitSuggestionForOpener>,
     moneyProfile: MoneyProfile? = null,
   ): String {
-    if (pending.isEmpty() && pendingFits.isEmpty() && moneyProfile == null) return prompt.body
     val block =
       buildString {
         appendLine(prompt.body)
+        appendLine()
+        appendLine(renderDateBlock(today(), graduation))
         if (pending.isNotEmpty()) {
           appendLine()
           appendLine(
@@ -903,6 +1000,66 @@ class CoachingService(
       }
     return block.trimEnd()
   }
+
+  /**
+   * The date block every system text carries (RFC 186): today, the student's
+   * expected high-school graduation date at the precision it was recorded, and
+   * the year of school those two work out to.
+   *
+   * Two lines with no trailing terminator, like every other block here -- the
+   * assembler owns the blank line that separates them. Today is written ISO, so
+   * there is one unambiguous form for the model to repeat; the graduation date
+   * is written in words, because the coach says that one aloud.
+   */
+  private fun renderDateBlock(
+    today: LocalDate,
+    graduation: PartialDate,
+  ): String =
+    "Today's date is $today ($COACH_ZONE_LABEL — the timezone College Board and ACT publish and enforce their deadlines in).\n" +
+      "The student expects to finish high school ${renderGraduationPhrase(graduation)}; ${HighSchoolYear.of(today, graduation).clause}"
+
+  /**
+   * The stored graduation date in words, at its STORED precision, saying so
+   * when it is short (RFC 186): a month we never recorded is a month the coach
+   * must never state, and the surest way to stop it inventing one is to tell it
+   * the month is not there.
+   *
+   * Day before month ("on 15 June 2028") is the wording RFC 186 took to its
+   * approval gate, and it is unambiguous in a way the US order is not: the
+   * model re-says this date in its own words to the student anyway, and a
+   * "06/15" it could read either way is the one form worth avoiding.
+   */
+  private fun renderGraduationPhrase(graduation: PartialDate): String =
+    // On the SEALED type, not on its nullable month/day projections: the
+    // precision cases and the type's variants are the same three cases, so the
+    // compiler is what refuses a fourth precision that silently rendered as
+    // "only the year is recorded".
+    when (graduation) {
+      is PartialDate.FullDate -> {
+        "on ${graduation.day} ${monthName(graduation.month)} ${graduation.year.value}"
+      }
+
+      is PartialDate.YearAndMonth -> {
+        "in ${monthName(graduation.monthOf)} ${graduation.year.value} (the day is not recorded)"
+      }
+
+      is PartialDate.YearOnly -> {
+        "in ${graduation.year.value} (only the year is recorded — no month, no day)"
+      }
+    }
+
+  /**
+   * Today, as a date (RFC 186, brief 0010 D15). The ONE home for the rule that
+   * the zone is the SERVICE's and never the injected clock's:
+   * `LocalDate.now(clock)` would let a caller decide what day it is, and
+   * UTC-today is not a US family's today -- between 20:00 and midnight Eastern,
+   * UTC has already turned over, and a coach reading it would tell an East
+   * Coast student that tonight's deadline passed yesterday.
+   */
+  private fun today(): LocalDate = LocalDate.ofInstant(clock.instant(), COACH_ZONE)
+
+  /** "June", not "JUNE" and not "6": the coach reads this line aloud. */
+  private fun monthName(month: Month): String = month.getDisplayName(TextStyle.FULL, Locale.US)
 
   /**
    * One money-profile field line: `answered (value)` | `declined` |
