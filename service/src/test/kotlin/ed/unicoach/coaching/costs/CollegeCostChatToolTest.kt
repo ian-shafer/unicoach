@@ -1317,20 +1317,23 @@ class CollegeCostChatToolTest {
         .jsonPrimitive.content
         .toDouble(),
     )
+    // The figure sentences carry the loan type, the cohort and the figure, and
+    // not the claimant: he is named once, in the header below (RFC 190).
     assertEquals(
-      "Borrower U reports that 394 of the 1000 students who graduated in 2024-25 borrowed federal loans " +
-        "-- 39.4%",
+      "394 of the 1000 students who graduated borrowed federal loans -- 39.4%",
       borrowing.getValue(BorrowingWire.shareLabelKey(LoanType.FEDERAL)).jsonPrimitive.content,
     )
     assertEquals(
-      "Borrower U reports that the students who graduated in 2024-25 and borrowed federal loans owed " +
-        "\$20,747 on average by the time they graduated",
+      "Graduates who borrowed federal loans owed \$20,747 on average by the time they graduated",
       borrowing.getValue(BorrowingWire.averageDebtLabelKey(LoanType.FEDERAL)).jsonPrimitive.content,
     )
     // D8: the cohort is named in words, with its year, and it is neither this
-    // year's freshmen nor every undergraduate.
+    // year's freshmen nor every undergraduate. The year is the CITATION's, said
+    // once at the head of the sentence, and "that year" refers back to it.
     val cohort = borrowing.getValue(BorrowingWire.COHORT_LABEL_KEY).jsonPrimitive.content
-    assertTrue(cohort.contains("graduated from it in 2024-25"), cohort)
+    assertTrue(cohort.contains("Borrower U's 2024-25 Common Data Set"), cohort)
+    assertTrue(cohort.contains("graduated from it that year"), cohort)
+    assertTrue(cohort.contains("not this year's freshmen"), cohort)
     assertEquals(
       "Borrower U's 2024-25 Common Data Set",
       borrowing
@@ -1342,7 +1345,7 @@ class CollegeCostChatToolTest {
   }
 
   @Test
-  fun `every borrowing sentence names the school as the one claiming the figure`() {
+  fun `every borrowing figure is covered by the block's one attribution`() {
     val student = createStudent()
     val college = seedListedCollege(student, "Self Reported U")
     CostsTestDb.seedBorrowing(
@@ -1355,18 +1358,46 @@ class CollegeCostChatToolTest {
       collegesOf(execute(student))
         .single()[BorrowingWire.KEY]!!
         .jsonObject
-    // D10: these are self-reported survey answers with no audit, so no
-    // sentence carrying a figure may be said in the flat voice an
-    // administrative figure is said in. Asserted over EVERY string the section
-    // can emit, not over the ones this test happened to think of.
+    // RFC 190 SUPERSEDES RFC 175 D10's per-sentence rule, and keeps its whole
+    // reason: a Common Data Set figure is an unaudited claim a school made
+    // about itself and must never read as an administrative record. What
+    // changes is the UNIT the attribution rides in. The section is ONE filing,
+    // ONE school and ONE cycle, so it is one citation's scope: the claimant is
+    // named once, in the sentence `cohort_label` carries, and every figure
+    // below is that claimant's. Restating the name at every figure was the
+    // repetition; it was never the guarantee.
+    val header = borrowing.getValue(BorrowingWire.COHORT_LABEL_KEY).jsonPrimitive.content
+    assertTrue(header.contains("Self Reported U"), "the block names the school claiming it: [$header]")
+    assertTrue(header.contains("2024-25 Common Data Set"), "with its cycle and its document: [$header]")
+    // And the section carries the citation itself, so the document under every
+    // figure is machine-readable and not only spoken.
+    assertEquals(
+      "Self Reported U's 2024-25 Common Data Set",
+      borrowing
+        .getValue("source")
+        .jsonObject
+        .getValue("cited_as")
+        .jsonPrimitive.content,
+    )
+    // NO FIGURE ESCAPES IT. Asserted over EVERY string the section can emit,
+    // not over the ones this test happened to think of: a figure-bearing
+    // sentence may not carry an attribution of its OWN, because a second
+    // publisher named inside this block would be a figure the header does not
+    // cover -- which is the one case (the federal median debt) RFC 190 makes
+    // name itself, on a surface where the two really do meet.
     val spoken =
       borrowing
         .filterValues { it is JsonPrimitive && it.isString }
-        .filterKeys { it != BorrowingWire.NOTE_KEY }
+        .filterKeys { it != BorrowingWire.NOTE_KEY && it != BorrowingWire.COHORT_LABEL_KEY }
         .mapValues { (_, value) -> value.jsonPrimitive.content }
     assertTrue(spoken.size >= LoanType.entries.size, "expected a sentence per loan type: $spoken")
-    val unattributed = spoken.filterValues { it.contains(Regex("""\d""")) && !it.contains("Self Reported U") }
-    assertEquals(emptyMap(), unattributed, "a CDS figure stated without naming the school as the claimant")
+    val selfAttributing =
+      spoken.filterValues { it.contains(Regex("""\d""")) && it.contains("Common Data Set") }
+    assertEquals(
+      emptyMap(),
+      selfAttributing,
+      "a figure under the block header re-cited a document: the block is attributed once (RFC 190)",
+    )
   }
 
   @Test
@@ -1451,7 +1482,15 @@ class CollegeCostChatToolTest {
     // standing as the whole of what this school's graduates borrowed.
     val line = borrowing.getValue(BorrowingWire.PRIVATE_NOT_FILED_KEY).jsonPrimitive.content
     assertTrue(line.contains("reports no average for private loans"), line)
-    assertTrue(line.contains("Federal Only U"), line)
+    // WHOSE filing it is comes from the block header, once (RFC 190): the
+    // sentence says what the filing does not carry and names nobody again.
+    assertTrue(
+      borrowing
+        .getValue(BorrowingWire.COHORT_LABEL_KEY)
+        .jsonPrimitive.content
+        .contains("Federal Only U"),
+      "the school is named once, in the block header: [$borrowing]",
+    )
   }
 
   @Test
@@ -1483,8 +1522,16 @@ class CollegeCostChatToolTest {
     // And the unread half is said as OURS, per loan type.
     val ours = borrowing.getValue(BorrowingWire.notReadKey(LoanType.PRIVATE)).jsonPrimitive.content
     assertTrue(ours.contains("WE could not read"), ours)
-    assertTrue(ours.contains("Half Read U"), ours)
     assertTrue(ours.contains("never that this school does not report it"), ours)
+    // WHOSE filing answered the column is the block header's to say, once
+    // (RFC 190) -- the gap sentence is only ever said under it.
+    assertTrue(
+      borrowing
+        .getValue(BorrowingWire.COHORT_LABEL_KEY)
+        .jsonPrimitive.content
+        .contains("Half Read U"),
+      "the school is named once, in the block header: [$borrowing]",
+    )
     // The claim about the SCHOOL's filing is withheld: it is not true here.
     assertNull(
       borrowing[BorrowingWire.PRIVATE_NOT_FILED_KEY],

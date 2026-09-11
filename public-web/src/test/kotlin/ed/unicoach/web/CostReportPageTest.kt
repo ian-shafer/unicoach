@@ -1193,9 +1193,13 @@ class CostReportPageTest {
     assertTrue(body.contains("carried a median of \$21,000 in federal loans"), body)
     assertTrue(body.contains("The source publishes no year for this figure."), body)
     // The CDS half names the school as the claimant and carries its filing
-    // year -- these are self-reported answers, not administrative records.
-    assertTrue(body.contains("Borrowing College reports that the students who graduated in 2024-25"), body)
-    assertTrue(body.contains("Borrowing College's 2024-25 Common Data Set"), body)
+    // year -- these are self-reported answers, not administrative records --
+    // in the BLOCK HEADER, once, above the figures it covers (RFC 190).
+    assertTrue(
+      body.contains("Borrowing College's 2024-25 Common Data Set reports these figures for the students who"),
+      body,
+    )
+    assertTrue(body.contains("Graduates who borrowed federal loans owed"), body)
     // The two are never summed and never differenced. Neither the total nor
     // the difference of the two debt figures appears anywhere on the page.
     listOf("41,747", "64,865", "64,612", "22,865", "\$253").forEach {
@@ -1231,7 +1235,7 @@ class CostReportPageTest {
     // BorrowingWire's, so the page and the coach cannot describe this silence
     // differently, and the page adds no advice of its own.
     assertTrue(
-      body.contains(BorrowingWire.privateNotFiledLabel(borrowingFixture("Borrowing College").figures.source)),
+      body.contains(BorrowingWire.privateNotFiledLabel()),
       "the absence sentence is the wire's, said whole: [$body]",
     )
     assertFalse(body.contains("\$43,865"), "no private figure is invented for a school that filed none")
@@ -1260,9 +1264,8 @@ class CostReportPageTest {
     // The half we read is rendered.
     assertTrue(body.contains("\$20,747"), "the federal average we did read must still render: [$body]")
     // The half we did not is OUR gap, in the wire's own words.
-    val citation = borrowingFixture("Borrowing College").figures.source
     assertTrue(
-      body.contains(BorrowingWire.notReadByUsLabel(LoanType.PRIVATE, citation)),
+      body.contains(BorrowingWire.notReadByUsLabel(LoanType.PRIVATE)),
       "the unread private cell is said as ours, said whole: [$body]",
     )
     // And never as the school having filed nothing: that claim is false here.
@@ -1273,7 +1276,7 @@ class CostReportPageTest {
   }
 
   @Test
-  fun `no borrowing sentence on the page states a school's figure without naming the school`() {
+  fun `every borrowing figure on the page renders under the block's one attribution`() {
     // The FEDERAL-ONLY school, so the private-absence sentence is on the page
     // as well: it is the one borrowing sentence that never says "graduated",
     // and a sweep keyed on that word would have exempted it silently.
@@ -1294,32 +1297,29 @@ class CostReportPageTest {
         ),
       )
 
-    // D10: every borrowing sentence is the school's own claim. The page is
-    // read without a coach beside it, so an unattributed figure here reads as
-    // an administrative fact about the school. Swept by the markers of the
-    // sentences BorrowingWire can emit, never by a word one of them happens to
-    // contain -- the next sentence must join the sweep by being written, not
-    // by being remembered.
+    // RFC 190, superseding RFC 175 D10's per-sentence rule and keeping its
+    // reason: these are self-reported survey answers with no audit, so a
+    // borrowing figure must never read as an administrative record. The
+    // attribution now rides on the BLOCK -- one filing, one school, one cycle
+    // -- and the page is read without a coach beside it, so the header has to
+    // be on the page, above every figure it covers. Swept by the markers of
+    // the sentences BorrowingWire can emit, never by a word one of them
+    // happens to contain -- the next sentence must join the sweep by being
+    // written, not by being remembered.
     // The markers are pinned to the wire's own sentences FIRST: a marker that
     // no longer appears in the sentence it stands for is one the sweep would
     // skip in silence, which is the failure this test exists to prevent.
     // The PAGE's own school, because these same strings are now the sweep's
-    // subject below: the sentences the wire builds for this citation are
-    // exactly the sentences the page was given to render.
-    val citation = borrowingFixture("Borrowing College").figures.source
-    val wireSentences =
-      listOf(
-        BorrowingWire.cohortLabel(citation),
-        BorrowingWire.averageDebtLabel(LoanType.FEDERAL, 20747, citation),
-        BorrowingWire.shareLabel(
-          LoanType.FEDERAL,
-          BorrowerCounts.Counted(borrowers = 394, graduatingClass = 1000),
-          Share.ofOrNull(part = 394, whole = 1000)!!,
-          citation,
-        ),
-        BorrowingWire.privateNotFiledLabel(citation),
-        "Source: ${citation.citedAs}.",
+    // subject below: the block the wire builds for this filing is exactly the
+    // block the page was given to render.
+    val coverage =
+      borrowingFixture(
+        "Borrowing College",
+        averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+        borrowersByLoanType = mapOf(LoanType.FEDERAL to 394),
       )
+    val block = BorrowingWire.blockOf(coverage)
+    val wireSentences = listOf(block.header) + block.sentences
     assertEquals(
       emptyList(),
       borrowingMarkers.filterNot { marker -> wireSentences.any { it.contains(marker) } },
@@ -1339,11 +1339,64 @@ class CostReportPageTest {
       spoken,
       "every borrowing sentence this school's filing supports must render: [$body]",
     )
+    // THE BLOCK CANNOT RENDER WITHOUT ITS HEADER, and the CDS voice survives in
+    // it: the school, its cycle and its document, above every figure below.
+    assertTrue(
+      block.header.contains("Borrowing College's 2024-25 Common Data Set"),
+      "the header is the one attribution, so it must name the school, the cycle and the document: [${block.header}]",
+    )
+    assertTrue(block.sentences.isNotEmpty(), "a block with no sentences would make this sweep vacuous")
+    val headerAt = body.indexOf(block.header)
     assertEquals(
       emptyList(),
-      spoken.filterNot { it.contains("Borrowing College") || it.startsWith("Source:") },
-      "a Common Data Set borrowing figure was stated without naming the school as the claimant",
+      block.sentences.filter { body.indexOf(it) < headerAt },
+      "a borrowing figure rendered ABOVE the attribution it is claimed under: [$body]",
     )
+    // And nothing below the header re-cites the document: the section is
+    // attributed once, which is the whole of what this slice changes.
+    assertEquals(
+      emptyList(),
+      block.sentences.filter { it.contains("Common Data Set") },
+      "a figure under the header carried an attribution of its own (RFC 190)",
+    )
+  }
+
+  @Test
+  fun `the federal debt names its own publisher while the borrowing block names the school's own filing`() {
+    // The mixed-source section (RFC 175 D9, RFC 190): a federal median debt
+    // from the Scorecard's own file, and a Common Data Set block from the
+    // school itself. The block header scopes ONLY the second, so the federal
+    // figure names its own publisher -- read off the cell it came from, never
+    // typed on this page.
+    val college = costFixtureWithBorrowing()
+    val body = render(costProfile(listOf(college), answeredMoney()))
+
+    val note =
+      requireNotNull(college.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD)) {
+        "the fixture's median debt must carry the cell it came from, or this test asserts nothing"
+      }
+    val federalPublisher = MoneySourceCopy.openingLabelOf(note.cell.source)
+    assertEquals(MoneySource.SCORECARD, note.cell.source, "the federal median debt is the Scorecard's own file")
+    assertTrue(
+      body.contains("$federalPublisher reports that students who finished here carried a median of \$21,000"),
+      "the federal figure names the publisher its own cell came from: [$body]",
+    )
+    // The school's own filing is named for the borrowing half, and only for it.
+    val header = BorrowingWire.blockOf(borrowingFixture("Borrowing College")).header
+    assertTrue(body.contains(header), "the borrowing block is attributed to the school's own filing: [$body]")
+    assertTrue(header.contains("Borrowing College's 2024-25 Common Data Set"), header)
+    // NEITHER STANDS FOR THE OTHER: the federal publisher is not named inside
+    // the borrowing block's header, and the CDS is not named in the federal
+    // sentence.
+    assertFalse(header.contains(federalPublisher), "the CDS header borrowed the federal publisher's name: [$header]")
+    assertTrue(
+      body.indexOf(federalPublisher) < body.indexOf(header),
+      "the two publishers are two attributions in one section, the federal one first: [$body]",
+    )
+    // RFC 175 D9 stands: the two figures are never summed and never differenced.
+    listOf("41,747", "64,865", "64,612", "22,865", "\$253").forEach {
+      assertFalse(body.contains(it), "the two debt figures were combined: [$it]")
+    }
   }
 
   @Test
@@ -1367,7 +1420,7 @@ class CostReportPageTest {
     // two surfaces used to hold two hand-written lists that disagreed, so the
     // same filing was narrated federal-first on the page and any-loan-first in
     // the payload.
-    val sentences = BorrowingWire.listSentences(borrowing)
+    val sentences = BorrowingWire.blockOf(borrowing).sentences
     assertEquals(
       sentences,
       sentences.sortedBy { body.indexOf(it) },
@@ -1412,15 +1465,20 @@ class CostReportPageTest {
     // so it says nothing here rather than saying it in the school's voice.
     assertEquals(
       emptyList(),
-      borrowingMarkers.filter { body.contains(it) && it != "Source:" },
+      borrowingMarkers.filter { body.contains(it) },
       "a borrowing sentence was rendered for a filing with nothing speakable in it: [$body]",
     )
   }
 
   /**
-   * One marker per sentence [BorrowingWire] can put on the report page, in
-   * render order: the cohort line, an average, a share, the private-absence
-   * claim, and the citation.
+   * One marker per string [BorrowingWire] can put on the report page, in render
+   * order: the block header, an average, a share, and the private-absence
+   * claim.
+   *
+   * The citation is NOT a marker of its own any more (RFC 190): the block's
+   * trailing "Source: ..." line is gone, and the document it named is in the
+   * header marker above -- so a "Source:" marker here would stand for the merit
+   * block's line instead and exempt itself from this sweep.
    *
    * A LIST of markers rather than a substring guess: the sweep above keyed on
    * the word "graduated" once, which exempted the private-absence sentence
@@ -1430,11 +1488,10 @@ class CostReportPageTest {
    */
   private val borrowingMarkers =
     listOf(
-      "reports these borrowing figures",
+      "reports these figures for the students who graduated",
       "on average by the time they graduated",
       "borrowed federal loans",
       "reports no average for private loans",
-      "Source:",
     )
 
   /**
@@ -1546,14 +1603,18 @@ class CostReportPageTest {
      * The word budget for the three-school page (brief 0009 D9/D13), measured
      * on [verboseState] + [verboseCampus] + [verbosePrivate].
      *
-     * The number is the one RFC 188 actually LEFT the page at, not the one the
-     * slice hoped for: 1,767 words before, 1,530 after. Brief 0009's own budget
-     * table gives this slice 223 words of repetition to remove and its
-     * acceptance criterion asked for 313, so the criterion was unreachable by
-     * removing repetition alone. A ceiling set at a number the page does not
-     * meet is a test that is either failing or lying; this one ratchets what was
-     * really won and refuses a regression.
+     * The number is the one each slice actually LEFT the page at, not the one it
+     * hoped for. RFC 188 took it from 1,767 words to 1,530; RFC 190 -- citing
+     * each block once instead of re-naming the school, its cycle and its
+     * document at every borrowing figure -- takes it from 1,530 to 1,450, which
+     * is 80 words of pure repetition off three schools. Both numbers were
+     * MEASURED here, on the same three verbose fixtures, by setting this
+     * constant to 0 and reading the failure.
+     *
+     * A ceiling set at a number the page does not meet is a test that is either
+     * failing or lying; this one ratchets what was really won and refuses a
+     * regression.
      */
-    const val WORD_CEILING = 1530
+    const val WORD_CEILING = 1450
   }
 }

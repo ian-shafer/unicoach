@@ -1175,6 +1175,11 @@ private fun FlowContent.figureBody(figure: SchoolFigure) {
  * school's OWN citation -- the CDS is a different source from the Scorecard and
  * is cited separately. It is never subtracted from any price above.
  *
+ * ATTRIBUTED ONCE, ABOVE THE FIGURES (RFC 190): the citation is an attribution
+ * line under the heading rather than a footnote at the foot of the block, for
+ * the reason the borrowing header is one -- the claimant is stated before the
+ * figures it covers, and every sentence below it comes from that one filing.
+ *
  * A citation with no fact under it is not data. [MeritPractice][ed.unicoach.coaching.admissions.MeritPractice]
  * already refuses to exist without a measure, but it can hold recipients with no
  * freshman headcount to make a share out of and no average -- which renders a
@@ -1189,9 +1194,12 @@ private fun FlowContent.meritBlock(cost: CollegeCost) {
   if (share == null && average == null) return
   section("report-merit") {
     h3 { +"Money this school gives for something other than financial need" }
+    // The claimant FIRST, under the heading, and not again at the foot (RFC
+    // 190): the same string, said before the figures it covers rather than
+    // after them, so the block is scoped by its attribution.
+    p("report-source") { +"Source: ${merit.source.citedAs}." }
     share?.let { p { +"${MeritAidWire.shareLabel(it)}." } }
     average?.let { p { +"${MeritAidWire.averageLabel(it)}." } }
-    p("report-source") { +"Source: ${merit.source.citedAs}." }
   }
 }
 
@@ -1245,20 +1253,35 @@ private fun FlowContent.debtBlock(cost: CollegeCost) {
  * SAYS is a sentence-building decision, not layout. Composed by the seam that
  * owns the composition, never by a `+ " "` here -- the ORDER of the two
  * sentences is [AssuranceTierCopy]'s, once, for every surface.
+ *
+ * IT NAMES ITS OWN PUBLISHER (RFC 190). This paragraph and the borrowing block
+ * below it are two publishers in one section: the block header attributes
+ * everything under it to the school's own Common Data Set, so a federal figure
+ * that named nobody would read as covered by that header. The name comes from
+ * the CELL the figure came from, through [MoneySourceCopy] -- never hand-typed,
+ * and never at all where the domain resolved no cell.
  */
 private fun shownDebtSentence(
   cost: CollegeCost,
   debt: Int,
 ): String {
-  val said =
-    "Students who finished here carried a median of ${WholeDollars.spoken(debt)} in federal loans. " +
+  val figure =
+    "students who finished here carried a median of ${WholeDollars.spoken(debt)} in federal loans. " +
       "The source publishes no year for this figure."
   // UNREACHABLE for a shown debt figure, and provably so: [CollegeCost.medianDebtAtCompletionUsd]
   // and this note read the SAME cohort row -- a value here means that row exists, and a row with
   // provenance always yields a note (RFC 179 D6). It stays because the note list is assembled by
   // another module: a page may not invent a tier the domain did not resolve, so where the note is
-  // somehow absent the figure is said alone rather than under a guessed one.
-  val note = cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD) ?: return said
+  // somehow absent the figure is said alone rather than under a guessed one -- and unattributed,
+  // under the page's own sources section, because a page may not invent a publisher either.
+  val note =
+    cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD)
+      ?: return figure.replaceFirstChar { it.uppercase() }
+  // This figure's OWN publisher, read off the cell it came from (RFC 184) and spoken by the one
+  // seam that names publishers, never typed here: the borrowing block below is attributed to the
+  // school's own Common Data Set, and a federal figure left unattributed beside it reads as
+  // covered by that header.
+  val said = "${MoneySourceCopy.openingLabelOf(note.cell.source)} reports that $figure"
   return AssuranceTierCopy.composedStatementOf(said, note.assurance)
 }
 
@@ -1270,6 +1293,14 @@ private fun shownDebtSentence(
  * cohort and the same attribution -- and a change to either lands in both.
  * Nothing is rendered for a school with no filing: the page is not the place to
  * explain our own corpus coverage.
+ *
+ * ATTRIBUTED ONCE, IN THE HEADER (RFC 190, superseding RFC 175 D10's
+ * per-sentence rule): the block header names the school, its cycle and its
+ * Common Data Set, and every sentence below it is a figure from that one
+ * filing. The header cannot be dropped -- [BorrowingWire.blockOf] hands it out
+ * with the sentences as one value -- and no figure from another publisher is
+ * rendered under it: the federal median debt above names its own publisher
+ * ([shownDebtSentence]).
  */
 private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
   // Exhaustive over the four states, not a pair of early returns: the page
@@ -1284,14 +1315,18 @@ private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
 
       is BorrowingCoverage.Reported -> reported
     }
-  val borrowing = coverage.figures
-  p { +"${BorrowingWire.cohortLabel(borrowing.source)}." }
+  // The HEADER first, then the figures it covers: the block is attributed
+  // once, above the sentences, and never again beneath them (RFC 190). The
+  // trailing "Source: <cited as>." line this used to close with printed the
+  // same `citedAs` the header now opens with -- and nothing else, no url and
+  // no document date -- so removing it loses no reachable fact.
+  val block = BorrowingWire.blockOf(coverage)
+  p { +"${block.header}." }
   // WHICH loan types are spoken, in what order, and when an absence is said
-  // out loud, all come from [BorrowingWire.listSentences] -- the one home of this
+  // out loud, all come from [BorrowingWire.blockOf] -- the one home of this
   // policy. A second list here is how the page and the coach came to narrate
   // the same filing in two different orders.
-  BorrowingWire.listSentences(coverage).forEach { sentence -> p { +"$sentence." } }
-  p("report-source") { +"Source: ${borrowing.source.citedAs}." }
+  block.sentences.forEach { sentence -> p { +"$sentence." } }
 }
 
 /**

@@ -1977,7 +1977,9 @@ class CollegeCostChatTool(
         "students who GRADUATED from that school in the year ${BorrowingWire.COHORT_LABEL_KEY} names actually " +
         "borrowed. Say that cohort out loud - those graduates, in that year, never this year's freshmen and " +
         "never all its undergraduates - and name the school as the one reporting it, because these are the " +
-        "school's own answers about itself and not an audited record. Each loan type is a separate figure: " +
+        "school's own answers about itself and not an audited record. Attribute the section ONCE, in the " +
+        "sentence ${BorrowingWire.COHORT_LABEL_KEY} carries, not at every figure. " +
+        "Each loan type is a separate figure: " +
         "keep federal and private apart, never add two loan types together and never present one as a total, " +
         "and where the school filed no private figure say so rather than leaving federal as the whole story. " +
         "Every figure here is money owed after graduating, never a price: never subtract any of it from a " +
