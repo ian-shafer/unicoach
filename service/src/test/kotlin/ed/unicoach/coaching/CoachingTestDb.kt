@@ -4,12 +4,15 @@ import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CdsAdmissionsDao
+import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
+import ed.unicoach.db.dao.CountingSqlSession
 import ed.unicoach.db.dao.SourceDocumentsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.NewCollegeMeritAid
 import ed.unicoach.db.models.NewSourceDocument
@@ -58,21 +61,18 @@ object CoachingTestDb {
     }
 
   /**
-   * A session that records the SQL of every statement it prepares, so "one
-   * query for the whole answer, never one per college" is an assertion rather
-   * than a test name. It delegates every statement to [sqlSession], so the read
-   * under test is the real read against the real database.
+   * [CountingSqlSession] over this fixture's own [sqlSession] by default.
+   *
+   * The decorator itself lives in `:db`'s test fixtures, where the batched DAO
+   * reads it proves things about live; this class is only the DEFAULT -- every
+   * call site here counts statements against the one session the fixture
+   * already owns, and `CountingSession()` with no argument is what those call
+   * sites read as. Duplicating the decorator to get that default is what this
+   * subclass exists not to do.
    */
   class CountingSession(
-    private val delegate: SqlSession = sqlSession,
-  ) : SqlSession {
-    val prepared: MutableList<String> = mutableListOf()
-
-    override fun prepareStatement(sql: String): PreparedStatement {
-      prepared += sql
-      return delegate.prepareStatement(sql)
-    }
-  }
+    delegate: SqlSession = sqlSession,
+  ) : CountingSqlSession(delegate)
 
   /** Truncates exactly the tables the calling suite touches, cascading through the CDS/list FKs. */
   fun truncate(vararg tables: String) {
@@ -136,6 +136,63 @@ object CoachingTestDb {
         ),
       ).getOrThrow()
   }
+
+  /**
+   * ONE `college_ipeds` row, on its natural key `ipeds_unit_id`.
+   *
+   * `college_ipeds` is one table read by two tools -- the cost read takes the
+   * housing flag off it (RFC 149) and the admissions read takes the
+   * admission-test policy (RFC 187) -- so it gets ONE seeder, on this object's
+   * standing rule. The two suites were otherwise hand-typing the same
+   * 23-parameter `NewCollegeIpeds` literal and disagreeing on every column
+   * neither of them asserts, which is a difference that can only ever become a
+   * defect.
+   *
+   * [offersHousing] and [testPolicy] are the two columns a test actually reads,
+   * and both default to NULL -- the third state each read must keep apart from
+   * an absent row: a school we HAVE a row for that does not report that column.
+   * A school with no row at all is seeded by not calling this.
+   *
+   * Every other column is NULL or its empty value. `NewCollegeIpeds` has no
+   * defaults of its own because the INGEST must state each one deliberately;
+   * a fixture is the opposite case, and a column no assertion names has no
+   * business carrying an invented plausible value that a reader might mistake
+   * for one.
+   */
+  fun seedIpeds(
+    ipedsUnitId: Int,
+    surveyYear: Int = 2023,
+    offersHousing: Boolean? = null,
+    testPolicy: Int? = null,
+  ) = CollegeIpedsDao
+    .upsert(
+      sqlSession,
+      NewCollegeIpeds(
+        ipedsUnitId = ipedsUnitId,
+        surveyYear = surveyYear,
+        cyActive = true,
+        deathYear = null,
+        closedAt = null,
+        newIpedsUnitId = null,
+        instLevel = null,
+        ugOffer = null,
+        sector = null,
+        carnegieBasic = null,
+        carnegieSize = null,
+        cbsa = null,
+        relAffil = null,
+        hasRotc = null,
+        hasStudyAbroad = null,
+        disabilityBand = null,
+        registeredDisabilityPercent = null,
+        offersHousing = offersHousing,
+        housingCapacityHeadcount = null,
+        applicationFeeUsd = null,
+        athleticAssoc = emptyList(),
+        footballConf = null,
+        testPolicy = testPolicy,
+      ),
+    ).getOrThrow()
 
   /**
    * The `source_documents` row a CDS fact cites (RFC 170, D13), upserted on

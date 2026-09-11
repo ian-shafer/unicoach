@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeTestPolicyRow
 import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewCollegeProgramsCensus
 import kotlinx.serialization.json.JsonArray
@@ -241,6 +242,60 @@ object CollegeIpedsDao {
         keys = ipedsUnitIds,
         bindKey = { stmt, index, id -> stmt.setInt(index, id) },
         map = { rs -> rs.getInt("ipeds_unit_id") to rs.getBoolean("offers_housing").takeUnless { rs.wasNull() } },
+      ).map { it.toMap() }
+
+  /**
+   * Each college's IPEDS admission-test policy (`ADMCON7`), keyed by
+   * `ipeds_unit_id` (RFC 187). The per-school READ behind the admissions
+   * profile's test-policy section: the column is already a search FILTER, so
+   * until now nothing could say what one named school on a student's list
+   * actually does.
+   *
+   * THREE states, kept apart all the way from the row, on the
+   * [housingFlagsByIpedsUnitId] precedent:
+   *
+   * - an ABSENT key is a school IPEDS has no `college_ipeds` row for at all;
+   * - a key with a NULL value is a row that does not report `ADMCON7`;
+   * - a key with a value is the raw code and the survey year that reported it.
+   *
+   * The first two render identically on the wire -- the section is missing and
+   * `test_policy` is named in `data_availability` -- but they are different
+   * facts, and the second one is the ingest owner's diagnosis rather than a
+   * statement about the school. Welding them together with a
+   * `test_policy IS NOT NULL` filter would do it in SQL, where no caller could
+   * ever tell them apart again: the exact defect RFC 149 fixed in the housing
+   * read.
+   *
+   * `getInt` reads a SQL NULL as `0`, and `0` is not a published `ADMCON7`
+   * code, so the null is recovered through `wasNull` rather than trusted from
+   * the getter -- the same discipline `getBoolean` needs above. That JDBC idiom
+   * is already the package's shared [getIntOrNull], so this read borrows it
+   * rather than retyping it.
+   *
+   * The code is returned RAW inside [CollegeTestPolicyRow]. `:db` must not
+   * depend on `:college`, so `ed.unicoach.college.AdmissionTestPolicy` is
+   * reached at the service boundary, where every other raw IPEDS code is
+   * translated.
+   *
+   * Batch by construction: one query for the whole answer, never one per
+   * college, and an empty [ipedsUnitIds] short-circuits without a query at all.
+   */
+  fun testPoliciesByIpedsUnitId(
+    session: SqlSession,
+    ipedsUnitIds: Collection<Int>,
+  ): Result<Map<Int, CollegeTestPolicyRow?>> =
+    session
+      .queryListWhereIn(
+        table = "college_ipeds",
+        columns = "ipeds_unit_id, survey_year, test_policy",
+        keyColumn = "ipeds_unit_id",
+        keys = ipedsUnitIds,
+        bindKey = { stmt, index, id -> stmt.setInt(index, id) },
+        map = { rs ->
+          val code = rs.getIntOrNull("test_policy")
+          rs.getInt("ipeds_unit_id") to
+            code?.let { CollegeTestPolicyRow(code = it, surveyYear = rs.getInt("survey_year")) }
+        },
       ).map { it.toMap() }
 
   /**

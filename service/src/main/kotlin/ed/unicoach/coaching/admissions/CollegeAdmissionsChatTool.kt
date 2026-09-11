@@ -21,7 +21,9 @@ import java.util.Locale
  * The `college_admissions_profile` chat tool (RFC 148): the coach's read path
  * into what the student's listed schools published about themselves in their
  * own Common Data Set -- the non-need (merit) money they hand out, what the
- * admission office says it weighs, and when each round is due. Read-only --
+ * admission office says it weighs, and when each round is due -- plus the one
+ * fact that is NOT theirs to publish: the admission-test policy each of them
+ * reported to the federal IPEDS survey (RFC 187). Read-only --
  * it writes nothing. Total by the [ed.unicoach.chat.ChatTool] contract:
  * malformed input returns a structured `{ "error": ... }` object the model
  * reads, never a throw.
@@ -34,9 +36,11 @@ import java.util.Locale
  * The rendering rules are the product, not decoration. A rating reaches the
  * wire as the words a coach says, a round carries its spoken name beside its
  * code, a date is a phrase and never a `{month, day}` pair of bare numbers, and
- * a school's `false` round flag is emitted as the statement it is. Each of the
- * three sections carries its own citation, because each is a different school's
- * own document from its own cycle.
+ * a school's `false` round flag is emitted as the statement it is. Each section
+ * carries its OWN citation -- the three CDS sections because each is a
+ * different school's own document from its own cycle, and the test policy
+ * because a policy claim without the year it was collected in is a claim about
+ * a year nobody named.
  */
 class CollegeAdmissionsChatTool(
   private val service: CollegeAdmissionsService,
@@ -94,10 +98,11 @@ class CollegeAdmissionsChatTool(
     }
 
   /**
-   * One college. The three sections are emitted in the order the coach should
-   * reach for them (RFC 145): the money first, then what the school weighs,
-   * then when it is due. A section this school does not report is ABSENT and is
-   * named in `data_availability`, never emitted as an empty object.
+   * One college. The four sections are emitted in the order the coach should
+   * reach for them (RFC 145): the money first, then what the school weighs --
+   * the C7 grid and then whether it wanted a test score at all -- then when it
+   * is all due. A section this school does not report is ABSENT and is named in
+   * `data_availability`, never emitted as an empty object.
    */
   private fun collegeObject(admissions: CollegeAdmissions): JsonObject =
     buildJsonObject {
@@ -108,6 +113,7 @@ class CollegeAdmissionsChatTool(
       put("list_status", admissions.listStatus.value)
       admissions.meritAid?.let { put(AdmissionsField.MERIT_AID.wireName, MeritAidWire.objectOf(it)) }
       admissions.factors?.let { put(AdmissionsField.ADMISSION_FACTORS.wireName, factorsObject(it)) }
+      admissions.testPolicy?.let { put(AdmissionsField.TEST_POLICY.wireName, testPolicyObject(it)) }
       admissions.deadlines?.let { put(AdmissionsField.DEADLINES.wireName, deadlinesObject(it)) }
       putJsonArray("data_availability") {
         admissions.notReported.forEach { add(JsonPrimitive(it.wireName)) }
@@ -124,6 +130,27 @@ class CollegeAdmissionsChatTool(
     buildJsonObject {
       putJsonArray("factors") { grid.weights.forEach { add(factorObject(it)) } }
       putJsonObject("source") { putCitation(grid.source) }
+    }
+
+  /**
+   * What this school told the federal admissions survey about test scores (RFC
+   * 187). Four string values, and the third of them is not optional: the
+   * "a school can change this, confirm it on their page" sentence rides with
+   * EVERY rendered policy (D17), because a dated policy quoted without it is
+   * exactly the fact a family would act on a year too late.
+   *
+   * The slug rides beside the sentence because it is the same plain word
+   * `search_colleges` accepts for this axis. The raw `1`/`3`/`5` never reaches
+   * here -- the service only builds the section from a mapped member -- and
+   * neither does the string `ADMCON7`, which is a survey's internal variable
+   * name and means nothing to a student.
+   */
+  private fun testPolicyObject(section: SchoolTestPolicy): JsonObject =
+    buildJsonObject {
+      put("policy", section.policy.slug)
+      put("statement", section.statement)
+      put("confirm_with_school", TestPolicyCopy.CONFIRM_WITH_SCHOOL)
+      putJsonObject("source") { putCitation(section.source) }
     }
 
   /** One reported C7 row: the code, the words a coach says for it, and the weight the school gives it -- from one construct. */
@@ -213,10 +240,22 @@ class CollegeAdmissionsChatTool(
 
     // The ethos contract rides the tool description (RFC 148): each school's
     // own document, the denominator said in full, and the two silences named.
+    //
+    // TWO lines below name IPEDS and so carry `money-attribution-exempt`
+    // markers (RFC 177): the ban is on naming the publisher of a canonical
+    // MONEY row in a live string, and a school's admission-test policy is not a
+    // money figure. The marker is scoped per LINE, never per file, which is why
+    // those two string literals are split where they are -- the publisher's
+    // name and its marker have to end up on the same line. Re-wrapping this
+    // paragraph without carrying the markers along re-arms the ban and fails
+    // MoneyAttributionNamesNoPublisherTest.
     val DESCRIPTION =
       "Read what the colleges on the student's list published about themselves in their own Common Data Set: " +
         "the non-need (merit) aid they give, what the admission office says it weighs, and their application " +
-        "rounds and deadlines. Always attribute the figures to the school's own Common Data Set - each section " +
+        "rounds and deadlines, plus what each school " +
+        "told the federal IPEDS " + // money-attribution-exempt: a test policy is not a money figure
+        "admissions survey about admission test " +
+        "scores. Always attribute the figures to the school's own Common Data Set - each section " +
         "carries its own source with the exact words to cite - and never estimate: when a section is named in " +
         "data_availability, that school does not report it, so say so plainly. " +
         "${MeritAidWire.SHARE_KEY} is a share of ALL full-time freshmen at that school, not of the students " +
@@ -226,6 +265,13 @@ class CollegeAdmissionsChatTool(
         "${MeritAidWire.AVERAGE_KEY} is what last year's recipients averaged; it is not an offer to this " +
         "student, so never subtract it from a published price. A round with offered false is the school stating " +
         "it does not run that round - tell the student that, it is a real answer. Dates come with no year " +
-        "because the schools publish none; read them as given. Read-only: this tool changes nothing."
+        "because the schools publish none; read them as given. " +
+        "${AdmissionsField.TEST_POLICY.wireName} is what THAT school reported " +
+        "to the IPEDS " + // money-attribution-exempt: the same test policy, not a money figure
+        "admissions survey in " +
+        "the year its source cites, and nothing else: say the year, say the confirm_with_school sentence with " +
+        "it, and never carry one school's policy over to another school on the list. When " +
+        "${AdmissionsField.TEST_POLICY.wireName} is named in data_availability, ${TestPolicyCopy.NOT_REPORTED} " +
+        "Read-only: this tool changes nothing."
   }
 }

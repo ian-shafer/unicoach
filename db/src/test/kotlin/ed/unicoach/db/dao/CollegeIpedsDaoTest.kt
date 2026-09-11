@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeTestPolicyRow
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewCollegeProgramsCensus
@@ -373,6 +374,62 @@ class CollegeIpedsDaoTest {
   @Test
   fun `housingFlagsByIpedsUnitId asks nothing of an empty id list`() {
     assertEquals(emptyMap(), CollegeIpedsDao.housingFlagsByIpedsUnitId(session, emptyList()).getOrThrow())
+  }
+
+  @Test
+  fun `testPoliciesByIpedsUnitId round-trips each published code with its survey year`() {
+    // RFC 187. The three ADMCON7 codes are 1, 3 and 5 -- not 1, 2, 3 -- so the
+    // read is exercised on all three rather than on a representative one, and
+    // the year comes off the ROW: a fixture collected in 2024 must cite 2024,
+    // which is what stops a literal 2023 reaching the sentence a family hears.
+    CollegeIpedsDao.upsert(session, ipeds(186131, testPolicy = 1, surveyYear = 2024)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(166027, testPolicy = 3, surveyYear = 2023)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(100690, testPolicy = 5, surveyYear = 2023)).getOrThrow()
+
+    val byUnitId =
+      CollegeIpedsDao.testPoliciesByIpedsUnitId(session, listOf(186131, 166027, 100690)).getOrThrow()
+    assertEquals(CollegeTestPolicyRow(code = 1, surveyYear = 2024), byUnitId[186131])
+    assertEquals(CollegeTestPolicyRow(code = 3, surveyYear = 2023), byUnitId[166027])
+    assertEquals(CollegeTestPolicyRow(code = 5, surveyYear = 2023), byUnitId[100690])
+  }
+
+  @Test
+  fun `testPoliciesByIpedsUnitId keeps a row reporting no policy apart from no row at all`() {
+    // The RFC 149 three-state rule, applied to ADMCON7: both absences render
+    // the same way on the wire, but only one of them is a statement about our
+    // own ingest, and a SQL-level `test_policy IS NOT NULL` filter would make
+    // them indistinguishable to every caller forever.
+    CollegeIpedsDao.upsert(session, ipeds(186131, testPolicy = 5)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(166027, testPolicy = null)).getOrThrow()
+
+    val byUnitId =
+      CollegeIpedsDao.testPoliciesByIpedsUnitId(session, listOf(186131, 166027, 999999)).getOrThrow()
+    assertEquals(5, byUnitId[186131]?.code, "IPEDS says this school considers a submitted score")
+    assertTrue(166027 in byUnitId, "a row that does not report ADMCON7 is a row we HAVE")
+    assertNull(byUnitId[166027], "and its answer is null, never a getInt zero")
+    assertTrue(999999 !in byUnitId, "a school with no IPEDS row at all is an absent key")
+  }
+
+  @Test
+  fun `testPoliciesByIpedsUnitId asks nothing of an empty id list`() {
+    // An empty map is the RESULT; the contract is that no statement was
+    // prepared to get it. Asserted through [CountingSqlSession] rather than from
+    // the return value, because a read that queried `IN ()` and got nothing
+    // back returns exactly the same empty map -- and that is the version that
+    // costs a round trip per empty college list.
+    val counting = CountingSqlSession(session)
+    assertEquals(emptyMap(), CollegeIpedsDao.testPoliciesByIpedsUnitId(counting, emptyList()).getOrThrow())
+    assertEquals(emptyList(), counting.prepared, "an empty id list must short-circuit without a query")
+  }
+
+  @Test
+  fun `testPoliciesByIpedsUnitId costs one query for a five-school read`() {
+    val unitIds = listOf(186131, 166027, 100690, 110635, 130794)
+    unitIds.forEach { CollegeIpedsDao.upsert(session, ipeds(it)).getOrThrow() }
+    val counting = CountingSqlSession(session)
+    val byUnitId = CollegeIpedsDao.testPoliciesByIpedsUnitId(counting, unitIds).getOrThrow()
+    assertEquals(5, byUnitId.size)
+    assertEquals(1, counting.prepared.size, "one query for the whole answer: [${counting.prepared}]")
   }
 
   @Test

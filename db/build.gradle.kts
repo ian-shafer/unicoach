@@ -17,6 +17,9 @@ dependencies {
   testFixturesImplementation(libs.kotlinx.serialization.json)
 
   testImplementation(libs.kotlin.test.junit5)
+  // CountingSqlSession: :db's own DAO tests assert the batching contract with the
+  // same decorator its dependants do, rather than keeping a second copy of it.
+  testImplementation(testFixtures(project(":db")))
 }
 
 tasks.test {

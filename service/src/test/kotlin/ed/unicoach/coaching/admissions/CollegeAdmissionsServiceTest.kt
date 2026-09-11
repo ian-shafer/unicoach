@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.admissions
 
 import ed.unicoach.coaching.CoachingTestDb
+import ed.unicoach.college.AdmissionTestPolicy
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
 import ed.unicoach.db.models.CollegeId
@@ -24,6 +25,19 @@ import kotlin.test.assertTrue
  * every one of them is provable without a JSON payload in the way.
  */
 class CollegeAdmissionsServiceTest {
+  companion object {
+    /**
+     * Every statement one whole admissions read prepares, whatever the list's
+     * length: the student's college selection (its list entries and then the
+     * college rows), the three CDS reference tables, and the IPEDS test policy
+     * RFC 187 added.
+     *
+     * The same number [CollegeAdmissionsService.readInSession]'s KDoc states in
+     * words, so the two move together or the batching test fails.
+     */
+    private const val BATCHED_STATEMENTS = 6
+  }
+
   @BeforeEach
   fun resetDatabase() {
     AdmissionsTestDb.reset()
@@ -343,7 +357,12 @@ class CollegeAdmissionsServiceTest {
     val college = read(student).colleges.single()
     assertNull(college.deadlines)
     assertEquals(
-      listOf(AdmissionsField.MERIT_AID, AdmissionsField.ADMISSION_FACTORS, AdmissionsField.DEADLINES),
+      listOf(
+        AdmissionsField.MERIT_AID,
+        AdmissionsField.ADMISSION_FACTORS,
+        AdmissionsField.TEST_POLICY,
+        AdmissionsField.DEADLINES,
+      ),
       college.notReported,
     )
   }
@@ -416,6 +435,130 @@ class CollegeAdmissionsServiceTest {
   }
 
   // ---------------------------------------------------------------------------
+  // The test policy (RFC 187)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `each published policy code becomes its own member, with the survey year off the row`() {
+    val student = AdmissionsTestDb.createStudent()
+    val required = AdmissionsTestDb.seedListedCollege(student, "Required College")
+    val optional = AdmissionsTestDb.seedListedCollege(student, "Optional College")
+    val blind = AdmissionsTestDb.seedListedCollege(student, "Blind College")
+    // 2024, deliberately: the citation must follow the ROW, so a fixture
+    // collected in a year other than 2023 is what proves no literal 2023 is
+    // hiding in the sentence a family hears.
+    AdmissionsTestDb.seedIpedsTestPolicy(required, testPolicy = 1, surveyYear = 2024)
+    AdmissionsTestDb.seedIpedsTestPolicy(optional, testPolicy = 5, surveyYear = 2024)
+    AdmissionsTestDb.seedIpedsTestPolicy(blind, testPolicy = 3, surveyYear = 2024)
+
+    val byName = read(student).colleges.associateBy { it.name }
+    assertEquals(AdmissionTestPolicy.REQUIRED, byName.getValue("Required College").testPolicy?.policy)
+    assertEquals(AdmissionTestPolicy.TEST_OPTIONAL, byName.getValue("Optional College").testPolicy?.policy)
+    assertEquals(AdmissionTestPolicy.TEST_BLIND, byName.getValue("Blind College").testPolicy?.policy)
+    assertEquals(
+      2024,
+      byName
+        .getValue("Required College")
+        .testPolicy
+        ?.source
+        ?.surveyYear,
+    )
+    assertTrue(
+      byName
+        .getValue("Required College")
+        .testPolicy
+        ?.source
+        ?.citedAs
+        ?.contains("2024") == true,
+      "the spoken citation carries the row's year: [${byName.getValue("Required College").testPolicy?.source?.citedAs}]",
+    )
+  }
+
+  @Test
+  fun `the statement is computed from the policy, never carried beside it`() {
+    val student = AdmissionsTestDb.createStudent()
+    val college = AdmissionsTestDb.seedListedCollege(student, "Optional College")
+    AdmissionsTestDb.seedIpedsTestPolicy(college, testPolicy = 5)
+
+    val section = read(student).colleges.single().testPolicy
+    assertNotNull(section)
+    // Asserted against the copy object rather than a retyped sentence: the
+    // point of computing it is that the words and the code cannot drift, and a
+    // literal here would be a second home for the words.
+    assertEquals(TestPolicyCopy.statementOf(AdmissionTestPolicy.TEST_OPTIONAL), section.statement)
+    assertTrue(section.statement.contains("did not require"), "the test-optional sentence says what the school did")
+  }
+
+  @Test
+  fun `no IPEDS row and a row reporting no policy are both silence the coach can state`() {
+    val student = AdmissionsTestDb.createStudent()
+    val noRow = AdmissionsTestDb.seedListedCollege(student, "No Row College")
+    val noPolicy = AdmissionsTestDb.seedListedCollege(student, "No Policy College")
+    // The row exists -- IPEDS has this school -- it simply does not answer
+    // ADMCON7. Different from the school above in the DAO, identical here.
+    AdmissionsTestDb.seedIpedsTestPolicy(noPolicy, testPolicy = null)
+
+    val byName = read(student).colleges.associateBy { it.name }
+    listOf("No Row College", "No Policy College").forEach { name ->
+      assertNull(byName.getValue(name).testPolicy, "[$name] reports no policy we can state")
+      assertTrue(
+        AdmissionsField.TEST_POLICY in byName.getValue(name).notReported,
+        "[$name] must name the section in data_availability rather than leaving a silence",
+      )
+    }
+  }
+
+  @Test
+  fun `a code outside the published set maps to nothing, so the section can only ever be suppressed`() {
+    // `testPolicyOf` suppresses the section for a code that maps to no
+    // [AdmissionTestPolicy] member, and that arm cannot be driven through the
+    // database: `college_ipeds_test_policy_domain_check` admits only 1, 3 and 5
+    // and fires on UPDATE as well as INSERT, so a fixture storing a 2 is
+    // refused before the service ever reads it. The guard is therefore pinned
+    // where it is decidable -- at the mapping itself -- so relaxing the CHECK
+    // cannot quietly turn an unknown code into some other school's sentence.
+    assertNull(AdmissionTestPolicy.fromCode(2), "2 is not a published ADMCON7 code")
+    assertNull(AdmissionTestPolicy.fromCode(0), "and neither is the zero a SQL NULL reads as")
+    assertEquals(
+      setOf(1, 3, 5),
+      AdmissionTestPolicy.entries.map { it.code }.toSet(),
+      "the published set is 1, 3 and 5 -- the domain the column's own CHECK enforces",
+    )
+  }
+
+  @Test
+  fun `a school that reports every other section still reports its policy silence`() {
+    val student = AdmissionsTestDb.createStudent()
+    val college = AdmissionsTestDb.seedListedCollege(student, "Full CDS College")
+    AdmissionsTestDb.seedMeritAid(college)
+    AdmissionsTestDb.seedFactors(college)
+    AdmissionsTestDb.seedDeadline(college)
+
+    val admissions = read(student).colleges.single()
+    assertNotNull(admissions.meritAid)
+    assertNotNull(admissions.factors)
+    assertNotNull(admissions.deadlines)
+    // The four sections are independent: a school's own Common Data Set says
+    // nothing about whether the federal survey has its admissions row.
+    assertEquals(listOf(AdmissionsField.TEST_POLICY), admissions.notReported)
+  }
+
+  @Test
+  fun `a policy is reported independently of every CDS section`() {
+    val student = AdmissionsTestDb.createStudent()
+    val college = AdmissionsTestDb.seedListedCollege(student, "IPEDS Only College")
+    AdmissionsTestDb.seedIpedsTestPolicy(college, testPolicy = 1)
+
+    val admissions = read(student).colleges.single()
+    assertEquals(AdmissionTestPolicy.REQUIRED, admissions.testPolicy?.policy)
+    assertEquals(
+      listOf(AdmissionsField.MERIT_AID, AdmissionsField.ADMISSION_FACTORS, AdmissionsField.DEADLINES),
+      admissions.notReported,
+      "the three CDS sections are silent and say so; the policy is unaffected",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
   // Batching
   // ---------------------------------------------------------------------------
 
@@ -428,18 +571,25 @@ class CollegeAdmissionsServiceTest {
           AdmissionsTestDb.seedMeritAid(it)
           AdmissionsTestDb.seedFactors(it)
           AdmissionsTestDb.seedDeadline(it)
+          AdmissionsTestDb.seedIpedsTestPolicy(it)
         }
       }
 
     val profile = read(student, ids)
     assertEquals(5, profile.colleges.size)
-    assertTrue(profile.colleges.all { it.meritAid != null && it.factors != null && it.deadlines != null })
+    assertTrue(
+      profile.colleges.all {
+        it.meritAid != null && it.factors != null && it.testPolicy != null && it.deadlines != null
+      },
+    )
     // The batch reads are keyed by college id; a duplicated id is read once.
     assertEquals(1, read(student, listOf(ids.first(), ids.first())).colleges.size)
 
     // The claim above is a statement count, so count statements: one college
     // and five colleges must prepare the SAME statements. A per-college loop in
-    // any of the three CDS reads fails here and nowhere else.
+    // any of the three CDS reads -- or in the IPEDS test-policy read RFC 187
+    // added, which costs one more statement for the whole answer and not one
+    // per college -- fails here and nowhere else.
     val one = CoachingTestDb.CountingSession()
     val five = CoachingTestDb.CountingSession()
     assertEquals(1, service.readInSession(one, student, ids.take(1)).colleges.size)
@@ -449,6 +599,19 @@ class CollegeAdmissionsServiceTest {
       five.prepared.size,
       "the read must cost the same statements for five colleges as for one, " +
         "never one per college: one=[${one.prepared}] five=[${five.prepared}]",
+    )
+    // And the count is ABSOLUTE, not merely equal to itself. "Five colleges
+    // cost what one college costs" stays true when a sixth read is added, so on
+    // its own it would let the read grow silently past the number
+    // [CollegeAdmissionsService.readInSession]'s own KDoc promises -- the list
+    // selection plus one statement per reference table. A new read is then a
+    // deliberate edit here and to that sentence, together.
+    assertEquals(
+      BATCHED_STATEMENTS,
+      five.prepared.size,
+      "the whole admissions read is [$BATCHED_STATEMENTS] statements -- the selection's two, the three CDS " +
+        "tables and the IPEDS test policy. It prepared [${five.prepared}]; if that is correct, say so in " +
+        "readInSession's KDoc in the same commit",
     )
   }
 

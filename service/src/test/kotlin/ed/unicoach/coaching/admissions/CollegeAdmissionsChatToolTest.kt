@@ -3,6 +3,8 @@ package ed.unicoach.coaching.admissions
 import ed.unicoach.chat.BareSourceCode
 import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.coaching.StudentScopedChatTool
+import ed.unicoach.college.AdmissionTestPolicy
+import ed.unicoach.college.CollegeQueryVocabulary
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
 import ed.unicoach.db.models.CollegeId
@@ -54,6 +56,8 @@ class CollegeAdmissionsChatToolTest {
 
   private fun meritOf(college: JsonObject): JsonObject? = college[AdmissionsField.MERIT_AID.wireName]?.jsonObject
 
+  private fun testPolicyOf(college: JsonObject): JsonObject? = college[AdmissionsField.TEST_POLICY.wireName]?.jsonObject
+
   private fun roundsOf(college: JsonObject) =
     college
       .getValue(AdmissionsField.DEADLINES.wireName)
@@ -88,6 +92,7 @@ class CollegeAdmissionsChatToolTest {
     AdmissionsTestDb.seedFactors(id, interview = FactorRating.CONSIDERED)
     AdmissionsTestDb.seedDeadline(id, round = ApplicationRound.EARLY_DECISION_1)
     AdmissionsTestDb.seedDeadline(id, round = ApplicationRound.REGULAR, closing = CdsMonthDay(1, 15), notification = null)
+    AdmissionsTestDb.seedIpedsTestPolicy(id)
     return id
   }
 
@@ -115,6 +120,31 @@ class CollegeAdmissionsChatToolTest {
     assertTrue(description.contains("ALL full-time freshmen"), "the denominator must ride the description")
     assertTrue(description.contains("data_availability"), "the silence must be explained")
     assertTrue(description.contains("offered false"), "a false round flag must be explained as an answer")
+    // RFC 187: the test-policy ethos rides the description too -- the policy is
+    // dated, it is per school, and its silence is ours.
+    assertTrue(
+      description.contains(AdmissionsField.TEST_POLICY.wireName),
+      "the description must name the section it is stating rules about: [$description]",
+    )
+    assertTrue(description.contains("say the year"), "a policy claim always carries its collection year: [$description]")
+    assertTrue(
+      description.contains("never carry one school's policy over to another school"),
+      "one school's policy is never generalised to the list: [$description]",
+    )
+    assertTrue(
+      description.contains(TestPolicyCopy.NOT_REPORTED),
+      "the absent-policy sentence is the copy object's, never retyped here: [$description]",
+    )
+    // The section key and the `search_colleges` filter field are ONE word (RFC
+    // 187): a student who filtered on it and then asked about one school reads
+    // the same word twice. AdmissionsField.TEST_POLICY types that word a second
+    // time -- its sibling MERIT_AID derives its key from MeritAidWire.KEY for
+    // exactly this reason -- so renaming either side has to fail here.
+    assertTrue(
+      AdmissionsField.TEST_POLICY.wireName in CollegeQueryVocabulary.FIELD_NAMES,
+      "the section key must be the same word search_colleges filters on: [${AdmissionsField.TEST_POLICY.wireName}] " +
+        "is not in [${CollegeQueryVocabulary.FIELD_NAMES}]",
+    )
     assertFalse(
       description.contains("without need"),
       "the tool must never describe the share as a share of freshmen without need: [$description]",
@@ -188,6 +218,7 @@ class CollegeAdmissionsChatToolTest {
         "list_status",
         AdmissionsField.MERIT_AID.wireName,
         AdmissionsField.ADMISSION_FACTORS.wireName,
+        AdmissionsField.TEST_POLICY.wireName,
         AdmissionsField.DEADLINES.wireName,
         "data_availability",
       ),
@@ -311,6 +342,7 @@ class CollegeAdmissionsChatToolTest {
       listOf(
         AdmissionsField.MERIT_AID.wireName,
         AdmissionsField.ADMISSION_FACTORS.wireName,
+        AdmissionsField.TEST_POLICY.wireName,
         AdmissionsField.DEADLINES.wireName,
       ),
       availabilityOf(college),
@@ -499,8 +531,12 @@ class CollegeAdmissionsChatToolTest {
     val college = seedFullyReportingCollege(student, "Cited University")
 
     val rendered = collegesOf(execute(student)).single()
+    // The THREE CDS sections. The test policy is deliberately not among them:
+    // it is one federal survey with no per-school document, so it carries its
+    // own citation type and is asserted on its own terms below (RFC 187).
+    val cdsFields = AdmissionsField.entries - AdmissionsField.TEST_POLICY
     val citations =
-      AdmissionsField.entries.map { field ->
+      cdsFields.map { field ->
         rendered
           .getValue(field.wireName)
           .jsonObject
@@ -508,8 +544,17 @@ class CollegeAdmissionsChatToolTest {
           .jsonObject
       }
     assertEquals(
-      List(3) { "Cited University's 2024-25 Common Data Set" },
+      List(cdsFields.size) { "Cited University's 2024-25 Common Data Set" },
       citations.map { it.getValue("cited_as").jsonPrimitive.content },
+    )
+    assertEquals(
+      "the U.S. Department of Education's IPEDS admissions survey, collected in 2023",
+      testPolicyOf(rendered)!!
+        .getValue("source")
+        .jsonObject
+        .getValue("cited_as")
+        .jsonPrimitive.content,
+      "the federal survey names itself, and never the school's own Common Data Set",
     )
     assertTrue(citations.all { it.getValue("url").jsonPrimitive.content == AdmissionsTestDb.SOURCE_URL })
     assertTrue(citations.all { it.getValue("archive_url").jsonPrimitive.content == AdmissionsTestDb.ARCHIVE_URL })
@@ -549,6 +594,115 @@ class CollegeAdmissionsChatToolTest {
         .getValue("cited_as")
         .jsonPrimitive.content,
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // The test policy (RFC 187)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the test-policy section renders the slug, the sentence, the standing caveat and its citation`() {
+    val student = AdmissionsTestDb.createStudent()
+    val college = AdmissionsTestDb.seedListedCollege(student, "Optional University")
+    AdmissionsTestDb.seedIpedsTestPolicy(college, testPolicy = 5, surveyYear = 2024)
+
+    val section = testPolicyOf(collegesOf(execute(student)).single())
+    assertNotNull(section)
+    assertEquals(AdmissionTestPolicy.TEST_OPTIONAL.slug, section.getValue("policy").jsonPrimitive.content)
+    // Asserted against the copy object, never a retyped sentence: the words
+    // have one home, and a literal here would be a second one.
+    assertEquals(
+      TestPolicyCopy.statementOf(AdmissionTestPolicy.TEST_OPTIONAL),
+      section.getValue("statement").jsonPrimitive.content,
+    )
+    assertEquals(
+      TestPolicyCopy.CONFIRM_WITH_SCHOOL,
+      section.getValue("confirm_with_school").jsonPrimitive.content,
+    )
+    val citedAs =
+      section
+        .getValue("source")
+        .jsonObject
+        .getValue("cited_as")
+        .jsonPrimitive.content
+    assertTrue(citedAs.contains("2024"), "the collection year is IN the sentence, never a bare key: [$citedAs]")
+    assertTrue(citedAs.contains("IPEDS"), "the publisher is named: [$citedAs]")
+    // No url key: IPEDS publishes no per-school page for this answer, so the
+    // section renders its own one-key source rather than reusing putCitation.
+    assertEquals(setOf("cited_as"), section.getValue("source").jsonObject.keys)
+  }
+
+  @Test
+  fun `each published code renders its own sentence, and every one carries the standing caveat`() {
+    val student = AdmissionsTestDb.createStudent()
+    // D17: the "a school can change this" sentence is not optional, so it is
+    // asserted on EVERY rendered section rather than on a representative one.
+    AdmissionTestPolicy.entries.forEach { policy ->
+      val college = AdmissionsTestDb.seedListedCollege(student, "${policy.slug} University")
+      AdmissionsTestDb.seedIpedsTestPolicy(college, testPolicy = policy.code)
+
+      val section = testPolicyOf(collegesOf(execute(student, """{"college_ids":["${college.value}"]}""")).single())
+      assertNotNull(section, "[${policy.slug}] must render a section")
+      assertEquals(policy.slug, section.getValue("policy").jsonPrimitive.content)
+      assertEquals(TestPolicyCopy.statementOf(policy), section.getValue("statement").jsonPrimitive.content)
+      assertEquals(
+        TestPolicyCopy.CONFIRM_WITH_SCHOOL,
+        section.getValue("confirm_with_school").jsonPrimitive.content,
+        "[${policy.slug}] must carry the standing caveat too",
+      )
+    }
+  }
+
+  @Test
+  fun `a school with no policy emits no section and names the silence`() {
+    val student = AdmissionsTestDb.createStudent()
+    val noRow = AdmissionsTestDb.seedListedCollege(student, "No Row College")
+    val noPolicy = AdmissionsTestDb.seedListedCollege(student, "No Policy College")
+    AdmissionsTestDb.seedIpedsTestPolicy(noPolicy, testPolicy = null)
+
+    collegesOf(execute(student)).forEach { college ->
+      assertNull(testPolicyOf(college), "an absent key, never an empty object: [${college["name"]}]")
+      assertTrue(
+        AdmissionsField.TEST_POLICY.wireName in availabilityOf(college),
+        "the silence must be sayable: [${availabilityOf(college)}]",
+      )
+    }
+    assertEquals(2, collegesOf(execute(student, """{"college_ids":["${noRow.value}","${noPolicy.value}"]}""")).size)
+  }
+
+  @Test
+  fun `no raw ADMCON7 code or variable name reaches the payload`() {
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionTestPolicy.entries.forEach { policy ->
+      AdmissionsTestDb.seedListedCollege(student, "${policy.slug} University").also {
+        AdmissionsTestDb.seedIpedsTestPolicy(it, testPolicy = policy.code)
+      }
+    }
+
+    val payload = execute(student).toString()
+    assertFalse(payload.contains("ADMCON7"), "the survey's internal variable name means nothing to a student")
+    // The codes themselves are checked through the PARSER, not by matching the
+    // serialized text: a `"policy":"5"` substring probe assumes kotlinx's
+    // compact spacing, and it misses the likelier regression anyway -- a code
+    // rendered as a JSON NUMBER, which is what `put(key, Int)` does. So every
+    // section is read back and held to being words: each value is a non-empty
+    // string, and `policy` is a slug that does not parse as a number.
+    collegesOf(execute(student)).forEach { college ->
+      val section = testPolicyOf(college)
+      assertNotNull(section, "every seeded school renders a section")
+      section.forEach { (key, value) ->
+        val primitive = value as? JsonPrimitive ?: return@forEach
+        assertTrue(primitive.isString, "[$key] must reach the model as words, not as a bare number: [$primitive]")
+        assertTrue(primitive.content.isNotEmpty(), "[$key] must not be an empty string")
+      }
+      assertNull(
+        section
+          .getValue("policy")
+          .jsonPrimitive.content
+          .toIntOrNull(),
+        "the policy key carries the slug word, never a published code",
+      )
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -10,7 +10,6 @@ import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.CodebookReferenceFixture
-import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
@@ -35,7 +34,6 @@ import ed.unicoach.db.models.NewAidFormRequirement
 import ed.unicoach.db.models.NewCohortMoneyStat
 import ed.unicoach.db.models.NewCohortPopulationCount
 import ed.unicoach.db.models.NewCollege
-import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewPriceFigure
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
@@ -390,40 +388,13 @@ object CostsTestDb {
    * [offersHousing] is nullable on purpose: a row that does not report `IC.ROOM`
    * must read exactly like NO row at all, and a fixture that could not express
    * it would leave that equivalence untested. Every other column is an
-   * uninteresting minimum -- this seeder exists for one flag.
+   * uninteresting minimum -- this seeder exists for one flag, and the row
+   * itself is typed once, by the shared [CoachingTestDb.seedIpeds].
    */
   fun seedIpedsHousing(
     ipedsUnitId: Int,
     offersHousing: Boolean?,
-  ) = CollegeIpedsDao
-    .upsert(
-      sqlSession,
-      NewCollegeIpeds(
-        ipedsUnitId = ipedsUnitId,
-        surveyYear = 2023,
-        cyActive = true,
-        deathYear = null,
-        closedAt = null,
-        newIpedsUnitId = null,
-        instLevel = null,
-        ugOffer = null,
-        sector = null,
-        carnegieBasic = null,
-        carnegieSize = null,
-        cbsa = null,
-        relAffil = null,
-        hasRotc = null,
-        hasStudyAbroad = null,
-        disabilityBand = null,
-        registeredDisabilityPercent = null,
-        offersHousing = offersHousing,
-        housingCapacityHeadcount = null,
-        applicationFeeUsd = null,
-        athleticAssoc = emptyList(),
-        footballConf = null,
-        testPolicy = null,
-      ),
-    ).getOrThrow()
+  ) = CoachingTestDb.seedIpeds(ipedsUnitId, offersHousing = offersHousing)
 
   /** One CDS merit-aid row for [collegeId] (RFC 148 D7), through the shared seeder. */
   fun seedMeritAid(

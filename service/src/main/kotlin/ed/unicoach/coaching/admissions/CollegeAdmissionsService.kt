@@ -1,9 +1,11 @@
 package ed.unicoach.coaching.admissions
 
 import ed.unicoach.coaching.StudentCollegeSelection
+import ed.unicoach.college.AdmissionTestPolicy
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CdsAdmissionsDao
+import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AdmissionFactor
 import ed.unicoach.db.models.ApplicationRound
@@ -14,6 +16,7 @@ import ed.unicoach.db.models.CollegeDeadline
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.CollegeMeritAid
+import ed.unicoach.db.models.CollegeTestPolicyRow
 import ed.unicoach.db.models.FactorRating
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
@@ -243,20 +246,28 @@ data class CollegeAdmissions(
   val listStatus: CollegeListEntryStatus,
   val meritAid: MeritPractice?,
   val factors: AdmissionFactorGrid?,
+  val testPolicy: SchoolTestPolicy?,
   val deadlines: DeadlineSchedule?,
 ) {
   /**
    * The sections this school does not report, so the coach says so instead of
-   * improvising. DERIVED from the three sections, never passed in: "did this
+   * improvising. DERIVED from the four sections, never passed in: "did this
    * school report this" is one fact, and a hand-built list beside the nullable
    * sections would be a second place to state it -- the exact drift this slice
    * exists to remove. A section is absent here exactly when it is absent above.
+   *
+   * [AdmissionsField.TEST_POLICY] is named here for BOTH of the read's two
+   * absences -- a school IPEDS has no admissions row for, and one whose row
+   * does not report `ADMCON7` -- because to a student they are the same
+   * sentence: we do not have this school's policy. The two stay distinguishable
+   * in the DAO, where the ingest owner can act on the difference.
    */
   val notReported: List<AdmissionsField>
     get() =
       buildList {
         if (meritAid == null) add(AdmissionsField.MERIT_AID)
         if (factors == null) add(AdmissionsField.ADMISSION_FACTORS)
+        if (testPolicy == null) add(AdmissionsField.TEST_POLICY)
         if (deadlines == null) add(AdmissionsField.DEADLINES)
       }
 }
@@ -268,15 +279,19 @@ data class CollegeAdmissionsProfile(
 )
 
 /**
- * Chat-free composition of the three CDS reference tables RFC 140 landed
- * (RFC 148): the student's active college list, joined to each school's own
- * latest-cycle merit-aid row, factor grid and application rounds. Read-only --
- * this service writes nothing, ever, and the [CollegeAdmissionsChatTool] above
- * it only renders what this returns.
+ * Chat-free composition of the three CDS reference tables RFC 140 landed, plus
+ * the one IPEDS admissions column RFC 187 added to the read: the student's
+ * active college list, joined to each school's own latest-cycle merit-aid row,
+ * factor grid and application rounds, and to what it told the federal
+ * admissions survey about test scores. Read-only -- this service writes
+ * nothing, ever, and the [CollegeAdmissionsChatTool] above it only renders what
+ * this returns.
  *
- * - The three reads are BATCHED, one query per table for the whole answer, so
- *   the cost of a fifty-school list is four queries and not one hundred and
- *   fifty.
+ * - The four reads are BATCHED, one query per table for the whole answer, so
+ *   the cost of a fifty-school list is six statements -- the student's list
+ *   entries, the college rows, and one per reference table -- and not two
+ *   hundred. Adding the test policy cost ONE statement for the whole answer,
+ *   not one per college.
  * - No cycle year is written down anywhere here. The corpus mixes 2024 and 2025
  *   per table per college, and the DAO resolves the newest per table; a
  *   hardcoded year would silently drop half the corpus.
@@ -310,8 +325,12 @@ class CollegeAdmissionsService(
    * The whole read on ONE session, extracted so the batching contract above is
    * assertable: a test can hand this a session that counts the statements it
    * prepares and prove that a five-college list costs the same statements as a
-   * one-college list. [getForStudent] is this function plus the connection and
-   * the `Result` wrapper, and nothing else.
+   * one-college list -- SIX of them since RFC 187 (the selection's two, the
+   * three CDS tables, the IPEDS test policy), and still six whatever the list's
+   * length. `CollegeAdmissionsServiceTest` asserts that number absolutely, so a
+   * seventh read cannot be added without this sentence being edited with it.
+   * [getForStudent] is this function plus the connection and the `Result`
+   * wrapper, and nothing else.
    */
   internal fun readInSession(
     session: SqlSession,
@@ -319,7 +338,11 @@ class CollegeAdmissionsService(
     collegeIds: List<CollegeId>?,
   ): CollegeAdmissionsProfile {
     val selection = StudentCollegeSelection.read(session, studentId, collegeIds)
-    val facts = LatestCdsFacts.read(session, selection.selected)
+    // Named rather than projected inside the call: this function's whole shape
+    // is "select, fetch, assemble", and a row projection inside the fetch is a
+    // second level of detail in the middle of the first.
+    val ipedsUnitIds = selection.colleges.map { it.ipedsUnitId }
+    val rows = AdmissionsRows.read(session, selection.selected, ipedsUnitIds)
 
     val colleges =
       selection.map { college, entry ->
@@ -327,9 +350,16 @@ class CollegeAdmissionsService(
         admissionsOf(
           college = college,
           listStatus = listStatus,
-          merit = facts.meritById[college.id],
-          factors = facts.factorsById[college.id],
-          deadlines = facts.deadlinesById[college.id].orEmpty(),
+          merit = rows.meritById[college.id],
+          factors = rows.factorsById[college.id],
+          testPolicy = rows.testPolicyByIpedsUnitId[college.ipedsUnitId],
+          // The two absences render identically, and the section rightly does
+          // not distinguish them -- but which one it was is the ingest owner's
+          // fact, so it is passed on rather than lost at the lookup. An ABSENT
+          // key is a school IPEDS has no row for; a key holding null is a row
+          // that does not report ADMCON7.
+          hasIpedsRow = college.ipedsUnitId in rows.testPolicyByIpedsUnitId,
+          deadlines = rows.deadlinesById[college.id].orEmpty(),
         )
       }
 
@@ -337,28 +367,49 @@ class CollegeAdmissionsService(
   }
 
   /**
-   * The three latest-cycle CDS reads for one answer, each already indexed by
-   * college. ONE construct rather than three copies of
+   * The four reference reads behind one answer, each already indexed by the key
+   * its own table is natural in. ONE construct rather than four copies of
    * `getOrThrow().associateBy` inline in the orchestrator: the batching
    * contract -- one query per table for the whole answer -- becomes a property
-   * of this type, [readInSession] reads as "select, fetch, assemble", and a
-   * fourth table is one field here instead of a fourth copy of the idiom.
+   * of this type, and [readInSession] reads as "select, fetch, assemble".
+   *
+   * It was `LatestCdsFacts` while all three tables were the schools' own Common
+   * Data Sets. IPEDS ADM is not the Common Data Set, and a holder called
+   * `LatestCdsFacts` carrying an IPEDS map is the kind of small lie that leads
+   * a later reader to attribute the test policy to the school's own CDS -- and
+   * to give it the CDS's per-school citation, which it does not have. The name
+   * moved with the fourth field (RFC 187), and `Facts` went with it: every
+   * field is stored ROWS indexed by the key its own table is natural in, which
+   * is a structural bound, where "facts" was a filler noun that named none
+   * (`CollegeSfaRows` and `CanonicalMoneyReadRows` are the house precedent).
+   *
+   * [testPolicyByIpedsUnitId] is keyed by `ipeds_unit_id` rather than by
+   * [CollegeId] because that is `college_ipeds`'s natural key, and
+   * [ed.unicoach.db.models.College.ipedsUnitId] is already on the row the
+   * service holds -- so the alternative would be an extra lookup to rekey a map
+   * nobody needed rekeyed. Its value is NULLABLE: an absent key is a school
+   * IPEDS has no row for, a null value is a row that does not report the
+   * policy.
    */
-  private data class LatestCdsFacts(
+  private data class AdmissionsRows(
     val meritById: Map<CollegeId, CollegeMeritAid>,
     val factorsById: Map<CollegeId, CollegeAdmissionFactors>,
+    val testPolicyByIpedsUnitId: Map<Int, CollegeTestPolicyRow?>,
     val deadlinesById: Map<CollegeId, List<CollegeDeadline>>,
   ) {
     companion object {
       fun read(
         session: SqlSession,
         collegeIds: List<CollegeId>,
-      ): LatestCdsFacts =
-        LatestCdsFacts(
+        ipedsUnitIds: List<Int>,
+      ): AdmissionsRows =
+        AdmissionsRows(
           meritById =
             CdsAdmissionsDao.listLatestMeritAid(session, collegeIds).getOrThrow().associateBy { it.collegeId },
           factorsById =
             CdsAdmissionsDao.listLatestAdmissionFactors(session, collegeIds).getOrThrow().associateBy { it.collegeId },
+          testPolicyByIpedsUnitId =
+            CollegeIpedsDao.testPoliciesByIpedsUnitId(session, ipedsUnitIds).getOrThrow(),
           deadlinesById =
             CdsAdmissionsDao.listLatestDeadlines(session, collegeIds).getOrThrow().groupBy { it.collegeId },
         )
@@ -377,6 +428,8 @@ class CollegeAdmissionsService(
     listStatus: CollegeListEntryStatus,
     merit: CollegeMeritAid?,
     factors: CollegeAdmissionFactors?,
+    testPolicy: CollegeTestPolicyRow?,
+    hasIpedsRow: Boolean,
     deadlines: List<CollegeDeadline>,
   ): CollegeAdmissions =
     CollegeAdmissions(
@@ -387,9 +440,10 @@ class CollegeAdmissionsService(
       listStatus = listStatus,
       // Each factory owns the "a citation with no facts under it is not data"
       // rule for its own section and returns null when it holds; the unreported
-      // list is then derived from these three, not restated beside them.
+      // list is then derived from these four, not restated beside them.
       meritAid = meritOf(college, merit),
       factors = factorsOf(college, factors),
+      testPolicy = testPolicyOf(college, testPolicy, hasIpedsRow),
       deadlines = scheduleOf(college, deadlines),
     )
 
@@ -415,6 +469,62 @@ class CollegeAdmissionsService(
           row.sourceYear,
           row.firstTimeFullTimeFreshmenHeadcount,
           row.sourceUrl,
+        )
+      }
+    }
+  }
+
+  /**
+   * One school's test-policy section, or null when we have no policy for it
+   * (RFC 187). Null covers three cases that are one sentence to a student --
+   * "we do not have this school's policy" -- and the third of them is the
+   * reason this function exists rather than a `let`:
+   *
+   * - no `college_ipeds` row for the school (an absent key in the read);
+   * - a row that does not report `ADMCON7` (a null value in the read);
+   * - a row whose code maps to NO known [AdmissionTestPolicy] member.
+   *
+   * The wire cannot tell the three apart and should not -- to a student they
+   * are one sentence -- but the LOG can, and [hasIpedsRow] is why this function
+   * takes a flag beside a nullable row. The read keeps "no row" and "a row that
+   * answers nothing" apart, and folding them at the lookup would throw that
+   * away one line after the DAO went to the trouble of preserving it: the
+   * second is a fact about OUR corpus, and `roundOf` below sets the precedent
+   * that what the mapping drops is recorded where it is dropped. A school IPEDS
+   * simply does not cover is ordinary and is NOT logged.
+   *
+   * The third case is a corpus defect rather than any kind of silence: the
+   * column's own CHECK admits only 1, 3 and 5, so a code that fails to map
+   * means the CHECK was relaxed or the ingest wrote something new. It is logged
+   * at WARN with the college, the code and the survey year before the section
+   * is suppressed, on the [meritOf]/[factorsOf] precedent -- the wire is right
+   * either way, but an operator can only find the defect if the run says which
+   * school it came from.
+   */
+  private fun testPolicyOf(
+    college: College,
+    row: CollegeTestPolicyRow?,
+    hasIpedsRow: Boolean,
+  ): SchoolTestPolicy? {
+    if (row == null) {
+      if (hasIpedsRow) {
+        logger.info(
+          "ipeds row reports no test policy -- section suppressed: college=[{}] ipeds_unit_id=[{}]",
+          college.id.value,
+          college.ipedsUnitId,
+        )
+      }
+      return null
+    }
+    return SchoolTestPolicy.from(row).also {
+      if (it == null) {
+        logger.warn(
+          "ipeds test_policy code is not a published ADMCON7 value -- section suppressed: " +
+            "college=[{}] ipeds_unit_id=[{}] test_policy=[{}] survey_year=[{}]",
+          college.id.value,
+          college.ipedsUnitId,
+          row.code,
+          row.surveyYear,
         )
       }
     }

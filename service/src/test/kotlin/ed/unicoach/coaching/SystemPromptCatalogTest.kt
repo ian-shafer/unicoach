@@ -1,7 +1,9 @@
 package ed.unicoach.coaching
 
 import ed.unicoach.chat.BareSourceCodeGuard
+import ed.unicoach.coaching.admissions.AdmissionsField
 import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
+import ed.unicoach.coaching.admissions.TestPolicyCopy
 import ed.unicoach.coaching.aid.FederalAidPolicyChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
@@ -61,28 +63,61 @@ import kotlin.test.fail
 class SystemPromptCatalogTest {
   companion object {
     /**
-     * The ONLY prefix that may precede the word "subtract" in coach copy: the
-     * rule has to be stated as a prohibition, never as a licence.
+     * The ONLY prefix that may precede a plain forbidden verb in coach copy:
+     * the rule has to be stated as a prohibition, never as a licence.
+     *
+     * Named for its oldest subject -- "subtract" (RFCs 141/149) -- but it is
+     * the same single word "predict" is policed with (RFC 187 D9), and one
+     * value with two names is what this file used to carry.
+     * [PERMITTED_TEST_PREP_PREFIX] is the only rule that needs a longer one.
      */
     private const val PERMITTED_SUBTRACT_PREFIX = "never "
 
     /**
-     * Every mention of subtracting, with the words in front of it.
+     * The only words that may precede "test prep" in coach copy (RFC 187 D9).
+     *
+     * Stated as its own licence scan rather than resting on the single positive
+     * assertion below, because the two halves of D9 have to be policed the same
+     * way: a later sentence recommending prep would leave the positive
+     * assertion green while reversing the rule. Longer than
+     * [PERMITTED_SUBTRACT_PREFIX] on purpose -- "never test prep" is not
+     * English, so the prohibition has to name the verb it forbids.
+     */
+    private const val PERMITTED_TEST_PREP_PREFIX = "never coach "
+
+    /**
+     * Every mention of [term] in [copy], each with the words in front of it.
+     *
+     * ONE licence scan for every rule of this shape. The three scans -- the
+     * standing "subtract" rule and RFC 187's "predict" and "test prep" halves
+     * -- were three inline copies of the same regex, so the next rule stated as
+     * a prohibition would have been a fourth.
      *
      * The lookback is the permitted prefix's own LENGTH, derived rather than
      * retyped: the scan only works because the window and the string it is
-     * compared against are the same size, and that coupling was written out by
-     * hand at seven sites, in none of which it was said aloud.
+     * compared against are the SAME SIZE, and passing the prefix in is what
+     * keeps that true for a caller who never thinks about it.
      */
-    private val SUBTRACT_MENTIONS = Regex("""(.{0,${PERMITTED_SUBTRACT_PREFIX.length}})subtract""")
-
-    /** Every mention of subtracting in [copy] that does NOT forbid it -- empty, or the copy is wrong. */
-    private fun listSubtractionsNotForbidden(copy: String): List<String> =
-      SUBTRACT_MENTIONS
+    private fun listMentions(
+      copy: String,
+      term: String,
+      permittedPrefix: String,
+    ): List<String> =
+      Regex("""(.{0,${permittedPrefix.length}})${Regex.escape(term)}""")
         .findAll(copy)
         .map { it.groupValues[1] }
-        .filterNot { it == PERMITTED_SUBTRACT_PREFIX }
         .toList()
+
+    /** Every mention of [term] in [copy] that does NOT forbid it -- empty, or the copy is wrong. */
+    private fun listMentionsNotForbidden(
+      copy: String,
+      term: String,
+      permittedPrefix: String,
+    ): List<String> = listMentions(copy, term, permittedPrefix).filterNot { it == permittedPrefix }
+
+    /** The standing subtraction rule, named: every mention of subtracting in [copy] that does not forbid it. */
+    private fun listSubtractionsNotForbidden(copy: String): List<String> =
+      listMentionsNotForbidden(copy, "subtract", PERMITTED_SUBTRACT_PREFIX)
 
     /** A `vNN` catalog label, and the number it carries. No leading zero: `v08` is not a label anything writes. */
     private val VERSION_LABEL = Regex("^v([1-9][0-9]*)$")
@@ -989,6 +1024,162 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The test-policy block (RFC 187), asserted in the AUTHORED file — see
+   * [authoredAdmissionsParagraph] for why this one is not read off the pinned
+   * row.
+   *
+   * It is part of the ADMISSIONS paragraph, not a paragraph of its own: it is
+   * the same tool's fourth section, so it is read where the coach is already
+   * being told how to read that tool.
+   */
+  @Test
+  fun `the authored admissions paragraph states a test policy per school, dated, and never as a list-wide claim`() {
+    val paragraph = authoredAdmissionsParagraph()
+
+    assertTrue(
+      paragraph.contains(AdmissionsField.TEST_POLICY.wireName),
+      "the block must key the rule off the section the tool actually emits",
+    )
+    assertTrue(
+      paragraph.contains("only from that school's own ${AdmissionsField.TEST_POLICY.wireName} section"),
+      "D17: a policy claim comes from THAT school's row, never from memory or from a similar school",
+    )
+    assertTrue(
+      paragraph.contains("Say the year the section's source cites in the same breath as the policy"),
+      "D17: a policy claim always carries the year it was collected in",
+    )
+
+    // The prompt PARAPHRASES two shipping constants rather than quoting them,
+    // so the probes are DERIVED from those constants instead of retyped here:
+    // rewording TestPolicyCopy.CONFIRM_WITH_SCHOOL or TestPolicyCopy.NOT_REPORTED
+    // must fail this test. Pinning the paraphrase instead -- which is what this
+    // test used to do -- left the tool wire and the prompt free to say two
+    // different things about the same rule, with nothing to notice.
+    // Lowercased on both sides: the constants are mid-sentence clauses and the
+    // prompt opens sentences with them.
+    val lowercased = paragraph.lowercase()
+    assertTrue(
+      lowercased.contains(TestPolicyCopy.POLICY_CAN_CHANGE.lowercase()),
+      "the block must say what the tool's confirm_with_school sentence says first -- a school can change this " +
+        "-- or the dated fact reads as current",
+    )
+    assertTrue(
+      lowercased.contains(TestPolicyCopy.CONFIRM_ON_THE_SCHOOLS_PAGE.lowercase()),
+      "and what it says second: the school's own page is where to confirm it",
+    )
+
+    assertTrue(
+      paragraph.contains("Never carry one school's policy across to another school on their list"),
+      "the brief's list-anchoring rule: one school's policy is never generalised to another school",
+    )
+    assertTrue(
+      paragraph.contains("only from the schools whose own recorded policy you have"),
+      "an aggregate claim about the list is LICENSED, not banned -- and only from the policies we actually have",
+    )
+    assertTrue(
+      paragraph.contains("name the ones you have no policy for"),
+      "and it is BEST EFFORT: on a list where IPEDS covers some schools and not others, the coach says what it " +
+        "has and names the gap, rather than falling silent on both",
+    )
+    assertTrue(
+      paragraph.contains("we do not have that school's policy"),
+      "an absent policy is a statement about US",
+    )
+    assertTrue(
+      paragraph.contains("not a statement about the school"),
+      "and never a statement that the school requires no score, which is the fabrication this block forbids",
+    )
+    assertTrue(
+      lowercased.contains(TestPolicyCopy.POLICY_GAP_IS_OURS.lowercase()),
+      "the absent-policy rule must say what TestPolicyCopy.NOT_REPORTED says -- the silence is a gap in OUR data",
+    )
+  }
+
+  /**
+   * The explain-once block and the standing scope rules (RFC 187, brief
+   * decisions D4/D9/D13), asserted in the AUTHORED file — see
+   * [authoredAdmissionsParagraph].
+   */
+  @Test
+  fun `the authored admissions paragraph explains testing once, names both tests, and refuses prep and predictions`() {
+    val paragraph = authoredAdmissionsParagraph()
+    val lowercased = paragraph.lowercase()
+
+    assertTrue(
+      paragraph.contains("The first time testing comes up in a conversation"),
+      "D4: the explanation is given at the first mention, before the answer",
+    )
+    assertTrue(
+      paragraph.contains("Give that explanation once in a conversation"),
+      "and once only -- a lecture at every mention is the failure mode D4 names",
+    )
+    assertTrue(
+      paragraph.contains("Say when a student needs a score") &&
+        paragraph.contains("Say when they would want one anyway") &&
+        paragraph.contains("Say when they are better off not sitting one"),
+      "all three arms of the explanation must be there: needs, wants, and better off without",
+    )
+    assertTrue(
+      paragraph.contains("Then answer the question they actually asked"),
+      "the explanation precedes the answer; it never replaces it",
+    )
+    assertTrue(
+      paragraph.contains("That explanation is general, and say so"),
+      "D4: the explanation is marked AS general, or a student hears it as a set of claims about their own schools",
+    )
+    assertTrue(
+      paragraph.contains("not a set of claims about their schools"),
+      "and the block says what it is not, which is the misreading the whole test-policy rule exists to prevent",
+    )
+
+    // D13. Counted rather than merely present: "names the ACT somewhere" is
+    // satisfied by a paragraph that says SAT five times and ACT once, which is
+    // exactly the default-noun habit the rule exists to break.
+    assertEquals(
+      Regex("\\bSAT\\b").findAll(paragraph).count(),
+      Regex("\\bACT\\b").findAll(paragraph).count(),
+      "D13: the SAT and the ACT are named symmetrically; in a dozen states the ACT is the test the student sits",
+    )
+    assertTrue(
+      paragraph.contains("the SAT is never the default noun"),
+      "and the rule is stated, not merely obeyed by this draft",
+    )
+
+    // D9, as a licence scan rather than a single positive: the prohibition has
+    // to hold for EVERY mention, so a later sentence that says "predict"
+    // without "never" in front of it fails here.
+    //
+    // LOWERCASED, like the prep scan below and for the same reason: the scan is
+    // a substring comparison against a lowercase prefix, so a sentence opening
+    // "Predict ..." -- the exact shape a licence would take -- was invisible to
+    // it while the prohibition mid-sentence kept it green.
+    assertTrue(
+      paragraph.contains("Never coach test prep, never predict a score, and never give odds of admission"),
+      "D9: prep, predicted scores and admission odds are all out of scope",
+    )
+    val predictions = listMentions(lowercased, "predict", PERMITTED_SUBTRACT_PREFIX)
+    assertTrue(predictions.isNotEmpty(), "the rule must actually be stated, or this assertion is vacuous")
+    assertEquals(
+      emptyList(),
+      listMentionsNotForbidden(lowercased, "predict", PERMITTED_SUBTRACT_PREFIX),
+      "every mention of predicting a score must forbid it: [$predictions]",
+    )
+
+    // The prep half of D9, scanned the SAME way. The positive assertion above
+    // proves the rule is stated once; it says nothing about a later sentence
+    // that recommends prep, and "never coach test prep" plus "a few weeks of
+    // practice would help" is the shape that would ship. Lowercased because
+    // the prohibition opens its sentence.
+    val prepMentions = listMentions(lowercased, "test prep", PERMITTED_TEST_PREP_PREFIX)
+    assertTrue(prepMentions.isNotEmpty(), "the prep rule must actually be stated, or this assertion is vacuous")
+    assertEquals(
+      emptyList(),
+      listMentionsNotForbidden(lowercased, "test prep", PERMITTED_TEST_PREP_PREFIX),
+      "every mention of test prep must forbid coaching it: [$prepMentions]",
+    )
+  }
+
+  /**
    * The living-arrangement paragraph (RFC 149), asserted in the body the runtime is
    * actually SERVED — the row `service.conf` pins.
    */
@@ -1051,7 +1242,7 @@ class SystemPromptCatalogTest {
     // failure this class exists to make loud.
     val served = servedBody()
 
-    val subtractions = SUBTRACT_MENTIONS.findAll(served).map { it.groupValues[1] }.toList()
+    val subtractions = listMentions(served, "subtract", PERMITTED_SUBTRACT_PREFIX)
     assertTrue(subtractions.isNotEmpty(), "the rule must actually be stated, or this assertion is vacuous")
     assertEquals(
       emptyList(),
@@ -2158,6 +2349,26 @@ class SystemPromptCatalogTest {
   }
 
   private fun admissionsParagraph(): String = paragraphAt(CoachParagraph.ADMISSIONS)
+
+  /**
+   * The admissions paragraph as a human AUTHORED it, read from
+   * `prompts/coach-system-prompt.md` rather than from the pinned catalog row.
+   *
+   * The two readings are the same text by the time anything ships -- that is
+   * exactly what
+   * [the pinned coach prompt body is exactly the authored source file] asserts,
+   * and it is the only guarantee the RFC 185 workflow has. But the seed
+   * migration is GENERATED at land by `bin/prompt-seed`, after the final
+   * rebase, so between authoring a sentence and landing it the catalog row does
+   * not carry it yet. A rule about copy this run authored therefore has to be
+   * stated over the file this run edited; stating it over the served body would
+   * make it unverifiable until the moment it can no longer be fixed cheaply.
+   *
+   * Nothing is lost: the file-versus-row test is what carries every such rule
+   * across to the served body, and it is one assertion rather than one per
+   * paragraph.
+   */
+  private fun authoredAdmissionsParagraph(): String = paragraphOf(authoredBody(), CoachParagraph.ADMISSIONS)
 
   /**
    * The source-jargon sentence, as the served body carries it: the tail of the

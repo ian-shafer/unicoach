@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.admissions
 
 import ed.unicoach.coaching.CoachingTestDb
+import ed.unicoach.college.AdmissionTestPolicy
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CodebookReferenceFixture
@@ -44,6 +45,7 @@ object AdmissionsTestDb {
       "source_documents",
       "college_admission_factors",
       "college_deadlines",
+      "college_ipeds",
       "college_list_entries",
       "colleges",
       "students",
@@ -161,6 +163,48 @@ object AdmissionsTestDb {
         ),
       ).getOrThrow()
   }
+
+  /**
+   * One `college_ipeds` row carrying this school's IPEDS admission-test policy
+   * (RFC 187), on the school's own `ipeds_unit_id` -- which is the table's
+   * natural key and is read back off the `colleges` row rather than guessed,
+   * so the seeded row is the one the service's read will actually find.
+   *
+   * [testPolicy] is the RAW `ADMCON7` code (1, 3 or 5), and `null` is the
+   * distinct third case the read must keep apart: a school we HAVE an IPEDS
+   * row for that does not report the policy. A school with no row at all is
+   * seeded by simply not calling this.
+   *
+   * [surveyYear] is explicit with a default for the same reason the CDS
+   * seeders' `sourceYear` is: the year is the SUBJECT of the citation test,
+   * which seeds 2024 to prove the sentence follows the row rather than a
+   * literal 2023.
+   *
+   * Every other column is left at the shared [CoachingTestDb.seedIpeds]
+   * default. They are not this section's subject, and the row is typed ONCE
+   * there: `college_ipeds` is one table this suite and the cost suite both
+   * seed, and two hand-typed 23-parameter literals disagreed on every column
+   * neither of them asserts.
+   */
+  fun seedIpedsTestPolicy(
+    collegeId: CollegeId,
+    testPolicy: Int? = AdmissionTestPolicy.TEST_OPTIONAL.code,
+    surveyYear: Int = 2023,
+  ) {
+    CoachingTestDb.seedIpeds(
+      ipedsUnitId = ipedsUnitIdOf(collegeId),
+      surveyYear = surveyYear,
+      testPolicy = testPolicy,
+    )
+  }
+
+  /** The `ipeds_unit_id` of a seeded college, read from its own row -- `college_ipeds` keys on it, `colleges` owns it. */
+  private fun ipedsUnitIdOf(collegeId: CollegeId): Int =
+    CollegesDao
+      .listByIds(sqlSession, listOf(collegeId))
+      .getOrThrow()
+      .single()
+      .ipedsUnitId
 
   fun seedDeadline(
     collegeId: CollegeId,
