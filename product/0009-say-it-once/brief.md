@@ -64,6 +64,41 @@
   version; the nine byte-frozen sentences are unchanged and
   `prompts/coach-system-prompt.md` was not touched.
 
+  concise/04/cite-once-per-block LANDED as RFC 190 (main@4a4bf350 + 7de43df6,
+  2026-09-11) — the borrowing block is attributed ONCE, in a header, and the
+  figures follow. `BorrowingWire.listSentences` became
+  `blockOf(coverage): BorrowingBlock(header, sentences)`, so the sentences are
+  UNREACHABLE without the attribution they are claimed under — "the block cannot
+  render without its header" is a property of the type, not a convention. The
+  header is built from `CdsCitation.citedAs` and names the school, its cycle and
+  its Common Data Set once; the seven sentence builders dropped the "<College>
+  reports that … graduated in 2024-25" frame and kept the loan type, the cohort,
+  the figure and the ours-vs-theirs voice. The page's trailing
+  `Source: <cited as>.` line is gone — it printed the same `citedAs` the header
+  now opens with, and no url (verified: `CostReportPage.kt` renders no `href` at
+  all), so nothing became unreachable (D1). The merit block states its citation
+  before its figures for the same reason. ATTRIBUTION WENT UP, not down: on the
+  mixed-source debt section the federal median debt used to name no publisher,
+  and now names its own, derived from the cell the figure came from
+  (`statusNoteFor(...).cell.source` through `MoneySourceCopy`), because the
+  block header scopes only the school's own filing; a test asserts both
+  publishers are present and neither stands for the other, and RFC 175 D9's
+  no-sum/no-comparison list stays green. This RFC SUPERSEDES RFC 175 D10's
+  per-sentence rule for the borrowing block — its reason is unchanged (an
+  unaudited self-report must never read as an administrative record), only the
+  unit the attribution rides in — and the D10 test is REPLACED, not deleted, by
+  `every borrowing figure is covered by the block's one attribution`. MEASURED:
+  1,530 -> 1,450 words on a three-school render (-5.2%), ratcheted in the
+  existing `CostReportPageTest.WORD_CEILING`; no second counter. The slice's
+  `<= 1,230` criterion is NOT met — it came off the superseded 1,793 chain
+  (SD1-SD4) and the real removable repetition here was 80 words. The real number
+  is reported rather than an assertion weakened. Gate: `bin/test` 3,081
+  executed, 0 failures, plus the pre-commit hook twice (the first land was
+  refused at the fast-forward because `main` advanced, so the hook re-ran on the
+  tree that actually landed). No DDL, no migration, no prompt version;
+  `prompts/coach-system-prompt.md` was not touched and the nine byte-frozen
+  sentences are unchanged.
+
 ## The question
 
 Ian, 2026-09-09:
