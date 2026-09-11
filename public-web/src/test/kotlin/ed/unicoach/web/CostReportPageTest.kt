@@ -7,6 +7,7 @@ import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
@@ -26,7 +27,10 @@ import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
+import ed.unicoach.web.render.BLENDED_IN_STATE_CLAUSE
 import ed.unicoach.web.render.NOT_REPORTED
+import ed.unicoach.web.render.SCHOOL_BLENDED_HINT
+import ed.unicoach.web.render.SUMMARY_HINT
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.server.testing.testApplication
@@ -85,6 +89,102 @@ class CostReportPageTest {
     }
     return body
   }
+
+  /** How many times [needle] is on the page -- the measurement "said once" actually needs. */
+  private fun countOf(
+    body: String,
+    needle: String,
+  ): Int = body.split(needle).size - 1
+
+  /**
+   * The words a parent actually reads, counted the way RFC 188 measured them:
+   * the report section with its markup stripped, entities restored, and
+   * whitespace-separated tokens counted.
+   *
+   * The `<head>` and the site chrome are excluded on purpose -- the budget is on
+   * the report's own copy, and a footer link is not a sentence about a school.
+   */
+  private fun visibleWordsOf(body: String): Int {
+    // The marker is ASSERTED, not assumed: `substringAfter` returns the WHOLE
+    // document when it misses, so a renamed section would quietly start
+    // measuring the head and the site chrome and the ceiling would be a
+    // measurement of something else that still passed.
+    val opening = "<section class=\"report\""
+    assertTrue(body.contains(opening), "the report section must be on the page to be measured")
+    val report = body.substringAfter(opening).substringBeforeLast("</section>")
+    val text =
+      report
+        .replace(Regex("<[^>]*>"), " ")
+        .replace("&#39;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        // LAST, always: decoding it first would turn `&amp;lt;` into a `<` the
+        // page never printed.
+        .replace("&amp;", "&")
+    return text.split(Regex("\\s+")).count { it.isNotBlank() }
+  }
+
+  /**
+   * The three schools the word budget is measured over: every one of them
+   * priced for all three ways of living, with a merit filing and a borrowing
+   * filing, so the fixture carries every repeating block the page can print.
+   */
+  private fun verboseState(): CollegeCost =
+    costFixture(
+      name = "Lakeshore State University",
+      control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+      tuitionInState = 12000,
+      tuitionOutOfState = 34000,
+      publishedPrice = 28000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 15000),
+      housingAndFoodOnCampus = 11000,
+      housingAndFoodOffCampus = 13000,
+      booksAndSupplies = 1200,
+      otherExpensesOnCampus = 2500,
+      otherExpensesOffCampus = 2800,
+      otherExpensesWithFamily = 3000,
+      medianDebt = 21000,
+      offersOnCampusHousing = true,
+      meritAid = meritFixture("Lakeshore State University"),
+      borrowing = borrowingFixture("Lakeshore State University"),
+    )
+
+  private fun verboseCampus(): CollegeCost =
+    costFixture(
+      name = "Eastbrook University",
+      tuitionInState = 30000,
+      publishedPrice = 52000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+      housingAndFoodOnCampus = 10000,
+      housingAndFoodOffCampus = 12000,
+      booksAndSupplies = 1000,
+      otherExpensesOnCampus = 2000,
+      otherExpensesOffCampus = 2400,
+      otherExpensesWithFamily = 2600,
+      medianDebt = 24000,
+      offersOnCampusHousing = true,
+      meritAid = meritFixture("Eastbrook University"),
+      borrowing = borrowingFixture("Eastbrook University"),
+    )
+
+  private fun verbosePrivate(): CollegeCost =
+    costFixture(
+      name = "Wynnford College",
+      tuitionInState = 41000,
+      publishedPrice = 60000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 25000),
+      housingAndFoodOnCampus = 12000,
+      housingAndFoodOffCampus = 14000,
+      booksAndSupplies = 1100,
+      otherExpensesOnCampus = 2200,
+      otherExpensesOffCampus = 2600,
+      otherExpensesWithFamily = 2900,
+      medianDebt = 27000,
+      offersOnCampusHousing = true,
+      meritAid = meritFixture("Wynnford College"),
+      borrowing = borrowingFixture("Wynnford College"),
+    )
 
   @Test
   fun `a two-school list states the six comparison assumptions in the domain's own words`() {
@@ -820,22 +920,149 @@ class CostReportPageTest {
   }
 
   @Test
-  fun `the blended-figure hint under both tables says which residency those figures are on`() {
+  fun `the blended-figure hint is said once for the whole page, with the residency it is on`() {
     val body = render(costProfile(listOf(stateSchool(), campusSchool()), answeredMoney()))
 
-    // The clause is appended to BOTH hint sentences, not to one of them: the
-    // summary and the per-school table print the two blended rows alike.
-    val clause =
-      "At a public school it, and the likely price after a financial aid offer, are figures for " +
-        "students paying in-state tuition."
+    // ONE hint, above the school sections: the warning is about the published
+    // price generally (RFC 149 D-F.1 requires it be said, not said N times), and
+    // the summary table is where the page already says it.
     assertTrue(
-      body.contains("so it is not the sum of the parts quoted below. $clause"),
+      body.contains("$SUMMARY_HINT $BLENDED_IN_STATE_CLAUSE"),
       "the summary hint must carry the residency clause",
     )
-    assertTrue(
-      body.contains("so it is not the sum of the parts above it. $clause"),
-      "and so must the per-school hint",
+    assertFalse(
+      body.contains(SCHOOL_BLENDED_HINT),
+      "a school section on a page that already said it must not say it again",
     )
+    assertEquals(1, countOf(body, BLENDED_IN_STATE_CLAUSE), "the in-state clause is said exactly once")
+  }
+
+  @Test
+  fun `a one-school report still carries the blended-figure hint, in its own words`() {
+    // There is no summary table to say it above, so the school section is the
+    // only place it can be said -- and it must still be said.
+    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+
+    assertTrue(
+      body.contains("$SCHOOL_BLENDED_HINT $BLENDED_IN_STATE_CLAUSE"),
+      "the only table on the page must carry the hint: [$body]",
+    )
+    assertEquals(1, countOf(body, BLENDED_IN_STATE_CLAUSE), "and exactly once")
+  }
+
+  @Test
+  fun `the in-state clause is absent from a report with no public school on it`() {
+    // It is a sentence ABOUT public schools. Under two private colleges it was
+    // simply false of every table it stood under.
+    val private = render(costProfile(listOf(privateSchool(), campusSchool()), answeredMoney()))
+    // Asserted against the RENDERER's own constant, never a hand-typed copy: an
+    // absence asserted against a copy passes vacuously the moment the sentence
+    // is reworded, which is exactly how this defect would come back green.
+    assertFalse(private.contains(BLENDED_IN_STATE_CLAUSE), "no school here prices by residency: [$private]")
+    assertTrue(private.contains(SUMMARY_HINT), "the blended-average warning itself still stands")
+
+    // And it IS said where a public school is on the page, mixed or alone.
+    val mixed = render(costProfile(listOf(privateSchool(), stateSchool()), answeredMoney()))
+    assertEquals(1, countOf(mixed, BLENDED_IN_STATE_CLAUSE), "one public school on the page is one clause")
+  }
+
+  @Test
+  fun `the residency sentence is said once on a one-school report, and once per school on three`() {
+    val one = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val statement =
+      "Riverside State University is a public school, and the tuition and fees figure that applies to this " +
+        "family is its in-state one."
+
+    // The single-school assumption block IS this school's basis and already
+    // states it; the section under it used to state the same sentence again.
+    assertEquals(1, countOf(one, statement), "a one-school report states its residency once: [$one]")
+    assertFalse(one.contains("class=\"report-school-residency\""), "the duplicate line is the one that goes")
+
+    // With two or more schools the per-school line is the ONLY place a SPECIFIC
+    // school's basis is stated, so it stays.
+    val three = render(costProfile(listOf(stateSchool(), campusSchool(), privateSchool()), answeredMoney()))
+    assertEquals(3, countOf(three, "class=\"report-school-residency\""), "every school states its own basis")
+    assertTrue(three.contains(statement), "including the public one")
+  }
+
+  @Test
+  fun `a figure that is the same in every column is said once, and one that varies is not`() {
+    // DERIVED, never a list of roles: the row collapses because the figures it
+    // would print are equal. Tuition and books are school-wide facts in the
+    // DOMAIN today, and that is their property, not this renderer's rule.
+    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val table = body.substringAfter("class=\"report-school\"")
+
+    val tuitionRow = table.substringAfter("class=\"report-row-tuition\"").substringBefore("</tr>")
+    assertEquals(1, countOf(tuitionRow, "\$12,000"), "one tuition figure for the whole school: [$tuitionRow]")
+    assertTrue(tuitionRow.contains("colspan=\"3\""), "and it spans the ways of living: [$tuitionRow]")
+
+    val books = table.substringAfter("Books and supplies").substringBefore("</tr>")
+    assertEquals(1, countOf(books, "\$1,200"), "books and supplies is school-wide too: [$books]")
+    assertTrue(books.contains("colspan=\"3\""), "and it spans the ways of living too: [$books]")
+
+    // Housing and food really does vary by way of living, so it is still a cell
+    // per column -- three figures, not one collapsed number.
+    val housing = table.substringAfter("Housing and food").substringBefore("</tr>")
+    assertTrue(housing.contains("\$11,000"), "the on-campus figure: [$housing]")
+    assertTrue(housing.contains("\$0"), "and our own at-home zero: [$housing]")
+    assertFalse(housing.contains("colspan"), "a row whose figures differ may never be collapsed: [$housing]")
+  }
+
+  @Test
+  fun `the income band the page states is not repeated at every net-price figure`() {
+    val band = IncomeBand.K48_TO_75K
+    val body =
+      render(costProfile(listOf(stateSchool(), campusSchool(), privateSchool()), answeredMoney(band)))
+
+    // Said once, in the family's own money line above every figure on the page.
+    assertTrue(
+      body.contains(MoneyBasis.AnsweredBand(band).statement),
+      "the band must still be stated in dollars, in the domain's own sentence: [$body]",
+    )
+    assertEquals(
+      1,
+      countOf(body, band.bracket),
+      "the band is on the page exactly once, not beside all six net-price figures",
+    )
+    assertTrue(body.contains("\$15,000"), "and every net price is still shown")
+    assertTrue(body.contains("\$22,000"), "and every net price is still shown")
+    assertTrue(body.contains("\$25,000"), "and every net price is still shown")
+  }
+
+  @Test
+  fun `the overall-average note still stands beside every figure it corrects`() {
+    // The two notes are not the same kind of sentence. A BandSpecific note
+    // CONFIRMS a figure that is genuinely for this family's band, so it may be
+    // said once above the page; the overall-average note CORRECTS a reader who
+    // would otherwise take a figure that is NOT theirs for theirs, and a
+    // correction has to be at the number to do its work (RFC 188, brief 0009 D5).
+    val overall =
+      costFixture(
+        name = "Ashford College",
+        tuitionInState = 41000,
+        publishedPrice = 60000,
+        netPrice = NetPrice.OverallAverage(24000),
+      )
+    val body = render(costProfile(listOf(stateSchool(), overall), answeredMoney()))
+    val note = "an overall average across all families, not a figure for this family"
+
+    // Twice: the summary row and the school's own table -- beside BOTH of the
+    // figures it corrects, exactly as before this slice.
+    assertEquals(2, countOf(body, note), "the correcting note is printed at every figure it corrects: [$body]")
+    // While the band note beside the other school's figures is gone.
+    assertEquals(1, countOf(body, IncomeBand.K48_TO_75K.bracket), "the confirming note is said once, above")
+  }
+
+  @Test
+  fun `a three-school report says every fact it holds in fewer than fifteen hundred words`() {
+    // D13: the budget lives in a test, not in an RFC. RFC 188 measured this
+    // fixture at 1,767 words before it and 1,530 after; the assertion is a
+    // RATCHET -- a repeat added back to the renderer fails here.
+    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+
+    val words = visibleWordsOf(body)
+    assertTrue(words <= WORD_CEILING, "the three-school page reads [$words] words, over [$WORD_CEILING]")
   }
 
   // ---------------------------------------------------------------------------
@@ -1312,5 +1539,21 @@ class CostReportPageTest {
       body.contains("whoever the student is"),
       "but never as a price that applies to every student: [$body]",
     )
+  }
+
+  private companion object {
+    /**
+     * The word budget for the three-school page (brief 0009 D9/D13), measured
+     * on [verboseState] + [verboseCampus] + [verbosePrivate].
+     *
+     * The number is the one RFC 188 actually LEFT the page at, not the one the
+     * slice hoped for: 1,767 words before, 1,530 after. Brief 0009's own budget
+     * table gives this slice 223 words of repetition to remove and its
+     * acceptance criterion asked for 313, so the criterion was unreachable by
+     * removing repetition alone. A ceiling set at a number the page does not
+     * meet is a test that is either failing or lying; this one ratchets what was
+     * really won and refuses a regression.
+     */
+    const val WORD_CEILING = 1530
   }
 }

@@ -14,7 +14,6 @@ import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.CostLine
 import ed.unicoach.coaching.costs.LineOrigin
 import ed.unicoach.coaching.costs.MoneyBasis
-import ed.unicoach.coaching.costs.MoneyProfileStatuses
 import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.ResidencyBasis
 import ed.unicoach.coaching.costs.SingleSchoolBasis
@@ -26,6 +25,7 @@ import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.ResidencyTierBasis
@@ -215,19 +215,120 @@ private const val SUMMARY_TUITION_VARIES = "Quoted per way of living below"
  * call sites below, where it can be seen, rather than hidden in a leading space
  * every caller has to remember.
  */
-private const val BLENDED_IN_STATE_CLAUSE =
+internal const val BLENDED_IN_STATE_CLAUSE =
   "At a public school it, and the likely price after a financial aid offer, are figures for students paying " +
     "in-state tuition."
 
 /** Said under the summary table, because two published prices side by side invite exactly this arithmetic. */
-private const val SUMMARY_HINT =
+internal const val SUMMARY_HINT =
   "The published price is each school's own published cost of attendance, an average blended across the ways " +
-    "of living, so it is not the sum of the parts quoted below. " + BLENDED_IN_STATE_CLAUSE
+    "of living, so it is not the sum of the parts quoted below."
 
-/** The same warning under ONE school's table, where "each school's" would be false. Written once, like its twin. */
-private const val SCHOOL_BLENDED_HINT =
+/**
+ * The same warning under ONE school's table, where "each school's" would be
+ * false. Written once, like its twin.
+ *
+ * `internal`, with [BLENDED_IN_STATE_CLAUSE] and [SUMMARY_HINT], for the reason
+ * [NOT_REPORTED] is: the tests that pin WHERE these sentences may no longer
+ * appear assert on the constants themselves, so a reworded hint cannot leave an
+ * absence assertion passing vacuously against words the page no longer prints.
+ */
+internal const val SCHOOL_BLENDED_HINT =
   "The published price is this school's own published cost of attendance, an average blended across the ways " +
-    "of living, so it is not the sum of the parts above it. " + BLENDED_IN_STATE_CLAUSE
+    "of living, so it is not the sum of the parts above it."
+
+/**
+ * The blended hint, with the in-state clause appended only where a PUBLIC school
+ * is on this page.
+ *
+ * [BLENDED_IN_STATE_CLAUSE] is a sentence about public schools, and it used to
+ * be a constant tail on both hints -- so a parent comparing two private colleges
+ * read a sentence about in-state tuition under a table where no school prices by
+ * residency at all. The control is the cost DOMAIN's own
+ * ([CollegeControl.Public]), read off the colleges this hint is printed over:
+ * the per-school hint asks about its one school, the page-level hint about every
+ * school it stands above, because the clause is true of the page exactly when
+ * one of them is public.
+ */
+private fun blendedHintFor(
+  hint: String,
+  hintStandsOver: List<CollegeCost>,
+): String = if (hintStandsOver.any { it.control is CollegeControl.Public }) "$hint $BLENDED_IN_STATE_CLAUSE" else hint
+
+/**
+ * The hint said ABOVE the school sections, over every school it stands over --
+ * under the summary table where there is one ([ReportShape.Compared]), and on
+ * its own where there is not ([ReportShape.ManyUncompared]).
+ */
+private fun pageBlendedHint(colleges: List<CollegeCost>): String = blendedHintFor(SUMMARY_HINT, colleges)
+
+/** The hint said under the ONE table on a one-school page, over that school alone. */
+private fun schoolBlendedHint(cost: CollegeCost): String = blendedHintFor(SCHOOL_BLENDED_HINT, listOf(cost))
+
+/**
+ * WHICH shape of report this profile is, decided ONCE.
+ *
+ * Three facts hang off this question -- which assumption block is rendered,
+ * whether a school section states its own residency basis, and where the blended
+ * hint is said -- and each used to re-derive it from `comparisonBasis` and the
+ * college count in its own words. Two hand-written booleans that must agree are
+ * how a one-school page ended up stating its residency sentence twice; a THIRD
+ * would be free to disagree with both.
+ *
+ * The shapes are the cost domain's, not this page's invention:
+ * [ComparisonBasis.of] deliberately builds nothing below two colleges, and this
+ * page has always kept a named arm for two or more colleges it was handed no
+ * comparison for. A fourth shape must fail to compile in the `when`s below
+ * rather than inherit a silence.
+ */
+private sealed interface ReportShape {
+  /** Nothing on the list: nothing is priced, so there is no assumption to state. */
+  data object NoColleges : ReportShape
+
+  /** The one school the assumption block above IS the basis of ([SingleSchoolBasis]). */
+  data class OneSchool(
+    val cost: CollegeCost,
+  ) : ReportShape
+
+  /** Two or more schools the domain built a comparison for. */
+  data class Compared(
+    val basis: ComparisonBasis,
+  ) : ReportShape
+
+  /** Two or more schools with no comparison basis -- priced, and compared by nobody. */
+  data object ManyUncompared : ReportShape
+
+  companion object {
+    fun of(profile: CollegeCostProfile): ReportShape {
+      val basis = profile.comparisonBasis
+      val single = profile.colleges.singleOrNull()
+      // Compared FIRST, and the order is load-bearing: the domain builds no
+      // basis below two colleges, so a basis implies two or more and can never
+      // steal the one-school shape out from under the residency line this page
+      // stops printing on it.
+      return when {
+        basis != null -> Compared(basis)
+        single != null -> OneSchool(single)
+        profile.colleges.isEmpty() -> NoColleges
+        else -> ManyUncompared
+      }
+    }
+  }
+}
+
+/**
+ * The band the page has ALREADY stated, or null where it states none.
+ *
+ * EXHAUSTIVE over the closed vocabulary, never `as?`: a variant added to
+ * [MoneyBasis] that also names a band must fail to compile here and decide
+ * whether the page states it, rather than fall silently to null and put the note
+ * back beside every net-price figure on the page.
+ */
+private fun bandSaidAboveOf(basis: MoneyBasis): IncomeBand? =
+  when (basis) {
+    is MoneyBasis.AnsweredBand -> basis.band
+    MoneyBasis.Declined, MoneyBasis.Unanswered -> null
+  }
 
 /**
  * The Family Cost Report for one student's [profile].
@@ -244,21 +345,44 @@ private const val SCHOOL_BLENDED_HINT =
  */
 suspend fun ApplicationCall.respondCostReportPage(profile: CollegeCostProfile) {
   val residencyBases = residencyBasesOf(profile)
+  val shape = ReportShape.of(profile)
+  // ONE derivation of the money basis for the whole page, like the residency
+  // bases above it: the assumption block states it and the net-price cells ask
+  // it which band was stated, and two calls could not disagree but could drift.
+  val moneyBasis = MoneyBasis.of(profile.moneyProfile)
+  val bandSaidAbove = bandSaidAboveOf(moneyBasis)
+  // The assumption block IS this school's own basis on exactly one shape, and
+  // that one fact decides both what a school section may stop saying (its
+  // residency sentence) and where the blended hint is said (RFC 188).
+  val basisIsThisSchool = shape is ReportShape.OneSchool
   respondHtml {
     siteLayout(PAGE_TITLE, noindex = true) {
       section("report") {
         h1 { +REPORT_HEADING }
         p("report-live") { +LIVE_LINE }
-        assumptions(profile, residencyBases)
+        assumptions(shape, residencyBases, moneyBasis)
         if (profile.colleges.isEmpty()) {
           p("report-empty") { +"There is no college on this list yet, so there is nothing to price." }
         } else {
           // The comparison the assumption lines above promise, made real: the
-          // basis object is non-null on exactly the same condition (two or more
-          // colleges), so the page can never state the comparison assumptions
-          // over a page that compares nothing.
-          profile.comparisonBasis?.let { summaryTable(profile, it) }
-          profile.colleges.forEach { schoolSection(it, residencyBases.getValue(it.collegeId)) }
+          // shape is [ReportShape.Compared] on exactly the same condition (two
+          // or more colleges the domain compared), so the page can never state
+          // the comparison assumptions over a page that compares nothing.
+          (shape as? ReportShape.Compared)?.let { summaryTable(profile, it.basis, bandSaidAbove) }
+          // The blended hint is a fact about the published price, not about one
+          // school: it is said ONCE, above the tables it warns about. The
+          // summary table carries it on a compared page and the one school
+          // carries it on its own page, which leaves the uncompared many -- a
+          // shape that is still priced, and still owed the warning.
+          if (shape is ReportShape.ManyUncompared) p("report-hint") { +pageBlendedHint(profile.colleges) }
+          profile.colleges.forEach {
+            schoolSection(
+              cost = it,
+              residency = residencyBases.getValue(it.collegeId),
+              basisIsThisSchool = basisIsThisSchool,
+              bandSaidAbove = bandSaidAbove,
+            )
+          }
         }
         // The publishers of the figures THIS page carries, never a constant:
         // a page with no IPEDS figure on it may not claim an IPEDS source, and
@@ -309,37 +433,36 @@ private fun residencyBasesOf(profile: CollegeCostProfile): Map<CollegeId, Colleg
  * family like this one has to say which family that is.
  */
 private fun FlowContent.assumptions(
-  profile: CollegeCostProfile,
+  shape: ReportShape,
   residencyBases: Map<CollegeId, CollegeResidencyBasis>,
+  moneyBasis: MoneyBasis,
 ) {
-  val basis = profile.comparisonBasis
-  val single = profile.colleges.singleOrNull()
-  when {
-    basis != null -> {
-      assumptionList("report-basis", basis.statements, profile.moneyProfile)
+  when (shape) {
+    is ReportShape.Compared -> {
+      assumptionList("report-basis", shape.basis.statements, moneyBasis)
     }
 
-    single != null -> {
+    is ReportShape.OneSchool -> {
       assumptionList(
         "report-single-basis",
-        SingleSchoolBasis.of(single, residencyBases.getValue(single.collegeId)).statements,
-        profile.moneyProfile,
+        SingleSchoolBasis.of(shape.cost, residencyBases.getValue(shape.cost.collegeId)).statements,
+        moneyBasis,
       )
     }
 
-    profile.colleges.isEmpty() -> {
+    ReportShape.NoColleges -> {
       // Nothing is priced, so there is no assumption to state. NAMED, because
       // the branch it used to share said the same nothing about a page that
       // does print prices.
       Unit
     }
 
-    else -> {
+    ReportShape.ManyUncompared -> {
       // Two or more colleges with no comparison basis is not a shape the cost
       // domain builds -- but the price tables below are rendered regardless, and
       // a price with nothing said about whose price it is is the one thing D-F
       // forbids. The family's own money line is the floor, always.
-      assumptionList("report-basis", emptyList(), profile.moneyProfile)
+      assumptionList("report-basis", emptyList(), moneyBasis)
     }
   }
 }
@@ -348,13 +471,13 @@ private fun FlowContent.assumptions(
 private fun FlowContent.assumptionList(
   sectionClass: String,
   statements: List<String>,
-  moneyProfile: MoneyProfileStatuses,
+  moneyBasis: MoneyBasis,
 ) {
   section(sectionClass) {
     h2 { +ASSUMPTIONS_HEADING }
     ul {
       statements.forEach { li { +it } }
-      li { +MoneyBasis.of(moneyProfile).statement }
+      li { +moneyBasis.statement }
     }
   }
 }
@@ -386,6 +509,7 @@ private fun FlowContent.assumptionList(
 private fun FlowContent.summaryTable(
   profile: CollegeCostProfile,
   basis: ComparisonBasis,
+  bandSaidAbove: IncomeBand?,
 ) {
   val held = basis.livingArrangement.comparable.firstOrNull()
   section("report-summary") {
@@ -393,9 +517,11 @@ private fun FlowContent.summaryTable(
     p("report-hint") { +heldArrangementHint(held) }
     table("report-table report-summary-table") {
       thead { summaryHeaderRow(held) }
-      tbody { profile.colleges.forEach { summaryRow(it, held) } }
+      tbody { profile.colleges.forEach { summaryRow(it, held, bandSaidAbove) } }
     }
-    p("report-hint") { +SUMMARY_HINT }
+    // The page's ONE blended hint when this table exists: the school sections
+    // below it print none.
+    p("report-hint") { +pageBlendedHint(profile.colleges) }
   }
 }
 
@@ -423,6 +549,7 @@ private fun THEAD.summaryHeaderRow(held: LivingArrangement?) {
 private fun TBODY.summaryRow(
   cost: CollegeCost,
   held: LivingArrangement?,
+  bandSaidAbove: IncomeBand?,
 ) {
   tr("report-row-summary") {
     rowHeader(cost.name)
@@ -436,7 +563,7 @@ private fun TBODY.summaryRow(
     }
     valueCell(TUITION_COLUMN, summaryTuitionCell(cost, held))
     valueCell(PUBLISHED_PRICE_COLUMN, publishedPriceCell(cost, TOTALS_IN_SCHOOL_TABLE_BELOW))
-    valueCell(NET_PRICE_COLUMN, netPriceCell(cost, TOTALS_IN_SCHOOL_TABLE_BELOW))
+    valueCell(NET_PRICE_COLUMN, netPriceCell(cost, TOTALS_IN_SCHOOL_TABLE_BELOW, bandSaidAbove))
   }
 }
 
@@ -498,6 +625,15 @@ private fun schoolWideTuition(cost: CollegeCost): SchoolFigure {
 private fun FlowContent.schoolSection(
   cost: CollegeCost,
   residency: CollegeResidencyBasis,
+  /**
+   * Whether the assumption block ABOVE is this one school's own basis -- one
+   * fact, in one sense, deciding both of the sentences this section may stop
+   * saying. Two parameters ("say the residency line", "here is your hint") could
+   * be handed a combination that is not a page: a section that both states its
+   * own residency AND prints the one-school hint says the residency twice again.
+   */
+  basisIsThisSchool: Boolean,
+  bandSaidAbove: IncomeBand?,
 ) {
   section("report-school") {
     h2 { +cost.name }
@@ -506,10 +642,16 @@ private fun FlowContent.schoolSection(
     // residency line below already says in English whether this school prices by
     // where the family lives, which is the only thing the control decides here.
     p("report-school-where") { +"${cost.city}, ${cost.state}" }
-    p("report-school-residency") { +residency.statement }
+    // On a one-school report the assumption block above IS this school's basis
+    // and already states the residency sentence ([SingleSchoolBasis]). Anywhere
+    // else this line is the only place a SPECIFIC school's basis is stated, so
+    // it stays.
+    if (!basisIsThisSchool) p("report-school-residency") { +residency.statement }
     tuitionTierLine(cost)
-    priceTable(cost)
-    p("report-hint") { +SCHOOL_BLENDED_HINT }
+    priceTable(cost, bandSaidAbove)
+    // ...and the same fact says the hint here, because a one-school page has no
+    // summary table above to have said it.
+    if (basisIsThisSchool) p("report-hint") { +schoolBlendedHint(cost) }
     meritBlock(cost)
     debtBlock(cost)
   }
@@ -561,7 +703,10 @@ private fun FlowContent.tuitionTierLine(cost: CollegeCost) {
  * one plain column instead -- its tuition, published price and price after aid
  * are still true and still shown.
  */
-private fun FlowContent.priceTable(cost: CollegeCost) {
+private fun FlowContent.priceTable(
+  cost: CollegeCost,
+  bandSaidAbove: IncomeBand?,
+) {
   val arrangements = cost.breakdown?.arrangements.orEmpty()
   val columnCount = if (arrangements.isEmpty()) SINGLE_COLUMN_COUNT else arrangements.size
   table("report-table") {
@@ -571,7 +716,7 @@ private fun FlowContent.priceTable(cost: CollegeCost) {
       componentRows(cost, arrangements)
       if (arrangements.isNotEmpty()) totalRow(arrangements)
       wholeSchoolRow(PUBLISHED_PRICE_COLUMN, publishedPriceCell(cost, TOTALS_ABOVE), columnCount)
-      wholeSchoolRow(NET_PRICE_COLUMN, netPriceCell(cost, TOTALS_ABOVE), columnCount)
+      wholeSchoolRow(NET_PRICE_COLUMN, netPriceCell(cost, TOTALS_ABOVE, bandSaidAbove), columnCount)
     }
   }
 }
@@ -596,20 +741,92 @@ private fun TBODY.tuitionRow(
   cost: CollegeCost,
   arrangements: List<ArrangementCost>,
 ) {
-  tr("report-row-tuition") {
-    rowHeader(TUITION_COLUMN)
+  // A school that publishes no component has no way of living to head a column,
+  // so its one cell is headed by the table's own fallback -- the only thing that
+  // differs between the two shapes, which is why the row is written once.
+  val cells =
     if (arrangements.isEmpty()) {
-      valueCell(SINGLE_COLUMN_HEADER, figureOf(amountUsd = null, blank = tuitionBlankFor(cost)))
+      listOf(GridCell(SINGLE_COLUMN_HEADER, figureOf(amountUsd = null, blank = tuitionBlankFor(cost))))
+    } else {
+      arrangements.map { arrangement ->
+        GridCell(
+          arrangement.arrangement.label,
+          figureOf(amountUsd = arrangement.tuitionLine?.amountUsd, blank = tuitionBlankFor(cost)),
+        )
+      }
+    }
+  gridRow("report-row-tuition", TUITION_COLUMN, cells)
+}
+
+/**
+ * One row of the arrangement grid -- said ONCE when it is the same thing in
+ * every column (RFC 188).
+ *
+ * The test is DERIVED and not a list of roles: a row collapses exactly when the
+ * figures it would print are equal, `distinct()` over the rendered
+ * [SchoolFigure] itself, which carries the amount, the blank label and the basis
+ * note. Tuition and books and supplies collapse today because the DOMAIN holds
+ * one field for the whole school in each ([ComponentRole.fieldOf] maps every
+ * arrangement to `BOOKS_AND_SUPPLIES_PER_YEAR_USD`, and `tuitionLine` is
+ * `applicableTuitionFor(control)` for every column) -- but that is their
+ * property, not this renderer's rule. Naming the two roles here would let a
+ * fourth arrangement with its OWN books field silently collapse two different
+ * numbers into one figure.
+ *
+ * A single-column table collapses nothing: there is no repeat to remove, and the
+ * `data-label` the phone layout reads is the way of living, which a one-column
+ * row still owes its reader.
+ */
+private fun TBODY.gridRow(
+  rowClass: String,
+  label: String,
+  cells: List<GridCell>,
+) {
+  val schoolWide = schoolWideFigureOf(cells)
+  tr(rowClass) {
+    rowHeader(label)
+    if (schoolWide != null) {
+      // The span is the row's OWN cell count, never a column count passed in
+      // beside the cells: two arguments that must agree are a `colspan` free to
+      // disagree with the header above it.
+      //
+      // No `data-label`: the row's own header names this figure, and the way of
+      // living it used to be labelled with is exactly what it no longer varies
+      // by. The same shape [wholeSchoolRow] prints, for the same reason.
+      spanningValueCell(schoolWide, cells.size)
       return@tr
     }
-    arrangements.forEach { arrangement ->
-      valueCell(
-        arrangement.arrangement.label,
-        figureOf(amountUsd = arrangement.tuitionLine?.amountUsd, blank = tuitionBlankFor(cost)),
-      )
-    }
+    cells.forEach { (columnLabel, figure) -> valueCell(columnLabel, figure) }
   }
 }
+
+/**
+ * The one figure a whole row says, or null where the row really does say a
+ * different thing in each column -- the DECISION half of [gridRow], named.
+ *
+ * The `size > 1` guard is the ONE-COLUMN case: nothing repeats there, and the
+ * collapsed cell would drop the `data-label` a phone still reads the way of
+ * living from.
+ *
+ * Structural equality is load-bearing: [SchoolFigure] is a `data class` pair, so
+ * `distinct()` compares the amount, the blank label and the basis note, and two
+ * cells that differ in any of the three are two different figures. A cell with
+ * an assumed-zero note therefore never collapses into a bare zero beside it.
+ */
+private fun schoolWideFigureOf(cells: List<GridCell>): SchoolFigure? =
+  if (cells.size > 1) cells.map { it.figure }.distinct().singleOrNull() else null
+
+/**
+ * One cell of the arrangement grid: the figure, and the column it stands under.
+ *
+ * A named pair rather than `Pair<String, SchoolFigure>`, because the String is
+ * not any string -- it is the way of living the phone layout restores beside the
+ * figure as its `data-label`, and `it.second` said none of that.
+ */
+private data class GridCell(
+  val columnLabel: String,
+  val figure: SchoolFigure,
+)
 
 /**
  * Why a school's tuition and fees figure is absent, said as itself.
@@ -713,13 +930,14 @@ private fun TBODY.componentRows(
   ComponentRole.entries
     .filter { role -> arrangements.any { role.fieldOf(it.arrangement) != null } }
     .forEach { role ->
-      tr("report-row-component") {
-        rowHeader(role.label)
-        arrangements.forEach { arrangement ->
+      gridRow(
+        "report-row-component",
+        role.label,
+        arrangements.map { arrangement ->
           val field = role.fieldOf(arrangement.arrangement)
           val line = arrangement.componentLines.firstOrNull { it.field == field }
           val blank = if (field == null) NOT_PART_OF_ARRANGEMENT else blankFor(cost, field, NOT_REPORTED)
-          valueCell(
+          GridCell(
             arrangement.arrangement.label,
             // A note belongs to a figure that EXISTS, which is exactly the
             // assumed at-home zero: [figureOf] attaches it to the amount and
@@ -727,8 +945,8 @@ private fun TBODY.componentRows(
             // describing a cell with no number in it.
             figureOf(amountUsd = line?.amountUsd, blank = blank, note = assumedNoteFor(line)),
           )
-        }
-      }
+        },
+      )
     }
 }
 
@@ -761,10 +979,18 @@ private fun TBODY.wholeSchoolRow(
 ) {
   tr("report-row-school") {
     rowHeader(label)
-    td("report-value") {
-      colSpan = columnCount.toString()
-      figureBody(figure)
-    }
+    spanningValueCell(figure, columnCount)
+  }
+}
+
+/** One figure across every column of the table -- the ONE site that writes that cell. */
+private fun TR.spanningValueCell(
+  figure: SchoolFigure,
+  columnCount: Int,
+) {
+  td("report-value") {
+    colSpan = columnCount.toString()
+    figureBody(figure)
   }
 }
 
@@ -829,6 +1055,7 @@ private fun publishedPriceCell(
 private fun netPriceCell(
   cost: CollegeCost,
   totals: String,
+  bandSaidAbove: IncomeBand?,
 ): SchoolFigure {
   val blank = blendedBlankFor(cost, CostField.NET_PRICE, totals)
   return when (val netPrice = cost.netPrice) {
@@ -836,7 +1063,17 @@ private fun netPriceCell(
       figureOf(
         amountUsd = netPrice.amount,
         blank = blank,
-        note = "the average for families with a household income of ${netPrice.band.bracket}",
+        // Said ONCE per page (RFC 188), and only when the page's own money line
+        // already names THIS band: [MoneyBasis.AnsweredBand] states the bracket
+        // in the assumption block above every figure on the page, so repeating
+        // it at each of the six net-price cells of a three-school report told a
+        // parent one fact six times. The test is the band itself, never the
+        // answered STATUS -- a cell whose band differs from the one the page
+        // stated keeps its own note rather than borrowing a sentence about
+        // another bracket.
+        note =
+          "the average for families with a household income of ${netPrice.band.bracket}"
+            .takeUnless { netPrice.band == bandSaidAbove },
       )
     }
 
