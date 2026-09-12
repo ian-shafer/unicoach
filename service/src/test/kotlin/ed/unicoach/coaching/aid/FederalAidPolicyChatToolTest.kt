@@ -1,6 +1,12 @@
 package ed.unicoach.coaching.aid
 
 import ed.unicoach.coaching.CoachingTestDb
+import ed.unicoach.coaching.aid.FederalAidPolicyChatTool.Companion.AWARD_YEAR_STATEMENT_KEY
+import ed.unicoach.coaching.aid.FederalAidPolicyChatTool.Companion.AWARD_YEAR_STATUS_KEY
+import ed.unicoach.coaching.aid.FederalAidPolicyChatTool.Companion.CURRENT_AWARD_YEAR_KEY
+import ed.unicoach.coaching.aid.FederalAidPolicyChatTool.Companion.DEPENDENCY_STATUS_KEY
+import ed.unicoach.coaching.aid.FederalAidPolicyChatTool.Companion.MAX_PELL_AGI_TESTS_KEY
+import ed.unicoach.coaching.aid.FederalAidPolicyChatTool.Companion.MONEY_PROFILE_KEY
 import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
@@ -22,6 +28,7 @@ import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -162,18 +169,85 @@ class FederalAidPolicyChatToolTest {
   }
 
   @Test
-  fun `the definition advertises a closed no-argument schema and the framing contract`() {
+  fun `the definition advertises a closed no-argument schema and a key legend`() {
     assertEquals("federal_aid_policy", tool.name)
     val definition = tool.definition
     assertEquals("federal_aid_policy", definition["name"]!!.jsonPrimitive.content)
     val schema = definition["input_schema"]!!.jsonObject
     assertEquals(0, schema["properties"]!!.jsonObject.size)
     assertEquals(false, schema["additionalProperties"]!!.jsonPrimitive.content.toBoolean())
+
+    // RFC 199: the description is a LEGEND -- one entry per wire key, what it
+    // means and what values it takes. Each assertion below names a key the
+    // payload really carries, so a renamed key breaks the legend that explains
+    // it rather than leaving the model reading a name that no longer exists.
     val description = definition["description"]!!.jsonPrimitive.content
-    assertTrue(description.contains("never a promised amount"), "Pell is a range, never a promise")
-    assertTrue(description.contains("never take a loan or a loan limit off any price"))
-    assertTrue(description.contains("most students applying from high school are dependent"), "the invitation names its value")
-    assertTrue(description.contains("MUST still answer fully"), "the answer never waits on the dependency question")
+    assertTrue(description.contains("A legend of the payload's keys follows"), "the legend announces itself")
+    assertTrue(description.contains("$CURRENT_AWARD_YEAR_KEY -"), "the current award year is a legend entry")
+    assertTrue(
+      description.contains("$AWARD_YEAR_STATUS_KEY - \"${AwardYearCurrency.Current.value}\""),
+      "the award-year status entry quotes the codes the payload puts on the wire",
+    )
+    assertTrue(description.contains(AwardYearCurrency.PriorYear.value), "and the prior-year code beside it")
+    assertTrue(description.contains(AWARD_YEAR_STATEMENT_KEY), "the prior-year sentence key is explained")
+    assertTrue(description.contains(MAX_PELL_AGI_TESTS_KEY), "the max-Pell income tests are explained")
+    assertTrue(
+      description.contains("$MONEY_PROFILE_KEY.$DEPENDENCY_STATUS_KEY"),
+      "the dependency echo is explained by its dotted path, as the payload nests it",
+    )
+    assertTrue(
+      description.contains("BOTH always served"),
+      "the legend says both loan tables are always present -- a schema fact, not an instruction",
+    )
+  }
+
+  @Test
+  fun `the tool description stays within its legend byte ceiling`() {
+    // The PUBLISHED description, exactly as every other assertion in this file
+    // reads it: budgeting the constant instead would measure a string the model
+    // is never sent.
+    val bytes =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+        .toByteArray()
+        .size
+
+    assertTrue(
+      bytes <= LEGEND_BYTE_CEILING,
+      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
+    )
+  }
+
+  @Test
+  fun `the description is a legend, not a rulebook`() {
+    val description =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+
+    // Each of these was in the DESCRIPTION before RFC 199 and is now stated
+    // ONCE, in the coach system prompt (SystemPromptCatalogTest asserts every
+    // one of them against the SERVED body). A phrase reappearing here means the
+    // second home is being rebuilt, and the two copies would drift.
+    //
+    // BE HONEST ABOUT WHAT THIS LIST IS: a tripwire on known regressions, not
+    // the guard. It matches PHRASINGS, so a behavioural rule written in new
+    // words walks straight past it. The guard that bites is
+    // [LEGEND_BYTE_CEILING], which prose cannot be added to without someone
+    // consciously raising the number.
+    listOf(
+      "Use it whenever",
+      "always say which award year",
+      "say its award_year_statement plainly",
+      "never a promised amount",
+      "never take a loan or a loan limit off any price",
+      "you MAY invite that answer once",
+      "MUST still answer fully",
+      "never raise the question again yourself",
+    ).forEach {
+      assertFalse(description.contains(it), "a behavioural rule is back in the tool description: [$it]")
+    }
   }
 
   @Test
@@ -189,4 +263,14 @@ class FederalAidPolicyChatToolTest {
       val result = (tool as ed.unicoach.chat.ChatTool).execute(buildJsonObject {})
       assertTrue(result["error"]!!.jsonPrimitive.content.contains("student-scoped"), "got $result")
     }
+
+  companion object {
+    /**
+     * The MEASURED size of the legend that ships (RFC 199 D4), not a budget
+     * with headroom: 1,359 bytes, down from the 1,389-byte rulebook it
+     * replaced. Adding a key means consciously raising this number, with the
+     * same question asked -- is this key worth its bytes?
+     */
+    const val LEGEND_BYTE_CEILING = 1359
+  }
 }

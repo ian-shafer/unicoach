@@ -2751,6 +2751,147 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * RFC 199: every behavioural rule that USED to be stated in
+   * `FederalAidPolicyChatTool.DESCRIPTION`, `CollegeListChatTool.DESCRIPTION`
+   * or `MoneyProfileChatTool.DESCRIPTION` as well, asserted in the body the
+   * runtime is SERVED.
+   *
+   * The same move RFC 192 made for the cost tool, for the three tools it named
+   * as still carrying the defect (RFC 192 D10): each description became a
+   * schema legend and its fourteen behavioural rules left, deleted because the
+   * prompt already said them. This test is what makes that safe. The three tool
+   * tests no longer assert any of them, and the artifact under change cannot be
+   * its own witness -- before this test, the ONLY guard on all fourteen was a
+   * `description.contains(...)` assertion inside the very test files the slice
+   * rewrote, so a rule dropped from the prompt too would have gone unnoticed.
+   *
+   * Read against the SERVED body, per paragraph, which is the stronger pin: it
+   * says the rule reaches the model, not that some Kotlin constant mentions it.
+   * The overlap with the paragraph tests above is DELIBERATE, for RFC 192's
+   * reason: a reader checking whether rule N survived must find rule N here,
+   * and a partial list is the one thing this test must not be.
+   *
+   * The fifteenth item -- the only rule with no other home -- is the sentence
+   * this slice AUTHORED, so it is stated over the authored file rather than the
+   * served row, exactly as [authoredAdmissionsParagraph] explains.
+   */
+  @Test
+  fun `the rules that left the three remaining tool descriptions are stated in the served prompt`() {
+    // federal_aid_policy: five rules, all of them already in the federal-aid
+    // paragraph the tool's own description used to repeat.
+    val federalAid = federalAidParagraph()
+    assertParagraphStates(
+      federalAid,
+      "Always say which award year a figure is for, and attribute it to the source the tool cites",
+      "the award year and the citation are said with every federal figure",
+    )
+    assertParagraphStates(
+      federalAid,
+      "say that plainly rather than presenting them as this year's",
+      "a prior-year group is never presented as this year's",
+    )
+    assertParagraphStates(
+      federalAid,
+      "never a promised amount",
+      "Pell is an eligibility and a range, never a promise",
+    )
+    assertParagraphStates(
+      federalAid,
+      "never subtract a loan or a loan limit from any price",
+      "a loan limit is a cap on borrowing, never aid that lowers a price",
+    )
+    assertParagraphStates(
+      federalAid,
+      "you may ask it once, saying what it unlocks",
+      "the dependency question is invited once, with its value named",
+    )
+    assertParagraphStates(
+      federalAid,
+      "answer fully anyway with both sets of figures and never raise it again yourself",
+      "the answer never waits on the dependency question, and a decline is never re-raised",
+    )
+    // The one rule with no other home, MOVED here by this slice: the trigger the
+    // tool description carried for the FAFSA's own aid outcome and for a
+    // borrowing-limit question. Stated over the AUTHORED file, because the seed
+    // this run's version is cut from is generated at land.
+    assertParagraphStates(
+      paragraphOf(authoredBody(), CoachParagraph.FEDERAL_AID),
+      "how much they are allowed to borrow, or about what the FAFSA works out for them",
+      "RFC 199: the federal tool's widest trigger had no home but the tool description, so it moves here",
+    )
+
+    // update_college_list: the ethos contract, in the paragraph that owns the
+    // list -- plus the id rule, which lives with the name lookup.
+    val collegeList = paragraphAt(CoachParagraph.COLLEGE_LIST)
+    assertParagraphStates(
+      collegeList,
+      "offer to add it to their list and say what that unlocks",
+      "the value-before-ask offer is stated where the coach reads it",
+    )
+    assertParagraphStates(
+      collegeList,
+      "only when the student asks or agrees",
+      "nothing is added, restatused or removed without the student's say-so",
+    )
+    assertParagraphStates(
+      collegeList,
+      "let it go without comment",
+      "a student who would rather not track a school is never pushed",
+    )
+    assertParagraphStates(
+      collegeList,
+      "changing it back is always one message away",
+      "a change of mind is honoured immediately",
+    )
+    assertParagraphStates(
+      nameLookupParagraph(),
+      "never build an id yourself, never guess one",
+      "the college_id comes from a lookup, a search or a cost result, never from the model",
+    )
+
+    // update_money_profile: when to ask, what to name, and how a decline is
+    // honoured -- split between the money paragraph and the living-plan one,
+    // because the plan is the field the living-plan paragraph owns.
+    val money = moneyParagraph()
+    assertParagraphStates(
+      money,
+      "say what it unlocks",
+      "a money question always names what the answer buys",
+    )
+    assertParagraphStates(
+      money,
+      "Only ask when the result offers it",
+      "the result, not the coach, decides when a money question is worth asking",
+    )
+    assertParagraphStates(
+      money,
+      "never raise that field again yourself",
+      "a decline is recorded and never re-asked",
+    )
+    val livingPlan = livingPlanParagraph()
+    assertParagraphStates(
+      livingPlan,
+      "worth one question only when the result offers it and cost is already what you are talking about",
+      "the living-plan question is never an opener",
+    )
+    assertParagraphStates(
+      livingPlan,
+      "one price picture instead of three",
+      "the living-plan question names what it buys",
+    )
+    assertParagraphStates(
+      livingPlan,
+      "keep the correction as that school's own plan",
+      "a per-school correction goes to the college list, not to the usual plan",
+    )
+    assertParagraphStates(
+      livingPlan,
+      "never raise the question again yourself",
+      "a declined living plan is never re-raised",
+    )
+  }
+
+  /**
    * One migrated rule, asserted in the paragraph that now owns it.
    *
    * The failure carries the literal that went missing AND the body it was looked

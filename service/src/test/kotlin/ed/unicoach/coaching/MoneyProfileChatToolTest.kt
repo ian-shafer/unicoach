@@ -1,5 +1,6 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -25,11 +26,19 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class MoneyProfileChatToolTest {
   companion object {
+    /**
+     * The MEASURED size of the legend that ships (RFC 199 D4), not a budget
+     * with headroom: 621 bytes, down from the 929-byte rulebook it replaced.
+     * Adding a field means consciously raising this number.
+     */
+    const val LEGEND_BYTE_CEILING = 621
+
     private lateinit var connection: Connection
     private lateinit var database: Database
 
@@ -88,7 +97,7 @@ class MoneyProfileChatToolTest {
   private fun profileOf(result: JsonObject): JsonObject = result.getValue("money_profile").jsonObject
 
   @Test
-  fun `the definition carries the name and the ethos contract`() {
+  fun `the definition carries the name and the legend`() {
     assertEquals("update_money_profile", tool.name)
     assertEquals("update_money_profile", tool.definition["name"]!!.jsonPrimitive.content)
     val description = tool.definition["description"]!!.jsonPrimitive.content
@@ -96,15 +105,27 @@ class MoneyProfileChatToolTest {
       tool.definition["input_schema"]!!
         .jsonObject["properties"]!!
         .jsonObject
-    assertTrue(description.contains("only when cost comes up naturally"), "the ethos contract must ride the description")
-    assertTrue(description.contains("without pushing"))
-    assertTrue(description.contains("Never re-ask a declined field"))
-    // RFC 152: the third field, and the sentence that keeps a per-school
-    // correction off the global default.
-    assertTrue(description.contains("where the student plans to live"), "the third field must ride the description")
+    // RFC 199: the description is a schema legend. The ethos it used to carry
+    // -- when to ask, how a decline is honoured -- is stated once in the coach
+    // system prompt and asserted there against the SERVED body.
     assertTrue(
-      description.contains("carries its own plan on the college list"),
-      "and the description must send a per-school correction to the college list, not to this tool",
+      description.contains("Record what the student just shared, or just declined to share, about money"),
+      "the legend says what the tool records",
+    )
+    assertTrue(
+      description.contains("Every field is described in the schema below and every field is optional"),
+      "the legend points at the per-parameter descriptions rather than restating them",
+    )
+    // RFC 152, carried forward: the third field, and the sentence that keeps a
+    // per-school correction off the usual plan. Both are schema facts.
+    assertTrue(description.contains("where they usually plan to live"), "the third field must ride the legend")
+    assertTrue(
+      description.contains("a plan for one particular school goes to ${CollegeListChatTool.TOOL_NAME} instead"),
+      "and the legend must send a per-school correction to the college list, not to this tool",
+    )
+    assertTrue(
+      description.contains("Setting a value and declining the same field in one call is an error"),
+      "the whole-call input contract is a schema fact and stays in the legend",
     )
     // The plan's enum is the persisted vocabulary itself, with the spoken label
     // beside every wire name -- one vocabulary, and no surface inventing copy.
@@ -129,6 +150,45 @@ class MoneyProfileChatToolTest {
         properties[flag]!!.jsonObject["const"]!!.jsonPrimitive.content,
         "$flag must carry const: true",
       )
+    }
+  }
+
+  @Test
+  fun `the tool description stays within its legend byte ceiling`() {
+    // The PUBLISHED description, not the constant: a budget must measure the
+    // string the model is actually sent.
+    val bytes =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+        .toByteArray()
+        .size
+
+    assertTrue(
+      bytes <= LEGEND_BYTE_CEILING,
+      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
+    )
+  }
+
+  @Test
+  fun `the description is a legend, not a rulebook`() {
+    val description =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+
+    // Each phrase was in the DESCRIPTION before RFC 199 and is now stated ONCE,
+    // in the coach system prompt, where SystemPromptCatalogTest asserts it
+    // against the SERVED body. A tripwire on known regressions, not the guard:
+    // it matches phrasings, so the ceiling above is what actually bites.
+    listOf(
+      "only when cost comes up naturally",
+      "never open with it",
+      "what the answer unlocks",
+      "record the decline and accept it without pushing",
+      "Never re-ask a declined field",
+    ).forEach {
+      assertFalse(description.contains(it), "a behavioural rule is back in the tool description: [$it]")
     }
   }
 

@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.collegelist
 
+import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
@@ -539,20 +540,20 @@ class CollegeListChatTool(
 
     const val TOOL_NAME = "update_college_list"
 
-    // The ethos contract rides the tool description verbatim (RFC 134's
-    // pattern): offer with the value named, never write without the student's
-    // say-so, honour a change of mind immediately.
+    // A schema legend, not a rulebook (RFC 199, on RFC 192's convention): what
+    // this tool does, which id it is keyed by, the one fact no parameter can
+    // state (a per-school plan overrides the usual one), and what the result
+    // echoes. Every input field carries its own `description` in the schema
+    // below, and every behavioural rule -- when to offer, whose say-so is
+    // needed, how a change of mind is honoured -- lives in the coach system
+    // prompt, stated once.
     const val DESCRIPTION =
       "Maintain the student's college list - the schools they are considering, applying to, " +
-        "admitted to, or rejected from - when the student asks for it or agrees to it. " +
-        "When a student shows real interest in a school, offer to add it and say what tracking " +
-        "unlocks (their real cost numbers, their options in one place); never add, change, or remove an " +
-        "entry without the student's say-so, and never push if they'd rather not track a school. " +
-        "The student can change a school's status or remove it at any time - honour that " +
-        "immediately and without comment. Use the college id from a college search or cost " +
-        "result. A school can also carry its own living plan - where the student plans to live at " +
-        "THAT school - when it differs from their usual plan: set it only when the student says so, " +
-        "and clear it to go back to their usual plan. The result echoes the full list after the write."
+        "admitted to, or rejected from. Keyed by college_id exactly as a college lookup, search or cost " +
+        "result gives it. Every input field is described in the schema below. living_plan is this " +
+        "school's OWN plan and wins over the student's usual plan; living_plan_clear drops it and goes " +
+        "back to that usual plan, which ${MoneyProfileChatTool.TOOL_NAME} records. The result echoes the " +
+        "full list after the write."
 
     private const val NOT_ON_LIST_REASON = "that school is not on the list; use action [add] to add it"
     private const val WRITE_FAILED_REASON = "college list write failed"

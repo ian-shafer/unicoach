@@ -1,5 +1,6 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
@@ -290,21 +291,21 @@ class MoneyProfileChatTool(
 
     const val TOOL_NAME = "update_money_profile"
 
-    // The ethos contract rides the tool description verbatim (RFC 134): value
-    // before ask, never force, declined stays declined.
+    // A schema legend, not a rulebook (RFC 199, on RFC 192's convention): what
+    // this tool records, the one fact no parameter can state (this plan is the
+    // USUAL one; a per-school plan goes to the college list), the whole-call
+    // input error, and what the result echoes. Every field carries its own
+    // `description` in the schema below, and every behavioural rule -- when to
+    // ask, what to name, how a decline is honoured -- lives in the coach system
+    // prompt, stated once.
     const val DESCRIPTION =
-      "Record household income band, state of residency, where the student plans to live, and/or " +
-        "whether they are dependent or independent for federal aid " +
-        "that the student just shared or declined to share, so cost estimates can use their real numbers. " +
-        "Ask about money only when cost comes up naturally in the conversation - never open with it, " +
-        "and always explain what the answer unlocks (their real net price, in-state vs out-of-state tuition, " +
-        "one price picture instead of three). " +
-        "A living plan here is the student's usual plan; a school they have decided differently about " +
-        "carries its own plan on the college list, so a correction about one school goes there. " +
-        "If the student declines, record the decline and accept it without pushing. " +
-        "Never re-ask a declined field unless the student reopens the topic themselves. " +
-        "Setting a value and declining the same field in one call is an error. " +
-        "The result echoes the full profile after the write."
+      "Record what the student just shared, or just declined to share, about money: household income " +
+        "band, state of residency, where they usually plan to live, and whether they are dependent or " +
+        "independent for federal aid - so cost answers can use their real numbers. Every field is " +
+        "described in the schema below and every field is optional; a call carries only what the student " +
+        "just said. living_plan here is the student's USUAL plan - a plan for one particular school goes " +
+        "to ${CollegeListChatTool.TOOL_NAME} instead. Setting a value and declining the same field in one " +
+        "call is an error. The result echoes the full profile after the write."
   }
 }
 

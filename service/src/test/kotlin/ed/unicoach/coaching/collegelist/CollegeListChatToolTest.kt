@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.collegelist
 
+import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.costs.CostsTestDb
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.college.CollegeSearchTool
@@ -55,18 +56,26 @@ class CollegeListChatToolTest {
   private fun activeEntries(student: StudentId) = CollegeListEntriesDao.listActiveByStudent(CostsTestDb.sqlSession, student).getOrThrow()
 
   @Test
-  fun `the definition carries the name, the enums, and the ethos contract`() {
+  fun `the definition carries the name, the enums, and the legend`() {
     assertEquals("update_college_list", tool.name)
     assertEquals("update_college_list", tool.definition["name"]!!.jsonPrimitive.content)
+    // RFC 199: the description is a schema legend -- what the tool does, which
+    // id it is keyed by, and the one fact no per-parameter description can
+    // state. The ethos it used to carry is stated once, in the coach system
+    // prompt, and asserted there against the SERVED body.
     val description = tool.definition["description"]!!.jsonPrimitive.content
-    assertTrue(description.contains("offer to add"), "the value-before-ask offer must ride the description")
+    assertTrue(description.contains("Maintain the student's college list"), "the legend says what the tool does")
     assertTrue(
-      description.contains("never add, change, or remove an entry without the student's say-so"),
-      "the say-so rule must ride the description",
+      description.contains("Keyed by college_id exactly as a college lookup, search or cost result gives it"),
+      "the legend says where the id comes from",
     )
     assertTrue(
-      description.contains("change a school's status or remove it at any time"),
-      "reversibility must ride the description",
+      description.contains("Every input field is described in the schema below"),
+      "the legend points at the per-parameter descriptions rather than restating them",
+    )
+    assertTrue(
+      description.contains("living_plan is this school's OWN plan and wins over the student's usual plan"),
+      "the cross-tool precedence fact has no other home and must stay here",
     )
 
     val properties =
@@ -102,9 +111,54 @@ class CollegeListChatToolTest {
       "living_plan_clear must carry const: true, so a compliant model can never emit false",
     )
     assertTrue(
-      description.contains("clear it to go back to their usual plan"),
-      "the override's reversibility must ride the description",
+      description.contains("living_plan_clear drops it and goes back to that usual plan"),
+      "the override's reversibility is a schema fact and stays in the legend",
     )
+    assertTrue(
+      description.contains(MoneyProfileChatTool.TOOL_NAME),
+      "and the legend names the tool that records the usual plan",
+    )
+  }
+
+  @Test
+  fun `the tool description stays within its legend byte ceiling`() {
+    // The PUBLISHED description, not the constant: a budget must measure the
+    // string the model is actually sent.
+    val bytes =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+        .toByteArray()
+        .size
+
+    assertTrue(
+      bytes <= LEGEND_BYTE_CEILING,
+      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
+    )
+  }
+
+  @Test
+  fun `the description is a legend, not a rulebook`() {
+    val description =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+
+    // Each phrase was in the DESCRIPTION before RFC 199 and is now stated ONCE,
+    // in the coach system prompt, where SystemPromptCatalogTest asserts it
+    // against the SERVED body. A tripwire on known regressions, not the guard:
+    // it matches phrasings, so the ceiling above is what actually bites.
+    listOf(
+      "when the student asks for it or agrees to it",
+      "offer to add",
+      "never add, change, or remove an entry without the student's say-so",
+      "never push if they'd rather not track a school",
+      "change a school's status or remove it at any time",
+      "without comment",
+      "set it only when the student says so",
+    ).forEach {
+      assertFalse(description.contains(it), "a behavioural rule is back in the tool description: [$it]")
+    }
   }
 
   @Test
@@ -523,5 +577,14 @@ class CollegeListChatToolTest {
 
     val overBound = execute(student, """{"action":"update","college_id":"${college.value}","reasons":"${"r".repeat(2049)}"}""")
     assertEquals("reasons must be non-empty and at most [2048] characters", errorOf(overBound), "got $overBound")
+  }
+
+  companion object {
+    /**
+     * The MEASURED size of the legend that ships (RFC 199 D4), not a budget
+     * with headroom: 472 bytes, down from the 867-byte rulebook it replaced.
+     * Adding a key means consciously raising this number.
+     */
+    const val LEGEND_BYTE_CEILING = 472
   }
 }

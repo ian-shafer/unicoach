@@ -1,8 +1,10 @@
 package ed.unicoach.coaching.aid
 
+import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.noArgumentToolDefinition
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.putDependency
 import kotlinx.serialization.json.JsonObject
@@ -249,26 +251,39 @@ class FederalAidPolicyChatTool(
         "guideline for the family's size and state."
 
     /**
-     * What the model is told, built from the very consts the payload is keyed
-     * by. The dependency invitation names its value (RFC 159 D-F: value before
-     * ask) and the answer NEVER waits on it -- both tables are always served.
+     * The payload legend the model is told (RFC 199, on RFC 192's convention):
+     * one entry per wire key, what it means and what values it takes, built
+     * from the very consts the payload is keyed by. Every behavioural rule --
+     * what to SAY to a family -- lives in the coach system prompt, and an entry
+     * here says only how to READ a key.
+     *
+     * Not `const`: the status codes are rendered from the enums the payload
+     * itself is written from, so the legend can never quote a value the wire no
+     * longer carries.
      */
-    const val DESCRIPTION =
-      "Federal Pell Grant and Direct Loan policy parameters from Federal Student Aid: the Pell maximum " +
-        "and minimum, the Student Aid Index floor, the maximum-Pell income tests, and the Direct Loan " +
-        "annual and aggregate limits. These are federal policy, identical at every college, so the tool " +
-        "takes no input. Use it whenever Pell Grants, federal loans, borrowing limits or the FAFSA's aid " +
-        "outcome come up. Every topic ($PELL_KEY, $UNDERGRAD_LOANS_KEY, $GRAD_LOANS_KEY) carries its " +
-        "$AWARD_YEAR_KEY and per-document $SOURCES_KEY: always say which award year a figure is for and " +
-        "attribute it to the cited source. When a topic's $AWARD_YEAR_STATUS_KEY is prior_year, say its " +
-        "$AWARD_YEAR_STATEMENT_KEY plainly rather than presenting the figures as this year's. Frame Pell " +
-        "as eligibility and a range, never a promised amount, and state loan limits as caps the family " +
-        "would repay with interest -- never take a loan or a loan limit off any price. The " +
-        "$MONEY_PROFILE_KEY block echoes whether the student is dependent or independent for federal " +
-        "aid: when $DEPENDENCY_STATUS_KEY is unanswered you MAY invite that answer once, saying what it " +
-        "unlocks (most students applying from high school are dependent for federal aid; knowing which " +
-        "applies picks the right loan limits), but MUST still answer fully without it by presenting both " +
-        "the $DEPENDENT_KEY and $INDEPENDENT_KEY tables; when it is declined, present both tables and " +
-        "never raise the question again yourself."
+    val DESCRIPTION =
+      "Federal Pell Grant and Direct Loan policy from Federal Student Aid: the Pell maximum and minimum, " +
+        "the Student Aid Index floor, the maximum-Pell income tests, and the Direct Loan annual and " +
+        "aggregate limits. It takes no input -- these are federal policy, identical at every college. A " +
+        "legend of the payload's keys follows.\n" +
+        "$CURRENT_AWARD_YEAR_KEY - the award year Federal Student Aid is currently on.\n" +
+        "$PELL_KEY / $UNDERGRAD_LOANS_KEY / $GRAD_LOANS_KEY - the three topics, each resolved to its OWN " +
+        "latest verified year and each carrying $AWARD_YEAR_KEY, $AWARD_YEAR_STATUS_KEY and $SOURCES_KEY " +
+        "(one entry per cited document).\n" +
+        "$AWARD_YEAR_STATUS_KEY - \"${AwardYearCurrency.Current.value}\" | " +
+        "\"${AwardYearCurrency.PriorYear.value}\": that topic's $AWARD_YEAR_KEY trails " +
+        "$CURRENT_AWARD_YEAR_KEY, and the topic then also carries $AWARD_YEAR_STATEMENT_KEY, the sentence " +
+        "to say for it.\n" +
+        "$MAX_PELL_AGI_TESTS_KEY - the two served percentages of the federal poverty guideline, with the " +
+        "$STATEMENT_KEY that glosses them.\n" +
+        "$FRAMING_STATEMENT_KEY / $LOAN_FRAMING_STATEMENT_KEY - the sentence to say about Pell, and the " +
+        "sentence to say about a loan limit.\n" +
+        "$UNDERGRAD_LOANS_KEY - a $DEPENDENT_KEY and an $INDEPENDENT_KEY table, BOTH always served " +
+        "whatever the student answered.\n" +
+        "$MONEY_PROFILE_KEY.$DEPENDENCY_STATUS_KEY - \"${AnswerStatus.ANSWERED.value}\" (the value rides " +
+        "beside it) | \"${AnswerStatus.DECLINED.value}\" | \"${AnswerStatus.UNANSWERED.value}\": the " +
+        "authority on whether to raise the dependency question " +
+        "(${MoneyProfileChatTool.TOOL_NAME} records it).\n" +
+        "$SOURCE_NOTE_KEY - why no college id rides this tool.\n"
   }
 }
