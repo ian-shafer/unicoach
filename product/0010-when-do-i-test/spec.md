@@ -111,6 +111,18 @@ SESSION was editing it. The sibling's own sibling slice was. So:
 A freeze scoped to where the danger was expected, rather than to where the
 change actually reached, is a freeze with a hole in it.
 
+**A fourth parallel-work hazard, and the first where the tooling did nothing
+wrong** (2026-09-11). This section itself was committed to `main` by the sibling
+session in `1af7b493`, under brief 0009's commit message, because its `git add`
+named a path it did not own. It was reviewed and left in place rather than
+reverted: the text was finished, and re-landing finished prose costs a commit
+for nothing. Recorded here so the attribution is not lost to the commit log. The
+general form, which is the same rule this section already states one layer
+along: **enumerate what you are about to act on, then act — never act on the set
+you think you own.** In a shared checkout a `git add` of another session's path
+is silent, passes every gate, and lands; neither RFC 193 nor RFC 194 would catch
+it, because a docs-only commit is exactly what it looks like.
+
 **The corrected form of the rule, since the first form invited the error.** Both
 sessions scoped a freeze to a FILE, independently, and both were wrong the same
 way. Do not start from the file. **Start from the change: enumerate every file
