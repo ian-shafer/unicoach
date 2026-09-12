@@ -14,6 +14,7 @@ import ed.unicoach.coaching.costs.UcsdScorecardRow
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
+import ed.unicoach.coaching.costs.spokenLabel
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AbsenceStatus
@@ -1598,6 +1599,208 @@ class CostReportPageTest {
     )
   }
 
+  // ---------------------------------------------------------------------------
+  // What KIND of number, said once for the set it covers (RFC 191, brief 0009 D3)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the tier sentence is said once for the figures it covers, not once per school`() {
+    // The whole slice, measured: three schools, three federal debt figures, ONE
+    // sentence saying what kind of number they are. It was printed three times.
+    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val statement = AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)
+
+    assertEquals(1, countOf(body, statement), "one sentence for the set of figures it covers: [$body]")
+    assertTrue(body.contains("report-kinds"), "and it is in the standing block, above the sources")
+    assertTrue(body.contains("The median federal loan debt:"), "which names the figures it covers: [$body]")
+    // Byte-identical to the domain's own copy, never re-worded on the way out
+    // (RFC 179, and the v19 prompt pin over the same sentence).
+    assertTrue(body.contains(statement), "and it is [AssuranceTierCopy]'s sentence, byte for byte")
+    // The debt paragraph keeps its figure and its publisher and loses only the
+    // repeated tier sentence (RFC 190's attribution is untouched).
+    assertTrue(body.contains("reports that students who finished here carried"), "the figure still says whose it is")
+  }
+
+  @Test
+  fun `every figure the page speaks a kind for is covered by exactly one sentence`() {
+    // Walked, not restated: the covered set is derived from the colleges'
+    // own figure statuses, so a figure that escaped the block fails here.
+    val colleges = listOf(verboseState(), verboseCampus(), verbosePrivate())
+    val body = render(costProfile(colleges, answeredMoney()))
+    val block = kindsBlockOf(body)
+
+    colleges.forEach { cost ->
+      val debt = requireNotNull(cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD))
+      // The EXPECTED scope, built per college and compared as a string: a
+      // predicate that does not mention the college asserts the same thing three
+      // times and cannot see a block that names the wrong subset of schools.
+      // Every school here is on one tier, so the label is bare -- and that IS
+      // the claim: one sentence, covering all three.
+      val expected = "The median federal loan debt:"
+      assertTrue(block.contains(expected), "[${cost.name}]'s debt figure must be named: [$block]")
+      assertEquals(
+        1,
+        countOf(block, AssuranceTierCopy.statementOf(debt.assurance)),
+        "and covered by exactly one sentence, the one that is true of it: [$block]",
+      )
+      AssuranceTier.entries.filter { it != debt.assurance }.forEach { other ->
+        assertFalse(block.contains(AssuranceTierCopy.statementOf(other)), "and by no other: [${other.value}]")
+      }
+    }
+    // The other two sentences are not said at all: no figure on this page is on
+    // either tier, and a sentence said over nothing describes nothing.
+    assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)))
+    assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT)))
+  }
+
+  @Test
+  fun `our own at-home assumption is never swept under a publisher's tier`() {
+    // RFC 166 section 7 and RFC 189's review in one test: the `$0` at-home
+    // housing line is OURS. It carries no published cell, so it cannot enter the
+    // covered set -- and the block must not name housing and food at all.
+    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val block = kindsBlockOf(body)
+
+    assertTrue(body.contains(AT_HOME_ASSUMPTION_STATEMENT), "the assumption is still stated as ours")
+    assertFalse(block.contains(AT_HOME_ASSUMPTION_STATEMENT), "but never inside a publisher's tier block: [$block]")
+    // FUTURE-PROOFING, said plainly: only the debt field can enter the covered
+    // set today, so no housing string could appear whatever the grouping did.
+    // The assertion is the regression guard for the day the covered set widens.
+    assertFalse(block.contains("housing and food"), "and no tier sentence claims the line we authored: [$block]")
+    assertFalse(block.contains("our assumption"), "the block speaks only for published figures: [$block]")
+  }
+
+  @Test
+  fun `a figure with no number is in no tier block, and keeps its own words`() {
+    // The exclusion RFC 189 wrote into the tool description, on this surface: a
+    // withheld figure is not a KIND of number, so it is covered by nothing --
+    // and it still says, in its own paragraph, who withheld it and what kind of
+    // number it would have been.
+    val suppressed =
+      oneBlankSchool(
+        booksAndSupplies = 1000,
+        medianDebt = null,
+        absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+      )
+    val body = render(costProfile(listOf(suppressed), answeredMoney()))
+
+    assertFalse(body.contains("report-kinds"), "no shown prose figure is no block at all, not an empty heading: [$body]")
+    assertTrue(
+      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER, MoneySource.SCORECARD))),
+      "the suppression is still stated",
+    )
+    assertTrue(
+      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)),
+      "and the tier the withheld figure would have had is still reachable (brief 0009 D1): [$body]",
+    )
+  }
+
+  @Test
+  fun `the tier block ranks nothing and counts nothing`() {
+    // RFC 179 D10. The block knows how many figures are on each tier and may
+    // never say so, and it may never order the three as better or worse.
+    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val block = kindsBlockOf(body)
+    // EVERY scope, not the first: a second group's header is exactly where a
+    // count would be added ("2 figures on this tier") and never noticed.
+    val scopes = block.split("report-kind-scope\">").drop(1).map { it.substringBefore("</span>") }
+
+    assertTrue(scopes.isNotEmpty(), "the block must have at least one scope to check: [$block]")
+    scopes.forEach { scope -> assertFalse(scope.any { it.isDigit() }, "no count in a scope: [$scope]") }
+    // Scoped to the BLOCK, not the whole page: "College Scorecard" contains
+    // "score", and a page-wide match would be asserting on a publisher's name.
+    listOf("strongest", "weakest", "most reliable", "rank", "score", "rating", "tier 1").forEach {
+      assertFalse(block.lowercase().contains(it), "no ranking of the three tiers reaches the block: [$it] in [$block]")
+    }
+  }
+
+  /**
+   * The tier block's own markup, with the marker ASSERTED.
+   *
+   * `substringAfter` returns the WHOLE document on a miss, so a renamed section
+   * would quietly turn every assertion below into an assertion about the whole
+   * page -- the same hazard [visibleWordsOf] guards, guarded the same way.
+   */
+  private fun kindsBlockOf(body: String): String {
+    assertTrue(body.contains("report-kinds"), "the tier block must be on the page to be read")
+    assertTrue(body.contains("report-sources"), "and the sources section must follow it")
+    return body.substringAfter("report-kinds").substringBefore("report-sources")
+  }
+
+  @Test
+  fun `two schools on two tiers get two headers, each naming only its own school`() {
+    // The failure this whole block risks: ONE header over two figures of
+    // different kinds tells a family that a survey answer is a federal record,
+    // or the reverse. The fixture forces the pairing on purpose -- no publisher
+    // we load puts a median debt figure on a survey tier -- because the
+    // renderer, not only the grouping, has to survive the case.
+    val federal = costFixture(name = "Lakeshore State University", tuitionInState = 12000, medianDebt = 21000)
+    val surveyed =
+      costFixture(
+        name = "Wynnford College",
+        tuitionInState = 41000,
+        medianDebt = 27000,
+        debtPublisher = PublishedCell.Survey.SFA,
+      )
+    val body = render(costProfile(listOf(federal, surveyed), answeredMoney()))
+    val block = kindsBlockOf(body)
+
+    assertEquals(2, countOf(block, "report-kind-scope"), "two kinds of number are two headers: [$block]")
+    assertTrue(
+      block.contains("The median federal loan debt at Lakeshore State University:"),
+      "the federal figure names its own school: [$block]",
+    )
+    assertTrue(
+      block.contains("The median federal loan debt at Wynnford College:"),
+      "and so does the surveyed one: [$block]",
+    )
+    // Each sentence said once, and neither header reaches the other's figure.
+    assertEquals(1, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)))
+    assertEquals(1, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)))
+    val federalHeader = block.substringBefore("The median federal loan debt at Wynnford College:")
+    assertFalse(
+      federalHeader.contains(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)),
+      "the survey sentence may not sit under the federal school's header: [$federalHeader]",
+    )
+  }
+
+  @Test
+  fun `a bare label is refused where another school states a different tier for the same figure`() {
+    // The over-reach a covered-set-only rule cannot see (RFC 191 D4): one
+    // school's debt figure is SHOWN, the other's is withheld and keeps its own
+    // sentence in its own paragraph -- on a different tier. An unqualified
+    // header over the shown one would claim the withheld one too.
+    val shown = costFixture(name = "Lakeshore State University", tuitionInState = 12000, medianDebt = 21000)
+    val withheld =
+      costFixture(
+        name = "Wynnford College",
+        tuitionInState = 41000,
+        medianDebt = null,
+        debtPublisher = PublishedCell.Survey.SFA,
+        absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+      )
+    val body = render(costProfile(listOf(shown, withheld), answeredMoney()))
+    val block = kindsBlockOf(body)
+
+    assertTrue(
+      block.contains("The median federal loan debt at Lakeshore State University:"),
+      "the header names the school whose figure it describes: [$block]",
+    )
+    assertFalse(
+      block.contains("Wynnford College"),
+      "and never the school whose figure it does not cover: [$block]",
+    )
+    // The withheld figure keeps both of its own sentences, outside the block.
+    assertTrue(
+      body.contains(requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER, MoneySource.IPEDS_SFA))),
+      "the suppression is still stated: [$body]",
+    )
+    assertTrue(
+      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)),
+      "and the tier it would have had is still reachable: [$body]",
+    )
+  }
+
   private companion object {
     /**
      * The word budget for the three-school page (brief 0009 D9/D13), measured
@@ -1606,15 +1809,24 @@ class CostReportPageTest {
      * The number is the one each slice actually LEFT the page at, not the one it
      * hoped for. RFC 188 took it from 1,767 words to 1,530; RFC 190 -- citing
      * each block once instead of re-naming the school, its cycle and its
-     * document at every borrowing figure -- takes it from 1,530 to 1,450, which
-     * is 80 words of pure repetition off three schools. Both numbers were
-     * MEASURED here, on the same three verbose fixtures, by setting this
-     * constant to 0 and reading the failure.
+     * document at every borrowing figure -- took it from 1,530 to 1,450, which
+     * is 80 words of pure repetition off three schools. RFC 191 says each
+     * ASSURANCE TIER once for the set of figures it covers rather than inside
+     * every school's debt paragraph, and takes it from 1,450 to 1,401. Every
+     * number was MEASURED here, on the same three verbose fixtures, by setting
+     * this constant to 0 and reading the failure.
+     *
+     * Brief 0009 wrote `<= 1,170` for RFC 191's slice. That number came off the
+     * superseded 1,793-word chain the brief itself retired (SD1, SD2, SD5) and
+     * is NOT reachable by grouping tier sentences: three sentences of thirty
+     * words were printed, one is printed, and the block that names the figures
+     * they cover costs eleven. The run reports the miss rather than weakening
+     * the assertion.
      *
      * A ceiling set at a number the page does not meet is a test that is either
      * failing or lying; this one ratchets what was really won and refuses a
      * regression.
      */
-    const val WORD_CEILING = 1450
+    const val WORD_CEILING = 1401
   }
 }

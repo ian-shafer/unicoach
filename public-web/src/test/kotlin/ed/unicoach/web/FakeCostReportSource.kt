@@ -266,6 +266,18 @@ fun costFixture(
    * vocabulary.
    */
   pricePublisher: PublishedCell.Survey? = null,
+  /**
+   * The publisher of the MEDIAN DEBT row, when the test needs that figure on a
+   * tier the Scorecard's own column does not give it.
+   *
+   * Deliberately synthetic, and the only knob in this file that is: no publisher
+   * we load pairs a survey with `GRAD_DEBT_MDN`, so a mixed-tier PAGE is not
+   * constructible from real data today -- the page speaks a tier for exactly one
+   * field. It exists because "two schools' same figure on two tiers" is the case
+   * a grouping header must survive (RFC 191 D4), and a guarantee tested only in
+   * a unit suite is a guarantee the renderer never has to keep.
+   */
+  debtPublisher: PublishedCell.Survey? = null,
 ): CollegeCost {
   val collegeId = CollegeId(UUID.randomUUID())
   val figures =
@@ -292,7 +304,7 @@ fun costFixture(
           heldOnlyInOtherYear.mapNotNull { (field, amountUsd) ->
             yearGapRow(collegeId, field, amountUsd, publisher = pricePublisher)
           },
-      cohortStats = cohortRows(collegeId, control, publishedPrice, netPrice, medianDebt, absenceStatuses),
+      cohortStats = cohortRows(collegeId, control, publishedPrice, netPrice, medianDebt, absenceStatuses, debtPublisher),
     )
   // Every derivation below is the SERVICE's own, published for exactly this
   // caller: a fixture may choose only what a school publishes, never re-decide
@@ -422,6 +434,7 @@ private fun cohortRows(
   netPrice: NetPrice.Reported,
   medianDebt: Int?,
   absenceStatuses: Map<CostField, AbsenceStatus>,
+  debtPublisher: PublishedCell.Survey? = null,
 ): List<CohortMoneyStat> {
   val blendScope =
     if (control is CollegeControl.Public) CohortResidencyScope.IN_STATE_RATE_PAYING else CohortResidencyScope.ALL
@@ -452,6 +465,7 @@ private fun cohortRows(
       vintage = null,
       amountUsd = medianDebt,
       absent = absenceStatuses[CostField.MEDIAN_DEBT_AT_COMPLETION_USD],
+      publisher = debtPublisher,
     ),
   )
 }
@@ -475,6 +489,7 @@ private fun cohortRow(
   vintage: AcademicYear?,
   amountUsd: Int?,
   absent: AbsenceStatus? = null,
+  publisher: PublishedCell.Survey? = null,
 ): CohortMoneyStat {
   val address =
     requireNotNull((field.figureAddress as? FigureAddress.Cohort)?.address) {
@@ -499,10 +514,11 @@ private fun cohortRow(
     // [PublishedCell.ScorecardCell.of], so this fixture is refused at the same
     // door the read is (RFC 184).
     cell =
-      PublishedCell.ScorecardCell.of(
-        ScorecardVariableNames.cohortOf(address.measure, incomeBand),
-        FIXTURE_LOCATION,
-      ),
+      publisher?.let { PublishedCell.Surveyed(it, ScorecardVariableNames.cohortOf(address.measure, incomeBand)) }
+        ?: PublishedCell.ScorecardCell.of(
+          ScorecardVariableNames.cohortOf(address.measure, incomeBand),
+          FIXTURE_LOCATION,
+        ),
     publisherFlag = null,
   )
 }

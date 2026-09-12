@@ -293,6 +293,99 @@ enum class ComponentRole(
 }
 
 /**
+ * How a FAMILY hears this figure's name (RFC 191).
+ *
+ * Mid-sentence, article and all -- "the median federal loan debt", not a title
+ * and not the wire name -- because every site that needs it is composing a
+ * phrase, and a label that has to be re-cased or re-articled at each of them is
+ * a label each of them is free to word differently.
+ *
+ * Here rather than in a renderer because it is MONEY COPY: `CostReportPage.kt`
+ * authors none, so a parent can never be shown a name for a figure that the
+ * coach would have called something else. The three component names are
+ * [ComponentRole.label] lowercased at its one home rather than re-typed, so a
+ * renamed role cannot leave two names for one row.
+ *
+ * It is the name used INSIDE A SENTENCE, and deliberately not the one home of
+ * every string a family sees for a figure: a table COLUMN is a heading rather
+ * than a phrase, and the report page's own column heads say more than this does
+ * ("The likely price after a financial aid offer" over a column of estimates,
+ * against "the price after a financial aid offer" mid-sentence). Two strings for
+ * two jobs, said so here, rather than one string bent to both.
+ *
+ * Exhaustive with no `else`, exactly like [componentRole] and [figureAddress]:
+ * a new [CostField] must decide how a family hears it rather than silently
+ * reaching a surface as a blank or as its wire name. RFC 141's vocabulary
+ * throughout -- tuition and fees, housing and food, the published price, a
+ * financial aid offer; never "room and board", "sticker price" or "award".
+ */
+val CostField.spokenLabel: String
+  get() =
+    when (this) {
+      CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD -> {
+        "the published price"
+      }
+
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD -> {
+        "in-state tuition and fees"
+      }
+
+      CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD -> {
+        "out-of-state tuition and fees"
+      }
+
+      CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD -> {
+        "in-district tuition and fees"
+      }
+
+      CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD -> {
+        "the in-district fees"
+      }
+
+      CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD -> {
+        "the in-state fees"
+      }
+
+      CostField.FEES_ONLY_OUT_OF_STATE_PER_YEAR_USD -> {
+        "the out-of-state fees"
+      }
+
+      // "after a financial aid offer" and never "after aid": RFC 141's own
+      // words for the one figure a family is most likely to read as a quote.
+      CostField.NET_PRICE -> {
+        "the price after a financial aid offer"
+      }
+
+      CostField.MEDIAN_DEBT_AT_COMPLETION_USD -> {
+        "the median federal loan debt"
+      }
+
+      CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD -> {
+        "the median earnings ten years after entry"
+      }
+
+      // The seven components, named by the ROLE a family sees in the table --
+      // three names, not seven. Which WAY OF LIVING a component belongs to is
+      // the column's own label and is never folded into the figure's name, so a
+      // scope naming "housing and food" is true of whichever column carries it.
+      CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
+      CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD,
+      CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD,
+      CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
+      CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
+      CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD,
+      CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
+      -> {
+        // NOT NULL for any of the seven: [componentRole] is exhaustive and
+        // returns a role for exactly these, so the elvis is a compiler
+        // obligation rather than a case. It names the field if it is ever
+        // reached, because a blank label is the one thing this property exists
+        // to make impossible.
+        componentRole?.label?.replaceFirstChar { it.lowercase() } ?: wireName
+      }
+    }
+
+/**
  * Which part of a price this field is, or null when it is not a component at
  * all (a whole-school figure, a tuition figure, an outcome figure).
  *

@@ -17,10 +17,13 @@ import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.ResidencyBasis
 import ed.unicoach.coaching.costs.SingleSchoolBasis
+import ed.unicoach.coaching.costs.SpokenAssurance
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.WithheldReason
 import ed.unicoach.coaching.costs.applicableTuitionFor
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
+import ed.unicoach.coaching.costs.canonical.AssuranceTierGrouping
+import ed.unicoach.coaching.costs.canonical.CoveredFigure
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
@@ -83,6 +86,9 @@ private const val PAGE_TITLE = "Cost report"
 
 /** The heading marker a test asserts on, and the page's honest claim of whose list this is. */
 private const val REPORT_HEADING = "Your student's college list"
+
+/** The tier block's own heading -- page chrome, not money copy: the sentences under it are the domain's (RFC 191). */
+private const val KINDS_HEADING = "What kind of numbers these are"
 
 /** D-A said aloud: the parent must know the page moves under them, because it does. */
 private const val LIVE_LINE = "This report is live \u2014 it updates as your student updates their list."
@@ -384,6 +390,10 @@ suspend fun ApplicationCall.respondCostReportPage(profile: CollegeCostProfile) {
             )
           }
         }
+        // What KIND of numbers the page's prose figures are, said once for the
+        // set each sentence covers (RFC 191) -- above the publishers, because a
+        // reader asks what a number is before asking who published it.
+        tierKindsSection(profile.colleges)
         // The publishers of the figures THIS page carries, never a constant:
         // a page with no IPEDS figure on it may not claim an IPEDS source, and
         // the constant this replaced claimed the Scorecard for every figure
@@ -1281,8 +1291,101 @@ private fun shownDebtSentence(
   // seam that names publishers, never typed here: the borrowing block below is attributed to the
   // school's own Common Data Set, and a federal figure left unattributed beside it reads as
   // covered by that header.
-  val said = "${MoneySourceCopy.openingLabelOf(note.cell.source)} reports that $figure"
-  return AssuranceTierCopy.composedStatementOf(said, note.assurance)
+  return "${MoneySourceCopy.openingLabelOf(note.cell.source)} reports that $figure"
+}
+
+/**
+ * The figures this page says in PROSE, and therefore the figures whose KIND it
+ * states (RFC 191).
+ *
+ * The covered set of the tier block, derived from the same condition the
+ * paragraph itself renders on -- one federal debt figure per school that has
+ * one -- rather than listed beside it. A second list would be free to drift into
+ * naming a figure the page does not print, which is the header-covers-the-wrong-
+ * figure failure this block exists to avoid.
+ *
+ * Table cells are NOT here on purpose. A blank cell still says its own status
+ * sentence with its own tier beside it ([blankFor]), because a figure with no
+ * number is not a kind of number -- the exclusion RFC 189 wrote into the tool
+ * description, on this surface. A shown cell states no tier today and states
+ * none after this RFC; that gap is RFC 191's open item, not a thing this
+ * function may quietly close.
+ */
+private fun proseFiguresOf(cost: CollegeCost): List<CoveredFigure> {
+  if (cost.medianDebtAtCompletionUsd == null) return emptyList()
+  val note = cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD) ?: return emptyList()
+  return listOf(
+    CoveredFigure(
+      collegeName = cost.name,
+      field = CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
+      assurance = SpokenAssurance(note.assurance),
+    ),
+  )
+}
+
+/**
+ * The figures whose tier this page states IN A CELL rather than in the block
+ * ([blankFor]), so the block can tell whether a bare label would reach one of
+ * them (RFC 191 D4).
+ *
+ * A blank keeps its own two sentences and is covered by no group -- a figure
+ * with no number is not a kind of number. But the label is the same label: with
+ * one school's debt figure shown and another's withheld on a different tier, an
+ * unqualified "the median federal loan debt" above one sentence would claim the
+ * other figure too. So these are handed to the grouping as context and never
+ * rendered by it.
+ *
+ * Exactly the four statuses [blankFor] speaks a tier for, read from the same
+ * enum it switches on: a status this page answers with the caller's own blank
+ * says no tier, and adding it here would qualify a label against a sentence
+ * nobody printed.
+ */
+private fun blankFiguresOf(cost: CollegeCost): List<CoveredFigure> =
+  cost.figureStatuses
+    .filter {
+      it.status in
+        setOf(
+          FigureStatus.IMPUTED_BY_PUBLISHER,
+          FigureStatus.SUPPRESSED_BY_PUBLISHER,
+          FigureStatus.NOT_APPLICABLE,
+          FigureStatus.NOT_COLLECTED_BY_US,
+        )
+    }.map { CoveredFigure(collegeName = cost.name, field = it.field, assurance = SpokenAssurance(it.assurance)) }
+
+/**
+ * What kind of numbers this page's prose figures are -- each sentence said ONCE,
+ * for the set of figures it covers (RFC 191, brief 0009 D3).
+ *
+ * It replaces the same thirty words printed inside every school's debt
+ * paragraph. Which sentence, in what order, and which figures each one covers is
+ * [AssuranceTierGrouping]'s -- this file authors no money copy -- and the
+ * section is ABSENT where the page shows no prose figure at all, rather than
+ * rendering a heading over nothing.
+ *
+ * It sits above [sourcesSection] because both are standing material about the
+ * whole page: what kind of numbers these are, then who published them and what
+ * this is not.
+ */
+private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
+  val groups =
+    AssuranceTierGrouping.groupsOf(
+      figures = colleges.flatMap { proseFiguresOf(it) },
+      spokenElsewhere = colleges.flatMap { blankFiguresOf(it) },
+    )
+  if (groups.isEmpty()) return
+  section("report-kinds") {
+    h2 { +KINDS_HEADING }
+    groups.forEach { group ->
+      p("report-kind") {
+        // Two sentences, never one: the scope names the figures and the tier
+        // sentence is [AssuranceTierCopy]'s, byte for byte, never re-worded here
+        // (RFC 179). No count, no rank, no score sits beside either.
+        span("report-kind-scope") { +group.scope }
+        +" "
+        +group.statement
+      }
+    }
+  }
 }
 
 /**

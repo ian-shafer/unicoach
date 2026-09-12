@@ -322,6 +322,18 @@ class CollegeCostChatToolTest {
       "the model must be told the band's dollar range rides the result (RFC 142)",
     )
     assertTrue(description.contains("Read-only"))
+    // RFC 191: a tier is a property of the SET of figures on it, so the coach is
+    // told to say each distinct sentence once for that set. RFC 189 said this
+    // for the default group only, which left an off-default tier shared by three
+    // fields as three recitations of the same sentence.
+    assertTrue(
+      description.contains("Say each distinct tier sentence ONCE for the SET of figures on it"),
+      "the grouping rule must ride the description: [$description]",
+    )
+    assertTrue(
+      description.contains("never once per figure"),
+      "and it must say plainly what it replaces: [$description]",
+    )
 
     val properties =
       tool.definition["input_schema"]!!

@@ -180,6 +180,25 @@ a {
   margin-bottom: 0.25rem;
 }
 
+/* The standing tier block (RFC 191): one sentence per KIND of number, said once
+   for the figures it covers. Set like the sources block it sits above -- quiet
+   standing material -- with the scope in the body weight so a reader can see at
+   a glance which figures each sentence is about. */
+.report-kinds {
+  margin-top: 2rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.report-kind {
+  margin: 0 0 0.5rem;
+}
+
+.report-kind-scope {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .report-sources {
   border-top: 1px solid var(--border);
   margin-top: 2rem;

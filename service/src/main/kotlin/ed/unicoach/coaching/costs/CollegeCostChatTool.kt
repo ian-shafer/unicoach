@@ -1902,7 +1902,9 @@ class CollegeCostChatTool(
         "the college was required to file and that is edit-checked, or a figure the college published about " +
         "itself that nobody checks. $ASSURANCE_STATEMENT_KEY is the sentence to say that in - say the tier " +
         "ONCE for the figures on the default, and name a figure's own tier where its entry carries one, after " +
-        "the $STATEMENT_KEY sentence where there is one. Never re-word that sentence, rank the " +
+        "the $STATEMENT_KEY sentence where there is one. Say each distinct tier sentence ONCE for the SET of " +
+        "figures on it, naming that set, never once per figure - where several entries carry the same tier, " +
+        "that is one sentence covering all of them. Never re-word that sentence, rank the " +
         "three or turn them into a score. " +
         "Every college carries $APPLIES_BASIS_KEY, which says which of three " +
         "states it is in: ${BlendedFigureApplicability.APPLIES.value} means the published price and the price " +
