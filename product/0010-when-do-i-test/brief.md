@@ -1,0 +1,469 @@
+# 0010 — When do I need to take the SATs?
+
+**Handle:** `test` (brief 0010)
+
+## Status
+
+- **Phase:** EXECUTE — **wave 1 COMPLETE** (RFC 186 + RFC 187, both landed
+  2026-09-11). Wave 2 held pending a sibling brief's prompt-deletion pass.
+- **Gate 1 (prioritisation):** **APPROVED by Ian 2026-09-10, verbatim:
+  "approve".** All fourteen decisions taken at their defaults. D4, D10 and D13
+  already carried Ian's pre-approval amendments (explain the stakes once; infer
+  school-day testing from the stored residency state instead of asking; scope is
+  the test FAMILY, never "the SAT"); D14 was added in the same round. **D9 is
+  standing** (never test prep, never score prediction, never chancing) and is
+  inherited by future briefs without re-asking.
+- **Gate 2 (spec):** **APPROVED by Ian 2026-09-10** — D15-D20 at their defaults,
+  confirmed by his dispatch instruction ("both") with the decision list in hand.
+  One pre-dispatch correction: a missing CONFLICTS edge between `test/01` and
+  `test/02` on `prompts/coach-system-prompt.md`. Eight slices in `spec.md`.
+- **Research:** three parallel subagents, all reported 2026-09-10 —
+  `research/testing-landscape.md`, `research/data-feasibility.md`,
+  `research/user-value.md`; DISCOVER is `discover.md`. A fourth,
+  `research/psat-national-merit.md`, verified the National Merit claims D13
+  rests on — see **Corrections to the record** below.
+- **Ledger:** below, one line per landed slice.
+
+## Ledger
+
+_(one line per landed slice: ID, RFC, SHAs, one-line what.)_
+
+    test/01/the-coach-knows-today LANDED as RFC 186 (main@88a8f1da + 57c668ba,
+       2026-09-11) — every system text now carries today's date in US Eastern,
+       the student's expected graduation date at its stored precision, and the
+       year of school derived from the two; the composeSystem early return is
+       deleted, so the block renders for a brand-new student with nothing on
+       file. Coach prompt v28 (rollback COACHING_SYSTEM_PROMPT_VERSION=v27).
+       Executed: 3,073 tests, 0 failures, whole suite; CoachingServiceTest 56,
+       HighSchoolYearTest 10.
+
+    test/02/does-this-school-want-a-score LANDED as RFC 187 (main@1b352e39 +
+       493dd34f, 2026-09-11) — college_admissions_profile gains a fourth
+       section, test_policy: the per-school IPEDS ADMCON7 policy that was
+       already stored and already a search filter but never readable for one
+       named school. Zero DDL. Every claim carries its collection year inside
+       the citation sentence, the "a school can change this, confirm on their
+       page" caveat rides on EVERY rendered section, and an absent policy says
+       we do not have it, never that the school requires no score. Coach prompt
+       v29 (rollback COACHING_SYSTEM_PROMPT_VERSION=v28). Executed: 1,734 tests,
+       0 failures on the landed tree; 18 added; 19 files, +1503/-96.
+
+**Wave 1 is complete.** Wave 2 (`test/03`, `test/04`) is held by agreement with
+the sibling `/chart say-it-once` session until its
+`concise/03/one-rule-one-home` — a pure DELETION pass on
+`prompts/coach-system-prompt.md` — has landed. A deletion rebased across
+additions can silently drop a sentence that landed minutes earlier, and no test
+catches it; an add/add rebase has no such failure mode. Only the deletion needs
+a window.
+
+## The question
+
+Ian's daughter asked him, in plain words, **"when do I need to take the SATs?"**
+— and unicoach could not have answered her. That one sentence is a whole class
+of question the product does not serve: _what do I have to do, and by when?_
+unicoach today is excellent at **what will this cost me** and knows almost
+nothing about **when**. It stores the student's expected high-school graduation
+date at signup and never tells the coach; it never tells the coach what today's
+date is; and it holds a school's application deadlines and whether that school
+weighs test scores, but has no notion of a testing calendar, a test policy, or a
+score. The brief asks: **is "when do I test" the right next bet, and if so, what
+is the smallest honest version of it?**
+
+A note on the seed question, which is itself a finding: Ian described her as a
+**junior in college**. If that is literal, the SAT is the wrong exam entirely
+(transfer applications rarely need it; graduate entry means GRE/GMAT/LSAT), and
+unicoach — whose every surface assumes a high-school student — would answer
+confidently and wrongly. If she is a high-school junior, she is in exactly the
+window the SAT question belongs to. **A coach that does not know which one it is
+talking to should not be answering timing questions at all.** Gate 1 has to
+decide whether unicoach owns that ambiguity or refuses it.
+
+## What the repo actually has today (grepped, not guessed)
+
+| Foundation                                            | Where                                                                                                               | State                                                                                                                                                          |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Expected high-school graduation date                  | `students.expected_high_school_graduation_year/_month/_day` (schema `0005`), variable precision, `NOT NULL` on year | Collected at signup, exposed over REST and admin — **never reaches the coach's context**                                                                       |
+| System-prompt assembly                                | `CoachingService.composeSystem`                                                                                     | Injects pending commitments, fit suggestions and the money profile. **No current date. No graduation year. No grade level.**                                   |
+| Coach prompt body                                     | `prompts/coach-system-prompt.md` (Markdown since RFC 185, seed v26)                                                 | Says "plan applications and deadlines" in its opening line and then says **nothing** about testing: zero mentions of SAT, ACT, test-optional, or a grade level |
+| Application deadlines                                 | `college_deadlines` (RFC 140): round, `offered`, closing/notification month+day, per CDS cycle                      | Live, read by `college_admissions_profile`. Dates are cycle-relative MM/DD, sparse, never fabricated                                                           |
+| Does this school weigh test scores                    | `college_admission_factors.test_scores` (CDS **C.704**), 4-value rating                                             | Live, already fetched by `bin/fetch-cds-seed`                                                                                                                  |
+| A school's SAT average                                | `colleges.sat_average_equivalent_score` (Scorecard `SAT_AVG`)                                                       | Live, in the search index; ACT is converted in, and it is an **admitted-student average**, not a percentile range                                              |
+| Test **policy** (required / optional / blind)         | —                                                                                                                   | **Absent.** CDS section C8 is the natural home; the fetcher does not request it                                                                                |
+| Score **ranges** (25th/75th percentile, % submitting) | —                                                                                                                   | **Absent.** CDS section C9                                                                                                                                     |
+| SAT/ACT test dates + registration deadlines           | —                                                                                                                   | **Absent**, and no repo precedent for a hand-maintained calendar                                                                                               |
+| Merit aid                                             | `college_merit_aid` (CDS H2A)                                                                                       | Live — and merit money is frequently **score-gated**, which is the bridge from testing to unicoach's money core                                                |
+
+## Candidate bets
+
+Ranked after research; listed here as framed.
+
+| # | Bet                                                         | One line                                                                                                                 | Existing foundation                                                         | Cost shape                                                             |
+| - | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| A | **The coach knows when "now" is, and who it is talking to** | Inject today's date and the student's graduation date (and therefore their year of school) into the system prompt        | `students` row exists; `composeSystem` is one function                      | Smallest possible — no DDL, no new data source                         |
+| B | **A testing timeline the coach can speak**                  | The SAT/ACT calendar and the standard sequence, personalised to the student's graduation year and their list's deadlines | Bet A + `college_deadlines`                                                 | Needs a calendar source; staleness is the risk                         |
+| C | **Does this school even want a score?**                     | Per-college test policy (CDS C8) and score range (C9) in `college_admissions_profile`                                    | `bin/fetch-cds-seed` already parses C7/C14/C16/C21/C22 from the same corpus | Medium — new fetch fields, new table or columns (**DDL → Ian's gate**) |
+| D | **Scores as money**                                         | Where a score crosses a published merit threshold, say what it is worth in dollars                                       | `college_merit_aid`, the whole money layer                                  | Highest value, weakest public data                                     |
+| E | **A deadline/reminder engine**                              | Dated, personalised nudges: register by X, test on Y, apply by Z                                                         | Queue + synthesis nudge machinery exists (`SynthesisService`)               | Largest; a promise the product must keep                               |
+| F | **Refuse well**                                             | Detect that the student is not a US high-school applicant and say so plainly instead of coaching them wrongly            | Bet A gives the signal                                                      | Small, and it is the honesty rule this repo already lives by           |
+
+## Success criteria for the decision
+
+1. The answer we ship must be **something Google and ChatGPT cannot give her** —
+   personalised to her graduation date, her list, and her money picture — or it
+   is not worth building (see brief 0001's differentiator test).
+2. It must be **reachable**: name the door (the chat tool, the screen).
+3. It must not require unicoach to **assert a fact it cannot source**. A test
+   date we hand-typed and a test policy we inferred are both the failure mode
+   briefs 0008 and 0009 exist to prevent.
+4. It must **degrade honestly** when the student is not who we assume.
+
+## What research found
+
+Three subagents reported; the full cited reports are in `research/`. Four facts
+moved the brief.
+
+**1. The generic answer is a commodity; the arithmetic is not.** ACT's own
+guidance is fall junior → spring junior → fall senior, and every competitor says
+some version of that. What none of them does is the subtraction for one student:
+for a **Nov 1** ED/EA deadline the last comfortable sittings are **SAT Oct 3**
+(scores Oct 16) and **ACT Oct 17** (scores Oct 27), so the real action date is
+**mid-September**, when registration closes — not October. The competitor
+weakness is structural staleness: CollegeVine's top-ranked "when should I take
+the SAT" article is dated **30 Sep 2016** and still quotes 2016-17 dates. The US
+counselor ratio is **372:1** (ASCA 2024-25).
+
+**2. A global "take the SAT" rule would be wrong for most students.** FairTest's
+2026-27 survey of 2,247 policies: **7% require** (161 colleges), **86%
+test-optional**, **4% test-free**, and the net change this cycle was **one
+college**. MIT, Harvard, Yale, Dartmouth, Brown, Caltech, Stanford and UT Austin
+require; the UC system stays test-free. So the answer must be anchored to **this
+student's list**, never asserted globally.
+
+**3. The unmatchable answer is a MONEY answer.** Alabama publishes an automatic
+merit grid where the score band _is_ dollars: SAT 1250 → \$6,000/yr, 1260 →
+\$8,000/yr, 1420+ → \$28,000/yr. Same page: scores **must** be submitted to be
+eligible, and UA **does not superscore for scholarships** — so "just superscore
+it" is wrong there. For Fall 2027 entry scores are due **Dec 4**, which makes
+the **Dec 5** SAT too late and **Nov 7** the last usable sitting, with
+registration closed **Oct 23**. A ten-point miss is \$8,000 over four years, on
+a date the family misses silently. ASU works the same way. That is unicoach's
+promise — price truth — not a test-prep pivot.
+
+**4. The data verdicts are better than expected in two places and worse in
+one.** Today's date + graduation year in the prompt: **EASY**, no DDL. Score
+percentile bands (`SATVR25/75`, `SATMT25/75`, `ACTCM25/75`): **EASY and free** —
+already sitting **unused in the committed Scorecard seed CSV** (949 rows). Test
+required/optional/blind: **MEDIUM** — not from CDS C8, which is thin and ~13%
+junk with only 149 colleges, but from **IPEDS `ADMCON7`**, populated for all
+1,972 institutions with an official codebook covering 360 of our 369 CDS
+schools. The national test calendar: **MEDIUM** — no machine-readable feed
+exists anywhere, so ~30 rows a year hand-maintained, and silent staleness is the
+risk. Per-college "last date scores may arrive" (CDS C.8E): **HARD**, 46 rows of
+unusable values — do not attempt.
+
+## The bets, ranked
+
+| Rank | Bet                                                            | Verdict across the three reports                                                                                                                                                                                                                                                                                                                                              |
+| ---- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **A — the coach knows when "now" is and who it is talking to** | All three name it first and call it the unblocker. Cheapest thing in the brief: no DDL, no new source, one function and a prompt edit. Today the coach cannot say "you are a junior; the next SAT is in six weeks" because it knows neither half of that sentence. It also disambiguates a high-school junior from a college junior **for free**, from a field already stored |
+| 2    | **B — the date arithmetic, anchored to the student's list**    | This is the product. Test date → registration deadline → score release → the school's own deadline, subtracted for this student. Needs a maintained ~30-row calendar with an explicit expiry, because the one thing worse than no date is a 2016 date                                                                                                                         |
+| 3    | **D — scores as money**                                        | The differentiator nothing else has, and the reason to build this at all. Weakest public data: automatic merit grids are published per school in HTML and exist in no dataset, so a first version is narrow and hand-curated, or it is dishonest                                                                                                                              |
+| 4    | **C — does this school even want a score?**                    | Cheap half is free (percentile bands, already committed); the policy half is a new IPEDS ADM ingest. Required for B and D to be truthful, since 86% of schools do not require a score at all                                                                                                                                                                                  |
+| 5    | **F — refuse well**                                            | Not a bet of its own after A: the stored graduation date is the signal, and the refusal is a prompt rule                                                                                                                                                                                                                                                                      |
+| 6    | **E — a dated reminder engine**                                | Real value, largest cost, and it makes a promise the product must then keep. A later brief                                                                                                                                                                                                                                                                                    |
+
+## Gate 1 — prioritisation
+
+Defaults are pre-chosen. "Approve" takes all twelve; amend any line.
+
+**D1. Take the bet.** "When do I test" becomes brief 0010's beat, scoped as a
+**deadline-and-money engine**, not a testing feature and never test prep.
+_Default: YES._
+
+**D2. Ship the cheap half first and on its own.** Inject today's date and the
+student's stored graduation date into the coach's system prompt as slice 1,
+landing independently of everything below, because every other slice is blocked
+on it and it is valuable alone. _Default: YES._
+
+**D3. The coach must know who it is talking to, and refuse when it does not.**
+Derive the year of school from the stored graduation date; where the student's
+own words contradict it (a **college** junior asking about the SAT), say plainly
+that unicoach coaches US high-school applicants and does not advise on
+GRE/GMAT/LSAT, rather than answering confidently. No new field. _Default: YES —
+refuse honestly._
+
+**D4. Advice is anchored to the student's college list — but the coach explains
+the stakes once, unprompted.** Two arms, and both are required (amended by Ian,
+2026-09-10).
+
+_The claim_ is list-anchored: with 86% of colleges test-optional, "you need to
+take a test" is false for most students, so a per-school statement is only ever
+made from that school's recorded policy.
+
+_The reasoning_ is not. The first time testing comes up, the coach explains — in
+its own plain words, not a list of facts — **what a college entrance test is
+for, when a student would need one, when they would want one even though no
+school demands it, and when they are better off not sitting one at all.** What
+is at stake in each direction:
+
+- **Need**: a school on the list requires a score; a scholarship requires a
+  score even where admission does not; an NCAA or state-programme rule requires
+  one.
+- **Want**: a strong score can only help at a test-optional school; it can move
+  real money at schools with automatic merit grids; it can offset a weaker
+  transcript; the PSAT route to National Merit is money, not admission.
+- **Not**: every school on the list is test-optional or test-free and the
+  student's time is better spent elsewhere; a score below a school's own
+  reported range is usually better withheld where withholding is allowed; the
+  cost, the Saturdays, and the stress are real and are not nothing.
+
+The explanation is given **once**, is not repeated at every mention, and never
+becomes a lecture that delays the actual answer to the actual question. With an
+empty college list the coach may still give the standard sequence, labelled as
+general rather than as advice about their schools. _Default: YES, both arms._
+
+**D5. Test policy comes from IPEDS `ADMCON7`, not CDS C8.** 1,972 institutions
+with an official required/optional/blind codebook beats 149 colleges of ~13%
+junk. _Default: ADMCON7._
+
+**D6. Adopt the score percentile bands already in the committed seed** — and
+prefer the 25th/75th **range** over `sat_average_equivalent_score` wherever we
+speak to a student, because an admitted-student average invites a student to
+read it as a bar. _Default: YES._
+
+**D7. The test calendar is hand-maintained data with an explicit expiry, and the
+coach refuses past it.** ~30 rows a year (SAT and ACT: test date, registration
+deadline, score release). Past the expiry date the coach says it does not know
+the current dates and points at the publisher, rather than naming a stale one.
+This adds a table — **DDL presented at /ship's gate** (standing D10). _Default:
+YES, with expiry-refusal._
+
+**D8. Score-gated merit money ships narrow and honest, not broad and guessed.**
+A hand-curated set of schools that publish an automatic merit grid, each row
+carrying its source URL and cycle; the coach speaks it only for those schools
+and says plainly that it does not know for the rest. _Default: YES, narrow — and
+if the curated set cannot reach a useful size, this slice becomes a later brief
+rather than a vague one._
+
+**D9. Never test prep, never score prediction, never chancing.** Khan Academy is
+free and better; chancing engines are a crowded, low-trust market. _Default: YES
+— standing._
+
+**D10. Infer school-day testing from the state we already hold; ask only what
+the state cannot answer.** (Amended by Ian, 2026-09-10 — "can the coach infer
+this from residence?" Yes, and it should.)
+
+The money profile already records the family's **state of residency**, and
+`composeSystem` already puts it in the coach's context for the in-state price.
+School-day testing is a **state-level** fact, so the same field answers it: ~12
+states require every junior to sit the ACT, ~14 plus DC contract SAT School Day,
+and three (OH, SC, TN) let the district choose. That is a ~50-row table keyed by
+state, with the same expiry discipline as D7, because these programmes change
+yearly and the best public list we found is secondary (PrepScholar, Oct 2025) —
+each row wants a state-DOE source URL before we assert it.
+
+So: **never ask for the state again** (D4's ethos and the money profile's rule),
+and where the state is unknown, the residency question already exists and
+already pays for itself twice. The one thing the state cannot settle is whether
+**her particular school** participates and on which date — that, and only that,
+is the single optional question, never gating, "I don't know" accepted.
+_Default: YES — infer from state, ask only the school-level detail._
+
+**D11. No reminders or notifications in this beat.** A dated nudge is a promise
+the product must keep; it needs its own brief. _Default: DEFER._
+
+**D12. Store the student's own test scores.** Without a stored score the coach
+cannot say "you are 10 points from the next money band" in a later session. New
+table, so **DDL at /ship's gate**; invited, declinable, never gating, and
+removable — the money-profile pattern. _Default: YES, store._
+
+**D13. The scope is college entrance tests, not "the SAT".** (Added by Ian,
+2026-09-10.) Every slice, every table and every sentence of copy is written for
+the family of admissions tests, with the SAT as one member and never the default
+noun.
+
+- **SAT and ACT are first-class and symmetric** — both calendars, both
+  registration deadlines, both score-release lags, both fee-waiver programmes
+  (they are separate programmes with different rules and different fees; ACT's
+  base fee is \$70). The coach never assumes the SAT; in ~12 states the ACT is
+  the test the student will actually sit.
+- **The CLT (Classic Learning Test)** is named where a school on the list
+  accepts it and nowhere else. Our research did not cover it, so its acceptance
+  list is an open question the spec must answer before any slice claims it.
+- **English-proficiency tests** (TOEFL, IELTS, Duolingo English Test) are a
+  different requirement with different triggers, and belong here as a named,
+  separate arm rather than being folded into "entrance tests".
+- **PSAT/NMSQT** is in scope as a **money** event, not an admissions one: it is
+  school-administered in an October window, the student does not register, and
+  **only the junior-year sitting qualifies** for National Merit.
+- **AP and IB exams are explicitly out of scope** as entrance tests. They are
+  credit and placement, a different question that deserves its own brief.
+- **Graduate and professional tests (GRE, GMAT, LSAT) stay out of scope**, and
+  D3 is how we say so honestly rather than by silence.
+
+_Default: YES — test-family scope, SAT never the default noun._
+
+**D14. The four score mechanics are encoded as explicit guardrails.** (Added
+2026-09-10, from the research's "most likely to be got subtly wrong" list.)
+These are where a fluent model produces confident, costly errors, so they are
+written as rules rather than left to the model's judgement:
+
+1. **Score Choice is per test date, and does not apply to the free score sends
+   chosen at registration.** Advising "just send your best" while four free
+   sends are already queued is a real, irreversible error.
+2. **Superscoring is the college's policy, not the testing agency's** — and not
+   ours to assume. Dartmouth superscores automatically; Yale forbids recomputing
+   an ACT composite across the old and new Science formats; Alabama does not
+   superscore **for scholarship purposes** at all, which is the exact case where
+   the advice is worth thousands of dollars. The coach states a superscore rule
+   only from a recorded per-school policy, and otherwise says it does not know.
+3. **Self-reported scores are widely accepted, with revocation risk** — Stanford
+   reserves the right to withdraw an offer where official scores disagree.
+4. **A College Board fee waiver is one per lifetime and carries unlimited free
+   score sends**; ACT runs a separate programme with its own rules. Waivers are
+   requested ideally 1-2 weeks before the registration deadline, which makes the
+   waiver its own earlier deadline.
+
+_Default: YES — guardrails, not judgement._
+
+## Corrections to the record (2026-09-10)
+
+Written down because the brief asserted them to Ian before they were verified.
+
+1. **"You cannot retake it, and there is no recourse" was overstated.** The
+   junior-year sitting is genuinely the only qualifying one — PSAT 10 and the
+   sophomore sitting explicitly do not count — and there is one in-school window
+   a year, so there is no retake. But NMSC operates an **alternate entry** route
+   for a student who misses it through illness or emergency: a letter to
+   `ae@nmerit.net`, received or postmarked by **April 1, 2027** for this cycle.
+   The coach must say that. "Missed it, and there is a route, and the route has
+   its own deadline" is a better and truer product than "missed it, too bad".
+2. **nationalmerit.org was never blocked.** The first agent's 403 was a
+   **User-Agent filter**, not Cloudflare; a browser User-Agent returns 200 on
+   every programme page. Every NMSC claim in this brief is now verified from
+   NMSC's own 2028-cycle pages.
+3. **The money is not NMSC's.** NMSC's own award is \$2,500 one-time, and its
+   college-sponsored awards are capped at \$500-\$2,000/yr and require naming
+   that school first choice. The large numbers are **university-owned automatic
+   packages**, verified from each school's own page: Oklahoma publishes
+   \$153,450 non-resident / \$146,850 resident; Alabama ~\$180-200k
+   out-of-state; Texas Tech 100% of cost of attendance; UT Dallas ~\$110k;
+   Florida State ~\$91,808 out-of-state; Idaho >\$85k; USC \$80k; ASU \$60-70k;
+   Maine 100% tuition with **no** first-choice requirement; Auburn \$44k **for
+   Alabama residents only**. UCF and Tulsa are competitive, not automatic.
+   Baylor, Fordham and Kentucky publish **no** National Merit award on their
+   live sites.
+4. **The base rate must be visible, and the cutoff is per-state.** 3.5M sit the
+   test, 1.2M enter, 16,000 reach Semifinalist, 15,000 Finalist, 6,700 win — a
+   ~1.25% base rate. The **Semifinalist cutoff is allocated per state**
+   (Commended is national), which means the stored residency state sits exactly
+   on the line the money is behind, and the coach must never quote a national
+   cutoff as if it were hers.
+5. **Currency risk is real and must be designed for.** Auburn cut its award to
+   in-state only; Texas Tech's page still carries a 2022 date; three schools
+   publish nothing. Every curated row therefore needs `source_url`, `cycle` and
+   `checked_on`, with an annual human re-check — these pages are re-keyed each
+   cycle, so **this cannot be scraped unattended**. That is D7's expiry
+   discipline applied to D8's dataset.
+
+**Effect on the approved decisions:** none is reversed. D13's PSAT arm survives
+with the alternate-entry route added and the base rate made visible; D8's
+curated set is confirmed at **10-11 schools with dollars today**, plus 3 worth
+recording as "no published award".
+
+## What the runs taught
+
+**From RFC 186 (`test/01`, 2026-09-11):**
+
+- **The `:851` early-return trap was real, and the test for it failed before the
+  fix.** Worth a standing check on any slice that adds coach context: a block
+  that is not ALWAYS composed is a block absent for exactly the new student the
+  feature is for.
+- **The repo's defaulted-`Clock` pattern is wrong when a service fixes the
+  zone.** `LocalDate.now(clock)` reads the INJECTED clock's zone, so the test
+  that pinned a UTC instant to prove "we use Eastern" rendered the UTC date and
+  **passed for the wrong reason**. Tier-0 review caught it. The landed shape is
+  `clock: InstantSource` plus
+  `LocalDate.ofInstant(clock.instant(), COACH_ZONE)`. **`test/04`'s calendar
+  arithmetic must use the same seam, never `LocalDate.now(...)`.**
+- **`HighSchoolYear` is the API the blocked slices asked for**:
+  `of(today,
+  graduation)` plus `label` ("grade 11 (junior year)"), `grade`
+  (`Int?`, null for the two out-of-range states) and `clause`. `test/05` and
+  `test/08` gate on JUNIOR and can ask `year == JUNIOR` directly rather than
+  re-deriving it.
+- **D15 is now code.** `COACH_ZONE = America/New_York`, and the words the coach
+  reads ("Eastern Time") are DERIVED from the constant, so they cannot drift
+  apart. The same phrase inside `prompts/coach-system-prompt.md` is
+  hand-maintained and flagged as such.
+- **A day- or month-precise graduation date already behind today is
+  `PAST_GRADUATION` immediately**; a year-only date still defers to the 1 July
+  rule. That is what makes D3's refusal fire from data rather than from the
+  model's guess.
+
+## Open items (declined in run, none blocking)
+
+- **Nothing range-checks the stored graduation year at input.** A typo like 2082
+  renders as a confident "not yet in high school". Making the derivation throw
+  would fail every turn for that student, so the fix belongs at the
+  signup/profile boundary — **brief 0007 territory**, not this brief.
+- `composeSystem` still inlines the commitment / fit / money block text while
+  the date block is a named helper. Declined as scope: it rewrites code
+  `test/02` was editing concurrently.
+- `monthName` duplicates `CollegeAdmissionsChatTool.datePhrase`. Left alone
+  deliberately: different input types, and "not recorded" (our gap) vs "not
+  reported" (the source's) are different words on purpose.
+- `FederalAidPolicyService.currentAwardYear` reads its July-1 boundary in UTC
+  while the coach now reads Eastern, so on the evening of 30 June the two can
+  name different days. Another feature's calendar decision.
+- **A wording question for Ian:** the block says "on 15 June 2028" — day before
+  month. Unambiguous, and it is what the gate approved, but a US family writes
+  "June 15, 2028". One word changes it.
+
+## Learning candidates for /principle (queued, not actioned)
+
+From RFC 186, the three judgement calls no corpus rule covered: (a) when a
+service fixes the zone, take an `InstantSource`, never a `Clock`, and never call
+`LocalDate.now(clock)`; (b) if a caller branches on an enum constant to fix its
+wording, the wording belongs on the constant; (c) `grep -c "@Test"` counts
+comments — the JUnit XML `tests=` attribute is the only count that means
+anything.
+
+**From RFC 187 (`test/02`, 2026-09-11):**
+
+- **Two prompt defects were caught by REVIEW, not by the author, and both were
+  in copy written from D4.** (a) The block banned describing the list as a whole
+  as test-optional, then ordered exactly that aggregate claim one paragraph
+  later. (b) The explain-once copy instructed school-specific claims no tool can
+  source — scholarship score rules, NCAA rules, "a school's own reported range"
+  — while the line above it forbids answering from memory. Both rewritten: the
+  aggregate is now BEST EFFORT (say it from the schools whose policy we hold,
+  say how many that covers, name the ones we do not), and each arm of the
+  explanation is labelled general with "go and check that school's page".
+  **Carry this into `test/04` and `test/05`, which write more of this copy: D4's
+  arms are reasons to CHECK, not facts we hold.**
+- **A doc comment that states a count is a claim.** `readInSession`'s KDoc said
+  the read costs five statements; the batching test only asserted that a
+  five-college list costs the same as a one-college list, so both stayed green
+  while the true count was SIX. Now asserted absolutely against a named
+  constant.
+- **For `test/03`:** the four sections are independent and wire order is
+  `AdmissionsField` declaration order — money, factors, test_policy, deadlines.
+  A score band belongs beside `test_policy`, and the service's holder is now
+  `AdmissionsRows` with one field per table, so a fifth read is one field and
+  one line.
+- **The land-lock gap, recorded here because it cost 16 minutes of gate time.**
+  `ship-land` takes the repo-wide lock; a plain `docs:` commit to `main` does
+  not. Four hook runs were invalidated by three `product/**` commits from a
+  sibling session that never contended for the lock. The run's own summary:
+  _"the lock serialises gates against gates, not against doc traffic."_ The fix
+  under review generalises an exemption `ship-land` ALREADY grants in one case —
+  its own RFC commit. The write-up is owned by brief 0009.
+
+## Learning candidate, strongest of the wave
+
+No principle in the review corpus covers **reviewing model-facing copy for
+self-consistency and sourceability** — which is exactly where RFC 187's two most
+valuable findings came from. A prompt block is code the model executes; it can
+contradict itself two paragraphs apart, and it can instruct a claim no tool can
+source. Nominated to /principle.

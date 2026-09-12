@@ -7,7 +7,52 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-11 — **`concise/04/cite-once-per-block` LANDED as RFC 190
+Updated: 2026-09-11 — **BRIEF 0009 WAVE 2 IS COMPLETE: an assurance tier is now
+said ONCE for the set of figures it covers**
+(`concise/05/tiers-grouped-not-repeated` LANDED as **RFC 191**,
+`main@bb581547` + `e3d9257a`). The administrative-record sentence was printed
+three times on a three-school report, once inside every school's debt paragraph;
+it is printed **once**, in a page-level block that names the figures it covers.
+**Measured 1,450 -> 1,401 words**, ratcheted in the existing
+`CostReportPageTest.WORD_CEILING`. Next free RFC: **192** (`pipeline/rfc-192` is
+live, so the next free after it is 193). Also today — **BRIEF 0010'S WAVE 1 IS
+COMPLETE: the coach finally knows what day it is, and whether a school wants a
+score at all** (RFC 186 `main@88a8f1da` + `57c668ba`; RFC 187 `main@1b352e39` +
+`493dd34f`). Until today the coach could not answer "when do I need to take the
+SATs?" — the seed question of the brief — because it was told neither the date
+nor the student's year of school, though we have stored her expected graduation
+date at signup since schema `0005`. **RFC 186** puts three facts in every system
+text: today's date in **US Eastern** (the timezone College Board and ACT publish
+and enforce in), the graduation date at its **stored precision**, and the year
+of school derived from the two — and it DELETES `composeSystem`'s early return,
+which had meant any such block would silently never render for a student with no
+money profile, i.e. every brand-new student. Out-of-range is a named state
+(`BEFORE_HIGH_SCHOOL` / `PAST_GRADUATION`), which makes the scope refusal — we
+coach US undergraduate applicants, not GRE/GMAT/LSAT — fire from **data** rather
+than from the model's guess. **RFC 187** adds the fourth section of
+`college_admissions_profile`, `test_policy`: the per-school IPEDS `ADMCON7`
+policy that was already stored and already a search FILTER but never readable
+for one named school, at **zero DDL and zero new fetch**. Every claim carries
+its 2023 collection year **inside** the citation sentence, the "a school can
+change this — confirm on their page" caveat rides on EVERY rendered section, and
+an absent policy says _we_ do not have it, never that the school requires no
+score. **Two prompt defects were caught by review, not by the author**, both in
+copy written from the brief's own D4: a block that banned an aggregate claim and
+then ordered one a paragraph later, and an explanation instructing
+school-specific claims no tool can source. Both rewritten — D4's arms are
+reasons to CHECK, not facts we hold. Coach prompt **v28** then **v29** (rollback
+`COACHING_SYSTEM_PROMPT_VERSION=v28`). **No DDL in either slice.** **Wave 2
+(`test/03`, `test/04`) is HELD by cross-brief agreement** until brief 0009's
+`concise/03` — a pure DELETION pass on the same prompt file — has landed: a
+deletion rebased across additions can silently drop a just-landed sentence and
+no test catches it, while an add/add rebase cannot. **A defect in the land
+protocol was found and is being written up by brief 0009:** `ship-land` takes
+the repo-wide lock but a plain `docs:` commit does not, so `rfc-187` passed the
+full gate FOUR times and was invalidated each time by doc traffic that never
+contended for the lock — "the lock serialises gates against gates, not against
+doc traffic". **Next free RFC 192** (recompute, never copy).
+
+Previously — **`concise/04/cite-once-per-block` LANDED as RFC 190
 (`main@4a4bf350` + `7de43df6`) — the parent report's borrowing block is
 attributed ONCE, in a header, and the figures follow.** MEASURED: **1,530 ->
 1,450 words** on a three-school render (-5.2%), ratcheted in the existing
@@ -81,7 +126,7 @@ report's 1,793 baseline is superseded by **1,767**, measured on today's main.
 Gate: `bin/test` **3,080 tests, 0 failures**. No migration, no DDL, no wire
 type, no prompt version. Brief 0009 wave 1 at that point: `concise/02` still
 running, **`concise/03` HELD** on the cross-brief prompt-file collision.
-Previously — **brief 0009 gates 1+2 approved 2026-09-09**: the coach and the
+Previously — **brief 0009 gates 1+2 approved 2026-09-11**: the coach and the
 parent report duplicate a lot of data and must be far more concise **without
 losing information**; `figure_statuses` is ~5,366 bytes per college and ~75%
 byte-identical, the tool DESCRIPTION is 16,383 bytes largely restating the
@@ -118,89 +163,137 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
 
 ## TL;DR — next steps, most important first
 
-1. **SAY IT ONCE — `concise/04` LANDED AS RFC 190, AND WAVE 1 IS DONE EXCEPT ONE
-   (`concise/01` = RFC 188, `concise/02` = RFC 189, 2026-09-11).** The borrowing
-   block now carries **one** attribution header instead of restating the school
-   and the cycle in every sentence: the page reads **1,450 words for three
-   schools, down from 1,530**, and the block's header cannot be separated from
-   its figures because `blockOf` hands them out as one value. On the
-   mixed-source debt section attribution **increased** — the federal median debt
-   names its own publisher now. RFC 175 D10's per-sentence rule is superseded;
-   its test was replaced, not dropped. The **`<= 1,230` target is NOT met** (80
-   words were really there to remove), the fifth pre-measurement number in this
-   brief to fail. **`concise/05` and `concise/07` are the live next steps.** The
-   coach's cost payload now states each provenance fact once per college:
-   **4,980 -> 1,864 bytes per college (-62.6%)**, measured, budgeted in a test.
-   Every figure still resolves to exactly one tier and one publisher — its own
-   entry's value, else the default — and our at-home `$0` is explicitly on NO
-   publisher's tier. That >= 60% target IS met, but only after a mid-run
-   amendment: the research report's `5,366` was **reconstructed, never
-   measured**, and assumed one (tier, publisher) pair per college where the real
-   corpus has **three**. Two spec defects against /chart now, both of the same
-   kind — a target written before anything was measured. **`concise/05` is
-   UNBLOCKED**; `concise/03` stays HELD on the cross-brief prompt-file
-   collision. And the parent Family Cost Report reads **1,530 words for three
-   schools, down from 1,767** (one school: 800 -> 762), with nothing a family
-   could learn made unlearnable. Tuition and books are said once per school, the
-   blended-average hint once per page, the income band once in the assumption
-   list. The "At a public school …" sentence no longer prints under **private**
-   colleges, and a one-school report no longer states its residency sentence
-   twice. The **≤ 1,480 target is NOT met** and is not reachable from this slice
-   alone — the brief's own budget table allocates it 223 words where 313 are
-   needed; Ian accepted 1,530 and `concise/04` + `concise/05` own the rest.
-   Everything below is the standing brief context. The coach and the parent
-   report repeat themselves badly, and Ian's instruction is to compress
-   **without losing information**. We rendered the page for real rather than
-   guessing: a 3-school report was **1,793 words, 502 of them (28.0%) exact
-   repeated blocks** when the research ran (**1,767** on the main `concise/01`
-   actually measured), and the debt+borrowing block alone is **504 words — 28%
-   of the page**. On the chat side the coach is handed **~5,366 bytes of
-   `figure_statuses` per college, ~75% of it byte-identical**, carrying exactly
-   **one** distinct assurance sentence; the tool DESCRIPTION is **16,383 bytes**
-   that largely restates the **25,201-byte** system prompt, so the model is told
-   the same rule twice in one context window. Both of Ian's examples are
-   confirmed and **both bigger than he said**: tuition prints **four** times per
-   school (summary plus three arrangement columns) and **books and supplies has
-   the identical shape**, which nobody had noticed; `"2024-25"` appears **21**
-   times across three schools because every `BorrowingWire` sentence
-   re-interpolates the college name and the cycle. **Two live defects** surfaced
-   on the way: `SCHOOL_BLENDED_HINT` is unconditional, so "At a public school it
-   … are figures for students paying in-state tuition" prints under **private**
-   colleges; and the residency sentence **double-prints on a one-school
-   report**, the commonest shape. Both ride with `concise/01`. **The useful
-   finding is that most of the win is free** — the RFC corpus guarantees that a
-   thing is _said_, never that it is said N times, so hoisting the school-wide
-   rows, emitting per-college provenance defaults (**~4x cut**) and deleting the
-   description's restatements touch no honesty guarantee at all. The prompt's
-   own repetition is an artifact of the append-only convention: "loans are not a
-   price reduction" is stated **five** times because five RFCs each appended
-   their own paragraph. **A correction to my own gate:** gate-1 D4 set ≤900
-   words; adding up every identified repeat gives **1,793 − 664 = 1,129**, so
-   **D9 supersedes it at ≤1,150** and explicitly refuses to chase 900 by merging
-   the merit and debt prose into one table — RFC 175 D9 says those two
-   publishers must never look summable. D4 stands as committed; the number is
-   replaced, not edited. **A second correction, measured this time:** the
-   `~5,366 bytes` above was RECONSTRUCTED from real copy strings, never
-   captured; the measured baseline is **4,980 bytes** on a mixed fixture, and a
-   college carries **three** distinct (tier, publisher) pairs, not one —
-   `concise/02` landed at **1,864 bytes (-62.6%)** as RFC 189. **Wave 1 is done
-   except one:** `concise/01` (RFC 188) and `concise/02` (RFC 189) LANDED.
-   **Held:** `concise/03/one-rule-one-home`, not on any `Needs:` edge but on a
-   discovered cross-brief collision — it works by **deleting** redundant
-   sentences from `prompts/coach-system-prompt.md` while brief 0010's live
-   `rfc-186` and `rfc-187` **add** to that same file and each cut an immutable
-   seed version, and a deletion pass rebased across two concurrent additions
-   could drop a sentence that landed minutes earlier with no test to catch it.
-   **Wave 2** is the two judgement calls: `concise/04/cite-once-per-block`,
-   which writes the RFC **superseding RFC 175 D10**'s per-sentence attribution,
-   and `concise/05/tiers-grouped-not-repeated`. Honest caveat recorded in the
+1. **THE COACH KNOWS WHAT DAY IT IS, AND WHETHER A SCHOOL WANTS A SCORE AT ALL
+   (RFCs 186 + 187, brief 0010 wave 1, 2026-09-11).** Ian's daughter asked "when
+   do I need to take the SATs?" and unicoach could not have answered her: the
+   coach was told neither today's date nor her year of school, though her
+   expected graduation date has been stored at signup since schema `0005`. **RFC
+   186** (`test/01/the-coach-knows-today`, `main@88a8f1da` + `57c668ba`) puts
+   three facts in EVERY system text — today's date in **US Eastern** (the
+   timezone College Board and ACT publish and enforce in), the graduation date
+   at its **stored precision**, and the year of school derived from the two —
+   and deletes `composeSystem`'s early return, which meant such a block would
+   have silently never rendered for a student with no money profile, i.e. every
+   brand-new student. The test for that failed before the fix. Out-of-range is a
+   named state (`BEFORE_HIGH_SCHOOL` / `PAST_GRADUATION`), so the scope refusal
+   — we coach US undergraduate applicants, not GRE/GMAT/LSAT — fires from
+   **data**, not from the model's guess. A review catch worth carrying: the test
+   proving "we use Eastern" was **passing for the wrong reason**, because
+   `LocalDate.now(clock)` reads the INJECTED clock's zone; the landed shape
+   takes an `InstantSource` and converts explicitly, and `test/04`'s calendar
+   arithmetic must use that same seam. **RFC 187**
+   (`test/02/does-this-school-want-a-score`, `main@1b352e39` + `493dd34f`) adds
+   the fourth section of `college_admissions_profile`: the per-school IPEDS
+   `ADMCON7` policy that was already stored and already a search FILTER but
+   never readable for ONE named school — at **zero DDL and zero new fetch**.
+   Every claim carries its 2023 collection year inside the citation sentence,
+   the "a school can change this, confirm on their page" caveat rides on EVERY
+   rendered section, and an absent policy says WE do not have it, never that the
+   school requires no score. **Two prompt defects were caught by review, not the
+   author**, both in copy written from gate-1 D4: a block that banned an
+   aggregate claim then ordered one a paragraph later, and an explanation
+   instructing school-specific claims no tool can source. Both rewritten — D4's
+   arms are reasons to CHECK, not facts we hold, and `test/04`/`test/05` inherit
+   that. Coach prompt **v28** then **v29** (rollback
+   `COACHING_SYSTEM_PROMPT_VERSION=v28`). Executed: 3,073 then 1,734 tests, 0
+   failures on each landed tree. **Wave 2 is HELD by cross-brief agreement**
+   until brief 0009's `concise/03` deletion pass lands on the same prompt file.
+
+2. **SAY IT ONCE — WAVE 2 IS COMPLETE: `concise/05` LANDED AS RFC 191 AND
+   `concise/04` AS RFC 190; WAVE 1 IS DONE EXCEPT ONE (`concise/01` = RFC 188,
+   `concise/02` = RFC 189, 2026-09-11).** An assurance tier is now said **once
+   for the set of figures it covers**, not once per figure: the
+   administrative-record sentence went **3x -> 1x** on a three-school report and
+   the page reads **1,401 words, down from 1,450**. A bare header can never
+   reach a figure it does not describe — ambiguity is measured over everything
+   the PAGE states a tier for, not over what the block groups, which is the
+   defect review caught: one school's debt shown on a federal tier and another's
+   withheld on a survey tier. Our at-home `$0` line carries no published cell,
+   so it can never be swept under a publisher's tier. Its **`<= 1,170` target is
+   NOT met, missed by 231 words** — the sixth pre-measurement number in this
+   brief to fail — and the RFC says so rather than weakening the assertion.
+   **`concise/06` and `concise/07` are the live next steps**; `concise/03` stays
+   HELD. The borrowing block now carries **one** attribution header instead of
+   restating the school and the cycle in every sentence: the page reads **1,450
+   words for three schools, down from 1,530**, and the block's header cannot be
+   separated from its figures because `blockOf` hands them out as one value. On
+   the mixed-source debt section attribution **increased** — the federal median
+   debt names its own publisher now. RFC 175 D10's per-sentence rule is
+   superseded; its test was replaced, not dropped. The **`<= 1,230` target is
+   NOT met** (80 words were really there to remove), the fifth pre-measurement
+   number in this brief to fail. The coach's cost payload now states each
+   provenance fact once per college: **4,980 -> 1,864 bytes per college
+   (-62.6%)**, measured, budgeted in a test. Every figure still resolves to
+   exactly one tier and one publisher — its own entry's value, else the default
+   — and our at-home `$0` is explicitly on NO publisher's tier. That >= 60%
+   target IS met, but only after a mid-run amendment: the research report's
+   `5,366` was **reconstructed, never measured**, and assumed one (tier,
+   publisher) pair per college where the real corpus has **three**. Two spec
+   defects against /chart now, both of the same kind — a target written before
+   anything was measured. **`concise/05` is UNBLOCKED**; `concise/03` stays HELD
+   on the cross-brief prompt-file collision. And the parent Family Cost Report
+   reads **1,530 words for three schools, down from 1,767** (one school: 800 ->
+   762), with nothing a family could learn made unlearnable. Tuition and books
+   are said once per school, the blended-average hint once per page, the income
+   band once in the assumption list. The "At a public school …" sentence no
+   longer prints under **private** colleges, and a one-school report no longer
+   states its residency sentence twice. The **≤ 1,480 target is NOT met** and is
+   not reachable from this slice alone — the brief's own budget table allocates
+   it 223 words where 313 are needed; Ian accepted 1,530 and `concise/04` +
+   `concise/05` own the rest. Everything below is the standing brief context.
+   The coach and the parent report repeat themselves badly, and Ian's
+   instruction is to compress **without losing information**. We rendered the
+   page for real rather than guessing: a 3-school report was **1,793 words, 502
+   of them (28.0%) exact repeated blocks** when the research ran (**1,767** on
+   the main `concise/01` actually measured), and the debt+borrowing block alone
+   is **504 words — 28% of the page**. On the chat side the coach is handed
+   **~5,366 bytes of `figure_statuses` per college, ~75% of it byte-identical**,
+   carrying exactly **one** distinct assurance sentence; the tool DESCRIPTION is
+   **16,383 bytes** that largely restates the **25,201-byte** system prompt, so
+   the model is told the same rule twice in one context window. Both of Ian's
+   examples are confirmed and **both bigger than he said**: tuition prints
+   **four** times per school (summary plus three arrangement columns) and
+   **books and supplies has the identical shape**, which nobody had noticed;
+   `"2024-25"` appears **21** times across three schools because every
+   `BorrowingWire` sentence re-interpolates the college name and the cycle.
+   **Two live defects** surfaced on the way: `SCHOOL_BLENDED_HINT` is
+   unconditional, so "At a public school it … are figures for students paying
+   in-state tuition" prints under **private** colleges; and the residency
+   sentence **double-prints on a one-school report**, the commonest shape. Both
+   ride with `concise/01`. **The useful finding is that most of the win is
+   free** — the RFC corpus guarantees that a thing is _said_, never that it is
+   said N times, so hoisting the school-wide rows, emitting per-college
+   provenance defaults (**~4x cut**) and deleting the description's restatements
+   touch no honesty guarantee at all. The prompt's own repetition is an artifact
+   of the append-only convention: "loans are not a price reduction" is stated
+   **five** times because five RFCs each appended their own paragraph. **A
+   correction to my own gate:** gate-1 D4 set ≤900 words; adding up every
+   identified repeat gives **1,793 − 664 = 1,129**, so **D9 supersedes it at
+   ≤1,150** and explicitly refuses to chase 900 by merging the merit and debt
+   prose into one table — RFC 175 D9 says those two publishers must never look
+   summable. D4 stands as committed; the number is replaced, not edited. **A
+   second correction, measured this time:** the `~5,366 bytes` above was
+   RECONSTRUCTED from real copy strings, never captured; the measured baseline
+   is **4,980 bytes** on a mixed fixture, and a college carries **three**
+   distinct (tier, publisher) pairs, not one — `concise/02` landed at **1,864
+   bytes (-62.6%)** as RFC 189. **Wave 1 is done except one:** `concise/01`
+   (RFC 188) and `concise/02` (RFC 189) LANDED. **Held:**
+   `concise/03/one-rule-one-home`, not on any `Needs:` edge but on a discovered
+   cross-brief collision — it works by **deleting** redundant sentences from
+   `prompts/coach-system-prompt.md` while brief 0010's live `rfc-186` and
+   `rfc-187` **add** to that same file and each cut an immutable seed version,
+   and a deletion pass rebased across two concurrent additions could drop a
+   sentence that landed minutes earlier with no test to catch it. **Wave 2** is
+   the two judgement calls: `concise/04/cite-once-per-block`, which writes the
+   RFC **superseding RFC 175 D10**'s per-sentence attribution, and
+   `concise/05/tiers-grouped-not-repeated`. Honest caveat recorded in the
    research: there is **no study** comparing grouped versus per-figure
    attribution — "one source line per block" is best-practice convergence, not a
    proven trust-neutral result. Standing decision **D8**: _say it once;
    repetition is a defect, not a safety margin._ **No table, column, migration
    or seeded row anywhere in this brief.**
 
-2. **WE NOW CITE THE YEAR THE PUBLISHER ACTUALLY MEANS — AND REFUSE A PRICE WE
+3. **WE NOW CITE THE YEAR THE PUBLISHER ACTUALLY MEANS — AND REFUSE A PRICE WE
    CANNOT LABEL HONESTLY (RFC 183, `soft/03/the-year-we-cite`, 2026-09-09).**
    Every College Scorecard figure was stamped with an academic year wrong by TWO
    years: published charges said 2022-23 and describe **2024-25**; `COSTT4_A`
@@ -235,7 +328,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    inflation, not a dispute. **This does not reach a family until a full
    re-ingest runs.** No migration, no DDL.
 
-3. **A CDS FILING IS NOW CHECKED AGAINST THE FEDERAL FILE (RFC 182,
+4. **A CDS FILING IS NOW CHECKED AGAINST THE FEDERAL FILE (RFC 182,
    `soft/04/two-more-ingest-refusals`, 2026-09-09).** Every coherence check
    `bin/fetch-cds-seed` ran until today looked only INSIDE one filing — more
    merit awards than freshmen, a borrowing block that contradicts itself. So a
@@ -261,7 +354,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    be spoken as the school's. 15 + 7 + 35 refusals, and 51 filings left the
    seed.
 
-4. **A FIGURE NOW SAYS WHAT KIND OF NUMBER IT IS (RFC 179,
+5. **A FIGURE NOW SAYS WHAT KIND OF NUMBER IT IS (RFC 179,
    `soft/02/assurance-tiers`, 2026-09-09).** unicoach speaks four publishers
    with one voice: a Common Data Set cell a college typed about itself and a
    federal loan record carry the same `REPORTED` status, and until today a
@@ -297,7 +390,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    coach what a school costs, and any parent opening a shared Family Cost
    Report. This is one sentence beside a number, not a new screen.
 
-5. **A FIGURE'S PUBLISHER IS NOW DERIVED, AND THE LIE IS GONE (RFC 177,
+6. **A FIGURE'S PUBLISHER IS NOW DERIVED, AND THE LIE IS GONE (RFC 177,
    `soft/01/one-hedge-seam`, 2026-09-08).** Until today unicoach told families
    that an IPEDS figure came from the U.S. Department of Education College
    Scorecard. One hand-typed constant said so in chat and on the Family Cost
@@ -322,7 +415,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    = **v22**. The door is the existing one — any family asking what a school
    costs, and any parent opening a shared Family Cost Report.
 
-6. **SEARCH NOW RANKS ON THE PRICE YOU WOULD ACTUALLY PAY (RFC 169,
+7. **SEARCH NOW RANKS ON THE PRICE YOU WOULD ACTUALLY PAY (RFC 169,
    `shape/05/search-on-your-price`, 2026-09-08).** Until now every family was
    ranked on ONE price — the Scorecard net price, which at a public school is
    the **in-state** figure after federal aid — so a family in Washington asking
@@ -349,7 +442,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    named under `excluded_unknown`, never substituted. Migration 0091 is four
    nullable index columns and **no new index**. Rollback = coach prompt v21.
 
-7. **A FAMILY CAN NOW SEE WHAT GRADUATES HERE ACTUALLY BORROWED, INCLUDING
+8. **A FAMILY CAN NOW SEE WHAT GRADUATES HERE ACTUALLY BORROWED, INCLUDING
    PRIVATE LOANS (RFC 175, `shape/07b/borrowing`, 2026-09-08).** Until now the
    only debt sentence unicoach said was the Scorecard's, which counts **federal
    loans only** — the tidier half. Ask "do students at Amherst take out loans?"
@@ -372,7 +465,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    ~90 with no filing at all hear "we don't hold a Common Data Set for this
    school", never "students here don't borrow". Rollback = coach prompt v20.
 
-8. **A FAMILY CAN NOW FIX ITS OWN MONEY FACTS ON A SCREEN (RFC 171,
+9. **A FAMILY CAN NOW FIX ITS OWN MONEY FACTS ON A SCREEN (RFC 171,
    `profile/02/your-details-screen`, 2026-09-05). BRIEF 0007 IS COMPLETE.** The
    door is a new slide-over menu row **"Your details"**, above "My colleges",
    which pushes a screen carrying the household income band and the state or
@@ -398,21 +491,21 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    and **`dependency` is still chat-only**, on neither REST verb, so no screen
    can reach the money profile's fourth tri-state.
 
-9. **THE COACH CAN NOW ANSWER "DO WE HAVE TO DO THE CSS PROFILE?" (RFC 170,
-   `shape/07a/need-and-forms`, 2026-09-05).** Ask what forms a school requires,
-   or whether it meets full financial need, and the answer comes from that
-   school's own Common Data Set with the year and a citation. Two honesty rules
-   ride on it: a form is **required or unknown, never "not required"** (the
-   corpus carries no false checkbox), and where WE failed to read a cell we say
-   that, rather than reporting it as the school's silence. Coverage is the real
-   CDS universe — 338 of 417 seeded colleges, and the CSS Profile answer exists
-   for only 73 — so "not reported in this school's CDS" is the common answer and
-   is said plainly. It also left the money layer cleaner than it found it: a
-   filing now has ONE row (`source_documents`) instead of a copy per table, and
-   the academic year is a typed start year instead of a `'YYYY-YY'` string with
-   an `'undated'` sentinel.
+10. **THE COACH CAN NOW ANSWER "DO WE HAVE TO DO THE CSS PROFILE?" (RFC 170,
+    `shape/07a/need-and-forms`, 2026-09-05).** Ask what forms a school requires,
+    or whether it meets full financial need, and the answer comes from that
+    school's own Common Data Set with the year and a citation. Two honesty rules
+    ride on it: a form is **required or unknown, never "not required"** (the
+    corpus carries no false checkbox), and where WE failed to read a cell we say
+    that, rather than reporting it as the school's silence. Coverage is the real
+    CDS universe — 338 of 417 seeded colleges, and the CSS Profile answer exists
+    for only 73 — so "not reported in this school's CDS" is the common answer
+    and is said plainly. It also left the money layer cleaner than it found it:
+    a filing now has ONE row (`source_documents`) instead of a copy per table,
+    and the academic year is a typed start year instead of a `'YYYY-YY'` string
+    with an `'undated'` sentinel.
 
-10. **A FAMILY CAN NOW SEE THE CANONICAL MONEY STORE (RFC 166,
+11. **A FAMILY CAN NOW SEE THE CANONICAL MONEY STORE (RFC 166,
     `shape/04/cost-answers-from-canonical`, 2026-09-05).** This is the first
     slice of brief 0006 a person can SEE. Ask the coach — or read a shared
     Family Cost Report — what a school costs, and the answer is built from
@@ -436,7 +529,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     test caught it, because the fixtures wrote at the reader's own addresses. A
     cross-module address-contract test now closes that hole.
 
-11. **ONE SOURCE FOR EVERY MONEY NUMBER (RFC 176,
+12. **ONE SOURCE FOR EVERY MONEY NUMBER (RFC 176,
     `shape/08/drop-the-publisher-shape`, 2026-09-09).** No door, by design —
     this is the slice that is invisible when it is right. `colleges` and
     `colleges_versions` no longer carry money at all: all eighteen
@@ -450,7 +543,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     version — the removal is a migration, and the pre-drop database dump kept
     outside the repo is the only route back to the dropped values.
 
-12. **UNICOACH NOW KNOWS WHO AN AID NUMBER IS ABOUT (RFC 162,
+13. **UNICOACH NOW KNOWS WHO AN AID NUMBER IS ABOUT (RFC 162,
     `shape/03/ipeds-sfa`, 2026-09-05).** IPEDS SFA fills the canonical store
     with aid: net price by income band, Pell share and **average award** (a
     figure the Scorecard does not publish), grant mix by source, and loan share
@@ -470,7 +563,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     in one file were at stake), and `not_reported_by_institution` cannot be
     filled from SFA at all because NCES imputes instead of blanking.
 
-13. **THE iOS COLLEGE LIST NOW SAYS WHAT IT MEANS ON THE WIRE (RFC 168,
+14. **THE iOS COLLEGE LIST NOW SAYS WHAT IT MEANS ON THE WIRE (RFC 168,
     `profile/03/list-screen-parity`, 2026-09-05).** The client's college-list
     PATCH carries a three-state `LivingPlanUpdate` — keep / set / clear — with a
     hand-written encoder: keep sends neither wire key, so a Save from the list
@@ -490,7 +583,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     an unknown `status` would black out the whole list for every shipped build,
     and that **reorder exists on no surface** (no column, no field, no route).
 
-14. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
+15. **FORMS CAN STOP GUESSING: ONE ENDPOINT SERVES THE VOCABULARY (RFC 165,
     `profile/01/served-vocabulary`, 2026-09-05).** `GET /api/v1/vocabularies` is
     a registry, not a money-profile route: one map of vocabulary name to
     entries, every entry `value` + `label`, extras allowed and nothing fewer.
@@ -507,7 +600,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     were demoted to an offline fallback pinned to the server by tests, which is
     what brief 0007 D6 asked for.
 
-15. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
+16. **THE IN-DISTRICT PRICE IS REAL NOW (RFC 161, `shape/02/ipeds-ic-ay`,
     2026-09-05).** IPEDS's published-charges file fills the canonical store
     ahead of the College Scorecard, and it fixes a wrong number we have been
     serving: the Scorecard collapses in-district into "in", so a community
@@ -529,7 +622,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     institutions, not ~6,100, because program-year reporters live in a different
     file, so the Scorecard stays the only source for the rest.
 
-16. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
+17. **THE MONEY STORE IS SHAPED LIKE MONEY (RFC 158, `shape/01/canonical-store`,
     2026-09-04).** Brief 0006's substrate: a price carries its residency, its
     living arrangement and its academic year; a statistic carries the population
     it describes; and an absence carries a reason instead of being an
@@ -543,7 +636,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     publisher-shaped columns from `colleges` and `colleges_versions`. There is
     no second place a money figure can come from any more.
 
-17. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
+18. **BEAT 1 IS COMPLETE: the coach now asks to share the Family Cost Report, at
     a moment it chooses (RFC 160, `first-value/06/invite-your-parent`,
     2026-09-03).** Brief 0001's wedge is closed end to end. Until now the report
     existed but the coach could only produce a link when the student thought to
@@ -560,7 +653,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     (minted, repeat, reissued, revoked, opted out), which is both the first read
     on share-rate and the substrate Beat 2's parent-account claim path needs.
 
-18. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
+19. **FIRST BRIEF 0006 SLICE LANDED: the coach now answers Pell and loan
     questions with cited federal facts (RFC 159, `shape/06/pell-and-loans`,
     2026-09-03).** A family can ask "can we get a Pell grant?" in session one —
     no college list, no profile — and get an honest answer naming the
@@ -574,7 +667,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     The dependency question is invited in flow and is fully declinable; both
     loan tables are served either way.
 
-19. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian,
+20. **BRIEF 0006 — MONEY IN UNICOACH SHAPE — GATES 1+2 APPROVED (Ian,
     2026-09-02, defaults, no amendments); WAVE 1 NOW HALF DONE.** The standing
     mistake is named: every money figure is stored in its publisher's shape, and
     RFCs 149/151/152/157 are a growing read-time compensation stack. Approved
@@ -592,7 +685,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     PAUSED by 0006 D11** — its question IS `shape/05/search-on-your-price`,
     decided at D14. Spec: `product/0006-money-in-unicoach-shape/spec.md`.
 
-20. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
+21. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
     IT BY USING THE PRODUCT. Fixed by RFC 157** (`main@29242880` + `7c7c56af`,
     2026-09-02). The Scorecard's published cost of attendance (`COSTT4_A`) and
     its net price (`NPT4` family) are figures for students paying the
@@ -616,7 +709,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     slice, not a fix to fold into the next run), and `first-value/06`'s spec
     drift.**
 
-21. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
+22. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
     LANDED as RFC 155 (`main@47cf9d62` + `6777c7c7`, 2026-09-01), so brief
     0001's Beat 1 is ONE SLICE from complete.** A parent no longer needs an
     account, a login, or the app. The student asks the coach to share,
@@ -639,7 +732,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     production; unset, the feature stays dark, declines honestly, and warns once
     at boot.
 
-22. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
+23. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
     LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
     every slice in the brief.** The coach now leads with the one way of living
     the family said they plan, instead of offering three and letting them pick —
@@ -659,7 +752,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable
     — the brief is done.**
 
-23. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
+24. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
     (RFCs 139, 144, 147, 150, 154 and 153, `search/04/similar-colleges`,
     2026-09-01); only `search/06/unattended-refresh` is left, and it is DEFERRED
     by intent.** A **`similar_colleges`** chat tool decides "similar" per call
@@ -675,7 +768,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
     debt it leaves is in the Backlog: the `NewCollege` test fixture is a 5th
     copy and the shared helper is in the wrong source set, parked twice over.
 
-24. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
+25. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).**
     The admissions layer is user-visible: the coach can answer, with citations,
     what a school weighs in admissions, when its rounds close, and how it
     actually behaves on merit aid — and merit rides along inside cost answers.
@@ -688,7 +781,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
 
 368) is a silence, not a zero.
 
-25. **Before any App Store submission: brief 0002, account deletion** — parked
+26. **Before any App Store submission: brief 0002, account deletion** — parked
     in the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR
     Art. 17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
 
@@ -1953,6 +2046,53 @@ and no new ask; the same facts, said with one attribution instead of five.
   still promises "We link to the college's own file" and no surface emits a
   source url. The sentence is byte-frozen; raised with Ian as its own slice.
 
+### What kind of number this is, said once (brief 0009 `concise/05`, RFC 191)
+
+**The door:** both existing doors — the shared Family Cost Report link a parent
+opens with no account, and the coach answering a cost question. No new surface
+and no new ask; the same facts, said once instead of once per school.
+
+- **What it does:** the report page carries one standing block, "What kind of
+  numbers these are", above the sources section. It holds one paragraph per
+  distinct assurance tier on the page: a scope naming the figures that tier
+  covers ("The median federal loan debt:"), then the tier sentence **verbatim**
+  from `AssuranceTierCopy`. The 30-word administrative-record sentence used to
+  print inside every school's debt paragraph — three times on a three-school
+  report. **Measured: 1,450 -> 1,401 words**, ratcheted in the existing
+  `CostReportPageTest.WORD_CEILING`; no second counter.
+- **A header can never speak for a figure it does not describe.** A label is
+  said bare only where every school puts that figure on the same tier, and is
+  qualified with its school otherwise — so a mixed-tier page renders **two right
+  headers rather than one wrong one**. Review caught the subtle half: ambiguity
+  is not a property of what the block GROUPS, it is a property of what the PAGE
+  CLAIMS. One school's debt shown on a federal tier and another's withheld on a
+  survey tier is exactly the case a covered-set-only rule cannot see, so
+  `groupsOf(figures, spokenElsewhere)` measures over everything the page states
+  a tier for. `spokenElsewhere` is never rendered.
+- **Our own assumption is never swept up** (RFC 166 §7). The at-home `$0`
+  housing line carries no published cell at all, so it cannot enter the walk and
+  no publisher's tier can claim it. Asserted by test.
+- **A figure with no number is a kind of nothing.** A withheld, not-applicable
+  or not-yet-collected figure is in no group and keeps its own status sentence
+  and its own tier sentence in its own cell — the exclusion RFC 189 wrote into
+  the tool description, applied to this surface. Nothing became unreachable.
+- **In chat:** RFC 189 already stated provenance once per college. The tool
+  description now extends that rule to the EXCEPTION group, so several fields
+  sharing one off-default tier are one sentence, not one each. Asserted by test.
+- **Nothing is ranked, scored or counted** (RFC 179 D10). No digit reaches a
+  scope and no ordering of the three tiers reaches the page; groups come out in
+  the order the figures were walked.
+- **How it degrades:** a page with no such figure renders no block at all,
+  rather than a heading over nothing.
+- **Rollback:** revert the code commit. No DDL, no migration, no prompt version;
+  `prompts/coach-system-prompt.md` was not touched.
+- **Known gap, recorded in the RFC, not closed here:** the page speaks a tier
+  for **one** of the eleven figures a school resolves (11/10/10 shown per
+  school; mandatory_survey 10/9/9, administrative_record 1/1/1). RFC 190 did not
+  change that and neither does this. Closing it costs about **+55 words said
+  ONCE** — not a repetition, so not this brief's kind of cost — and nothing
+  landed here forecloses the decision.
+
 ### The coach asks you to share it (brief 0001 S6, RFC 160)
 
 **The door:** the chat coach, in an ordinary conversation. The student does not
@@ -2042,7 +2182,8 @@ progress — this is the column /chart reads to know what "halfway done" means.
 
 | Pri | Work                                                        | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Where                                        |
 | --- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| P1  | Say it once (brief 0009)                                    | **GATES 1+2 APPROVED (2026-09-09, all defaults, no amendments); THREE SLICES LANDED (RFCs 188, 189, 190), ONE HELD.** Ian: the coach and the parent Family Cost Report duplicate a lot of data — tuition listed once per living situation, "<college> <year> Common Data Set reports ..." restated constantly — and both should be far more concise **without losing information**. Three cited research reports delivered 2026-09-09; the page was RENDERED FOR REAL to measure it. **Measured:** a 3-school report is **1,793 words, 502 of them (28.0%) exact repeats**; the debt+borrowing block alone is **504 words (28%)**; `figure_statuses[]` is **~5,366 bytes per college, ~75% byte-identical**, carrying exactly ONE distinct assurance sentence; the chat tool DESCRIPTION is **16,383 bytes** largely restating the system prompt; the prompt is **25,201 bytes / 158 imperative sentences**. Ian's two examples both confirmed and both BIGGER than stated: tuition prints **four** times per school (summary + 3 arrangement columns) and **books and supplies has the identical shape**, unmentioned; `"2024-25"` appears **21** times across three schools. **Two defects found while measuring:** `SCHOOL_BLENDED_HINT`'s in-state clause is unconditional and so prints "At a public school ..." under PRIVATE colleges, and the residency sentence double-prints on a one-school report — the commonest shape. **The honest correction:** gate-1 D4 set <=900 words; adding up every identified repeat gives **1,793-664 = 1,129**, so D4's number was 229 short of reachable. **D9 supersedes it at <=1,150** and refuses to chase 900 by merging the merit and debt tables (RFC 175 D9: two un-summable publishers must not look summable). D4 stands as committed. Seven slices. **Wave 1:** `concise/01/the-page-says-it-once` **LANDED as RFC 188 (`main@5d69aa43` + `f555346f`, 2026-09-11)** — tuition and books said once per school by a DERIVED rule, the blended hint once per page, the income band once in the assumption list, and both defects dead (the in-state clause no longer prints under private colleges; the one-school residency sentence no longer doubles). **Measured 1,767 -> 1,530 words** on three schools (800 -> 762 on one), ratcheted in `CostReportPageTest`. **Its <=1,480 criterion is NOT met and is unreachable from this slice**: the brief's own budget table allocates it 223 words where 1,793->1,480 needs 313 — a **spec defect against /chart**, accepted by Ian at the gate ("approve both"), with `concise/04`/`concise/05` owning the rest. The research baseline of 1,793 is superseded by **1,767**, measured on today's main. `concise/02/the-payload-says-it-once` **LANDED as RFC 189 (`main@eed5b148` + `9928f121`, 2026-09-11)** — `figure_provenance` once per college, a `figure_statuses` entry only for a field with something of its own to say, each entry repeating only the provenance key that DIFFERS, `by_college` only where a school differs, and the breakdown NAMING its tuition key instead of repeating the figure. **Measured 4,980 -> 1,864 bytes per college (-62.6%)**, budgeted in `CollegeCostChatToolTest`. Its >=60% criterion IS met, after a mid-run amendment Ian approved: the first shape measured 44.7%, because the research `5,366` was RECONSTRUCTED and assumed one (tier, publisher) pair per college where the real corpus has **three** — a second **spec defect against /chart**; **`concise/03/one-rule-one-home` is HELD on a cross-brief collision** — it DELETES redundant sentences from `prompts/coach-system-prompt.md` while brief 0010's live `rfc-186`/`rfc-187` ADD to that same file and each mint a seed version, and a deletion pass rebased across two concurrent additions could silently drop a just-landed sentence with no test to catch it. **Wave 2:** `concise/04/cite-once-per-block` **LANDED as RFC 190 (`main@4a4bf350` + `7de43df6`, 2026-09-11)** — the borrowing block carries ONE attribution header (school + cycle + Common Data Set) and the figures follow; `BorrowingWire.blockOf` hands the header and the sentences out as one value, so a figure cannot render without the claim it is made under. It SUPERSEDES RFC 175 D10's per-sentence rule (same reason, different unit) and REPLACES its test. On the mixed-source debt section attribution went **UP**: the federal median debt now names its own publisher, derived from the cell it came from, where it named nobody before; RFC 175 D9 is untouched. **Measured 1,530 -> 1,450 words** (-5.2%), ratcheted in the existing `WORD_CEILING`. **Its `<=1,230` criterion is NOT met** — inherited from the superseded 1,793 chain, and only 80 words of repetition were really there: the **fifth spec defect of the same kind** in this brief. `concise/05/tiers-grouped-not-repeated` is **READY** (unblocked by RFC 189). **Wave 3:** `concise/06/the-coach-answer-shape`, `concise/07/quiet-provenance`. Standing: **D8 — "Say it once: every surface states a fact, a source and a hedge once per block; repetition is a defect, not a safety margin."** Nine sentences are **byte-frozen** against the immutable v19 prompt row, so every slice compresses by DELETING repeats, never by rewording. No table, column, migration or seeded row anywhere in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `product/0009-say-it-once`                   |
+| P1  | When do I test? (brief 0010)                                | **GATES 1+2 APPROVED (2026-09-10, all defaults); WAVE 1 COMPLETE (RFCs 186 + 187), WAVE 2 HELD BY AGREEMENT.** Ian's daughter asked "when do I need to take the SATs?" and the coach could not have answered: it was told neither the date nor her year of school. Scoped at gate 1 as a **deadline-and-money engine**, never test prep (**D9, standing**). Four cited research reports. The differentiator is that a score is a PRICE: Alabama pays $6,000/yr at SAT 1250 and $8,000/yr at 1260, requires a submitted score to qualify, and does NOT superscore for scholarships; its Dec 4 score deadline makes the Dec 5 SAT useless and Nov 7 the last usable sitting, with registration closed Oct 23. National Merit verified from NMSC's own pages (the earlier 403 was a User-Agent filter, not a block): junior-year sitting only, per-STATE Semifinalist cutoff, ~1.25% base rate, and an **alternate entry** route by April 1 — so "miss it and it is gone" is false. Automatic Finalist awards verified per school: Oklahoma $153,450 non-resident, Alabama ~$180-200k OOS, Maine 100% tuition with no first-choice requirement, Auburn $44k **in-state only** (a documented cut, which is why every curated row carries `checked_on`). **Eight slices `test/01`-`test/08`; ask `slice-board`, not this line.** **LANDED:** `test/01/the-coach-knows-today` (RFC 186) and `test/02/does-this-school-want-a-score` (RFC 187), both zero-DDL, coach prompt v28 then v29. **Corrections to my own spec, found by the runs:** `PartialDate` is not in `:common`; IPEDS ADM2023 was ALREADY fetched so D5 cost no new ingest; the Scorecard seed is **gitignored**, and its score bands cover 949 colleges against `SAT_AVG`'s 1,037 — the range covers FEWER schools than the average it replaces (D16 governs the fallback). **Wave 2 held** until brief 0009's `concise/03` deletion pass lands on `prompts/coach-system-prompt.md`. Standing: **D15** deadline arithmetic in US Eastern, dates not hours; **D20** staleness is a BUILD FAILURE — a calendar, state or merit row within 90 days of expiry fails a test, because rot is the competitor's failure mode.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `product/0010-when-do-i-test`                |
+| P1  | Say it once (brief 0009)                                    | **GATES 1+2 APPROVED (2026-09-11, all defaults, no amendments); FOUR SLICES LANDED (RFCs 188, 189, 190, 191), ONE HELD; WAVES 1-2 DONE EXCEPT `concise/03`.** Ian: the coach and the parent Family Cost Report duplicate a lot of data — tuition listed once per living situation, "<college> <year> Common Data Set reports ..." restated constantly — and both should be far more concise **without losing information**. Three cited research reports delivered 2026-09-11; the page was RENDERED FOR REAL to measure it. **Measured:** a 3-school report is **1,793 words, 502 of them (28.0%) exact repeats**; the debt+borrowing block alone is **504 words (28%)**; `figure_statuses[]` is **~5,366 bytes per college, ~75% byte-identical**, carrying exactly ONE distinct assurance sentence; the chat tool DESCRIPTION is **16,383 bytes** largely restating the system prompt; the prompt is **25,201 bytes / 158 imperative sentences**. Ian's two examples both confirmed and both BIGGER than stated: tuition prints **four** times per school (summary + 3 arrangement columns) and **books and supplies has the identical shape**, unmentioned; `"2024-25"` appears **21** times across three schools. **Two defects found while measuring:** `SCHOOL_BLENDED_HINT`'s in-state clause is unconditional and so prints "At a public school ..." under PRIVATE colleges, and the residency sentence double-prints on a one-school report — the commonest shape. **The honest correction:** gate-1 D4 set <=900 words; adding up every identified repeat gives **1,793-664 = 1,129**, so D4's number was 229 short of reachable. **D9 supersedes it at <=1,150** and refuses to chase 900 by merging the merit and debt tables (RFC 175 D9: two un-summable publishers must not look summable). D4 stands as committed. Seven slices. **Wave 1:** `concise/01/the-page-says-it-once` **LANDED as RFC 188 (`main@5d69aa43` + `f555346f`, 2026-09-11)** — tuition and books said once per school by a DERIVED rule, the blended hint once per page, the income band once in the assumption list, and both defects dead (the in-state clause no longer prints under private colleges; the one-school residency sentence no longer doubles). **Measured 1,767 -> 1,530 words** on three schools (800 -> 762 on one), ratcheted in `CostReportPageTest`. **Its <=1,480 criterion is NOT met and is unreachable from this slice**: the brief's own budget table allocates it 223 words where 1,793->1,480 needs 313 — a **spec defect against /chart**, accepted by Ian at the gate ("approve both"), with `concise/04`/`concise/05` owning the rest. The research baseline of 1,793 is superseded by **1,767**, measured on today's main. `concise/02/the-payload-says-it-once` **LANDED as RFC 189 (`main@eed5b148` + `9928f121`, 2026-09-11)** — `figure_provenance` once per college, a `figure_statuses` entry only for a field with something of its own to say, each entry repeating only the provenance key that DIFFERS, `by_college` only where a school differs, and the breakdown NAMING its tuition key instead of repeating the figure. **Measured 4,980 -> 1,864 bytes per college (-62.6%)**, budgeted in `CollegeCostChatToolTest`. Its >=60% criterion IS met, after a mid-run amendment Ian approved: the first shape measured 44.7%, because the research `5,366` was RECONSTRUCTED and assumed one (tier, publisher) pair per college where the real corpus has **three** — a second **spec defect against /chart**; **`concise/03/one-rule-one-home` is HELD on a cross-brief collision** — it DELETES redundant sentences from `prompts/coach-system-prompt.md` while brief 0010's live `rfc-186`/`rfc-187` ADD to that same file and each mint a seed version, and a deletion pass rebased across two concurrent additions could silently drop a just-landed sentence with no test to catch it. **Wave 2:** `concise/04/cite-once-per-block` **LANDED as RFC 190 (`main@4a4bf350` + `7de43df6`, 2026-09-11)** — the borrowing block carries ONE attribution header (school + cycle + Common Data Set) and the figures follow; `BorrowingWire.blockOf` hands the header and the sentences out as one value, so a figure cannot render without the claim it is made under. It SUPERSEDES RFC 175 D10's per-sentence rule (same reason, different unit) and REPLACES its test. On the mixed-source debt section attribution went **UP**: the federal median debt now names its own publisher, derived from the cell it came from, where it named nobody before; RFC 175 D9 is untouched. **Measured 1,530 -> 1,450 words** (-5.2%), ratcheted in the existing `WORD_CEILING`. **Its `<=1,230` criterion is NOT met** — inherited from the superseded 1,793 chain, and only 80 words of repetition were really there: the **fifth spec defect of the same kind** in this brief. `concise/05/tiers-grouped-not-repeated` **LANDED as RFC 191 (`main@bb581547` + `e3d9257a`, 2026-09-11)** — an assurance tier is said ONCE for the SET of figures it covers: the administrative-record sentence went **3x -> 1x** on a three-school page, moved into a standing `report-kinds` block that NAMES the figures it covers, with the sentence byte-identical to `AssuranceTierCopy`. A bare label is refused wherever another school states a different tier for the same figure, so a mixed-tier page renders two right headers rather than one wrong one — the defect **review** caught, because ambiguity is a property of what the PAGE claims, not of what the block groups. Our at-home `$0` line carries no published cell and so can never be swept under a publisher's tier; a figure with no number is in no group and keeps its own two sentences. **Measured 1,450 -> 1,401 words**, ratcheted in the existing `WORD_CEILING`. **Its `<= 1,170` criterion is NOT met, missed by 231 words** — the **sixth** pre-measurement number in this brief to fail. OPEN ITEM: the page speaks a tier for ONE of the eleven figures a school resolves (11/10/10 shown; mandatory_survey 10/9/9, administrative_record 1/1/1), unchanged by RFC 190 and unchanged here; closing it costs about +55 words said ONCE, which is not this brief's kind of cost. **Wave 2 is COMPLETE.** **Wave 3:** `concise/06/the-coach-answer-shape`, `concise/07/quiet-provenance`. Standing: **D8 — "Say it once: every surface states a fact, a source and a hedge once per block; repetition is a defect, not a safety margin."** Nine sentences are **byte-frozen** against the immutable v19 prompt row, so every slice compresses by DELETING repeats, never by rewording. No table, column, migration or seeded row anywhere in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `product/0009-say-it-once`                   |
 | P1  | Beyond money: the rest of the college decision (brief 0011) | **GATES 1+2 APPROVED (2026-09-10/11); NOTHING LANDED YET.** Five cited research reports (2,390 lines) + four DISCOVER agents (879 lines, 47 corrections). The bet: earnings and debt **by major** (field explains R²=0.60 of graduate earnings, institution 0.36) and completion **for a student like me** (published rate overstates a low-income student's odds by a median 12.3pp). Nine slices `beyond/01`-`beyond/09`; ask `slice-board`, not this line, for what is startable. **A LIVE defect found and slotted as `beyond/02`**: the ingest looks for the literal `"PrivacySuppressed"` and the Scorecard writes `PS`, so 1,228 `GRAD_DEBT_MDN` rows today say "the school did not report this" when the publisher suppressed it — and the field-of-study load would push 84,917 more cells through the same seam. Standing decisions: **D3** (no admission odds, no fit/happiness/safety score, no grade or rank, nothing from model memory; a non-money figure carries publisher + cohort year or is not spoken), **D4** (chancing refused, and the five fields it needs are not collected), **D23** (a limitation earns copy in proportion to how often it bites — a narrowing of brief 0009's standing D8), **D13/D14** (a `public-web` explainer section and the rules for publishing claims about third parties). **D11 = (a)**: do not widen the CDS take for class size.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `product/0011-beyond-money`                  |
 | P1  | How soft is this number? (brief 0008)                       | **GATES 1+2 APPROVED (2026-09-05); THREE OF FOUR SLICES LANDED.** **`soft/01/one-hedge-seam` LANDED as RFC 177 (`main@3c010785` + `ebaef69e`, 2026-09-08, migration 0093, coach prompt v23)** — attribution is derived per figure at one seam (`MoneySourceCopy` + a source-carrying `FigureStatusCopy`), `CostSources.SCORECARD_ATTRIBUTION` is deleted, and the LIVE defect is dead: IPEDS figures are no longer credited to the College Scorecard in chat or on the report page, pinned by a test that fails on the old code. A publisher is named only when it published a figure the family can SEE, and a fifth `MoneySource` now fails to COMPILE at the seam. Review found and fixed a second instance of the same defect class (the page named publishers of suppressed and value-free rows) and a nullable that would have rendered the literal "null" into coach copy. Two slice-text items were returned to /chart as a spec defect: the four aid-policy constants and the report's merit/borrowing CDS sentence state CORPUS COVERAGE, not a figure's publisher, so deriving them from `MoneySource` would state something false. **`soft/02/assurance-tiers` LANDED as RFC 179 (`main@922e33c6` + `55b829f3`, 2026-09-09, no migration, no prompt version)** — a figure now says what KIND of number it is. `AssuranceTier` (`ADMINISTRATIVE_RECORD` / `MANDATORY_SURVEY` / `VOLUNTARY_SELF_REPORT`) is a pure function of `(MoneySource, source_variable)`, read as a PAIR with `FigureStatus`; `source_variable` now travels to the copy seam, a SHOWN figure gets a note at last (so the tier is visible beside a dollar amount, not only on blank cells), `figure_statuses[]` gains `assurance` + `assurance_statement`, and `AidPolicyDao` — the Common Data Set's own door — calls the SAME resolver, so the CDS has no special case. An unmapped Scorecard variable is a located, typed fault, and the closure test derives the Scorecard key space from the loader's own registry (`ScorecardInstitutionColumns.LOADED_VARIABLES`) instead of hand-listing it. **Four spec corrections returned to /chart**: H.208 is `need_fully_met_count`, a HEADCOUNT in `cohort_population_counts` whose table carries no `source_variable` read row, so it cannot reach the copy seam — the softest sentence is pinned to **H.209 (and H.211)**; `DEBT_MDN` is not a column this loader reads, so it has no tier; DISCOVER item 9 is **stale** (RFC 175 already landed the H4/H5 borrowing facts); and no College Scorecard data dictionary was ever committed and there is no xlsx reader on the JVM classpath, so RFC 179 commits the 24 rows we use as `db/seed/scorecard/dictionary-variable-sources.csv` with its sha256 in `db/seed/scorecard/FETCH-NOTES.md`. **One OPEN item**: a `PublishedCell` value type binding `(source, source_variable)` was asked for by THREE separate review lenses and declined here — the pair travels as two loose primitives and a wrong pairing compiles, but the id is written by the IPEDS and CDS loaders too, so the type crosses `:db`, `:college`, `:service` and `:public-web`. **It wants its own slice.** **`soft/04/two-more-ingest-refusals` LANDED as RFC 182 (`main@6b7586cf` + `3787f936`, 2026-09-09, no migration, no prompt version)** — the first `bin/fetch-cds-seed` checks that compare a filing against something OUTSIDE itself: CDS `H.201` against IPEDS `SCFA1N` at a two-sided 50% threshold (with an `H.204` sibling on the aid-policy document), and a value signature repeating byte-for-byte across different `unit_id`s in one `source_year`. IPEDS arrives by a new `-I` option; an absent `sfa2223.csv` skips the check and records the skip in `PROVENANCE.json`, a present-but-unreadable one is a fault. 15 + 7 + 35 refusals; seed rows `merit-aid` 368 -> 352, `aid_policy` 3,568 -> 3,496, `admission-factors` 373 -> 369, `deadlines` 846 -> 831. Nothing family-visible gained a warning, flag or score (D4, D7). Its product close-out was written after the fact — RFC 182's run landed the code and never touched `product/**`, so the board read the slice as READY for a day. Four spec corrections went back to /chart: the "8 wrong colleges" is **3** today (UIUC `145637`, Florida `134130`, Rowan `184782`) because five were fixed upstream in the 2026-09-08 fetch; the slice worded rule 1 one-sided while its own measurement was two-sided; "a main campus's PDF mapped onto branch UNITIDs" is wrong for one of the seven clusters (WPI + Whitman are unrelated); and a live extractor defect owned by no slice — Boston University and Carnegie Mellon both report `graduating_class_count = 2025`, the class YEAR read as a headcount, landed by `shape/07b`. **`soft/03/the-year-we-cite` LANDED as RFC 183 (`main@b981fff9` + `886dee52`, 2026-09-09, no migration, no DDL), and brief 0008 is COMPLETE** — all four slices landed. Scorecard vintages corrected (both wrong by TWO years), pinned per column against a committed transcription of the publisher's cohort map; 19,780 suppressed net-price rows freed; and the collapse the corrected year would have re-introduced is refused at the write seam, so 246 colleges are not understated and 0 lose their in-district price. Two record corrections went back to /chart: RFC 161's displacement FIRED (29,704 rows, wrong year) rather than never firing as the slice claimed, and its "92.1% agreement" is really 20.3%. Still open: `PCTPELL` is dated by the publisher and stamped undated by the fill (declared and pinned, not fixed), and nobody has measured how many `WrittenUnmeasured` colleges are district-based. **A full re-ingest is required before any of it reaches a family.** The money store treats a Scorecard administrative record and a school's unaudited self-report as the same kind of fact, and the hedge that covers the difference is hand-written at ~39 prompt sites plus 19 Kotlin strings. Research killed the obvious shape: a `self_reported` flag on the SOURCE would be false, because **16 of the 18 Scorecard cells we load are re-published IPEDS** and only `GRAD_DEBT_MDN` (NSLDS) and `MD_EARN_WNE_P10` (Treasury) are administrative. The axis is real from the publishers' own words — IPEDS is mandatory under 20 USC 1094(a)(17), edit-checked and keyholder-attested; the CDS has no collector, no deadline, no sanction and no audit. Ian's "14 of 249 filings report more borrowers than graduates" reproduces **exactly**, but **12 of the 14 are our own PDF-extraction failures** (two carry the class year as the graduate count), so it measures our extractor, not school honesty — which is why **no findings table is being built** (every internal check runs 0/309 today; `bin/fetch-cds-seed` already drops those blocks). Four slices: `soft/01/one-hedge-seam` (one derived attribution, prompt v21, kills a LIVE defect — IPEDS figures are credited to the Scorecard in chat and on the report page today), `soft/02/assurance-tiers` (three tiers keyed on `(source, source_variable)`, code-side, no migration; BLOCKED on 01), `soft/03/the-year-we-cite` (Scorecard AY2024-25 is stamped 2022, so RFC 161's designed IPEDS displacement NEVER FIRES and NPT4 collides with SFA 2021-22 — held until `shape/07b` lands, to avoid a three-way rebase on `CanonicalMoneyLoader.kt`), `soft/04/two-more-ingest-refusals` (two cross-source refusals; LANDED as RFC 182 — the wrong freshman counts measured as 8 were 3 by land time, five having been fixed upstream). Standing decision D7: **unicoach never renders a confidence score, percentage or rating for a figure.** | `product/0008-how-soft-is-this-number`       |
 | P1  | Money in unicoach shape (brief 0006)                        | **Gates 1+2 APPROVED (2026-09-02, defaults, no amendments); WAVE 1 COMPLETE, WAVE 2 MOSTLY DONE.** Canonical money layer: PriceFigure vs CohortMoneyStat, stored missingness status, authored vocabularies, IPEDS IC_AY + SFA un-deferred, policy-parameter store, staged cutover. Ten slices specced (`shape/07b/borrowing` was split out of `shape/07` at design and is now SPECCED, 2026-09-05), **six landed**. **`shape/06/pell-and-loans` LANDED as RFC 159 (2026-09-03)**; **`shape/01/canonical-store` LANDED as RFC 158 (2026-09-04)**; **`shape/02/ipeds-ic-ay` LANDED as RFC 161 (2026-09-05)** — IPEDS charges fill the store ahead of the Scorecard, making the in-district tier real (269 institutions were served their in-district price under an in-state label) and splitting fees from tuition; **`shape/03/ipeds-sfa` LANDED as RFC 162 (2026-09-05, migration 0085)** — IPEDS SFA fills the store with AID (net price by income band, Pell share and average, grant mix by source, loan share and average) plus `cohort_population_counts`, the residency and living-arrangement headcounts behind every basis; aid scope now follows the denominator; **`shape/04/cost-answers-from-canonical` LANDED as RFC 166 (2026-09-05, migration 0086, coach prompt v19)** — **the door**: every cost answer the coach and the Family Cost Report give now reads `price_figures` and `cohort_money_stats`, the in-district tier and split fees are spoken, living at home gets a complete total whose `$0` food-and-housing line is labelled as OUR assumption (D17), and each figure's status is said aloud; the RFC 149/151/152/157 honesty layer survives as a projection. **`shape/07a/need-and-forms` LANDED as RFC 170 (2026-09-05, migrations 0087/0088, coach prompt v20)** — the CDS answers what a school ASKS you to file (`aid_forms` + `aid_form_requirements`) and how it TREATS need (the canonical money tables); the modeled-ahead `aid_policy_facts` was DROPPED rather than filled, because the data is two shapes, not one bag; `source_documents` gives a filing one row so three older CDS tables stop duplicating its urls; `academic_year` and `money_source` became DOMAINs and the `'undated'` sentinel became NULL. **`shape/07b/borrowing` LANDED as RFC 175 (2026-09-08, migrations 0089/0090, coach prompt v21)** — CDS H4/H5 borrowing including the private loans the Scorecard never shows; loan type is part of the MEASURE (the `shape/03` grant-mix pattern), so no table and no `loan_types` vocabulary was added, and Ian's gate flipped D9 (the Family Cost Report page carries it too) and added D10 (a CDS figure is spoken as the school's OWN claim). Review added D11: a zero average over zero borrowers is the source's sentinel, refused at ingest, while the zero COUNT stands. **`shape/05/search-on-your-price` LANDED as RFC 169 (2026-09-08, migrations 0091/0092, coach prompt v22)** — search runs on ONE price ruler: with the family's state on file, each school's published on-campus total at that family's own tuition tier, with aid said to be absent from it in one sentence; with no state on file, the net price as before with its basis in the metric NAME on the wire. The two rulers can never mix (the anchor carries its own ruler; a mixed pairing is refused). Search now ASKS for residency, an offer that never gates a result, and **D19 landed with it at zero DDL cost** — a school with no separately published in-district price is ranked AND labelled (641 of 3,264 in the default universe), never silently treated as in-state. Migration 0091 is four nullable `college_search_index` columns plus a 4→6 clause percentile CHECK and **no index** (every published-price read is a CASE over two tier columns). **Honest next state**: NINE of ten slices landed. **`shape/08/drop-the-publisher-shape` LANDED as RFC 176** (2026-09-09, migration 0094) — the re-spec worry recorded here is spent, and the publisher money columns are gone. `shape/09/exchange-participation` is the one unlanded slice, and it is **DEFERRED by intent**, not blocked. **Spec defects found and closed the same day**: `CHG7/8AY` is off campus NOT with family, so no source publishes with-family food and housing — **D17 (Ian, 2026-09-05) treats living at home as $0 and states the assumption in words**, and shape/04 implemented exactly that; and shape/03's spec text carries a public-only SFA variable list (~65% of colleges would be dropped) plus a `Z`-flag mapping that is wrong for both IPEDS surveys — **RFC 162 corrects landed RFC 161 on `Z`**, and both are open items for /chart. Brief 0005 PAUSED into this brief (D11); D14 decided its search-ranking question.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `product/0006-money-in-unicoach-shape`       |
@@ -2071,14 +2212,37 @@ written. Readiness is a fact about the repo at this second, so it is computed,
 never remembered. What stays here is what only a person can write: the bet, the
 user manual, priorities, and the backlog.
 
+**Brief 0009 after `concise/05` (2026-09-11).**
+`concise/05/tiers-grouped-not-repeated` LANDED as RFC 191 and leaves the board.
+**Wave 2 is complete.** It blocked nothing, so it unblocks nothing: what remains
+startable in this brief is `concise/07` (both its PREFER edges now satisfied)
+and `concise/06` behind the HELD `concise/03`. The sixth pre-measurement number
+failed here: `<= 1,170` was inherited from the superseded 1,793 chain, and the
+removable repetition was 60 words against an 11-word block that names what it
+covers. The run measured 1,450 -> 1,401, set the ratchet at the real number and
+reported the miss by 231 words.
+
+The finding worth carrying out of this slice is not the word count. A grouping
+header's correctness depends on what ANOTHER seam still prints: a bare label
+computed over the covered set alone over-reaches, because ambiguity is a
+property of what the PAGE claims rather than of what the block groups. It was
+caught in review, not by a test, and the fix —
+`groupsOf(figures,
+spokenElsewhere)` — is the shape any future compression seam
+on this page should copy. The synthetic `debtPublisher` fixture knob is
+justified for the same reason: no real publisher pairs a survey tier with
+`GRAD_DEBT_MDN`, and **an untestable case is not the same as an impossible
+one**.
+
 **Brief 0009 after `concise/04` (2026-09-11).** `concise/04/cite-once-per-block`
 LANDED as RFC 190 and leaves the board; it blocked nothing, so it unblocks
-nothing. What remains startable in this brief is `concise/05` (ready),
-`concise/07` (its PREFER on `concise/04` is now satisfied), and `concise/06`
-behind the HELD `concise/03`. The fifth pre-measurement number in this brief
-failed here too: `concise/04`'s `<= 1,230` was inherited from the superseded
-1,793 chain, and only 80 words of repetition existed to remove. The run measured
-1,530 -> 1,450, set the ratchet at the real number and reported the miss.
+nothing. What remained startable in this brief at that point was `concise/05`
+(ready), `concise/07` (its PREFER on `concise/04` now satisfied), and
+`concise/06` behind the HELD `concise/03`. The fifth pre-measurement number in
+this brief failed here too: `concise/04`'s `<= 1,230` was inherited from the
+superseded 1,793 chain, and only 80 words of repetition existed to remove. The
+run measured 1,530 -> 1,450, set the ratchet at the real number and reported the
+miss.
 
 **Brief 0009 wave 1, after `concise/01` AND `concise/02` (2026-09-11).**
 `concise/01` LANDED as RFC 188 and `concise/02` as RFC 189; both leave the
