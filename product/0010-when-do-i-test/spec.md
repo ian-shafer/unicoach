@@ -63,7 +63,68 @@ Also binding:
   seam belongs to the canonical MONEY tables only; borrowing it would claim a
   provenance model testing data does not have.
 - **Next free RFC number: 186** (max 185 across `rfc/`, all references and all
-  seven worktrees). Recompute at dispatch; never copy this number.
+  seven worktrees). Recompute at dispatch; never copy this number. _This number
+  was already stale within a minute of dispatch — `test/01` took 186 and
+  `test/02` claimed 187 — and by wave 2 a sibling brief had taken 188-194. The
+  line stands as written to make the point: **claim it live, never read it from
+  a document.**_
+
+## The unit of contention is the FILE and the KIND of edit
+
+Derived twice on 2026-09-11, from opposite directions, in traffic with the
+sibling `/chart say-it-once` session (brief 0009). It binds every future slice
+in this brief.
+
+A CONFLICTS edge says two slices touch the same file. That is not one risk, it
+is two, and only one of them needs serialising:
+
+- **A DELETION rebased across concurrent ADDITIONS can silently drop a sentence
+  that landed minutes earlier**, and no test catches it, because the test corpus
+  does not know the sentence was ever meant to be there. This needs a real
+  window.
+- **An add/add rebase has no such failure mode.** Git either merges or surfaces
+  a conflict, and both intents survive.
+
+So three slices touching `prompts/coach-system-prompt.md` got three different
+answers on the same afternoon: `concise/06` (adds) overlapped freely, `test/03`
+(never opens the file) started immediately, and `concise/03` (deletes) got a
+held window. **Holding a slice that does not open the contended file is
+cargo-culting the agreement past its reason.**
+
+Two corollaries this brief follows:
+
+- A hold is scoped to a FILE and a KIND, never to a brief or a wave.
+- `Needs: CONFLICTS` is currently one word for both hazards. Where a slice in
+  this brief DELETES from a file another live slice adds to, say so in the
+  reason, because the board cannot.
+
+**The final clause, added 2026-09-11 after the freeze did not catch the real
+collision.** The window we agreed protected `prompts/coach-system-prompt.md`.
+The conflict arrived through `CollegeCostChatTool.DESCRIPTION` — the OTHER file
+that deletion pass deleted from — which nobody protected, because no other
+SESSION was editing it. The sibling's own sibling slice was. So:
+
+> the unit of contention is the FILE and the KIND of edit — and for a DELETION,
+> it is EVERY file the deletion touches, whoever is editing them, **including
+> your own sibling slices**.
+
+A freeze scoped to where the danger was expected, rather than to where the
+change actually reached, is a freeze with a hole in it.
+
+**The corrected form of the rule, since the first form invited the error.** Both
+sessions scoped a freeze to a FILE, independently, and both were wrong the same
+way. Do not start from the file. **Start from the change: enumerate every file
+your pass touches, then protect that set.** This binds `test/04`, whose
+hand-maintained calendar will one day be revised by deleting rows, and
+`test/07`/`test/08`, which share one curated dataset.
+
+**And the finding underneath it, which this brief inherits as a review rule.**
+The rule that nearly vanished was held ONLY by an assertion inside the very test
+file the slice was rewriting. **A guard inside the artifact under rewrite is not
+a guard**: it gets edited in good faith by the person most likely to break it,
+because rewriting that file IS the task. Any slice here that ratchets a budget,
+pins a sentence or asserts a count must put that guard somewhere its own work
+does not open.
 
 ## Slices
 

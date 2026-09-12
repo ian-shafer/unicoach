@@ -471,11 +471,43 @@ the first dollar.
 
 ## `concise/07/quiet-provenance`
 
+**Status:** DEFERRED
+
 **Needs:**
 
 - PREFER concise/01/the-page-says-it-once — product judgement. Collapsing text
   we are about to delete would hide the wrong thing. Overridable.
 - PREFER concise/04/cite-once-per-block — same reason.
+
+**DEFERRED 2026-09-11 — the other slices ate its value; awaiting Ian's
+confirm.** Recorded here so the board stops showing READY, which invites a
+wasted run. This is a park, not a cancel: remove the `Status:` line to schedule
+it.
+
+Two landed slices closed off most of what this slice was for:
+
+- `concise/01` (RFC 188, D-b) moved the **income-band note INTO the assumptions
+  block**. Gate-1 **D5** forbids hiding anything band-specific. So the
+  assumptions block — this slice's main target — **can no longer be collapsed**
+  without breaking a committed decision.
+- `concise/08` (RFC 196) made `sourcesSection` carry a **live link to each
+  college's own filing** — the first actionable thing on it. D5's rule, taken
+  from CFPB, is that hidden content must not be essential to the task.
+  Collapsing a section in the same week we made it useful is backwards.
+
+What remains hideable is the standing "what this is not" prose minus the
+never-collapse "this is not an offer" paragraph, plus `concise/05`'s tier-kinds
+block. Small — and it would mean introducing the first `<details>` chrome in
+`public-web` for a marginal first-screen gain, on a page already **21% shorter**
+(1,767 -> 1,404 words).
+
+_The finding worth keeping:_ this slice was not wrong when specced. **Two slices
+composed to remove its value**, and neither could have known — `01` moved a note
+up, `08` made a block useful, and between them the third slice's target
+disappeared. A spec written all at once cannot see this; only re-checking each
+slice against what actually landed can. (Chart's EXECUTE phase says exactly
+that: "re-check the next slice's instruction against what actually landed — the
+code wins over the spec.")
 
 **What to build and why. ** Everything above removes words. This removes
 **first-screen load** without removing a single word: standing,
@@ -807,3 +839,91 @@ unit of contention is the FILE and the KIND of edit, not the brief and not the
 wave_ — is correct but was applied to too few files. The full form is: **for a
 deletion, the unit is every file the deletion touches, whoever is editing them,
 including your own sibling slices.**
+
+**SD9 — "set the ceiling with a little headroom" is self-contradictory, and I
+said it.** Found 2026-09-11 by `concise/03`'s Tier 1 review.
+
+I instructed the run to "set the ceiling at the real measured size **with a
+little headroom**, document in the test that adding a key means consciously
+raising it (the same contract `WORD_CEILING` carries)". The two halves
+contradict each other. `WORD_CEILING` is set **exactly** at its measurement —
+that is what makes "you must consciously raise this" a true statement. Headroom
+makes it false: the run's 57 spare bytes are a free behavioural sentence
+(_"Never estimate a missing figure."_ is 32 bytes), which is precisely what the
+ceiling exists to stop creeping back.
+
+**A ratchet is a measurement, not a budget.** Set it exact, every time.
+
+**SD10 — "one rule, one home" was applied to ONE tool; three more have the same
+defect.** Reported by `concise/03` and deliberately NOT absorbed into its run.
+`FederalAidPolicyChatTool`, `CollegeListChatTool` and `MoneyProfileChatTool`
+each carry behavioural rules duplicated between their tool DESCRIPTION and the
+coach prompt, unguarded. That is three more slices of the same shape. **A /chart
+decision, not a run's to widen** — recorded here, to be put to Ian rather than
+decided inside a ship run.
+
+_Also declined by that run, correctly, as a clean follow-up:_ four appended
+sentences give the figure-status paragraph a second subject. Fixing it needs a
+new `CoachParagraph` and reordered lines, which a **deletion-only** slice may
+not do.
+
+_One more principle candidate from the same review:_ the legend listed English
+glosses where the payload carries enum tokens — a legend for values the model
+never sees, in the artifact whose only job is to explain the payload. **A legend
+must be derived from, or pinned to, the thing it describes.** Close to, but
+distinct from, SD8's "a guard must not live inside the artifact it guards".
+
+## Principle nominations from this brief
+
+Filed here so they survive the runs' archives. To be taken to `/skill:principle`
+with Ian, not edited into the corpus directly.
+
+**P1 — The artifact under change cannot be its own witness.** _(Strongest
+nomination; two independent instances, two briefs, one day.)_ The thing being
+changed must not be the thing that attests to its correctness, because the
+change and the check then move together and the check cannot fail.
+
+- _Instance A (brief 0009, `concise/03`)_: RFC 191's rule was pinned ONLY by an
+  assertion inside the very test file the slice was rewriting. Rewriting that
+  file **is** the task, so the guard gets edited in good faith by the person
+  most likely to break it. The rule was minutes from silent deletion.
+- _Instance B (brief 0010, RFC 187)_: model-facing copy asserting its own
+  correctness, caught in review.
+- Generalisation credited to the `/chart tests` session, which spotted that two
+  nominations were one principle.
+
+**P2 — A ratchet constant is the measurement exactly, never measurement plus
+headroom**, wherever its documented contract is "raise this consciously". Enough
+slack for one sentence is enough for the regression it exists to prevent.
+(`concise/03`: 57 spare bytes is a free behavioural sentence. My instruction
+asked for headroom AND the conscious-raise contract; they are incompatible.
+SD9.)
+
+**P3 — Verify an RFC's measured numbers against the tree, not by reading the
+RFC.** An RFC is a claim; the tree is the fact. This practice found committed
+conflict markers in `concise/03` within minutes, and corrected ten of this
+brief's own numbers.
+
+**P4 — An error handler's cleanup must be scoped to the operation THIS code
+started.** (RFC 193: `git rebase --abort` fired on any failure, including "an
+operation already in progress", which would have destroyed an operator's own
+paused rebase and reported it as ours.)
+
+**P5 — A reader that classifies text must set `IFS=`.** (RFC 193, reproduced: a
+directory named `␣product` classified as `product` and skipped the gate. RFC 194
+pinned it with a negative control — deleting `IFS=` fails exactly one
+assertion.)
+
+**P6 — A fixture must strip what the production caller must keep.** A test that
+builds its own git repo must clear the hook environment; the real caller must
+not. Getting it backwards makes every assertion pass **against the wrong
+repository** — green, and meaningless. (RFC 194.)
+
+**P7 — A sweep must count the thing, not a spelling of it.** (RFC 196: the
+source sweep counted `a(href`, allowlisting one of two valid anchor forms — the
+second form was exactly the hole the test existed to close.)
+
+**P8 — A legend must be derived from, or pinned to, the thing it describes.**
+(RFC 192: the `assurance` entry hand-typed English glosses where the payload
+carries enum tokens, explaining values the model never sees.) _Possibly a
+special case of P1; let `/principle` decide._

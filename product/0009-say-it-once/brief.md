@@ -613,3 +613,142 @@ _Default:_ **yes — standing.** "Say it once: every surface states a fact, a
 source and a hedge once per block; repetition is a defect, not a safety margin.
 Compression never removes reachability." Marked `standing` so briefs after 0009
 inherit it without re-asking.
+
+---
+
+## LEARN
+
+Written 2026-09-11, the day the brief executed. Seven slices, two infrastructure
+RFCs, ten spec defects, eight principle nominations.
+
+### What we set out to do, and what we got
+
+| Surface                                      |      Before |                    After |
+| -------------------------------------------- | ----------: | -----------------------: |
+| Parent report, 3 schools                     | 1,767 words |         **1,404** (−21%) |
+| Coach payload, per college                   | 4,980 bytes |       **1,864** (−62.6%) |
+| Coach context window                         |           — |  **9,703 bytes smaller** |
+| Links to a college's own filing              |       **0** | **6** on a 3-school page |
+| D1 honesty items reachable in a coach answer |   **48/52** |                **52/52** |
+
+Ian's two examples are both closed: tuition is said once per school, not four
+times; the borrowing block carries one attribution header instead of restating
+the school and the cycle in every sentence.
+
+**The most interesting number is 48/52.** It was measured against the SHIPPING
+prompt, and it means the coach was already dropping four of fifty-two honesty
+items before this brief touched it. A brief about concision found and fixed an
+_attribution_ defect it was not looking for.
+
+### The one that went the other way, said plainly
+
+**`concise/06` made the coach say MORE, not less: +4.1% words.** In a brief
+called "Say it once". What it bought was ORDER and ATTRIBUTION — 48/52 → 52/52,
+and words before the first figure falling 84 → 10 on a borrowing answer. That is
+a real result and it is not the result the brief's title promises. It is
+recorded as such in the RFC, the ledger and STATUS.md rather than averaged away.
+
+And one case got **worse**: a comparison now takes **175 words** to reach the
+first dollar, up from 157, because the landed body states the basis more fully.
+D7's front-load rule is **structurally blocked** for comparisons by RFC 151's
+committed "say those five lines first". An addition-only slice may not reorder a
+landed instruction, so it was named rather than fixed. **Open item: a
+reorder-licensed slice.**
+
+### Ten spec defects, one cause
+
+SD1-SD10 are all the same failure: **a number or an absolute written before it
+was measured, then inherited downstream.** ≤900 words, ≤1,480, ≤1,230, ≤1,170,
+≤4 KB, "mandatory never optional", 5,366 bytes, 1,793 words, 16,383 bytes, 158
+lines — and one acceptance criterion (SD-08's) that was **vacuous** and could
+not have failed on any input.
+
+Every one was caught by a run that **measured instead of complying**. Not one
+was caught by me.
+
+**The standing instruction that should outlive this brief:** _measure at run
+start, set the bar at the real number, and report a miss rather than weakening
+an assertion._ Ten runs did exactly that; each was right to.
+
+### The composition finding
+
+`concise/07` was not wrong when specced. **Two slices composed to remove its
+value**: `concise/01` moved the income-band note into the block `07` wanted to
+collapse (which D5 forbids hiding), and `concise/08` made the sources section
+actionable by putting a live link in it. Neither could have known.
+
+**A spec written all at once cannot see this.** Only re-checking each slice
+against what actually landed can — which is what chart's EXECUTE phase already
+says, and this is the first brief where it decided an outcome.
+
+### Parallel work broke the tooling, and two fixes landed
+
+Two /chart sessions running slices concurrently found three hazards in one
+afternoon, none of them anybody's fault:
+
+1. a doc commit does not take the land lock, so it invalidates another run's
+   validated tree — **fixed, RFC 193**;
+2. a doc commit pays the full 2-4 minute gate it cannot affect — **fixed, RFC
+   194**; a doc commit now takes **13 seconds**, measured;
+3. the hook validates the TREE, not the COMMIT, so another session's unstaged
+   file fails your commit — **OPEN**, with a free interim mitigation (run
+   `bin/format -c` before committing; 8 seconds, read-only).
+
+Run `rfc-187` lost the land race **four times** before this was diagnosed. The
+diagnosis came from the session that was LOSING, not the one causing it.
+
+**The coordination rule, in its corrected form:** _the unit of contention is the
+FILE and the KIND of edit — and for a DELETION, every file the deletion touches,
+whoever is editing them, including your own sibling slices._ A deletion rebased
+across concurrent additions loses a sentence **silently**; an add/add rebase
+cannot. Both sessions first scoped a freeze to a file rather than to a change,
+from opposite ends — which is evidence the rule as stated invited the error.
+
+### The evaluation finding — the most portable thing here
+
+`concise/06`'s 52 mechanical checks scored its gate draft **EQUAL to the
+shipping prompt**, 48/52 both sides. **A run that stopped at the grade would
+have reported "no loss".**
+
+Reading the eighteen raw answers found **two real losses no check named**:
+per-figure attribution had collapsed into a blanket publisher list, and the
+at-home assumption was dropped from an answer that named the zero. Two new
+guards were written, and the re-run scored **52/52**.
+
+> The checks found nothing. Reading found two. The fixes scored four.
+
+The evidence LANDS rather than sitting in gitignored scratch:
+`research/concise-06-answer-shape-eval.json` — eighteen answers, the question
+set, 52 check names, counting rules, results, and the honest caveats (no API
+key, not the production coach, no tool loop).
+
+### Follow-on work, none of it scheduled
+
+- **SD10** — three more tools (`FederalAidPolicyChatTool`,
+  `CollegeListChatTool`, `MoneyProfileChatTool`) carry the same
+  description/prompt duplication, unguarded. Three slices of `concise/03`'s
+  shape. **A /chart decision.**
+- **The comparison front-load**, above — needs a reorder-licensed slice.
+- **The 1-of-11 tier gap** — the page states a kind-of-number for one figure in
+  eleven. Measured price of closing it: **+55 words, said once**. Belongs to
+  brief 0008's question, not this one.
+- **Link rot** — 5,048 urls to colleges' own PDFs; we hold mirrors and
+  deliberately do not render them. A parent meeting a 404 is undecided.
+- **Hazard 3**, above, and its cheap diagnostic (say _"this file is not in your
+  commit"_).
+- **`concise/07`** — DEFERRED, awaiting confirm.
+- **Eight principle nominations**, filed in `spec.md`, strongest being **"the
+  artifact under change cannot be its own witness"** — two independent
+  instances, two briefs, one day.
+
+### What this says about the skill
+
+Nothing in chart needs changing. Two of its existing rules decided outcomes here
+and both earned their place: _re-check each slice against what actually landed_
+(which deferred `concise/07`), and _a product question that surfaces mid-run
+comes back to the brief_ (which is how `concise/05`'s A/B question and SD10
+reached a decision instead of being absorbed by a run).
+
+The one thing I would add, if evidence keeps accumulating, is a phase-level
+instruction to **re-derive every acceptance number at run start**. Ten defects
+in one brief is enough to suspect it is not a local failure of mine.
