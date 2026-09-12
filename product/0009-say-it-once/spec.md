@@ -479,10 +479,10 @@ the first dollar.
   we are about to delete would hide the wrong thing. Overridable.
 - PREFER concise/04/cite-once-per-block — same reason.
 
-**DEFERRED 2026-09-11 — the other slices ate its value; awaiting Ian's
-confirm.** Recorded here so the board stops showing READY, which invites a
-wasted run. This is a park, not a cancel: remove the `Status:` line to schedule
-it.
+**CANCELLED 2026-09-11 by Ian ("okay. do it"), recorded as decision D16.** The
+ID stays; a cancelled slice is never renumbered or deleted (non-negotiable 7).
+It keeps `Status: DEFERRED` so `slice-board` parks it, and this paragraph is the
+binding record that it will not be scheduled.
 
 Two landed slices closed off most of what this slice was for:
 
@@ -927,3 +927,149 @@ second form was exactly the hole the test existed to close.)
 (RFC 192: the `assurance` entry hand-typed English glosses where the payload
 carries enum tokens, explaining values the model never sees.) _Possibly a
 special case of P1; let `/principle` decide._
+
+---
+
+## Post-gate additions: `concise/09` and `concise/10`
+
+Two slices added 2026-09-11 on Ian's decision, after EXECUTE completed.
+Appended, never edits of committed decisions (non-negotiable 7).
+
+**D16 (Ian, 2026-09-11): `concise/07/quiet-provenance` is CANCELLED.** Recorded
+above beside the slice. The ID is permanent and is never reused.
+
+**D17 (Ian, 2026-09-11): "spec the one-rule-one-home work."**
+
+**D18 (Ian, 2026-09-11): "spec link rot. I'm okay saying something and not
+linking if the link is dead."**
+
+---
+
+## `concise/09/three-more-homes`
+
+**Needs:**
+
+- CONFLICTS concise/10/no-link-to-a-grave — both may mint a coach prompt version
+  from `prompts/coach-system-prompt.md`. An ADD/ADD overlap: a rebase risk, not
+  an order. Neither deletes, so neither needs a window.
+
+**What to build and why.** `concise/03` (RFC 192) gave the cost tool one home
+per rule: its description became a pure schema legend, 46 behaviour rules
+already stated in the prompt were deleted, and 17 moved to the prompt. Net
+context window **9,703 bytes smaller**. Three tools still carry the defect,
+unguarded — RFC 192 D10: `FederalAidPolicyChatTool`, `CollegeListChatTool`,
+`MoneyProfileChatTool`. The model is told the same rule twice in one context
+window, in two wordings, and when someone updates one copy the other drifts
+silently.
+
+**ONE slice, not three — and the measurement says so.** The three `DESCRIPTION`
+constants are **1,682 + 1,881 + 1,115 = 4,678 bytes** total (measured
+2026-09-11, `FederalAidPolicyChatTool.kt:256`, `CollegeListChatTool.kt:545`,
+`MoneyProfileChatTool.kt:295`). That is **a quarter** of the cost tool's 18,580.
+Three RFCs, three gates and three prompt versions for 4.7 KB would cost more
+than the defect. One slice, **one prompt version**, three files.
+
+**Set expectations honestly:** the win here is roughly **a tenth** of
+`concise/03`'s, and the real reason to do it is drift prevention and
+consistency, not bytes. Say that in the RFC rather than implying another 14 KB.
+
+**Foundations.** RFC 192's landed pattern is the whole specification:
+description = schema legend (what each key means, what values it takes);
+behaviour = prompt. `LEGEND_BYTE_CEILING` is the precedent for the assertion
+shape.
+
+**Decided here.** Each tool's `DESCRIPTION` becomes a schema legend. A behaviour
+rule the prompt already states is DELETED. A behaviour rule with no home MOVES
+to the prompt. Per-parameter `description` strings inside the JSON schema are
+legitimate legend content and stay.
+
+**Left to /ship's design.** Whether the three tools share one legend convention
+or keep their own; the new prompt version number (compute it live).
+
+**Acceptance criteria.**
+
+- **A named before/after rule map**, as RFC 192 produced: every rule that exists
+  today still exists somewhere, each mapped to its surviving home. That is
+  gate-1 D1 applied to instructions, and it is the deliverable that proves
+  nothing was lost.
+- **MEASURE AT RUN START. Do not take a byte target from this document.** Ten
+  spec defects in this brief were numbers written before measuring (SD1-SD10).
+  Set every ceiling at the real measured size, **exactly**, with no headroom
+  (SD9, P2).
+- Guards pinned **outside** the artifact being rewritten (P1): assert against
+  the SERVED prompt body, not against a constant in the file under edit.
+- Deletion-only in the prompt; no paragraph opener reworded; the nine
+  byte-frozen sentences untouched.
+- Name the rollback version, and say whether it is a WHOLE or a HALF rollback —
+  RFC 192's is a half, because reverting the prompt without reverting the code
+  leaves the moved rules in neither home.
+- No DDL, no table, no column.
+
+**Reachability / the door.** Invisible to a family by design: the same coach,
+told each rule once. Its effect is fewer competing instructions in one context
+window.
+
+**First-session test.** Identical answers; less duplicated instruction.
+
+---
+
+## `concise/10/no-link-to-a-grave`
+
+**Needs:**
+
+- CONFLICTS concise/09/three-more-homes — see above. Rebase risk only.
+
+**What to build and why.** `concise/08` (RFC 196) made the Family Cost Report
+link to each college's own filing — 5,048 urls, pointing at colleges' own PDFs.
+Some are already dead and more will die. A parent who clicks a citation and
+meets a 404 learns that we do not check what we point at. Ian: _"Let's try and
+not link to 404s."_
+
+**Foundations.** `source_documents` (RFC 170) already stores
+`source_url NOT NULL` **and a nullable `archive_url`** — our mirror, stored and
+**never rendered** today. `CdsSeedLoader` writes the rows. RFC 196's
+`CdsSeedLoaderTest` already walks all 5,048 urls to assert their scheme, so a
+corpus-wide sweep at build time is a pattern that exists and passes.
+
+**Decided here.**
+
+- **Liveness is checked at INGEST, never at render.** A family must never wait
+  on a college's web server, and a report must never be slower because a
+  school's site is down.
+- **The result is RECORDED**, so a dead link is a known fact rather than a
+  surprise at render time.
+- **D18 (Ian):** where the college's own file is dead, **say the citation and do
+  not link it.** The attribution text still appears — a family still learns
+  whose claim it is, in which cycle, from which document — it simply is not
+  clickable. Nothing becomes unreachable (D1); only the anchor goes.
+
+**Left to /ship's design phase.** Where the liveness result is stored (a column,
+a separate table, or a build-time artifact) — **if it needs DDL, present the
+proposed DDL explicitly at the /ship approval gate** (non-negotiable 6, brief
+0001 D10); how often the check re-runs; whether `archive_url` is ever offered,
+and under what words.
+
+**Acceptance criteria.**
+
+- No render-time network call. Assert it.
+- A dead source renders the citation as **text**, not as a link, and the page
+  still states who claimed the figure and in which cycle.
+- **The frozen sentence stays true.** `AssuranceTierCopy`'s
+  `VOLUNTARY_SELF_REPORT` copy says _"We link to the college's own file so you
+  can see it."_ It is byte-frozen and cannot be reworded. So **that sentence
+  must not be said about a figure whose link we have dropped.** Walk the surface
+  and assert it, as RFC 196 did — it is vacuous on the page today and must stay
+  true when a CDS figure reaches it.
+- A checker that cannot reach the network must **not** mark everything dead: an
+  unreachable CHECK is our gap, not the school's silence (RFC 166 §6). Fail
+  closed — no result means keep the link and record that the check did not run,
+  the shape RFC 182 used for its skipped cross-source check.
+- Report real counts: how many of the 5,048 are dead. **Measure; do not
+  estimate.**
+
+**Reachability / the door.** The existing share link, and any coach answer
+citing a Common Data Set figure.
+
+**First-session test.** A parent clicks a citation and reaches the college's
+filing — or, where it is gone, reads the same attribution with nothing to click,
+and is not sent to a dead page.
