@@ -204,6 +204,65 @@
   which is right for the promise as worded — but a parent meeting a 404 is a
   real outcome nobody has decided about.
 
+  concise/03/one-rule-one-home LANDED as RFC 192 (main@dd0f8f01 + 276639d5,
+  2026-09-12) — two homes for one rule made one. The `college_cost_profile` tool
+  DESCRIPTION is now a SCHEMA LEGEND (what each wire key means, what values it
+  takes, every key and token interpolated from its constant) and every
+  BEHAVIOURAL rule left it: 46 deleted because the prompt already said them, 17
+  appended to the prompt as one sentence each. MEASURED, never rounded:
+  DESCRIPTION 18,580 -> 6,845 bytes (-63.2%; 18,386 -> 6,845 and -62.8% against
+  the inventory base, RFC 191 having added 194 bytes in between); prompt 183
+  lines/29,297 bytes -> 196/31,329, so the PROMPT GREW 2,032 bytes while the
+  window got 9,703 BYTES SHORTER — the net is the result, and a reader who sees
+  only "the prompt got longer" has read the wrong number. The rule count is
+  unchanged; the DUPLICATE count fell. THE SPEC'S "<= 4 KB" WAS WITHDRAWN AT THE
+  GATE ON MEASURED EVIDENCE and is NOT a miss: a legend compressed to fit 4,096
+  measured 4,072, i.e. 0.6% headroom — one added key would fail an unrelated
+  change — and it could only be hit by stripping the prose out of the one
+  artifact whose sole reader is a language model. Replaced by a RATCHET at the
+  real size, `LEGEND_BYTE_CEILING = 6845` exactly, with no headroom, because a
+  ceiling whose documented contract is "you must consciously raise this" is the
+  measurement, not a budget (SD6, SD9; Ian: "the bar was mine, written before
+  anyone measured anything. Do not defend it."). THE PROMPT HALF IS 491 BYTES,
+  1.7% — the brief's claim that the money vocabulary written 4x and the loans
+  rule 5x were deletable repetition is WRONG: each repetition carries unique
+  per-paragraph content or is held by a paragraph-scoped assertion, and
+  deletion-only cannot trim a clause. 14 further proven duplicates are listed in
+  the RFC and deliberately LEFT, because deleting the line means deleting a
+  committed guard and this slice was not authorised to trade a test for bytes.
+  THE NEAR-MISS, and the reason the hold mattered: RFC 191 added a grouping rule
+  to the DESCRIPTION hours before this run rebased onto it, the rebase
+  conflicted there, and taking the legend side would have dropped that rule with
+  NO test failing — the only thing holding it was a `description.contains(...)`
+  assertion in the very test file this slice rewrites. Caught at Tier 0 by a
+  reviewer verifying the RFC's numbers against the TREE rather than reading the
+  RFC. Carried forward as the 17th prompt sentence and pinned against the SERVED
+  body (RFC 192 D7). The hold protected `prompts/coach-system-prompt.md`; the
+  collision came through the OTHER file the slice deletes from — a deletion pass
+  must enumerate every file it deletes from, not just the one anyone worried
+  about. ALSO FOUND BY REVIEW: the legend listed ENGLISH GLOSSES where the
+  payload carries `AssuranceTier` tokens, so it was a legend for values the
+  model never sees — fixed by interpolating the enum and pinning the legend TO
+  it (D8). Coach prompt v30; rollback `COACHING_SYSTEM_PROMPT_VERSION=v29`,
+  documented in `service.conf` as a HALF rollback, because the legend is
+  ordinary code and a pin flip alone would leave the 17 moved rules in NEITHER
+  home. New `prompts/README.md` states the two-homes boundary where a prompt
+  author will actually meet it. THE DOOR: invisible to the family by design —
+  the same coach, told each rule once. Gate: the landing `bin/test check`
+  through `bin/pre-commit` passed, exit 0, 3m29s, verified tree d5df238e; the
+  pre-land full `bin/test` ran 3,131 executed, 0 failures, 0 errors, 0 skipped,
+  and `bin/shell-tests` 1,309 assertions, exit 0. No DDL, no table, no column,
+  no hand-written migration; the one seeded row is the generated coach v30
+  prompt seed this slice's own version mint requires. The nine byte-frozen
+  sentences are unchanged and all 18 `CoachParagraph` openers are untouched.
+  OPEN ITEM, and it is a product question not a defect:
+  `FederalAidPolicyChatTool`, `CollegeListChatTool` and `MoneyProfileChatTool`
+  carry the SAME duplication, unguarded by either the ceiling or the legend
+  test. "One rule, one home" was applied to ONE tool; three more have the defect
+  (D10). SECOND OPEN ITEM: four of the appended sentences widen the
+  figure-status paragraph's subject, which wants a new `CoachParagraph` and
+  reordered lines — something a deletion-only slice may not do.
+
 ## The question
 
 Ian, 2026-09-11:
