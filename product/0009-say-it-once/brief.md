@@ -5,7 +5,10 @@
 ## Status
 
 - **Phase:** EXECUTE — `concise/01`, `02`, `04` and `05` LANDED 2026-09-11;
-  `concise/03` HELD on a cross-brief collision
+  `concise/03`, `06` and `08` LANDED 2026-09-12. **One slice is left in this
+  brief** (the quiet-provenance one), and it is held by product judgement
+  pending a fresh decision about what may still collapse on the page the links
+  landed on.
 - **Gate 1 (prioritisation):** **PASSED 2026-09-11 — Ian approved all defaults,
   verbatim: "approve"**. D1-D8 stand as written below. D8 is `standing`.
 - **Gate 2 (spec):** **PASSED 2026-09-11 — "approve"**; D9-D14 in `spec.md`
@@ -262,6 +265,69 @@
   (D10). SECOND OPEN ITEM: four of the appended sentences widen the
   figure-status paragraph's subject, which wants a new `CoachParagraph` and
   reordered lines — something a deletion-only slice may not do.
+
+  concise/06/the-coach-answer-shape LANDED as RFC 198 (main@0acd6efd + 86f4ea76,
+  2026-09-12) — a money answer now has a SHAPE (gate-1 D7). One new coach-prompt
+  paragraph, ten sentences, nothing reworded and no opener touched: lead with
+  the number (the first sentence carries a figure, whose it is and what it
+  covers); three or more figures of the same kind on the same basis go in a
+  table, one row each, within the three-column phone limit already in the
+  prompt; the unit is said once in the column header; a caution is said once
+  where it changes the decision rather than beside every figure. FOUR GUARDS
+  ride with the four rules, and they are the reason an ADDITION-only slice could
+  do this at all: the `comparison_basis` five sentences STILL come first
+  (RFC 151) and the living-arrangement split STILL leads (RFC 152) — this slice
+  may add an ordering rule, never reorder a committed one; "once per answer" is
+  NEVER licence to leave out the sentence beside a figure with no amount, the
+  tier sentence, OUR at-home $0 (RFC 166 §7) or the residency basis (gate-1 D1);
+  and it is never licence to move a caution AWAY from its figure — the source
+  and the academic year are said with the figure they cover, and a loan is money
+  paid back with interest every time one is named. ONE PROHIBITION ADDED BY THIS
+  RUN: two figures the prompt forbids adding or comparing never share a table,
+  because a table is a claim that its rows are comparable — the hazard RFC 175
+  D9 names on the page (and that D9 forbade `concise/04` from creating) arriving
+  in chat by a new route. THE EVALUATION IS THE DELIVERABLE HERE, and it lands
+  with the code: eighteen raw coach answers (six real money questions x three
+  prompt bodies) over REAL payloads captured from the DB-backed harness, the 52
+  mechanical checks, the counting rules and the results, committed at
+  `product/0009-say-it-once/research/concise-06-answer-shape-eval.json` rather
+  than left in gitignored `.scratch/`. MEASURED: D1 reachability 48/52 (v30) ->
+  48/52 (the first draft) -> **52/52** (as landed). THE ANSWERS GOT LONGER, NOT
+  SHORTER: 1,799 -> 1,873 words, **+4.1%**, and that is reported rather than
+  hidden — the source-and-year-at-the-figure guard costs words, and the trade
+  made was +4.1% words for +4 reachable D1 items. Words before the first figure:
+  single school 9 -> 5, borrowing answer 84 -> 10, but the COMPARISON case went
+  157 -> 175, i.e. WORSE: D7's front-load rule is satisfied for single-school
+  answers and STRUCTURALLY BLOCKED for comparisons by RFC 151's committed "say
+  those five lines first", and a slice licensed only to ADD cannot fix it.
+  Tables 0 -> 4, none mixing two academic years or two publishers. THE FINDING
+  TO CARRY FORWARD: the mechanical checks scored the first draft EQUAL to v30
+  (48/52 both) and a run that stopped there would have reported "no loss" —
+  reading the raw answers found two real losses no check named (attribution
+  collapsed into a blanket publisher list, and the at-home assumption dropped
+  from an answer that named the zero), the two guards written against them are
+  sentences 4 and 10, and re-running scored 52/52. The checks found nothing;
+  reading found two; the fixes scored four. Review (one adversarial reviewer,
+  verifying every number against the tree) raised four BLOCKING findings and all
+  four were fixed before landing: the RFC pointed at an archive path that did
+  not exist and was gitignored, one result row was false because the counting
+  rule was unstated, the new rules de facto reordered three landed instructions,
+  and the attribution collapse above. Coach prompt v31 (196 lines/31,329 bytes
+  -> 206/33,317); rollback `COACHING_SYSTEM_PROMPT_VERSION=v30`, a WHOLE
+  rollback — unlike RFC 192's — because this slice changes no code. Nothing went
+  into the `college_cost_profile` legend (RFC 192; `LEGEND_BYTE_CEILING = 6845`
+  exact, no headroom). Gate: `nix develop -c bin/test` 3,146 executed, 0
+  failures, 0 errors, 0 skipped, plus the landing `bin/test check` through
+  `bin/pre-commit`, exit 0, verified tree 2d799042. No DDL, no table, no column,
+  no hand-written migration; the one generated seed is this run's own v31 prompt
+  row. The nine byte-frozen sentences are unchanged, all 19 `CoachParagraph`
+  openers are untouched, and prompt line 61 — the known-wrong score-ranges line
+  owned by brief 0010's `test/04` — was left alone. OPEN ITEMS: the comparison
+  case needs a slice licensed to REORDER; the +4.1% may be partly winnable back;
+  the model put the unit in a bold caption rather than a column header; the
+  table prohibition was never exercised by the evaluation (an untestable case is
+  not an impossible one); one unlicensed derived difference (off-campus vs
+  at-home) appeared once.
 
 ## The question
 
