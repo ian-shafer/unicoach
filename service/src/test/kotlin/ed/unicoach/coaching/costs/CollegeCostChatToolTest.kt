@@ -284,7 +284,7 @@ class CollegeCostChatToolTest {
   }
 
   @Test
-  fun `the definition carries the name, the schema, and the ethos contract`() {
+  fun `the definition carries the name, the schema, and the legend's anchors`() {
     assertEquals("college_cost_profile", tool.name)
     assertEquals("college_cost_profile", tool.definition["name"]!!.jsonPrimitive.content)
     val description = tool.definition["description"]!!.jsonPrimitive.content
@@ -303,37 +303,22 @@ class CollegeCostChatToolTest {
       )
     }
     assertFalse(description.contains("College Scorecard"), "the hand-typed attribution is gone: [$description]")
-    assertTrue(description.contains("never estimate"), "the no-invented-numbers rule must ride the description")
-    assertTrue(description.contains("never re-raise"), "the decline etiquette must ride the description")
     assertTrue(description.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
     assertTrue(
-      description.contains("money_profile.residency_status is the authority on whether to raise residency"),
-      "residency's decline authority must ride the description exactly as income's does (RFC 145)",
-    )
-    // Positionally, not by indexOf: `income_band` also occurs inside
-    // `income_band_label` earlier in the description, so the order has to be
-    // read off the sentence that states it.
-    assertTrue(
-      description.contains("${PrecisionOffer.RESIDENCY.field} sorts first"),
-      "the description must state the offer order it renders: residency first",
+      description.contains("money_profile.residency_status") &&
+        description.contains("the authority on whether to raise residency, income and the living plan"),
+      "residency's decline authority must ride the legend exactly as income's does (RFC 145)",
     )
     assertTrue(
       description.contains("income_band_label"),
       "the model must be told the band's dollar range rides the result (RFC 142)",
     )
     assertTrue(description.contains("Read-only"))
-    // RFC 191: a tier is a property of the SET of figures on it, so the coach is
-    // told to say each distinct sentence once for that set. RFC 189 said this
-    // for the default group only, which left an off-default tier shared by three
-    // fields as three recitations of the same sentence.
-    assertTrue(
-      description.contains("Say each distinct tier sentence ONCE for the SET of figures on it"),
-      "the grouping rule must ride the description: [$description]",
-    )
-    assertTrue(
-      description.contains("never once per figure"),
-      "and it must say plainly what it replaces: [$description]",
-    )
+    // RFC 191's grouping rule -- each distinct tier sentence said ONCE for the
+    // SET of figures on it, never once per figure -- is BEHAVIOUR, so RFC 192
+    // moved it to the coach prompt with the rest of them. It is asserted against
+    // the SERVED prompt body in SystemPromptCatalogTest, which is the stronger
+    // pin: it says the rule reaches the model, not that a constant mentions it.
 
     val properties =
       tool.definition["input_schema"]!!
@@ -3381,56 +3366,26 @@ class CollegeCostChatToolTest {
         description.contains(LivingArrangement.OFF_CAMPUS.value),
       "the three arrangements must be named",
     )
-    assertTrue(
-      description.contains("never add up what is there and call it the total"),
-      "a missing total is a rule, not an invitation to improvise one",
-    )
     // Gate-2 D17 (RFC 166 §7) reversed this paragraph: the at-home line is a
-    // labelled `$0` now, and the description's whole job here is to say WHOSE
-    // zero it is -- ours, in one canonical sentence nobody re-words.
+    // labelled `$0` now, and the legend's whole job here is to name the key and
+    // say WHOSE zero it is. The sentence a coach speaks about it is the coach
+    // prompt's, not the tool's (RFC 192).
     assertTrue(
-      description.contains(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName) &&
-        description.contains(AT_HOME_ASSUMPTION_STATEMENT),
-      "the at-home zero is stated in the domain's own words, never re-worded here",
-    )
-    assertTrue(
-      description.contains("never say this school reported a zero and never say it failed to report the figure"),
-      "no publisher collects the figure, so neither claim about the school is available",
+      description.contains(CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName),
+      "the at-home zero's own key must be named in the legend",
     )
     assertTrue(
       description.contains(CollegeCostChatTool.ASSUMED_BY_UNICOACH_KEY),
       "and the key that names our own amounts on the wire must be described",
     )
     assertTrue(
-      description.contains("never compare it with an arrangement total"),
-      "RFC 149 D-F rule 1: COSTT4_A is not the component sum",
-    )
-    assertTrue(
-      description.contains("never subtract ${CostField.NET_PRICE.wireName} from tuition"),
-      "RFC 149 D-F rule 2: aid applies to the blend, never to a component",
-    )
-    assertTrue(
-      description.contains(CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY) &&
-        description.contains("has no residence halls"),
-      "the no-dorms answer must be readable as one",
+      description.contains(CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY),
+      "the on-campus housing flag must be readable as one",
     )
     // RFC 152's chosen-arrangement block, in the same description.
     assertTrue(
       description.contains(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY),
       "the chosen-arrangement key must be described",
-    )
-    assertTrue(
-      description.contains("Lead with it, name it in the student's own words"),
-      "a resolved plan is what the coach LEADS with, in the student's words",
-    )
-    assertTrue(
-      description.contains("never assume living at home for a school silently"),
-      "with_family is never inferred by us (D2a)",
-    )
-    assertTrue(
-      description.contains("never quote a different arrangement in its place") &&
-        description.contains("never carry a neighbour's figure across"),
-      "a school not priced for the plan gets its reason, never a substitute",
     )
     // Every shape is named by its CODE, never by which sibling keys are absent
     // (RFC 152): the coach is told to read [CollegeCostChatTool.PRICING_KEY],
@@ -3444,8 +3399,7 @@ class CollegeCostChatToolTest {
     )
     assertTrue(
       NoTotalReason.entries.all { description.contains("\"${it.value}\"") } &&
-        description.contains("are OUR gaps, so never say this school published no price") &&
-        description.contains("never add up what is there and call it the total"),
+        description.contains("OUR gaps"),
       "and the no-total case says whose gap it is, so our own open question never blames a school's price list",
     )
     // EXHAUSTIVE over both enums the description enumerates, mirroring the
@@ -3462,19 +3416,38 @@ class CollegeCostChatToolTest {
       ResidencyTierBasis.entries.all { description.contains("\"${it.value}\"") },
       "every residency-tier basis the payload can emit must be named in the description: [$description]",
     )
+    // The same sweep over the four vocabularies the legend enumerates by hand.
+    // A legend that lists three of four values teaches the model that the fourth
+    // cannot occur, and a member added to any of these enums would otherwise
+    // reach the payload with the legend still describing the old set.
+    assertTrue(
+      BlendedFigureApplicability.entries.all { description.contains("\"${it.value}\"") },
+      "every blended-figure applicability the payload can emit must be named in the description: [$description]",
+    )
+    assertTrue(
+      AssuranceTier.entries.all { description.contains("\"${it.value}\"") },
+      "every assurance tier the payload can carry must be named in the description: [$description]",
+    )
+    assertTrue(
+      LivingPlanSource.entries.all { description.contains("\"${it.value}\"") },
+      "every living-plan source the payload can emit must be named in the description: [$description]",
+    )
+    assertTrue(
+      LivingArrangement.entries.all { description.contains("\"${it.value}\"") },
+      "every way of living the payload prices must be named in the description: [$description]",
+    )
+    assertTrue(
+      FigureGroup.entries.all { description.contains(it.wireName) },
+      "every figure group that dates figures must be named in the description: [$description]",
+    )
     assertTrue(
       description.contains("The other ways of living stay in ${CollegeCostChatTool.BREAKDOWN_KEY} and stay true"),
-      "the breakdown is never filtered (D2): a what-if stays answerable from the same result",
+      "the breakdown is never filtered (D2): every other arrangement is still in the payload",
     )
     assertTrue(
-      description.contains("never add figures from the two different years together"),
-      "RFC 149 D-F rule 3, said to the model as well as enforced in the types",
-    )
-    assertTrue(
-      description.contains("quote a number with the year of the key that lists it") &&
-        description.contains(CollegeCostChatTool.ACADEMIC_YEAR_KEY) &&
+      description.contains(CollegeCostChatTool.ACADEMIC_YEAR_KEY) &&
         description.contains(CollegeCostChatTool.DATED_FIGURES_KEY),
-      "each vintage key names the figures it dates, and the description must say how to read that",
+      "each vintage key names the figures it dates, and the legend must name both keys",
     )
     assertTrue(
       description.contains("\"${CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY}\": true"),
@@ -3485,8 +3458,7 @@ class CollegeCostChatToolTest {
     // DOES tell them apart must be named, or the coach reads the narrower case
     // as the wider one.
     assertTrue(
-      description.contains(CollegeCostChatTool.HELD_ACADEMIC_YEAR_KEY) &&
-        description.contains("never carry that figure into a total"),
+      description.contains(CollegeCostChatTool.HELD_ACADEMIC_YEAR_KEY),
       "the held year must be named as a key to read, not left inside a sentence: [$description]",
     )
     // RFC 189: the two new keys, and the resolution rule the whole compression
@@ -3499,19 +3471,23 @@ class CollegeCostChatToolTest {
     )
     assertTrue(
       description.contains(CollegeCostChatTool.TUITION_FIELD_IN_TOTALS_KEY) &&
-        description.contains("NAMES the top-level key"),
+        description.contains("NAMES the top-level tuition key"),
       "the tuition figure is now named rather than repeated, so the description must say how to read it",
     )
     // ...and the two field classes the default must never be read onto (F2).
+    // The legend states this as the key's own entry now (RFC 192): the same two
+    // claims, read off the line that names the key rather than off a sentence
+    // repeating the key's name mid-prose.
     assertTrue(
-      description.contains("${CollegeCostChatTool.ASSUMED_BY_UNICOACH_KEY} is OURS") &&
+      description.contains("${CollegeCostChatTool.ASSUMED_BY_UNICOACH_KEY} - keys whose amount is OURS") &&
         description.contains("on no publisher's tier"),
       "our own at-home line must never be resolved to the publisher's default: [$description]",
     )
-    assertTrue(
-      description.contains("has no number here to resolve at all"),
-      "a field in data_availability has no figure to put a tier on: [$description]",
-    )
+    // The rule that a field with no number has no tier to resolve is BEHAVIOUR,
+    // so RFC 192 left it in its one home: the coach prompt sentence beginning
+    // "A figure the result does not carry has no source and no kind of number
+    // either", pinned by SystemPromptCatalogTest's [the rules that left the cost
+    // tool description are stated in the served prompt].
   }
 
   // ---------------------------------------------------------------------------
@@ -4475,25 +4451,98 @@ class CollegeCostChatToolTest {
       "the model must be told when the object rides: a comparison, never a one-school answer",
     )
     assertTrue(
-      description.contains("above the table"),
-      "the basis is said as ordinary copy above the table, never as a footnote under it",
-    )
-    assertTrue(
-      description.contains("never build a column from two different bases"),
-      "one residency and one way of living per column - the contract this slice exists for",
-    )
-    assertTrue(
-      description.contains("three columns"),
-      "RFC 124's cap, restated where the comparison is actually rendered",
-    )
-    assertTrue(
-      description.contains("leave that cell blank and label it as not reported"),
-      "a missing part is a labelled blank, never a zero and never a neighbour's figure",
-    )
-    assertTrue(
       description.contains(CollegeCostChatTool.STATEMENT_KEY) && description.contains(CollegeCostChatTool.BASIS_KEY),
       "each fact carries a code and the sentence to say, and the model must be told to say the sentence",
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // The legend itself (RFC 192): its size, and the rules it must NOT carry
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the tool description stays within its legend byte ceiling`() {
+    // The PUBLISHED description, exactly as every other assertion in this file
+    // reads it. Budgeting the constant instead would leave the budget measuring
+    // a string the model is never sent, which is the one thing a budget must not
+    // do.
+    val bytes =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+        .toByteArray()
+        .size
+
+    assertTrue(
+      bytes <= LEGEND_BYTE_CEILING,
+      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
+    )
+  }
+
+  @Test
+  fun `the description is a legend, not a rulebook`() {
+    val description =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+
+    // Each of these was in the DESCRIPTION before RFC 192 and is now stated
+    // ONCE, in the coach system prompt. A phrase reappearing here means the
+    // second home is being rebuilt: the model would be told the same rule twice
+    // in one context window, and the two copies would drift.
+    //
+    // BE HONEST ABOUT WHAT THIS LIST IS: a tripwire on known regressions, not
+    // the guard. It matches PHRASINGS, so a behavioural rule written in new words
+    // walks straight past it. The guard that actually bites is
+    // [LEGEND_BYTE_CEILING] — behaviour is what made the old description 18,580
+    // bytes, and prose cannot be added to a full budget without someone
+    // consciously raising the number. This list's job is narrower and still worth
+    // it: it names the exact sentences that have already been here once, and one
+    // of them (RFC 191's) was re-added to this constant and nearly shipped twice.
+    listOf(
+      "never estimate",
+      "never re-raise",
+      "say that sentence rather than writing your own",
+      "never add up what is there and call it the total",
+      "never subtract",
+      "Lead with it",
+      // RFC 191's grouping rule, the one phrase here with a proven history of
+      // coming back: it was added to the DESCRIPTION hours before RFC 192
+      // rebased onto it, and the rebase nearly dropped it (RFC 192 D7). It now
+      // lives in the prompt, and re-adding it here must fail.
+      "ONCE for the SET",
+      "never once per figure",
+    ).forEach { behaviour ->
+      assertFalse(
+        description.contains(behaviour),
+        "the legend says what a key MEANS, never what to say to the family: [$behaviour]",
+      )
+    }
+  }
+
+  private companion object {
+    /**
+     * The byte budget for the rendered legend (RFC 192 D1), MEASURED here by
+     * setting this constant to 0 and reading the failure.
+     *
+     * `CollegeCostChatTool.DESCRIPTION` was 18,580 bytes on this branch's base
+     * `main@d2fc8bdf`, when it was half schema legend and half a second copy of
+     * the coach prompt's behavioural rules. (The RFC's inventory measured 18,386
+     * on `main@493dd34f`; RFC 191's tier-grouping sentence, 194 bytes, landed on
+     * the description in between.)
+     *
+     * The contract is `CostReportPageTest.WORD_CEILING`'s: the number is what
+     * the artifact really costs today, not a target, so adding a key means
+     * consciously RAISING it -- and asking the same question that one asks, is
+     * this key worth its bytes? What it refuses is the silent regrowth: a
+     * behavioural paragraph appended here because an append is the safe edit.
+     *
+     * It is the measurement ITSELF, never a rounded one: every byte of headroom
+     * is a sentence that can be appended with nobody raising the number, which
+     * is the one edit this budget exists to make visible. The legend is built
+     * from compile-time constants alone, so an exact ratchet cannot flake.
+     */
+    const val LEGEND_BYTE_CEILING = 6845
   }
 }
 

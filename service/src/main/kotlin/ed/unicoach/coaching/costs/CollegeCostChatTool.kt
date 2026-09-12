@@ -3,7 +3,6 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.MeritAidWire
-import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.canonical.FigureGapOwner
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
@@ -164,7 +163,7 @@ class CollegeCostChatTool(
   ): JsonObject =
     buildJsonObject {
       put(BASIS_KEY, scope)
-      put("status", answer.status.value)
+      put(STATUS_KEY, answer.status.value)
       // The state rides on the answered case and nowhere else, and EXHAUSTIVELY
       // so: a case added to [ComparedResidency] must fail to compile here rather
       // than silently ship without the state it carries.
@@ -182,7 +181,7 @@ class CollegeCostChatTool(
       // [BlendedFigureBasis.namedPerCollege]), so the renderer never re-derives
       // the condition -- absent, never empty, like every other list here.
       if (namedPerCollege.isNotEmpty()) {
-        putJsonArray("by_college") { namedPerCollege.forEach { add(objectOfEntry(it)) } }
+        putJsonArray(BY_COLLEGE_KEY) { namedPerCollege.forEach { add(objectOfEntry(it)) } }
       }
     }
 
@@ -805,7 +804,7 @@ class CollegeCostChatTool(
     buildJsonObject {
       val note = exception.note
       put("field", note.field.wireName)
-      put("status", note.status.value)
+      put(STATUS_KEY, note.status.value)
       // ABSENT rather than empty where the note has no status sentence -- a
       // shown, plainly reported figure (RFC 179 D6). Absence has ONE
       // representation on this payload, and an empty string would be a second.
@@ -1408,6 +1407,16 @@ class CollegeCostChatTool(
     /** The per-school plans inside the comparison basis: emitted only when the schools are not all on one plan. */
     const val CHOSEN_BY_COLLEGE_KEY = "chosen_by_college"
 
+    /**
+     * The per-school entries inside one basis fact (RFC 189 D2) -- present only
+     * where a school is not fully described by the [STATEMENT_KEY] above it.
+     *
+     * A constant rather than a literal, like every other key the DESCRIPTION
+     * quotes back to the model (see [ARRANGEMENT_KEY]): a rename must move the
+     * payload and the prompt together.
+     */
+    const val BY_COLLEGE_KEY = "by_college"
+
     /** The IPEDS housing answer's own key -- emitted whenever the flag is known, true or false (RFC 149 D-B). */
     const val OFFERS_ON_CAMPUS_HOUSING_KEY = "offers_on_campus_housing"
 
@@ -1691,6 +1700,16 @@ class CollegeCostChatTool(
     const val FIGURE_STATUSES_KEY = "figure_statuses"
 
     /**
+     * WHY a figure carries no number ([FigureStatus]) -- on a
+     * [FIGURE_STATUSES_KEY] entry and on a basis fact.
+     *
+     * A constant rather than a literal, like every other key the DESCRIPTION
+     * quotes back to the model (see [ARRANGEMENT_KEY]): a rename must move the
+     * payload and the prompt together.
+     */
+    const val STATUS_KEY = "status"
+
+    /**
      * The (tier, publisher) pair most of this college's figures are on, said
      * ONCE per college (RFC 189 D1) -- the default a [FIGURE_STATUSES_KEY] entry
      * with no pair of its own resolves to.
@@ -1847,243 +1866,128 @@ class CollegeCostChatTool(
         "${MoneyProfileChatTool.TOOL_NAME}), every school they have not decided separately about can lead " +
         "with that one price picture instead of three."
 
-    // The ethos contract rides the tool description (RFC 135): real numbers
-    // with a named source, the basis always labeled, never re-raise a decline.
+    // The legend is the tool's whole job (RFC 192): one entry per wire key, what
+    // it means, and what values it takes, in payload order. Every behavioural
+    // rule -- what to SAY to the family -- lives in the coach system prompt, and
+    // an entry here says only how to READ a key.
     // Not `const`: the example band range is rendered from IncomeBand.bracket,
     // the one home for that copy (RFC 142), so the description can never quote
     // a range the results themselves no longer carry.
     val DESCRIPTION =
-      "Read the real cost facts for the colleges on the student's list: sticker cost, tuition, " +
-        "the net price their family would actually pay, median debt and median earnings. " +
-        "Every result names the publishers its own figures came from in \"$SOURCE_KEY\" - attribute figures " +
-        "to the source this payload names, never to one you assume, and when a field appears in " +
-        "$DATA_AVAILABILITY_KEY there is no number for it in this result: " +
-        "say so plainly, never estimate. That happens for one of two reasons, and they are not the same fact - " +
-        "either the college does not report the field, or it is a figure that does not describe this family and " +
-        "was withheld, which a $WITHHELD_FIGURES_KEY entry names and explains. Never say a school reported " +
-        "nothing when the entry is ours. " +
-        "$FIGURE_PROVENANCE_KEY says what KIND of number this college's figures are and who published them, " +
-        "once for the whole college: its $ASSURANCE_KEY, the $ASSURANCE_STATEMENT_KEY to say that in, and the " +
-        "$FIGURE_SOURCE_KEY that published them. It is the DEFAULT for every figure this college's own " +
-        "publishers reported. " +
-        "$FIGURE_STATUSES_KEY then carries an entry only for a field that has something of its OWN to say - a " +
-        "status sentence, a year we hold the figure for, or a different kind of number or publisher - so a " +
-        "field that CARRIES A NUMBER and has no entry there is shown and plainly reported on the default " +
-        "above. Two kinds of field are NOT on that default and you must never put them there. A line named " +
-        "by $ASSUMED_BY_UNICOACH_KEY is OURS, not a figure any publisher reported: it is on no publisher's " +
-        "tier and has no $FIGURE_SOURCE_KEY at all, so say it as our own assumption and never attribute it to " +
-        "the publisher $FIGURE_PROVENANCE_KEY names. A field listed in $DATA_AVAILABILITY_KEY has no number " +
-        "here to resolve at all - say there is no figure, and never read a tier or a publisher onto it. " +
-        "An entry carries a " +
-        "provenance key only where it DIFFERS from the default, so resolve each of the two facts on its own, " +
-        "the same way every time: a figure's $ASSURANCE_KEY is its own entry's when the entry has one and " +
-        "$FIGURE_PROVENANCE_KEY's otherwise, and its $FIGURE_SOURCE_KEY is its own entry's when the entry has " +
-        "one and $FIGURE_PROVENANCE_KEY's otherwise. $ASSURANCE_KEY and $ASSURANCE_STATEMENT_KEY always " +
-        "travel together - never one without the other. " +
-        "An entry says WHY a field has no number, carrying a status and " +
-        "the $STATEMENT_KEY to say it in - say that sentence rather than writing your own. " +
-        "\"${FigureStatus.NOT_REPORTED_BY_INSTITUTION.value}\" and \"${FigureStatus.NOT_APPLICABLE.value}\" are " +
-        "the school's own answer - it reported nothing, or the figure does not apply there and the source says " +
-        "so. \"${FigureStatus.SUPPRESSED_BY_PUBLISHER.value}\" is the publisher withholding a figure the school " +
-        "did report, for privacy, and \"${FigureStatus.NOT_COLLECTED_BY_US.value}\" is OURS - we have not " +
-        "collected it yet - so for neither of those may you say the school failed to report it. " +
-        "A \"${FigureStatus.NOT_COLLECTED_BY_US.value}\" entry that ALSO carries $HELD_ACADEMIC_YEAR_KEY is " +
-        "the narrower case: this school DID publish that figure, for THAT academic year, and we hold it - it " +
-        "is simply not the year this school's prices are quoted at here. Say which year we hold it for, read " +
-        "from $HELD_ACADEMIC_YEAR_KEY rather than from the sentence, and never carry that figure into a total " +
-        "beside figures from another year. " +
-        "\"${FigureStatus.IMPUTED_BY_PUBLISHER.value}\" is not a blank at all: the figure IS shown, and it is " +
-        "the publisher's own estimate rather than a number the school reported, so quote it with that said - " +
-        "including when it is a zero. A \"${FigureStatus.REPORTED.value}\" entry that is shown carries no " +
-        "$STATEMENT_KEY at all; a plainly reported figure is shown plainly and you say nothing about its " +
-        "status. " +
-        "$ASSURANCE_KEY is what KIND of number a figure is, which is a different " +
-        "fact from who published it and from whether it is blank: a federal administrative record, a survey " +
-        "the college was required to file and that is edit-checked, or a figure the college published about " +
-        "itself that nobody checks. $ASSURANCE_STATEMENT_KEY is the sentence to say that in - say the tier " +
-        "ONCE for the figures on the default, and name a figure's own tier where its entry carries one, after " +
-        "the $STATEMENT_KEY sentence where there is one. Say each distinct tier sentence ONCE for the SET of " +
-        "figures on it, naming that set, never once per figure - where several entries carry the same tier, " +
-        "that is one sentence covering all of them. Never re-word that sentence, rank the " +
-        "three or turn them into a score. " +
-        "Every college carries $APPLIES_BASIS_KEY, which says which of three " +
-        "states it is in: ${BlendedFigureApplicability.APPLIES.value} means the published price and the price " +
-        "after a financial aid offer are this family's there, ${BlendedFigureApplicability.WITHHELD.value} " +
-        "means they are withheld, and ${BlendedFigureApplicability.BASIS_STATED.value} means we cannot say " +
-        "whose they are - either we have not asked where the family lives, or the data does not record what " +
-        "kind of school it is - so both figures are shown on the in-state basis with that basis said. " +
-        "$APPLIES_KEY rides beside it as a true/false only when the answer is known. " +
-        "Each net_price is an object carrying amount_usd (whole US dollars per " +
-        "academic year) and a basis: your_income_band means it is " +
-        "specific to the student's answered household income band; overall_average means the band is not " +
-        "on file and the figure is the all-family average - say which it is. When a net price is band-specific it " +
-        "also carries income_band_label, the band's dollar range in plain words (e.g. \"${IncomeBand.OVER_110K.bracket}\") - say that " +
-        "range when you name the band aloud, never the income_band code and never a data-source bucket name. " +
-        "A net_price with no amount_usd but a $WITHHELD_REASON_KEY is one WE withheld, never the school's " +
-        "silence: it keeps its basis and its band label, and the statement beside the reason is the one to " +
-        "say. " +
-        "When a college's result carries " +
-        "$PRECISION_OFFER_KEY, it is a list of upgrade invitations for that result, each naming the money-profile field " +
-        "it would fill (${MoneyProfileChatTool.TOOL_NAME} records them) and carrying the sentence you may say. Raise them " +
-        "in the order given: ${PrecisionOffer.RESIDENCY.field} sorts first because it is the cheaper question and the " +
-        "bigger correction - it selects which of the school's published prices applies - while " +
-        "${PrecisionOffer.INCOME_BAND.field} makes " +
-        "the net price family-specific and ${PrecisionOffer.LIVING_PLAN.field} narrows three price pictures to one. " +
-        "money_profile.residency_status is the authority on whether to raise residency, " +
-        "money_profile.income_band_status the authority on whether to raise income, and " +
-        "money_profile.living_plan_status the authority on whether to raise the living plan: " +
-        "declined means the student said no - never re-raise it yourself; answered means the field is already on file. " +
-        "A college result may also carry ${MeritAidWire.KEY}, from that school's own Common Data Set and cited " +
-        "separately from the cost figures: ${MeritAidWire.SHARE_KEY} is a share of ALL full-time freshmen " +
-        "at that school - never a share of the students with no financial need, which no school reports - and " +
-        "${MeritAidWire.AVERAGE_KEY} is what last year's recipients averaged, not an offer to this student, so " +
-        "never subtract it from any price here. Its absence means only that this school does not report it. " +
-        "Published tuition and fees ride one key per residency tier: " +
-        "${CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName}, " +
-        "${CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD.wireName}, and - only at the schools that " +
-        "publish one - ${CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD.wireName}, the price for students " +
-        "living in the school's own district. $RESIDENCY_TIERS_KEY says which tiers this school publishes, as a " +
-        "$BASIS_KEY code with the $STATEMENT_KEY to say it in: " +
-        "\"${ResidencyTierBasis.THREE_TIERS_PUBLISHED.value}\" names all three, " +
-        "\"${ResidencyTierBasis.TWO_TIERS_PUBLISHED.value}\" is the ordinary state pair with no district tier " +
-        "to mention, \"${ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.value}\" means our source " +
-        "never separated a district price from the state price - so the in-state figure is shown exactly as it " +
-        "was published, and you must never call it an in-district price or claim a lower district price exists " +
-        "- \"${ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER.value}\" means a district price and one " +
-        "other tier, and not the full three - and " +
-        "\"${ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.value}\" means one tuition price is all we hold - " +
-        "never that one price applies to everybody, because that one figure can itself be a residency-specific " +
-        "price, and the tuition key beside it says which - and " +
-        "\"${ResidencyTierBasis.NO_PUBLISHED_TUITION.value}\" means we hold NO tuition price for this school " +
-        "at all: there is no tuition key to read and you must never name a tuition figure for it. A " +
-        "district is never asked about: the family's state answer cannot select a district price, so the " +
-        "in-district figure is a labelled tier you may quote and never the tuition line inside a total. " +
-        "${CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD.wireName}, " +
-        "${CostField.FEES_ONLY_OUT_OF_STATE_PER_YEAR_USD.wireName} and " +
-        "${CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD.wireName} are the fees PART of the matching " +
-        "combined figure, not a cost beside it: never add one to a tuition and fees figure or to any " +
-        "total, and never subtract one from the other. " +
-        "A college result may also carry ${AidPolicyWire.KEY}, also from that school's own Common Data Set and " +
-        "cited there: ${AidPolicyWire.NEED_MET_SHARE_KEY} and ${AidPolicyWire.FULLY_MET_SHARE_KEY} are about the " +
-        "freshmen that school gave need-based aid to, never about every freshman and never about this student - " +
-        "say each one the way its label says it. Neither figure means the school meets full need: no school " +
-        "publishes that, so answer 'do they meet full need?' with these two cited figures and their year, never " +
-        "with a yes or a no of your own. ${AidPolicyWire.FORMS_KEY} lists the aid forms that school's Common Data " +
-        "Set says are required of first-year applicants; a form that is not in the list is not listed in that " +
-        "filing, which is NOT the school saying it is not required - ${AidPolicyWire.FORMS_NOTE_KEY} says that in " +
-        "words and you must not contradict it. ${AidPolicyWire.FORMS_NOT_COLLECTED_KEY} is a different thing " +
-        "again: that school's filing answers those forms and WE could not read the answer, so say we could not " +
-        "read it and never that the school does not require them. When the section is absent, " +
-        "${AID_POLICY_AVAILABILITY_KEY} says why. " +
-        "A college result may also carry ${BorrowingWire.KEY}, from the same filing and cited there: what the " +
-        "students who GRADUATED from that school in the year ${BorrowingWire.COHORT_LABEL_KEY} names actually " +
-        "borrowed. Say that cohort out loud - those graduates, in that year, never this year's freshmen and " +
-        "never all its undergraduates - and name the school as the one reporting it, because these are the " +
-        "school's own answers about itself and not an audited record. Attribute the section ONCE, in the " +
-        "sentence ${BorrowingWire.COHORT_LABEL_KEY} carries, not at every figure. " +
-        "Each loan type is a separate figure: " +
-        "keep federal and private apart, never add two loan types together and never present one as a total, " +
-        "and where the school filed no private figure say so rather than leaving federal as the whole story. " +
-        "Every figure here is money owed after graduating, never a price: never subtract any of it from a " +
-        "published price, a net price or a total, and never present it as a cost. It is also a different " +
-        "figure from ${CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName} above, which is a federal-only " +
-        "median over a different cohort with no year - say the two separately, and never add or compare them " +
-        "as though they measured one thing. When the section is absent, $BORROWING_AVAILABILITY_KEY says why, as a " +
-        "$BASIS_KEY code with the $STATEMENT_KEY to say it in. " +
-        "A college result may also carry $BREAKDOWN_KEY, the published price split into the parts a family can " +
-        "actually influence, keyed by where the student would live: " +
-        "${LivingArrangement.ON_CAMPUS.value}, ${LivingArrangement.OFF_CAMPUS.value}, " +
-        "${LivingArrangement.WITH_FAMILY.value}. Each " +
-        "arrangement carries the school's published allowances for that way of living, and $TOTAL_KEY only when " +
-        "every part of it is reported - when there is " +
-        "no $TOTAL_KEY, say the parts and say a part is missing, never add up what is there and call it the total. " +
-        "The tuition and fees figure that applies to this student is NOT repeated inside each arrangement: " +
-        "$BREAKDOWN_KEY carries $TUITION_FIELD_IN_TOTALS_KEY, which NAMES the top-level key of this same " +
-        "college whose amount every $TOTAL_KEY here includes. Read the amount from that named key, and every " +
-        "total is that amount plus the allowances listed beside it. " +
-        "${LivingArrangement.WITH_FAMILY.value} carries a " +
-        "${CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName} line of 0, and that zero is OURS: " +
-        "$AT_HOME_ASSUMPTION_STATEMENT " +
-        "Say that assumption in the same breath as the at-home total. No school and no publisher collects a " +
-        "with-family food-and-housing figure at all, so never say this school reported a zero and never say it " +
-        "failed to report the figure. The arrangement names the line under $ASSUMED_BY_UNICOACH_KEY, which " +
-        "lists every key in that arrangement whose amount is ours rather than the school's - it is why the " +
-        "at-home total is complete. " +
-        "${CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName} is a separate figure - an average blended " +
-        "across all three arrangements, from an earlier year, and at a public school built for students paying " +
-        "in-state tuition, so never compare it with an arrangement total and " +
-        "never present one as the other. ${CostField.NET_PRICE.wireName} is on that same in-state basis at a " +
-        "public school. Never offer either of them to a family from another state as their price: at a public " +
-        "school outside the family's state neither figure is in this result at all, and the arrangement totals in " +
-        "$BREAKDOWN_KEY, built from that school's out-of-state tuition and fees, are the figures that apply to " +
-        "them, so quote those instead. A private school publishes one price, so the question does not arise " +
-        "there. When the state the family lives in is not on file, both figures ARE shown: say what basis they " +
-        "are on and never gate an answer on the question. Aid applies to the whole price and not to any one part of it, so never " +
-        "subtract ${CostField.NET_PRICE.wireName} from tuition or from any of these components, or one from the " +
-        "other. When a college carries \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": false, " +
-        "IPEDS reports that school has no " + // money-attribution-exempt: IPEDS housing flag, not a money figure
-        "residence halls: say so, and do not treat the absent ${LivingArrangement.ON_CAMPUS.value} arrangement as " +
-        "unreported data. If that college nevertheless carries an ${LivingArrangement.ON_CAMPUS.value} " +
-        "arrangement, the school published those figures itself and the two sources disagree: quote the published " +
-        "figures and say the school reports no on-campus housing, never one fact without the other. " +
-        "\"$OFFERS_ON_CAMPUS_HOUSING_KEY\": true means " +
-        "IPEDS reports the school does have on-campus housing, so a " + // money-attribution-exempt: the same flag
-        "missing ${LivingArrangement.ON_CAMPUS.value} arrangement there is unreported cost data rather than the " +
-        "absence of dorms. When the key is absent altogether " +
-        "IPEDS does not say either way - never read a present or " + // money-attribution-exempt: the same flag, absent
-        "missing ${LivingArrangement.ON_CAMPUS.value} arrangement as the answer. " +
-        "A college result may also carry $CHOSEN_ARRANGEMENT_KEY: the one way of living the family has said " +
-        "they plan on at this school. Lead with it, name it in the student's own words from its " +
-        "$ARRANGEMENT_LABEL_KEY. Its $ARRANGEMENT_SOURCE_KEY says where the plan came from: " +
-        "${LivingPlanSource.PER_COLLEGE.value} means the student said it about THIS school; " +
-        "${LivingPlanSource.PROFILE_DEFAULT.value} means it is their usual plan being assumed here, so name the " +
-        "assumption in the same breath - never assume living at home for a school silently - and if they correct " +
-        "you, record it as that school's own plan with ${CollegeListChatTool.TOOL_NAME}. Its $PRICING_KEY says " +
-        "which case this school is in, and you read that code rather than guessing from which keys are there: " +
-        "\"${LivingPlanPricing.PRICED.value}\" carries the $TOTAL_KEY to lead with; " +
-        "\"${LivingPlanPricing.NOT_PRICED_HERE.value}\" carries an $ARRANGEMENT_REASON_KEY and no price, because " +
-        "this school is not priced for that way of living at all: say the reason plainly, never quote a " +
-        "different arrangement in its place, never carry a neighbour's figure across; " +
-        "\"${LivingPlanPricing.NO_TOTAL_HERE.value}\" means this school shows that way of living but no total is " +
-        "settled for it, and its $NO_TOTAL_REASON_KEY says whose gap that is - " +
-        "\"${NoTotalReason.AWAITING_RESIDENCY_ANSWER.value}\", " +
-        "\"${NoTotalReason.TUITION_APPLICABILITY_UNKNOWN.value}\" and " +
-        "\"${NoTotalReason.PART_NOT_COLLECTED_BY_US.value}\" are OUR gaps, so never say this school " +
-        "published no price - the last of those means WE have not collected a part, or hold it only for another " +
-        "academic year, and the school may publish it perfectly well - while " +
-        "\"${NoTotalReason.PART_NOT_PUBLISHED.value}\" is a part this school does not " +
-        "publish - in every one of those cases quote the parts of it in $BREAKDOWN_KEY, say which part is " +
-        "missing, and never add up what is there and call it the total. Its $STATEMENT_KEY says the same case in " +
-        "words, every time. The other ways " +
-        "of living stay in $BREAKDOWN_KEY and stay true - answer a \"what if we lived at home instead\" from them. " +
-        "When the key is absent the family has said nothing about where they will live: show every way of living " +
-        "the school publishes, each named, exactly as before. " +
-        "${FigureGroup.PUBLISHED_PRICE.wireName} and ${FigureGroup.BLENDED_AVERAGE.wireName} each carry an " +
-        "$ACADEMIC_YEAR_KEY and the $DATED_FIGURES_KEY it dates - and the year is that SCHOOL's, so two schools " +
-        "in one answer may carry two different years: " +
-        "quote a number with the year of the key that lists it, never with the other one, and never add figures from " +
-        "the two different years together. A figure named by neither key has no academic year - " +
-        "${CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName} and " +
-        "${CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName} describe cohorts rather than one price year - " +
-        "so say those numbers without a year rather than borrowing one from another figure. " +
-        "When the result carries two or more colleges it also carries $COMPARISON_BASIS_KEY, the assumptions a " +
-        "side-by-side holds constant: who the figures describe, the residency, " +
-        "which residency the blended figures are on ($BLENDED_FIGURE_BASIS_KEY, " +
-        "with $APPLIES_KEY saying whether those two figures are this family's there), the way of living " +
-        "every school here is priced for, the academic years - each one naming under $DATED_COLLEGES_KEY the " +
-        "schools it is true of, by college_id and name, because two schools in one comparison may be served at " +
-        "two different years, so match on college_id and never read a year onto a school it does not name - " +
-        "and what aid means " +
-        "in a net price. Each one carries a $BASIS_KEY code and the $STATEMENT_KEY you may say: say those " +
-        "sentences as ordinary copy above the table, never as a footnote under it, and never build a column " +
-        "from two different bases - one residency and one way of living per column, or say it as two tables. " +
-        "A by_college array appears inside one of those facts only where the schools differ on it or a school " +
-        "has something of its own to say; where it is absent the $STATEMENT_KEY above it is true of every " +
-        "school in the call, so say it once and never narrate a difference between them. " +
-        "Put the tuition and fees line above the estimated living costs and say which block is which. Rows are " +
-        "schools; keep the table to three columns and short cells, or say it as a list. When a school does not " +
-        "report a part, leave that cell blank and label it as not reported: never a zero, never a neighbour's " +
-        "figure, and never a total summed from what happens to be there. " +
+      "Real cost facts for the colleges on the student's list: sticker cost, tuition and fees, the net " +
+        "price their family would actually pay, median debt, median earnings. A legend of the payload's " +
+        "keys follows, in the order they appear.\n" +
+        "$SOURCE_KEY - the publishers this payload's own figures came from.\n" +
+        "$DATA_AVAILABILITY_KEY - fields with no number in this result (the college does not report it, or " +
+        "it is a figure that does not describe this family and was withheld).\n" +
+        "$WITHHELD_FIGURES_KEY - the entry naming and explaining a withheld figure.\n" +
+        "$FIGURE_PROVENANCE_KEY - the college-wide DEFAULT kind and publisher of its figures: " +
+        "$ASSURANCE_KEY, $ASSURANCE_STATEMENT_KEY, $FIGURE_SOURCE_KEY.\n" +
+        "$ASSURANCE_KEY - kind of number: \"${AssuranceTier.ADMINISTRATIVE_RECORD.value}\" (a federal file " +
+        "about students) | \"${AssuranceTier.MANDATORY_SURVEY.value}\" (a compelled, edit-checked filing) | " +
+        "\"${AssuranceTier.VOLUNTARY_SELF_REPORT.value}\" (the college's own unchecked publication).\n" +
+        "$ASSURANCE_STATEMENT_KEY - the sentence for that tier; it always travels with $ASSURANCE_KEY.\n" +
+        "$FIGURE_STATUSES_KEY - per-field entry, present only where a field differs from the default or " +
+        "has no number: $STATUS_KEY, $STATEMENT_KEY, $HELD_ACADEMIC_YEAR_KEY, $ASSURANCE_KEY or " +
+        "$FIGURE_SOURCE_KEY overrides. A figure's $ASSURANCE_KEY is its own entry's when the entry has one " +
+        "and $FIGURE_PROVENANCE_KEY's otherwise; $FIGURE_SOURCE_KEY resolves the same way.\n" +
+        "$STATEMENT_KEY - the sentence to say for that entry.\n" +
+        "$STATUS_KEY - \"${FigureStatus.NOT_REPORTED_BY_INSTITUTION.value}\" (school reported nothing) | " +
+        "\"${FigureStatus.NOT_APPLICABLE.value}\" (does not apply there, source says so) | " +
+        "\"${FigureStatus.SUPPRESSED_BY_PUBLISHER.value}\" (publisher withheld it for privacy) | " +
+        "\"${FigureStatus.NOT_COLLECTED_BY_US.value}\" (OURS, not gathered yet) | " +
+        "\"${FigureStatus.IMPUTED_BY_PUBLISHER.value}\" (figure IS shown, publisher's own estimate) | " +
+        "\"${FigureStatus.REPORTED.value}\" (shown plainly, no $STATEMENT_KEY).\n" +
+        "$HELD_ACADEMIC_YEAR_KEY - on a \"${FigureStatus.NOT_COLLECTED_BY_US.value}\" entry: the year we " +
+        "DO hold that figure for.\n" +
+        "$ASSUMED_BY_UNICOACH_KEY - keys whose amount is OURS: on no publisher's tier, and no " +
+        "$FIGURE_SOURCE_KEY.\n" +
+        "$APPLIES_BASIS_KEY - whether the published price and the price after a financial aid offer are " +
+        "this family's: \"${BlendedFigureApplicability.APPLIES.value}\" (they are) | " +
+        "\"${BlendedFigureApplicability.WITHHELD.value}\" (they are not, and are held back) | " +
+        "\"${BlendedFigureApplicability.BASIS_STATED.value}\" (residency or school control unknown; both " +
+        "shown on the in-state basis).\n" +
+        "$APPLIES_KEY - true/false, only when known.\n" +
+        "${CostField.NET_PRICE.wireName} - amount_usd (whole USD per academic year), $BASIS_KEY " +
+        "(\"your_income_band\" | \"overall_average\"), income_band_label (the band's dollar range in plain " +
+        "words, e.g. \"${IncomeBand.OVER_110K.bracket}\"), $WITHHELD_REASON_KEY (a figure WE withheld; it keeps " +
+        "its basis and label).\n" +
+        "$PRECISION_OFFER_KEY - ordered upgrade invitations, each naming a money-profile field " +
+        "(${MoneyProfileChatTool.TOOL_NAME} records them) and the sentence to say: " +
+        "${PrecisionOffer.RESIDENCY.field}, ${PrecisionOffer.INCOME_BAND.field}, " +
+        "${PrecisionOffer.LIVING_PLAN.field}.\n" +
+        "money_profile.residency_status / income_band_status / living_plan_status - \"declined\" | " +
+        "\"answered\": the authority on whether to raise residency, income and the living plan.\n" +
+        "${MeritAidWire.KEY} - from that school's Common Data Set: ${MeritAidWire.SHARE_KEY} (of ALL " +
+        "full-time freshmen), ${MeritAidWire.AVERAGE_KEY} (last year's recipients). Absent = not " +
+        "reported.\n" +
+        "${CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName} / " +
+        "${CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD.wireName} / " +
+        "${CostField.TUITION_AND_FEES_IN_DISTRICT_PER_YEAR_USD.wireName} - published tuition and fees, one " +
+        "key per residency tier.\n" +
+        "${CostField.FEES_ONLY_IN_STATE_PER_YEAR_USD.wireName} / " +
+        "${CostField.FEES_ONLY_OUT_OF_STATE_PER_YEAR_USD.wireName} / " +
+        "${CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD.wireName} - the fees PART of the matching combined " +
+        "figure, not a cost beside it.\n" +
+        "$RESIDENCY_TIERS_KEY - $BASIS_KEY + $STATEMENT_KEY: " +
+        "\"${ResidencyTierBasis.THREE_TIERS_PUBLISHED.value}\" | " +
+        "\"${ResidencyTierBasis.TWO_TIERS_PUBLISHED.value}\" | " +
+        "\"${ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.value}\" (the in-state figure is " +
+        "shown exactly as published) | \"${ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER.value}\" | " +
+        "\"${ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.value}\" (the one tuition key beside it says which " +
+        "residency that price is for) | \"${ResidencyTierBasis.NO_PUBLISHED_TUITION.value}\" (no tuition " +
+        "key at all).\n" +
+        "${AidPolicyWire.KEY} - from the same Common Data Set: ${AidPolicyWire.NEED_MET_SHARE_KEY} and " +
+        "${AidPolicyWire.FULLY_MET_SHARE_KEY} (both about the freshmen given need-based aid), " +
+        "${AidPolicyWire.FORMS_KEY}, ${AidPolicyWire.FORMS_NOTE_KEY}, " +
+        "${AidPolicyWire.FORMS_NOT_COLLECTED_KEY} (the filing answered; WE could not read it).\n" +
+        "$AID_POLICY_AVAILABILITY_KEY - why the ${AidPolicyWire.KEY} section is absent.\n" +
+        "${BorrowingWire.KEY} - from the same filing: what the students who GRADUATED in the year " +
+        "${BorrowingWire.COHORT_LABEL_KEY} names borrowed, each loan type its own figure.\n" +
+        "$BORROWING_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY: why that section is absent.\n" +
+        "${CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName} - federal-only median, a different cohort, no " +
+        "academic year.\n" +
+        "${CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName} - cohort figure, no academic year.\n" +
+        "$BREAKDOWN_KEY - the published price split by where the student would live: " +
+        "\"${LivingArrangement.ON_CAMPUS.value}\", \"${LivingArrangement.OFF_CAMPUS.value}\", " +
+        "\"${LivingArrangement.WITH_FAMILY.value}\". Each carries the school's allowances, and a $TOTAL_KEY " +
+        "only when every part is reported.\n" +
+        "$TUITION_FIELD_IN_TOTALS_KEY - NAMES the top-level tuition key whose amount every $TOTAL_KEY here " +
+        "already includes; a total is that amount plus the allowances beside it.\n" +
+        "${CostField.HOUSING_AND_FOOD_WITH_FAMILY_PER_YEAR_USD.wireName} - 0 under " +
+        "${LivingArrangement.WITH_FAMILY.value}, and that zero is ours (it is named under " +
+        "$ASSUMED_BY_UNICOACH_KEY); no publisher collects the figure.\n" +
+        "${CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName} - an older average blended across " +
+        "all three arrangements; at a public school, built on in-state tuition. " +
+        "${CostField.NET_PRICE.wireName} is on that same in-state basis, and both are absent for an " +
+        "out-of-state family at a public school.\n" +
+        "$OFFERS_ON_CAMPUS_HOUSING_KEY - \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": true " +
+        "(IPEDS: has halls) | false " + // money-attribution-exempt: IPEDS housing flag, not a money figure
+        "(IPEDS: no residence halls) | absent " + // money-attribution-exempt: the same flag
+        "(IPEDS says neither way). A school flagged " + // money-attribution-exempt: the same flag, absent
+        "false that still carries an ${LivingArrangement.ON_CAMPUS.value} arrangement published those " +
+        "figures itself.\n" +
+        "$CHOSEN_ARRANGEMENT_KEY - the one way of living the family plans at this school: " +
+        "$ARRANGEMENT_LABEL_KEY, $ARRANGEMENT_SOURCE_KEY (\"${LivingPlanSource.PER_COLLEGE.value}\" | " +
+        "\"${LivingPlanSource.PROFILE_DEFAULT.value}\", their usual plan assumed here), $PRICING_KEY, " +
+        "$STATEMENT_KEY. The other ways of living stay in $BREAKDOWN_KEY and stay true; an absent key " +
+        "means the family has said nothing.\n" +
+        "$PRICING_KEY - \"${LivingPlanPricing.PRICED.value}\" (carries $TOTAL_KEY) | " +
+        "\"${LivingPlanPricing.NOT_PRICED_HERE.value}\" (carries $ARRANGEMENT_REASON_KEY, no price) | " +
+        "\"${LivingPlanPricing.NO_TOTAL_HERE.value}\" (carries $NO_TOTAL_REASON_KEY).\n" +
+        "$NO_TOTAL_REASON_KEY - \"${NoTotalReason.AWAITING_RESIDENCY_ANSWER.value}\" | " +
+        "\"${NoTotalReason.TUITION_APPLICABILITY_UNKNOWN.value}\" | " +
+        "\"${NoTotalReason.PART_NOT_COLLECTED_BY_US.value}\" (OUR gaps; we may hold the part only for " +
+        "another academic year) | \"${NoTotalReason.PART_NOT_PUBLISHED.value}\" (the school's gap).\n" +
+        "${FigureGroup.PUBLISHED_PRICE.wireName} / ${FigureGroup.BLENDED_AVERAGE.wireName} - each carries " +
+        "an $ACADEMIC_YEAR_KEY and the $DATED_FIGURES_KEY it dates; the year is that SCHOOL's. A figure " +
+        "named by neither has no academic year.\n" +
+        "$COMPARISON_BASIS_KEY - present with two or more colleges: who the figures describe, the " +
+        "residency, $BLENDED_FIGURE_BASIS_KEY (with $APPLIES_KEY), the way of living, the academic years, " +
+        "and what aid means in a net price. Each carries $BASIS_KEY + $STATEMENT_KEY, and a dated fact " +
+        "names its $DATED_COLLEGES_KEY by college_id and name.\n" +
+        "$BY_COLLEGE_KEY - present inside a fact only where the schools differ or one has its own thing " +
+        "to say; where it is absent the $STATEMENT_KEY above it is true of every school in the call.\n" +
         "Read-only: this tool changes nothing."
   }
 }

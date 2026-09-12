@@ -2324,7 +2324,10 @@ class CoachingServiceTest {
       body.contains("unicoach coaches students applying to US undergraduate study from high school"),
       "and it must say what unicoach DOES coach",
     )
-    assertTrue(body.contains("Never treat the SAT as the default test"), "D13: the SAT is never the default noun")
+    // RFC 192 deleted the duplicate that used to carry this rule at the end of
+    // the graduate-scope paragraph; v29 states it better placed, inside the
+    // testing block, and this literal is that line's wording.
+    assertTrue(body.contains("the SAT is never the default noun"), "D13: the SAT is never the default noun")
     assertTrue(body.contains("never in hours left"), "D15: the coach speaks dates and whole days")
   }
 

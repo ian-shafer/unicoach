@@ -2348,6 +2348,256 @@ class SystemPromptCatalogTest {
     assertEquals(emptyList(), offenders, "a seeded prompt is transcribing a codebook again")
   }
 
+  /**
+   * RFC 192: every behavioural rule that USED to be stated in
+   * `CollegeCostChatTool.DESCRIPTION` as well, asserted in the body the runtime
+   * is SERVED.
+   *
+   * The tool description and this prompt were sent to the model in one context
+   * window and largely said the same things, so the description was rewritten as
+   * a pure key legend and its rules left: deleted where the prompt already said
+   * them, and appended as one sentence to the owning paragraph where it did not.
+   * This test is what makes that safe. `CollegeCostChatToolTest` no longer
+   * asserts any of them, so if a rule were dropped from the prompt too, nothing
+   * else would notice.
+   *
+   * Read against the SERVED body, per paragraph, which is the stronger pin: it
+   * says the rule reaches the model, not that some Kotlin constant mentions it.
+   * About thirteen of these assertions also appear in their own paragraph's test
+   * above, and the overlap is DELIBERATE rather than unnoticed: there the subject
+   * is what that paragraph says, here it is that the migration did not lose a
+   * rule. Deleting the duplicates would make this test a partial list of the
+   * migration, which is the one thing it must not be — a reader checking whether
+   * rule N survived must find rule N here. Covering tests, for anyone tempted to
+   * prune: [the served money paragraph names the cost tool, the offer key and the
+   * glossary terms], [the served living-arrangement paragraph leads with the
+   * split, never a blended total], [the served comparison paragraph keeps one
+   * basis to a column] and [the served borrowing paragraph never presents a debt
+   * figure as a price]. The at-home sentence is the one rule not
+   * repeated here: it is byte-frozen copy and is already pinned against the
+   * shipping constant by
+   * [the served prompt states the in-district tier and the at-home assumption].
+   */
+  @Test
+  fun `the rules that left the cost tool description are stated in the served prompt`() {
+    // The money paragraph: the decline etiquette, the offer order, and the
+    // never-estimate rule the description used to carry beside them. The
+    // residency field is read from the shipping offer rather than retyped.
+    val money = moneyParagraph()
+    assertParagraphStates(money, "never raise that field again yourself", "a decline is never re-raised by the coach")
+    assertParagraphStates(
+      money,
+      "${PrecisionOffer.RESIDENCY.field} offer comes first",
+      "the offer order the payload renders is stated where the coach reads it",
+    )
+    assertParagraphStates(money, "rather than estimating", "a figure a school does not report is never estimated")
+    // ...and the three rules that had NO other home, appended to it by RFC 192.
+    assertParagraphStates(
+      money,
+      "Where a school publishes only one tuition price",
+      "one published price is never a price for everybody",
+    )
+    assertParagraphStates(
+      money,
+      "Where we hold no tuition price for a school at all",
+      "no tuition price means no tuition figure is named for that school",
+    )
+    assertParagraphStates(
+      money,
+      "A fees-only figure is already inside that school's tuition and fees line",
+      "a fees-only figure is a part of the combined figure, never a cost beside it",
+    )
+
+    // The admissions paragraph carries the same never-estimate rule for a field
+    // named in data_availability.
+    assertParagraphStates(
+      admissionsParagraph(),
+      "that school does not report it: say so plainly rather than estimating it",
+      "data_availability is a silence to state, never a number to invent",
+    )
+
+    // The living-arrangement paragraph: the missing total, the at-home zero's
+    // attribution, the blended-average and net-price arithmetic bans, the
+    // no-dorms answer, and the two-vintage rules.
+    val living = livingArrangementParagraph()
+    assertParagraphStates(
+      living,
+      "never add up the parts that are there and call the result the total",
+      "a missing part is said, never summed around",
+    )
+    assertParagraphStates(living, "never say the school reported it", "our own zero is never the school's figure")
+    assertParagraphStates(
+      living,
+      "never present it as one arrangement's total and never compare the two",
+      "the blended cost of attendance is not an arrangement total",
+    )
+    assertParagraphStates(
+      living,
+      "never subtract a net price from tuition",
+      "aid comes off the whole price, never off one part of it",
+    )
+    assertParagraphStates(living, "has no residence halls", "the no-dorms answer is an answer, not missing data")
+    assertParagraphStates(
+      living,
+      "say a number with the year that lists it",
+      "a figure is quoted with the year of the key that lists it",
+    )
+    assertParagraphStates(
+      living,
+      "never add figures from two different years together",
+      "two vintages are never summed",
+    )
+    // ...and the one RFC 192 appended to it. The no-academic-year rule was
+    // appended here first and MOVED to the borrowing paragraph at Tier 1 review,
+    // beside the other rule about the same two figures; it is asserted there.
+    assertParagraphStates(
+      living,
+      "Where a result does not say whether a school has residence halls",
+      "an absent housing flag is not an answer either way",
+    )
+
+    // The living-plan paragraph: lead with the answered plan, never assume the
+    // at-home one, and never substitute a neighbour's arrangement.
+    val plan = livingPlanParagraph()
+    assertParagraphStates(
+      plan,
+      "lead with that one way of living and name it in the student's own words",
+      "a resolved plan is what the coach leads with",
+    )
+    assertParagraphStates(
+      plan,
+      "Living at home is never something you assume quietly",
+      "the at-home plan is never inferred silently",
+    )
+    assertParagraphStates(
+      plan,
+      "never quote a different arrangement in its place",
+      "a school not priced for the plan gets its reason, never a substitute",
+    )
+    assertParagraphStates(
+      plan,
+      "never carry a neighbour's figure across",
+      "a school not priced for the plan gets its reason, never a substitute",
+    )
+
+    // The figure-status paragraph: whose gap a blank is, plus the six rules RFC
+    // 192 appended about reading a figure's tier, publisher and held year.
+    val statuses = paragraphAt(CoachParagraph.FIGURE_STATUS)
+    assertParagraphStates(
+      statuses,
+      "it is our gap, so never tell a family the school failed to report",
+      "our own gap is never spoken as the school's silence",
+    )
+    assertParagraphStates(
+      statuses,
+      "Two things in a cost result never carry a kind of number of the school's own",
+      "a line we assumed and a field with no number are on no publisher's tier",
+    )
+    assertParagraphStates(
+      statuses,
+      "A figure the result does not carry has no source and no kind of number either",
+      "an absent figure gets no publisher and no tier read onto it",
+    )
+    assertParagraphStates(
+      statuses,
+      "Where we hold a figure only for an earlier year",
+      "a held year is said, and that figure is never folded into a total beside another year's",
+    )
+    assertParagraphStates(
+      statuses,
+      "once for the whole school, in the sentence the result gives you",
+      "the kind of number is said once for the school, not beside every figure",
+    )
+    assertParagraphStates(
+      statuses,
+      "Where one figure carries a different kind of number from the rest",
+      "a figure's own tier is said after its status sentence",
+    )
+    assertParagraphStates(
+      statuses,
+      "exactly as the result writes it, and never rank the three kinds",
+      "the tier sentence is frozen copy: never reworded, never ranked, never scored",
+    )
+    // RFC 191's grouping rule, carried forward. It landed in the tool
+    // DESCRIPTION hours before this slice rebased onto it, and this slice is a
+    // DELETION pass over that constant: taking the legend side of the rebase
+    // would have dropped the rule with no test to notice, because the corpus did
+    // not know the sentence was ever meant to be there. It is behaviour, so it
+    // belongs in the prompt with the rest of them.
+    assertParagraphStates(
+      statuses,
+      "once for the SET of figures it covers, naming that set, never once per figure",
+      "RFC 191: one tier sentence covers the SET of figures on that tier, never one recitation per figure",
+    )
+
+    // The comparison paragraph: where the basis sentences go, one basis to a
+    // column, the table cap, the labelled blank -- and the two rules RFC 192
+    // appended about reading a comparison's per-school facts.
+    val comparison = comparisonParagraph()
+    assertParagraphStates(comparison, "above the table", "the basis is ordinary copy above the table, never a footnote")
+    assertParagraphStates(
+      comparison,
+      "Keep one residency and one way of living in a column",
+      "one residency and one way of living per column",
+    )
+    assertParagraphStates(comparison, "three columns", "RFC 124's table cap")
+    assertParagraphStates(
+      comparison,
+      "leave that cell blank and label it as not reported",
+      "a missing part is a labelled blank",
+    )
+    assertParagraphStates(
+      comparison,
+      "match on the school's id and never read a year onto a school it does not name",
+      "a dated fact names the schools it covers, and is matched on the id",
+    )
+    assertParagraphStates(
+      comparison,
+      "say it once and never invent a difference between them",
+      "one basis sentence for every school is said once",
+    )
+
+    // The aid-policy and borrowing paragraphs: the three remaining rules that
+    // had no home but the tool.
+    assertParagraphStates(
+      needAndFormsParagraph(),
+      "say that we could not read it, never that the school does not require",
+      "an answer WE could not read is never the school saying a form is not required",
+    )
+    val borrowing = borrowingParagraph()
+    assertParagraphStates(
+      borrowing,
+      "Name the school and the graduating year once for the borrowing figures",
+      "the borrowing section is attributed once, not at every figure",
+    )
+    assertParagraphStates(
+      borrowing,
+      "Median debt and median earnings carry no academic year",
+      "a cohort figure never borrows another figure's year, and it is said beside the other rule about those two figures",
+    )
+    assertParagraphStates(
+      borrowing,
+      "cover different students: say them separately",
+      "the federal median and the school's own borrowing figures are never added or compared",
+    )
+  }
+
+  /**
+   * One migrated rule, asserted in the paragraph that now owns it.
+   *
+   * The failure carries the literal that went missing AND the body it was looked
+   * for in, on this file's own precedent: this test's whole subject is WHICH
+   * rule did not survive the move, and a message that restates the rule alone
+   * sends the reader back into two files to learn what broke.
+   */
+  private fun assertParagraphStates(
+    paragraph: String,
+    literal: String,
+    why: String,
+  ) {
+    assertTrue(paragraph.contains(literal), "$why -- [$literal] is not in the paragraph: [$paragraph]")
+  }
+
   private fun admissionsParagraph(): String = paragraphAt(CoachParagraph.ADMISSIONS)
 
   /**
