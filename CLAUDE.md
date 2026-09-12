@@ -81,6 +81,25 @@ full hook — that run is the branch's gate, and the same run's `deno fmt --chec
 covers the whole working tree including the RFC markdown — so the **RFC doc**
 commit that follows lands with `--no-verify` against an already-validated tree.
 
+**A `product/**`-only commit skips the test half automatically** (RFC 194). When
+**every staged path** is under `product/**` — the `/chart` layer's briefs,
+specs, research reports and `STATUS.md` — the hook runs `bin/format -c` and
+**not** `bin/test check`. Anything else runs the full gate: one code path in the
+set, a mixed set, an empty index, or a rename that crosses the `product/**`
+boundary. The hook logs which scope it chose, by name, so the two kinds of
+commit are distinguishable afterwards. You do not ask for this and cannot ask
+for it; it is not a flag.
+
+Note that this is a **different claim** from the `--no-verify` RFC-doc commit
+above, and the difference is the point. That one is safe because an earlier run
+**already checked** that content. This one is safe because **`product/**` is not
+a build input at all** — no Gradle source set, resource, migration or script
+reads those files — so the test half cannot change its answer for such a commit,
+now or ever. It is an exemption from running the check, not from having passed
+it. `bin/format -c` still runs, because Markdown IS checked and that gate is the
+only thing that checks it. And because the full gate did not run, such a commit
+records no `ship-verified` marker.
+
 ## Running tests
 
 Do **not** run `./gradlew test` directly — the DB-backed tests will fail with

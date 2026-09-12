@@ -10,6 +10,12 @@ Native validation script run before committing. Runs two gates concurrently:
 the Gradle test suite (bin/test check) and the format/lint check (bin/format -c,
 the repo's single ktlint + deno fmt avenue).
 
+When EVERY staged path is under product/ the test half is skipped and only
+bin/format -c runs: nothing under product/ is a build input, so bin/test check
+cannot change its answer. Anything else -- a mixed set, an empty index, a rename
+crossing the product/ boundary -- runs the full gate. The classification is
+logged to stderr by name.
+
 Options:
   -h: Help
 EOF
@@ -44,20 +50,39 @@ if ! "$PROJECT_ROOT/bin/is-nix"; then
   fatal "pre-commit must run inside the unicoach Nix dev shell. Commit via 'nix develop -c git commit ...' or from a 'nix develop' shell."
 fi
 
-log-info "Running pre-commit checks concurrently..."
+# Classify the staged set BEFORE anything starts, and log which gate this run is
+# (RFC 194). A commit that skipped the test half and one that ran it must be
+# distinguishable from the hook output alone -- the same reason RFC 183 logs its
+# withholding rather than withholding silently.
+DOCS_ONLY=0
+if staged_changes_are_product_docs_only "$PROJECT_ROOT"; then
+  DOCS_ONLY=1
+  log-info "gate scope: product-docs-only -- every staged path is under product/; running bin/format -c only, skipping bin/test check (product/ is not a build input)."
+else
+  log-info "gate scope: full -- running bin/format -c and bin/test check concurrently."
+fi
 
 # Two concurrent gates: the test suite, and the format/lint check. ktlint lives
 # only in bin/format (no Gradle ktlint plugin), so `bin/format -c` is the single
 # Kotlin+Markdown lint gate; `bin/test check` runs the Gradle tests.
-"$PROJECT_ROOT/bin/test" check &
-TEST_PID=$!
+#
+# bin/format -c runs on BOTH paths. It is the only Markdown gate in the repo and
+# costs ~8s, which is why the product-docs exemption skips the test half and not
+# the hook: a blanket --no-verify would take the one check those commits need.
+TEST_STATUS=0
+LINT_STATUS=0
+
+if [ "$DOCS_ONLY" -eq 0 ]; then
+  "$PROJECT_ROOT/bin/test" check &
+  TEST_PID=$!
+fi
 
 "$PROJECT_ROOT/bin/format" -c &
 LINT_PID=$!
 
-TEST_STATUS=0
-LINT_STATUS=0
-wait $TEST_PID || TEST_STATUS=$?
+if [ "$DOCS_ONLY" -eq 0 ]; then
+  wait $TEST_PID || TEST_STATUS=$?
+fi
 wait $LINT_PID || LINT_STATUS=$?
 
 FAILED=0
@@ -101,8 +126,16 @@ fi
 # the commit sha, means an amend or a rebase that preserves content stays
 # verified while any content change does not. Inert for anything that does not
 # ask: the marker lives inside .git and nothing else reads it.
+# NOT recorded on the product-docs-only path. The marker means "the full
+# pre-commit gate passed on this tree"; recording it after skipping the tests
+# would put a lie in the one file that stops unverified code landing, and a
+# marker that can lie is worse than no marker. The failure this accepts is the
+# safe direction: a /ship run whose branch TIP were a product-only commit is
+# refused at land, and one re-commit fixes it.
 SHIP_VERIFIED="$PROJECT_ROOT/.prime/agent/skills/ship/scripts/ship-verified"
-if [ -x "$SHIP_VERIFIED" ]; then
+if [ "$DOCS_ONLY" -eq 1 ]; then
+  log-info "product-docs-only run: not recording a verified tree (the full gate did not run)."
+elif [ -x "$SHIP_VERIFIED" ]; then
   "$SHIP_VERIFIED" record || log-info "warning: could not record verified tree (continuing)"
 fi
 

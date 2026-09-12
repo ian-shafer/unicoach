@@ -8446,4 +8446,232 @@ assert_success "fetch-scorecard -h prints the help to stdout and exits 0, stderr
   test_scorecard_help_exits_zero_on_stdout
 rm -rf "$SCORECARD_OUT" "$SCORECARD_ZIPS" "$SCORECARD_ZIP_OUT" "$FETCHER_LOADER_DIR"
 
+# ── RFC 194: the product-docs-only gate classification (bin/pre-commit) ───────
+# staged_changes_are_product_docs_only is a pure function of ONE repository's
+# index, so every case below drives it over a throwaway repo under mktemp -d: no
+# cluster, no Gradle, no daemons, well under a second for the lot.
+#
+# THIS HARNESS CAN ITSELF RUN INSIDE A GIT HOOK (git commit -> bin/pre-commit ->
+# bin/test check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
+# GIT_INDEX_FILE are exported and OUTRANK `git -C`. Without strip_git_hook_env
+# every case would silently classify THIS repo's index and "pass" for the wrong
+# reason. So the fixture strips, in a subshell, for both the setup git calls and
+# the predicate itself. The production caller must NOT strip: under `git commit`
+# the exported index is exactly the set being committed.
+docs_gate_git() { # <repo> <git args...>
+  local repo="$1"
+  shift
+  (strip_git_hook_env && git -C "$repo" "$@")
+}
+
+docs_gate_classify() { # <repo> -> 0 = product-docs-only, 1 = full gate
+  (strip_git_hook_env && staged_changes_are_product_docs_only "$1")
+}
+
+# A fresh repo with one baseline commit: a doc under product/ and a code file.
+docs_gate_repo() {
+  local repo
+  repo="$(mktemp -d)"
+  (
+    strip_git_hook_env
+    git -C "$repo" init -q -b main
+    git -C "$repo" config user.email "tests@example.com"
+    git -C "$repo" config user.name "scripts-tests"
+    mkdir -p "$repo/product/0001-brief/research" "$repo/bin"
+    printf 'brief\n' > "$repo/product/0001-brief/brief.md"
+    printf 'deep\n' > "$repo/product/0001-brief/research/user-value.md"
+    printf 'code\n' > "$repo/bin/thing"
+    git -C "$repo" add -A
+    git -C "$repo" commit -qm base
+  ) > /dev/null 2>&1
+  printf '%s\n' "$repo"
+}
+
+# Each case: stage something, classify, clean up. The staging is expressed the
+# way a developer would express it (git mv, git rm, git add), so the test drives
+# git's own porcelain rather than a reconstruction of it.
+test_docs_gate_all_docs() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'more\n' >> "$repo/product/0001-brief/brief.md"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -eq 0 ]
+}
+assert_success "staged set entirely under product/ classifies as docs-only" test_docs_gate_all_docs
+
+test_docs_gate_nested_docs() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'more\n' >> "$repo/product/0001-brief/research/user-value.md"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -eq 0 ]
+}
+assert_success "a DEEPLY nested product/ path still classifies as docs-only (case * spans /)" \
+  test_docs_gate_nested_docs
+
+test_docs_gate_all_code() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'more\n' >> "$repo/bin/thing"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a staged set with only code runs the FULL gate" test_docs_gate_all_code
+
+test_docs_gate_mixed() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'more\n' >> "$repo/product/0001-brief/brief.md"
+  printf 'more\n' >> "$repo/bin/thing"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a MIXED staged set (docs + code) runs the FULL gate" test_docs_gate_mixed
+
+# An empty set trivially satisfies "every path is under product/". Fail safe
+# instead: nothing staged is not a docs-only commit.
+test_docs_gate_empty_index() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "an EMPTY staged set runs the FULL gate (no vacuous pass)" test_docs_gate_empty_index
+
+# The two renames are the cases rename detection would misclassify: with it on,
+# --name-only prints only the destination.
+test_docs_gate_rename_out_of_product() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  docs_gate_git "$repo" mv product/0001-brief/brief.md bin/brief.md
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a rename OUT of product/ runs the FULL gate (both sides classified)" \
+  test_docs_gate_rename_out_of_product
+
+test_docs_gate_rename_into_product() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  docs_gate_git "$repo" mv bin/thing product/0001-brief/thing
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a rename INTO product/ runs the FULL gate (the deleted code path counts)" \
+  test_docs_gate_rename_into_product
+
+test_docs_gate_deletion_under_product() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  docs_gate_git "$repo" rm -q product/0001-brief/brief.md
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -eq 0 ]
+}
+assert_success "a DELETION under product/ is still docs-only" test_docs_gate_deletion_under_product
+
+test_docs_gate_deletion_of_code() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  docs_gate_git "$repo" rm -q bin/thing
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a DELETION of a code file runs the FULL gate" test_docs_gate_deletion_of_code
+
+# The INDEX decides, not the working tree: an unstaged doc edit does not make a
+# staged code change docs-only.
+test_docs_gate_reads_the_index_not_the_worktree() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'more\n' >> "$repo/bin/thing"
+  docs_gate_git "$repo" add bin/thing
+  printf 'unstaged\n' >> "$repo/product/0001-brief/brief.md"
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "an UNSTAGED product/ edit does not rescue a staged code file (index decides)" \
+  test_docs_gate_reads_the_index_not_the_worktree
+
+# A regular FILE named `product` is not under product/; it falls to the
+# catch-all reject arm rather than being guessed at.
+test_docs_gate_file_named_product() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'not a directory\n' > "$repo/product-notes"
+  printf 'nor this\n' > "$repo/productx"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a root path merely PREFIXED with product runs the FULL gate" \
+  test_docs_gate_file_named_product
+
+# A pathname containing a newline is ONE path, not two. Read line-wise (the
+# default --name-only output, which would also QUOTE this name), it splits into
+# "product/od" and "d.md" and the second half fails the glob; with -z and
+# `read -r -d ''` it stays one docs path. The wrong answer here happens to be the
+# safe one, which is exactly why it would go unnoticed without an assertion.
+test_docs_gate_newline_in_pathname() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'x\n' > "$repo/product/0001-brief/od"$'\n'"d.md"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -eq 0 ]
+}
+assert_success "a product/ pathname containing a NEWLINE is read as ONE path (-z), still docs-only" \
+  test_docs_gate_newline_in_pathname
+
+# The predicate is a predicate: its answer is its exit status, and it writes
+# nothing to stdout. bin/pre-commit does the logging, on stderr.
+test_docs_gate_is_silent_on_stdout() {
+  local repo out status
+  repo="$(docs_gate_repo)"
+  printf 'more\n' >> "$repo/product/0001-brief/brief.md"
+  docs_gate_git "$repo" add -A
+  out="$(docs_gate_classify "$repo" 2> /dev/null)"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -eq 0 ] && [ -z "$out" ]
+}
+assert_success "the classifier writes nothing to stdout (its answer is the exit status)" \
+  test_docs_gate_is_silent_on_stdout
+
+# bin/pre-commit must log the scope BY NAME on both paths, so a commit that
+# skipped the test half is distinguishable afterwards from the hook output.
+test_pre_commit_logs_both_gate_scopes() {
+  grep -q 'gate scope: product-docs-only' "$PROJECT_ROOT/bin/pre-commit" \
+    && grep -q 'gate scope: full' "$PROJECT_ROOT/bin/pre-commit"
+}
+assert_success "bin/pre-commit names both gate scopes in its logging" test_pre_commit_logs_both_gate_scopes
+
+
 end_tests

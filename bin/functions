@@ -72,6 +72,50 @@ strip_git_hook_env() {
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 }
 
+# Classify the STAGED set of <repo-root>: 0 when every staged path is under
+# product/ (the /chart product layer -- briefs, specs, research, STATUS.md), 1
+# otherwise. bin/pre-commit uses it to skip `bin/test check`, which cannot change
+# its answer for such a commit because nothing under product/ is a build input.
+#
+# Four properties, each load-bearing:
+#
+#  * It reads the INDEX (`git diff --cached`), not the working tree: what will be
+#    committed, not what happens to be lying around.
+#  * `--no-renames` is what makes renames and copies safe. With rename detection
+#    ON, `--name-only` prints only the DESTINATION, so a rename OUT of product/
+#    into bin/ would read as docs-only -- a code file smuggled past the gate by
+#    moving it. Disabling it decomposes every rename into its delete and its add,
+#    so BOTH sides are classified. Deletions are listed already.
+#  * `-z` with `read -r -d ''`, so a pathname containing a newline cannot dodge
+#    the glob (the default output would quote and escape it into something else).
+#  * It FAILS SAFE in every direction. An empty index leaves found=0 -> not
+#    docs-only -> the full gate; an empty set satisfying a universal test is the
+#    classic silent pass. A git failure (unborn HEAD, broken index) produces no
+#    output, which is that same empty case. The `case` has ONE accepting arm and a
+#    catch-all reject, so any path it cannot place -- including a regular FILE
+#    named `product` at the root -- runs the full gate.
+#
+# In a `case` pattern `*` matches `/`, so `product/*` matches nested paths:
+# product/0009-say-it-once/research/x.md is docs-only. That is NOT true of a
+# pathspec glob handed to git, where a single-level pattern would miss nested
+# paths -- the mechanism has to match the matcher it runs through.
+#
+# It deliberately does NOT strip_git_hook_env: under `git commit` the exported
+# GIT_DIR/GIT_INDEX_FILE name the very index being committed, which is exactly
+# the set to classify. A CALLER pointing it at some other repository (a test
+# fixture) must strip them itself.
+staged_changes_are_product_docs_only() {
+  local repo="$1" path found=0
+  while IFS= read -r -d '' path; do
+    found=1
+    case "$path" in
+    product/*) ;;
+    *) return 1 ;;
+    esac
+  done < <(git -C "$repo" diff --cached --name-only -z --no-renames)
+  [ "$found" -eq 1 ]
+}
+
 log-info() {
   echo "$@" >&2
 }
