@@ -8673,5 +8673,76 @@ test_pre_commit_logs_both_gate_scopes() {
 }
 assert_success "bin/pre-commit names both gate scopes in its logging" test_pre_commit_logs_both_gate_scopes
 
+# The five paths RFC 193's review reproduced a real defect on. The SIBLING
+# implementation of the same idea (RFC 193's docs-only base advance) read its
+# paths with `while read -r path` -- no `IFS=` -- so bash stripped leading and
+# trailing IFS whitespace and a directory named " product" (LEADING SPACE) was
+# read as "product", matched the docs test, and skipped the gate: a code path
+# smuggled past the hook by a filename.
+#
+# THIS implementation never had that defect -- `bin/functions:staged_changes_are_
+# product_docs_only` has always read `while IFS= read -r -d '' path` -- so these
+# are a GUARD, not a fix. They exist because the defect is demonstrated rather
+# than hypothetical, and because the character that breaks it is invisible in a
+# diff. Drop the `IFS=` and the first two rows fail.
+test_docs_gate_leading_space_directory() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  mkdir -p "$repo/ product"
+  printf 'code\n' > "$repo/ product/x.kt"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a directory named ' product' (LEADING SPACE) runs the FULL gate (RFC 193's defect)" \
+  test_docs_gate_leading_space_directory
+
+test_docs_gate_trailing_space_directory() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  mkdir -p "$repo/product "
+  printf 'code\n' > "$repo/product /x.kt"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a directory named 'product ' (TRAILING SPACE) runs the FULL gate" \
+  test_docs_gate_trailing_space_directory
+
+test_docs_gate_trailing_space_filename() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  printf 'code\n' > "$repo/x.kt "
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a root file whose name ENDS in a space runs the FULL gate" \
+  test_docs_gate_trailing_space_filename
+
+# The nastiest row: a CODE path whose newline splits it into a half that looks
+# like a product/ path. Read line-wise this stages "co" and "product/d.kt", and
+# the second half alone would classify docs-only. -z keeps it one path, and one
+# path that is not under product/ is the full gate.
+test_docs_gate_newline_splitting_into_a_product_looking_half() {
+  local repo status
+  repo="$(docs_gate_repo)"
+  mkdir -p "$repo/co"$'\n'"product"
+  printf 'code\n' > "$repo/co"$'\n'"product/d.kt"
+  docs_gate_git "$repo" add -A
+  docs_gate_classify "$repo"
+  status=$?
+  rm -rf "$repo"
+  [ "$status" -ne 0 ]
+}
+assert_success "a code path whose NEWLINE would split off a product/-looking half runs the FULL gate" \
+  test_docs_gate_newline_splitting_into_a_product_looking_half
+
 
 end_tests
