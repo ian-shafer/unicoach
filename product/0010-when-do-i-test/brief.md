@@ -467,3 +467,37 @@ self-consistency and sourceability** — which is exactly where RFC 187's two mo
 valuable findings came from. A prompt block is code the model executes; it can
 contradict itself two paragraphs apart, and it can instruct a claim no tool can
 source. Nominated to /principle.
+
+## Process changes adopted mid-brief (2026-09-11)
+
+Both fixes came out of this brief's own land failures and are now in force. They
+change how the remaining slices work, so they are recorded here rather than only
+in the sibling brief that owns the write-up.
+
+- **RFC 193 — `ship-land` has a docs-only fast path.** A base that advanced ONLY
+  by commits touching nothing but `product/` no longer costs a second gate run:
+  the run is replayed onto that tip and lands, recording
+  `LAND_FAST_PATH=docs-only` and the classified commits. It skips the **gate**,
+  not the ancestry check. Anything else — one code path in the range, a merge, a
+  conflicting replay — falls back to the old refusal. Born from `rfc-187`, which
+  passed the full hook four times and was invalidated four times by doc traffic
+  that never took the lock.
+- **RFC 194 — a commit whose staged paths are ALL under `product/` skips the
+  test half** of the pre-commit hook; only `bin/format -c` runs, and the hook
+  logs the scope it chose by name. **Measured on this brief's next doc commit:
+  seconds instead of ~4 minutes**, with the log line
+  `gate scope: product-docs-only`. Such a commit records no `ship-verified`
+  marker, by design.
+
+**What this changes for the remaining slices.** This session no longer
+negotiates a commit window with sibling sessions before writing the ledger or
+`STATUS.md`; it commits immediately after each land. Live runs are told so
+explicitly, because a base that moves under them by `product/**` is now absorbed
+rather than fatal.
+
+**What it does NOT fix, and every slice here still has to respect:**
+`bin/format -c` is **whole-tree**, so another session's unformatted, unstaged
+file still fails this session's commit — the fast path makes that an 8-second
+discovery instead of a 4-minute one, which is a thirty-fold improvement in the
+COST of the failure and none at all in its frequency. Hence the standing
+practice: **run `nix develop -c bin/format -c` before spending a commit.**
