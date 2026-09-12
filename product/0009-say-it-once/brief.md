@@ -144,6 +144,66 @@
   `prompts/coach-system-prompt.md` was not touched and the nine byte-frozen
   sentences are unchanged.
 
+  concise/08/the-link-we-promised LANDED as RFC 196 (main@44b4291c + 00a3a8ef,
+  2026-09-12) — the Family Cost Report now links each self-reported figure to
+  the college's own filing (D15, Ian: "We should link to our sources"). The page
+  rendered ZERO `href`s while `AssuranceTierCopy`'s byte-frozen
+  voluntary-self-report sentence promised "We link to the college's own file so
+  you can see it". Two shapes were in the way: merit held the whole
+  `CdsCitation` and printed only `citedAs`, and borrowing's citation was
+  FLATTENED to a prose header in the service before the page could see it — the
+  RFC 177 shape, a fact read from the store and dropped a layer later.
+  `BorrowingBlock` now carries the `CdsCitation` itself; RFC 190's guarantee is
+  kept and tightened, because the attribution the figures are unreachable
+  without is a typed citation instead of an opaque string, and `blockOf` is
+  still the only way to reach the sentences. Link target is `source_url`, link
+  TEXT is `citedAs` — the string the page already printed — so the page gained
+  links and ZERO words. `archive_url` stays on the wire and off the page. THE
+  ACCEPTANCE CRITERION AS WRITTEN WAS VACUOUS, and this is the finding to carry
+  forward: "wherever the VOLUNTARY_SELF_REPORT sentence can be rendered, a link
+  must be rendered too" could not have failed, because that tier is reachable
+  only from `MoneySource.COMMON_DATA_SET` and no `CostField` is CDS-filled — the
+  sentence cannot render on this page at all. The real broken promise was one
+  level down, in the two CDS attributions the page does print. The criterion is
+  kept as a TEST stated as an implication (sentence => link), vacuous today and
+  live the day a CDS figure reaches the page. That is SD9, and the first of this
+  brief's pre-measurement claims that was wrong about BEHAVIOUR rather than
+  about a number. Ian, at the gate: "I wrote a criterion against the surface I
+  imagined instead of the one that exists." SECURITY, on Ian's requirement at
+  the gate: `href` is the one attribute where escaping does not save a
+  logged-out parent, so a `source_url` that is not http(s) FAULTS with a located
+  `UnlinkableSourceUrlException` naming the college and the cycle, and reaches a
+  family as the route's existing branded 503 — never a silent drop, never a
+  rendered link. "The alternative to this check is not a missing link, it is an
+  executable one." The predicate (`isWebUrl`) lives in `:common`; the located
+  fault stays on the domain type. The claim it fails closed on is ENFORCED, not
+  asserted: `CdsSeedLoaderTest` walks all 5,048 committed `source_url`s.
+  `rel="noreferrer"` on every anchor, beside the route's existing
+  `Referrer-Policy: no-referrer`. THE DOOR: a parent opens the share link and
+  clicks the school's name under "Money this school gives for something other
+  than financial need" or above the borrowing figures, and lands on that
+  school's own Common Data Set file. MEASURED: 1,401 -> 1,404 words, ratcheted
+  deliberately in the existing `CostReportPageTest.WORD_CEILING`. The three are
+  NOT words — the link text is a string the page already printed; the merit
+  line's sentence-final `.` now follows a `</a>` and the tag-strip counts it as
+  its own token. The instrument was left alone rather than adjusted to flatter
+  the number. Review found four real defects in my own work, all fixed before
+  landing: the RFC claimed the page "has no access to" the raw url (false — a
+  public property, so the rule is a convention and a source sweep now enforces
+  it); the fail-closed argument rested on an unenforced corpus assumption (now
+  the seed guard); `BorrowingBlock.headerTail` was a rendering parameter on a
+  shared wire record (dropped); and the seed guard hand-rolled `split(",")` in
+  the module whose loader uses Apache Commons CSV, one quoted comma away from
+  validating the wrong column while staying green. Gate: the landing
+  `bin/test check` through `bin/pre-commit` passed, exit 0, 3m29s, verified tree
+  75f4a692 — 3,141 executed, 0 failures, 0 errors. No DDL, no migration, no
+  seeded row, no prompt version; `prompts/coach-system-prompt.md` was not
+  touched and the nine byte-frozen sentences are unchanged. OPEN ITEM: link rot.
+  5,048 urls, the longest 1,744 characters, pointing at colleges' own PDFs; some
+  are already dead. We hold `archive_url` and deliberately do not render it,
+  which is right for the promise as worded — but a parent meeting a 404 is a
+  real outcome nobody has decided about.
+
 ## The question
 
 Ian, 2026-09-11:
