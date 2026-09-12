@@ -1,5 +1,6 @@
 package ed.unicoach.web
 
+import ed.unicoach.coaching.admissions.CdsCitation
 import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
 import ed.unicoach.coaching.costs.BorrowingCoverage
 import ed.unicoach.coaching.costs.BorrowingWire
@@ -34,7 +35,9 @@ import ed.unicoach.web.render.SCHOOL_BLENDED_HINT
 import ed.unicoach.web.render.SUMMARY_HINT
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import java.io.File
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -90,6 +93,15 @@ class CostReportPageTest {
     }
     return body
   }
+
+  /**
+   * How the page states ONE Common Data Set filing since RFC 196: the claimant
+   * inside an anchor pointing at the college's own file.
+   *
+   * Built from the citation rather than typed, so a test cannot pass on a url
+   * or a spoken name the fixture does not actually carry.
+   */
+  private fun linkedCitation(citation: CdsCitation): String = "<a href=\"${citation.url}\" rel=\"noreferrer\">${citation.citedAs}</a>"
 
   /** How many times [needle] is on the page -- the measurement "said once" actually needs. */
   private fun countOf(
@@ -1196,8 +1208,13 @@ class CostReportPageTest {
     // The CDS half names the school as the claimant and carries its filing
     // year -- these are self-reported answers, not administrative records --
     // in the BLOCK HEADER, once, above the figures it covers (RFC 190).
+    // ... and since RFC 196 the claimant is a LINK to that school's own file,
+    // so the sentence is an anchor followed by the rest of itself.
     assertTrue(
-      body.contains("Borrowing College's 2024-25 Common Data Set reports these figures for the students who"),
+      body.contains(
+        "rel=\"noreferrer\">Borrowing College's 2024-25 Common Data Set</a>" +
+          " reports these figures for the students who",
+      ),
       body,
     )
     assertTrue(body.contains("Graduates who borrowed federal loans owed"), body)
@@ -1321,6 +1338,10 @@ class CostReportPageTest {
       )
     val block = BorrowingWire.blockOf(coverage)
     val wireSentences = listOf(block.header) + block.sentences
+    // The header's own containment is asserted in its LINKED form below (RFC
+    // 196): the page renders the claimant inside an anchor, so the flat string
+    // is no longer a substring of the markup even though it is still the
+    // sentence being said.
     assertEquals(
       emptyList(),
       borrowingMarkers.filterNot { marker -> wireSentences.any { it.contains(marker) } },
@@ -1334,9 +1355,9 @@ class CostReportPageTest {
     // would fail this guard for a reason that has nothing to do with
     // attribution. The marker pin above already proves this list is the whole
     // list.
-    val spoken = wireSentences.filter { body.contains(it) }
+    val spoken = block.sentences.filter { body.contains(it) }
     assertEquals(
-      wireSentences,
+      block.sentences,
       spoken,
       "every borrowing sentence this school's filing supports must render: [$body]",
     )
@@ -1347,7 +1368,11 @@ class CostReportPageTest {
       "the header is the one attribution, so it must name the school, the cycle and the document: [${block.header}]",
     )
     assertTrue(block.sentences.isNotEmpty(), "a block with no sentences would make this sweep vacuous")
-    val headerAt = body.indexOf(block.header)
+    // The header as the PAGE says it since RFC 196: the claimant is an anchor
+    // to the school's own file, the rest of the sentence follows it.
+    val renderedHeader = linkedCitation(block.citation) + BorrowingWire.HEADER_TAIL
+    assertTrue(body.contains(renderedHeader), "the block header must render, linked: [$body]")
+    val headerAt = body.indexOf(renderedHeader)
     assertEquals(
       emptyList(),
       block.sentences.filter { body.indexOf(it) < headerAt },
@@ -1383,7 +1408,8 @@ class CostReportPageTest {
       "the federal figure names the publisher its own cell came from: [$body]",
     )
     // The school's own filing is named for the borrowing half, and only for it.
-    val header = BorrowingWire.blockOf(borrowingFixture("Borrowing College")).header
+    val borrowingBlock = BorrowingWire.blockOf(borrowingFixture("Borrowing College"))
+    val header = linkedCitation(borrowingBlock.citation) + BorrowingWire.HEADER_TAIL
     assertTrue(body.contains(header), "the borrowing block is attributed to the school's own filing: [$body]")
     assertTrue(header.contains("Borrowing College's 2024-25 Common Data Set"), header)
     // NEITHER STANDS FOR THE OTHER: the federal publisher is not named inside
@@ -1801,6 +1827,194 @@ class CostReportPageTest {
     )
   }
 
+  // ---------------------------------------------------------------------------
+  // The link we promised (RFC 196, brief 0009 D15)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * `sourceLink` is the ONLY place this page opens an anchor.
+   *
+   * A SOURCE SWEEP, and it exists because the type cannot carry this one:
+   * [ed.unicoach.coaching.admissions.CdsCitation.url] is a public property, so
+   * `a(href = citation.url)` still compiles and would render the executable url
+   * `linkTarget()` refuses. The guarantee is therefore a convention, and an
+   * unenforced convention on a page served to a logged-out parent is the shape
+   * this repo has been bitten by before -- so the convention is asserted over
+   * the file rather than written in a comment.
+   *
+   * Scoped to THIS FILE, not the module: the site chrome, the home page and the
+   * verify-email page all open anchors legitimately, and a module-wide ban would
+   * be false. What is banned is a SECOND link shape on the report.
+   */
+  @Test
+  fun `the report page opens exactly one anchor, and never on a raw citation url`() {
+    val source = File("src/main/kotlin/ed/unicoach/web/render/CostReportPage.kt")
+    assertTrue(source.isFile, "the page source must be readable for this sweep to mean anything: [${source.absolutePath}]")
+    // CODE ONLY. The ban is on what the page RENDERS, and this file explains
+    // itself at length -- a KDoc that says the word `href` is the rule being
+    // documented, not broken.
+    val code =
+      source
+        .readLines()
+        .filterNot { it.trimStart().startsWith("*") || it.trimStart().startsWith("//") || it.trimStart().startsWith("/*") }
+        .joinToString("\n")
+
+    // COUNTED ON `href`, not on `a(href` -- the second is a SPELLING, and
+    // `a { href = citation.url }` is a second kotlinx.html anchor form that
+    // spelling never sees. Counting the attribute catches every form of the
+    // thing being banned rather than the one form somebody wrote first.
+    assertEquals(1, countOf(code, "href"), "the page named [href] outside [sourceLink]: [${source.name}]")
+    assertTrue(code.contains("a(href = citation.linkTarget())"), "the one anchor must target the CHECKED url")
+    // The raw property, reached from this page at all, is the defect: it is what
+    // `linkTarget()` exists to stand in front of.
+    assertEquals(0, countOf(code, ".url"), "the page reached for a raw citation url: [${source.name}]")
+  }
+
+  /**
+   * THE ACCEPTANCE CRITERION, walked rather than listed.
+   *
+   * `AssuranceTierCopy`'s voluntary-self-report sentence says, in our own
+   * words, "We link to the college's own file so you can see it", and that
+   * sentence is byte-frozen against the immutable v19 prompt row. Before RFC 196
+   * this page rendered ZERO anchors of any kind and still stated two
+   * self-reported Common Data Set attributions per school.
+   *
+   * The sweep STRIPS EVERY ANCHOR from the rendered page and then asserts that
+   * no citation shape survives. It walks the surface instead of naming merit and
+   * borrowing, so a third Common Data Set block added later joins this test by
+   * being rendered, not by being remembered -- the failure mode a list of known
+   * call sites has.
+   *
+   * The shape, not the words: the standing sentence in the sources section says
+   * "each school's own Common Data Set" about no particular filing and is not a
+   * citation. A citation names a school and a cycle, which is what the regex
+   * matches.
+   */
+  @Test
+  fun `no Common Data Set filing is cited anywhere on this page outside a link`() {
+    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+
+    // "<College>'s 2024-25 Common Data Set" -- the citation shape, whichever
+    // block states it. `[^<>]` keeps one match from spanning a tag.
+    val citation = Regex("""[^<>]*'s \d{4}-\d{2} Common Data Set""")
+    assertTrue(
+      citation.containsMatchIn(body),
+      "the fixture must cite at least one filing, or this sweep proves nothing: [$body]",
+    )
+
+    val withoutLinks = body.replace(Regex("""<a\b[^>]*>.*?</a>""", RegexOption.DOT_MATCHES_ALL), " ")
+    assertEquals(
+      emptyList(),
+      citation.findAll(withoutLinks).map { it.value.trim() }.toList(),
+      "a filing is cited on this page without a link to it: [$withoutLinks]",
+    )
+  }
+
+  /**
+   * The promise itself, as an IMPLICATION rather than a claim about today.
+   *
+   * Said plainly, because a vacuous test that is mistaken for a live one is
+   * worse than none: this assertion CANNOT FAIL on the page as it exists.
+   * `AssuranceTier.VOLUNTARY_SELF_REPORT` is reachable only from
+   * `MoneySource.COMMON_DATA_SET` (`AssuranceTierClosureTest` pins that the
+   * Scorecard and both IPEDS surveys never produce it), and no `CostField` is
+   * filled from the Common Data Set -- so the sentence cannot render here at
+   * all. Brief 0009's criterion, taken literally, was written against a surface
+   * that does not exist.
+   *
+   * It is kept because it is the exact statement of the promise, and it goes
+   * live by itself the day a Common Data Set figure reaches this page: the
+   * sentence and no link is then a failure here rather than a defect a family
+   * finds.
+   */
+  @Test
+  fun `the sentence that promises a link is never printed without one`() {
+    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+
+    if (body.contains(AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT))) {
+      assertTrue(body.contains("<a href="), "we said we link to the college's own file and linked nothing: [$body]")
+    }
+    // The page states self-reported filings whether or not it states that
+    // sentence, so the links themselves are asserted unconditionally -- and
+    // EXACTLY, not at-least: three schools, a merit filing and a borrowing
+    // filing each, and a seventh link would be a filing nobody specified.
+    assertEquals(6, countOf(body, "rel=\"noreferrer\""), "three schools, a merit filing and a borrowing filing each")
+  }
+
+  /**
+   * The link goes to the COLLEGE'S OWN FILE, per school, and never to our
+   * mirror.
+   *
+   * `source_url` is what the sentence promises. `archive_url` is the corpus's
+   * tidy permalink -- it stays on the coach wire, where `putCitation` emits
+   * both, and it is not rendered here: a second link is chrome a parent did not
+   * ask for, and one that replaced the college's own file would quietly change
+   * what the sentence means.
+   *
+   * Per-school urls, because a single shared fixture url would let every
+   * assertion pass on a neighbour's link.
+   */
+  @Test
+  fun `each block links that school's own file, never our mirror`() {
+    val merit = meritFixture("Ashford College", url = MERIT_URL, archiveUrl = ARCHIVE_URL)
+    val borrowing = borrowingFixture("Ashford College", url = BORROWING_URL, archiveUrl = ARCHIVE_URL)
+    val college =
+      costFixture(
+        name = "Ashford College",
+        tuitionInState = 30000,
+        publishedPrice = 52000,
+        netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+        medianDebt = 21000,
+        meritAid = merit,
+        borrowing = borrowing,
+      )
+
+    val body = render(costProfile(listOf(college), answeredMoney()))
+
+    assertTrue(body.contains(linkedCitation(merit.source)), "the merit block links its own filing: [$body]")
+    assertTrue(body.contains(linkedCitation(borrowing.figures.source)), "the borrowing block links its own: [$body]")
+    assertEquals(0, countOf(body, ARCHIVE_URL), "our mirror is not rendered on this page: [$body]")
+  }
+
+  /**
+   * A `source_url` that is not an http(s) url STOPS THE PAGE.
+   *
+   * `href` is the one attribute where escaping does not save a logged-out
+   * parent: `javascript:` in an href is live whatever `kotlinx.html` does to the
+   * attribute value. Every one of the 5,048 rows in the committed Common Data
+   * Set seed is http or https, so a row that reaches here with another scheme is
+   * evidence the corpus is wrong or poisoned -- not a case to degrade
+   * gracefully.
+   *
+   * Neither softer answer is available: dropping the link silently would leave
+   * us promising a link beside none, and rendering it would put an executable
+   * url in front of a family. So it faults, and the family gets the branded 503
+   * this route already renders for a read fault.
+   */
+  @Test
+  fun `a source url that is not http renders nothing at all, not a link`() =
+    testApplication {
+      val poisoned =
+        costFixture(
+          name = "Ashford College",
+          tuitionInState = 30000,
+          publishedPrice = 52000,
+          netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+          meritAid = meritFixture("Ashford College", url = "javascript:alert(1)"),
+        )
+      application {
+        testPublicWebModule(
+          costReportSource =
+            FakeCostReportSource(FakeReportAnswer.Live(costProfile(listOf(poisoned), answeredMoney()))),
+        )
+      }
+
+      val response = client.get("/report?token=$TEST_LIVE_TOKEN")
+
+      assertEquals(HttpStatusCode.ServiceUnavailable, response.status, "a poisoned url must stop the page")
+      assertFalse(response.bodyAsText().contains("javascript:"), "the url reached a parent anyway")
+    }
+
   private companion object {
     /**
      * The word budget for the three-school page (brief 0009 D9/D13), measured
@@ -1823,10 +2037,26 @@ class CostReportPageTest {
      * they cover costs eleven. The run reports the miss rather than weakening
      * the assertion.
      *
+     * RFC 196 takes it from 1,401 to 1,404, and the three words are NOT words.
+     * The link text is `CdsCitation.citedAs` -- the string the page already
+     * printed -- so a parent reads exactly what they read before. What changed
+     * is the INSTRUMENT: [visibleWordsOf] replaces every tag with a space, so
+     * the sentence-final `.` after each merit block's `</a>` is now its own
+     * token. Three schools, three stray full stops. The instrument was left
+     * alone rather than adjusted to flatter the number -- re-baselining it would
+     * silently move every figure in the chain above.
+     *
      * A ceiling set at a number the page does not meet is a test that is either
      * failing or lying; this one ratchets what was really won and refuses a
      * regression.
      */
-    const val WORD_CEILING = 1401
+    const val WORD_CEILING = 1404
+
+    /** One school's own Common Data Set file, and a second one, so a link cannot pass on the other's url. */
+    const val MERIT_URL = "https://example.test/ashford-merit-cds.pdf"
+    const val BORROWING_URL = "https://example.test/ashford-borrowing-cds.pdf"
+
+    /** Our mirror of the same filing -- on the wire, never on this page (RFC 196). */
+    const val ARCHIVE_URL = "https://archive.example.test/ashford-cds.pdf"
   }
 }

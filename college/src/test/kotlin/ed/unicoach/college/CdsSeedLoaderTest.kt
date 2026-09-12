@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.isWebUrl
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.models.ApplicationRound
@@ -58,6 +59,58 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     generateSequence(File(".").absoluteFile) { it.parentFile }
       .map { File(it, "db/seed/cds") }
       .first { it.isDirectory }
+
+  @Test
+  fun `every committed source url is a url a browser will fetch`() {
+    // THE ASSUMPTION RFC 196 FAILS CLOSED ON, made falsifiable here.
+    //
+    // `CdsCitation.linkTarget` refuses to render a `source_url` that is not
+    // http(s), and the argument for refusing rather than degrading is that no
+    // such row exists. Nothing enforced that. A single bad row would have
+    // turned a family's cost report into a 503 with no build failure anywhere
+    // before it -- a build-time problem discovered at read time.
+    //
+    // Over the COMMITTED corpus, not a fixture: the fixture is not what ships.
+    //
+    // Parsed by the SAME reader the loader uses, never `split(",")`. A hand-rolled
+    // index walk shifts by one on the first quoted comma in an earlier field, and
+    // `source_url` is second-to-last in all four files -- so the guard would
+    // validate the wrong value and stay green over the corpus it exists to check.
+    val urls =
+      committedSeedDir
+        .listFiles { file -> file.extension == "csv" }
+        .orEmpty()
+        .sorted()
+        .flatMap { file -> sourceUrlsOf(file).map { file.name to it } }
+
+    assertEquals(4, committedSeedDir.listFiles { file -> file.extension == "csv" }.orEmpty().size, "four seed files")
+    // A FLOOR, not a measurement: the corpus grows, and the number is here only
+    // so a stubbed or half-written seed cannot make the sweep below vacuous.
+    assertTrue(urls.size >= 5000, "the committed seed must be the real corpus, not a stub: [${urls.size}] rows")
+    assertEquals(
+      emptyList(),
+      urls.filterNot { (_, url) -> isWebUrl(url) },
+      "a committed source_url cannot be rendered as a link, so the report would fault on it",
+    )
+  }
+
+  /** Every `source_url` in one committed seed file, read through the loader's own CSV reader. */
+  private fun sourceUrlsOf(file: File): List<String> =
+    CSVParser
+      .parse(
+        file,
+        Charsets.UTF_8,
+        CSVFormat.DEFAULT
+          .builder()
+          .setHeader()
+          .setSkipHeaderRecord(true)
+          .build(),
+      ).use { records ->
+        // The column is ASSERTED, once per file, before any row is read: a
+        // renamed column would otherwise make this walk find nothing and pass.
+        assertTrue(records.headerMap.containsKey("source_url"), "[${file.name}] carries no source_url column")
+        records.map { it.get("source_url").trim() }
+      }
 
   private fun collegeId(ipedsUnitId: Int): CollegeId =
     withSession {

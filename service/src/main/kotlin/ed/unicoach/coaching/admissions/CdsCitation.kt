@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.admissions
 
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.common.util.isWebUrl
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.put
 
@@ -34,6 +35,48 @@ data class CdsCitation(
   /** "Amherst College's 2024-25 Common Data Set" -- the sentence fragment the coach says. */
   val citedAs: String get() = "$collegeName's ${cycleLabel(sourceYear)} Common Data Set"
 
+  /**
+   * [url] as an `href` TARGET, or a LOCATED FAULT (RFC 196).
+   *
+   * The Family Cost Report is served to a logged-out parent, and `href` is the
+   * one attribute where escaping does not save you: `javascript:` in an href is
+   * live whatever `kotlinx.html` does to the attribute value. So the scheme is
+   * asserted here, at the one type that holds the url, rather than trusted at
+   * each renderer.
+   *
+   * It FAILS CLOSED, and neither of the two softer answers is available to a
+   * caller: a silent drop would leave us saying "we link to the college's own
+   * file" beside no link, which is the promise RFC 196 exists to keep, and
+   * rendering it anyway would put an executable url in front of a parent. The
+   * alternative to this check is not "a missing link" -- it is an executable
+   * one.
+   *
+   * Failing closed costs nothing today: all 5,048 rows of the committed CDS
+   * seed carry `http`/`https` (RFC 196), so a row that reaches here with any
+   * other scheme is evidence the corpus is wrong or poisoned, not a case to
+   * degrade gracefully.
+   *
+   * WHAT COUNTS as a web url is [isWebUrl]'s, in `:common`: the scheme question
+   * is domain-agnostic and every `href` in this repo asks it, while WHAT A
+   * VIOLATION MEANS is this type's -- a stored Common Data Set row that cannot
+   * be linked is corrupt data about a named college, so the fault is located
+   * here and not there.
+   *
+   * A FUNCTION rather than a computed property, because it can fault and a
+   * property that throws reads like a field.
+   *
+   * NOT applied to [putCitation]: the wire hands the url to a language model as
+   * data, where no scheme is executable, and a coach answer is not the place to
+   * discover a bad seed row. The check is on the LINK path, which is the path
+   * that can hurt somebody.
+   */
+  fun linkTarget(): String =
+    if (isWebUrl(url)) {
+      url
+    } else {
+      throw UnlinkableSourceUrlException(collegeName, sourceYear, url)
+    }
+
   companion object {
     /**
      * The spoken cycle label for a CDS `source_year`: 2024 -> "2024-25".
@@ -46,6 +89,25 @@ data class CdsCitation(
     fun cycleLabel(sourceYear: Int): String = AcademicYear(sourceYear).label
   }
 }
+
+/**
+ * A `source_documents` row whose `source_url` cannot be an `href` (RFC 196).
+ *
+ * LOCATED: it names the college and the cycle whose filing is unlinkable, so the
+ * seed row is identifiable from the message alone -- the shape this repo uses
+ * for an unmapped source code, rather than a bare failure at render.
+ *
+ * It reaches a family as the branded 503 the report route already renders for a
+ * read fault, which is the intended outcome: the page stops rather than showing
+ * a parent a link we are not willing to stand behind.
+ */
+class UnlinkableSourceUrlException(
+  val collegeName: String,
+  val sourceYear: Int,
+  val url: String,
+) : IllegalStateException(
+    "source_documents url for [$collegeName] [${CdsCitation.cycleLabel(sourceYear)}] is not an http(s) url: [$url]",
+  )
 
 /** The per-section citation on the wire (D2); a null archive copy omits the key rather than emitting an empty string. */
 fun JsonObjectBuilder.putCitation(citation: CdsCitation) {

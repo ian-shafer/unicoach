@@ -25,13 +25,35 @@ import kotlinx.serialization.json.putJsonObject
  * said once, in [header], and [BorrowingWire.blockOf] is the only way to reach
  * [sentences] -- so a caller cannot render the figures without the claim they
  * are made under.
+ *
+ * RFC 196 carries the CITATION into this type rather than the prose built from
+ * it, and RFC 190's guarantee is unchanged by that -- strengthened, if anything.
+ * [blockOf] is still the only way to reach [sentences], and the attribution the
+ * figures are unreachable without is now a typed [CdsCitation] instead of an
+ * opaque string. Nothing is loosened: no surface gained a way to hold the
+ * figures without the claim, it gained a way to say the claim as a LINK. The
+ * flattened header used to be built in the service and the page could therefore
+ * not link the filing it was already naming -- a fact read from the store and
+ * dropped a layer later (the RFC 177 shape).
  */
 data class BorrowingBlock(
-  /** Who is claiming every figure below, in which cycle, from which document. */
-  val header: String,
+  /** Who is claiming every figure below, in which cycle, from which document -- and WHERE that document is. */
+  val citation: CdsCitation,
   /** The figures, said without re-naming the claimant. */
   val sentences: List<String>,
-)
+) {
+  /**
+   * The whole attribution sentence, for a surface that cannot carry a link.
+   *
+   * A surface that CAN renders [citation] as the link and
+   * [BorrowingWire.HEADER_TAIL] after it. That constant is not mirrored here:
+   * it is the same for every block, so a pass-through property on this record
+   * would be a rendering parameter riding on one filing's data -- and it is what
+   * [header] is built from, so the two forms cannot say different sentences
+   * either way.
+   */
+  val header: String get() = BorrowingWire.blockHeader(citation)
+}
 
 /**
  * The one home for the borrowing section's wire shape and its copy (RFC 175).
@@ -227,7 +249,7 @@ object BorrowingWire {
    */
   fun blockOf(coverage: BorrowingCoverage.Reported): BorrowingBlock =
     BorrowingBlock(
-      header = blockHeader(coverage.figures.source),
+      citation = coverage.figures.source,
       sentences =
         buildList {
           if (coverage.graduatingClassNotReadByUs) add(graduatingClassNotReadByUsLabel())
@@ -328,8 +350,18 @@ object BorrowingWire {
    * "That year" rather than the cycle repeated: the cycle is already in
    * [CdsCitation.citedAs], one clause earlier in this same sentence.
    */
-  fun blockHeader(source: CdsCitation): String =
-    "${source.citedAs} reports these figures for the students who graduated from it that year -- not this " +
+  fun blockHeader(source: CdsCitation): String = "${source.citedAs}$HEADER_TAIL"
+
+  /**
+   * Everything [blockHeader] says AFTER the claimant, as one string.
+   *
+   * Extracted so a surface that renders the claimant as a LINK (RFC 196) prints
+   * the rest of the same sentence rather than composing a second one. There is
+   * one copy of these words, and [blockHeader] is built from it, so the two
+   * forms cannot drift.
+   */
+  const val HEADER_TAIL: String =
+    " reports these figures for the students who graduated from it that year -- not this " +
       "year's freshmen, and not all its undergraduates"
 
   /**

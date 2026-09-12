@@ -563,6 +563,10 @@ fun meritFixture(
   recipients: Int? = 250,
   averageAid: Int? = 12000,
   sourceYear: Int = 2024,
+  /** The college's OWN file -- per school, so a link assertion cannot pass on a neighbour's url (RFC 196). */
+  url: String = "https://example.test/cds.pdf",
+  /** Our mirror. Given a value by the test that asserts the page links the college's file and never this one. */
+  archiveUrl: String? = null,
 ): MeritPractice =
   MeritPractice(
     fullTimeFreshmen = freshmen,
@@ -572,8 +576,8 @@ fun meritFixture(
       CdsCitation(
         collegeName = collegeName,
         sourceYear = sourceYear,
-        url = "https://example.test/cds.pdf",
-        archiveUrl = null,
+        url = url,
+        archiveUrl = archiveUrl,
       ),
   )
 
@@ -603,6 +607,10 @@ fun borrowingFixture(
   gapStatusByLoanType: Map<LoanType, FigureStatus> = emptyMap(),
   /** OUR gap at CDS H.401, the denominator every share divides by. */
   graduatingClassGapStatus: FigureStatus? = null,
+  /** The college's OWN file -- per school, so a link assertion cannot pass on a neighbour's url (RFC 196). */
+  url: String = "https://example.test/cds.pdf",
+  /** Our mirror. Given a value by the test that asserts the page links the college's file and never this one. */
+  archiveUrl: String? = null,
 ): BorrowingCoverage.Reported =
   BorrowingCoverage.Reported(
     figures =
@@ -622,8 +630,8 @@ fun borrowingFixture(
           CdsCitation(
             collegeName = collegeName,
             sourceYear = sourceYear,
-            url = "https://example.test/cds.pdf",
-            archiveUrl = null,
+            url = url,
+            archiveUrl = archiveUrl,
           ),
       ),
     gapStatusByLoanType =

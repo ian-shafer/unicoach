@@ -1,5 +1,6 @@
 package ed.unicoach.web.render
 
+import ed.unicoach.coaching.admissions.CdsCitation
 import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.costs.ArrangementCost
 import ed.unicoach.coaching.costs.BorrowingCoverage
@@ -39,6 +40,7 @@ import kotlinx.html.TBODY
 import kotlinx.html.THEAD
 import kotlinx.html.TR
 import kotlinx.html.ThScope
+import kotlinx.html.a
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.h3
@@ -1207,7 +1209,18 @@ private fun FlowContent.meritBlock(cost: CollegeCost) {
     // The claimant FIRST, under the heading, and not again at the foot (RFC
     // 190): the same string, said before the figures it covers rather than
     // after them, so the block is scoped by its attribution.
-    p("report-source") { +"Source: ${merit.source.citedAs}." }
+    //
+    // AND IT IS A LINK (RFC 196). The url was already in hand here and was
+    // thrown away at the point of render, while `AssuranceTierCopy`'s
+    // voluntary-self-report sentence says, in our own words, "We link to the
+    // college's own file so you can see it". The link TEXT is the citation's
+    // own `citedAs` -- never the url, which runs to 1,744 characters in our own
+    // corpus -- so the page gains a link and no words.
+    p("report-source") {
+      +"Source: "
+      sourceLink(merit.source)
+      +"."
+    }
     share?.let { p { +"${MeritAidWire.shareLabel(it)}." } }
     average?.let { p { +"${MeritAidWire.averageLabel(it)}." } }
   }
@@ -1424,12 +1437,53 @@ private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
   // same `citedAs` the header now opens with -- and nothing else, no url and
   // no document date -- so removing it loses no reachable fact.
   val block = BorrowingWire.blockOf(coverage)
-  p { +"${block.header}." }
+  // The claimant, as a LINK to the school's own filing, and the rest of the
+  // same sentence after it (RFC 196). Both halves are [BorrowingWire]'s --
+  // `HEADER_TAIL` is the tail of the string `blockHeader` is built from -- so
+  // this composes no sentence of its own, and `BorrowingBlock` now carries the
+  // CITATION rather than prose flattened from it, which is what makes the link
+  // reachable here at all.
+  p {
+    sourceLink(block.citation)
+    +"${BorrowingWire.HEADER_TAIL}."
+  }
   // WHICH loan types are spoken, in what order, and when an absence is said
   // out loud, all come from [BorrowingWire.blockOf] -- the one home of this
   // policy. A second list here is how the page and the coach came to narrate
   // the same filing in two different orders.
   block.sentences.forEach { sentence -> p { +"$sentence." } }
+}
+
+/**
+ * One CDS filing, said as a LINK to the college's own file (RFC 196, brief 0009
+ * D15).
+ *
+ * THE ONE PLACE THIS PAGE OPENS AN ANCHOR. Merit and borrowing are two blocks
+ * with one promise behind them: `AssuranceTierCopy`'s voluntary-self-report
+ * sentence ends "We link to the college's own file so you can see it", and that
+ * sentence is byte-frozen against the immutable v19 prompt row -- it cannot be
+ * reworded, so the link has to exist. One helper rather than two renders means a
+ * third CDS block cannot be added with a different link shape.
+ *
+ * - The TARGET is `source_url`, the college's own file, which is what the
+ *   sentence promises. `archive_url` -- our mirror -- is not rendered beside it
+ *   and never instead of it; it stays reachable on the coach wire, where every
+ *   citation still carries both.
+ * - The TEXT is [CdsCitation.citedAs], the string this page already printed. The
+ *   url is heterogeneous and long (1,744 characters at its worst in our own
+ *   seed) and is never shown to anybody.
+ * - [CdsCitation.linkTarget] asserts the scheme and FAULTS rather than
+ *   rendering: `href` is where escaping does not save a logged-out parent.
+ * - `rel="noreferrer"` even though the report route already sends
+ *   `Referrer-Policy: no-referrer` for exactly this reason. The header rides the
+ *   ROUTE and the link is on the PAGE; a page rendered from a second route later
+ *   would otherwise lose the guarantee with nothing failing.
+ */
+private fun FlowContent.sourceLink(citation: CdsCitation) {
+  a(href = citation.linkTarget()) {
+    rel = "noreferrer"
+    +citation.citedAs
+  }
 }
 
 /**
