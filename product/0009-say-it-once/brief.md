@@ -329,6 +329,34 @@
   not an impossible one); one unlicensed derived difference (off-campus vs
   at-home) appeared once.
 
+  concise/09/three-more-homes LANDED as RFC 199 (main@85a56653 + 1a174c6f,
+  2026-09-12) — RFC 192's one-rule-one-home pattern applied to the three tools
+  RFC 192 D10 named: `federal_aid_policy`, `update_college_list`,
+  `update_money_profile`. Each DESCRIPTION is now a schema legend; 14 behaviour
+  rules the coach prompt already stated are DELETED, and 1 rule with no other
+  home MOVED to the prompt as a single appended sentence (coach prompt v32,
+  rollback v31, a HALF rollback because the legends are ordinary Kotlin). The
+  DELIVERABLE IS THE NAMED RULE MAP in the RFC: 25 items, every one of them
+  still reachable, each mapped to its surviving home. MEASURED AT RUN START, and
+  the spec was wrong again (SD12): the three descriptions render **3,185 bytes**
+  (1,389 + 867 + 929), not the spec's 4,678 — that figure was Kotlin SOURCE
+  bytes and its college-list part (1,881) was wrong even so (993). So this
+  surface was a SIXTH of the cost tool's 18,580, not a quarter. AS LANDED:
+  1,359 + 472 + 621 = **2,452 bytes, -733**; the prompt grew 196; **net context
+  window -537 bytes**. THAT IS A ROUNDING ERROR beside RFC 192's -9,703 and the
+  RFC leads with it rather than burying it — the reason to do this was drift,
+  not bytes: 14 rules stated in two places, with the only guard on any of them
+  being a `description.contains(...)` assertion inside the very test file a
+  rewrite edits. P1 APPLIED: all 14 are now asserted against the SERVED prompt
+  body in `SystemPromptCatalogTest`, outside the artifacts under change, and
+  each tool carries a `LEGEND_BYTE_CEILING` set at the measured size EXACTLY
+  (1,359 / 472 / 621, no headroom, P2) confirmed by reading the real byte count
+  out of a deliberately failed assertion. Full suite: **3,153 tests executed, 0
+  failed**. OPEN ITEM: the general form of "never open with a money question"
+  now rests on three field-scoped prompt rules (lines 24, 28, 29, 123) rather
+  than one general sentence; nothing is unreachable, but a later slice may
+  decide the general form should exist.
+
 ## The question
 
 Ian, 2026-09-11:
