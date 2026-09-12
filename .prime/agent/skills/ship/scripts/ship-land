@@ -104,7 +104,248 @@ LOCK_HELD=1
 trap release_lock EXIT
 
 # 3. The gate. Nothing lands that the hook never saw.
+#
+# This runs BEFORE step 3a's rebase, and the order is load-bearing: the verified
+# tree is the PRE-REBASE tip's tree, and a replay does not preserve it.
 "$SCRIPT_DIR/ship-verified" assert "${DOC_ARGS[@]+"${DOC_ARGS[@]}"}"
+
+# 3a. The docs-only fast path (RFC 193).
+#
+# RFC 167 serialises phase 6 so two runs cannot spend the gate on the same base.
+# It cannot serialise what never takes the lock, and a plain `docs:` commit on
+# the base branch is exactly that — an ordinary commit from a session that is not
+# in phase 6 at all. It moves the base while this run is inside its 2-4 minute
+# gate, step 4 then refuses the fast-forward, and the run pays the whole gate
+# again. Measured 2026-09-11: one run lost that race four times in a row, to
+# three `product/**` commits. `slice` makes that commit MANDATORY after every
+# landed slice, so the traffic scales with parallelism rather than with sloppiness.
+#
+# So: when the base advanced ONLY by commits that touch nothing but product/,
+# replay this run onto it and land WITHOUT re-running the gate. This is not a
+# weakened gate, it is a REPEAT exemption — declining to re-run a check whose
+# result is already proven for these paths. Be precise about what is true, since
+# the landed tree is this run's verified code plus their docs and was never
+# hook-verified AS A WHOLE: the landed tree differs from the verified tree ONLY
+# by paths under product/, which are not Gradle inputs and cannot change a test
+# result; and bin/format -c, the only Markdown gate, has already passed
+# independently on both halves — on the verified tree here, and on those doc
+# commits' own way in.
+#
+# FAIL SAFE IS THE WHOLE DESIGN. Every path not POSITIVELY recognised as
+# docs-only falls through to the behaviour this script had before: refuse at step
+# 4, rebase, re-run the gate. When in doubt, run the gate.
+#
+# Note what is NOT in the predicate: rfc/**. The ship skill commits the RFC
+# markdown immediately after its own code commit, so a range containing an RFC
+# almost always contains code too and falls back anyway — while the day a test
+# reads an RFC as a fixture, a wider predicate is silently wrong. A narrower
+# predicate that is provably safe beats a wider one that needs a guard test.
+
+# The contract is a PREFIX on the path string, not a glob. Real doc traffic is
+# nested several levels deep (product/0009-say-it-once/research/_parts/x.md), and
+# a single-level `product/*` glob matches product/STATUS.md while silently
+# missing those — safe, but useless for the commonest case. `"$LAND_DOCS_PREFIX"?*`
+# is "the literal prefix, then at least one more character", which no glob
+# dialect can reinterpret.
+LAND_DOCS_PREFIX="product/"
+
+# land_classify_advance <from> <to>
+#
+# Fills LAND_ADVANCE_ROWS (one "<short-sha>\t<verdict>\t<subject>" per commit,
+# oldest first) and LAND_ADVANCE_SHAS, and returns 0 ONLY when every commit in
+# the range qualifies. EVERY commit, not the tip: a docs -> code -> docs advance
+# has a docs-only tip and is not docs-only — the same shape as the stale-BASE_SHA
+# trap this skill already documents, where a check on one end sleeps through
+# exactly the case it exists to catch.
+land_classify_advance() {
+  local from="$1" to="$2"
+  local list sha parents nparents paths path verdict ok=1
+  LAND_ADVANCE_ROWS=()
+  LAND_ADVANCE_SHAS=()
+
+  list="$(git rev-list --reverse "$from..$to" 2> /dev/null)" || return 1
+  # An empty range is not "vacuously docs-only": it means the caller asked about
+  # an advance that is not there, and the caller is what decides that, not this.
+  [ -n "$list" ] || return 1
+
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    verdict="docs-only"
+
+    # Exactly one parent. A merge is not a replay of somebody's docs commit and
+    # a root commit has no diff to read; neither is classified.
+    if parents="$(git show -s --format=%P "$sha" 2> /dev/null)"; then
+      nparents="$(printf '%s\n' $parents | grep -c . || true)"
+      [ "$nparents" = "1" ] || verdict="not-docs (parents: $nparents)"
+    else
+      # Said explicitly rather than left to the no-paths test below: a commit git
+      # cannot read is a different state from a commit that changed nothing, and
+      # a verdict line is the only place anybody will ever see which it was.
+      verdict="not-docs (unreadable)"
+    fi
+
+    if [ "$verdict" = "docs-only" ]; then
+      # core.quotePath=false so a real product path with an accent in it
+      # (product/café.md) arrives as itself rather than as "product/caf\303\251.md",
+      # which begins with a quote and would fail the prefix test — fail-safe, but
+      # failing safe on exactly the traffic this path exists for is a dead
+      # feature. A path containing a newline or a control character is STILL
+      # quoted by git, still fails the prefix test, and still falls back.
+      paths="$(git -c core.quotePath=false diff-tree --no-commit-id --name-only -r "$sha" 2> /dev/null)" || paths=""
+      # A commit that changes NO path satisfies "every path is under product/"
+      # vacuously. An empty set passing a universal test is the classic silent
+      # pass, so it is refused explicitly rather than left to the loop below.
+      if [ -z "$paths" ]; then
+        verdict="not-docs (no paths)"
+      else
+        # IFS= : without it `read` strips leading and trailing whitespace, so a
+        # path in a directory literally named " product" arrives as
+        # "product/x.txt" and is classified docs-only. Demonstrated, not
+        # theorised — it skipped the gate and landed.
+        while IFS= read -r path; do
+          [ -n "$path" ] || continue
+          case "$path" in
+            "$LAND_DOCS_PREFIX"?*) ;;
+            *)
+              verdict="not-docs ($path)"
+              break
+              ;;
+          esac
+        done <<< "$paths"
+      fi
+    fi
+
+    [ "$verdict" = "docs-only" ] || ok=0
+    LAND_ADVANCE_ROWS+=("$(git rev-parse --short "$sha")	$verdict	$(git show -s --format=%s "$sha" 2> /dev/null || echo '?')")
+    LAND_ADVANCE_SHAS+=("$(git rev-parse --short "$sha")")
+  done <<< "$list"
+
+  [ "$ok" -eq 1 ]
+}
+
+# A land that skipped the gate and a land that ran it must be distinguishable
+# afterwards — the same argument RFC 183 makes for its withholding counters. So
+# EVERY invocation that reaches this step records a verdict, and the archived run
+# scratch carries the classification that produced it.
+#
+# The state file is SOURCED by every ship script, so both values are single
+# tokens with no spaces: `KEY=two words` would execute `words` on the next load.
+# The prose belongs in the note file, which nobody sources.
+land_record_fast_path() { # land_record_fast_path <verdict> <headline>
+  local verdict="$1" headline="$2" note="$RUN_SCRATCH/land-fast-path.md" shas="" row
+  local report="$RUN_SCRATCH/report.md"
+
+  if [ "${#LAND_ADVANCE_SHAS[@]}" -gt 0 ]; then
+    shas="$(printf '%s,' "${LAND_ADVANCE_SHAS[@]}")"
+    shas="${shas%,}"
+  fi
+  "$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set LAND_FAST_PATH "$verdict"
+  "$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set LAND_FAST_PATH_COMMITS "${shas:-none}"
+
+  {
+    echo "## Land fast path (RFC 193): $verdict"
+    echo
+    echo "$headline"
+    echo
+    if [ "${#LAND_ADVANCE_ROWS[@]}" -gt 0 ]; then
+      echo '```'
+      for row in "${LAND_ADVANCE_ROWS[@]+"${LAND_ADVANCE_ROWS[@]}"}"; do echo "$row"; done
+      echo '```'
+    else
+      echo "The base branch did not advance while this run held the gate."
+    fi
+  } > "$note"
+  # Phase 7 writes report.md BEFORE ship-land runs, so it cannot have predicted
+  # this outcome: append rather than expect.
+  [ -f "$report" ] || return 0
+  {
+    echo
+    cat "$note"
+  } >> "$report"
+}
+
+LAND_ADVANCE_ROWS=()
+LAND_ADVANCE_SHAS=()
+BASE_TIP="$(git -C "$ORIGINAL_CHECKOUT" rev-parse "$BASE_BRANCH" 2> /dev/null)" || BASE_TIP=""
+if [ -z "$BASE_TIP" ]; then
+  log-info "[fast path] could not read [$BASE_BRANCH] in [$ORIGINAL_CHECKOUT] — taking the normal path"
+  land_record_fast_path none "The base branch tip could not be read, so no advance was classified."
+elif git merge-base --is-ancestor "$BASE_TIP" HEAD; then
+  land_record_fast_path none "The base branch did not advance; the gate was not re-run because it did not need to be."
+elif land_classify_advance HEAD "$BASE_TIP"; then
+  log-info "[fast path] [$BASE_BRANCH] advanced by ${#LAND_ADVANCE_SHAS[@]} commit(s), every one of them under [$LAND_DOCS_PREFIX]:"
+  for _row in "${LAND_ADVANCE_ROWS[@]+"${LAND_ADVANCE_ROWS[@]}"}"; do log-info "          $_row"; done
+  # Rebase onto the tip that was CLASSIFIED, not onto whatever the base branch
+  # says now. ship-rebase resolves the tip itself, and this traffic takes no
+  # lock, so between the classification and the replay the branch can gain a
+  # commit nobody looked at — landing on it is precisely the hole this step
+  # closes. Hence plain git here, and the state written by hand below.
+  LAND_PRE_FAST_PATH_HEAD="$(git rev-parse HEAD)"
+  # A worktree already mid-surgery is NOT this step's to touch. ship-rebase
+  # refuses one for its own reasons; here the stake is higher, because the
+  # failure branch below aborts — and aborting an operator's paused rebase,
+  # while reporting it as a conflict of our own, destroys work the old code
+  # would have left untouched while refusing cleanly at step 4.
+  LAND_REBASE_BUSY=0
+  for _op in rebase-merge rebase-apply MERGE_HEAD; do
+    [ -e "$(git rev-parse --git-path "$_op")" ] && LAND_REBASE_BUSY=1
+  done
+  LAND_REBASE_ERR="$RUN_SCRATCH/land-fast-path-rebase.err"
+  if [ "$LAND_REBASE_BUSY" -eq 1 ]; then
+    log-info "[fast path] not taken: an operation is already in progress in [$CODEBASE_ROOT] — finish or abort it, then re-run ship-land"
+    land_record_fast_path none "A docs-only advance was found, but a rebase or merge was already in progress in the worktree, so nothing was replayed."
+  elif git rebase "$BASE_TIP" > /dev/null 2> "$LAND_REBASE_ERR"; then
+    "$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set BASE_SHA "$BASE_TIP"
+    "$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set PRE_REBASE_HEAD "$LAND_PRE_FAST_PATH_HEAD"
+    BASE_SHA="$BASE_TIP"
+    # Rotate the ledger exactly as ship-rebase does, and for its reason: every
+    # pre-rebase checkpoint now names abandoned history, so ship-recover's
+    # "target must be an ancestor of HEAD" invariant would be a lie if this run
+    # stops at step 4 and a later session tries to recover.
+    LAND_LEDGER="$RUN_SCRATCH/checkpoints.log"
+    if [ -f "$LAND_LEDGER" ]; then
+      _n=1
+      while [ -e "$LAND_LEDGER.pre-rebase-$_n" ]; do _n=$((_n + 1)); done
+      mv "$LAND_LEDGER" "$LAND_LEDGER.pre-rebase-$_n"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$(git rev-parse HEAD)" "land-fast-path" "0" "rebased onto $BASE_TIP (docs-only advance)" > "$RUN_SCRATCH/checkpoints.log"
+    land_record_fast_path docs-only "Replayed onto [$BASE_TIP] WITHOUT re-running bin/pre-commit: the landed tree differs from the hook-verified tree only by paths under [$LAND_DOCS_PREFIX], which are not Gradle inputs, and bin/format -c has already passed on both halves."
+    log-info "[fast path] replayed onto $BASE_TIP without re-running the gate (RFC 193)"
+  else
+    # Abort, do not leave the rebase in progress. The worktree goes back
+    # byte-for-byte and the run takes the path it would have taken before this
+    # step existed. A conflict between this run and a product/** commit is two
+    # sessions disagreeing about the same file — a human's to read, not this
+    # script's to resolve mechanically inside the one path that reaches the base
+    # branch.
+    # Abort only a rebase THIS step started: the guard above proved there was
+    # none before, so anything in progress now is ours. A failure that started
+    # nothing (a refused rebase, a hook, a signing prompt) leaves no state to
+    # abort, and calling --abort on it would be the same overreach the guard
+    # exists to prevent.
+    for _op in rebase-merge rebase-apply; do
+      if [ -e "$(git rev-parse --git-path "$_op")" ]; then
+        git rebase --abort > /dev/null 2>&1 || true
+        break
+      fi
+    done
+    # git's own words, or the operator is told "CONFLICTED" about a failure that
+    # was nothing of the kind — a dirty index, a hook, a signing failure.
+    log-info "[fast path] the docs-only replay FAILED and was aborted — this run rebases and re-runs the gate as usual. git said:"
+    [ -s "$LAND_REBASE_ERR" ] && sed 's/^/          /' "$LAND_REBASE_ERR" >&2
+    land_record_fast_path none "A docs-only advance was found, but replaying this run onto it failed (usually a conflict); the rebase was aborted and the gate was not skipped."
+  fi
+elif [ "${#LAND_ADVANCE_ROWS[@]}" -eq 0 ]; then
+  # An empty table means the classification itself failed — git could not walk
+  # the range. Naming "commits outside product/" here would report a cause that
+  # may not exist, for an advance nobody managed to read.
+  log-info "[fast path] not taken: the advance from HEAD to [$BASE_TIP] could not be classified — the gate must be re-run on the moved base"
+  land_record_fast_path none "The advance could not be classified (git could not walk the range), so this run re-runs the gate."
+else
+  log-info "[fast path] not taken: [$BASE_BRANCH] advanced by commits outside [$LAND_DOCS_PREFIX] — the gate must be re-run on the moved base:"
+  for _row in "${LAND_ADVANCE_ROWS[@]+"${LAND_ADVANCE_ROWS[@]}"}"; do log-info "          $_row"; done
+  land_record_fast_path none "The advance contains at least one commit that is not docs-only, so this run re-runs the gate."
+fi
 
 # 3b. db/schema/ORDER is in land order (RFC 180). Phase 6 calling ship-order is
 # prose, and a run that skipped it lands CLEANLY — its ORDER line exists, only

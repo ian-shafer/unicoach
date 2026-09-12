@@ -53,6 +53,17 @@ literally a commit whose parent is `main`. A fast-forward makes branch commits
 part of `main`'s history without any of them being a "commit to `main`", so the
 branch tip is what has to have passed.
 
+**One narrow exemption, at land time (RFC 193).** `ship-land` does not re-run
+the gate when the base advanced ONLY by commits that touch nothing but
+`product/**`; it replays the run onto them and lands. So the landed tree is this
+run's hook-verified code plus those docs, and that combined tree never went
+through the hook as a whole. The claim is deliberately narrower than "it passed
+the hook": the landed tree differs from the hook-verified tree only by paths
+under `product/`, which are not Gradle inputs and cannot change a test result,
+and `bin/format -c` — the only Markdown gate — has already passed on both halves
+independently. Every other advance still costs a rebase and a full re-run, and
+`ship-land` records which of the two it did.
+
 **Skipping the hook moves the responsibility; it does not remove it.** The agent
 that changed the code is responsible for testing it — run
 `nix develop -c bin/test <module> -f` and report the real executed counts — and

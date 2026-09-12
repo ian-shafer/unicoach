@@ -378,6 +378,20 @@ at most 15m; `ship-land` releases it at the fast-forward. Phase 5's
 holding the lock through review would serialise the part of a run that has no
 reason to be serial.
 
+**A base that advanced by `product/**` commits only does NOT cost a second gate
+run** (RFC 193). Those commits never take the lock — a `docs:` commit is an
+ordinary commit from a session that is not in phase 6 at all — so they move the
+base while a run is inside its gate, and they did it four times to one run on
+2026-09-11. `ship-land` therefore classifies the advance itself: when every
+commit in it touches nothing but `product/`, it replays this run onto that tip
+and lands, recording `LAND_FAST_PATH=docs-only` and the commits it classified in
+the run state, in `<rs>/land-fast-path.md`, and appended to `<rs>/report.md`.
+Anything else — one code path, a merge, an empty commit, a replay that conflicts
+— falls back to today's refusal, and the run rebases and re-runs the gate as
+before. The fast path skips the **gate**, not the ancestry check: the
+fast-forward is still confirmed, and `main` can move again while step 3a runs.
+Say in the report which of the two happened; the run state says so too.
+
 If the hook fails on tests, **stop and report**. That is the one place after
 approval where this skill wakes Ian — and it happens inside the critical
 section, so: **any exit from phase 6 that is not a land releases the lock

@@ -369,6 +369,308 @@ pass_test "ship-land refuses a dangling-symlink or directory bin/prompt-seed ins
 pass_test "the path ship-land guards on names a script that exists and is executable"
 
 echo ""
+echo "==== ship-land: the docs-only fast path (RFC 193) ===="
+
+# RFC 167 serialises phase 6 so two runs cannot spend the gate on the same base,
+# but a plain `docs:` commit on main never takes that lock — it is an ordinary
+# commit from a session that is not in phase 6 at all. It moved main under a live
+# run four times on 2026-09-11 and cost ~16 minutes of gate time. RFC 193's fast
+# path replays the run onto a base that advanced ONLY by product/** commits and
+# lands it without re-running the gate.
+#
+# Unlike the lock assertions above, these need a REAL worktree and a REAL
+# fast-forward: the thing under test is what ship-land does to the base branch,
+# and a grep over the source would pass on a script that never runs. Everything
+# is still local — a throwaway `git init`, no Gradle, no database, no hook. The
+# verified-tree marker is written by hand, which is exactly what bin/pre-commit
+# would have appended.
+#
+# fast_path_fixture <run-id> — sets FP_REPO, FP_WT, FP_RS, FP_BASE and leaves the
+# run's own commit on ship/<run-id> with its tree recorded as verified.
+fast_path_fixture() {
+  local run_id="$1"
+  FP_REPO="$FIXTURE_DIR/fp-$run_id"
+  FP_WT="$FIXTURE_DIR/fp-$run_id-wt"
+  FP_RS="$FIXTURE_DIR/fp-$run_id-rs"
+  git init -q "$FP_REPO"
+  # A repo whose HEAD is `master` would make BASE_BRANCH=main a lie; name the
+  # branch rather than inheriting the machine's init.defaultBranch.
+  git -C "$FP_REPO" symbolic-ref HEAD refs/heads/main
+  git -C "$FP_REPO" config user.email "ship-scripts-tests@example.invalid"
+  git -C "$FP_REPO" config user.name "ship-scripts-tests"
+  git -C "$FP_REPO" config commit.gpgsign false
+  # db/schema/ORDER exists because ship-land's step 3b gate runs `ship-order -n`
+  # against it; an empty corpus is a no-op there, which is what this section
+  # wants — the subject is step 3a, not the migration manifest.
+  mkdir -p "$FP_REPO/db/schema" "$FP_REPO/product" "$FP_REPO/src" "$FP_REPO/rfc"
+  : > "$FP_REPO/db/schema/ORDER"
+  echo "status" > "$FP_REPO/product/STATUS.md"
+  echo "code" > "$FP_REPO/src/code.txt"
+  git -C "$FP_REPO" add -A
+  git -C "$FP_REPO" commit -q -m "init"
+  FP_BASE="$(git -C "$FP_REPO" rev-parse HEAD)"
+
+  git -C "$FP_REPO" worktree add -q -b "ship/$run_id" "$FP_WT" main
+  git -C "$FP_WT" config user.email "ship-scripts-tests@example.invalid"
+  git -C "$FP_WT" config user.name "ship-scripts-tests"
+  git -C "$FP_WT" config commit.gpgsign false
+}
+
+# fast_path_verify_and_state — records the run's tip tree as hook-verified and
+# writes the run scratch. Called after the caller has made the run's commits.
+fast_path_verify_and_state() {
+  local run_id="$1"
+  git -C "$FP_WT" rev-parse 'HEAD^{tree}' >> "$FP_REPO/.git/ship-verified-trees"
+  mkdir -p "$FP_RS"
+  {
+    echo "RUN_ID=$run_id"
+    echo "LANE=quick"
+    echo "BRANCH=ship/$run_id"
+    echo "CODEBASE_ROOT=$FP_WT"
+    echo "ORIGINAL_CHECKOUT=$FP_REPO"
+    echo "BASE_BRANCH=main"
+    echo "BASE_SHA=$FP_BASE"
+    echo "RUN_SCRATCH=$FP_RS"
+    echo "PHASE=landing"
+  } > "$FP_RS/state"
+}
+
+# The ordinary run: one code commit, hook-verified, ready to land.
+fast_path_run_commit() {
+  echo "new" > "$FP_WT/src/new.txt"
+  git -C "$FP_WT" add -A
+  git -C "$FP_WT" commit -q -m "feat: the run's own work"
+}
+
+fp_err="$FIXTURE_DIR/fast-path.err"
+fp_status=0
+run_ship_land() {
+  fp_status=0
+  "$SHIP_LAND" -s "$FP_RS" > /dev/null 2> "$fp_err" || fp_status=$?
+}
+
+# The archived state, since a LANDED run's scratch has been moved out of the
+# worktree ship-land deleted.
+fp_state() { cat "$FP_RS/state" 2> /dev/null || cat "$FP_REPO/.scratch/ship-archive/$1/state"; }
+fp_note() { cat "$FP_RS/land-fast-path.md" 2> /dev/null || cat "$FP_REPO/.scratch/ship-archive/$1/land-fast-path.md"; }
+
+# 1. THE CASE THE FAST PATH EXISTS FOR, and the nesting matters. Real doc traffic
+# is several levels deep (product/0009-say-it-once/research/_parts/x.md), so a
+# single-level `product/*` glob would match STATUS.md and silently miss the
+# research files — recognising the deep path is the assertion that pins the
+# PREFIX contract rather than a glob.
+fast_path_fixture fp-docs
+fast_path_run_commit
+fast_path_verify_and_state fp-docs
+mkdir -p "$FP_REPO/product/0009-brief/research/_parts"
+echo "deep" > "$FP_REPO/product/0009-brief/research/_parts/history.md"
+git -C "$FP_REPO" add -A
+git -C "$FP_REPO" commit -q -m "docs: a deeply nested research part"
+echo "more" >> "$FP_REPO/product/STATUS.md"
+git -C "$FP_REPO" add -A
+git -C "$FP_REPO" commit -q -m "docs: product status"
+FP_RUN_TIP="$(git -C "$FP_WT" rev-parse HEAD)"
+run_ship_land
+[ "$fp_status" -eq 0 ] ||
+  fail_test "ship-land refused a docs-only advance (status $fp_status): $(cat "$fp_err")"
+git -C "$FP_REPO" log --oneline main | grep -q "the run's own work" ||
+  fail_test "the fast path landed without this run's work on main"
+git -C "$FP_REPO" log --oneline main | grep -q "deeply nested research part" ||
+  fail_test "the fast path dropped the docs commits it replayed onto"
+[ "$(git -C "$FP_REPO" rev-parse main)" != "$FP_RUN_TIP" ] ||
+  fail_test "main is the PRE-rebase tip: the run was never replayed onto the docs commits"
+pass_test "a docs-only advance (including a 3-level-deep product path) lands with no second gate run"
+
+# 2. The record, without which a land that skipped the gate and one that ran it
+# are indistinguishable afterwards.
+fp_state fp-docs | grep -qx "LAND_FAST_PATH=docs-only" ||
+  fail_test "the run state does not record LAND_FAST_PATH=docs-only: $(fp_state fp-docs)"
+fp_state fp-docs | grep -qE "^LAND_FAST_PATH_COMMITS=[0-9a-f]+,[0-9a-f]+$" ||
+  fail_test "LAND_FAST_PATH_COMMITS does not name the two commits as single-token short shas: $(fp_state fp-docs)"
+# Single tokens are not cosmetic: the state file is SOURCED by every ship script,
+# so `KEY=two words` would execute `words` on the next load.
+if fp_state fp-docs | grep -E "^LAND_FAST_PATH" | grep -q " "; then
+  fail_test "a LAND_FAST_PATH value contains a space, and the state file is sourced"
+fi
+fp_note fp-docs | grep -q "docs-only" ||
+  fail_test "land-fast-path.md does not classify the commits it skipped the gate for"
+pass_test "the fast path records its verdict and the commits it classified"
+
+# 3. THE TRAP, driven in the exact order that springs it: docs -> code -> docs.
+# The advance has a docs-only TIP and is not docs-only. A check that looked at
+# the tip, or at the cumulative diff, sleeps through exactly this case — the same
+# shape as the stale-BASE_SHA trap the skill already documents.
+fast_path_fixture fp-mixed
+fast_path_run_commit
+fast_path_verify_and_state fp-mixed
+echo "a" > "$FP_REPO/product/a.md"
+git -C "$FP_REPO" add -A && git -C "$FP_REPO" commit -q -m "docs: first"
+echo "x" > "$FP_REPO/src/theirs.txt"
+git -C "$FP_REPO" add -A && git -C "$FP_REPO" commit -q -m "feat: their code"
+echo "b" > "$FP_REPO/product/b.md"
+git -C "$FP_REPO" add -A && git -C "$FP_REPO" commit -q -m "docs: last"
+run_ship_land
+[ "$fp_status" -ne 0 ] ||
+  fail_test "ship-land took the fast path over a docs -> CODE -> docs advance"
+grep -q "advanced past this run's base" "$fp_err" ||
+  fail_test "the mixed advance did not fall back to today's refusal: $(cat "$fp_err")"
+fp_state fp-mixed | grep -qx "LAND_FAST_PATH=none" ||
+  fail_test "a refused advance did not record LAND_FAST_PATH=none"
+fp_note fp-mixed | grep -q "not-docs (src/theirs.txt)" ||
+  fail_test "the classification does not name the commit that made the advance mixed"
+pass_test "docs -> code -> docs REFUSES, and the record names the code path that decided it"
+
+# 4. Three advances that are NOT this predicate, each one a way a wider or lazier
+# test would wrongly qualify. rfc/**, deliberately excluded so the day a test
+# reads an RFC as a fixture the predicate is not silently wrong; a commit with NO
+# paths, which satisfies "every path is under product/" vacuously and is the
+# classic empty-set silent pass; and a merge, which is not a replay of anybody's
+# docs commit and has no single parent to diff against.
+fp_refuses() { # fp_refuses <run-id> <expected note text> <advance commands...>
+  local run_id="$1" expect="$2"
+  shift 2
+  fast_path_fixture "$run_id"
+  fast_path_run_commit
+  fast_path_verify_and_state "$run_id"
+  ( cd "$FP_REPO" && eval "$@" )
+  run_ship_land
+  [ "$fp_status" -ne 0 ] ||
+    fail_test "[$run_id] ship-land took the fast path over an advance that is not docs-only"
+  fp_state "$run_id" | grep -qx "LAND_FAST_PATH=none" ||
+    fail_test "[$run_id] did not record LAND_FAST_PATH=none"
+  fp_note "$run_id" | grep -q "$expect" ||
+    fail_test "[$run_id] classification does not say [$expect]: $(fp_note "$run_id")"
+}
+
+fp_refuses fp-rfc "not-docs (rfc/999-x.md)" \
+  'echo x > rfc/999-x.md && git add -A && git commit -q -m "rfc: 999"'
+pass_test "an rfc/**-only advance is NOT docs-only — the predicate is product/ and nothing else"
+
+fp_refuses fp-empty "not-docs (no paths)" \
+  'echo a > product/a.md && git add -A && git commit -q -m "docs: one" && git commit -q --allow-empty -m "empty"'
+pass_test "a commit that changes NO path is not docs-only (an empty set does not satisfy the test)"
+
+fp_refuses fp-merge "not-docs (parents: 2)" \
+  'git checkout -q -b side && echo a > product/side.md && git add -A && git commit -q -m "docs: side" &&
+   git checkout -q main && echo b > product/main.md && git add -A && git commit -q -m "docs: main" &&
+   git merge -q --no-ff side -m "merge docs"'
+pass_test "a MERGE whose whole diff is under product/ is still not docs-only"
+
+fp_refuses fp-lookalike "not-docs (productX/a.md)" \
+  'mkdir -p productX && echo a > productX/a.md && git add -A && git commit -q -m "docs: lookalike"'
+pass_test "the prefix is [product/]: a productX/ path does not qualify"
+
+# 5. A conflicting replay ABORTS and falls back, leaving the worktree exactly as
+# it was. Two runs editing the same product file is a real disagreement for a
+# human to read — not something the one script that reaches main resolves
+# mechanically — and a rebase left IN PROGRESS here would wedge the worktree the
+# operator is about to work in.
+fast_path_fixture fp-conflict
+echo "the run's sentence" > "$FP_WT/product/STATUS.md"
+echo "new" > "$FP_WT/src/new.txt"
+git -C "$FP_WT" add -A
+git -C "$FP_WT" commit -q -m "feat: the run's own work"
+fast_path_verify_and_state fp-conflict
+FP_CONFLICT_HEAD="$(git -C "$FP_WT" rev-parse HEAD)"
+echo "their sentence" > "$FP_REPO/product/STATUS.md"
+git -C "$FP_REPO" add -A && git -C "$FP_REPO" commit -q -m "docs: their edit to the same file"
+run_ship_land
+[ "$fp_status" -ne 0 ] ||
+  fail_test "ship-land landed a replay that conflicted"
+grep -q "FAILED and was aborted" "$fp_err" ||
+  fail_test "the conflicting replay did not report an abort: $(cat "$fp_err")"
+[ "$(git -C "$FP_WT" rev-parse HEAD)" = "$FP_CONFLICT_HEAD" ] ||
+  fail_test "the aborted replay moved the run's HEAD"
+[ ! -e "$(git -C "$FP_WT" rev-parse --git-path rebase-merge)" ] &&
+  [ ! -e "$(git -C "$FP_WT" rev-parse --git-path rebase-apply)" ] ||
+  fail_test "the conflicting replay left a rebase IN PROGRESS in the run's worktree"
+[ -z "$(git -C "$FP_WT" status --porcelain)" ] ||
+  fail_test "the aborted replay left the run's worktree dirty"
+fp_state fp-conflict | grep -qx "LAND_FAST_PATH=none" ||
+  fail_test "the aborted replay recorded a fast path it did not take"
+pass_test "a conflicting docs-only replay aborts, restores the worktree, and falls back to the gate"
+
+# 6. The generated-artifact land gates run AFTER the replay, on the tree that
+# actually lands. Nothing else in this section would notice if step 3a were moved
+# below them — the fixture's ORDER is empty and it has no bin/prompt-seed — so the
+# ordering is pinned with a bin/prompt-seed STUB that records the arguments it was
+# handed. ship-land passes it `-b "$BASE_SHA"`, so the recorded base being the
+# POST-replay tip is the proof: the gate saw the landing base, not the stale one.
+fast_path_fixture fp-gates
+mkdir -p "$FP_WT/bin"
+cat > "$FP_WT/bin/prompt-seed" << 'STUB'
+#!/usr/bin/env bash
+# Test stub: record the arguments ship-land handed the coach-prompt land gate.
+echo "$*" > "${PROMPT_SEED_ARGS:-/dev/null}"
+exit 0
+STUB
+chmod +x "$FP_WT/bin/prompt-seed"
+echo "new" > "$FP_WT/src/new.txt"
+git -C "$FP_WT" add -A
+git -C "$FP_WT" commit -q -m "feat: the run's own work"
+fast_path_verify_and_state fp-gates
+echo "more" >> "$FP_REPO/product/STATUS.md"
+git -C "$FP_REPO" add -A
+git -C "$FP_REPO" commit -q -m "docs: product status"
+FP_MOVED_TIP="$(git -C "$FP_REPO" rev-parse main)"
+PROMPT_SEED_ARGS="$FIXTURE_DIR/prompt-seed.args"
+export PROMPT_SEED_ARGS
+run_ship_land
+unset PROMPT_SEED_ARGS
+[ "$fp_status" -eq 0 ] ||
+  fail_test "the fast path failed with a bin/prompt-seed present: $(cat "$fp_err")"
+[ -f "$FIXTURE_DIR/prompt-seed.args" ] ||
+  fail_test "the coach-prompt land gate never ran on the fast path"
+grep -q -- "-b $FP_MOVED_TIP" "$FIXTURE_DIR/prompt-seed.args" ||
+  fail_test "the land gate ran against the STALE base [$(cat "$FIXTURE_DIR/prompt-seed.args")], not the replayed one [$FP_MOVED_TIP] — step 3a must come before it"
+pass_test "the generated-artifact land gates run AFTER the replay, against the base that lands"
+
+# 7. A worktree already mid-rebase is NOT this step's to touch. The fallback
+# aborts, and aborting an operator's paused rebase — while calling it a conflict
+# of our own — destroys work the old code left alone while refusing cleanly.
+fast_path_fixture fp-busy
+fast_path_run_commit
+fast_path_verify_and_state fp-busy
+echo "more" >> "$FP_REPO/product/STATUS.md"
+git -C "$FP_REPO" add -A
+git -C "$FP_REPO" commit -q -m "docs: product status"
+# A rebase left in progress, exactly as ship-rebase leaves one on conflict.
+git -C "$FP_WT" rebase -x false HEAD~1 > /dev/null 2>&1 || true
+[ -e "$(git -C "$FP_WT" rev-parse --git-path rebase-merge)" ] ||
+  fail_test "the fixture did not manage to leave a rebase in progress"
+run_ship_land
+[ "$fp_status" -ne 0 ] ||
+  fail_test "ship-land landed a worktree that was mid-rebase"
+[ -e "$(git -C "$FP_WT" rev-parse --git-path rebase-merge)" ] ||
+  fail_test "the fast path ABORTED an operation it did not start"
+grep -q "already in progress" "$fp_err" ||
+  fail_test "the busy worktree was not reported as such: $(cat "$fp_err")"
+git -C "$FP_WT" rebase --abort > /dev/null 2>&1 || true
+pass_test "a worktree already mid-rebase is left untouched, not aborted and reported as a conflict"
+
+# 8. A path whose only difference from product/ is leading whitespace. `read`
+# without IFS= strips it, so a directory literally named " product" was
+# classified docs-only and skipped the gate — demonstrated, not theorised.
+fp_refuses fp-space "not-docs" \
+  'mkdir -p " product" && echo a > " product/x.txt" && git add -A && git commit -q -m "docs: leading space"'
+pass_test "a leading-space \" product/\" path does not read as product/ (IFS= on the path reader)"
+
+# 9. The unmoved base still lands, and says it took no fast path. This is the
+# common case, and it is here because the cheapest way to break every land is to
+# make the new step fire when nothing advanced.
+fast_path_fixture fp-still
+fast_path_run_commit
+fast_path_verify_and_state fp-still
+run_ship_land
+[ "$fp_status" -eq 0 ] ||
+  fail_test "ship-land refused a run whose base never moved (status $fp_status): $(cat "$fp_err")"
+fp_state fp-still | grep -qx "LAND_FAST_PATH=none" ||
+  fail_test "a land with no advance did not record LAND_FAST_PATH=none"
+fp_state fp-still | grep -qx "LAND_FAST_PATH_COMMITS=none" ||
+  fail_test "a land with no advance named commits it never classified"
+pass_test "a base that did not move lands as before, recorded as no fast path"
+
+echo ""
 echo "==== ship-order: land-time re-placement of db/schema/ORDER ===="
 
 # ship-order is the other half of the land gate (RFC 180 D6): db/schema/ORDER is
