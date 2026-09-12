@@ -1,6 +1,6 @@
 # 0009 "Say it once" — spec and slices
 
-Brief handle: **`concise`**. Gate 1 passed 2026-09-09 (Ian: "approve", all eight
+Brief handle: **`concise`**. Gate 1 passed 2026-09-11 (Ian: "approve", all eight
 defaults). This file carries DISCOVER's corrections, the slices, and gate 2.
 
 ## DISCOVER — what is actually true in the tree
@@ -555,13 +555,13 @@ never merely deleted.
 
 ## Gate 2 outcome
 
-**PASSED 2026-09-09.** Ian approved all defaults, verbatim: **"approve"**.
+**PASSED 2026-09-11.** Ian approved all defaults, verbatim: **"approve"**.
 D9-D14 stand as written. D9 supersedes gate-1 D4's number (D4 itself is
 immutable and left as committed).
 
 ## Dispatch log
 
-**2026-09-09 — wave 1 dispatched as TWO slices, not three.**
+**2026-09-11 — wave 1 dispatched as TWO slices, not three.**
 
 Live-number check at dispatch (computed, not copied): highest RFC file **185**;
 live `pipeline/rfc-178` (stale, 2d, 28 behind), `rfc-186`, `rfc-187`. Next free
@@ -602,12 +602,12 @@ Append-only. A defect here is a fact about this spec being wrong, recorded so a
 later slice is not written against it.
 
 **SD1 — `concise/01`'s "≤ 1,480 words" criterion was unreachable, and this
-spec's own budget table proves it.** Found 2026-09-09 by the `concise/01` run,
+spec's own budget table proves it.** Found 2026-09-11 by the `concise/01` run,
 which measured rather than argued. The budget table above allocates that slice
 102 + 72 + 25 + 24 = **223 words**, while 1,793 -> 1,480 requires **313**. The
 criterion and the table were written in the same document and disagree. The run
 deleted **all three** per-school hints rather than the two budgeted, beat its
-allocation, and still measured **1,530**. Ian accepted 1,530 (D-a, 2026-09-09).
+allocation, and still measured **1,530**. Ian accepted 1,530 (D-a, 2026-09-11).
 The remaining ~90 words belong to `concise/04` and `concise/05`; they were never
 this slice's to save.
 
@@ -626,7 +626,7 @@ start of each remaining slice; do not copy a number from this file.
 **SD3 — "the default key is mandatory, never optional" was too absolute.**
 `concise/02` narrowed it: `figure_provenance` is absent when a college holds
 **zero** figure provenance, because a mandatory default over an empty set would
-be an invented value. Accepted 2026-09-09. The invariant that actually matters
+be an invented value. Accepted 2026-09-11. The invariant that actually matters
 survives and is the one to state in future slices: **exceptions can never exist
 without a default.**
 
@@ -643,7 +643,7 @@ Consequence: the all-three-or-none exception shape this spec assumed reaches
 only 55.3% / 59.5% smaller, missing gate-1 D4's ≥ 60%. The run amended the
 object shape to **per-key resolution** (an entry carries `source` when the
 publisher differs, and the tier code + its sentence **as one inseparable value**
-when the tier differs; any omitted key is the default's). Approved 2026-09-09 —
+when the tier differs; any omitted key is the default's). Approved 2026-09-11 —
 it is inside "left to /ship's design phase", and it is a better design
 independent of any byte target: it says what differs, rather than restating
 everything.
@@ -668,3 +668,142 @@ first**, and both are directed to **ratchet the existing
 the expected cost of writing seven slices against one snapshot of a moving tree;
 the fix is the instruction to re-grep and re-measure, not a promise to keep the
 numbers fresh in this file.
+
+**SD6 — the brief's headline claim about prompt repetition was wrong, and the 4
+KB legend bar was harmful.** Found 2026-09-11 by the `concise/03` run, which
+measured before designing.
+
+_The claim._ This spec and the research report both assert that the coach prompt
+restates itself — "the money vocabulary is written out at least **four** times,
+'loans are not a price reduction' **five** times" — and imply the repetition is
+deletable. Measured: it is real, but **almost none of it can go under
+deletion-only**, because each repetition carries unique per-paragraph content or
+is pinned by a paragraph-scoped test assertion. Deleting the line would delete a
+committed guard with it. **The real prompt saving is 491 bytes (1.7%),** and
+four lines. The win in this slice is entirely on the TOOL DESCRIPTION side (~14
+KB), not the prompt side.
+
+_The stale numbers._ The DESCRIPTION is **18,386** bytes, not 16,383 — RFCs 189
+and 190 both grew it. The prompt is **29,297 bytes / 183 lines**, not 158 — v28
+added 7 lines and v29 added 18. Shared files drift under parallel runs faster
+than a spec can track.
+
+_The bar._ Gate-2 said the legend must reach **≤ 4 KB**. Measured, a readable
+legend is 5,479 bytes and a version with the prose stripped out entirely is
+4,072 — **24 bytes under the bar, 0.6% headroom**. So the bar (a) makes a test
+that fails on the next unrelated key anyone adds, and (b) can only be met by
+compressing English in the one artifact whose sole reader is a language model.
+**The bar is withdrawn** (2026-09-11): build the readable legend, set the
+ceiling at its real measured size with headroom, and report the real percentage.
+~18,386 → ~5,500 is about **−70%**, and −70% readable beats −78% unreadable.
+
+_Not a defect, stated so it is not read as one._ This slice makes the prompt NET
+GROW (4 lines out, up to 16 in) while the context window shrinks ~14 KB. That is
+one-rule-one-home working as designed: the rule count is unchanged, the
+DUPLICATE count falls, and the model stops being told the same thing twice in
+one window.
+
+_The pattern, now six for six._ Every number this brief asserted before
+measuring has been wrong: ≤ 900, ≤ 1,480, ≤ 1,230, ≤ 1,170, ≥ 60% (right answer,
+wrong reasoning), 5,366 bytes, 1,793 words, 16,383 bytes, 158 lines, and ≤ 4 KB.
+Six separate runs caught them by measuring. **The standing instruction stands
+and should outlive this brief: measure at run start, set the bar at the real
+number, and report a miss rather than weakening an assertion.**
+
+---
+
+## Post-gate addition: `concise/08/the-link-we-promised`, and a reorder
+
+**Decision D15 (Ian, 2026-09-11, verbatim): "We should link to our sources."**
+Appended, not an edit of a committed decision (chart non-negotiable 7).
+
+**Needs:**
+
+- CONFLICTS concise/07/quiet-provenance — both edit `sourcesSection` and the
+  provenance area of `CostReportPage.kt`. A rebase risk, not an order; `07` is
+  separately held pending `08` by product judgement, not by this edge.
+
+**The defect.** `AssuranceTierCopy`'s `VOLUNTARY_SELF_REPORT` sentence ends _"We
+link to the college's own file so you can see it."_ The Family Cost Report
+renders **no link at all** — `href` count in `CostReportPage.kt` is **zero**. We
+make a promise in our own words, on the surface a parent reads, and do not keep
+it. The sentence is byte-frozen, so it cannot be reworded: the link must exist.
+
+**What is already true** (measured 2026-09-11, do not re-derive):
+`source_documents` (RFC 170, migration 0087) stores `source_url NOT NULL` +
+`archive_url`, written by `CdsSeedLoader`; every CDS read already joins it;
+`CdsCitation` already carries both and `putCitation` already emits them to
+**chat** for admissions, merit, borrowing and aid policy. **The chat side is not
+the gap.** The page is, in two shapes: merit holds the whole citation and prints
+only the label (`CostReportPage.kt:1210`), and borrowing has its citation
+**flattened to a prose header in the service** (`BorrowingWire.kt:230`) before
+the page can see it — the RFC 177 defect shape again, a fact read from the store
+and dropped a layer later. **No table, column, migration or prompt version.**
+
+### Reorder: `concise/08` runs BEFORE `concise/07`
+
+`concise/07/quiet-provenance` proposes collapsing `sourcesSection` behind a
+disclosure. `concise/08` makes that same section carry a **live link to each
+college's own filing** — the first genuinely actionable thing on it.
+
+**Collapsing a section in the same week we make it useful is backwards.** A
+provenance block a parent can click through to the source document is not the
+same artifact as the prose block `concise/07` was specced against, and D5's rule
+("hidden content must not be essential to the task") reads differently once the
+content is a working link rather than a standing hedge.
+
+So `concise/07` is **held pending `concise/08`**, and its scope is explicitly
+**re-opened**: after `08` lands, decide again what may collapse, against the
+page that then exists. This is not a `Needs:` edge — nothing technical blocks it
+— it is a product-judgement hold, recorded here so the board's READY is not
+mistaken for "should start".
+
+**SD7 — `concise/07`'s foundations are stale.** It cites `assumptions` at `:311`
+and `sourcesSection` at `:1081`. RFCs 188, 190 and 191 have all edited
+`CostReportPage.kt` since. Re-grep, and re-measure the baseline: the page is
+**1,401 words**, not the 1,793 this spec was written against.
+
+**SD8 — the freeze protected a FILE when the thing at risk was a RULE, and the
+rule lived in two files.** Found 2026-09-11 by the `concise/03` run, as a
+near-miss caught in review.
+
+_What happened._ `concise/03` is a deletion pass. It was held out of wave 1 for
+a cross-session collision on `prompts/coach-system-prompt.md`, and a hold on
+that file was negotiated with the `/chart tests` session. The collision arrived
+through the **other** file the slice deletes from —
+`CollegeCostChatTool.DESCRIPTION` — where **our own** `concise/05` (RFC 191) had
+added three lines hours earlier: _"Say each distinct tier sentence ONCE for the
+SET of figures on it … never once per figure."_ A rebase conflicted there,
+`git rebase --continue` committed the conflict markers, and taking the legend
+side would have **silently dropped RFC 191's rule**.
+
+_Why no test would have caught it._ The only thing holding that rule was a
+`description.contains(...)` assertion **inside the very test file `concise/03`
+was rewriting**. A guard that lives inside the artifact under rewrite is
+guaranteed to be edited by the person most likely to break it — in good faith,
+because rewriting that file is the task. The fix re-points it at the **served
+prompt body**, which is strictly stronger: the pin now lives outside the thing
+being changed.
+
+_Three rules out of one near-miss._
+
+1. **A deletion pass must enumerate EVERY file it deletes from, and protect each
+   one.** Not "the file we were worried about". The hold was scoped by where the
+   danger was expected, not by where the change actually reached. This is the
+   coordinator's error, not the run's.
+2. **"Rebase first" is not sufficient. A deletion pass must re-derive its
+   inventory after EVERY rebase**, because the base can move again mid-run.
+   `concise/03` rebased first exactly as instructed and was still overtaken.
+3. **A guard must not live inside the artifact it guards.** Nominated to
+   `/principle`; the corpus does not appear to cover it.
+
+_And a review practice worth naming._ Tier 0 found the committed conflict
+markers by **checking the RFC's measured numbers against the actual tree instead
+of reading the RFC**. An RFC is a claim; the tree is the fact. That is the same
+discipline that corrected six of this brief's own numbers.
+
+_Extending the contention rule._ SD-note: the rule this brief derived — _the
+unit of contention is the FILE and the KIND of edit, not the brief and not the
+wave_ — is correct but was applied to too few files. The full form is: **for a
+deletion, the unit is every file the deletion touches, whoever is editing them,
+including your own sibling slices.**

@@ -4,12 +4,12 @@
 
 ## Status
 
-- **Phase:** EXECUTE — wave 1: `concise/01` and `concise/02` LANDED 2026-09-11;
+- **Phase:** EXECUTE — `concise/01`, `02`, `04` and `05` LANDED 2026-09-11;
   `concise/03` HELD on a cross-brief collision
-- **Gate 1 (prioritisation):** **PASSED 2026-09-09 — Ian approved all defaults,
+- **Gate 1 (prioritisation):** **PASSED 2026-09-11 — Ian approved all defaults,
   verbatim: "approve"**. D1-D8 stand as written below. D8 is `standing`.
-- **Gate 2 (spec):** **PASSED 2026-09-09 — "approve"**; D9-D14 in `spec.md`
-- **Research:** 3 parallel reports **delivered** 2026-09-09 —
+- **Gate 2 (spec):** **PASSED 2026-09-11 — "approve"**; D9-D14 in `spec.md`
+- **Research:** 3 parallel reports **delivered** 2026-09-11 —
   `research/report-verbosity.md` (416 lines, page rendered for real),
   `research/coach-verbosity.md` (537 lines), `research/concision-craft.md` (513
   lines, external, all sources fetched)
@@ -99,9 +99,54 @@
   `prompts/coach-system-prompt.md` was not touched and the nine byte-frozen
   sentences are unchanged.
 
+  concise/05/tiers-grouped-not-repeated LANDED as RFC 191 (main@bb581547 +
+  e3d9257a, 2026-09-11) — an assurance tier is said ONCE for the SET of figures
+  it covers (gate-1 D3). The administrative-record sentence was printed three
+  times on a three-school report, once inside every school's debt paragraph, and
+  is now printed once, in a page-level `report-kinds` block above the sources
+  section: a derived scope naming the figures it covers, then the sentence
+  verbatim from `AssuranceTierCopy`. The covered set is DERIVED at the site that
+  renders it (`proseFiguresOf`), never a hand list. Two exclusions, both RFC
+  189's own: a figure with NO NUMBER is in no group and keeps its own status and
+  tier sentence in its own cell (`blankFor` untouched, so nothing became
+  unreachable — D1), and the at-home `$0` housing line carries no published cell
+  at all, so OUR assumption can never be swept under a publisher's tier (RFC 166
+  §7), asserted by test. THE REVIEW CATCH, and the thing to carry forward: a
+  bare group label computed over the COVERED set alone OVER-REACHES, because
+  ambiguity is not a property of what the block groups — it is a property of
+  what the PAGE claims. One school's debt shown on a federal tier and another's
+  withheld on a survey tier is exactly the case where a bare header speaks for a
+  figure it does not cover. The correct shape is
+  `groupsOf(figures, spokenElsewhere)`, measuring ambiguity over everything the
+  page states a tier for; `spokenElsewhere` is never rendered and only widens
+  the set of fields that must name their schools. The synthetic `debtPublisher`
+  fixture knob is justified precisely BECAUSE no real publisher pairs a survey
+  tier with `GRAD_DEBT_MDN` — an untestable case is not the same as an
+  impossible one, and a page-level guarantee tested only in a unit suite is one
+  the renderer never has to keep. Also landed: `CostField.spokenLabel`
+  (exhaustive — the page authors no money copy), a `require` refusing one
+  (college, field) pair on two tiers, and one DESCRIPTION sentence extending RFC
+  189's once-per-default rule to the EXCEPTION group, asserted by test.
+  MEASURED: 1,450 -> 1,401 words on a three-school render, ratcheted in the
+  existing `CostReportPageTest.WORD_CEILING` (1450 -> 1401); no second counter.
+  The slice's `<= 1,170` criterion is NOT met, missed by 231 words — it came off
+  the superseded 1,793 chain (SD1, SD2, SD5) and the removable repetition here
+  was 60 words against an 11-word block that names what it covers. The real
+  number is reported rather than an assertion weakened. OPEN ITEM recorded in
+  the RFC: the page speaks a tier for ONE of the eleven figures a school
+  resolves (11/10/10 shown per school; mandatory_survey 10/9/9,
+  administrative_record 1/1/1), unchanged by RFC 190 and unchanged here; closing
+  that gap costs about +55 words said ONCE, which is not this brief's kind of
+  cost, so nothing landed here forecloses it. Gate: the landing `bin/test check`
+  through `bin/pre-commit` passed, exit 0, 3m18s, verified tree cc921989; an
+  earlier full `bin/test` on the pre-review-fix tree ran 3,110 executed, 0
+  failures. No DDL, no migration, no prompt version;
+  `prompts/coach-system-prompt.md` was not touched and the nine byte-frozen
+  sentences are unchanged.
+
 ## The question
 
-Ian, 2026-09-09:
+Ian, 2026-09-11:
 
 > The coach and the public-web HTML parent report both duplicate a lot of data.
 > E.g. tuition is the same for each of the living situations (on-campus,
@@ -122,7 +167,7 @@ That is the failure mode this brief exists to avoid.
 ### Why now
 
 The surfaces are finished enough to read as a whole. Brief 0008 closed on
-2026-09-09 (RFC 183) and brief 0006 is closed but for one deferred slice, so the
+2026-09-11 (RFC 183) and brief 0006 is closed but for one deferred slice, so the
 Family Cost Report and the `college_cost_profile` tool now carry their full
 intended payload for the first time — publisher (RFC 177), assurance tier (RFC
 179), cited year (RFC 183), borrowing (RFC 175), tuition tier (RFC 169). Each
@@ -131,7 +176,7 @@ Nobody has yet spent a run on the _composition_.
 
 ## What the repo does today
 
-Grepped, not guessed (2026-09-09).
+Grepped, not guessed (2026-09-11).
 
 | Surface             | Where                                                                                                 | Shape today                                                                                                                                                                                                           |
 | ------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -190,7 +235,7 @@ Gate 1 is answered well if, after it, we can say:
 
 ---
 
-## Research synthesis (2026-09-09)
+## Research synthesis (2026-09-11)
 
 Three parallel reports, all cited. `report-verbosity` **rendered the real page**
 in a throwaway worktree (no repo file changed); `coach-verbosity` measured the
