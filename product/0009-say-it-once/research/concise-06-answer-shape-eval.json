@@ -1,0 +1,271 @@
+{
+  "run": "rfc-198 / concise/06/the-coach-answer-shape",
+  "caveats": [
+    "no Anthropic API key in this checkout and CHAT_PROVIDER=log, so the PRODUCTION coach was not run",
+    "a different model instance from production, no tool-calling loop, no history beyond the six questions",
+    "grades are mechanical string/regex checks; the raw answers are here because the checks can only find losses someone wrote a check for"
+  ],
+  "counting_rules": {
+    "figure": "a `$` immediately followed by a digit",
+    "word": "a whitespace-separated token containing a letter or digit, after markdown table pipes, separator rows, * and # are stripped"
+  },
+  "questions": "Q1 [payload-one-school.json]  What would Sierra State cost me?\nQ2 [payload-three-schools.json]  What do these three schools cost?\nQ3 [payload-three-schools.json]  What if I live at home instead?\nQ4 [payload-three-schools.json]  Which one is cheapest after aid?\nQ5 [payload-three-schools.json]  How much debt do students leave with at these schools?\nQ6 [payload-three-schools.json]  Why is there no number for some of Six Statuses U's costs?\n",
+  "checks": {
+    "q1": [
+      "figure: tuition and fees 12,000",
+      "figure: an arrangement total",
+      "figure: net price 14,000",
+      "income band said in dollars",
+      "cited year 2023-24 (published prices)",
+      "cited year 2022-23 (blended/net)",
+      "publisher named (IPEDS / Scorecard)",
+      "assurance tier sentence (mandatory survey)",
+      "at-home $0 said as OURS",
+      "arrangement named",
+      "the price after aid attributed to its publisher, within two sentences of the figure"
+    ],
+    "q2": [
+      "basis: population sentence",
+      "basis: residency named",
+      "basis: way of living named",
+      "basis: academic year named",
+      "basis: what a net price counts as aid",
+      "figure: Sierra 12,000",
+      "figure: Marlowe 61,000",
+      "figure: a total per school",
+      "never invents Six Statuses U's missing on-campus total",
+      "publisher named"
+    ],
+    "q3": [
+      "at-home total 15,700",
+      "at-home $0 said as OURS",
+      "never the school's figure",
+      "difference vs on campus named",
+      "arrangement named in the family's words"
+    ],
+    "q4": [
+      "net price figure",
+      "income band in dollars",
+      "net-price basis named",
+      "cited year for the net price",
+      "publisher named",
+      "no loan subtracted from a price",
+      "the price after aid attributed to its publisher, within two sentences of the figure"
+    ],
+    "q5": [
+      "Sierra federal-loan debt 20,747",
+      "Sierra any-loan debt 27,202",
+      "cohort + year said (2024-25 graduates)",
+      "school named as the one saying it",
+      "private loans not in filing",
+      "federal median debt 23,000 (Scorecard)",
+      "administrative-record tier sentence",
+      "Six Statuses U: no filing, said plainly",
+      "the two publishers never added or compared",
+      "debt never presented as a price",
+      "loan said as money paid back with interest"
+    ],
+    "q6": [
+      "status: not applicable",
+      "status: not collected by us",
+      "status: imputed by publisher",
+      "status: suppressed by publisher",
+      "status: not reported by institution",
+      "our gap never said as the school failing",
+      "no total invented from partial parts",
+      "where the at-home housing zero is named, it is said as OURS"
+    ]
+  },
+  "results": {
+    "v30-before": {
+      "q1": {
+        "text_words": 346,
+        "words_before_figure": 9,
+        "passed": 10,
+        "total": 11,
+        "misses": [
+          "the price after aid attributed to its publisher, within two sentences of the figure"
+        ],
+        "tables": 0
+      },
+      "q2": {
+        "text_words": 391,
+        "words_before_figure": 157,
+        "passed": 10,
+        "total": 10,
+        "misses": [],
+        "tables": 0
+      },
+      "q3": {
+        "text_words": 193,
+        "words_before_figure": 15,
+        "passed": 4,
+        "total": 5,
+        "misses": [
+          "at-home $0 said as OURS"
+        ],
+        "tables": 0
+      },
+      "q4": {
+        "text_words": 197,
+        "words_before_figure": 11,
+        "passed": 5,
+        "total": 7,
+        "misses": [
+          "publisher named",
+          "the price after aid attributed to its publisher, within two sentences of the figure"
+        ],
+        "tables": 0
+      },
+      "q5": {
+        "text_words": 368,
+        "words_before_figure": 84,
+        "passed": 11,
+        "total": 11,
+        "misses": [],
+        "tables": 0
+      },
+      "q6": {
+        "text_words": 304,
+        "words_before_figure": 148,
+        "passed": 8,
+        "total": 8,
+        "misses": [],
+        "tables": 0
+      }
+    },
+    "v31-first-draft": {
+      "q1": {
+        "text_words": 340,
+        "words_before_figure": 8,
+        "passed": 10,
+        "total": 11,
+        "misses": [
+          "the price after aid attributed to its publisher, within two sentences of the figure"
+        ],
+        "tables": 0
+      },
+      "q2": {
+        "text_words": 382,
+        "words_before_figure": 176,
+        "passed": 10,
+        "total": 10,
+        "misses": [],
+        "tables": 15
+      },
+      "q3": {
+        "text_words": 206,
+        "words_before_figure": 11,
+        "passed": 4,
+        "total": 5,
+        "misses": [
+          "at-home $0 said as OURS"
+        ],
+        "tables": 0
+      },
+      "q4": {
+        "text_words": 191,
+        "words_before_figure": 6,
+        "passed": 5,
+        "total": 7,
+        "misses": [
+          "publisher named",
+          "the price after aid attributed to its publisher, within two sentences of the figure"
+        ],
+        "tables": 0
+      },
+      "q5": {
+        "text_words": 361,
+        "words_before_figure": 10,
+        "passed": 11,
+        "total": 11,
+        "misses": [],
+        "tables": 0
+      },
+      "q6": {
+        "text_words": 243,
+        "words_before_figure": 127,
+        "passed": 8,
+        "total": 8,
+        "misses": [],
+        "tables": 0
+      }
+    },
+    "v31-landed": {
+      "q1": {
+        "text_words": 358,
+        "words_before_figure": 5,
+        "passed": 11,
+        "total": 11,
+        "misses": [],
+        "tables": 0
+      },
+      "q2": {
+        "text_words": 437,
+        "words_before_figure": null,
+        "passed": 10,
+        "total": 10,
+        "misses": [],
+        "tables": 15
+      },
+      "q3": {
+        "text_words": 225,
+        "words_before_figure": 14,
+        "passed": 5,
+        "total": 5,
+        "misses": [],
+        "tables": 5
+      },
+      "q4": {
+        "text_words": 209,
+        "words_before_figure": 15,
+        "passed": 7,
+        "total": 7,
+        "misses": [],
+        "tables": 0
+      },
+      "q5": {
+        "text_words": 388,
+        "words_before_figure": 10,
+        "passed": 11,
+        "total": 11,
+        "misses": [],
+        "tables": 0
+      },
+      "q6": {
+        "text_words": 256,
+        "words_before_figure": 141,
+        "passed": 8,
+        "total": 8,
+        "misses": [],
+        "tables": 0
+      }
+    }
+  },
+  "answers": {
+    "v30-before": {
+      "q1": "**What you would actually pay at Sierra State University: $14,000 a year.** That is the net price for families in your income band, $48,001 to $75,000 \u2014 what you would actually pay after grants and scholarships. It is a 2022-23 figure and it is an average blended across all three ways of living, so it is not the total for any one of them.\n\nLiving at home is your usual plan, so I have priced Sierra State that way here \u2014 that is an assumption for this school, and if you would rather live somewhere else there, tell me and I will keep it as this school's own plan. These figures are for the 2023-24 academic year.\n\n- **Tuition and fees:** $12,000 \u2014 the price the school sets and publishes. This is its in-state price, which is what a family living in California would pay there.\n- **Housing and food:** $0. Living at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n- **Books and everyday costs:** $1,200 for books and supplies and $2,500 for everyday spending. These are the school's own estimates of living costs, and your own choices move them.\n- **Total, living at home:** $15,700 a year.\n\nLiving at home instead of on campus would cost $9,500 less a year \u2014 on campus comes to $25,200.\n\nFor this school our source does not separate a district price from the state price, so the in-state figure is shown as it was published and we cannot say whether a lower district price exists.\n\nThose published figures come from the U.S. Department of Education's IPEDS survey of college costs. The college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it. The published cost of attendance and the net price come from the College Scorecard.\n\nWould you like me to show what renting off campus at Sierra State would come to as well?\n",
+      "q2": "Here is what all three come to. First, what these figures rest on.\n\nThese are averages for first-year, full-time students who received federal aid - not a quote for this family. The public schools here \u2014 Sierra State University and Six Statuses U \u2014 are shown at the tuition and fees a family living in CA would be charged; the other schools here publish one price for everyone, so residency changes nothing there. You plan on living at home, and every school here is priced for it, so that is the one way of living below. The tuition and fees figures and the parts of living cost the schools publish come from the 2023-24 academic year, and the published cost of attendance and net price figures come from 2022-23. A net price is the published price minus the average grants and scholarships the school gave. Loans and work-study are never subtracted.\n\n**Sierra State University \u2014 living at home**\n\n- Tuition and fees: $12,000 (in-state)\n- Housing and food: $0 \u2014 our assumption, see below\n- Books and everyday costs: $1,200 books and supplies, $2,500 everyday spending (school's estimates)\n- Total: $15,700 a year\n\n**Marlowe College \u2014 living at home**\n\n- Tuition and fees: $61,000 (one published price for everyone)\n- Housing and food: $0 \u2014 our assumption, see below\n- Books and everyday costs: $1,200 books and supplies, $2,500 everyday spending (school's estimates)\n- Total: $64,700 a year\n\n**Six Statuses U \u2014 living at home**\n\n- Tuition and fees: $12,000 (in-state)\n- Housing and food: $0 \u2014 our assumption, see below\n- Books and everyday costs: $1,200 books and supplies, $2,500 everyday spending (school's estimates)\n- Total: $15,700 a year\n\nTuition and fees is the price each school sets and publishes; the other lines are each school's own estimates of living costs, and your own choices move them.\n\nAbout that zero: living at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n\nThe published figures above come from the U.S. Department of Education's IPEDS survey of college costs. The college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it.\n\nDo you want me to show what living on campus or renting off campus would come to at each of them?\n",
+      "q3": "Living at home is what I already priced all three at, so those totals stand: $15,700 at Sierra State University, $64,700 at Marlowe College and $15,700 at Six Statuses U. Here is what the other two ways of living come to instead, from the same 2023-24 figures.\n\n**Living on campus**\n\n- Sierra State University: $25,200 a year \u2014 $9,500 more than living at home.\n- Marlowe College: $74,200 a year \u2014 $9,500 more than living at home.\n- Six Statuses U: no total. The school did not report its everyday-spending figure for living on campus, so there is no on-campus total to give you, and I will not add up the parts that are there and call it one.\n\n**Renting off campus**\n\n- Sierra State University: $27,700 a year.\n- Marlowe College: $76,700 a year.\n- Six Statuses U: $27,700 a year.\n\nIn every one of these, tuition and fees is the price the school sets and publishes, and housing and food, books and everyday spending are the school's own estimates, which your own choices move.\n\nIf you would rather be priced for one of these instead of living at home, say which and I will keep it for that school.\n",
+      "q4": "After a financial aid offer, all three come out the same: **$14,000 a year** at Sierra State University, at Marlowe College and at Six Statuses U. That is the net price for families in your income band, $48,001 to $75,000 \u2014 what you would actually pay after grants and scholarships, from the 2022-23 academic year.\n\nTwo things worth holding on to:\n\n- A net price is the published price minus the average grants and scholarships the school gave. Loans and work-study are never subtracted \u2014 a loan is money paid back with interest, so it does not make a school cheaper.\n- Each of these is an average blended across all three ways of living, so it is not the total for living at home and I cannot set it against those totals.\n\nSierra State University and Six Statuses U publish their published price and their price after a financial aid offer for students paying in-state tuition, which is what you would pay there, so both figures are yours. Marlowe College publishes one price for everyone, so its figures are not on any residency basis.\n\nWould you like me to put this cost comparison on a page a parent can open?\n",
+      "q5": "Here is what each school reports about its own graduates. A loan is money paid back with interest, and this is money owed after graduating \u2014 it is not a price, so I will not set it against any of the costs above.\n\n**Sierra State University** \u2014 its 2024-25 Common Data Set reports these figures for the students who graduated from it that year, not this year's freshmen and not all its undergraduates. 1000 students were in the graduating class.\n\n- Graduates who borrowed federal loans owed $20,747 on average by the time they graduated \u2014 394 of the 1000, or 39.4%.\n- Graduates who borrowed a loan of any kind owed $27,202 on average \u2014 396 of the 1000, or 39.6%.\n- This filing reports no average for private loans, so these figures are not the whole of what its graduates borrowed. These are separate figures that overlap, so neither is a total and they cannot be added.\n\n**Marlowe College** \u2014 its 2024-25 Common Data Set reports these figures for the students who graduated from it that year, not this year's freshmen and not all its undergraduates. 1000 students were in the graduating class.\n\n- Graduates who borrowed federal loans owed $20,747 on average by the time they graduated \u2014 394 of the 1000, or 39.4%.\n- Graduates who borrowed a loan of any kind owed $27,202 on average \u2014 396 of the 1000, or 39.6%.\n- This filing reports no average for private loans, so these figures are not the whole of what its graduates borrowed.\n\n**Six Statuses U** \u2014 we hold no Common Data Set filing for this school, so we have nothing to say about what its graduates borrowed. Check with the school's financial aid office; I will not estimate it from another school.\n\nSeparately, the federal median debt at completion is $23,000 at each of the three. That figure covers a different set of students, so keep it apart from the school-reported figures above and do not add or compare them. This comes from federal loan and tax records, not from the college. It covers only students who got federal aid, and small numbers are blurred a little to protect privacy.\n\nDo you want me to look at what each school says about meeting financial need next?\n",
+      "q6": "Good question \u2014 the gaps are different kinds of gap, and the result says which is which for Six Statuses U.\n\n- **Everyday spending for living on campus:** this school did not report this figure. That is why there is no on-campus total for it \u2014 one part of the total is missing, so there is nothing to total.\n- **A district tuition price:** this figure does not apply at this school, and the source says so. This school publishes two tuition prices: one for students living in its state and one for students from outside it.\n- **A fees-only figure for district students:** we have not collected this figure yet. That gap is ours, not the school's.\n- **A fees-only figure for out-of-state students:** the U.S. Department of Education's IPEDS survey of college costs withholds this figure to protect students' privacy.\n- **A fees-only figure for in-state students:** this one does have an amount, $0. The U.S. Department of Education's IPEDS survey of college costs estimated this for the school; the school did not report it. It sits inside the tuition and fees line already, so it is never added on top.\n\nOne more zero that is not a gap at all: the $0 for housing and food at home. Living at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n\nThe figures Six Statuses U does publish come from the U.S. Department of Education's IPEDS survey of college costs. The college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it.\n\nWould you like me to check the school's own page or financial aid office for anything here?\n"
+    },
+    "v31-first-draft": {
+      "q1": "Living at home, **Sierra State University comes to $15,700 a year** for 2023-24. Living at home is your usual plan, so I assumed it for this school \u2014 tell me if that is wrong and I will keep the correction as Sierra State's own plan. The other ways of living are still here and still true.\n\n- **Tuition and fees:** $12,000 \u2014 the price the school sets and publishes, at the in-state rate, which is what a family living in CA would pay there.\n- **Housing and food:** counted as $0 \u2014 see the note below.\n- **Books and everyday costs:** $1,200 for books and supplies and $2,500 for everyday spending \u2014 the school's own estimates of living costs, and your own choices move them.\n- **Total for living at home:** $15,700\n\nLiving at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n\nLiving at home instead of on campus would cost **$9,500 less a year** \u2014 on campus comes to $25,200 for the same year.\n\nFor your family, the net price is **$14,000 a year** \u2014 what you would actually pay after grants and scholarships, for families earning $48,001 to $75,000. That figure is a 2022-23 average blended across all three ways of living, so it is a different kind of number from the 2023-24 totals above and I have not mixed the two.\n\nFor this school our source does not separate a district price from the state price, so the in-state figure is shown as it was published and we cannot say whether a lower district price exists.\n\nThe figures come from the U.S. Department of Education's IPEDS survey of college costs and the U.S. Department of Education College Scorecard. The college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it.\n\nWould you like me to do the same for the other schools on your list?\n",
+      "q2": "These are averages for first-year, full-time students who received federal aid - not a quote for this family.\n\nThe public schools here - Sierra State University and Six Statuses U - are shown at the tuition and fees a family living in CA would be charged; the other schools here publish one price for everyone, so residency changes nothing there.\n\nThe student plans on living at home, and every school here is priced for it, so the figures below hold that one way of living.\n\nThe published price figures for Sierra State University, Marlowe College and Six Statuses U, which are tuition and fees and the parts of living cost a school publishes, come from the 2023-24 academic year. The blended averages for Sierra State University, Marlowe College and Six Statuses U, which are the published cost of attendance and the net price, come from the 2022-23 academic year.\n\nA net price is the published price minus the average grants and scholarships the school gave. Loans and work-study are never subtracted.\n\nLiving at home, the totals for 2023-24 are **$15,700 at Sierra State University**, **$64,700 at Marlowe College** and **$15,700 at Six Statuses U**.\n\n**Tuition and fees \u2014 the price the school sets and publishes (2023-24, dollars)**\n\n| School | Tuition and fees |\n| --- | --- |\n| Sierra State University | 12,000 |\n| Marlowe College | 61,000 |\n| Six Statuses U | 12,000 |\n\n**Estimated living costs, living at home (2023-24, dollars)** \u2014 these are the schools' own estimates, and your own choices move them.\n\n| School | Books and supplies | Everyday spending |\n| --- | --- | --- |\n| Sierra State University | 1,200 | 2,500 |\n| Marlowe College | 1,200 | 2,500 |\n| Six Statuses U | 1,200 | 2,500 |\n\nHousing and food does not appear above because you would be living at home. Living at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n\n**Total for living at home (2023-24, dollars)**\n\n| School | Total |\n| --- | --- |\n| Sierra State University | 15,700 |\n| Marlowe College | 64,700 |\n| Six Statuses U | 15,700 |\n\nThe figures come from the U.S. Department of Education's IPEDS survey of college costs and the U.S. Department of Education College Scorecard. For all three schools: the college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it.\n",
+      "q3": "The figures I just gave you are already the living-at-home ones \u2014 $15,700 at Sierra State University, $64,700 at Marlowe College and $15,700 at Six Statuses U for 2023-24. Living at home is your usual plan, so I assumed it at each school; tell me if that is wrong anywhere and I will keep the correction as that school's own plan.\n\nHere is what the other ways of living come to, same year, same tuition basis.\n\n**Sierra State University**\n\n- Living on campus: $25,200 \u2014 living at home instead would cost $9,500 less a year.\n- Renting off campus: $27,700.\n\n**Marlowe College**\n\n- Living on campus: $74,200 \u2014 living at home instead would cost $9,500 less a year.\n- Renting off campus: $76,700.\n\n**Six Statuses U**\n\n- Living on campus: no total. The school did not report the everyday-spending figure for living on campus, so there is no on-campus total to give, and I will not add up the parts that are there and call it the total.\n- Renting off campus: $27,700 \u2014 living at home instead would cost $12,000 less a year.\n\nTuition and fees is the price the school sets and publishes; housing and food, books and everyday costs are the school's own estimates of living costs, and your own choices move them.\n",
+      "q4": "**All three come out the same: $14,000 a year** \u2014 what you would actually pay after grants and scholarships, for families earning $48,001 to $75,000. So on this measure none of them is cheaper than the others.\n\n- Sierra State University: $14,000\n- Marlowe College: $14,000\n- Six Statuses U: $14,000\n\nThose figures are from the 2022-23 academic year, and each is an average blended across all three ways of living \u2014 not the 2023-24 living-at-home totals we looked at, so I have kept the two apart rather than comparing them.\n\nA net price is the published price minus the average grants and scholarships the school gave. Loans and work-study are never subtracted: a loan is money paid back with interest, so it changes who pays and when, not what the school costs.\n\nSierra State University and Six Statuses U publish this figure for students paying in-state tuition and fees, which is what your family would pay in CA, so it is yours at both. Marlowe College publishes one price for everyone, so its figure is not on any residency basis.\n\nWould you like me to put this comparison on a page your parents can open?\n",
+      "q5": "**At Sierra State University, graduates who borrowed federal loans owed $20,747 on average by the time they graduated**, and graduates who borrowed a loan of any kind owed $27,202 on average. Marlowe College reports the same two figures: $20,747 and $27,202.\n\nThese are two separate kinds of borrowing, and they overlap, so I have not added them together and neither one is a total.\n\n**Sierra State University** \u2014 its 2024-25 Common Data Set reports these figures for the students who graduated from it that year, not this year's freshmen and not all its undergraduates.\n\n- 394 of the 1000 students who graduated borrowed federal loans \u2014 39.4%.\n- 396 of the 1000 students who graduated borrowed a loan of any kind \u2014 39.6%.\n- This filing reports no average for private loans, so these figures are not the whole of what its graduates borrowed.\n\n**Marlowe College** \u2014 its 2024-25 Common Data Set reports these figures for the students who graduated from it that year, not this year's freshmen and not all its undergraduates.\n\n- 394 of the 1000 students who graduated borrowed federal loans \u2014 39.4%.\n- 396 of the 1000 students who graduated borrowed a loan of any kind \u2014 39.6%.\n- This filing reports no average for private loans, so these figures are not the whole of what its graduates borrowed.\n\n**Six Statuses U** \u2014 we hold no Common Data Set filing for this school, so we have nothing to say about what its graduates borrowed. I will not estimate it from another school, and the federal-loan figures above are not a stand-in for it.\n\nSeparately, the College Scorecard reports a median debt at completion of $23,000 at each of the three schools. That covers a different set of students from the schools' own figures above, so I am giving it on its own and not adding it to them or comparing them. This comes from federal loan and tax records, not from the college. It covers only students who got federal aid, and small numbers are blurred a little to protect privacy.\n\nEvery figure here is money owed after graduating, paid back with interest \u2014 it is not a price, so it never comes off any of the costs we looked at.\n",
+      "q6": "Each blank has its own reason, and they are not all the school's doing.\n\n- **Everyday spending, living on campus:** this school did not report this figure. That is why there is no on-campus total for Six Statuses U \u2014 one part is missing, so I will not add up the parts that are there and call it the total.\n- **In-district tuition and fees:** this figure does not apply at this school, and the source says so. Six Statuses U publishes two tuition prices: one for students living in its state and one for students from outside it.\n- **In-district fees on their own:** we have not collected this figure yet. That is our gap, not something the school failed to report.\n- **In-state fees on their own:** the figure is $0, and the U.S. Department of Education's IPEDS survey of college costs estimated this for the school; the school did not report it. A fees-only figure is already inside the tuition and fees line of $12,000, so it is never added to a total.\n- **Out-of-state fees on their own:** the U.S. Department of Education's IPEDS survey of college costs withholds this figure to protect students' privacy.\n\nNone of these blanks is a zero, and none of them is a reason for me to guess a number.\n\nFor the figures Six Statuses U does report: the college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it.\n"
+    },
+    "v31-landed": {
+      "q1": "For your household income band \u2014 **$48,001 to $75,000** \u2014 Sierra State University's price after a financial aid offer is **$14,000 a year**. That is what you would actually pay after grants and scholarships, which are money you never pay back. It comes from the U.S. Department of Education College Scorecard for the **2022-23** academic year, and it is an average for first-year, full-time students who received federal aid rather than a quote for your family.\n\nLiving at home is your usual plan, so that is the way of living I have priced this school for. The published figures below are for **2023-24**.\n\n**Living at home, Sierra State University**\n\n- **Tuition and fees (in-state):** $12,000 \u2014 the price the school sets and publishes\n- **Housing and food:** none counted\n- **Books and everyday costs:** $1,200 for books and supplies, $2,500 for everyday spending \u2014 the school's own estimates, and your own choices move them\n- **Total for living at home:** $15,700\n\nLiving at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n\nLiving at home instead of on campus would cost **$9,500 less a year** \u2014 the on-campus total for 2023-24 is $25,200.\n\nTwo notes on the basis of these numbers. For this school our source does not separate a district price from the state price, so the in-state figure is shown as it was published and we cannot say whether a lower district price exists. For the published tuition and fees and living-cost figures, from the U.S. Department of Education's IPEDS survey of college costs: the college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it.\n\nSierra State also has a published cost of attendance of $40,000 for **2022-23** \u2014 an older average blended across all three ways of living, so it is not the at-home total and the two should not be compared.\n\nIs living at home still the plan for Sierra State, or would you rather I price it for living on campus?",
+      "q2": "Before the figures, here is what they are.\n\nThese are averages for first-year, full-time students who received federal aid - not a quote for this family. The public schools here \u2014 Sierra State University and Six Statuses U \u2014 are shown at the tuition and fees a family living in CA would be charged; Marlowe College publishes one price for everyone, so residency changes nothing there. You plan on living at home, and every school here is priced for it, so the figures below hold that one way of living. The published price figures for Sierra State University, Marlowe College and Six Statuses U, which are tuition and fees and the parts of living cost a school publishes, come from the **2023-24** academic year; the blended averages for all three, which are the published cost of attendance and the net price, come from **2022-23**. A net price is the published price minus the average grants and scholarships the school gave \u2014 loans and work-study are never subtracted.\n\n**Total for living at home** (dollars, 2023-24)\n\n| School | Total |\n| --- | --- |\n| Sierra State University | 15,700 |\n| Marlowe College | 64,700 |\n| Six Statuses U | 15,700 |\n\n**Tuition and fees** \u2014 the price each school sets and publishes (dollars, 2023-24)\n\n| School | Tuition and fees |\n| --- | --- |\n| Sierra State University | 12,000 (in-state) |\n| Marlowe College | 61,000 (one price for everyone) |\n| Six Statuses U | 12,000 (in-state) |\n\n**Estimated living costs, living at home** \u2014 the school's own estimates, which your choices move (dollars, 2023-24)\n\n| School | Housing and food | Books and everyday |\n| --- | --- | --- |\n| Sierra State University | none counted | 1,200 books, 2,500 everyday |\n| Marlowe College | none counted | 1,200 books, 2,500 everyday |\n| Six Statuses U | none counted | 1,200 books, 2,500 everyday |\n\nLiving at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n\nOn the two public schools and district prices: Six Statuses U publishes two tuition prices, one for students living in its state and one for students from outside it. For Sierra State University our source does not separate a district price from the state price, so the in-state figure is shown as it was published and we cannot say whether a lower district price exists.\n\nFor the published tuition and fees and living-cost figures at all three schools, from the U.S. Department of Education's IPEDS survey of college costs: the college had to report this to the federal government, and the form checks it against last year's answer. Nobody audits it.\n\nWould you like me to bring in what each school's price after a financial aid offer looks like next?",
+      "q3": "Living at home is already the way of living those figures are priced for \u2014 **$15,700** at Sierra State University, **$64,700** at Marlowe College and **$15,700** at Six Statuses U for 2023-24.\n\nLiving at home, we count no food-and-housing cost: eating at home is not free, but it is not a new cost that enrolling creates, so the at-home total counts it as zero. That is our assumption, not a figure any school published.\n\nHere is what living on campus instead would come to, from the same 2023-24 published figures.\n\n| School | Total living on campus | Difference vs. living at home |\n| --- | --- | --- |\n| Sierra State University | 25,200 | 9,500 more |\n| Marlowe College | 74,200 | 9,500 more |\n| Six Statuses U | not reported | cannot be said |\n\nSix Statuses U reports its on-campus housing and food ($9,000) and books and supplies ($1,200), but for everyday spending on campus: this school did not report this figure. So there is no on-campus total for that school, and I will not add up the parts we do have and call it one.\n\nEach on-campus total is tuition and fees at the in-state price for the two public schools and Marlowe's single price, plus that school's own estimates of housing and food, books and everyday spending.\n\nDo you want me to keep living at home as the plan for all three, or change it for one of them?",
+      "q4": "None of them is cheaper after aid: the price after a financial aid offer is **$14,000 a year at all three** \u2014 Sierra State University, Marlowe College and Six Statuses U \u2014 for your income band of **$48,001 to $75,000**, from the U.S. Department of Education College Scorecard for **2022-23**.\n\nA net price is the published price minus the average grants and scholarships the school gave. Loans and work-study are never subtracted, because a loan is money paid back with interest and it does not make a school cheaper.\n\nTwo things to hold on to:\n\n- These are averages for first-year, full-time students who received federal aid \u2014 not a quote for your family. Your own figure comes from each school's financial aid offer.\n- Both public schools publish that figure for students paying in-state tuition and fees, which is what you would pay in CA, so it is yours at both. Marlowe College publishes one price for everyone, so its figure is on no residency basis.\n\nThis $14,000 is a blended average across all three ways of living, so it is not the at-home total from before and the two should not be set against each other.\n\nWould you like me to put this cost comparison on a page your parents can open?",
+      "q5": "At **Sierra State University**, graduates who borrowed federal loans owed **$20,747** on average by the time they graduated, and graduates who borrowed a loan of any kind owed **$27,202** on average. A loan is money paid back with interest. These figures are from Sierra State University's 2024-25 Common Data Set, which reports them for the students who graduated from it that year \u2014 not this year's freshmen, and not all its undergraduates.\n\n- 394 of the 1000 students who graduated borrowed federal loans \u2014 39.4%\n- 396 of the 1000 students who graduated borrowed a loan of any kind \u2014 39.6%\n\nThe two kinds are separate and they overlap, so I do not add them together and neither one is a total. This filing reports no average for private loans, so these figures are not the whole of what its graduates borrowed.\n\nAt **Marlowe College** the figures are the same shape, from Marlowe College's 2024-25 Common Data Set, for the students who graduated from it that year \u2014 not this year's freshmen, and not all its undergraduates.\n\n- Graduates who borrowed federal loans owed **$20,747** on average by the time they graduated; 394 of the 1000 students who graduated borrowed federal loans \u2014 39.4%\n- Graduates who borrowed a loan of any kind owed **$27,202** on average; 396 of the 1000 students who graduated borrowed a loan of any kind \u2014 39.6%\n- This filing reports no average for private loans, so these figures are not the whole of what its graduates borrowed\n\nFor **Six Statuses U**: we hold no Common Data Set filing for this school, so we have nothing to say about what its graduates borrowed. I will not estimate it from another school, and the federal-loan figures above are not a stand-in for it \u2014 ask that school's financial aid office.\n\nSeparately, the College Scorecard reports a median debt at completion of **$23,000** at Sierra State University, at Marlowe College and at Six Statuses U. That figure covers a different group of students from a school's own borrowing figures, so I keep the two apart rather than adding or comparing them. This comes from federal loan and tax records, not from the college. It covers only students who got federal aid, and small numbers are blurred a little to protect privacy.\n\nNone of these is a price: money owed after graduating is never subtracted from any cost.",
+      "q6": "Each blank has its own reason, and they are not the same reason.\n\n- **Everyday spending on campus:** this school did not report this figure. That is why there is no on-campus total for Six Statuses U \u2014 I will not add the parts we do have and call the result a total.\n- **In-district tuition and fees:** this figure does not apply at this school, and the source says so. Six Statuses U publishes two tuition prices, one for students living in its state and one for students from outside it.\n- **In-district fees on their own:** we have not collected this figure yet. That gap is ours, not the school's.\n- **Out-of-state fees on their own:** the U.S. Department of Education's IPEDS survey of college costs withholds this figure to protect students' privacy.\n- **In-state fees on their own:** this one does have an amount, **$0** \u2014 but the U.S. Department of Education's IPEDS survey of college costs estimated this for the school; the school did not report it. A fees-only figure is already inside the tuition and fees line, so it is never added to a total.\n\nTwo other gaps, for completeness. We hold no Common Data Set filing for this school, so we have nothing to say about how it treats financial need or which aid forms it requires, or about what its graduates borrowed \u2014 the school's financial aid office is the place to ask.\n\nEverything Six Statuses U does report \u2014 tuition and fees of $12,000 in-state for 2023-24, and its at-home total of $15,700 \u2014 still stands as published."
+    }
+  }
+}

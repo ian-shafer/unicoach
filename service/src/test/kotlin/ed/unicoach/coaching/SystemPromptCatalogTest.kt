@@ -221,6 +221,7 @@ class SystemPromptCatalogTest {
       LIVING_ARRANGEMENT("When a school reports its costs by living arrangement,"),
       SEARCH("When a student names something they want to study, search"),
       COMPARISON("When two or more schools appear together, the cost tool"),
+      ANSWER_SHAPE("Lead a money answer with the number"),
       NAME_LOOKUP("When the student names a school in words -- the full name,"),
       SIMILAR_COLLEGES("When a student names one school and asks for others like"),
       LIVING_PLAN("A cost result may also carry a third precision_offer"),
@@ -1315,6 +1316,171 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The answer-shape paragraph (RFC 198, brief 0009 `concise/06`), asserted in
+   * the body the runtime is actually SERVED — the row `service.conf` pins.
+   *
+   * Gate-1 D7 allows a table, and this paragraph is the four delivery rules that
+   * follow from it: the number first, parallel figures in a table, the unit in
+   * the header once, and one caution rather than one per figure.
+   *
+   * Two of the eight sentences are not the rules themselves and matter more than
+   * they look:
+   *
+   * - The `comparison_basis` sentence DEFERS to the committed instruction above
+   *   it (RFC 151: the five basis lines are said first, as ordinary sentences
+   *   above the table). Leading with the number is an ordering rule for what the
+   *   answer says after its basis, never a licence to drop one. This slice is
+   *   ADDITION-only and may not reorder a landed instruction.
+   * - The last sentence is gate-1 D1 in one line: "once per answer" never means
+   *   "leave it out". The four things named there — the status sentence beside a
+   *   figure with no amount, the assurance-tier sentence, OUR at-home zero (RFC
+   *   166 §7) and the residency basis — are each said as their own paragraphs
+   *   require, however short the answer is.
+   *
+   * The table-safety sentence is this run's own addition, from RFC 175 D9 and
+   * RFC 149 D-C: a shared table makes two un-summable publishers look summable,
+   * which is exactly why `concise/04` was forbidden from merging the merit and
+   * debt tables on the page. A chat table is a new route to the same defect.
+   */
+  @Test
+  fun `the served answer-shape paragraph leads with the figure and never drops a required sentence`() {
+    val paragraph = answerShapeParagraph()
+
+    assertTrue(
+      paragraph.contains("the first sentence carries a figure"),
+      "D7 rule 1: a money answer opens on a number, not on the method",
+    )
+    assertTrue(
+      paragraph.contains("The explanation, the caution and the method come after it, never before it"),
+      "front-loading is an ORDER, stated as one",
+    )
+    assertTrue(
+      paragraph.contains(CollegeCostChatTool.COMPARISON_BASIS_KEY) && paragraph.contains("still come first"),
+      "the committed comparison rule (RFC 151) outranks the new ordering rule, and this paragraph says so",
+    )
+    assertTrue(
+      paragraph.contains("never drops a basis, a source or a year"),
+      "ordering an answer never removes what gate-1 D1 protects",
+    )
+    assertTrue(
+      paragraph.contains("three or more figures of the same kind") && paragraph.contains("one row each"),
+      "D7 rule 2: parallel figures of one kind are a table, one row per thing",
+    )
+    assertTrue(
+      paragraph.contains("three-column limit"),
+      "the table rule defers to the phone-width cap already in the prompt rather than restating it",
+    )
+    assertTrue(
+      paragraph.contains("unit in the column header once") && paragraph.contains("never repeat it in every cell"),
+      "D7 rule 3: the unit is said once, in the header",
+    )
+    assertTrue(
+      paragraph.contains("Never put two figures in one table"),
+      "RFC 175 D9 on the chat side: a shared table is a claim that two figures are comparable",
+    )
+    assertTrue(
+      paragraph.contains("another publisher's figure"),
+      "the two debt publishers are the case D9 named; they never share a table",
+    )
+    assertTrue(
+      paragraph.contains("Say a caution once in an answer"),
+      "D7 rule 4: one hedge where it changes the decision, not one per figure",
+    )
+    assertTrue(
+      paragraph.contains("never licence to leave out a sentence the result gives you"),
+      "gate-1 D1: saying something once is never saying it none",
+    )
+    assertTrue(
+      paragraph.contains("a figure with no amount"),
+      "the figure-status sentence survives the once-per-answer rule",
+    )
+    assertTrue(
+      paragraph.contains("what kind of number a school's figures are"),
+      "the assurance-tier sentence survives the once-per-answer rule",
+    )
+    assertTrue(
+      paragraph.contains("our own assumption about living at home"),
+      "RFC 166 §7: the at-home zero is OURS and is always said",
+    )
+    assertTrue(
+      paragraph.contains("the residency basis a price is on"),
+      "RFC 157: which residency a figure assumes survives the once-per-answer rule",
+    )
+    assertTrue(
+      paragraph.contains("the split still leads and the same four lines still follow in the same order"),
+      "the living-arrangement rules (RFC 152) outrank the new ordering rule too: front-loading never replaces the split with one total",
+    )
+    assertTrue(
+      paragraph.contains("name the source and the academic year with the figure they cover rather than in a list at the end"),
+      "saying a source once is never saying it far from its figure (RFC 177, RFC 183)",
+    )
+    assertTrue(
+      paragraph.contains("a loan is money paid back with interest every time you name one"),
+      "the loan caution is per mention and survives the once-per-answer rule (RFC 141/175)",
+    )
+    assertParagraphKeepsTheStandingCopyRules("the answer-shape paragraph", paragraph)
+  }
+
+  /**
+   * The answer-shape rule's rollback is a real one (RFC 198).
+   *
+   * Stated as a RELATION rather than as a version literal: the lowest `coach`
+   * version carrying the paragraph must have a selectable predecessor that does
+   * NOT carry it. A literal `v30` would be wrong the moment another run's prompt
+   * version lands first — the labels are computed by `bin/prompt-seed` at land,
+   * and two prompt-editing runs were live in other sessions while this one was
+   * open — and "assert the version before the SERVED one lacks it" goes silently
+   * false as soon as any later version lands on top.
+   *
+   * What the pin actually buys: `COACHING_SYSTEM_PROMPT_VERSION=<predecessor>`
+   * serves a body without these four delivery rules, so the answer shape can be
+   * reverted on its own. Unlike RFC 192's, this rollback is a WHOLE one: this
+   * run changes no code, so flipping the pin removes the rules entirely and
+   * leaves nothing behind in another home.
+   */
+  @Test
+  fun `the version before the answer-shape paragraph is selectable and does not carry it`() {
+    val versionNumbers = mutableListOf<Int>()
+    connection.prepareStatement("SELECT version FROM system_prompts WHERE name = ?").use { statement ->
+      statement.setString(1, coaching.systemPromptName)
+      statement.executeQuery().use { rows ->
+        while (rows.next()) {
+          versionNumberOrNull(rows.getString("version"))?.let { versionNumbers += it }
+        }
+      }
+    }
+
+    // Every body is read through [bodyOf], so each row is matched in the line
+    // dialect THAT row was written with rather than in this run's.
+    val carries = { number: Int ->
+      SystemPromptsDao
+        .findByNameAndVersion(session, coaching.systemPromptName, "v$number")
+        .getOrNull()
+        ?.let { row -> bodyOf(row).contains(CoachParagraph.ANSWER_SHAPE) }
+    }
+
+    val first =
+      assertNotNull(
+        versionNumbers.sorted().firstOrNull { carries(it) == true },
+        "no coach version carries the answer-shape paragraph; bin/prompt-seed cuts one at land from prompts/coach-system-prompt.md",
+      )
+    // The predecessor is the HIGHEST version below [first], not [first - 1]:
+    // the labels are contiguous today and nothing promises they stay so, and a
+    // gap would fail this test for a reason that has nothing to do with the rule
+    // it guards.
+    val predecessor =
+      assertNotNull(
+        versionNumbers.filter { it < first }.maxOrNull(),
+        "the answer-shape paragraph must be an ADDITION to an earlier body, never the first coach version",
+      )
+    assertEquals(
+      false,
+      carries(predecessor),
+      "the rollback target [v$predecessor] must stay selectable and must not already carry the rules the rollback exists to remove",
+    )
+  }
+
+  /**
    * The living-plan paragraph (RFC 152), asserted in the body the runtime is
    * actually SERVED — the row `service.conf` pins.
    */
@@ -2023,6 +2189,8 @@ class SystemPromptCatalogTest {
   private fun livingPlanParagraph(): String = paragraphAt(CoachParagraph.LIVING_PLAN)
 
   private fun comparisonParagraph(): String = paragraphAt(CoachParagraph.COMPARISON)
+
+  private fun answerShapeParagraph(): String = paragraphAt(CoachParagraph.ANSWER_SHAPE)
 
   /**
    * The name-lookup paragraph (RFC 154), asserted in the body the runtime is
