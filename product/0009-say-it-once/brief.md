@@ -5,10 +5,11 @@
 ## Status
 
 - **Phase:** EXECUTE — `concise/01`, `02`, `04` and `05` LANDED 2026-09-11;
-  `concise/03`, `06` and `08` LANDED 2026-09-12. **One slice is left in this
-  brief** (the quiet-provenance one), and it is held by product judgement
-  pending a fresh decision about what may still collapse on the page the links
-  landed on.
+  `concise/03`, `06`, `08` and `09` LANDED 2026-09-12; `concise/11` LANDED
+  2026-09-13. **Two slices are left in this brief**:
+  `concise/10/no-link-to-a-grave`, in flight, and the quiet-provenance one,
+  which is held by product judgement pending a fresh decision about what may
+  still collapse on the page the links landed on.
 - **Gate 1 (prioritisation):** **PASSED 2026-09-11 — Ian approved all defaults,
   verbatim: "approve"**. D1-D8 stand as written below. D8 is `standing`.
 - **Gate 2 (spec):** **PASSED 2026-09-11 — "approve"**; D9-D14 in `spec.md`
@@ -356,6 +357,56 @@
   now rests on three field-scoped prompt rules (lines 24, 28, 29, 123) rather
   than one general sentence; nothing is unreachable, but a later slice may
   decide the general form should exist.
+
+  concise/11/never-open-with-money LANDED as RFC 202 (main@6daf680f + 1e86ead3,
+  2026-09-13) — the coach is told again never to open a conversation with money.
+  ONE sentence, addition only, at prompt line 24: "Whichever field a result
+  offers, you still never open a conversation with money: raise residency_state,
+  income_band or living_plan only once cost is already what you are talking
+  about, and never as your way into the topic." MEASURED: `git numstat` on
+  `prompts/coach-system-prompt.md` is **1 added, 0 deleted** — 207 -> 208 lines,
+  33,513 -> 33,736 bytes (+223). No rewording, no paragraph opener touched, none
+  of the nine byte-frozen sentences touched, and prompt line 62 (the known-wrong
+  score-ranges line owned by brief 0010's `test/04`) left alone. THE GAP WAS
+  NARROW AND THE RFC SAYS SO: RFC 199's rule map recorded all four clauses of
+  the deleted `update_money_profile` ethos block as still stated by the prompt,
+  and THREE of them really are — accept-a-decline and never-re-ask at line 31,
+  say-what-it-unlocks per field at lines 25, 30 and 124. Only "never open with
+  it" was missing, nothing was unreachable, and the rule went from STATED to
+  EMERGENT rather than from present to absent: every money question is gated on
+  "only ask when the result offers it" and a `precision_offer` exists only
+  inside a cost result. Weaker in three ways all the same — the guarantee was
+  nobody's written rule, it was explicit for one of three fields, and nothing
+  stopped the coach calling a cost tool unprompted and manufacturing the offer.
+  THE RFC 134 HALF may be the more important one: RFC 134 says "the tool
+  DESCRIPTION carries the ethos contract verbatim" and RFC 199 removed that
+  contract without ever citing RFC 134, so a reader of RFC 134 today would look
+  in the description and not find it. RFC 202 carries the change: the ethos
+  contract's home is now the PROMPT, RFC 134's SCHEMA half (the tri-state
+  `declined`, nothing gated) is untouched and still binding, and the move is RFC
+  192's one-rule-one-home reason applied by RFC 199. ONE TEST, over the SERVED
+  body (P1): the field list is DERIVED from `PrecisionOffer.entries`, so a
+  fourth offer fails the test until the rule names it and the rule's scope
+  cannot narrow in silence. No rollback-relation test, deliberately and stated
+  in the RFC — the rollback is whole and code-free, and the failure mode worth
+  guarding is the sentence disappearing again, which is exactly what happened to
+  its predecessor. Coach prompt v33; rollback
+  `COACHING_SYSTEM_PROMPT_VERSION=v32`, a WHOLE rollback because this run
+  changes no production code. Gate: `nix develop -c bin/test` **3,154 executed,
+  0 failures, 0 errors, 0 skipped**, and the new test verified present in the
+  JUnit XML with no failure or skipped element — it RAN; then the landing
+  `bin/test check` through `bin/pre-commit` passed TWICE, because the first land
+  lost the land lock to RFC 201 and the rebase onto a changed `bin/pre-commit`
+  cost a second full gate run. The land itself took RFC 193's docs-only fast
+  path over one `product/**` commit. Review (one adversarial reviewer, verifying
+  every claim against the tree) found NOTHING BLOCKING and three SHOULD FIX
+  items, all applied: the RFC claimed the prompt "no longer states" a rule it
+  never stated, every prompt line cite was a base number one low after the
+  insert, and there was no test-execution evidence at review time. No DDL, no
+  table, no column, no hand-written migration; the one seeded row is this run's
+  own generated v33 prompt seed. THE DOOR: the existing coach conversation — a
+  student who opens about essays or deadlines is not asked their household
+  income.
 
 ## The question
 
