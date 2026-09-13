@@ -923,6 +923,16 @@ repository** — green, and meaningless. (RFC 194.)
 source sweep counted `a(href`, allowlisting one of two valid anchor forms — the
 second form was exactly the hole the test existed to close.)
 
+**P9 — A log line that claims an action must be tested against the action's
+EFFECT, not its invocation.** RFC 201's adopt path called a restore command and
+logged "root checkout reverted", while a STAGED change survived untouched — the
+restore read the index, not `HEAD`. A test asserting "the command ran" passes; a
+test asserting "the file is back at HEAD" fails. Distinct from P1 and P7: this
+is the gap between **calling** and **achieving**. Aggravating factor worth
+keeping in the nomination: it failed on the LIKELIEST case by construction — the
+refusal tells an agent to adopt _because_ they ran `git add`, so the file is
+always staged.
+
 **P8 — A legend must be derived from, or pinned to, the thing it describes.**
 (RFC 192: the `assurance` entry hand-typed English glosses where the payload
 carries enum tokens, explaining values the model never sees.) _Possibly a
@@ -1073,3 +1083,74 @@ citing a Common Data Set figure.
 **First-session test.** A parent clicks a citation and reaches the college's
 filing — or, where it is gone, reads the same attribution with nothing to click,
 and is not sent to a dead page.
+
+---
+
+## `concise/11/never-open-with-money`
+
+**D19 (Ian, 2026-09-11): approve "one sentence restoring the general rule, plus
+the RFC 134 citation that RFC 199 omitted".**
+
+**Needs:**
+
+- CONFLICTS concise/10/no-link-to-a-grave — `concise/10` may mint a coach prompt
+  version. ADD/ADD if so; a rebase risk, not an order.
+
+**What to build and why.** RFC 199 deleted this from `MoneyProfileChatTool`'s
+description, together with a code comment reading _"The ethos contract rides the
+tool description verbatim (RFC 134): value before ask, never force, declined
+stays declined."_:
+
+> "Ask about money only when cost comes up naturally in the conversation - never
+> open with it, and always explain what the answer unlocks…"
+
+**Three of RFC 199's four claimed replacements HOLD** — verified by reading, not
+grepping: accept-a-decline and never-re-ask are both really at prompt line 30
+(_"never raise that field again yourself — but if they later bring money back
+up"_), and say-what-it-unlocks is at lines 24 and 39. **My first report said all
+four were lost; that was wrong, and it was wrong because I string-matched the
+tool's WORDING instead of reading the prompt's MEANING — the same error I had
+just accused the run of.** Recorded as SD13.
+
+**What is genuinely missing is one clause: "never open with it."** The prompt
+gates every money question on _"only ask when the result offers it"_ (line 28).
+A `precision_offer` only exists inside a cost result, so in practice cost has
+already come up — but that is **structure, not a stated rule**. The rule went
+from STATED to EMERGENT, which is weaker in three ways: it depends on a
+mechanism nobody wrote down as a guarantee; it is explicit for only ONE of the
+three fields (line 123, the living plan, says _"and cost is already what you are
+talking about"_); and nothing stops the coach calling a cost tool unprompted and
+manufacturing the offer.
+
+**Foundations.** The prompt already owns this idiom — line 152, for a different
+feature: _"in every other conversation you still **never open with the
+offer**"_. Use that phrasing; do not invent a new one.
+
+**Decided here.** One added sentence in the money region stating the general
+rule for all three precision-offer fields. **Addition only.**
+
+**Left to /ship's design phase.** The exact wording and the insertion point.
+
+**Acceptance criteria.**
+
+- ONE added sentence. No rewording, no paragraph opener touched, no byte-frozen
+  sentence touched, nothing deleted.
+- Asserted against the **SERVED** prompt body (P1), not against a constant in a
+  file the slice edits.
+- **The RFC must cite RFC 134 and resolve it.** RFC 134 says _"The tool
+  DESCRIPTION carries the ethos contract verbatim"_ and _"product ethos — value
+  before ask, never force — is a schema fact, not a UX preference."_ RFC 199
+  removed that contract and **never cited RFC 134 at all**. Per
+  `rfc/INVARIANTS.md` the earlier RFC is left as committed; this RFC carries the
+  change and states plainly that the ethos contract now lives in the PROMPT
+  rather than the description, and why that is acceptable. That process gap is
+  real independently of the wording question, because a reader of RFC 134 today
+  will believe the contract is still in the description.
+- Name the prompt version and its rollback; say whether WHOLE or HALF.
+- No DDL.
+
+**Reachability / the door.** The existing coach conversation. Nothing new to
+reach.
+
+**First-session test.** A student opens a conversation about essays or deadlines
+and is not asked their household income.
