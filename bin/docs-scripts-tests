@@ -1,0 +1,627 @@
+#!/usr/bin/env bash
+# docs-scripts-tests — shell assertions over the documentation land path
+# (RFC 201): .prime/agent/skills/chart/scripts/docs-claim and docs-land, plus
+# the two bin/functions predicates they and bin/pre-commit rest on.
+#
+# WHAT IS BEING PROTECTED. /chart and /slice used to write product/** in the root
+# checkout and commit on main. Two sessions doing that in one tree produced two
+# measured failures on 2026-09-11: a 4m17s gate run thrown away by another
+# session's unstaged file, and a docs commit that swept up 63 lines of another
+# session's in-progress spec. The fix is that documentation now works the way
+# code already did -- own worktree, own branch, fast-forward into main -- and
+# that bin/pre-commit REFUSES a commit in the root checkout so the old path stops
+# existing rather than being discouraged.
+#
+# NO WORKTREE OF THE REAL REPO, NO GRADLE, NO POSTGRES. Every assertion runs
+# against a throwaway `git init` repo under mktemp -d. That is not only cheap: a
+# case that reached the real checkout would add worktrees and branches to a
+# machine running live /ship and /chart sessions, and `docs-land` ends in
+# `git merge --ff-only` on whatever it was pointed at.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+docs-scripts-tests [options]
+
+Runs the shell assertions over the /chart documentation land path: docs-claim,
+docs-land, bin/functions' branch_lands_product_docs_only and
+protected_commit_target, and bin/pre-commit's refusal text. Needs no database,
+no daemon and no worktree of this repo: each case runs against a throwaway git
+repo under a temp dir.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: docs-scripts-tests accepts no positional arguments."
+fi
+
+CHART_SCRIPTS="$PROJECT_ROOT/.prime/agent/skills/chart/scripts"
+DOCS_CLAIM="$CHART_SCRIPTS/docs-claim"
+DOCS_LAND="$CHART_SCRIPTS/docs-land"
+
+[ -x "$DOCS_CLAIM" ] || fail_test "docs-claim is missing or not executable [$DOCS_CLAIM]"
+[ -x "$DOCS_LAND" ] || fail_test "docs-land is missing or not executable [$DOCS_LAND]"
+
+# This harness runs inside the pre-commit hook (git commit -> bin/pre-commit ->
+# bin/test check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
+# GIT_INDEX_FILE are exported and OUTRANK both `git -C` and a plain `cd`. Without
+# this strip every fixture below would operate on the REAL repository -- and the
+# subject of this file ends in `git merge --ff-only`. docs-land strips for
+# itself; the assertion at the end proves it.
+strip_git_hook_env
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+# docs_fixture -> prints the root checkout path of a fresh repo with one commit.
+#
+# The worktree docs-claim adds is a SIBLING of the repo directory, so each
+# fixture gets its own parent directory and cannot collide with another case's.
+#
+# The parent comes from `mktemp -d` and NOT from a counter. Every caller invokes
+# this in a command substitution -- `repo="$(docs_fixture)"` -- which is a
+# SUBSHELL, so an incremented counter dies with it and every fixture would be
+# handed the SAME directory: one `git init` over another's repo, one case's
+# worktree standing in another case's assertion. That is not a hypothetical; it
+# is what this function did in its first draft, and the assertion that caught it
+# is the one about a refused -a leaving no worktree behind.
+docs_fixture() {
+  local parent repo
+  parent="$(mktemp -d "$FIXTURE_DIR/fixture.XXXXXX")"
+  repo="$parent/repo"
+  mkdir -p "$repo/product/0001-brief"
+  git init -q -b main "$repo" > /dev/null
+  git -C "$repo" config user.email "tests@example.com"
+  git -C "$repo" config user.name "docs-scripts-tests"
+  printf '.scratch/\n' > "$repo/.gitignore"
+  printf 'brief\n' > "$repo/product/0001-brief/brief.md"
+  mkdir -p "$repo/bin"
+  printf 'code\n' > "$repo/bin/thing"
+  git -C "$repo" add -A
+  git -C "$repo" commit -qm base > /dev/null
+  printf '%s\n' "$repo"
+}
+
+# Commit in a fixture WORKTREE. --no-verify because a fixture has no hook
+# installed and this harness is not testing git.
+docs_commit() { # <dir> <message>
+  git -C "$1" add -A
+  git -C "$1" -c user.email=tests@example.com -c user.name=docs-scripts-tests \
+    commit -qm "$2" --no-verify > /dev/null
+}
+
+# `in_dir` rather than `env -C`: -C is a GNU env option that BSD env acquired
+# only recently, and this harness must not depend on which env is first on PATH
+# inside the dev shell.
+in_dir() { # <dir> <command...>
+  local dir="$1"
+  shift
+  (cd "$dir" && "$@")
+}
+
+# Silence a case whose POINT is the exit status. The refusal text is asserted
+# where it matters (the 'lands nothing' case) and is noise everywhere else.
+quiet() { "$@" > /dev/null 2>&1; }
+
+claim() { # <repo> <docs-claim args...>
+  local repo="$1"
+  shift
+  in_dir "$repo" "$DOCS_CLAIM" "$@"
+}
+
+worktree_of() { # <repo> <slug>
+  printf '%s-docs-%s\n' "$1" "$2"
+}
+
+echo "==== docs-claim: grammar ===="
+
+# 1. -h on stdout, nothing on stderr. The bin/ rule: stdout carries only what the
+# caller explicitly asked for, and help is the one thing they can ask for.
+test_claim_help() {
+  local out err
+  out="$(mktemp)"; err="$(mktemp)"
+  "$DOCS_CLAIM" -h > "$out" 2> "$err" || { rm -f "$out" "$err"; return 1; }
+  grep -q 'docs-claim -s <slug>' "$out" || { rm -f "$out" "$err"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -2 "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+}
+assert_success "docs-claim -h prints help on stdout, stderr empty" test_claim_help
+
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "docs-claim with no -s is a usage error" \
+  "$DOCS_CLAIM"
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "docs-claim rejects an unknown option" \
+  "$DOCS_CLAIM" -Z
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "docs-claim rejects a positional argument" \
+  "$DOCS_CLAIM" -s brief extra
+
+CLAIM_REPO="$(docs_fixture)"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "docs-claim rejects a non-kebab-case slug" \
+  in_dir "$CLAIM_REPO" "$DOCS_CLAIM" -s "Brief Two"
+
+echo "==== docs-claim: the claim ===="
+
+# 2. The happy path, and the state file is the whole interface to docs-land.
+CLAIM_OUT="$(claim "$CLAIM_REPO" -s 0001-brief)"
+CLAIM_WT="$(worktree_of "$CLAIM_REPO" 0001-brief)"
+[ -d "$CLAIM_WT" ] || fail_test "docs-claim created no worktree at [$CLAIM_WT]"
+pass_test "docs-claim creates the worktree <repo>-docs-<slug>"
+
+[ "$(git -C "$CLAIM_WT" rev-parse --abbrev-ref HEAD)" = "docs/0001-brief" ] ||
+  fail_test "the claimed worktree is on [$(git -C "$CLAIM_WT" rev-parse --abbrev-ref HEAD)], expected [docs/0001-brief]"
+pass_test "docs-claim puts the worktree on branch docs/<slug>"
+
+# 3. stdout is the state block and NOTHING else -- every log line in this script
+# goes to stderr, which is what makes the output parseable by its caller.
+test_claim_stdout_is_state_only() {
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+    [A-Z_]*=*) ;;
+    *) log-error "docs-claim wrote a non-KEY=value line to stdout: [$line]"; return 1 ;;
+    esac
+  done <<< "$CLAIM_OUT"
+  printf '%s\n' "$CLAIM_OUT" | grep -q '^RUN_SCRATCH=' &&
+    printf '%s\n' "$CLAIM_OUT" | grep -q '^CODEBASE_ROOT=' &&
+    printf '%s\n' "$CLAIM_OUT" | grep -q '^BASE_SHA='
+}
+assert_success "docs-claim writes ONLY KEY=value state to stdout (logging is stderr)" \
+  test_claim_stdout_is_state_only
+
+# 4. The branch name is the claim, and git makes it atomic: a second session
+# choosing the same slug is refused, and the first session's worktree is intact.
+assert_failure "a second claim of the same slug is refused" \
+  in_dir "$CLAIM_REPO" "$DOCS_CLAIM" -s 0001-brief
+[ -d "$CLAIM_WT" ] || fail_test "the refused second claim removed the first claim's worktree"
+pass_test "the refused claim left the first session's worktree untouched"
+
+# 5. A claim from inside a LINKED worktree is refused. docs-land fast-forwards in
+# the checkout named ORIGINAL_CHECKOUT, and a linked worktree cannot move the
+# base branch -- a claim made there would record a place that cannot land.
+assert_failure "docs-claim refuses to run from a linked worktree" \
+  quiet in_dir "$CLAIM_WT" "$DOCS_CLAIM" -s 0002-other
+
+echo "==== docs-claim: -a adopts named paths only ===="
+
+# 6. Validation happens BEFORE the worktree is created, so a rejected -a leaves
+# no branch behind for the operator to clean up.
+ADOPT_REPO="$(docs_fixture)"
+printf 'x\n' > "$ADOPT_REPO/bin/stray"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-a refuses a path outside product/" \
+  in_dir "$ADOPT_REPO" "$DOCS_CLAIM" -s 0001-brief -a bin/stray
+[ ! -d "$(worktree_of "$ADOPT_REPO" 0001-brief)" ] ||
+  fail_test "the refused -a still created a worktree"
+git -C "$ADOPT_REPO" rev-parse --verify docs/0001-brief > /dev/null 2>&1 &&
+  fail_test "the refused -a left branch docs/0001-brief behind"
+pass_test "a refused -a creates no worktree and no branch"
+
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-a refuses a product/ path that does not exist" \
+  in_dir "$ADOPT_REPO" "$DOCS_CLAIM" -s 0001-brief -a product/0001-brief/nope.md
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-a refuses a path containing .." \
+  in_dir "$ADOPT_REPO" "$DOCS_CLAIM" -s 0001-brief -a "product/../bin/thing"
+
+# 7. The migration case, exactly as an in-flight session meets it: an UNTRACKED
+# in-progress spec sitting in the shared root checkout.
+printf 'draft spec\n' > "$ADOPT_REPO/product/0001-brief/spec.md"
+# A second session's file, in the same directory, NOT named on the command line.
+printf 'not mine\n' > "$ADOPT_REPO/product/0001-brief/other-session.md"
+claim "$ADOPT_REPO" -s 0001-brief -a product/0001-brief/spec.md > /dev/null
+ADOPT_WT="$(worktree_of "$ADOPT_REPO" 0001-brief)"
+[ "$(cat "$ADOPT_WT/product/0001-brief/spec.md" 2> /dev/null)" = "draft spec" ] ||
+  fail_test "-a did not copy the untracked file into the worktree"
+[ ! -e "$ADOPT_REPO/product/0001-brief/spec.md" ] ||
+  fail_test "-a left the untracked file in the root checkout"
+pass_test "-a moves an untracked product/ file into the worktree"
+
+# THE ONE THAT MATTERS. -a acts on the paths NAMED and on nothing else. A glob,
+# or a `git checkout -- product/`, would have taken the other session's file too
+# -- which is hazard 4 reproduced by the tool built to close it.
+[ "$(cat "$ADOPT_REPO/product/0001-brief/other-session.md" 2> /dev/null)" = "not mine" ] ||
+  fail_test "-a touched a file it was not given: another session's work was destroyed"
+[ ! -e "$ADOPT_WT/product/0001-brief/other-session.md" ] ||
+  fail_test "-a copied a file it was not given into the worktree"
+pass_test "-a leaves a path it was not given alone, in BOTH directions"
+
+# 8. A TRACKED, modified file: the edit moves to the worktree and the root
+# checkout goes back to what the base branch says.
+TRACKED_REPO="$(docs_fixture)"
+printf 'brief\nedited here\n' > "$TRACKED_REPO/product/0001-brief/brief.md"
+claim "$TRACKED_REPO" -s 0001-brief -a product/0001-brief/brief.md > /dev/null
+TRACKED_WT="$(worktree_of "$TRACKED_REPO" 0001-brief)"
+grep -q 'edited here' "$TRACKED_WT/product/0001-brief/brief.md" ||
+  fail_test "-a did not carry the tracked file's edit into the worktree"
+grep -q 'edited here' "$TRACKED_REPO/product/0001-brief/brief.md" &&
+  fail_test "-a left the edit in the root checkout"
+[ -z "$(git -C "$TRACKED_REPO" status --porcelain -- product/)" ] ||
+  fail_test "-a left product/ dirty in the root checkout: [$(git -C "$TRACKED_REPO" status --porcelain -- product/)]"
+pass_test "-a moves a TRACKED file's edit and reverts the root checkout"
+
+# THE MIGRATION CASE, not an edge of it. The refusal message sends an agent here
+# precisely because they ran `git add` and were refused, so the file is STAGED by
+# construction. A restore that reads the index instead of HEAD no-ops here and
+# succeeds only in the case that never happens -- which is what it did.
+STAGED_REPO="$(docs_fixture)"
+printf 'brief\nstaged edit\n' > "$STAGED_REPO/product/0001-brief/brief.md"
+git -C "$STAGED_REPO" add product/0001-brief/brief.md
+claim "$STAGED_REPO" -s 0001-brief -a product/0001-brief/brief.md > /dev/null
+STAGED_WT="$(worktree_of "$STAGED_REPO" 0001-brief)"
+grep -q 'staged edit' "$STAGED_WT/product/0001-brief/brief.md" ||
+  fail_test "-a did not carry a STAGED edit into the worktree"
+[ -z "$(git -C "$STAGED_REPO" status --porcelain -- product/)" ] ||
+  fail_test "-a left the STAGED edit in the root checkout: [$(git -C "$STAGED_REPO" status --porcelain -- product/)]"
+pass_test "-a moves a STAGED edit and leaves the root checkout genuinely clean"
+
+echo "==== docs-land: grammar ===="
+
+test_land_help() {
+  local out err
+  out="$(mktemp)"; err="$(mktemp)"
+  "$DOCS_LAND" -h > "$out" 2> "$err" || { rm -f "$out" "$err"; return 1; }
+  grep -q 'docs-land -s <run-scratch>' "$out" || { rm -f "$out" "$err"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -2 "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+}
+assert_success "docs-land -h prints help on stdout, stderr empty" test_land_help
+
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "docs-land with no -s is a usage error" \
+  "$DOCS_LAND"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "docs-land rejects a run-scratch with no state file" \
+  "$DOCS_LAND" -s "$FIXTURE_DIR/no-such-run"
+
+echo "==== docs-land: what a branch may land ===="
+
+# 9. The happy path: a product/-only branch fast-forwards, the worktree is
+# removed and the branch is deleted.
+LAND_REPO="$(docs_fixture)"
+claim "$LAND_REPO" -s 0001-brief > /dev/null
+LAND_WT="$(worktree_of "$LAND_REPO" 0001-brief)"
+LAND_RS="$LAND_WT/.scratch/docs/0001-brief"
+printf 'ledger line\n' >> "$LAND_WT/product/0001-brief/brief.md"
+docs_commit "$LAND_WT" "docs: ledger"
+LAND_TIP="$(git -C "$LAND_WT" rev-parse HEAD)"
+LAND_SHA="$("$DOCS_LAND" -s "$LAND_RS" 2> /dev/null)"
+[ "$(git -C "$LAND_REPO" rev-parse main)" = "$LAND_TIP" ] ||
+  fail_test "docs-land did not fast-forward main to the branch tip"
+pass_test "docs-land fast-forwards the base branch onto a product/-only branch"
+[ "$LAND_SHA" = "$LAND_TIP" ] ||
+  fail_test "docs-land printed [$LAND_SHA] on stdout, expected the landed SHA [$LAND_TIP]"
+pass_test "docs-land writes ONLY the landed SHA to stdout"
+[ ! -d "$LAND_WT" ] || fail_test "docs-land left the worktree behind"
+git -C "$LAND_REPO" rev-parse --verify docs/0001-brief > /dev/null 2>&1 &&
+  fail_test "docs-land left the branch behind"
+pass_test "docs-land removes the worktree and deletes the branch"
+
+# 10. THE GATE. A branch carrying one path outside product/ does not land, and
+# main does not move. This is the whole safety argument of the docs path: a
+# branch that can only land product/ paths cannot land an untested build input,
+# because product/ is not a build input.
+CODE_REPO="$(docs_fixture)"
+claim "$CODE_REPO" -s 0001-brief > /dev/null
+CODE_WT="$(worktree_of "$CODE_REPO" 0001-brief)"
+CODE_RS="$CODE_WT/.scratch/docs/0001-brief"
+CODE_MAIN_BEFORE="$(git -C "$CODE_REPO" rev-parse main)"
+printf 'ledger\n' >> "$CODE_WT/product/0001-brief/brief.md"
+printf 'sneaky\n' >> "$CODE_WT/bin/thing"
+docs_commit "$CODE_WT" "docs: ledger (and a code file)"
+assert_failure "docs-land REFUSES a branch that lands a path outside product/" \
+  quiet "$DOCS_LAND" -s "$CODE_RS"
+[ "$(git -C "$CODE_REPO" rev-parse main)" = "$CODE_MAIN_BEFORE" ] ||
+  fail_test "the refused land moved main anyway"
+pass_test "the refused land left the base branch where it was"
+
+# 11. A RENAME out of product/ into bin/ is the same defect wearing a disguise:
+# with rename detection on, --name-only prints only the destination for a rename
+# INTO product/ and only that for one out of it. --no-renames decomposes both.
+RENAME_REPO="$(docs_fixture)"
+claim "$RENAME_REPO" -s 0001-brief > /dev/null
+RENAME_WT="$(worktree_of "$RENAME_REPO" 0001-brief)"
+git -C "$RENAME_WT" mv product/0001-brief/brief.md bin/brief.md
+docs_commit "$RENAME_WT" "docs: move a brief into bin/"
+assert_failure "docs-land refuses a RENAME out of product/ into bin/" \
+  quiet "$DOCS_LAND" -s "$RENAME_WT/.scratch/docs/0001-brief"
+
+# 12. A branch that lands NOTHING is refused, and refused with its own message:
+# "lands nothing" and "lands code" are different mistakes with different fixes.
+EMPTY_REPO="$(docs_fixture)"
+claim "$EMPTY_REPO" -s 0001-brief > /dev/null
+EMPTY_RS="$(worktree_of "$EMPTY_REPO" 0001-brief)/.scratch/docs/0001-brief"
+test_land_empty_names_itself() {
+  local err status=0
+  err="$(mktemp)"
+  "$DOCS_LAND" -s "$EMPTY_RS" > /dev/null 2> "$err" || status=$?
+  [ "$status" -ne 0 ] && grep -q 'lands nothing' "$err"
+  status=$?
+  rm -f "$err"
+  return $status
+}
+assert_success "docs-land refuses an empty branch and says 'lands nothing'" \
+  test_land_empty_names_itself
+
+# 13. An uncommitted change is refused. A land is not the place to discover that
+# half the ledger line is still in the working tree.
+DIRTY_REPO="$(docs_fixture)"
+claim "$DIRTY_REPO" -s 0001-brief > /dev/null
+DIRTY_WT="$(worktree_of "$DIRTY_REPO" 0001-brief)"
+printf 'landed\n' >> "$DIRTY_WT/product/0001-brief/brief.md"
+docs_commit "$DIRTY_WT" "docs: ledger"
+printf 'and more, uncommitted\n' >> "$DIRTY_WT/product/0001-brief/brief.md"
+assert_failure "docs-land refuses an uncommitted change in the worktree" \
+  quiet "$DOCS_LAND" -s "$DIRTY_WT/.scratch/docs/0001-brief"
+
+echo "==== docs-land: a base branch that moved ===="
+
+# 14. The base WILL move: a docs land takes no lock and code lands do not wait
+# for one. A run that can replay cleanly does so and lands, rather than handing
+# the operator a rebase they would have run verbatim.
+MOVED_REPO="$(docs_fixture)"
+claim "$MOVED_REPO" -s 0001-brief > /dev/null
+MOVED_WT="$(worktree_of "$MOVED_REPO" 0001-brief)"
+printf 'my ledger line\n' >> "$MOVED_WT/product/0001-brief/brief.md"
+docs_commit "$MOVED_WT" "docs: my ledger"
+# Another session lands a DIFFERENT file while this run was writing.
+printf 'status\n' > "$MOVED_REPO/product/STATUS.md"
+docs_commit "$MOVED_REPO" "docs: someone else's status"
+MOVED_OTHER="$(git -C "$MOVED_REPO" rev-parse main)"
+"$DOCS_LAND" -s "$MOVED_WT/.scratch/docs/0001-brief" > /dev/null 2>&1 ||
+  fail_test "docs-land did not replay onto a moved base"
+git -C "$MOVED_REPO" merge-base --is-ancestor "$MOVED_OTHER" main ||
+  fail_test "the replay dropped the other session's landed commit"
+grep -q 'my ledger line' "$MOVED_REPO/product/0001-brief/brief.md" ||
+  fail_test "the replay lost this run's own line"
+pass_test "docs-land replays onto a moved base and lands both sessions' work"
+
+# 15. A replay that CONFLICTS is a human's to read. It must not be resolved
+# mechanically inside the one path that reaches the base branch, and it must not
+# leave a half-finished rebase in the worktree for the next session to find.
+CONFLICT_REPO="$(docs_fixture)"
+claim "$CONFLICT_REPO" -s 0001-brief > /dev/null
+CONFLICT_WT="$(worktree_of "$CONFLICT_REPO" 0001-brief)"
+printf 'brief\nMINE\n' > "$CONFLICT_WT/product/0001-brief/brief.md"
+docs_commit "$CONFLICT_WT" "docs: mine"
+printf 'brief\nTHEIRS\n' > "$CONFLICT_REPO/product/0001-brief/brief.md"
+docs_commit "$CONFLICT_REPO" "docs: theirs"
+CONFLICT_MAIN="$(git -C "$CONFLICT_REPO" rev-parse main)"
+assert_failure "docs-land refuses a replay it cannot make cleanly" \
+  quiet "$DOCS_LAND" -s "$CONFLICT_WT/.scratch/docs/0001-brief"
+[ "$(git -C "$CONFLICT_REPO" rev-parse main)" = "$CONFLICT_MAIN" ] ||
+  fail_test "the conflicted land moved main"
+[ -d "$CONFLICT_WT" ] || fail_test "the conflicted land removed the worktree with the work still in it"
+for op in rebase-merge rebase-apply; do
+  [ -e "$(git -C "$CONFLICT_WT" rev-parse --git-path "$op")" ] &&
+    fail_test "the conflicted land left a rebase in progress in the worktree"
+done
+pass_test "a conflicted replay is aborted, the worktree is kept, main is untouched"
+
+# 16. An operation ALREADY in progress is not this script's to abort. Aborting an
+# operator's paused rebase, while reporting it as a conflict of our own, destroys
+# work that refusing cleanly would have left alone.
+mkdir -p "$(git -C "$CONFLICT_WT" rev-parse --git-path rebase-merge)"
+assert_failure "docs-land refuses when an operation is already in progress" \
+  quiet "$DOCS_LAND" -s "$CONFLICT_WT/.scratch/docs/0001-brief"
+[ -e "$(git -C "$CONFLICT_WT" rev-parse --git-path rebase-merge)" ] ||
+  fail_test "docs-land destroyed an in-progress operation it did not start"
+pass_test "docs-land leaves an operation it did not start alone"
+rm -rf "$(git -C "$CONFLICT_WT" rev-parse --git-path rebase-merge)"
+
+echo "==== branch_lands_product_docs_only ===="
+
+# The predicate is the gate's whole content, so it is driven directly for the
+# cases a path can be spelled in. It is a DIFFERENT question from its neighbour
+# staged_changes_are_product_docs_only (what is STAGED, RFC 194) and from
+# ship-land's land_classify_advance (what did every commit in a range change,
+# RFC 193). Three questions, three functions, one file for two of them.
+predicate_repo() { # -> a repo whose HEAD is one commit past main
+  local repo
+  repo="$(docs_fixture)"
+  git -C "$repo" checkout -q -b docs/probe
+  printf '%s\n' "$repo"
+}
+
+# THE DEMONSTRATED DEFECT. RFC 193's sibling implementation read its paths with
+# `while read -r path` -- no `IFS=` -- so bash stripped leading whitespace and a
+# directory named " product" (LEADING SPACE) was read as "product", classified
+# docs-only, and skipped the gate: a code path smuggled past the hook by a
+# filename. Drop the `IFS=` from branch_lands_product_docs_only and this fails.
+test_predicate_leading_space_directory() {
+  local repo status
+  repo="$(predicate_repo)"
+  mkdir -p "$repo/ product"
+  printf 'code\n' > "$repo/ product/x.kt"
+  docs_commit "$repo" "a directory with a leading space"
+  branch_lands_product_docs_only "$repo" main
+  status=$?
+  [ "$status" -ne 0 ]
+}
+assert_success "a directory named ' product' (LEADING SPACE) is NOT docs-only" \
+  test_predicate_leading_space_directory
+
+test_predicate_newline_in_pathname() {
+  local repo
+  repo="$(predicate_repo)"
+  printf 'x\n' > "$repo/product/0001-brief/od"$'\n'"d.md"
+  docs_commit "$repo" "a pathname with a newline"
+  branch_lands_product_docs_only "$repo" main
+}
+assert_success "a product/ pathname containing a NEWLINE is read as ONE path (-z)" \
+  test_predicate_newline_in_pathname
+
+test_predicate_file_named_product() {
+  local repo status
+  repo="$(predicate_repo)"
+  rm -rf "$repo/product"
+  printf 'not a directory\n' > "$repo/product"
+  docs_commit "$repo" "a FILE named product"
+  branch_lands_product_docs_only "$repo" main
+  status=$?
+  [ "$status" -ne 0 ]
+}
+assert_success "a regular FILE named 'product' is NOT docs-only (the case arm needs the slash)" \
+  test_predicate_file_named_product
+
+test_predicate_empty_range_is_not_vacuously_true() {
+  local repo status
+  repo="$(predicate_repo)"
+  branch_lands_product_docs_only "$repo" main
+  status=$?
+  [ "$status" -ne 0 ]
+}
+assert_success "a branch that lands NOTHING answers 1 (an empty set is not a vacuous pass)" \
+  test_predicate_empty_range_is_not_vacuously_true
+
+test_predicate_is_silent_on_stdout() {
+  local repo out status
+  repo="$(predicate_repo)"
+  printf 'more\n' >> "$repo/product/0001-brief/brief.md"
+  docs_commit "$repo" "docs"
+  out="$(branch_lands_product_docs_only "$repo" main 2> /dev/null)"
+  status=$?
+  [ "$status" -eq 0 ] && [ -z "$out" ]
+}
+assert_success "the predicate writes nothing to stdout (its answer is the exit status)" \
+  test_predicate_is_silent_on_stdout
+
+echo "==== protected_commit_target: never develop on main ===="
+
+# The guard bin/pre-commit runs. Its two clauses answer two different questions
+# and both are wanted: the root checkout is the one tree every session shares, and
+# main is the branch nothing is developed on.
+test_guard_refuses_root_checkout() {
+  local repo reason
+  repo="$(docs_fixture)"
+  reason="$(protected_commit_target "$repo")" || return 1
+  case "$reason" in
+  *"ROOT checkout"*) return 0 ;;
+  *) log-error "the root checkout was refused for the wrong reason: [$reason]"; return 1 ;;
+  esac
+}
+assert_success "the ROOT checkout is refused, and named as the root checkout" \
+  test_guard_refuses_root_checkout
+
+test_guard_allows_a_linked_worktree() {
+  local repo
+  repo="$(docs_fixture)"
+  claim "$repo" -s 0001-brief > /dev/null 2>&1
+  ! protected_commit_target "$(worktree_of "$repo" 0001-brief)" > /dev/null
+}
+assert_success "a LINKED worktree on its own branch is allowed" \
+  test_guard_allows_a_linked_worktree
+
+# Claude Code's rfc-pipeline worktrees run with a DETACHED HEAD. They are linked
+# worktrees doing exactly what this rule asks for, and .claude/** is never
+# modified by this workflow -- so a detached HEAD must not be refused.
+test_guard_allows_a_detached_linked_worktree() {
+  local repo wt
+  repo="$(docs_fixture)"
+  wt="$repo-detached"
+  git -C "$repo" worktree add -q --detach "$wt" main > /dev/null 2>&1
+  ! protected_commit_target "$wt" > /dev/null
+}
+assert_success "a linked worktree with a DETACHED HEAD is allowed (the rfc-pipeline case)" \
+  test_guard_allows_a_detached_linked_worktree
+
+# The second clause, exercised on its own. main cannot be checked out twice, so
+# the only way to reach it is a linked worktree whose HEAD is a branch named
+# main in a repo whose own main is elsewhere -- which is what a fixture can make.
+test_guard_refuses_head_main_in_a_linked_worktree() {
+  local repo wt reason
+  repo="$(docs_fixture)"
+  wt="$repo-second"
+  git -C "$repo" worktree add -q --detach "$wt" main > /dev/null 2>&1
+  git -C "$repo" checkout -q -b parked
+  git -C "$wt" checkout -q main
+  reason="$(protected_commit_target "$wt")" || return 1
+  case "$reason" in
+  *"HEAD is [main]"*) return 0 ;;
+  *) log-error "HEAD=main was refused for the wrong reason: [$reason]"; return 1 ;;
+  esac
+}
+assert_success "HEAD on main is refused even in a linked worktree (the rule, not the arrangement)" \
+  test_guard_refuses_head_main_in_a_linked_worktree
+
+# bin/pre-commit must carry the refusal AND the recipe. The refusal text is the
+# entire migration experience for an in-flight session: it is seen by an agent
+# mid-close-out that expected to commit, and an error that makes the reader go
+# and find an RFC is a worse error.
+test_pre_commit_carries_the_recipe() {
+  grep -q 'protected_commit_target' "$PROJECT_ROOT/bin/pre-commit" &&
+    grep -q 'docs-claim' "$PROJECT_ROOT/bin/pre-commit" &&
+    grep -q 'docs-land' "$PROJECT_ROOT/bin/pre-commit" &&
+    grep -q 'ship-claim' "$PROJECT_ROOT/bin/pre-commit" &&
+    grep -qi 'Nothing is lost' "$PROJECT_ROOT/bin/pre-commit"
+}
+assert_success "bin/pre-commit runs the guard and its refusal carries the whole recipe" \
+  test_pre_commit_carries_the_recipe
+
+# The recipe is built from the STAGED set and from nothing else. Other dirty
+# paths under product/ may belong to another live session, and a recipe that
+# swept them in would print hazard 4 from inside the fix for it.
+test_pre_commit_recipe_reads_the_index_only() {
+  grep -q 'diff --cached --name-only -z --no-renames -- product/' "$PROJECT_ROOT/bin/pre-commit"
+}
+assert_success "bin/pre-commit builds the -a recipe from the STAGED set only" \
+  test_pre_commit_recipe_reads_the_index_only
+
+# The slug in the recipe is derived from the first staged path's own directory,
+# so the commonest case (one brief) needs no thought from the reader. The sed
+# expression is lifted OUT of bin/pre-commit and run, rather than eyeballed: this
+# line shipped once with its backreference mangled to a control character, which
+# printed `docs-claim -s  -a ...` -- a command that looks right at a glance and
+# fails on paste. A grep for the line's shape would not have caught it.
+test_pre_commit_slug_derivation() {
+  local line expr slug
+  # Parameter expansion, not a nested sed: the thing being extracted IS a sed
+  # expression in single quotes, and a sed quoting its way past that would be
+  # harder to read than the line it checks.
+  line="$(grep -m1 'DOCS_SLUG=' "$PROJECT_ROOT/bin/pre-commit")" ||
+    { log-error "could not find the DOCS_SLUG derivation in bin/pre-commit"; return 1; }
+  expr="${line#*sed -n \'}"
+  expr="${expr%\'*}"
+  [ -n "$expr" ] && [ "$expr" != "$line" ] ||
+    { log-error "could not read the sed expression out of [$line]"; return 1; }
+  slug="$(printf '%s' "product/0011-beyond-money/spec.md" | sed -n "$expr")"
+  [ "$slug" = "0011-beyond-money" ] ||
+    { log-error "the recipe's slug derivation produced [$slug], expected [0011-beyond-money]"; return 1; }
+}
+assert_success "the -a recipe's slug is really derived from the staged path" \
+  test_pre_commit_slug_derivation
+
+# Last, the escape this harness itself depends on. A git hook exports GIT_DIR,
+# and it outranks `git -C` AND a plain `cd`. docs-land ends in
+# `git merge --ff-only`: one that trusted the environment over its own run state
+# would fast-forward the REAL repository from a fixture branch.
+test_land_ignores_a_hook_git_dir() {
+  local repo wt rs real_main_before status=0
+  repo="$(docs_fixture)"
+  claim "$repo" -s 0001-brief > /dev/null 2>&1
+  wt="$(worktree_of "$repo" 0001-brief)"
+  rs="$wt/.scratch/docs/0001-brief"
+  printf 'ledger\n' >> "$wt/product/0001-brief/brief.md"
+  docs_commit "$wt" "docs: ledger"
+  real_main_before="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
+  GIT_DIR="$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir)" \
+    GIT_INDEX_FILE="$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir)/index" \
+    "$DOCS_LAND" -s "$rs" > /dev/null 2>&1 || status=$?
+  [ "$status" -eq 0 ] || { log-error "docs-land under GIT_DIR exited $status"; return 1; }
+  grep -q ledger "$repo/product/0001-brief/brief.md" ||
+    { log-error "docs-land under GIT_DIR did not land into the fixture"; return 1; }
+  [ "$(git -C "$PROJECT_ROOT" rev-parse HEAD)" = "$real_main_before" ]
+}
+assert_success "GIT_DIR from a hook cannot move docs-land off the run's own repo" \
+  test_land_ignores_a_hook_git_dir
+
+end_tests

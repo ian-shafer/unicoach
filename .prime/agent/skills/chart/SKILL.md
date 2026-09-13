@@ -53,6 +53,10 @@ the prioritisation gate and the spec gate. Everything else is this skill's job.
    a new numbered decision (or a new brief), never an edit of the old one. The
    brief's `Status:` ledger and post-gate slice additions (e.g. S3.5) are the
    living, append-only parts.
+8. **`product/**` is never written in the root checkout.** Every write goes in a
+   worktree this run claimed, and reaches `main` by fast-forward only (RFC 201).
+   `bin/pre-commit` refuses a commit in the root checkout, so this is enforced
+   rather than remembered. See **Landing product docs** below.
 
 ## The artifact: `product/NNNN-slug/`
 
@@ -71,6 +75,50 @@ Number = max existing + 1, zero-padded to four digits. The brief opens with a
 
 Update the ledger immediately after each /ship run lands (code SHA + doc SHA).
 Resume a brief by reading `Status:`, never from session memory.
+
+## Landing product docs
+
+Two sessions writing `product/**` in one shared checkout collide in two ways.
+`bin/pre-commit` validates the whole working tree rather than the commit, so one
+session's unformatted file fails another session's commit — after that commit
+may already have spent minutes running tests. And `git add` takes any path it is
+handed, so a commit can carry changes the committing run does not own. Both are
+one cause: two writers in one tree. So each writer gets its own tree:
+
+    .prime/agent/skills/chart/scripts/docs-claim -s <slug>     # from the ROOT checkout
+    # ... write product/** in the worktree it prints as CODEBASE_ROOT ...
+    nix develop -c git commit -m "docs: ..."                   # the hook, in that worktree
+    .prime/agent/skills/chart/scripts/docs-land -s <run-scratch>
+
+`-s <slug>` is the brief directory for a chart phase (`0011-beyond-money`) or
+`rfc-<n>-docs` for a /slice close-out. The branch is `docs/<slug>` and the
+worktree is `<repo>-docs-<slug>`. Deliberately NOT `pipeline/rfc-<n>`: that
+prefix is how both `ship-claim` and Claude Code's rfc-pipeline compute the next
+free RFC number, and a docs branch parked there would burn a number for a change
+that has no design.
+
+`docs-land` asserts that the branch's net diff against `main` touches nothing
+outside `product/`, and that is the whole safety argument: **a branch that can
+only land `product/` paths cannot land an untested build input, because
+`product/` is not a build input.** It replays onto a base that moved and takes
+no land lock — doc traffic is frequent and cheap, and RFC 193's docs-only fast
+path in `ship-land` is what absorbs it on the code side.
+
+The commit still goes through the hook. A commit whose staged paths are all
+under `product/` skips the test half of the gate (RFC 194), so it costs the
+format check rather than a full test run — which is what makes a branch per
+ledger line affordable.
+
+**Adopting mid-flight.** A session that already has `product/**` changes sitting
+in the root checkout is refused at its next commit, with the recipe in the
+refusal text. Nothing is lost — the files stay exactly where they are. Move only
+what is YOURS, by name:
+
+    docs-claim -s <slug> -a product/0011-beyond-money/spec.md -a product/STATUS.md
+
+`-a` acts on the paths named and on nothing else. Do not reach for a glob or a
+`git checkout -- product/`: the root checkout is shared, so acting on the set
+you think you own destroys work that is not yours.
 
 **`product/STATUS.md` is the cross-brief tracker** — a glanceable TL;DR of next
 steps (rewritten on every update, never "see below"), a user manual of shipped
@@ -196,9 +244,17 @@ edit, proposed to Ian — this file is code, gated like code.
 
 ## Relationship to ship
 
-This skill never claims worktrees, writes RFCs, or lands code — that is /ship's
-contract, including its own approval gate and the pre-commit hook. The interface
-is one artifact: the slice instruction. If /ship needs product context beyond
-its instruction, the instruction was underwritten; fix it in `spec.md`. Product
-files (`product/**` and this skill) land on `main` through the normal gate like
-any other change.
+This skill never writes RFCs and never lands code — that is /ship's contract,
+including its own approval gate and the pre-commit hook. The interface is one
+artifact: the slice instruction. If /ship needs product context beyond its
+instruction, the instruction was underwritten; fix it in `spec.md`.
+
+It DOES claim a worktree now, for its own documentation (**Landing product
+docs**). That is the same instrument /ship uses and not the same contract: a
+docs worktree has no RFC number, no approval gate and no review tiers, and
+`docs-land` will not let it carry a path outside `product/`.
+
+**This file is not `product/**`.** A skill edit is code — gated like code,
+proposed to Ian, and landed by /ship, which is the only path that runs the full
+test gate. `docs-land` refuses a branch carrying one, by construction rather
+than by rule: `.prime/agent/skills/**` is not under `product/`.

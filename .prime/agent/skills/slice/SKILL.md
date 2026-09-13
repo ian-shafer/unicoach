@@ -50,8 +50,15 @@ is delegation between peers, not containment.
    (RFC 180) — a slug filename and a line in `db/schema/ORDER`.
 5. **A run that lands code without updating `product/**` is NOT finished.** The
    ledger and `product/STATUS.md` are part of the deliverable, not paperwork.
-6. **This skill never lands code itself.** No worktree, no RFC, no commit — that
-   is /ship's contract, including its approval gate and the pre-commit hook.
+6. **This skill never lands code itself.** No RFC, no code commit — that is
+   /ship's contract, including its approval gate and the pre-commit hook. It
+   does claim one worktree of its own, for the close-out DOCS, and that worktree
+   can land nothing but `product/**`.
+7. **The close-out is never written in the root checkout.** `docs-claim` ->
+   write -> commit -> `docs-land` (RFC 201). Two sessions writing `product/**`
+   in one shared tree can waste a full test run and can commit changes the run
+   does not own. `bin/pre-commit` refuses a commit in the root checkout, so a
+   run that forgets is refused rather than silently doing it.
 
 ## Slice IDs
 
@@ -269,6 +276,24 @@ If /ship stops at the hook, this skill stops too. Report; do not work around it.
 The run is not finished when the code lands. It is finished when the product
 docs say what the product now is.
 
+**Claim a docs worktree first, and write there — never in the root checkout.**
+One command before anything else in this phase, and one after (RFC 201):
+
+    .prime/agent/skills/chart/scripts/docs-claim -s rfc-<n>-docs   # from the ROOT checkout
+    # ... write a, b and c below in the worktree it prints as CODEBASE_ROOT ...
+    nix develop -c git commit -m "docs: ... (RFC <n>)"
+    .prime/agent/skills/chart/scripts/docs-land -s <run-scratch>
+
+The slug is free-form kebab-case. `rfc-<n>-docs` is the convention for one
+slice, and it is unique by the same claim that made the RFC number unique — but
+nothing parses it, so a close-out covering two landed slices takes ONE claim
+with a slug of its own (`wave-2-docs`) rather than two claims racing on one
+`STATUS.md`. `docs-land` prints the doc SHA on stdout; that is the second SHA
+the ledger line needs.
+
+The commit is `product/**`-only, so it skips the test half of the gate (RFC
+194): it costs the format check, not a full test run.
+
 **a. The brief's ledger** (`product/NNNN-*/brief.md`), one appended line in the
 house format — slice ID, RFC number, code SHA + doc SHA, date, one-line what:
 
@@ -309,7 +334,9 @@ not a surprise at its kickoff.
       standing decisions (reachability, value-before-ask, DDL-at-gate), and live
       numbers.
 - [ ] RFC number recomputed immediately before the commit.
-- [ ] /ship landed: code SHA and doc SHA in hand, `PHASE=complete`.
+- [ ] /ship landed: code SHA in hand, `PHASE=complete`.
+- [ ] Close-out written in a claimed `docs/` worktree, not the root checkout.
+- [ ] `docs-land` run: doc SHA in hand, worktree and branch gone.
 - [ ] Brief ledger line appended.
 - [ ] `product/STATUS.md`: TL;DR, `Updated:` line, work table, user-manual entry
       with its door, wave board.

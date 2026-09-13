@@ -68,6 +68,15 @@ conventional_dump_path() {
 #
 # The ship-* scripts under .prime/agent/skills/ship/scripts keep their own
 # copies deliberately: they do not source bin/, so there is nothing to share.
+# The docs-* scripts under .prime/agent/skills/chart/scripts DO source this file
+# and nothing else from bin/ (RFC 201). The distinction is not taste: it is
+# `bin/common` that the ship scripts cannot afford -- it layers the dotenvs and
+# derives a per-checkout port block for a checkout those scripts merely point
+# AT, so an env fault in a repo they do not run in would fail them. This file
+# assigns defaults and defines functions and does nothing else, and it parses
+# under macOS system bash 3.2 (measured), which is the shell a skill script runs
+# in outside the Nix dev shell. Sourcing it is therefore free, and it is what
+# keeps the product/ path predicates in ONE file to read.
 strip_git_hook_env() {
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 }
@@ -114,6 +123,110 @@ staged_changes_are_product_docs_only() {
     esac
   done < <(git -C "$repo" diff --cached --name-only -z --no-renames)
   [ "$found" -eq 1 ]
+}
+
+# Classify what a BRANCH LANDS: 0 when the net diff of <repo>'s HEAD against
+# <base-ref> touches nothing outside product/, 1 otherwise. Used by
+# .prime/agent/skills/chart/scripts/docs-land, which is the only path by which a
+# /chart or /slice documentation run reaches main (RFC 201).
+#
+# A DIFFERENT QUESTION FROM ITS TWO NEIGHBOURS, and they are deliberately three
+# functions rather than one with a mode. This one asks "what does this branch
+# LAND", i.e. the net tree difference that the fast-forward will publish.
+# `staged_changes_are_product_docs_only` above asks "what is STAGED" (RFC 194,
+# one commit's index). `ship-land`'s own `land_classify_advance` asks "what did
+# EVERY COMMIT in this range change" (RFC 193) -- per-commit, because a
+# docs -> code -> docs advance has a docs-only tip and is not docs-only.
+#
+# Per-commit is the wrong shape HERE, and the reason is worth stating: a docs run
+# may well commit twice, amend, or rebase, and what it publishes is the tree, not
+# its route to it. The safety claim being made is about the LANDED TREE -- a
+# branch that can only land product/ paths cannot land an untested build input,
+# because product/ is not a build input -- so the predicate reads the landed
+# tree. The caller asserts the fast-forward separately, which is what makes
+# "net diff against the base" and "what lands" the same set.
+#
+# The four properties of the neighbour hold here for the same reasons and are not
+# re-argued: --no-renames (a rename OUT of product/ must be classified on BOTH
+# sides), -z with `IFS= read -r -d ''` (a pathname with a newline, or a directory
+# named " product" with a LEADING SPACE, cannot dodge the glob -- that one is a
+# demonstrated defect, see RFC 193), one accepting arm with a catch-all reject,
+# and an EMPTY set answering 1. Empty here means "this branch lands nothing",
+# which is a refusal and not a vacuous pass.
+#
+# Like its neighbour it does NOT strip_git_hook_env -- a caller pointing it at
+# another repository must strip for itself.
+branch_lands_product_docs_only() {
+  local repo="$1" base_ref="$2" path found=0
+  while IFS= read -r -d '' path; do
+    found=1
+    case "$path" in
+    product/*) ;;
+    *) return 1 ;;
+    esac
+  done < <(git -C "$repo" diff --name-only -z --no-renames "$base_ref" HEAD)
+  [ "$found" -eq 1 ]
+}
+
+# The "never develop on main" guard (RFC 201). Prints ONE line naming why a
+# commit in <repo> must be refused and returns 0; returns 1, silently, when the
+# commit may proceed. bin/pre-commit is its caller and does the logging.
+#
+# It answers with a REASON on stdout rather than a bare status because the
+# refusal message is the whole migration experience: an agent mid-close-out that
+# expected to commit has to be told which of the two rules it hit.
+#
+# Two clauses, and BOTH are wanted:
+#
+#  * The ROOT CHECKOUT is read-only. Every writer gets its own worktree -- /ship
+#    already did, /chart and /slice now do -- so one session's uncommitted,
+#    unformatted file is not in another session's tree (hazard 3) and `git add`
+#    cannot be handed a path that is not there (hazard 4). The root checkout is
+#    the one tree every session shares, so it is the one tree nobody commits in.
+#    Detected by git-dir == git-common-dir, which is true in the primary worktree
+#    and false in every linked one (ship's, and Claude Code's under
+#    .claude/worktrees/).
+#  * HEAD is `main`. Redundant TODAY -- git refuses to check one branch out in
+#    two worktrees, so main lives only in the root checkout and the first clause
+#    already caught it. Kept because it encodes the RULE ("we can never edit on
+#    main; we only ff-merge into main") rather than today's mechanics, and a
+#    guard that encodes the rule outlives one that encodes the arrangement.
+#
+# A detached HEAD is not `main` and is not refused on the second clause: the
+# Claude Code rfc-pipeline worktrees run detached, and they are linked worktrees
+# doing exactly what this rule asks for.
+#
+# NOT a claim to be unbypassable. `git commit --no-verify` walks straight past
+# it, as it does past every other check in this hook. This makes the old path
+# impossible BY DEFAULT, which is the difference between a rule in the instrument
+# and a rule in a session's memory -- the latter is what failed twice in one
+# afternoon on 2026-09-11.
+PROTECTED_COMMIT_BRANCH="main"
+protected_commit_target() {
+  local repo="$1" git_dir common_dir head_branch
+  git_dir="$(git -C "$repo" rev-parse --absolute-git-dir 2> /dev/null)" || return 1
+  # --git-common-dir answers a path relative to the git process's CWD, and
+  # --absolute-git-dir an absolute one, so they are not comparable until both are
+  # resolved. Resolved by cd+`pwd -P` rather than `rev-parse
+  # --path-format=absolute`, which needs git 2.31: this predicate must not
+  # acquire a version floor the rest of bin/ does not have.
+  #
+  # `pwd -P` and not `pwd`. --absolute-git-dir answers the PHYSICAL path, and on
+  # macOS /var is a symlink to /private/var -- so a logical `pwd` compares
+  # /var/.../.git against /private/var/.../.git, they differ, and the root
+  # checkout is classified as a linked worktree. That is the failure direction
+  # that matters: the guard would silently stop guarding.
+  common_dir="$(cd "$repo" 2> /dev/null && cd "$(git rev-parse --git-common-dir 2> /dev/null)" 2> /dev/null && pwd -P)" || return 1
+  if [ "$git_dir" = "$common_dir" ]; then
+    echo "this is the ROOT checkout [$repo] and it is read-only: every session works in its own worktree"
+    return 0
+  fi
+  head_branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2> /dev/null)" || head_branch=""
+  if [ "$head_branch" = "$PROTECTED_COMMIT_BRANCH" ]; then
+    echo "HEAD is [$PROTECTED_COMMIT_BRANCH] and nothing is developed on [$PROTECTED_COMMIT_BRANCH]: it only ever fast-forwards"
+    return 0
+  fi
+  return 1
 }
 
 log-info() {

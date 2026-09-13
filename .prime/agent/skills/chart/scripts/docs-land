@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# docs-land — fast-forward a documentation run into the base branch (RFC 201).
+#
+# The ONLY path by which /chart's and /slice's product/** writes reach main. It
+# is deliberately much smaller than ship-land, and the reason is the one sentence
+# this whole design rests on:
+#
+#   A branch that can only land product/ paths cannot land an untested build
+#   input, because product/ is not a build input.
+#
+# So this script asserts WHAT the branch lands (the net diff against the base
+# touches nothing outside product/) rather than asking ship-verified whether the
+# full gate ran on it. It could not ask even if it wanted to: RFC 194 makes
+# bin/pre-commit skip bin/test check for a product-docs-only commit and
+# DELIBERATELY record no verified marker for it, because a marker that can lie is
+# worse than no marker.
+#
+# NO LAND LOCK, on purpose. RFC 193 considered making doc commits take the
+# repo-wide land lock and rejected it: it would tax the common cheap case to
+# protect the rare one, and doc traffic scales with the number of parallel
+# slices. Doc traffic still moves main without the lock, and RFC 193's docs-only
+# fast path in ship-land is still exactly what absorbs that. This change makes
+# that path MORE load-bearing, not redundant.
+#
+# Sources bin/functions -- and nothing else from bin/. See the note there.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_FOR_FUNCTIONS="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
+# shellcheck source=/dev/null
+. "$REPO_ROOT_FOR_FUNCTIONS/bin/functions" 2> /dev/null ||
+  { echo "[FATAL] cannot source [$REPO_ROOT_FOR_FUNCTIONS/bin/functions]" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+docs-land -s <run-scratch>
+
+Rebases a documentation run onto the base branch if it moved, asserts that the
+branch lands nothing outside product/, fast-forwards the base branch from the
+root checkout, then removes the worktree and deletes the branch.
+
+Refuses an uncommitted change, a branch that lands a path outside product/, a
+branch that lands nothing at all, and a rebase it cannot replay cleanly.
+
+  -s <run-scratch>  the directory docs-claim printed as RUN_SCRATCH
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  h) help 0 ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ "$#" -eq 0 ] || fatal -s "$EXIT_UNEXPECTED_ARG" "docs-land takes no positional arguments: $*"
+[ -n "$RUN_SCRATCH" ] || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "the run scratch is required: pass -s <run-scratch>"
+[ -f "$RUN_SCRATCH/state" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "no run state at [$RUN_SCRATCH/state]"
+
+# A git hook exports GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE, and all three
+# outrank both `git -C` and a plain `cd`. This script names two repositories
+# explicitly and must be answered about THEM.
+strip_git_hook_env
+
+# shellcheck disable=SC1090
+. "$RUN_SCRATCH/state"
+
+cd "$CODEBASE_ROOT"
+
+# 1. Clean tree. A safety check, not an obstacle to force past.
+git diff --quiet && git diff --cached --quiet ||
+  fatal "worktree [$CODEBASE_ROOT] has uncommitted changes"
+
+# 2. Catch up with a base branch that moved.
+#
+# It will have moved: a docs land takes no lock and code lands do not wait for
+# one. Replaying is safe here for the same reason RFC 193 gives for replaying a
+# code run over a docs advance -- bin/format -c, the only Markdown gate, has
+# already passed independently on both halves, and neither half is a Gradle
+# input on this side of the merge.
+BASE_TIP="$(git -C "$ORIGINAL_CHECKOUT" rev-parse "$BASE_BRANCH")" ||
+  fatal "could not read [$BASE_BRANCH] in [$ORIGINAL_CHECKOUT]"
+
+if ! git merge-base --is-ancestor "$BASE_TIP" HEAD; then
+  # An operation already in progress is NOT this script's to touch: aborting an
+  # operator's paused rebase while reporting it as our own conflict destroys work
+  # that refusing cleanly would have left alone. Same guard, same reason, as
+  # ship-land's fast path.
+  for op in rebase-merge rebase-apply MERGE_HEAD; do
+    [ -e "$(git rev-parse --git-path "$op")" ] &&
+      fatal "an operation is already in progress in [$CODEBASE_ROOT] — finish or abort it, then re-run docs-land"
+  done
+  log-info "[$BASE_BRANCH] advanced to [$BASE_TIP] — replaying this run onto it"
+  if ! git rebase "$BASE_TIP" > /dev/null 2>&1; then
+    for op in rebase-merge rebase-apply; do
+      if [ -e "$(git rev-parse --git-path "$op")" ]; then
+        git rebase --abort > /dev/null 2>&1 || true
+        break
+      fi
+    done
+    fatal "could not replay [$BRANCH] onto [$BASE_TIP] — two sessions disagree about the same file, which is a human's to read. Rebase by hand in [$CODEBASE_ROOT], then re-run docs-land."
+  fi
+  # The run state is SOURCED by this script, so it is rewritten rather than
+  # appended to: a second BASE_SHA line would be read as the last one wins, which
+  # is right by luck rather than by design.
+  sed -i.bak "s|^BASE_SHA=.*|BASE_SHA=$BASE_TIP|" "$RUN_SCRATCH/state"
+  rm -f "$RUN_SCRATCH/state.bak"
+fi
+
+# 3. THE GATE. What does this branch LAND?
+if ! branch_lands_product_docs_only "$CODEBASE_ROOT" "$BASE_TIP"; then
+  # Report WHICH, and tell the two failures apart: "lands nothing" and "lands
+  # code" are different mistakes with different fixes, and a single message
+  # covering both would name neither.
+  offenders=""
+  while IFS= read -r -d '' path; do
+    case "$path" in
+    product/*) ;;
+    *) offenders="$offenders$path"$'\n' ;;
+    esac
+  done < <(git diff --name-only -z --no-renames "$BASE_TIP" HEAD)
+  if [ -z "$offenders" ]; then
+    fatal "[$BRANCH] lands nothing against [$BASE_BRANCH] — there is no documentation change to land"
+  fi
+  log-error "[$BRANCH] lands paths outside product/, which a documentation run may not do:"
+  printf '%s' "$offenders" | sed 's/^/          /' >&2
+  fatal "a change outside product/ goes through /ship, which runs the full gate. Nothing was landed."
+fi
+
+TIP="$(git rev-parse HEAD)"
+
+# 4. Fast-forward the base branch from the root checkout.
+cd "$ORIGINAL_CHECKOUT"
+git merge-base --is-ancestor "$BASE_BRANCH" "$BRANCH" ||
+  fatal "[$BASE_BRANCH] advanced past this run again — re-run docs-land"
+
+current="$(git rev-parse --abbrev-ref HEAD)"
+[ "$current" = "$BASE_BRANCH" ] ||
+  fatal "the root checkout is on [$current], expected [$BASE_BRANCH]"
+
+# `>&2` on all three of these, and on the rebase above. git writes "Updating
+# a..b", "Fast-forward" and "Deleted branch" to STDOUT, and this script's stdout
+# carries exactly one thing: the landed SHA, for a caller that wants it. Every
+# other word is a diagnostic.
+git merge --ff-only "$BRANCH" >&2
+
+landed="$(git rev-parse "$BASE_BRANCH")"
+[ "$landed" = "$TIP" ] || fatal "post-land verify failed: [$BASE_BRANCH] is [$landed], expected [$TIP]"
+
+# 5. Archive the run scratch out of the worktree before the worktree goes.
+archive="$ORIGINAL_CHECKOUT/.scratch/docs-archive/$RUN_ID"
+mkdir -p "$(dirname "$archive")"
+rm -rf "$archive"
+cp -R "$RUN_SCRATCH" "$archive"
+
+# 6. Tear down.
+git worktree remove "$CODEBASE_ROOT" >&2
+git branch -d "$BRANCH" >&2
+
+log-info "Landed [$RUN_ID] onto [$BASE_BRANCH] at [$TIP]"
+log-info "Run artifacts archived at [$archive]"
+echo "$TIP"

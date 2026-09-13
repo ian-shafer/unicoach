@@ -46,6 +46,74 @@ fi
 # operator staring at "not in the dev shell" from inside an active Nix shell.
 # Called once and branched on directly, so no outcome is discarded; the cost is
 # one confirming line on the happy path.
+# Never develop on main, and never commit in the root checkout (RFC 201).
+#
+# FIRST, ahead of the dev-shell refusal above all else, because this one needs no
+# toolchain to answer and refusing twice in a row -- once for the shell, then
+# once for the branch -- would spend a second round trip on news we already had.
+#
+# The two hazards this closes were measured on 2026-09-11, an hour apart, with
+# two sessions sharing this one checkout: the hook validates the whole WORKING
+# TREE rather than the commit, so one session's unstaged file failed another
+# session's 4m17s gate run; and `git add <path>` is silent about whose path it
+# is, so a docs commit swept up 63 lines of another session's in-progress spec.
+# Both have one root cause -- two writers in one tree -- and /ship had already
+# solved it for code by giving every run its own worktree. This makes that the
+# rule for documentation too, and the enforcement is here rather than in a skill
+# file because an instruction an agent can forget is not an enforcement.
+#
+# The refusal MESSAGE is the migration. An in-flight session adopts this by being
+# refused mid-close-out, so the text below has to carry the whole recipe: what was
+# refused, the exact command with this session's own staged product/ paths filled
+# in, and the fact that no work is lost. An error that makes the reader go and
+# find an RFC is a worse error.
+if COMMIT_REFUSAL="$(protected_commit_target "$PROJECT_ROOT")"; then
+  log-error "refusing this commit: $COMMIT_REFUSAL."
+  log-info ""
+  log-info "  Nothing is lost. Your files are still here, exactly as you left them;"
+  log-info "  only the commit was refused. Move them to a worktree and commit there."
+  log-info ""
+
+  # The staged set, and ONLY the staged set. Other dirty paths under product/ may
+  # belong to another live session, and a recipe that swept them in would be the
+  # very hazard 4 this rule exists to close -- printed by the thing that closes
+  # it. Enumerate what you are about to act on, then act.
+  DOCS_PATHS=()
+  while IFS= read -r -d '' staged_path; do
+    DOCS_PATHS+=("$staged_path")
+  done < <(git -C "$PROJECT_ROOT" diff --cached --name-only -z --no-renames -- product/)
+
+  if [ "${#DOCS_PATHS[@]}" -gt 0 ]; then
+    # A slug from the first staged path's own directory, so the common case
+    # (one brief) needs no thought: product/0011-beyond-money/spec.md -> 0011-beyond-money.
+    DOCS_SLUG="$(printf '%s' "${DOCS_PATHS[0]}" | sed -n 's|^product/\([^/]*\)/.*|\1|p')"
+    [ -n "$DOCS_SLUG" ] || DOCS_SLUG="status"
+    DOCS_CMD=".prime/agent/skills/chart/scripts/docs-claim -s $DOCS_SLUG"
+    for staged_path in "${DOCS_PATHS[@]}"; do
+      DOCS_CMD="$DOCS_CMD -a $(printf '%q' "$staged_path")"
+    done
+    log-info "  Your staged product/ paths, and the command that moves them:"
+    log-info ""
+    log-info "    $DOCS_CMD"
+    log-info ""
+    log-info "  Then commit in the worktree it prints, and:"
+    log-info ""
+    log-info "    .prime/agent/skills/chart/scripts/docs-land -s <run-scratch>"
+    log-info ""
+    log-info "  -a takes only the paths NAMED above. This checkout is shared: do not"
+    log-info "  add a path you did not write."
+  else
+    log-info "  For product/ documentation:"
+    log-info ""
+    log-info "    .prime/agent/skills/chart/scripts/docs-claim -s <slug> -a <your-path>..."
+    log-info "    .prime/agent/skills/chart/scripts/docs-land  -s <run-scratch>"
+    log-info ""
+    log-info "  For code: .prime/agent/skills/ship/scripts/ship-claim -l rfc|quick,"
+    log-info "  which is the /ship run that already works this way."
+  fi
+  exit 2
+fi
+
 if ! "$PROJECT_ROOT/bin/is-nix"; then
   fatal "pre-commit must run inside the unicoach Nix dev shell. Commit via 'nix develop -c git commit ...' or from a 'nix develop' shell."
 fi

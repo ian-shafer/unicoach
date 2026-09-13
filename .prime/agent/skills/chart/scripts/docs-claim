@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# docs-claim — claim a documentation worktree for /chart and /slice (RFC 201).
+#
+# WHY THIS EXISTS. /ship gives every code run its own worktree and reaches main
+# by fast-forward only. The documentation path did not: /chart wrote product/**
+# straight into the root checkout and committed on main. That is development on
+# main, and on 2026-09-11 it produced two measured failures an hour apart --
+# one session's unstaged file failing another session's 4m17s gate run, and a
+# `git add` sweeping 63 lines of another session's in-progress spec into the
+# wrong commit. Both are "two writers in one tree". This is the other half of
+# the fix that bin/pre-commit's refusal enforces: a place to go.
+#
+# THE NAMING, and why neither existing prefix would do. A docs change has no RFC
+# number, so `pipeline/rfc-<n>` is not merely unnecessary, it is harmful: that
+# prefix is scanned by ship-claim AND by Claude Code's rfc-pipeline when they
+# compute the next free RFC number, so a docs branch parked there would burn a
+# number for a change that has no design. `ship/<slug>` is lane B of a /ship run
+# and is what ship-status lists as live engineering work. So a third prefix:
+#
+#   branch      docs/<slug>
+#   worktree    <repo>-docs-<slug>
+#   run scratch <worktree>/.scratch/docs/<slug>
+#
+# `git worktree add -b` is atomic, so two sessions choosing one slug is a clean
+# refusal rather than a collision.
+#
+# Sources bin/functions -- and nothing else from bin/. See the note there: it is
+# bin/common the skill scripts cannot afford, not this file.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_FOR_FUNCTIONS="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
+# shellcheck source=/dev/null
+. "$REPO_ROOT_FOR_FUNCTIONS/bin/functions" 2> /dev/null ||
+  { echo "[FATAL] cannot source [$REPO_ROOT_FOR_FUNCTIONS/bin/functions]" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+docs-claim -s <slug> [-b <base-branch>] [-a <path>]...
+
+Claim a documentation run and create its worktree, printing the run state as
+KEY=value lines on stdout.
+
+  -s <slug>  kebab-case slug: the brief directory for a chart phase
+             (0011-beyond-money), or rfc-<n>-docs for a slice close-out
+  -b <br>    base branch to fork from (default: main)
+  -a <path>  ADOPT a path: copy it from the root checkout into the new worktree
+             and restore it in the root checkout. Repeatable. Must be under
+             product/. Acts ONLY on the paths named -- never a glob, because the
+             root checkout is shared and the set you think you own is not the
+             set you own.
+
+Run from the ROOT checkout. The root checkout is read-only for commits
+(bin/pre-commit refuses there), which is exactly why this script exists.
+EOF
+  exit "${1:-0}"
+}
+
+SLUG="" BASE_BRANCH="main"
+ADOPT=()
+while getopts ":s:b:a:h" opt; do
+  case "$opt" in
+  s) SLUG="$OPTARG" ;;
+  b) BASE_BRANCH="$OPTARG" ;;
+  a) ADOPT+=("$OPTARG") ;;
+  h) help 0 ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ "$#" -eq 0 ] || fatal -s "$EXIT_UNEXPECTED_ARG" "docs-claim takes no positional arguments: $*"
+[ -n "$SLUG" ] || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "the slug is required: pass -s <slug>"
+[[ "$SLUG" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] ||
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "slug must be kebab-case: [$SLUG]"
+
+ORIGINAL_CHECKOUT="$(git rev-parse --show-toplevel)" ||
+  fatal "docs-claim must run inside the unicoach checkout"
+
+# Run from the ROOT checkout, asserted rather than asked for. The fast-forward at
+# land time happens in the checkout that has the base branch checked out, and a
+# claim made from a sibling worktree would record that sibling as the place to
+# land -- a mistake nothing downstream could detect, because a linked worktree
+# can hold a valid-looking BASE_BRANCH it is not allowed to move.
+# `pwd -P`, for the reason bin/functions' protected_commit_target spells out:
+# --absolute-git-dir is physical and on macOS a logical pwd is not.
+CLAIM_GIT_DIR="$(git -C "$ORIGINAL_CHECKOUT" rev-parse --absolute-git-dir)"
+CLAIM_COMMON_DIR="$(cd "$ORIGINAL_CHECKOUT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+[ "$CLAIM_GIT_DIR" = "$CLAIM_COMMON_DIR" ] ||
+  fatal "docs-claim must run from the ROOT checkout, not from the linked worktree [$ORIGINAL_CHECKOUT]"
+
+git -C "$ORIGINAL_CHECKOUT" rev-parse --verify "$BASE_BRANCH" > /dev/null 2>&1 ||
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "base branch [$BASE_BRANCH] does not exist"
+
+# Adopted paths are validated BEFORE the worktree is created, so a typo costs
+# nothing and leaves no branch behind to clean up.
+for adopt_path in "${ADOPT[@]+"${ADOPT[@]}"}"; do
+  case "$adopt_path" in
+  product/?*) ;;
+  *) fatal -s "$EXIT_INVALID_ARG_VALUE" "the -a path must be under product/ only: [$adopt_path]. A docs run lands documentation; code goes through /ship." ;;
+  esac
+  case "$adopt_path" in
+  *..*) fatal -s "$EXIT_INVALID_ARG_VALUE" "an -a path may not contain '..': [$adopt_path]" ;;
+  esac
+  [ -e "$ORIGINAL_CHECKOUT/$adopt_path" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the -a path does not exist in [$ORIGINAL_CHECKOUT]: [$adopt_path]"
+done
+
+WORKTREE_PARENT="$(dirname "$ORIGINAL_CHECKOUT")"
+REPO_NAME="$(basename "$ORIGINAL_CHECKOUT")"
+WORKTREE_PATH="$WORKTREE_PARENT/${REPO_NAME}-docs-${SLUG}"
+BRANCH="docs/${SLUG}"
+RUN_ID="docs-${SLUG}"
+
+# `>&2`, not `2>/dev/null`. `git worktree add` writes "HEAD is now at ..." to
+# STDOUT, and this script's stdout is the KEY=value state block its caller
+# parses. Folding git's chatter into stderr keeps that block clean AND keeps
+# git's own words when the claim fails, which a blanket discard would lose.
+git -C "$ORIGINAL_CHECKOUT" worktree add -b "$BRANCH" "$WORKTREE_PATH" "$BASE_BRANCH" >&2 ||
+  fatal "could not claim [$BRANCH] at [$WORKTREE_PATH] — another session may hold this slug"
+
+# The run scratch lives inside the worktree, so .scratch/ must be ignored or the
+# run state would be committed. Asserted, not assumed — the same probe and the
+# same reason as ship-claim.
+if ! git -C "$WORKTREE_PATH" check-ignore -q .scratch/probe 2> /dev/null; then
+  git -C "$ORIGINAL_CHECKOUT" worktree remove --force "$WORKTREE_PATH" 2> /dev/null || true
+  git -C "$ORIGINAL_CHECKOUT" branch -D "$BRANCH" 2> /dev/null || true
+  fatal ".scratch/ is not gitignored in this repo — run state would be committed. Add it to .gitignore first."
+fi
+
+# Adopt. COPY FIRST, VERIFY, THEN restore in the root checkout: the restore
+# deletes or reverts a file whose only other copy is the one just made, so the
+# order is not stylistic. A verify failure leaves the root checkout untouched.
+for adopt_path in "${ADOPT[@]+"${ADOPT[@]}"}"; do
+  src="$ORIGINAL_CHECKOUT/$adopt_path"
+  dst="$WORKTREE_PATH/$adopt_path"
+  mkdir -p "$(dirname "$dst")"
+  rm -rf "$dst"
+  cp -R "$src" "$dst" || fatal "could not copy [$adopt_path] into [$WORKTREE_PATH]"
+  diff -r -q "$src" "$dst" > /dev/null 2>&1 ||
+    fatal "the copy of [$adopt_path] does not match the original — nothing was restored in [$ORIGINAL_CHECKOUT]"
+
+  if git -C "$ORIGINAL_CHECKOUT" ls-files --error-unmatch -- "$adopt_path" > /dev/null 2>&1; then
+    # Tracked: put the root checkout's copy back to what the base branch says.
+    # `checkout HEAD --`, not `checkout --`. Without the HEAD, git restores the
+    # path from the INDEX, so a change the session had already STAGED survives
+    # untouched while this script logs that the root checkout was reverted. That
+    # is the likeliest migration case of all -- an agent runs `git add`, the hook
+    # refuses the commit, and the recipe in the refusal is what sends them here --
+    # so the one case that must work was the one that did not.
+    git -C "$ORIGINAL_CHECKOUT" checkout HEAD -- "$adopt_path" ||
+      fatal "adopted [$adopt_path] but could not restore it in [$ORIGINAL_CHECKOUT]"
+    log-info "adopted [$adopt_path] (tracked — root checkout restored from HEAD)"
+  else
+    rm -rf "$src"
+    log-info "adopted [$adopt_path] (untracked — removed from the root checkout)"
+  fi
+done
+
+BASE_SHA="$(git -C "$ORIGINAL_CHECKOUT" rev-parse "$BASE_BRANCH")"
+RUN_SCRATCH="$WORKTREE_PATH/.scratch/docs/$SLUG"
+mkdir -p "$RUN_SCRATCH"
+
+{
+  echo "RUN_ID=$RUN_ID"
+  echo "SLUG=$SLUG"
+  echo "BRANCH=$BRANCH"
+  echo "CODEBASE_ROOT=$WORKTREE_PATH"
+  echo "ORIGINAL_CHECKOUT=$ORIGINAL_CHECKOUT"
+  echo "BASE_BRANCH=$BASE_BRANCH"
+  echo "BASE_SHA=$BASE_SHA"
+  echo "RUN_SCRATCH=$RUN_SCRATCH"
+  echo "PHASE=claimed"
+} > "$RUN_SCRATCH/state"
+
+# Anything still dirty under product/ in the ROOT checkout is named, not touched.
+# It may be another live session's work — that is the whole point — and the
+# operator is the only one who can say which lines are theirs. Named because a
+# stray file left in the root checkout now blocks ship-land's `merge --ff-only`
+# instead of being committed by accident, which is a better failure but still a
+# failure somebody has to see coming.
+LEFTOVER="$(git -C "$ORIGINAL_CHECKOUT" status --porcelain -- product/ || true)"
+if [ -n "$LEFTOVER" ]; then
+  log-warning "the ROOT checkout still has dirty paths under product/:"
+  printf '%s\n' "$LEFTOVER" | sed 's/^/           /' >&2
+  log-info "           If any are YOURS, adopt them by name:"
+  log-info "             .prime/agent/skills/chart/scripts/docs-claim -s <slug> -a <path>"
+  log-info "           If they are not, leave them alone."
+fi
+
+log-info "Claimed [$RUN_ID] on [$BRANCH] at [$WORKTREE_PATH]"
+cat "$RUN_SCRATCH/state"

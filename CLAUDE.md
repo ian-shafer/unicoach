@@ -100,6 +100,38 @@ it. `bin/format -c` still runs, because Markdown IS checked and that gate is the
 only thing that checks it. And because the full gate did not run, such a commit
 records no `ship-verified` marker.
 
+**Nothing is developed on `main`, and nothing is committed in the root
+checkout** (RFC 201). `bin/pre-commit` refuses both, before it starts any gate,
+and the refusal prints the command that moves your work. `main` only ever
+fast-forwards.
+
+Two sessions writing in one shared checkout collide in two ways. The hook
+validates the whole working TREE rather than the commit, so one session's
+unformatted file fails another session's commit — after that commit may already
+have spent minutes running tests. And `git add <path>` is silent about whose
+path it is, so a commit can carry changes the committing run does not own. One
+worktree per writer removes both: another session's uncommitted work is not in
+your tree, so no gate of yours can trip on it and no `git add` of yours can name
+it.
+
+So every writer claims a worktree:
+
+    .prime/agent/skills/ship/scripts/ship-claim -l rfc|quick     # code
+    .prime/agent/skills/chart/scripts/docs-claim -s <slug>       # product/** docs
+
+and each lands by fast-forward — `ship-land` for code, `docs-land` for docs.
+`docs-land` asserts that the branch's net diff touches nothing outside
+`product/`; a change to anything else, `.prime/agent/skills/**` included, goes
+through /ship and the full gate.
+
+Two honest limits. `git commit --no-verify` walks past the guard exactly as it
+walks past every other check here — the old path is impossible by DEFAULT, not
+impossible. And the guard stops you COMMITTING in the root checkout, not WRITING
+there: a file left dirty in it now blocks `ship-land`'s `git merge --ff-only`
+instead of being committed by mistake, which is a better failure but still one
+somebody has to clear. `docs-claim` names any dirty `product/` path it finds
+there and leaves it alone, because it may be another session's.
+
 ## Running tests
 
 Do **not** run `./gradlew test` directly — the DB-backed tests will fail with

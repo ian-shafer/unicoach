@@ -35,6 +35,7 @@ the first failure:
   ship-scripts-tests  ~6s  the /ship land lock, no cluster at all
   prompt-seed-scripts-tests
                       ~3s  the coach prompt seed generator, no cluster at all
+  docs-scripts-tests 4.6s  the /chart documentation land path, no cluster at all
   q-scripts-tests    ~12s  queue ops tools, shared cluster
   db-scripts-tests   ~15s  db/cluster lifecycle, its OWN private cluster
   scripts-tests      ~63s  daemon/ops/deploy scripts, shared cluster + built
@@ -74,6 +75,11 @@ fi
 # line is now a failure, not a silent loss of 40 assertions and the land gate
 # they cover.
 "$PROJECT_ROOT/bin/prompt-seed-scripts-tests"
+# Nearly free for the same reason again: docs-claim and docs-land read a git tree
+# and copy files, so this harness needs only throwaway `git init` repos under a
+# temp dir (RFC 201). It is the gate on the path /chart and /slice now take to
+# main, and on bin/pre-commit's refusal to commit in the root checkout.
+"$PROJECT_ROOT/bin/docs-scripts-tests"
 "$PROJECT_ROOT/bin/q-scripts-tests"
 # db-scripts-tests builds its own private env file and sets ENV_FILE, which
 # bin/common rejects as mutually exclusive with an inherited ENV_FILES. Clear the
