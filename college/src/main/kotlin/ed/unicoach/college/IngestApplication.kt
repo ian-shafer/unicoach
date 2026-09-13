@@ -716,6 +716,7 @@ private fun logCdsRun(result: CdsSeedLoader.LoadResult) {
     logCdsTable(table.logLabel, summary)
   }
   logCdsAidPolicy(result.aidPolicy)
+  logCdsLinkCheck(result.linkCheck)
   logCdsCoverage(result.coverage)
 }
 
@@ -761,6 +762,57 @@ private fun logCdsAidPolicy(summary: CdsSeedLoader.AidPolicySummary) {
     summary.skipped,
     summary.unmatchedIpedsUnitIds,
   )
+}
+
+/**
+ * What this run recorded about the links it wrote (RFC 200), over DISTINCT
+ * documents.
+ *
+ * The two unknowns are printed as TWO numbers and never summed. A pile of
+ * UNDATED unknowns means the sidecar is stale or absent -- nobody asked. A pile
+ * of DATED unknowns means the checker RAN and could not get an answer, which is
+ * a broken checker (an expired proxy, a blocked egress) wearing the same word.
+ * Summed, the second is invisible, and a check that quietly did not run would
+ * look like one that passed -- the thing RFC 182 exists to prevent. Both keep
+ * the link, so only the operator pays for the distinction.
+ *
+ * [CdsSeedLoader.LinkCheckSummary.statusRows] is printed beside them: the
+ * sidecar's own row count, so "441 documents, 441 status rows" and "441
+ * documents, 0 status rows" are two different runs at a glance.
+ */
+private fun logCdsLinkCheck(summary: CdsSeedLoader.LinkCheckSummary) {
+  logger.info(
+    "CDS link check: [documents={}] [found={}] [not_found={}] [unknown_never_asked={}] " +
+      "[unknown_no_answer={}] [status_rows={}]",
+    summary.documents,
+    summary.found,
+    summary.notFound,
+    summary.unknownNeverAsked,
+    summary.unknownNoAnswer,
+    summary.statusRows,
+  )
+
+  // The ONE shape that means this run asked NOBODY: not one document was
+  // checked. The fail-open direction is kept -- every link stands -- but a run
+  // that recorded nothing must not READ like a run that recorded a clean
+  // corpus, and at INFO among six numbers it did: the fact was there and
+  // nothing said it was wrong. Raised to WARNING beside the numbers, never
+  // instead of them.
+  //
+  // It says what was CHECKED, not what it inferred: the resolved path this run
+  // looked for, and which of the two things happened to it. A truncated copy, a
+  // wrong -o and a genuinely absent file all produce `statusRows == 0`, and
+  // telling an operator that a file they are looking at "was not found" sends
+  // them after the wrong fault.
+  if (summary.statusRows == 0 && summary.documents > 0) {
+    logger.warn(
+      "CDS link check: sidecar [{}] {}, so nothing was checked; [{}] documents recorded " +
+        "[unknown] with no date and every link is kept",
+      summary.sidecarPath,
+      if (summary.sidecarPresent) "is present but carries NO rows" else "was not there to read",
+      summary.documents,
+    )
+  }
 }
 
 /**

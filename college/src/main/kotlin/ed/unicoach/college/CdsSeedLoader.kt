@@ -35,9 +35,11 @@ import ed.unicoach.db.models.NewCollegeMeritAid
 import ed.unicoach.db.models.NewSourceDocument
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.ValueBearingStatus
 import org.apache.commons.csv.CSVRecord
 import java.io.File
+import java.time.LocalDate
 
 /**
  * The three CDS seed files as one all-or-nothing provenance group (RFC 148),
@@ -221,6 +223,77 @@ class CdsSeedLoader(
     ) : Defect
 
     /**
+     * A `source-url-status.csv` row whose `source_url_status` is none of the
+     * three states (RFC 200).
+     *
+     * The sidecar's defects name the FILE rather than a [Table]: it is not one
+     * of the four seed tables, it writes no rows of its own, and it has no
+     * `rows_ingested` key -- it is a column on a document the other four
+     * files already write.
+     */
+    data class SidecarRowArity(
+      val file: String,
+      val line: Long,
+      val cells: Int,
+      val expectedCells: Int,
+    ) : Defect
+
+    /** A sidecar row whose `source_url` cell is empty -- a verdict about nothing. */
+    data class SidecarEmptyUrl(
+      val file: String,
+      val line: Long,
+    ) : Defect
+
+    data class SidecarUnknownStatus(
+      val file: String,
+      val line: Long,
+      val url: String,
+      val value: String,
+      val allowed: List<String>,
+    ) : Defect
+
+    /** A sidecar `checked_on` cell that is not an ISO `yyyy-mm-dd` day. */
+    data class SidecarNotADate(
+      val file: String,
+      val line: Long,
+      val url: String,
+      val value: String,
+    ) : Defect
+
+    /**
+     * A sidecar verdict with no day beside it.
+     *
+     * `found` and `not_found` both REQUIRE one
+     * (`source_documents_checked_when_known`): you cannot claim to know
+     * without saying when you looked, and a dateless verdict is the shape a
+     * half-written checker leaves behind.
+     */
+    data class SidecarStatusWithoutDate(
+      val file: String,
+      val line: Long,
+      val url: String,
+      val status: String,
+    ) : Defect
+
+    /**
+     * Two sidecar rows giving one url DIFFERENT verdicts.
+     *
+     * Resolved by row order it would be the later row that decides whether a
+     * family sees a link, with nobody told -- the [ConflictingFilingUrls] rule,
+     * applied to the one column that can remove an anchor.
+     */
+    data class SidecarConflictingStatus(
+      val file: String,
+      /** The line the FIRST verdict was read from -- named, so fixing the file starts here. */
+      val firstLine: Long,
+      /** The line that disagreed with it. */
+      val line: Long,
+      val url: String,
+      val first: RecordedStatus,
+      val second: RecordedStatus,
+    ) : Defect
+
+    /**
      * Two seed rows naming one filing with different urls (RFC 170, D13). Both
      * documents ride on the defect: which url is "wrong" is the operator's
      * call, and a message that names only one cannot be acted on.
@@ -252,7 +325,8 @@ class CdsSeedLoader(
    */
   class FormatException(
     val defect: Defect,
-  ) : RuntimeException(renderDefect(defect))
+    cause: Throwable? = null,
+  ) : RuntimeException(renderDefect(defect), cause)
 
   /**
    * A DB failure on ONE seed row, restating that row's seed coordinates (table,
@@ -301,11 +375,48 @@ class CdsSeedLoader(
     val skipped: Int get() = unmatchedIpedsUnitIds.size
   }
 
+  /**
+   * What this run recorded about the links it wrote (RFC 200), over the
+   * DISTINCT documents rather than the seed rows that cite them.
+   *
+   * The two unknowns are counted SEPARATELY and never summed. `unknown` with
+   * no date is "we never asked"; `unknown` with a date is "we asked and got no
+   * usable answer" -- a 403, a timeout, two passes that disagreed. One total
+   * would hide the difference between a STALE sidecar and a BROKEN checker,
+   * and RFC 182's rule is that a check which quietly did not run must never
+   * look like one that passed. Both keep the link, so the distinction costs a
+   * family nothing and costs an operator everything if it is lost.
+   */
+  data class LinkCheckSummary(
+    val documents: Int,
+    val found: Int,
+    val notFound: Int,
+    /** `unknown` with NO date: we never asked. */
+    val unknownNeverAsked: Int,
+    /** `unknown` WITH a date: we asked, and got no usable answer. */
+    val unknownNoAnswer: Int,
+    /** How many urls the sidecar carried, whether or not this seed cites them. */
+    val statusRows: Int,
+    /**
+     * The sidecar path this run actually resolved and looked for, and whether a
+     * file was there to read.
+     *
+     * Both are carried because [statusRows] `== 0` has TWO causes -- no file,
+     * or a file holding only a header -- and a warning that infers "no sidecar
+     * exists" from a row count tells an operator that the file in front of them
+     * is absent. The path is the resolved one, not the bare filename, because
+     * "which file did you look for" is the question a wrong `-o` raises.
+     */
+    val sidecarPath: String,
+    val sidecarPresent: Boolean,
+  )
+
   data class LoadResult(
     val meritAid: TableSummary,
     val admissionFactors: TableSummary,
     val deadlines: TableSummary,
     val aidPolicy: AidPolicySummary,
+    val linkCheck: LinkCheckSummary,
     val coverage: CdsCoverage,
   ) {
     /**
@@ -363,13 +474,24 @@ class CdsSeedLoader(
     assertHeader(sources.aidPolicy, AID_POLICY_COLUMNS)
   }
 
-  /** Loads the three seed files (header-asserted first) and computes the
-   * launch-set coverage report from the DB. */
+  /** Loads the four seed files and the RFC 200 sidecar (headers asserted
+   * first), and computes the launch-set coverage report from the DB.
+   *
+   * [sourceUrlStatusCsv] is the RFC 200 source-url-status sidecar, which by convention
+   * sits BESIDE the seed it describes (`bin/cds-link-check` writes it into the
+   * seed directory) -- so it is defaulted from the aid-policy file's own
+   * directory rather than made a fifth required argument of every caller. It
+   * is the one seed file that may be ABSENT: a run without it has asked
+   * nobody, every document loads `unknown` with no date, every link is kept,
+   * and [LinkCheckSummary.unknownNeverAsked] says so in the run summary. It is
+   * NOT silently tolerated -- it is loudly counted.
+   */
   suspend fun load(
     meritAidCsv: File,
     admissionFactorsCsv: File,
     deadlinesCsv: File,
     aidPolicyCsv: File,
+    sourceUrlStatusCsv: File = sidecarBeside(aidPolicyCsv),
   ): LoadResult =
     database.withConnection { session ->
       // Assert every header before any row of any file is written, so a renamed
@@ -396,15 +518,24 @@ class CdsSeedLoader(
       // than resolved by write order with nobody told.
       var filings = Filings()
 
+      // Read BEFORE the first document is written, exactly as the headers are:
+      // a malformed sidecar must fail before any row cites a verdict, not
+      // halfway through the second file.
+      // Whether a file was there is recorded AT THE READ, not re-stat'ed when
+      // the summary is built: the operator is told what this run actually
+      // looked at, not what the filesystem holds some minutes later.
+      val sidecarPresent = sourceUrlStatusCsv.isFile
+      val linkCheck = readLinkCheck(sourceUrlStatusCsv)
+
       val meritAid =
         loadTable(session, meritAidCsv, Table.MERIT_AID, MERIT_AID_COLUMNS) { collegeId, record ->
-          val (id, seen) = documentIdFor(session, collegeId, record, Table.MERIT_AID, filings)
+          val (id, seen) = documentIdFor(session, collegeId, record, Table.MERIT_AID, filings, linkCheck)
           filings = seen
           id.thenWrite { document -> CdsAdmissionsDao.upsertMeritAid(session, mapMeritAid(collegeId, record, document)) }
         }
       val factors =
         loadTable(session, admissionFactorsCsv, Table.ADMISSION_FACTORS, ADMISSION_FACTORS_COLUMNS) { collegeId, record ->
-          val (id, seen) = documentIdFor(session, collegeId, record, Table.ADMISSION_FACTORS, filings)
+          val (id, seen) = documentIdFor(session, collegeId, record, Table.ADMISSION_FACTORS, filings, linkCheck)
           filings = seen
           id.thenWrite { document ->
             CdsAdmissionsDao.upsertAdmissionFactors(session, mapAdmissionFactors(collegeId, record, document))
@@ -412,14 +543,163 @@ class CdsSeedLoader(
         }
       val deadlines =
         loadTable(session, deadlinesCsv, Table.DEADLINES, DEADLINES_COLUMNS) { collegeId, record ->
-          val (id, seen) = documentIdFor(session, collegeId, record, Table.DEADLINES, filings)
+          val (id, seen) = documentIdFor(session, collegeId, record, Table.DEADLINES, filings, linkCheck)
           filings = seen
           id.thenWrite { document -> CdsAdmissionsDao.upsertDeadline(session, mapDeadline(collegeId, record, document)) }
         }
-      val aidPolicy = loadAidPolicy(session, aidPolicyCsv, filings)
+      val (aidPolicy, allFilings) = loadAidPolicy(session, aidPolicyCsv, filings, linkCheck)
       val coverage = CdsAdmissionsDao.getCoverage(session).getOrThrow()
-      LoadResult(meritAid, factors, deadlines, aidPolicy, coverage)
+      val linkCheckSummary =
+        summariseLinkCheck(allFilings, linkCheck, sourceUrlStatusCsv.path, sidecarPresent)
+      LoadResult(meritAid, factors, deadlines, aidPolicy, linkCheckSummary, coverage)
     }
+
+  /**
+   * The source-url status of the DOCUMENTS this run wrote, counted off the
+   * filings themselves rather than off the sidecar.
+   *
+   * The sidecar may describe urls this seed no longer cites, and the seed may
+   * cite urls the sidecar never saw; what an operator needs to know is the
+   * state of the links THIS run just wrote. [LinkCheckSummary.statusRows]
+   * carries the other number beside it, so the two can be compared.
+   */
+  private fun summariseLinkCheck(
+    filings: Filings,
+    linkCheck: LinkCheck,
+    sidecarPath: String,
+    sidecarPresent: Boolean,
+  ): LinkCheckSummary {
+    val documents = filings.written
+
+    // ONE pass that PARTITIONS: every document is given exactly one bucket by
+    // an exhaustive `when`, so the four counts sum to [documents] by
+    // construction. Four independent predicates would be exhaustive today and
+    // silently incomplete the moment the enum grows -- and the failure would be
+    // a summary whose parts do not add up to its whole, in the log line an
+    // operator reads to decide whether a run is sane.
+    val buckets = documents.groupingBy(::bucketOf).eachCount()
+    return LinkCheckSummary(
+      documents = documents.size,
+      found = buckets[LinkBucket.FOUND] ?: 0,
+      notFound = buckets[LinkBucket.NOT_FOUND] ?: 0,
+      // The two unknowns, split by the DATE and never added up: see
+      // [LinkCheckSummary].
+      unknownNeverAsked = buckets[LinkBucket.UNKNOWN_NEVER_ASKED] ?: 0,
+      unknownNoAnswer = buckets[LinkBucket.UNKNOWN_NO_ANSWER] ?: 0,
+      statusRows = linkCheck.size,
+      sidecarPath = sidecarPath,
+      sidecarPresent = sidecarPresent,
+    )
+  }
+
+  /** The four buckets the run summary reports -- one per document, never two, never none. */
+  private enum class LinkBucket { FOUND, NOT_FOUND, UNKNOWN_NEVER_ASKED, UNKNOWN_NO_ANSWER }
+
+  /** Which bucket one document falls in, decided in the one place that decides it. */
+  private fun bucketOf(document: NewSourceDocument): LinkBucket =
+    when (document.sourceUrlStatus) {
+      // No `else`: a status added later must be given a bucket HERE, because a
+      // summary whose parts do not sum to its whole is how a broken run reads
+      // like a clean one.
+      SourceUrlStatus.FOUND -> {
+        LinkBucket.FOUND
+      }
+
+      SourceUrlStatus.NOT_FOUND -> {
+        LinkBucket.NOT_FOUND
+      }
+
+      SourceUrlStatus.UNKNOWN -> {
+        if (document.sourceUrlCheckedOn == null) LinkBucket.UNKNOWN_NEVER_ASKED else LinkBucket.UNKNOWN_NO_ANSWER
+      }
+    }
+
+  /**
+   * `source-url-status.csv` as a lookup by url, header-asserted first, or the
+   * empty lookup when the file is not there ("we never asked", for every url).
+   *
+   * Every cell is refused rather than repaired: a status outside the three, a
+   * `checked_on` that is not a day, a verdict with no day, or two rows giving
+   * one url different verdicts. This file decides whether a family is shown a
+   * link, so a row this loader cannot read is a broken sidecar and never a row
+   * to guess at.
+   */
+  private fun readLinkCheck(file: File): LinkCheck {
+    if (!file.isFile) return LinkCheck()
+    assertHeader(SourceFile(file, file.path), SOURCE_URL_STATUS_COLUMNS)
+    // Located while reading, unwrapped at the end: the LINE a verdict came from
+    // is needed only to name both sides of a conflict, and [LinkCheck] has no
+    // business carrying it.
+    val byUrl = mutableMapOf<String, LocatedStatus>()
+    parseCsv(file).use { records ->
+      for (record in records) {
+        // The header assertion covers column NAMES only; a truncated row would
+        // otherwise throw an unlocated IllegalArgumentException out of Commons
+        // CSV, which is outside this loader's error contract.
+        if (!record.isConsistent || record.size() != SOURCE_URL_STATUS_COLUMNS.size) {
+          throw FormatException(
+            Defect.SidecarRowArity(file.path, record.recordNumber, record.size(), SOURCE_URL_STATUS_COLUMNS.size),
+          )
+        }
+        val url = record.get("source_url").trim()
+        if (url.isEmpty()) throw FormatException(Defect.SidecarEmptyUrl(file.path, record.recordNumber))
+        val recorded = recordedStatusOf(file, record, url)
+        val first = byUrl[url]
+        if (first != null && first.recorded != recorded) {
+          throw FormatException(
+            Defect.SidecarConflictingStatus(
+              file.path,
+              first.line,
+              record.recordNumber,
+              url,
+              first.recorded,
+              recorded,
+            ),
+          )
+        }
+        byUrl[url] = LocatedStatus(record.recordNumber, recorded)
+      }
+    }
+    return LinkCheck(byUrl.mapValues { (_, located) -> located.recorded })
+  }
+
+  /** One sidecar row's verdict and day, with every refusal located by file and line. */
+  private fun recordedStatusOf(
+    file: File,
+    record: CSVRecord,
+    url: String,
+  ): RecordedStatus {
+    val rawStatus = record.get("source_url_status").trim()
+    val status =
+      SourceUrlStatus.fromValue(rawStatus) ?: throw FormatException(
+        Defect.SidecarUnknownStatus(
+          file.path,
+          record.recordNumber,
+          url,
+          rawStatus,
+          SourceUrlStatus.entries.map { it.value },
+        ),
+      )
+    val rawDate = record.get("checked_on").trim()
+    val checkedOn =
+      if (rawDate.isEmpty()) {
+        null
+      } else {
+        runCatching { LocalDate.parse(rawDate) }.getOrElse { cause ->
+          // CHAINED, not discarded: the located defect says which cell, and the
+          // parser's own reason underneath says why -- [2026-13-01] and
+          // [2026-02-30] read identically without it.
+          throw FormatException(Defect.SidecarNotADate(file.path, record.recordNumber, url, rawDate), cause)
+        }
+      }
+    // The Kotlin half of `source_documents_checked_when_known`, refused HERE so
+    // the operator gets the file and line: [NewSourceDocument] would otherwise
+    // refuse the same pair with no idea which row produced it.
+    if (status.requiresCheckedOn && checkedOn == null) {
+      throw FormatException(Defect.SidecarStatusWithoutDate(file.path, record.recordNumber, url, status.value))
+    }
+    return RecordedStatus(status, checkedOn)
+  }
 
   /**
    * Streams one seed file's MATCHED rows: arity check, `unit_id` parse, and the
@@ -594,6 +874,8 @@ class CdsSeedLoader(
     val counts: List<NewCohortPopulationCount>,
     val forms: List<NewAidFormRequirement>,
     val unmatchedIpedsUnitIds: List<Int>,
+    /** Every filing the WHOLE load has now read, this file's included. */
+    val filings: Filings,
   )
 
   /**
@@ -609,7 +891,13 @@ class CdsSeedLoader(
     session: SqlSession,
     file: File,
     filings: Filings,
-  ): AidPolicySummary = writeAidPolicy(session, readAidPolicy(session, file, filings))
+    linkCheck: LinkCheck,
+  ): Pair<AidPolicySummary, Filings> {
+    val read = readAidPolicy(session, file, filings, linkCheck)
+    // The filing set leaves with the summary because the RFC 200 counts are
+    // over DOCUMENTS, and this file is the last of the four to add to it.
+    return writeAidPolicy(session, read) to read.filings
+  }
 
   /**
    * `aid_policy.csv` as canonical rows. Writes ONE thing itself -- the
@@ -620,6 +908,7 @@ class CdsSeedLoader(
     session: SqlSession,
     file: File,
     filings: Filings,
+    linkCheck: LinkCheck,
   ): ReadAidPolicy {
     val stats = mutableListOf<NewCohortMoneyStat>()
     val counts = mutableListOf<NewCohortPopulationCount>()
@@ -627,7 +916,7 @@ class CdsSeedLoader(
     var seen = filings
     val unmatched =
       forEachResolvedRow(session, file, Table.AID_POLICY, AID_POLICY_COLUMNS) { collegeId, ipedsUnitId, record ->
-        val row = aidPolicyRow(session, collegeId, ipedsUnitId, record, seen)
+        val row = aidPolicyRow(session, collegeId, ipedsUnitId, record, seen, linkCheck)
         seen = row.filings
         val cell = getCode(record, "fact", Table.AID_POLICY, AID_POLICY_CELLS)
         // AFTER the fact lookup, deliberately (RFC 179 D5): a row whose `fact`
@@ -648,7 +937,7 @@ class CdsSeedLoader(
           is AidPolicyFact.Form -> forms += formOf(fact, row)
         }
       }
-    return ReadAidPolicy(stats, counts, forms, unmatched)
+    return ReadAidPolicy(stats, counts, forms, unmatched, seen)
   }
 
   /**
@@ -706,9 +995,10 @@ class CdsSeedLoader(
     ipedsUnitId: Int,
     record: CSVRecord,
     filings: Filings,
+    linkCheck: LinkCheck,
   ): AidPolicyRow {
     val year = getAcademicYear(record, "source_year", Table.AID_POLICY)
-    val filing = filingOf(record, collegeId, year, Table.AID_POLICY, filings)
+    val filing = filingOf(record, collegeId, year, Table.AID_POLICY, filings, linkCheck)
     val document =
       withRowLocation(Table.AID_POLICY, record, ipedsUnitId) {
         SourceDocumentsDao.upsert(session, filing.document)
@@ -839,9 +1129,10 @@ class CdsSeedLoader(
     record: CSVRecord,
     table: Table,
     filings: Filings,
+    linkCheck: LinkCheck,
   ): Pair<Result<SourceDocumentId>, Filings> {
     val year = getAcademicYear(record, "source_year", table)
-    val filing = filingOf(record, collegeId, year, table, filings)
+    val filing = filingOf(record, collegeId, year, table, filings, linkCheck)
     return SourceDocumentsDao.upsert(session, filing.document) to filing.filings
   }
 
@@ -854,6 +1145,58 @@ class CdsSeedLoader(
    * "named by file and line" guarantee with it.
    */
   private inline fun <T, R> Result<T>.thenWrite(block: (T) -> Result<R>): Result<R> = fold(block) { Result.failure(it) }
+
+  /**
+   * One url's recorded `source_url_status` (RFC 200): the verdict, and the
+   * day it was reached.
+   *
+   * ONE value rather than two columns read apart, because the pair IS the
+   * vocabulary: `unknown` with no date is "we never asked" and `unknown` with
+   * one is "we asked and got no usable answer", and a reader holding only the
+   * status cannot tell a broken checker from a stale one.
+   */
+  data class RecordedStatus(
+    val status: SourceUrlStatus,
+    val checkedOn: LocalDate?,
+  )
+
+  /**
+   * One [RecordedStatus] and the sidecar line it was read from.
+   *
+   * Held only while the file is being read, and only so a conflict can name
+   * BOTH rows: an operator told which line disagreed, but not which line it
+   * disagreed WITH, starts by grepping a 441-row file for the url.
+   */
+  private data class LocatedStatus(
+    val line: Long,
+    val recorded: RecordedStatus,
+  )
+
+  /**
+   * `db/seed/cds/source-url-status.csv` as a lookup BY URL -- the product of
+   * `bin/cds-link-check`, joined onto the document the four seed files already
+   * write.
+   *
+   * By url and not by (college, year), because that is what the checker swept:
+   * one url is one file on one school's web server, whoever cites it.
+   *
+   * A url this file does not mention is [NEVER_ASKED] -- `unknown` with NO
+   * date -- and KEEPS its link. That is the honest reading of an absent answer
+   * and it is also the reading an ABSENT sidecar gets, whole: a run with no
+   * status file has asked nobody, which the ingest summary then says in as
+   * many words. Fail-open is the RFC 166 s6 rule -- an unreachable check is
+   * OUR gap, never the school's silence.
+   */
+  @JvmInline
+  internal value class LinkCheck(
+    private val byUrl: Map<String, RecordedStatus> = emptyMap(),
+  ) {
+    /** The recorded verdict for [url], or "we never asked". */
+    fun of(url: String): RecordedStatus = byUrl[url] ?: NEVER_ASKED
+
+    /** How many urls this file carries; reported as `status_rows` so "441 documents, 0 status rows" is visible. */
+    val size: Int get() = byUrl.size
+  }
 
   /**
    * The filings this load has read so far, as a VALUE.
@@ -877,6 +1220,14 @@ class CdsSeedLoader(
 
     /** This set plus [document] -- a new value, never a mutation of the old one. */
     fun with(document: NewSourceDocument): Filings = Filings(documents + ((document.collegeId to document.academicYear) to document))
+
+    /**
+     * Every DISTINCT document this load wrote, which is what the status
+     * summary counts. Counting seed ROWS instead would report the aid-policy
+     * file's thirty-odd rows per filing as thirty-odd documents, and make the
+     * dead-link share meaningless.
+     */
+    val written: Collection<NewSourceDocument> get() = documents.values
   }
 
   /** One row's filing and the filing set that now includes it. */
@@ -900,14 +1251,24 @@ class CdsSeedLoader(
     year: AcademicYear,
     table: Table,
     filings: Filings,
+    linkCheck: LinkCheck,
   ): ReadFiling {
+    val sourceUrl = getString(record, "source_url", table)
+    // The sidecar joined BY URL (RFC 200): the status is a fact about the
+    // school's own file, so it is looked up with the url and written onto the
+    // same document row, in the same transaction as every fact that cites it.
+    // A url the sidecar does not mention is `unknown` with no date -- we never
+    // asked -- and keeps its link.
+    val recorded = linkCheck.of(sourceUrl)
     val document =
       NewSourceDocument(
         collegeId = collegeId,
         source = MoneySource.COMMON_DATA_SET,
         academicYear = year,
-        sourceUrl = getString(record, "source_url", table),
+        sourceUrl = sourceUrl,
         archiveUrl = getStringOrNull(record, "archive_url"),
+        sourceUrlStatus = recorded.status,
+        sourceUrlCheckedOn = recorded.checkedOn,
       )
     val first = filings.first(collegeId, year)
     if (first != null && first != document) {
@@ -1292,6 +1653,51 @@ class CdsSeedLoader(
         "archive_url",
       )
 
+    /**
+     * The RFC 200 source-url-status sidecar's filename, written by
+     * `bin/cds-link-check` into the seed directory and read back from beside
+     * the seed. Named once, here, so the checker and the loader cannot come to
+     * disagree about it.
+     */
+    const val SOURCE_URL_STATUS_FILE = "source-url-status.csv"
+
+    /**
+     * The sidecar that sits BESIDE the seed it describes, resolved from the
+     * aid-policy file's ABSOLUTE parent.
+     *
+     * Absolute deliberately: `File("x.csv").parentFile` is NULL, so a bare
+     * relative seed path once fell back to the process's current directory and
+     * would have read whichever sidecar the launcher happened to be standing
+     * in -- a file that decides whether a family is shown a link, chosen by
+     * where somebody ran the command. `absoluteFile` always has a parent, so
+     * there is no fallback left to take.
+     */
+    internal fun sidecarBeside(aidPolicyCsv: File): File = File(aidPolicyCsv.absoluteFile.parentFile, SOURCE_URL_STATUS_FILE)
+
+    /**
+     * The sidecar's header, asserted exactly as every other seed header is.
+     *
+     * `pass_one` and `pass_two` are read by no code and are required anyway:
+     * they are the EVIDENCE for the verdict beside them -- the two status
+     * codes the two passes returned -- and a reviewer of the diff needs them
+     * to see why a url was called dead. A header that has quietly lost them is
+     * a checker that stopped showing its work.
+     */
+    val SOURCE_URL_STATUS_COLUMNS =
+      listOf(
+        "source_url",
+        "source_url_status",
+        "checked_on",
+        "pass_one",
+        "pass_two",
+      )
+
+    /**
+     * The recorded status of a url nobody asked about: `unknown`, with NO
+     * date. Keeps the link.
+     */
+    internal val NEVER_ASKED = RecordedStatus(SourceUrlStatus.UNKNOWN, null)
+
     val AID_POLICY_COLUMNS =
       listOf(
         "unit_id",
@@ -1540,6 +1946,35 @@ private fun renderDefect(defect: CdsSeedLoader.Defect): String =
     is CdsSeedLoader.Defect.ValueUnderValuelessStatus -> {
       "[${defect.table.label}] line [${defect.line}]: status [${defect.status}] bears no value, but [value] " +
         "carries [${defect.value}]"
+    }
+
+    is CdsSeedLoader.Defect.SidecarRowArity -> {
+      "[${defect.file}] line [${defect.line}]: [${defect.cells}] cells, expected [${defect.expectedCells}]"
+    }
+
+    is CdsSeedLoader.Defect.SidecarEmptyUrl -> {
+      "[${defect.file}] line [${defect.line}]: [source_url] is empty, so this verdict is about nothing"
+    }
+
+    is CdsSeedLoader.Defect.SidecarUnknownStatus -> {
+      "[${defect.file}] line [${defect.line}]: [source_url_status] value [${defect.value}] is not one of " +
+        "${defect.allowed} (url [${defect.url}])"
+    }
+
+    is CdsSeedLoader.Defect.SidecarNotADate -> {
+      "[${defect.file}] line [${defect.line}]: [checked_on] value [${defect.value}] is not an ISO yyyy-mm-dd day " +
+        "(url [${defect.url}])"
+    }
+
+    is CdsSeedLoader.Defect.SidecarStatusWithoutDate -> {
+      "[${defect.file}] line [${defect.line}]: status [${defect.status}] must say when it was reached, but " +
+        "[checked_on] is empty (url [${defect.url}])"
+    }
+
+    is CdsSeedLoader.Defect.SidecarConflictingStatus -> {
+      "[${defect.file}] line [${defect.line}]: url [${defect.url}] was already read on line " +
+        "[${defect.firstLine}] as [${defect.first.status.value}] on [${defect.first.checkedOn}] and is now " +
+        "[${defect.second.status.value}] on [${defect.second.checkedOn}]"
     }
 
     is CdsSeedLoader.Defect.ConflictingFilingUrls -> {

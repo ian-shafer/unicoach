@@ -15,6 +15,7 @@ import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.MoneyProfilesDao
@@ -1255,7 +1256,7 @@ class CollegeCostChatToolTest {
         "[$assuranceKey]",
       )
       assertEquals(
-        AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT),
+        AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT, FilingLink.LINKED),
         policy.getValue(statementKey).jsonPrimitive.content,
         "the sentence is the domain's own, never re-worded here: [$statementKey]",
       )
@@ -2753,7 +2754,7 @@ class CollegeCostChatToolTest {
     assertEquals(
       Triple(
         AssuranceTier.MANDATORY_SURVEY.value,
-        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED),
         MoneySource.IPEDS_IC_AY.value,
       ),
       resolvedProvenanceOf(rendered, shownPlainly),
@@ -2896,7 +2897,7 @@ class CollegeCostChatToolTest {
     assertEquals(
       Triple(
         AssuranceTier.MANDATORY_SURVEY.value,
-        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED),
         MoneySource.SCORECARD.value,
       ),
       resolvedProvenanceOf(college, CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName),
@@ -2942,7 +2943,7 @@ class CollegeCostChatToolTest {
       debt.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
     )
     assertEquals(
-      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD),
+      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED),
       debt.getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY).jsonPrimitive.content,
       "the code never travels without the words for it",
     )
@@ -2972,7 +2973,7 @@ class CollegeCostChatToolTest {
       earnings.getValue(CollegeCostChatTool.ASSURANCE_KEY).jsonPrimitive.content,
     )
     assertEquals(
-      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD),
+      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED),
       earnings.getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY).jsonPrimitive.content,
     )
     assertEquals(
@@ -3010,7 +3011,7 @@ class CollegeCostChatToolTest {
     assertEquals(
       Triple(
         AssuranceTier.MANDATORY_SURVEY.value,
-        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+        AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED),
         MoneySource.IPEDS_IC_AY.value,
       ),
       resolvedProvenanceOf(college, CostField.FEES_ONLY_IN_DISTRICT_PER_YEAR_USD.wireName),
@@ -3084,7 +3085,7 @@ class CollegeCostChatToolTest {
       assertTrue(assurance in tiers, "[$field] resolved to no tier in the vocabulary: [$assurance]")
       assertTrue(source in sources, "[$field] resolved to no publisher in the vocabulary: [$source]")
       assertEquals(
-        AssuranceTierCopy.statementOf(assertNotNull(AssuranceTier.entries.find { it.value == assurance })),
+        AssuranceTierCopy.statementOf(assertNotNull(AssuranceTier.entries.find { it.value == assurance }), FilingLink.LINKED),
         statement,
         "[$field] resolved to a sentence that is not its own tier's",
       )
@@ -3154,7 +3155,7 @@ class CollegeCostChatToolTest {
       val tier = assertNotNull(AssuranceTier.entries.find { it.value == code }, "[$code] is no tier: [$carrier]")
       tiersSeen += tier
       assertContentEquals(
-        AssuranceTierCopy.statementOf(tier).toByteArray(Charsets.UTF_8),
+        AssuranceTierCopy.statementOf(tier, FilingLink.LINKED).toByteArray(Charsets.UTF_8),
         carrier
           .getValue(CollegeCostChatTool.ASSURANCE_STATEMENT_KEY)
           .jsonPrimitive.content

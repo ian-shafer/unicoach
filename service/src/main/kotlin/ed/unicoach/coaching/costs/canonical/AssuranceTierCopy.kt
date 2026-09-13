@@ -3,6 +3,30 @@ package ed.unicoach.coaching.costs.canonical
 import ed.unicoach.db.models.AssuranceTier
 
 /**
+ * Whether the surface saying a tier sentence is ALSO rendering the college's
+ * own file (RFC 200).
+ *
+ * A parameter and not a default, because exactly one tier sentence --
+ * `voluntary_self_report` -- ends by PROMISING that link, and the promise must
+ * not be made by a caller that is not keeping it. Declared as an enum rather
+ * than a `Boolean` so the two arms are named where they are read: a bare
+ * `false` at a call site says nothing about which half of the sentence it
+ * decides.
+ *
+ * For a CDS filing the answer is `CdsCitation.linksToFile` and nothing else --
+ * the ONE predicate that decides whether we point a reader at a filing. A
+ * caller holding NO filing at all passes [LINKED], because its tier's sentence
+ * promises no link in the first place; each such site says so in a comment.
+ */
+enum class FilingLink {
+  /** We are rendering the college's own file beside these words. */
+  LINKED,
+
+  /** We are not, so the sentence that promises one is not said. */
+  NOT_LINKED,
+}
+
+/**
  * The three assurance tiers, spoken (RFC 179).
  *
  * The English half of [AssuranceTier], which carries none: the enum is a
@@ -54,10 +78,27 @@ object AssuranceTierCopy {
   fun composedStatementOf(
     statusStatement: String?,
     tier: AssuranceTier,
-  ): String = listOfNotNull(statusStatement, statementOf(tier)).joinToString(" ")
+    filing: FilingLink,
+  ): String = listOfNotNull(statusStatement, statementOf(tier, filing)).joinToString(" ")
 
-  /** How a family hears what KIND of number this is. Composed beside the status sentence, never inside it. */
-  fun statementOf(tier: AssuranceTier): String =
+  /**
+   * How a family hears what KIND of number this is. Composed beside the status
+   * sentence, never inside it.
+   *
+   * [filing] is REQUIRED and has no default, which is the whole of RFC 200's
+   * safety argument: the self-report sentence ENDS with a promise to link the
+   * college's own file, so no caller may state the tier without also stating
+   * whether that link is being rendered. A default would let a surface holding
+   * no filing -- or holding a dead one -- make the promise by omission, which
+   * is exactly the defect this parameter exists to make uncompilable. It is the
+   * ONE place the question "are we pointing at this file?" is answered for
+   * copy, and for a CDS filing the answer comes from `CdsCitation.linksToFile`
+   * and nowhere else.
+   */
+  fun statementOf(
+    tier: AssuranceTier,
+    filing: FilingLink,
+  ): String =
     when (tier) {
       AssuranceTier.ADMINISTRATIVE_RECORD -> {
         "This comes from federal loan and tax records, not from the college. It covers only students " +
@@ -69,9 +110,45 @@ object AssuranceTierCopy {
           "year's answer. Nobody audits it."
       }
 
+      // The ONE tier whose sentence promises a link, so the ONE tier [filing]
+      // can change. The `when` is exhaustive with no `else` here too: a fourth
+      // answer to "are we linking?" must fail to compile rather than quietly
+      // pick the promise.
       AssuranceTier.VOLUNTARY_SELF_REPORT -> {
-        "The college published this about itself. No one checks it. We link to the college's own file " +
-          "so you can see it."
+        when (filing) {
+          FilingLink.LINKED -> SELF_REPORT_WITHOUT_LINK + SELF_REPORT_LINK_PROMISE
+
+          // The third sentence is DELETED, whole, and the first two are
+          // returned byte for byte (RFC 200). It is never reworded, and the
+          // distinction is the whole point: these sentences are byte-frozen
+          // against the immutable v19 prompt row (`SystemPromptCatalogTest`),
+          // so a reword would move a string no new seed can fix and would mint
+          // a prompt version for a copy change. Brief 0009 D1 draws the line we
+          // follow -- a RESTATEMENT may be deleted, a frozen sentence may never
+          // be reworded -- so a filing whose link we dropped simply does not
+          // have the promise SAID about it.
+          FilingLink.NOT_LINKED -> SELF_REPORT_WITHOUT_LINK
+        }
       }
     }
+
+  /**
+   * The frozen self-report copy MINUS the promise -- the first two sentences,
+   * byte for byte as v19 froze them.
+   *
+   * Split out rather than edited: `SELF_REPORT_WITHOUT_LINK +
+   * SELF_REPORT_LINK_PROMISE` is character-identical to the single literal it
+   * replaces, so the v19 pin does not move and no prompt version is minted.
+   */
+  const val SELF_REPORT_WITHOUT_LINK = "The college published this about itself. No one checks it."
+
+  /**
+   * The promise RFC 196 finally kept, as its own whole sentence -- leading
+   * space included, because it is appended to the sentence before it.
+   *
+   * Written in exactly ONE place in this source set, and asserted to be, so
+   * that dropping it for an unlinkable filing is a deletion at one seam rather
+   * than a second copy someone forgot.
+   */
+  const val SELF_REPORT_LINK_PROMISE = " We link to the college's own file so you can see it."
 }

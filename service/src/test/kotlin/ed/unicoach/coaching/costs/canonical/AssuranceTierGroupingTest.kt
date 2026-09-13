@@ -33,7 +33,7 @@ class AssuranceTierGroupingTest {
 
     assertEquals(1, groups.size, "three figures of one kind are one sentence: [$groups]")
     assertEquals(
-      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD),
+      AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED),
       groups.single().statement,
       "and the sentence is [AssuranceTierCopy]'s, byte for byte",
     )

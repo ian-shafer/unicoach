@@ -16,6 +16,7 @@ import ed.unicoach.db.models.NewCohortPopulationCount
 import ed.unicoach.db.models.NewSourceDocument
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -479,6 +480,9 @@ class BorrowingDaoTest {
           academicYear = academicYear,
           sourceUrl = "https://example.edu/cds-2024-25.pdf",
           archiveUrl = null,
+          // This fixture asked nobody, and says so (RFC 200): no verdict, no date.
+          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
+          sourceUrlCheckedOn = null,
         ),
       ).getOrThrow()
 

@@ -1,7 +1,9 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.coaching.admissions.CdsCitation
 import ed.unicoach.coaching.admissions.putCitation
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AssuredFigure
@@ -91,7 +93,7 @@ object AidPolicyWire {
         // need met" is the school's own unaudited claim, and it is emitted from
         // the same construct as its number so no call site can put the figure
         // in the model's context without what kind of number it is.
-        putAssurance(assured, NEED_MET_ASSURANCE_KEY, NEED_MET_ASSURANCE_STATEMENT_KEY)
+        putAssurance(assured, policy.source, NEED_MET_ASSURANCE_KEY, NEED_MET_ASSURANCE_STATEMENT_KEY)
       }
       // The derived share and both of its counts, or none of them: the two
       // headcounts ARE the derivation, and a share without its denominator is
@@ -110,7 +112,7 @@ object AidPolicyWire {
       policy.averageNeedBasedGrantUsd?.let { assured ->
         put(AVERAGE_GRANT_KEY, assured.figure)
         put(AVERAGE_GRANT_LABEL_KEY, averageGrantLabel(assured.figure))
-        putAssurance(assured, AVERAGE_GRANT_ASSURANCE_KEY, AVERAGE_GRANT_ASSURANCE_STATEMENT_KEY)
+        putAssurance(assured, policy.source, AVERAGE_GRANT_ASSURANCE_KEY, AVERAGE_GRANT_ASSURANCE_STATEMENT_KEY)
       }
       if (policy.requiredForms.isNotEmpty()) {
         putJsonArray(FORMS_KEY) { policy.requiredForms.forEach { add(it.value) } }
@@ -130,21 +132,47 @@ object AidPolicyWire {
     }
 
   /**
-   * One figure's tier and its sentence, from the figure itself.
+   * One figure's tier and its sentence, from the figure and the FILING it is
+   * made in.
    *
    * It takes the [AssuredFigure] and not the policy plus a measure, so there is
    * no lookup to miss: the tier travels inside the figure, so a figure that
    * reaches the wire HAS one. The earlier shape read a side-map and returned
    * early when the key was absent, which dropped the tier of a figure it was
    * emitting in the same breath -- silently, and with nothing failing.
+   *
+   * It takes the [CdsCitation] for the same reason, one RFC later (RFC 200 D8).
+   * Every aid-policy figure here is a school's own Common Data Set answer, so
+   * every one of them is `voluntary_self_report`, whose frozen sentence ends
+   * "We link to the college's own file so you can see it" -- and this object
+   * emits [putCitation] beside it. That promise was being made about the
+   * fifteen filings in the committed corpus whose file answers 404 (measured
+   * 2026-09-13, over 441 distinct documents). Passing the citation means the
+   * sentence
+   * CANNOT be chosen without the filing in hand: there is no argument list here
+   * that lets a caller state the tier and forget the document.
+   *
+   * The promise sentence is DELETED, whole, never reworded -- it is byte-frozen
+   * against the immutable v19 prompt row, and [AssuranceTierCopy.statementOf]'s
+   * [FilingLink.NOT_LINKED] arm returns the first two sentences byte for byte.
    */
   private fun JsonObjectBuilder.putAssurance(
     figure: AssuredFigure<*>,
+    citation: CdsCitation,
     assuranceKey: String,
     statementKey: String,
   ) {
     put(assuranceKey, figure.assurance.value)
-    put(statementKey, AssuranceTierCopy.statementOf(figure.assurance))
+    // No second predicate and no second entry point: the link question is
+    // [CdsCitation.linksToFile]'s alone, and the copy seam is told the ANSWER.
+    // A tier whose sentence promises nothing is unaffected by it.
+    put(
+      statementKey,
+      AssuranceTierCopy.statementOf(
+        figure.assurance,
+        if (citation.linksToFile) FilingLink.LINKED else FilingLink.NOT_LINKED,
+      ),
+    )
   }
 
   /**

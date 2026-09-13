@@ -1,8 +1,11 @@
 package ed.unicoach.coaching.admissions
 
+import ed.unicoach.db.models.SourceUrlStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 /**
  * The one thing a citation's url is allowed to be used for outside the wire: an
@@ -14,7 +17,16 @@ import kotlin.test.assertFailsWith
  * at the type that holds the url, once, rather than trusted at each renderer.
  */
 class CdsCitationLinkTest {
-  private fun citation(url: String) = CdsCitation(collegeName = "Ashford College", sourceYear = 2024, url = url, archiveUrl = null)
+  private fun citation(
+    url: String,
+    sourceUrlStatus: SourceUrlStatus = SourceUrlStatus.FOUND,
+  ) = CdsCitation(
+    collegeName = "Ashford College",
+    sourceYear = 2024,
+    url = url,
+    archiveUrl = null,
+    sourceUrlStatus = sourceUrlStatus,
+  )
 
   @Test
   fun `an http or https filing is linkable, verbatim`() {
@@ -62,6 +74,41 @@ class CdsCitationLinkTest {
     // refusing it would stop a page over nothing. It is handed over VERBATIM.
     val shouty = "HTTPS://example.test/cds.pdf"
     assertEquals(shouty, citation(shouty).linkTarget())
+  }
+
+  @Test
+  fun `a filing whose own file is gone has no link target, and every other status keeps one`() {
+    // RFC 200 D5. Only the recorded 404 verdict drops the anchor: an
+    // unreachable check is OUR gap and never the school's silence (RFC 166 s6),
+    // so UNKNOWN -- "we never asked", or "we asked and got no usable answer" --
+    // links exactly as it did before this RFC existed.
+    val url = "https://example.test/cds.pdf"
+
+    assertNull(citation(url, SourceUrlStatus.NOT_FOUND).linkTargetOrNull(), "a 404 filing must not be linked")
+    assertEquals(url, citation(url, SourceUrlStatus.FOUND).linkTargetOrNull())
+    assertEquals(url, citation(url, SourceUrlStatus.UNKNOWN).linkTargetOrNull())
+    // The citation itself is unchanged by the verdict: the family still learns
+    // whose claim it is and in which cycle. Only the anchor goes.
+    assertEquals("Ashford College's 2024-25 Common Data Set", citation(url, SourceUrlStatus.NOT_FOUND).citedAs)
+  }
+
+  @Test
+  fun `a gone filing answers no link rather than faulting, even with a poisoned scheme`() {
+    // The ORDER of the two checks, asserted rather than assumed: NOT_FOUND is
+    // read FIRST, so a dead url that is also poisoned answers "no link" instead
+    // of stopping a whole page over a link nobody would have rendered.
+    // `assertNull` alone would pass if the call threw... it would not: a thrown
+    // exception fails the test, which is exactly the property being asserted.
+    assertNull(citation("javascript:alert(1)", SourceUrlStatus.NOT_FOUND).linkTargetOrNull())
+
+    // And the RFC 196 fault is NOT weakened for anything we would still link.
+    assertFailsWith<UnlinkableSourceUrlException> { citation("javascript:alert(1)", SourceUrlStatus.FOUND).linkTargetOrNull() }
+    assertFailsWith<UnlinkableSourceUrlException> { citation("javascript:alert(1)", SourceUrlStatus.UNKNOWN).linkTargetOrNull() }
+    // `linkTarget()` itself is untouched by RFC 200: a gone filing still faults
+    // if somebody asks for the target directly, because that caller asked for a
+    // link and this url cannot be one.
+    assertFailsWith<UnlinkableSourceUrlException> { citation("javascript:alert(1)", SourceUrlStatus.NOT_FOUND).linkTarget() }
+    assertNotNull(citation("https://example.test/cds.pdf", SourceUrlStatus.NOT_FOUND).linkTarget())
   }
 
   @Test

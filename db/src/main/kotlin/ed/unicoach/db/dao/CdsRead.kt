@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.SourceUrlStatus
 
 /*
  * The read plumbing every Common Data Set DAO shares (RFC 170, 175).
@@ -27,8 +28,30 @@ internal data class CitedFact<F>(
   val academicYear: AcademicYear,
   val sourceUrl: String,
   val archiveUrl: String?,
+  /**
+   * Whether [sourceUrl] was still served when we last looked (RFC 200), read
+   * from the document beside the urls it is about. Recorded at ingest; this
+   * read asks no school's web server anything.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
   val fact: F,
 )
+
+/**
+ * A stored source_url_status slug as its domain type.
+ *
+ * The same rule as [decodeCohortPopulation], and it matters more here: the ONE
+ * state that drops an anchor is [SourceUrlStatus.NOT_FOUND], so a slug silently
+ * defaulted to UNKNOWN would keep a link to a grave and nothing would say so.
+ * A slug no enum reads is schema/enum drift, raised as a located
+ * [corruptValue].
+ */
+internal fun decodeSourceUrlStatus(
+  raw: String,
+  row: String,
+): SourceUrlStatus =
+  SourceUrlStatus.fromValue(raw)
+    ?: throw corruptValue(raw, "SourceUrlStatus", "source_documents.source_url_status ($row)")
 
 /**
  * One fact per key, REFUSING a duplicate.

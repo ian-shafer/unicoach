@@ -25,6 +25,7 @@ import ed.unicoach.coaching.costs.applicableTuitionFor
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.AssuranceTierGrouping
 import ed.unicoach.coaching.costs.canonical.CoveredFigure
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.db.models.CollegeId
@@ -916,7 +917,10 @@ private fun blankFor(
     FigureStatus.SUPPRESSED_BY_PUBLISHER,
     FigureStatus.NOT_APPLICABLE,
     FigureStatus.NOT_COLLECTED_BY_US,
-    -> AssuranceTierCopy.composedStatementOf(note.statement, note.assurance)
+    // LINKED, holding no filing: a cost-figure note on this page carries a
+    // federal tier, whose sentence promises no link. The page's ONE surface
+    // that does hold a filing asks [CdsCitation.linksToFile] instead.
+    -> AssuranceTierCopy.composedStatementOf(note.statement, note.assurance, FilingLink.LINKED)
   }
 }
 
@@ -1472,17 +1476,31 @@ private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
  * - The TEXT is [CdsCitation.citedAs], the string this page already printed. The
  *   url is heterogeneous and long (1,744 characters at its worst in our own
  *   seed) and is never shown to anybody.
- * - [CdsCitation.linkTarget] asserts the scheme and FAULTS rather than
- *   rendering: `href` is where escaping does not save a logged-out parent.
+ * - [CdsCitation.linkTargetOrNull] answers null for a filing we no longer point
+ *   at (RFC 200), and OTHERWISE asserts the scheme and FAULTS rather than
+ *   rendering: `href` is where escaping does not save a logged-out parent. The
+ *   order is deliberate -- a filing whose file is gone needs no link, so its
+ *   url is never judged -- and it is tested.
  * - `rel="noreferrer"` even though the report route already sends
  *   `Referrer-Policy: no-referrer` for exactly this reason. The header rides the
  *   ROUTE and the link is on the PAGE; a page rendered from a second route later
  *   would otherwise lose the guarantee with nothing failing.
+ *
+ * AND THE SAME WORDS WITH NO ANCHOR, where the college's own file is recorded
+ * as gone (RFC 200 D6). Only the anchor goes: the family still learns whose
+ * claim this is and in which cycle, because [CdsCitation.citedAs] is printed
+ * either way. A link to a 404 is a worse answer than no link, and dropping the
+ * citation with it would take a fact off the page to hide a broken url.
  */
 private fun FlowContent.sourceLink(citation: CdsCitation) {
-  a(href = citation.linkTarget()) {
-    rel = "noreferrer"
+  val target = citation.linkTargetOrNull()
+  if (target == null) {
     +citation.citedAs
+  } else {
+    a(href = target) {
+      rel = "noreferrer"
+      +citation.citedAs
+    }
   }
 }
 

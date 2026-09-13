@@ -231,6 +231,7 @@ object AidPolicyDao {
       academicYear = AcademicYear(rs.getInt("year")),
       sourceUrl = rs.getString("source_url"),
       archiveUrl = rs.getString("archive_url"),
+      sourceUrlStatus = decodeSourceUrlStatus(rs.getString("source_url_status"), row),
       fact =
         when (val kind = rs.getString("kind")) {
           STAT_KIND -> {
@@ -287,6 +288,7 @@ object AidPolicyDao {
       academicYear = first.academicYear,
       sourceUrl = first.sourceUrl,
       archiveUrl = first.archiveUrl,
+      sourceUrlStatus = first.sourceUrlStatus,
       // Each figure leaves this read WITH its own row's tier (RFC 179). The
       // tier is a fact about the row a figure came from, so it travels inside
       // the figure rather than in a side-map beside it: a policy-wide tier

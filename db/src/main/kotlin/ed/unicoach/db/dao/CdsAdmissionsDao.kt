@@ -17,6 +17,7 @@ import ed.unicoach.db.models.NewCollegeAdmissionFactors
 import ed.unicoach.db.models.NewCollegeDeadline
 import ed.unicoach.db.models.NewCollegeMeritAid
 import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.SourceUrlStatus
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -62,6 +63,22 @@ object CdsAdmissionsDao {
   // ---------------------------------------------------------------------------
   // Row mappers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Reads the joined document's source-url status (RFC 200). The three row types share
+   * one mapper because they cite the same table through the same join, and
+   * because the ONE state that drops an anchor is [SourceUrlStatus.NOT_FOUND]:
+   * a slug quietly defaulted to UNKNOWN would keep a link to a grave with
+   * nothing said. The fact row's own id locates it -- the document is reached
+   * only through this fact, so that id is what an operator holds.
+   *
+   * The DECODE and the fault are [decodeSourceUrlStatus]'s, in `CdsRead.kt` with
+   * the rest of the shared CDS read plumbing; this mapper adds only the LOCATOR
+   * -- which fact row cited the document -- so one stored column keeps one
+   * decoder and one exception shape across every dao that reads it.
+   */
+  private fun ResultSet.sourceUrlStatus(): SourceUrlStatus =
+    decodeSourceUrlStatus(getString("source_url_status"), "cited by row [${getString("id")}]")
 
   /** Reads a rating column through [FactorRating.fromValue]; a persisted value
    * outside the enum (impossible under the `cds_factor_rating` domain) fails loudly. */
@@ -111,6 +128,7 @@ object CdsAdmissionsDao {
       noNeedMeritAverageUsd = rs.getIntOrNull("no_need_merit_average_usd"),
       sourceUrl = rs.getString("source_url"),
       archiveUrl = rs.getString("archive_url"),
+      sourceUrlStatus = rs.sourceUrlStatus(),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
     )
@@ -140,6 +158,7 @@ object CdsAdmissionsDao {
       applicantInterest = rs.getRatingOrNull("applicant_interest"),
       sourceUrl = rs.getString("source_url"),
       archiveUrl = rs.getString("archive_url"),
+      sourceUrlStatus = rs.sourceUrlStatus(),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
     )
@@ -162,6 +181,7 @@ object CdsAdmissionsDao {
       notification = rs.getMonthDayOrNull("notification_month", "notification_day"),
       sourceUrl = rs.getString("source_url"),
       archiveUrl = rs.getString("archive_url"),
+      sourceUrlStatus = rs.sourceUrlStatus(),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
     )

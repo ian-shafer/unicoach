@@ -14,6 +14,7 @@ import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.spokenLabel
 import ed.unicoach.common.util.AcademicYear
@@ -29,6 +30,7 @@ import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.web.render.BLENDED_IN_STATE_CLAUSE
 import ed.unicoach.web.render.NOT_REPORTED
 import ed.unicoach.web.render.SCHOOL_BLENDED_HINT
@@ -667,13 +669,13 @@ class CostReportPageTest {
     val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
 
     assertTrue(
-      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)),
+      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)),
       "the shown debt paragraph carries the administrative-record sentence: [$body]",
     )
     // Beside the figure, not instead of it, and the two sentences stay two.
     assertTrue(
       body.indexOf("The source publishes no year for this figure") <
-        body.indexOf(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)),
+        body.indexOf(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)),
       "the tier sentence follows the figure's own words",
     )
   }
@@ -697,7 +699,7 @@ class CostReportPageTest {
       )
 
     val status = requireNotNull(FigureStatusCopy.statementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER, MoneySource.SCORECARD))
-    val tier = AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)
+    val tier = AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)
     assertTrue(body.contains("$status $tier"), "status sentence then tier sentence, in that order: [$body]")
   }
 
@@ -1473,6 +1475,9 @@ class CostReportPageTest {
           academicYear = AcademicYear(2024),
           sourceUrl = "https://example.test/cds.pdf",
           archiveUrl = null,
+          // STATED, not defaulted (RFC 200): this filing's file was served when
+          // we looked, which is the case every assertion below was written for.
+          sourceUrlStatus = SourceUrlStatus.FOUND,
           graduatingClass = 39,
           averageDebtUsdByLoanType = emptyMap(),
           borrowersByLoanType = mapOf(LoanType.FEDERAL to 2588),
@@ -1634,7 +1639,7 @@ class CostReportPageTest {
     // The whole slice, measured: three schools, three federal debt figures, ONE
     // sentence saying what kind of number they are. It was printed three times.
     val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
-    val statement = AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)
+    val statement = AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)
 
     assertEquals(1, countOf(body, statement), "one sentence for the set of figures it covers: [$body]")
     assertTrue(body.contains("report-kinds"), "and it is in the standing block, above the sources")
@@ -1666,17 +1671,17 @@ class CostReportPageTest {
       assertTrue(block.contains(expected), "[${cost.name}]'s debt figure must be named: [$block]")
       assertEquals(
         1,
-        countOf(block, AssuranceTierCopy.statementOf(debt.assurance)),
+        countOf(block, AssuranceTierCopy.statementOf(debt.assurance, FilingLink.LINKED)),
         "and covered by exactly one sentence, the one that is true of it: [$block]",
       )
       AssuranceTier.entries.filter { it != debt.assurance }.forEach { other ->
-        assertFalse(block.contains(AssuranceTierCopy.statementOf(other)), "and by no other: [${other.value}]")
+        assertFalse(block.contains(AssuranceTierCopy.statementOf(other, FilingLink.LINKED)), "and by no other: [${other.value}]")
       }
     }
     // The other two sentences are not said at all: no figure on this page is on
     // either tier, and a sentence said over nothing describes nothing.
-    assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)))
-    assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT)))
+    assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)))
+    assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT, FilingLink.LINKED)))
   }
 
   @Test
@@ -1716,7 +1721,7 @@ class CostReportPageTest {
       "the suppression is still stated",
     )
     assertTrue(
-      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)),
+      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)),
       "and the tier the withheld figure would have had is still reachable (brief 0009 D1): [$body]",
     )
   }
@@ -1781,11 +1786,11 @@ class CostReportPageTest {
       "and so does the surveyed one: [$block]",
     )
     // Each sentence said once, and neither header reaches the other's figure.
-    assertEquals(1, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD)))
-    assertEquals(1, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)))
+    assertEquals(1, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)))
+    assertEquals(1, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)))
     val federalHeader = block.substringBefore("The median federal loan debt at Wynnford College:")
     assertFalse(
-      federalHeader.contains(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)),
+      federalHeader.contains(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)),
       "the survey sentence may not sit under the federal school's header: [$federalHeader]",
     )
   }
@@ -1822,7 +1827,7 @@ class CostReportPageTest {
       "the suppression is still stated: [$body]",
     )
     assertTrue(
-      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)),
+      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)),
       "and the tier it would have had is still reachable: [$body]",
     )
   }
@@ -1863,11 +1868,26 @@ class CostReportPageTest {
     // `a { href = citation.url }` is a second kotlinx.html anchor form that
     // spelling never sees. Counting the attribute catches every form of the
     // thing being banned rather than the one form somebody wrote first.
+    //
+    // ONE `href` still, after RFC 200 widened `sourceLink` to two branches: the
+    // second branch renders TEXT and opens no anchor, so the count of the
+    // attribute is exactly what distinguishes "a filing said without a link"
+    // from "a second link shape".
     assertEquals(1, countOf(code, "href"), "the page named [href] outside [sourceLink]: [${source.name}]")
-    assertTrue(code.contains("a(href = citation.linkTarget())"), "the one anchor must target the CHECKED url")
+    // The one anchor targets the CHECKED url, and it is checked by the function
+    // that can also answer "no link" -- `linkTargetOrNull`. Asserted as the CALL
+    // plus the fact that the value it returned is what the anchor is given, so a
+    // renderer cannot call it, discard the answer and link `citation.url`.
+    assertTrue(code.contains("citation.linkTargetOrNull()"), "the anchor decision must come from the CHECKED accessor")
+    assertTrue(code.contains("a(href = target)"), "the one anchor must target the value that check returned")
     // The raw property, reached from this page at all, is the defect: it is what
-    // `linkTarget()` exists to stand in front of.
+    // `linkTargetOrNull()` exists to stand in front of.
     assertEquals(0, countOf(code, ".url"), "the page reached for a raw citation url: [${source.name}]")
+    // NOT VACUOUS: the sweep must be reading the branch it is judging. A file
+    // that stopped containing `sourceLink` would satisfy every assertion above
+    // by having nothing in it.
+    assertTrue(code.contains("private fun FlowContent.sourceLink("), "the sweep must have read [sourceLink] itself")
+    assertTrue(code.contains("+citation.citedAs"), "the sweep must have read the text branch it permits")
   }
 
   /**
@@ -1931,7 +1951,7 @@ class CostReportPageTest {
   fun `the sentence that promises a link is never printed without one`() {
     val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
 
-    if (body.contains(AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT))) {
+    if (body.contains(AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT, FilingLink.LINKED))) {
       assertTrue(body.contains("<a href="), "we said we link to the college's own file and linked nothing: [$body]")
     }
     // The page states self-reported filings whether or not it states that
@@ -2014,6 +2034,130 @@ class CostReportPageTest {
       assertEquals(HttpStatusCode.ServiceUnavailable, response.status, "a poisoned url must stop the page")
       assertFalse(response.bodyAsText().contains("javascript:"), "the url reached a parent anyway")
     }
+
+  // ---------------------------------------------------------------------------
+  // And no link to a grave (RFC 200)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The REPORT's own markup, without the site chrome.
+   *
+   * The header and the footer open anchors legitimately -- Home, Terms, Privacy
+   * -- so "zero anchors" is a claim about the report, and measuring the whole
+   * document would make it a claim about the layout instead. The opening marker
+   * is asserted for the reason [visibleWordsOf] asserts it: `substringAfter`
+   * returns the WHOLE document when it misses, which would quietly widen the
+   * assertion to something that cannot hold.
+   */
+  private fun reportSectionOf(body: String): String {
+    val opening = "<section class=\"report\""
+    assertTrue(body.contains(opening), "the report section must be on the page to be measured")
+    return body.substringAfter(opening).substringBeforeLast("</section>")
+  }
+
+  /**
+   * A filing whose own file is gone is still CITED -- in the same words -- and
+   * is not linked (RFC 200 D6, D18).
+   *
+   * Both Common Data Set blocks at once, because they are two renders of one
+   * helper and a fix applied to merit alone would leave borrowing linking a
+   * 404. The family still learns whose claim it is and in which cycle: only the
+   * anchor goes.
+   */
+  @Test
+  fun `a filing whose college file is gone is said in the same words, with no anchor`() {
+    val merit = meritFixture("Ashford College", url = MERIT_URL, sourceUrlStatus = SourceUrlStatus.NOT_FOUND)
+    val borrowing = borrowingFixture("Ashford College", url = BORROWING_URL, sourceUrlStatus = SourceUrlStatus.NOT_FOUND)
+    val college =
+      costFixture(
+        name = "Ashford College",
+        tuitionInState = 30000,
+        publishedPrice = 52000,
+        netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+        medianDebt = 21000,
+        meritAid = merit,
+        borrowing = borrowing,
+      )
+
+    val body = render(costProfile(listOf(college), answeredMoney()))
+    val report = reportSectionOf(body)
+
+    // THE SAME WORDS. Built from the fixtures rather than typed, so the
+    // assertion cannot pass on a school or a cycle the page never printed.
+    assertTrue(report.contains(merit.source.citedAs), "the merit filing is still cited: [$report]")
+    assertTrue(report.contains(borrowing.figures.source.citedAs), "the borrowing filing is still cited: [$report]")
+    assertTrue(report.contains("Ashford College"), "the page still names the college")
+    assertTrue(report.contains("2024-25"), "and still says which cycle the filing is")
+    // AND NO ANCHOR, counted on the attribute rather than on one call spelling.
+    assertEquals(0, countOf(report, "href"), "a dead filing was linked anyway: [$report]")
+    assertEquals(0, countOf(body, "rel=\"noreferrer\""), "a dead filing was linked anyway: [$body]")
+    // The url itself never reaches a parent, in an anchor or as text.
+    assertEquals(0, countOf(body, MERIT_URL), "the dead merit url reached the page: [$body]")
+    assertEquals(0, countOf(body, BORROWING_URL), "the dead borrowing url reached the page: [$body]")
+  }
+
+  /**
+   * ONE gone filing does not cost the other one its link.
+   *
+   * The decision is per CITATION and not per page, and a helper that read a
+   * page-level flag would pass every assertion above while dropping every
+   * anchor on the report.
+   */
+  @Test
+  fun `a gone filing beside a live one drops only its own anchor`() {
+    val merit = meritFixture("Ashford College", url = MERIT_URL, sourceUrlStatus = SourceUrlStatus.NOT_FOUND)
+    val borrowing = borrowingFixture("Ashford College", url = BORROWING_URL, sourceUrlStatus = SourceUrlStatus.FOUND)
+    val college =
+      costFixture(
+        name = "Ashford College",
+        tuitionInState = 30000,
+        publishedPrice = 52000,
+        netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+        medianDebt = 21000,
+        meritAid = merit,
+        borrowing = borrowing,
+      )
+
+    val body = render(costProfile(listOf(college), answeredMoney()))
+
+    assertEquals(1, countOf(body, "rel=\"noreferrer\""), "exactly the live filing keeps its link: [$body]")
+    assertTrue(body.contains(linkedCitation(borrowing.figures.source)), "the live borrowing filing is linked: [$body]")
+    assertTrue(body.contains(merit.source.citedAs), "the gone merit filing is still cited: [$body]")
+    assertEquals(0, countOf(body, MERIT_URL), "the dead merit url reached the page: [$body]")
+  }
+
+  /**
+   * A verdict we do not have KEEPS the link, and a verdict we have and passed
+   * renders exactly what it rendered before this RFC.
+   *
+   * `UNKNOWN` is "we never asked" or "we asked and got no usable answer" -- OUR
+   * gap, never the school's silence (RFC 166 s6). A bot-blocked university is
+   * not a dead filing, and nine of the 441 documents in the committed corpus
+   * are exactly that.
+   */
+  @Test
+  fun `a found filing is byte-unchanged and an unchecked one keeps its link`() {
+    listOf(SourceUrlStatus.FOUND, SourceUrlStatus.UNKNOWN).forEach { status ->
+      val merit = meritFixture("Ashford College", url = MERIT_URL, sourceUrlStatus = status)
+      val borrowing = borrowingFixture("Ashford College", url = BORROWING_URL, sourceUrlStatus = status)
+      val college =
+        costFixture(
+          name = "Ashford College",
+          tuitionInState = 30000,
+          publishedPrice = 52000,
+          netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+          medianDebt = 21000,
+          meritAid = merit,
+          borrowing = borrowing,
+        )
+
+      val body = render(costProfile(listOf(college), answeredMoney()))
+
+      assertTrue(body.contains(linkedCitation(merit.source)), "[$status] must link the merit filing: [$body]")
+      assertTrue(body.contains(linkedCitation(borrowing.figures.source)), "[$status] must link the borrowing filing: [$body]")
+      assertEquals(2, countOf(body, "rel=\"noreferrer\""), "[$status] renders both links and no more")
+    }
+  }
 
   private companion object {
     /**

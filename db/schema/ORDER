@@ -103,3 +103,4 @@ seed-coach-system-prompt-v30.sql
 seed-coach-system-prompt-v31.sql
 seed-coach-system-prompt-v32.sql
 seed-coach-system-prompt-v33.sql
+record-source-url-status.sql

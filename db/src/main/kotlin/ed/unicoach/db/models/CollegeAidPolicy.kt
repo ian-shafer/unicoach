@@ -25,6 +25,12 @@ data class CollegeAidPolicy(
   val sourceUrl: String,
   val archiveUrl: String?,
   /**
+   * Whether [sourceUrl] was still served when we last looked (RFC 200), read
+   * from the same document row. NOT asked here: the verdict was recorded at
+   * ingest, so no family waits on a school's web server.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
+  /**
    * CDS H2 line i: the average share of need met, over the freshmen the school
    * gave need-based scholarship or grant aid (line e) -- NOT over the larger
    * line-d population below.

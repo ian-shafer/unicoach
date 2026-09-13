@@ -34,6 +34,12 @@ object SourceDocumentsDao {
    * school republishes a corrected pdf, and the newest run is the truth. That
    * is the whole point of the document being one row -- the correction lands
    * once and every fact citing it follows.
+   *
+   * The RFC 200 source-url-status pair is overwritten with them, and for the same
+   * reason: a re-run that found the school's file back is the newest answer,
+   * and the pair is a fact ABOUT the url this statement is writing. Leaving a
+   * previous run's verdict in place would attach yesterday's answer to today's
+   * url -- the one way the column could state a check that never happened.
    */
   fun upsert(
     session: SqlSession,
@@ -42,11 +48,15 @@ object SourceDocumentsDao {
     session
       .mutateReturning(
         """
-        INSERT INTO source_documents (college_id, source, academic_year, source_url, archive_url)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO source_documents (
+          college_id, source, academic_year, source_url, archive_url, source_url_status, source_url_checked_on
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (college_id, source, academic_year) DO UPDATE
           SET source_url = EXCLUDED.source_url,
-              archive_url = EXCLUDED.archive_url
+              archive_url = EXCLUDED.archive_url,
+              source_url_status = EXCLUDED.source_url_status,
+              source_url_checked_on = EXCLUDED.source_url_checked_on
         RETURNING id
         """.trimIndent(),
         bind = { stmt: PreparedStatement ->
@@ -55,6 +65,8 @@ object SourceDocumentsDao {
           stmt.setInt(3, input.academicYear.firstCalendarYear)
           stmt.setString(4, input.sourceUrl)
           stmt.setStringOrNull(5, input.archiveUrl)
+          stmt.setString(6, input.sourceUrlStatus.value)
+          stmt.setDateOrNull(7, input.sourceUrlCheckedOn)
         },
         map = { rs -> SourceDocumentId(UUID.fromString(rs.getString("id"))) },
         // The write-path mapping, so a refused document is a NAMED constraint

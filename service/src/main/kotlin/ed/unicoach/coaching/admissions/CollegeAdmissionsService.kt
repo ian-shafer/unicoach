@@ -125,7 +125,7 @@ data class MeritPractice(
         fullTimeFreshmen = row.firstTimeFullTimeFreshmenHeadcount,
         nonNeedMeritRecipients = row.noNeedMeritRecipientsHeadcount,
         averageNonNeedAid = row.noNeedMeritAverageUsd,
-        source = CdsCitation(collegeName, row.sourceYear, row.sourceUrl, row.archiveUrl),
+        source = CdsCitation(collegeName, row.sourceYear, row.sourceUrl, row.archiveUrl, row.sourceUrlStatus),
       ).takeIf { !it.isEmpty }
   }
 }
@@ -170,7 +170,7 @@ data class AdmissionFactorGrid(
           AdmissionFactor.entries.mapNotNull { factor ->
             factor.ratingOf(row)?.let { FactorWeight(factor, it) }
           },
-        source = CdsCitation(collegeName, row.sourceYear, row.sourceUrl, row.archiveUrl),
+        source = CdsCitation(collegeName, row.sourceYear, row.sourceUrl, row.archiveUrl, row.sourceUrlStatus),
       ).takeIf { !it.isEmpty }
   }
 }
@@ -563,7 +563,7 @@ class CollegeAdmissionsService(
     // `first()` is safe because [latestCycleOf] returns null rather than an
     // empty list -- the selection owns non-emptiness, so this assembly does not
     // have to re-check it from a distance.
-    val citation = current.first().let { CdsCitation(college.name, it.sourceYear, it.sourceUrl, it.archiveUrl) }
+    val citation = current.first().let { CdsCitation(college.name, it.sourceYear, it.sourceUrl, it.archiveUrl, it.sourceUrlStatus) }
     return DeadlineSchedule(
       rounds = current.map { roundOf(college, it) },
       source = citation,

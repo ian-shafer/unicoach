@@ -2,6 +2,7 @@ package ed.unicoach.coaching.admissions
 
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.isWebUrl
+import ed.unicoach.db.models.SourceUrlStatus
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.put
 
@@ -31,6 +32,17 @@ data class CdsCitation(
   val sourceYear: Int,
   val url: String,
   val archiveUrl: String?,
+  /**
+   * Whether [url] was still served when we last looked (RFC 200), read off the
+   * `source_documents` row this citation was built from.
+   *
+   * REQUIRED, with no default: a default would let a construction site that
+   * never plumbed the column through claim the school's file is fine, and the
+   * whole point of the column is that only a recorded check may speak. The
+   * verdict is established at INGEST by `bin/cds-link-check`; nothing on this
+   * path asks the network.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
 ) {
   /** "Amherst College's 2024-25 Common Data Set" -- the sentence fragment the coach says. */
   val citedAs: String get() = "$collegeName's ${cycleLabel(sourceYear)} Common Data Set"
@@ -77,6 +89,51 @@ data class CdsCitation(
       throw UnlinkableSourceUrlException(collegeName, sourceYear, url)
     }
 
+  /**
+   * Whether we are still willing to point a reader at the college's own file
+   * (RFC 200) -- the ONE place that question is answered.
+   *
+   * Every surface that withholds something because the file is gone asks THIS:
+   * [linkTargetOrNull] drops the anchor, [putCitation] emits a note instead of
+   * a url, and `AidPolicyWire` drops the sentence that promises the link (via
+   * `FilingLink`). Written once, because the rule is one rule -- a fourth
+   * status, or a second reason to withhold a link, is then added here and
+   * nowhere else, instead of being hunted across three spellings in two
+   * packages.
+   *
+   * A PROPERTY and not a function: it cannot fault and it reads as the fact it
+   * is, unlike [linkTarget], which can.
+   */
+  val linksToFile: Boolean get() =
+    when (sourceUrlStatus) {
+      // EXHAUSTIVE, with no `else`, deliberately. This is the one predicate
+      // that decides whether we point a family at a school's file, so a status
+      // added later must be ANSWERED here rather than inheriting "yes" from a
+      // `!= NOT_FOUND`. That is what makes the claim elsewhere in this RFC --
+      // that a fourth answer fails to compile -- true at this seam too.
+      SourceUrlStatus.FOUND -> true
+
+      SourceUrlStatus.UNKNOWN -> true
+
+      SourceUrlStatus.NOT_FOUND -> false
+    }
+
+  /**
+   * The `href` for a filing we are still willing to point at, or null where the
+   * college's own file is [SourceUrlStatus.NOT_FOUND] (RFC 200).
+   *
+   * NOT_FOUND is checked FIRST, before [linkTarget]'s scheme fault, so a dead
+   * url that is ALSO poisoned answers "no link" rather than faulting a whole
+   * page over a link nobody was going to render. The RFC 196 fault is not
+   * weakened by that ordering: it still fires for every url this type is asked
+   * to LINK, which is the only path that can hurt somebody.
+   *
+   * Every other status keeps the link. An unreachable check is OUR gap and
+   * never the school's silence (RFC 166 s6) -- a bot-blocked university is not
+   * a dead filing -- so only the one recorded 404 verdict drops an anchor.
+   */
+  fun linkTargetOrNull(): String? = if (linksToFile) linkTarget() else null
+
   companion object {
     /**
      * The spoken cycle label for a CDS `source_year`: 2024 -> "2024-25".
@@ -109,9 +166,41 @@ class UnlinkableSourceUrlException(
     "source_documents url for [$collegeName] [${CdsCitation.cycleLabel(sourceYear)}] is not an http(s) url: [$url]",
   )
 
-/** The per-section citation on the wire (D2); a null archive copy omits the key rather than emitting an empty string. */
+/** The wire key for the sentence said INSTEAD of a url we know is dead (RFC 200). */
+const val SOURCE_FILE_NOTE_KEY: String = "source_file_note"
+
+/**
+ * What the coach says about a filing whose own file is gone -- a new, unfrozen
+ * sentence (RFC 200 D8).
+ *
+ * SAID, not merely omitted. Dropping the url silently would leave the model
+ * free to invent a link to the document it is citing; stating the absence is
+ * what makes "we cannot link this one" a fact the coach can pass on. The
+ * citation itself is unchanged, so the family still learns whose claim it is
+ * and in which cycle.
+ */
+const val SOURCE_FILE_NOT_FOUND_NOTE: String =
+  "The college's own file for this filing is no longer online, so there is nothing to link."
+
+/**
+ * The per-section citation on the wire (D2); a null archive copy omits the key
+ * rather than emitting an empty string.
+ *
+ * A [SourceUrlStatus.NOT_FOUND] filing emits [SOURCE_FILE_NOTE_KEY] and NO
+ * `url`: a url we recorded as a 404 is not data the coach should be handed to
+ * repeat. `archive_url` is unaffected either way -- it is a different document
+ * with a different claim behind it (RFC 196 D1), and this RFC does not start
+ * offering it in words.
+ */
 fun JsonObjectBuilder.putCitation(citation: CdsCitation) {
   put("cited_as", citation.citedAs)
-  put("url", citation.url)
+  // ASKED, never re-derived: [CdsCitation.linksToFile] is the one place that
+  // decides whether we point a reader at this file, so this seam cannot drift
+  // from the anchor the page drops or the promise the wire withholds.
+  if (citation.linksToFile) {
+    put("url", citation.url)
+  } else {
+    put(SOURCE_FILE_NOTE_KEY, SOURCE_FILE_NOT_FOUND_NOTE)
+  }
   citation.archiveUrl?.let { put("archive_url", it) }
 }

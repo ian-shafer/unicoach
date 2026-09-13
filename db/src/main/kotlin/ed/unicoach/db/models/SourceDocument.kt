@@ -1,6 +1,7 @@
 package ed.unicoach.db.models
 
 import ed.unicoach.common.util.AcademicYear
+import java.time.LocalDate
 import java.util.UUID
 
 /** Surface id for a `source_documents` row, and the reference every CDS fact carries. */
@@ -35,4 +36,42 @@ data class NewSourceDocument(
   val academicYear: AcademicYear,
   val sourceUrl: String,
   val archiveUrl: String?,
-)
+  /**
+   * Whether [sourceUrl] was still served when we last looked (RFC 200),
+   * recorded at INGEST and never asked at render.
+   *
+   * REQUIRED HERE, with no Kotlin default. [SourceUrlStatus.UNKNOWN] with no
+   * [sourceUrlCheckedOn] is what a writer that ran no check says -- and in this
+   * type it SAYS it rather than inheriting it, because the one thing this
+   * column exists to stop is a claim about a school's file that nobody made.
+   * The CDS loader states both from `db/seed/cds/source-url-status.csv`; every
+   * other writer states UNKNOWN and null, in as many words.
+   *
+   * The COLUMN does carry `DEFAULT 'unknown'`
+   * (`db/schema/record-source-url-status.sql`), and the two do not disagree:
+   * `unknown` with no date is the honest reading of a row written by a path
+   * that ran no check, so an inherited one claims nothing. The stricter rule is
+   * this type's, applied to the Kotlin writers, and it is a rule about SAYING
+   * the verdict -- not a claim that the storage layer forbids omitting it.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
+  /**
+   * The day [sourceUrlStatus] was established, or null where we never asked.
+   *
+   * An UNKNOWN with a date is a check that RAN and got no usable answer, which
+   * must never look like one that passed (RFC 182); the two are told apart
+   * here, which is why the enum needs no fourth member.
+   */
+  val sourceUrlCheckedOn: LocalDate?,
+) {
+  init {
+    // The Kotlin half of `source_documents_checked_when_known`: you cannot
+    // claim to know without saying when you looked. Held here as well as in
+    // the schema so an unsatisfiable row cannot be built at all -- the DB
+    // would refuse it, but hundreds of rows later and with no writer named.
+    require(!sourceUrlStatus.requiresCheckedOn || sourceUrlCheckedOn != null) {
+      "a [${sourceUrlStatus.value}] verdict must say when it was reached: " +
+        "college=[${collegeId.value}] year=[${academicYear.label}] source_url=[$sourceUrl]"
+    }
+  }
+}

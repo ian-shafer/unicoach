@@ -12,6 +12,7 @@ import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.CostsTestDb.seedCollege
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureAddress
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.common.util.AcademicYear
@@ -311,7 +312,7 @@ class CollegeCostServiceTest {
     assertEquals(FigureStatus.REPORTED, tuition.status)
     assertNull(tuition.statement, "no status prose was invented for a figure whose status says nothing")
     assertEquals(AssuranceTier.MANDATORY_SURVEY, tuition.assurance)
-    assertEquals(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY), tuition.assuranceStatement)
+    assertEquals(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED), tuition.assuranceStatement)
 
     // And the tier is read from the row's own pair, so one college's two
     // publishers do not collapse: the median debt is the Scorecard relaying
@@ -351,7 +352,7 @@ class CollegeCostServiceTest {
     assertEquals(FigureStatus.IMPUTED_BY_PUBLISHER, note.status)
     assertEquals(AssuranceTier.MANDATORY_SURVEY, note.assurance)
     assertNotNull(note.statement, "the imputed figure keeps its own sentence")
-    assertEquals(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY), note.assuranceStatement)
+    assertEquals(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED), note.assuranceStatement)
     assertFalse(
       note.statement.orEmpty().contains(note.assuranceStatement),
       "two sentences, composed beside each other and never concatenated into one",
@@ -3498,7 +3499,7 @@ class CollegeCostServiceTest {
     assertEquals(AssuranceTier.MANDATORY_SURVEY, summary.default.assurance.tier)
     assertEquals(MoneySource.IPEDS_IC_AY, summary.default.source)
     assertEquals(
-      AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY),
+      AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED),
       summary.default.assurance.statement,
       "the sentence is derived from the code, so the two can never disagree",
     )

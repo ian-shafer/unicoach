@@ -118,6 +118,7 @@ data class AidPolicyPractice(
             sourceYear = row.academicYear.firstCalendarYear,
             url = row.sourceUrl,
             archiveUrl = row.archiveUrl,
+            sourceUrlStatus = row.sourceUrlStatus,
           ),
       )
   }

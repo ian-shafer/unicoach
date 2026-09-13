@@ -13,8 +13,16 @@ import ed.unicoach.db.models.FactTable
  * own clauses qualify every column and nothing is ambiguous across the join.
  */
 internal object SourceDocumentJoin {
-  /** The projected citation columns. */
-  const val CITATION_COLUMNS = "d.source_url, d.archive_url"
+  /**
+   * The projected citation columns: the two urls, and whether the school's own
+   * one was still served when we last looked (RFC 200).
+   *
+   * The status pair is projected HERE rather than by each caller, because it is
+   * read on exactly the occasions the urls are -- a citation that renders an
+   * anchor must know whether that anchor points at a grave. Nothing on this
+   * path asks the network: the answer was recorded at ingest.
+   */
+  const val CITATION_COLUMNS = "d.source_url, d.archive_url, d.source_url_status"
 
   /**
    * The FROM/JOIN clause for a fact source carrying `source_document_id`.

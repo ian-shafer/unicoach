@@ -4,6 +4,7 @@ import ed.unicoach.coaching.admissions.CdsCitation
 import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.LoanTypeBorrowing
+import ed.unicoach.db.models.SourceUrlStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -25,6 +26,7 @@ class BorrowingWireTest {
       sourceYear = 2024,
       url = "https://example.test/cds.pdf",
       archiveUrl = "https://archive.example.test/cds.pdf",
+      sourceUrlStatus = SourceUrlStatus.FOUND,
     )
 
   private fun coverage() =

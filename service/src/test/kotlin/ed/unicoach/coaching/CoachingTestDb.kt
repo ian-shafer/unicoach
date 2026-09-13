@@ -17,6 +17,7 @@ import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.NewCollegeMeritAid
 import ed.unicoach.db.models.NewSourceDocument
 import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.StudentId
 import java.sql.Connection
 import java.sql.DriverManager
@@ -214,6 +215,10 @@ object CoachingTestDb {
           academicYear = AcademicYear(sourceYear),
           sourceUrl = sourceUrl,
           archiveUrl = archiveUrl,
+          // STATED, not defaulted (RFC 200): this fixture ran no link check, so
+          // it says "no verdict, never asked" -- the pair that keeps the link.
+          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
+          sourceUrlCheckedOn = null,
         ),
       ).getOrThrow()
 }

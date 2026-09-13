@@ -28,6 +28,17 @@ class CollegeBorrowing(
   val sourceUrl: String,
   val archiveUrl: String?,
   /**
+   * Whether [sourceUrl] was still served when we last looked (RFC 200), read
+   * from the same document row. NOT asked here: the verdict was recorded at
+   * ingest, so no family waits on a school's web server.
+   *
+   * REQUIRED, with no default: nothing is entitled to claim a school's file is
+   * gone, and nothing is entitled to claim it is fine either. A caller holding
+   * no check says [SourceUrlStatus.UNKNOWN] -- no verdict, which KEEPS the
+   * link -- and says it out loud.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
+  /**
    * CDS H.401: how many students this school says it awarded a bachelor's
    * degree to in this cycle -- the denominator of every borrowing share, and
    * the cohort every figure below is about.

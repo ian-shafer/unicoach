@@ -41,6 +41,12 @@ data class CollegeMeritAid(
   val sourceUrl: String,
   /** The corpus's archived copy, from the same document row. */
   val archiveUrl: String?,
+  /**
+   * Whether [sourceUrl] was still served when we last looked (RFC 200), read
+   * from the same document row. NOT asked here: the verdict was recorded at
+   * ingest, so no family waits on a school's web server.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
   override val createdAt: Instant,
   override val updatedAt: Instant,
 ) : Identifiable<CollegeMeritAidId>,

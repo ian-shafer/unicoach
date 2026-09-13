@@ -86,8 +86,11 @@ object BorrowingDao {
       -- fact under -- a merit-aid-only filing of a later year, say -- from
       -- being served as its newest aid cycle and emptying the block.
       filings AS (
+        -- The citation columns are [SourceDocumentJoin.CITATION_COLUMNS], never
+        -- re-spelled here: one home decides what a citation projects, so a
+        -- column added there reaches this CTE without this file naming it.
         SELECT DISTINCT ON (d.college_id)
-               d.id, d.college_id, d.academic_year AS year, d.source_url, d.archive_url
+               d.id, d.college_id, d.academic_year AS year, ${SourceDocumentJoin.CITATION_COLUMNS}
         FROM source_documents d
         JOIN ids i ON i.college_id = d.college_id
         CROSS JOIN cds
@@ -133,7 +136,8 @@ object BorrowingDao {
           ON c.source_document_id = f.id
          AND c.population = ANY ($TEXT_ARRAY_PARAM)
       )
-      SELECT f.college_id, f.year, f.source_url, f.archive_url, x.kind, x.name, x.scope, x.number, x.status, x.basis
+      SELECT f.college_id, f.year, f.source_url, f.archive_url, f.source_url_status,
+             x.kind, x.name, x.scope, x.number, x.status, x.basis
       FROM filings f
       LEFT JOIN facts x ON x.college_id = f.college_id
       ORDER BY f.college_id, x.kind, x.name
@@ -271,6 +275,7 @@ object BorrowingDao {
       academicYear = academicYear,
       sourceUrl = rs.getString("source_url"),
       archiveUrl = rs.getString("archive_url"),
+      sourceUrlStatus = decodeSourceUrlStatus(rs.getString("source_url_status"), address.toString()),
       fact =
         when (kind) {
           // The LEFT JOIN's unmatched side: this filing exists and reports no
@@ -457,6 +462,7 @@ object BorrowingDao {
       academicYear = first.academicYear,
       sourceUrl = first.sourceUrl,
       archiveUrl = first.archiveUrl,
+      sourceUrlStatus = first.sourceUrlStatus,
       graduatingClass = graduatingClassOf(facts, address),
       // The bare figures, not ready-made pairs: [CollegeBorrowing] stitches
       // each count against the ONE class size above, so this read cannot hand

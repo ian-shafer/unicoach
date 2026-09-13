@@ -41,6 +41,7 @@ import ed.unicoach.db.models.LoanTypeBorrowing
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
 import ed.unicoach.db.models.PublishedCell
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
@@ -567,6 +568,13 @@ fun meritFixture(
   url: String = "https://example.test/cds.pdf",
   /** Our mirror. Given a value by the test that asserts the page links the college's file and never this one. */
   archiveUrl: String? = null,
+  /**
+   * Whether the college's own file was still served when we looked (RFC 200).
+   * [SourceUrlStatus.FOUND] by default, because a linked filing is the case
+   * every older assertion on this page was written against; the tests that care
+   * pass NOT_FOUND or UNKNOWN by name.
+   */
+  sourceUrlStatus: SourceUrlStatus = SourceUrlStatus.FOUND,
 ): MeritPractice =
   MeritPractice(
     fullTimeFreshmen = freshmen,
@@ -578,6 +586,7 @@ fun meritFixture(
         sourceYear = sourceYear,
         url = url,
         archiveUrl = archiveUrl,
+        sourceUrlStatus = sourceUrlStatus,
       ),
   )
 
@@ -611,6 +620,8 @@ fun borrowingFixture(
   url: String = "https://example.test/cds.pdf",
   /** Our mirror. Given a value by the test that asserts the page links the college's file and never this one. */
   archiveUrl: String? = null,
+  /** Whether the college's own file was still served when we looked (RFC 200); only NOT_FOUND drops the anchor. */
+  sourceUrlStatus: SourceUrlStatus = SourceUrlStatus.FOUND,
 ): BorrowingCoverage.Reported =
   BorrowingCoverage.Reported(
     figures =
@@ -632,6 +643,7 @@ fun borrowingFixture(
             sourceYear = sourceYear,
             url = url,
             archiveUrl = archiveUrl,
+            sourceUrlStatus = sourceUrlStatus,
           ),
       ),
     gapStatusByLoanType =

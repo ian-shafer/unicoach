@@ -23,6 +23,7 @@ import ed.unicoach.db.models.NewSourceDocument
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.ValueBearingStatus
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -412,6 +413,8 @@ class CanonicalMoneyDaoTest {
               academicYear = AcademicYear(2024),
               sourceUrl = "",
               archiveUrl = null,
+              sourceUrlStatus = SourceUrlStatus.UNKNOWN,
+              sourceUrlCheckedOn = null,
             ),
           ).getOrThrow()
       }
@@ -675,6 +678,8 @@ class CanonicalMoneyDaoTest {
           academicYear = academicYear,
           sourceUrl = sourceUrl,
           archiveUrl = null,
+          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
+          sourceUrlCheckedOn = null,
         ),
       ).getOrThrow()
 

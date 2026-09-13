@@ -12,6 +12,7 @@ import ed.unicoach.db.models.NewCollegeDeadline
 import ed.unicoach.db.models.NewCollegeMeritAid
 import ed.unicoach.db.models.NewSourceDocument
 import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.StudentId
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -164,6 +165,8 @@ class CdsAdmissionsDaoTest {
           academicYear = AcademicYear(sourceYear),
           sourceUrl = sourceUrl,
           archiveUrl = archiveUrl,
+          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
+          sourceUrlCheckedOn = null,
         ),
       ).getOrThrow()
 

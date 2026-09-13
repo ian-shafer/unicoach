@@ -15,6 +15,7 @@ import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.DatedStat
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.college.Codebook
@@ -886,7 +887,10 @@ class FitLensService(
       // into it -- [FigureStatusCopy] is byte-pinned by the immutable prompt
       // row, and a tier appended inside its return value would move it. The
       // composition itself is [AssuranceTierCopy]'s, not this file's.
-      AssuranceTierCopy.composedStatementOf(FigureStatusCopy.statementOf(status, source), assurance),
+      // LINKED, holding no filing: the fit-lens digest states federal cost
+      // figures, whose tiers' sentences promise no link, so there is no promise
+      // here for a dead file to falsify.
+      AssuranceTierCopy.composedStatementOf(FigureStatusCopy.statementOf(status, source), assurance, FilingLink.LINKED),
     )
 
   /**

@@ -13,6 +13,7 @@ import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
@@ -1281,7 +1282,7 @@ class FitLensServiceTest {
         call2Text.contains(
           "netPriceStatus=[reported] " +
             "netPriceNote=[This figure comes from the U.S. Department of Education College Scorecard. " +
-            "${AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)}]",
+            "${AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)}]",
         ),
         "a SHOWN net price must carry its tier too, message=[$call2Text]",
       )
@@ -1311,7 +1312,7 @@ class FitLensServiceTest {
           "netPriceStatus=[suppressed_by_publisher] " +
             "netPriceNote=[The U.S. Department of Education College Scorecard withholds this figure to protect " +
             "students' privacy. " +
-            "${AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY)}]",
+            "${AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)}]",
         ),
         "a suppressed figure must ride as a status CODE with its sentence beside it, message=[$call2Text]",
       )

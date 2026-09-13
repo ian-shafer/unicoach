@@ -10,6 +10,7 @@ import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.FigureAddress
 import ed.unicoach.coaching.costs.canonical.FigureProvenance
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.ServedFigures
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.publishedTuitionTiersOf
@@ -833,8 +834,14 @@ data class FigureStatusNote(
    * as constructor state it was a second field every construction site had to
    * remember to fill with the same call. A note whose tier and tier sentence
    * disagreed would have compiled.
+   *
+   * [FilingLink.LINKED] while holding NO filing: a cost figure's note is never
+   * a Common Data Set filing -- its tiers are the federal ones -- so the
+   * sentence it gets back promises no link at all and the parameter cannot
+   * change a byte of it. Answered rather than defaulted, so a future CDS-backed
+   * cost figure has to come back here and say which it is.
    */
-  val assuranceStatement: String get() = AssuranceTierCopy.statementOf(assurance)
+  val assuranceStatement: String get() = AssuranceTierCopy.statementOf(assurance, FilingLink.LINKED)
 }
 
 /**
@@ -856,8 +863,16 @@ data class FigureStatusNote(
 value class SpokenAssurance(
   val tier: AssuranceTier,
 ) {
-  /** The sentence that says [tier], from [AssuranceTierCopy] -- never re-worded, never passed in. */
-  val statement: String get() = AssuranceTierCopy.statementOf(tier)
+  /**
+   * The sentence that says [tier], from [AssuranceTierCopy] -- never re-worded,
+   * never passed in.
+   *
+   * [FilingLink.LINKED] while holding NO filing: this value carries a tier and
+   * nothing else, and every surface that speaks it -- the coach payload, the
+   * report page, the fit-lens digest -- holds no `CdsCitation`. Their tiers'
+   * sentences promise no link, so there is none for a dead file to falsify.
+   */
+  val statement: String get() = AssuranceTierCopy.statementOf(tier, FilingLink.LINKED)
 }
 
 /**
