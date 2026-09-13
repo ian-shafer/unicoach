@@ -5,11 +5,10 @@
 ## Status
 
 - **Phase:** EXECUTE — `concise/01`, `02`, `04` and `05` LANDED 2026-09-11;
-  `concise/03`, `06`, `08` and `09` LANDED 2026-09-12; `concise/11` LANDED
-  2026-09-13. **Two slices are left in this brief**:
-  `concise/10/no-link-to-a-grave`, in flight, and the quiet-provenance one,
-  which is held by product judgement pending a fresh decision about what may
-  still collapse on the page the links landed on.
+  `concise/03`, `06`, `08` and `09` LANDED 2026-09-12; `concise/11` and
+  `concise/10` LANDED 2026-09-13. **One slice is left in this brief**: the
+  quiet-provenance one (`concise/07`), held by product judgement pending a fresh
+  decision about what may still collapse on the page the links landed on.
 - **Gate 1 (prioritisation):** **PASSED 2026-09-11 — Ian approved all defaults,
   verbatim: "approve"**. D1-D8 stand as written below. D8 is `standing`.
 - **Gate 2 (spec):** **PASSED 2026-09-11 — "approve"**; D9-D14 in `spec.md`
@@ -407,6 +406,55 @@
   own generated v33 prompt seed. THE DOOR: the existing coach conversation — a
   student who opens about essays or deadlines is not asked their household
   income.
+
+  concise/10/no-link-to-a-grave LANDED as RFC 200 (main@265bc6d9 + 39de45da,
+  2026-09-13) — we stop pointing families at dead filings. `bin/cds-link-check`
+  probes each college's own Common Data Set file TWICE at ingest, writes
+  `db/seed/cds/source-url-status.csv`, and `CdsSeedLoader` records the verdict
+  on the `source_documents` row it already writes. A `not_found` filing renders
+  its citation as TEXT with no anchor: same words, no link (D18). MEASURED BY
+  THE COMMITTED SCRIPT, 2026-09-13 — and the first number is a spec defect: the
+  corpus is **441 DISTINCT documents**, not 5,048; that was the ROW count, and
+  one filing answers many facts (SD11). Of the 441: **417 found, 15 not_found, 9
+  unknown**. The 15 = **237 of 5,048 rows = 4.7%** lose their anchor; the 9 (7
+  expired Google signed exports, plus Williams and Akron answering 403 to a
+  script) KEEP theirs. DDL APPROVED BY IAN WITH HIS OWN REVISION: three states,
+  not four — `source_url_status` (`unknown`/`found`/`not_found`) plus
+  `source_url_checked_on`, with a constraint stronger than the one proposed
+  (**you cannot claim to know without saying when you looked**). The fourth
+  distinction is carried by the DATE: `unknown` with no date is "we never
+  asked", `unknown` with a date is "we asked and got no usable answer", and the
+  ingest summary prints the two counts SEPARATELY so a broken checker cannot
+  read as stale data (RFC 182's rule, kept in the data). THE BRIEF WAS HALF
+  WRONG ABOUT THE FROZEN SENTENCE and the RFC leads with the correction: it is
+  vacuous on the PAGE only — `AidPolicyWire` emits "We link to the college's own
+  file so you can see it." and `putCitation` into the SAME object, and CDS
+  aid-policy figures are VOLUNTARY_SELF_REPORT, so the coach was being handed
+  that promise beside a url that 404s for fifteen filings. A LIVE broken
+  promise, not a latent one, found by walking the surface instead of trusting
+  the spec. Fixed by DELETING the third sentence for an unlinkable filing —
+  never a reword — guarded by a strict-PREFIX assertion a reword cannot pass.
+  FAIL CLOSED THROUGHOUT: only 404/410 seen TWICE is dead; 403/400/timeouts keep
+  the link, because an unreachable check is our gap and never the school's
+  silence (RFC 166 §6); the script REFUSES to write when nothing was found or
+  when >20% came back dead, and writing nothing keeps every link. REVIEW EARNED
+  ITS COST, four tiers: Tier 0 found a VACUOUS 403 test and a `NameError` that
+  made the dead-share refusal CRASH rather than refuse (the guard I said I cared
+  most about); Tier 1 collapsed "we are not pointing at this file" from three
+  decision sites to ONE predicate and made `FilingLink` a required parameter, so
+  five call sites had to answer it; Tier 2 caught `linksToFile` as
+  `!= NOT_FOUND` — a fourth status would have linked SILENTLY — and restored TLS
+  verification, since an interception proxy answering 404 for everything is the
+  exact failure the refusals exist to catch; Tier 3 found five comments that had
+  become FALSE, including `-h` text contradicted by the script's own committed
+  output, and an inverted severity where the link-dropping verdict was quieter
+  than the harmless one. Full suite **3,185 tests, 0 failures**; shell **1,407
+  assertions** including 25 new arms. Rollback is WHOLE. OPEN ITEMS: the sidecar
+  is a SNAPSHOT and nothing re-runs it (a periodic check is a separate slice);
+  an ingest staging seed files without the sidecar records "never asked" for all
+  441 — fail-open, and now LOUD; and `archive_url` still points at
+  collegedata.fyi, a THIRD PARTY, so RFC 170's "our mirror" comment is
+  inaccurate and is /chart's to decide.
 
 ## The question
 
