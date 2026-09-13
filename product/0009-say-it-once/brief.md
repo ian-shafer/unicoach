@@ -879,3 +879,127 @@ reached a decision instead of being absorbed by a run).
 The one thing I would add, if evidence keeps accumulating, is a phase-level
 instruction to **re-derive every acceptance number at run start**. Ten defects
 in one brief is enough to suspect it is not a local failure of mine.
+
+---
+
+## LEARN — final, on close
+
+The brief closed with **ten slices landed and one cancelled**. Below is what the
+runs taught that the LEARN section above could not yet know.
+
+### The final numbers
+
+| Surface                                   |      Before |                                                    After |
+| ----------------------------------------- | ----------: | -------------------------------------------------------: |
+| Parent report, 3 schools                  | 1,767 words |                                         **1,404** (−21%) |
+| Coach payload, per college                | 4,980 bytes |                                       **1,864** (−62.6%) |
+| Coach context window                      |           — | **~10,240 bytes smaller** (RFC 192 −9,703, RFC 199 −537) |
+| Citation links on the report              |           0 |                               **6**, and now conditional |
+| Honesty items reachable in a coach answer |       48/52 |                                                **52/52** |
+
+### `concise/10` found a LIVE broken promise, not a latent one
+
+I specced it believing the sentence _"We link to the college's own file so you
+can see it"_ was unreachable. RFC 196 established that for the PAGE and I
+generalised it to the surface. Wrong: `AidPolicyWire` emits that sentence and
+the url in the SAME object, so the coach was being handed the promise beside a
+link that 404s **for fifteen filings**.
+
+Fixed by DELETING the third frozen sentence for an unlinkable filing — never
+rewording it — under a strict-PREFIX assertion, so a reword cannot pass. The v19
+pin never moved and no prompt version was minted.
+
+**Measured:** the corpus is **441 distinct documents**, not the 5,048 this brief
+quoted (SD11 — that was a ROW count). **417 found / 15 not_found / 9 unknown.**
+Before, 5,048 of 5,048 rows carried a clickable citation, **237 of them to a
+file that 404s**. After, 4,811 link and 237 (4.7%) say the same words with
+nothing to click. The 9 unknown keep their links — fail-open, by design.
+
+### Review kept finding things no test would have failed
+
+`concise/10`'s four tiers are the clearest example in the brief:
+
+- a test arm that was **vacuous** — `!= "gone"` passes on the empty string a
+  broken reader returns;
+- the refusal guard I said I cared most about **crashed with a NameError instead
+  of refusing**;
+- `linksToFile` written as `!= NOT_FOUND`, so a fourth status would have linked
+  **silently**, in a design whose claim was that a fourth answer fails to
+  compile;
+- TLS verification disabled — an intercepting proxy answering 404 for everything
+  is exactly the failure the refusals exist to catch;
+- five comments that had become FALSE, including help text naming schools as
+  bot-blocked that the script's own committed output says are reachable.
+
+None of those would have failed a test. All of them were found by reading.
+
+### Three infrastructure RFCs nobody planned
+
+Running this brief in parallel with another /chart session broke the tooling in
+four ways. Two sessions, one afternoon, none of it anybody's fault:
+
+| # | Hazard                                                                       | Outcome                                    |
+| - | ---------------------------------------------------------------------------- | ------------------------------------------ |
+| 1 | a doc commit does not take the land lock, so it invalidates a validated tree | **RFC 193**                                |
+| 2 | a doc commit pays a full gate it cannot affect                               | **RFC 194** — 4 min to ~13s                |
+| 3 | the hook validates the TREE, not the commit                                  | **RFC 201**, for the observed failure only |
+| 4 | `git add` of another session's path is silent and lands                      | **RFC 201**, closed by construction        |
+
+**The rule they converge on:** _enumerate what you are about to act on, then act
+— never act on the set you think you own._ It was derived three times, from two
+sessions, in one afternoon, and it bit me an hour after I had written it down.
+
+**And the coordination rule:** _the unit of contention is the FILE and the KIND
+of edit — and for a DELETION, every file the deletion touches, whoever is
+editing them, including your own sibling slices._ A deletion rebased across
+concurrent additions loses a sentence **silently**; an add/add rebase cannot.
+
+### Thirteen spec defects, and what they have in common
+
+SD1-SD13. Twelve were numbers or claims asserted before measuring; one (SD13)
+was mine judging coverage by string-matching instead of reading. **Every one was
+caught by a run that measured instead of complying.** Not one was caught by me.
+
+The two that hurt most were the ones where the _deliverable meant to prove
+nothing was lost_ was itself wrong: RFC 199's rule map (P11) and my own vacuous
+acceptance criterion in `concise/08`, which could not have failed on any input.
+
+### Eleven principle nominations
+
+P1-P11, recorded in `spec.md`. The strongest is **"the artifact under change
+cannot be its own witness"** — two independent instances, two briefs, one day,
+and a third arrived later in `concise/09`, fourteen rules wide.
+
+### What this says about the skill
+
+Two of chart's existing rules decided outcomes here and both earned their place:
+_re-check each slice against what actually landed_ (which cancelled `concise/07`
+after two other slices ate its value), and _a product question that surfaces
+mid-run comes back to the brief_ (which is how `concise/05`'s A/B question, SD10
+and D18 reached Ian instead of being absorbed by a run).
+
+**The one change I would propose**, on thirteen defects of evidence: a
+phase-level instruction that **every acceptance number is re-derived at run
+start, and no number in a spec is binding**. This brief wrote that instruction
+into its own slices halfway through and the defect rate did not drop — because
+the numbers were already written. It belongs in the skill, before the spec is
+authored.
+
+### Left behind, deliberately
+
+- **`concise/07`** — CANCELLED (D16). `concise/10` notes it is now a sharper
+  question than when parked: the page it would quieten is the page whose
+  citations just became conditional.
+- **`archive_url` points at collegedata.fyi, a THIRD PARTY.** RFC 170's column
+  comment calls it "our mirror". Inaccurate, and nobody's slice.
+- **The liveness sidecar is a snapshot**; nothing re-runs it. A periodic
+  re-check is its own slice.
+- **An ingest without the sidecar** records "never asked" for all 441 —
+  fail-open, and now loud. An ingest flag is a follow-up.
+- **The 1-of-11 tier gap** — the page states a kind-of-number for one figure in
+  eleven. Price: **+55 words, said once.** Brief 0008's question.
+- **The comparison front-load** — a comparison takes 175 words to reach the
+  first dollar, and D7's rule is structurally blocked by a prior committed
+  instruction. Needs a slice licensed to reorder.
+- **Hazard 3 in general**, and its cheap diagnostic: say _"this file is not in
+  your commit"_.
