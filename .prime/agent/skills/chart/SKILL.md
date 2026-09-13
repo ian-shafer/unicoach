@@ -19,6 +19,16 @@ description: >-
 A product question in; landed, user-reachable value out. Two human touchpoints:
 the prioritisation gate and the spec gate. Everything else is this skill's job.
 
+## Talking to Ian
+
+Every message this skill sends Ian follows
+[`../shared/operator-comms.md`](../shared/operator-comms.md). The two gates are
+where it bites: a gate is the one moment the run stops, so its decisions take
+the `YOUR DECISION REQUIRED` block, and nothing in that block is named by a bare
+identifier. This skill also MINTS the identifiers everyone downstream then has
+to explain — decision numbers and slice IDs — so it carries one extra duty,
+stated under PRIORITISE below: every committed decision gets a short label.
+
 ## Non-negotiables
 
 1. **Never modify `.claude/**`.** Same rule as ship.
@@ -26,7 +36,9 @@ the prioritisation gate and the spec gate. Everything else is this skill's job.
    decides the bet; gate 2 (spec) decides the slices. Every gate is a numbered
    decision list (`D1, D2, ...`) with **defaults pre-chosen** — approving costs
    one word, amending one line. Between and after the gates, do not ask; act on
-   the recorded decisions.
+   the recorded decisions. Each decision is PRESENTED in the
+   `YOUR DECISION REQUIRED` block (`../shared/operator-comms.md`): options as
+   outcomes, one recommendation, one reason, and the silent default.
 3. **Product judgement is spent at SPEC & SLICE, not delegated to /ship.** Each
    slice instruction is written so its acceptance criteria already embody the
    product ethos and the gate decisions. /ship's job is production-quality
@@ -160,6 +172,18 @@ across reports), then present **gate 1**: the numbered decisions with defaults.
 Record Ian's answers in the brief verbatim, including amendments — an amendment
 (0001: "report-as-wedge, invite-parent first-class") often IS the product
 insight; carry it into every downstream slice.
+
+**Every committed decision gets a short label** — three to six words, written
+beside its number in the brief:
+
+    D33 — no loan subtraction. <the full decision text, verbatim>
+
+The label is not decoration and not a summary that may drift: it is the gloss
+every later message uses so `D33` can be said cheaply after its first full
+expansion (`../shared/operator-comms.md`, rule 1). Without it, each downstream
+run either re-quotes the whole decision or writes a bare number nobody can read.
+The verbatim text stays the binding version; the label never replaces it in an
+argument about what was decided.
 
 ### DISCOVER
 

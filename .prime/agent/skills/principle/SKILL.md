@@ -20,6 +20,16 @@ An agent that edits its own review rules mid-run stops being a check on itself.
 That is why codification is a separate, human-gated conversation rather than a
 step at the end of `/ship`.
 
+## Talking to Ian
+
+Every message this skill sends Ian follows
+[`../shared/operator-comms.md`](../shared/operator-comms.md). All four gates
+below stop the run and are HIS calls, so each is presented in the
+`YOUR DECISION REQUIRED` block — one decision per block, the options as
+outcomes, one recommendation with one reason, and the default taken in silence.
+Name a principle by its file name and say in one line what it checks; a lens
+name alone is not information.
+
 ## What the corpus is
 
     .claude/skills/design-review-*/SKILL.md   design principles

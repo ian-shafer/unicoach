@@ -19,6 +19,15 @@ already written by /chart and already approved at its gate 2 — this skill does
 not re-decide it. It resolves it, checks that it may run now, hands /ship a
 complete instruction, and closes the books afterwards.
 
+## Talking to Ian
+
+Every message this skill sends Ian follows
+[`../shared/operator-comms.md`](../shared/operator-comms.md). This skill talks
+almost entirely in identifiers — slice IDs, decision numbers, RFC numbers, the
+three dependency kinds — so rule 1 applies to nearly every sentence it emits:
+say what the name IS the first time it reaches him, then use the short form. The
+gate questions below are written in the required shapes; copy them.
+
 ## Peer of chart and ship, not an entry point of chart
 
 **Verdict: peer.** It reads chart's artifacts and writes back to chart's ledger,
@@ -79,6 +88,16 @@ admissions layer, brief 0004's S4 is similar colleges, and 0003 numbers with
 > "S4" is ambiguous across briefs — 0001 S4 (admissions, landed RFCs 140/148)
 > and 0004 S4 (similar colleges). Say `search/04/similar-colleges` or
 > `first-value/04b/admissions-in-chat`.
+
+> YOUR DECISION REQUIRED — which slice is "S4"?
+>
+> Why now: the old single-letter names were reused across briefs, so "S4" names
+> two different pieces of work and I will not guess. Option A —
+> `first-value/04b/admissions-in-chat`: show admissions chances in the chat,
+> brief 0001. Landed already as RFCs 140 and 148. Option B —
+> `search/04/similar-colleges`: find colleges like one the student already
+> likes, brief 0004. Not started. Recommend: B, because A is already landed. If
+> you say nothing: I wait. Guessing costs a whole build run on the wrong thing.
 
 Do not guess from context. Guessing here spends a whole /ship run on the wrong
 thing.
@@ -151,24 +170,43 @@ arises.
 **BLOCKS unmet → refuse, and name the target and its reason.** Do not
 half-start, do not claim a worktree:
 
-> `search/04/similar-colleges` BLOCKS on `search/03/the-index` — weighted
-> distance runs over the index's percentile columns, and the index does not
-> exist yet. Run `search/03/the-index` first.
+> BLOCKED — `search/04/similar-colleges` cannot start yet.
+>
+> That slice finds colleges similar to one the student likes. It measures
+> similarity over the percentile columns of the search index, and that index
+> does not exist yet. The slice that builds it is `search/03/the-index`.
+>
+> To unblock: run `search/03/the-index` first. Nothing for you to decide.
 
 **`Status: DEFERRED` → confirm once, like a PREFER.** A deferred slice is parked
 by intent, not blocked by anything. It never appears under READY on the board.
-Ask plainly — "`search/06/unattended-refresh` is marked DEFERRED. Start it
-anyway?" — and if Ian says yes, remove the `Status:` line as part of the run's
-close-out, because the board must match the decision.
+Ask in the block, and if Ian says yes, remove the `Status:` line as part of the
+run's close-out, because the board must match the decision:
+
+> YOUR DECISION REQUIRED — start a slice that was parked on purpose?
+>
+> Why now: `search/06/unattended-refresh` (refresh the college data on a
+> schedule, with nobody watching) is marked DEFERRED — parked by choice, not
+> blocked by anything. Nothing stops it technically. Option A — start it now.
+> Option B — leave it parked. Recommend: B, unless something changed since it
+> was parked. If you say nothing: B, and the run stops here.
 
 **PREFER → a one-line override question, with the reason, defaulting to defer.**
 It never refuses:
 
-> `first-value/05/family-cost-report` PREFERs `money/02/component-split` (the
-> parent-facing artifact should show the component split, not one blended
-> number) and `money/03/comparison-contract` (the report compares schools, so it
-> should carry the five assumption lines). Both are product judgement, neither
-> is technical. Run it now anyway? [default: wait for M2/M3]
+> YOUR DECISION REQUIRED — build the family cost report now, or after two other
+> slices?
+>
+> Why now: `first-value/05/family-cost-report` (the cost summary a parent reads)
+> can be built today. Two slices would make it better, and neither is
+> technically required: `money/02/component-split` breaks the cost into tuition,
+> housing and food instead of one blended number, and
+> `money/03/comparison-contract` adds the five assumption lines a report needs
+> when it compares schools. Option A — build it now. A parent sees a report
+> sooner; it shows one blended number and no assumption lines, and we rewrite it
+> twice. Option B — wait for those two slices. The first report a parent ever
+> sees is the right one. Recommend: B. This is the artifact the whole brief is
+> betting on. If you say nothing: B.
 
 Record his answer verbatim — it goes in the report and, if he overrode, in the
 ledger line for that slice.
@@ -341,8 +379,9 @@ not a surprise at its kickoff.
 - [ ] `product/STATUS.md`: TL;DR, `Updated:` line, work table, user-manual entry
       with its door, wave board.
 - [ ] Next slice re-checked against what landed; drift reported.
-- [ ] Report to Ian: slice ID, RFC number claimed, SHAs, gate answers, open
-      items, and the `.scratch/ship-archive/<run-id>/` path.
+- [ ] Report to Ian: opens with `DONE` and one sentence a non-engineer could
+      repeat, then slice ID, RFC number claimed, SHAs, gate answers, open items,
+      and the `.scratch/ship-archive/<run-id>/` path.
 
 Any unchecked box means the run is still open. Say so plainly rather than
 declaring done.

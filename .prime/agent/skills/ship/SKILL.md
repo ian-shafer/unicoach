@@ -15,6 +15,19 @@ description: >-
 One instruction in, landed change out. Two human touchpoints: the instruction,
 and one approval.
 
+## Talking to Ian
+
+Every message this skill sends Ian follows
+[`../shared/operator-comms.md`](../shared/operator-comms.md): expand an internal
+name the first time it reaches him (`D33`, `S4`, tier 2, lane A, `BASE_SHA`),
+then use the short form; put anything that stops the run in the
+`YOUR DECISION REQUIRED` block; open every message with one of the five triage
+labels and lead with the outcome in plain words.
+
+That file is the contract. This skill's own prose is agent-facing and keeps its
+vocabulary — the rule governs what is SAID to Ian, not what is written here or
+in an RFC.
+
 ## Non-negotiables
 
 1. **Never modify `.claude/**`.** The Claude Code workflow stays as-is. This
@@ -220,6 +233,15 @@ Present: the lane, the design summary, and **the decisions where taste matters,
 with defaults pre-chosen**. Approving should cost one word; disagreeing, one
 line. Record it: `ship-state -s <rs> set APPROVED yes`. Do not ask again.
 
+This gate STOPS the run, so every decision in it takes the
+`YOUR DECISION REQUIRED` block from
+[`../shared/operator-comms.md`](../shared/operator-comms.md) — one decision per
+block, two to four options stated as outcomes rather than mechanisms, a
+recommendation with one reason, and the default that is taken in silence. Say
+the lane in words ("mechanical change, no design doc"), not as a letter alone. A
+new database table is presented as its DDL, in the block, with the cost of being
+wrong stated (0001 D10).
+
 ### 4. implement
 
 Delegate to a child. State its write-scope as a **deny list**, not an allowlist:
@@ -416,6 +438,10 @@ it now, naming what it displaced.
 **Write `<rs>/report.md` BEFORE calling `ship-land`** — the worktree is deleted
 at landing, and a report that exists only in this session dies with it. Then
 give Ian the same content in chat.
+
+Open it with `DONE` and one sentence a non-engineer could repeat — what a user
+can now do, or what the run established. The detail follows. An open item names
+who must act.
 
 RFC number/slug, landed SHAs with `--stat`, what was built, per-tier findings
 applied/discarded, the test counts actually executed, and **open items** — every
