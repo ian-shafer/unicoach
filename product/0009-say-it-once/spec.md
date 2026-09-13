@@ -923,6 +923,21 @@ repository** — green, and meaningless. (RFC 194.)
 source sweep counted `a(href`, allowlisting one of two valid anchor forms — the
 second form was exactly the hole the test existed to close.)
 
+**P10 — A line-number citation written against the base is wrong the moment the
+change inserts a line.** Every prompt-line cite in RFC 202 and its
+`service.conf` comment was one low until review caught it. Cite the LANDED file;
+re-derive after the edit.
+
+**P11 — A rule map that records where a deleted rule "still lives" must be
+verified by READING the target PER CLAUSE, not by string-matching the deleted
+block's wording.** RFC 199's item 20 named four lines for a four-clause block;
+three clauses were there and one was not — and **the map passed review because
+the named lines do discuss the subject.** String-adjacency is the trap: the
+citation looks right to a reviewer and to the author, and only a
+clause-by-clause read finds the gap. (SD13 is the same lesson from the other
+direction: I string-matched the deleted block's WORDING against the prompt and
+wrongly concluded all four were lost.)
+
 **P9 — A log line that claims an action must be tested against the action's
 EFFECT, not its invocation.** RFC 201's adopt path called a restore command and
 logged "root checkout reverted", while a STAGED change survived untouched — the
