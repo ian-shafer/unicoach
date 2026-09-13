@@ -501,3 +501,45 @@ file still fails this session's commit — the fast path makes that an 8-second
 discovery instead of a 4-minute one, which is a thirty-fold improvement in the
 COST of the failure and none at all in its frequency. Hence the standing
 practice: **run `nix develop -c bin/format -c` before spending a commit.**
+
+## Decisions after gate 2 (appended, never edits)
+
+Committed decisions are immutable; a changed decision is a new numbered one.
+These were taken by Ian on 2026-09-12 in EXECUTE, and bind every remaining
+slice.
+
+**D21. Dates are formatted in ONE place, and the format is US-centric.** Ian:
+_"Dates are tricky... we should have a single place where we format dates. And
+we should start with a US-centric format e.g. Sep 12, 2026."_
+
+The repo currently renders a user-facing date in at least four ways, and this
+brief added one of them:
+
+| Where                                             | Renders                                  |
+| ------------------------------------------------- | ---------------------------------------- |
+| `CoachingService.monthName` (RFC 186, this brief) | `15 June 2028` — day before month        |
+| `CollegeAdmissionsChatTool` (RFC 148)             | `November 1`, no year by design          |
+| `admin-web` `CellRender.DATE_FORMAT`              | `MMM d, yyyy` — **already Ian's format** |
+| `IpedsLoader.CLOSED_AT_FORMAT`                    | `MM/dd/uuuu` — parser, not user-facing   |
+
+So the target format already exists in the tree and is not a new invention. The
+decision is **one seam, not four**, at `Sep 12, 2026`, with the
+partial-precision forms derived from the same place rather than hand-written
+beside it. It is carried by a new slice, `test/04.5/one-date-seam`.
+
+**D22. This brief is not delivered against a calendar, and it is not designed
+for one user.** Ian: his daughter is a **high-school junior**, and _"she's just
+an example / test user. Do not design specifically for her."_ And on whether to
+pull the PSAT slice forward because its October window is near: _"No. We are not
+trying to deliver by certain dates. We'll be done when we're done."_
+
+Two consequences, both binding:
+
+- **Slice order stands at D18.** No slice is resequenced because a real-world
+  date is approaching. `test/08` stays where it is.
+- **No copy, acceptance criterion or test may encode this student.** A junior in
+  a particular state with a particular list is a worked example for reasoning
+  about the product, never a shape the product is fitted to. Where a slice needs
+  a concrete case, it says so as an example and carries at least one case that
+  is deliberately unlike it — a senior, an empty list, a state with no
+  school-day programme, a student past graduation.

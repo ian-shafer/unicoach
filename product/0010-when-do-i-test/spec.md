@@ -332,6 +332,67 @@ question and gets a dated, sourced, school-anchored answer in one reply.
 
 ---
 
+### `test/04.5/one-date-seam`
+
+**Needs:**
+
+- BLOCKS test/04/the-testing-calendar — technical. This slice consolidates the
+  date renderings that exist, and `test/04` is adding one of the largest of them
+  (test dates, registration deadlines, score releases, a resolved school
+  deadline). Consolidating before it lands would leave a seam that immediately
+  has a fifth caller written against the old shape.
+
+**What and why.** Ian, 2026-09-12 (**D21**): _"Dates are tricky... we should
+have a single place where we format dates. And we should start with a US-centric
+format e.g. Sep 12, 2026."_ Today a user-facing date is rendered in at least
+four places, in at least three formats, and this brief added one of them — RFC
+186 says `15 June 2028`, day before month, which no US family writes. The point
+is not the format. It is that a date's shape is currently a property of
+whichever file happens to print it.
+
+**Foundations.** `CoachingService.monthName` (RFC 186),
+`CollegeAdmissionsChatTool`'s `datePhrase` (RFC 148), `admin-web`'s
+`CellRender.DATE_FORMAT` — which is **already** `MMM d, yyyy`, so the target
+format is a precedent in the tree, not an invention — and whatever `test/04`
+lands.
+
+**Decided here.**
+
+- **One seam**, and every user-facing date goes through it. `Sep 12, 2026`.
+- **The partial forms are derived from the same seam, never hand-written beside
+  it**: `Sep 2026` when the day is unknown, `2026` when only the year is, and
+  the year-less form (`Nov 1`) that a Common Data Set cycle genuinely has no
+  year for. RFC 148's no-year rule is preserved — it is a fact about the SOURCE,
+  and this slice must not let the seam invent a year to make a sentence tidy.
+- **Ours vs theirs survives the merge.** RFC 186 says "the day is not recorded"
+  (our gap) where the admissions tool says "not reported" (the source's
+  silence). Those are different claims and the seam keeps both; a single wording
+  here would be a regression dressed as consistency.
+- **`test/04`'s resolved deadline stays labelled as ours** (RFC 197 D4). A
+  shared formatter must not launder a date we derived into one a school
+  published.
+
+**Left to /ship's design.** Which module owns the seam (`:common` is the obvious
+home, and note `PartialDate` lives in `:db`, not `:common` — RFC 186 found that
+the hard way); whether the iOS and `public-web` surfaces are in scope or are a
+follow-on; whether `admin-web` adopts the shared seam or keeps its own.
+
+**Acceptance criteria.**
+
+- One named seam formats every user-facing date in the modules it covers, and a
+  test enumerates the callers: a NEW hand-rolled month name or date pattern in
+  those modules fails the build. **The guard does not live in a file the seam's
+  own work rewrites** (the standing rule below).
+- `15 June 2028` is gone. The coach says `Jun 15, 2028`.
+- A date we DERIVED is still spoken as ours, and a date with no source year
+  still has no year.
+- No user-visible date changes meaning — only its shape.
+- **Door:** every surface that already says a date; this slice adds no new one.
+
+**First-session test.** A junior with a partial graduation date on file and one
+school on her list sees the same date shape in the coach's opening line, in her
+school's deadline, and in the testing timeline.
+
 ### `test/05/your-state-already-pays`
 
 **Needs:**
