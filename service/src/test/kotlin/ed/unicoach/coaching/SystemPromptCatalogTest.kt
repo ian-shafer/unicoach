@@ -972,6 +972,56 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The general rule the money region stopped stating (RFC 202, brief 0009
+   * `concise/11`), asserted in the body the runtime is actually SERVED — the
+   * row `service.conf` pins.
+   *
+   * RFC 199 deleted `MoneyProfileChatTool.DESCRIPTION`'s four-clause ethos
+   * block (RFC 134) and recorded the whole of it as already stated by this
+   * prompt. Read rather than grepped, three of the four hold: accept a decline
+   * and never re-ask are both in the decline sentence above, and
+   * say-what-it-unlocks is in the residency sentence and in the college-list
+   * paragraph. The fourth — **never open with it** — was nowhere, and this test
+   * is why it cannot leave again in silence.
+   *
+   * It was not unreachable, and that distinction is the point of the test:
+   * every money question is gated on "Only ask when the result offers it", and
+   * a `precision_offer` exists only inside a cost result, so the rule was still
+   * EMERGENT from the structure. A rule nobody wrote down is guarded by
+   * nothing, is explicit for one of three fields only, and says nothing about a
+   * coach that calls a cost tool unprompted and manufactures the offer.
+   *
+   * THE FIELD LIST IS DERIVED, never typed: the rule claims to cover every
+   * field a `precision_offer` can carry, so it is read off [PrecisionOffer]
+   * itself. A fourth offer added later fails here until the rule names it,
+   * which is the only way the rule's SCOPE cannot narrow in silence.
+   *
+   * P1, the artifact under change cannot be its own witness: this reads the
+   * served row, not `prompts/coach-system-prompt.md` and not a constant in a
+   * file this slice edits. `bin/prompt-seed` cuts the version at land, so the
+   * served row is this run's body by the time the gate runs.
+   */
+  @Test
+  fun `the served money paragraph forbids opening a conversation with money`() {
+    val moneyParagraph = moneyParagraph()
+
+    assertTrue(
+      moneyParagraph.contains("never open a conversation with money"),
+      "RFC 134's ethos contract, restated where it now lives: the coach never opens on the ask",
+    )
+    PrecisionOffer.entries.forEach { offer ->
+      assertTrue(
+        moneyParagraph.contains(offer.field),
+        "the rule covers every precision_offer field, so it must name [${offer.field}]; a rule that lists two of three narrows itself",
+      )
+    }
+    assertTrue(
+      moneyParagraph.contains("only once cost is already what you are talking about"),
+      "the rule states its CONDITION, not just the prohibition - the living-plan sentence's own clause, raised to all three fields",
+    )
+  }
+
+  /**
    * The admissions paragraph (RFC 148), asserted in the body the runtime is
    * actually SERVED — the row `service.conf` pins.
    */
