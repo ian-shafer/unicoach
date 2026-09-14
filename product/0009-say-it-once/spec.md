@@ -746,8 +746,9 @@ number, and report a miss rather than weakening an assertion.**
 
 ## Post-gate addition: `concise/08/the-link-we-promised`, and a reorder
 
-**Decision D15 (Ian, 2026-09-11, verbatim): "We should link to our sources."**
-Appended, not an edit of a committed decision (chart non-negotiable 7).
+**D15 — link to our sources.** (Ian, 2026-09-11, verbatim): "We should link to
+our sources." Appended, not an edit of a committed decision (chart
+non-negotiable 7).
 
 **Needs:**
 
@@ -960,13 +961,15 @@ special case of P1; let `/principle` decide._
 Two slices added 2026-09-11 on Ian's decision, after EXECUTE completed.
 Appended, never edits of committed decisions (non-negotiable 7).
 
-**D16 (Ian, 2026-09-11): `concise/07/quiet-provenance` is CANCELLED.** Recorded
-above beside the slice. The ID is permanent and is never reused.
+**D16 — cancel quiet-provenance.** (Ian, 2026-09-11):
+`concise/07/quiet-provenance` is CANCELLED. Recorded above beside the slice. The
+ID is permanent and is never reused.
 
-**D17 (Ian, 2026-09-11): "spec the one-rule-one-home work."**
+**D17 — one rule, one home for the last three tools.** (Ian, 2026-09-11): "spec
+the one-rule-one-home work."
 
-**D18 (Ian, 2026-09-11): "spec link rot. I'm okay saying something and not
-linking if the link is dead."**
+**D18 — say the citation, drop a dead link.** (Ian, 2026-09-11): "spec link rot.
+I'm okay saying something and not linking if the link is dead."
 
 ---
 
@@ -1103,8 +1106,9 @@ and is not sent to a dead page.
 
 ## `concise/11/never-open-with-money`
 
-**D19 (Ian, 2026-09-11): approve "one sentence restoring the general rule, plus
-the RFC 134 citation that RFC 199 omitted".**
+**D19 — restore "never open with money".** (Ian, 2026-09-11): approve "one
+sentence restoring the general rule, plus the RFC 134 citation that RFC 199
+omitted".
 
 **Needs:**
 
@@ -1172,7 +1176,7 @@ and is not asked their household income.
 
 ---
 
-## D20 — the numeric size ceilings are DELETED (Ian, 2026-09-11). Supersedes D13.
+## D20 — budgets are not tests. The numeric size ceilings are DELETED (Ian, 2026-09-11). Supersedes D13.
 
 Recorded verbatim in substance; D13 stands as committed and is not edited.
 
