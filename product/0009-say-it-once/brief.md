@@ -6,9 +6,10 @@
 
 - **Phase:** EXECUTE — `concise/01`, `02`, `04` and `05` LANDED 2026-09-11;
   `concise/03`, `06`, `08` and `09` LANDED 2026-09-12; `concise/11` and
-  `concise/10` LANDED 2026-09-13. **One slice is left in this brief**: the
-  quiet-provenance one (`concise/07`), held by product judgement pending a fresh
-  decision about what may still collapse on the page the links landed on.
+  `concise/10` LANDED 2026-09-13; `concise/12` LANDED 2026-09-14. **One slice is
+  left in this brief**: the quiet-provenance one (`concise/07`), held by product
+  judgement pending a fresh decision about what may still collapse on the page
+  the links landed on.
 - **Gate 1 (prioritisation):** **PASSED 2026-09-11 — Ian approved all defaults,
   verbatim: "approve"**. D1-D8 stand as written below. D8 is `standing`.
 - **Gate 2 (spec):** **PASSED 2026-09-11 — "approve"**; D9-D14 in `spec.md`
@@ -455,6 +456,55 @@
   441 — fail-open, and now LOUD; and `archive_url` still points at
   collegedata.fyi, a THIRD PARTY, so RFC 170's "our mirror" comment is
   inaccurate and is /chart's to decide.
+
+  concise/12/budgets-are-not-tests LANDED as RFC 203 (main@192ea2a9 + <DOCSHA>,
+  2026-09-14) — the five numeric size ceilings are DELETED (D20, Ian's own
+  decision, superseding D13). `WORD_CEILING` had moved **1,767 -> 1,530 -> 1,450
+  -> 1,401 -> 1,404** and the last step was UPWARD: no slice met its spec's
+  target, each ratcheted the constant to whatever it had just measured, so a
+  threshold edited by the change it constrains asserted nothing. It recorded
+  history and taxed every later change — brief 0011's `beyond/07` would have had
+  to raise a ceiling to add a sentence a parent wants. Gone: `WORD_CEILING` and
+  its `assertTrue` in `CostReportPageTest`, and the four `LEGEND_BYTE_CEILING`
+  constants (6845, 1359, 621, 472) with the one test each backed, plus three
+  companion objects the constant was the only member of.
+  `MoneyProfileChatToolTest`'s companion stays — it holds the JDBC setup. KEPT
+  THE MEASUREMENT, DROPPED THE GATE: the three-school page is still rendered and
+  still counted, and prints
+  `[MEASURE] three-school cost report: [1404] visible words` to the test's
+  captured stdout, read with
+  `grep -h MEASURE public-web/build/test-results/test/*.xml`. The console route
+  was rejected because it needs `testLogging { events("standardOut") }` in
+  `public-web/build.gradle.kts` — outside test sources, so it would breach this
+  slice's own "no production, no build file" criterion — and it is module-wide,
+  which buries the number in noise. NO PROPERTY TEST WEAKENED, and this is
+  measured, not asserted: assertion call sites fell by exactly ONE per file (587
+  -> 586, 62 -> 61, 79 -> 78, 102 -> 101, 253 -> 252), which is the deleted
+  ceiling and nothing else; `@Test` counts 116 -> 115, 9 -> 8, 26 -> 25, 28 ->
+  27, and `CostReportPageTest` unchanged at 67. TEST-ONLY AND DELETION-ONLY: the
+  diff is five test sources plus the RFC, +29/-173 of Kotlin, no production
+  file, no build file, no DDL, no migration, no seeded row, and
+  `prompts/coach-system-prompt.md` untouched (brief 0010's rfc-186/187 are live
+  on it). Rollback is a plain revert. TWO COMMENTS WERE CORRECTED, approved at
+  the gate and recorded in the RFC so the diff does not read as scope creep: the
+  `legend, not a rulebook` tests said "the guard that actually bites is
+  `LEGEND_BYTE_CEILING`", which after the deletion is an active false statement
+  about the safety of the code, in the file most likely to be read by someone
+  deciding whether a phrase list is enough. They now say the true thing — the
+  phrase list is a tripwire on known regressions, there is deliberately NO size
+  guard, and growth is judged by a person at the /ship gate — because a reader
+  who learned only "there is no ceiling" might add one back. **P2 IS RETIRED**
+  and the RFC records it as a superseded nomination: exactness was not the
+  problem, the mechanism was, since conscious raising happened all five times,
+  once upward, and meant nothing when the run raising the constant was the run
+  it constrained. No general review principle is nominated — Ian declined one,
+  because one incident is not enough to codify a lens and policing an artifact
+  we are deleting is over-fitting one level up. Full suite **3,181 tests, 0
+  failures, 0 errors**, plus the shell DB harness's 53. One flake worth naming:
+  the first hook run failed a `ship-scripts-tests` docs-only fast-path assertion
+  that passed on `main`, in the worktree, and on the immediate retry; nothing in
+  this diff can reach it. THE DOOR: none — test-only, nothing a family sees
+  changes.
 
 ## The question
 
