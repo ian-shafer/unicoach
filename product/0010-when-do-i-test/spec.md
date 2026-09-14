@@ -546,38 +546,41 @@ Ask `slice-board`, not this list, for what is startable.
 
 ## Gate 2 — the spec decisions
 
-**D15. What "today" means.** Both existing `Clock` sites default to
-`Clock.systemUTC()`, and UTC-today is not a US family's today. _Default:_
-deadline arithmetic is computed in **US Eastern**, because that is the timezone
-College Board and ACT publish and enforce in; the coach states **dates**, never
-"hours left", and never says "closes today" without naming the publisher's
-timezone. Where residency is known the coach may say the student's own local
-date. _Rejected default: per-student timezone inference from state, which is
-wrong for the split-timezone states and buys nothing at date granularity._
+**D15 — today is US Eastern. What "today" means.** Both existing `Clock` sites
+default to `Clock.systemUTC()`, and UTC-today is not a US family's today.
+_Default:_ deadline arithmetic is computed in **US Eastern**, because that is
+the timezone College Board and ACT publish and enforce in; the coach states
+**dates**, never "hours left", and never says "closes today" without naming the
+publisher's timezone. Where residency is known the coach may say the student's
+own local date. _Rejected default: per-student timezone inference from state,
+which is wrong for the split-timezone states and buys nothing at date
+granularity._
 
-**D16. The score-band fallback.** Bands cover 949 colleges; the average covers
-1,037, so ~88 colleges have an average and no band. _Default:_ prefer the band;
-where only an average exists, say it and label it as **the average score of
-admitted students**, explicitly not a cut-off; never show both for the same
-school; never fabricate a band from an average.
+**D16 — average only where no band. The score-band fallback.** Bands cover 949
+colleges; the average covers 1,037, so ~88 colleges have an average and no band.
+_Default:_ prefer the band; where only an average exists, say it and label it as
+**the average score of admitted students**, explicitly not a cut-off; never show
+both for the same school; never fabricate a band from an average.
 
-**D17. Stating a policy's age.** `ADMCON7` is collection year 2023, and the
-volatile schools are the top ~50. _Default:_ every policy claim carries its year
-in the coach's words, plus a standing sentence that a school can change its
-policy and its own page is where to confirm. We do **not** refuse an older
-policy — refusing 1,936 schools' only policy data would be worse than dating it
-honestly.
+**D17 — date the policy, never refuse it. Stating a policy's age.** `ADMCON7` is
+collection year 2023, and the volatile schools are the top ~50. _Default:_ every
+policy claim carries its year in the coach's words, plus a standing sentence
+that a school can change its policy and its own page is where to confirm. We do
+**not** refuse an older policy — refusing 1,936 schools' only policy data would
+be worse than dating it honestly.
 
-**D18. Slice order.** _Default:_ the four waves above, with `test/01` and
-`test/02` dispatched first and in parallel.
+**D18 — four waves, 01 and 02 first. Slice order.** _Default:_ the four waves
+above, with `test/01` and `test/02` dispatched first and in parallel.
 
-**D19. Where hand-maintained data lives.** _Default:_ a database table seeded
-from a **committed** CSV with a `PROVENANCE.json`, following the CDS seed
-pattern — hand-typed data must be reviewable in a diff. This differs from
-Scorecard, whose seed is gitignored because it is fetched.
+**D19 — hand-typed data is a committed CSV. Where hand-maintained data lives.**
+_Default:_ a database table seeded from a **committed** CSV with a
+`PROVENANCE.json`, following the CDS seed pattern — hand-typed data must be
+reviewable in a diff. This differs from Scorecard, whose seed is gitignored
+because it is fetched.
 
-**D20. Staleness is a build failure, not a silent wrong answer.** _Default:_ a
-test fails when a committed calendar, state table or merit-grid row is within
-**90 days** of its expiry, or is past it. Rot is the competitor's failure mode
-(CollegeVine's 2016 article still ranks first for this question); we make ours
-loud and early rather than discovering it from a family who missed a date.
+**D20 — staleness fails the build. Staleness is a build failure, not a silent
+wrong answer.** _Default:_ a test fails when a committed calendar, state table
+or merit-grid row is within **90 days** of its expiry, or is past it. Rot is the
+competitor's failure mode (CollegeVine's 2016 article still ranks first for this
+question); we make ours loud and early rather than discovering it from a family
+who missed a date.

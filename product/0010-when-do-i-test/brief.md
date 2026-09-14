@@ -176,25 +176,25 @@ unusable values — do not attempt.
 
 Defaults are pre-chosen. "Approve" takes all twelve; amend any line.
 
-**D1. Take the bet.** "When do I test" becomes brief 0010's beat, scoped as a
+**D1 — take the bet.** "When do I test" becomes brief 0010's beat, scoped as a
 **deadline-and-money engine**, not a testing feature and never test prep.
 _Default: YES._
 
-**D2. Ship the cheap half first and on its own.** Inject today's date and the
-student's stored graduation date into the coach's system prompt as slice 1,
-landing independently of everything below, because every other slice is blocked
-on it and it is valuable alone. _Default: YES._
+**D2 — date in the prompt first. Ship the cheap half first and on its own.**
+Inject today's date and the student's stored graduation date into the coach's
+system prompt as slice 1, landing independently of everything below, because
+every other slice is blocked on it and it is valuable alone. _Default: YES._
 
-**D3. The coach must know who it is talking to, and refuse when it does not.**
-Derive the year of school from the stored graduation date; where the student's
-own words contradict it (a **college** junior asking about the SAT), say plainly
-that unicoach coaches US high-school applicants and does not advise on
-GRE/GMAT/LSAT, rather than answering confidently. No new field. _Default: YES —
-refuse honestly._
+**D3 — refuse a non-high-schooler. The coach must know who it is talking to, and
+refuse when it does not.** Derive the year of school from the stored graduation
+date; where the student's own words contradict it (a **college** junior asking
+about the SAT), say plainly that unicoach coaches US high-school applicants and
+does not advise on GRE/GMAT/LSAT, rather than answering confidently. No new
+field. _Default: YES — refuse honestly._
 
-**D4. Advice is anchored to the student's college list — but the coach explains
-the stakes once, unprompted.** Two arms, and both are required (amended by Ian,
-2026-09-10).
+**D4 — list-anchored, explain once. Advice is anchored to the student's college
+list — but the coach explains the stakes once, unprompted.** Two arms, and both
+are required (amended by Ian, 2026-09-10).
 
 _The claim_ is list-anchored: with 86% of colleges test-optional, "you need to
 take a test" is false for most students, so a per-school statement is only ever
@@ -222,36 +222,36 @@ becomes a lecture that delays the actual answer to the actual question. With an
 empty college list the coach may still give the standard sequence, labelled as
 general rather than as advice about their schools. _Default: YES, both arms._
 
-**D5. Test policy comes from IPEDS `ADMCON7`, not CDS C8.** 1,972 institutions
-with an official required/optional/blind codebook beats 149 colleges of ~13%
-junk. _Default: ADMCON7._
+**D5 — policy from IPEDS, not CDS. Test policy comes from IPEDS `ADMCON7`, not
+CDS C8.** 1,972 institutions with an official required/optional/blind codebook
+beats 149 colleges of ~13% junk. _Default: ADMCON7._
 
-**D6. Adopt the score percentile bands already in the committed seed** — and
-prefer the 25th/75th **range** over `sat_average_equivalent_score` wherever we
-speak to a student, because an admitted-student average invites a student to
-read it as a bar. _Default: YES._
+**D6 — range, not average. Adopt the score percentile bands already in the
+committed seed** — and prefer the 25th/75th **range** over
+`sat_average_equivalent_score` wherever we speak to a student, because an
+admitted-student average invites a student to read it as a bar. _Default: YES._
 
-**D7. The test calendar is hand-maintained data with an explicit expiry, and the
-coach refuses past it.** ~30 rows a year (SAT and ACT: test date, registration
-deadline, score release). Past the expiry date the coach says it does not know
-the current dates and points at the publisher, rather than naming a stale one.
-This adds a table — **DDL presented at /ship's gate** (standing D10). _Default:
-YES, with expiry-refusal._
+**D7 — calendar expires, coach refuses. The test calendar is hand-maintained
+data with an explicit expiry, and the coach refuses past it.** ~30 rows a year
+(SAT and ACT: test date, registration deadline, score release). Past the expiry
+date the coach says it does not know the current dates and points at the
+publisher, rather than naming a stale one. This adds a table — **DDL presented
+at /ship's gate** (standing D10). _Default: YES, with expiry-refusal._
 
-**D8. Score-gated merit money ships narrow and honest, not broad and guessed.**
-A hand-curated set of schools that publish an automatic merit grid, each row
-carrying its source URL and cycle; the coach speaks it only for those schools
-and says plainly that it does not know for the rest. _Default: YES, narrow — and
-if the curated set cannot reach a useful size, this slice becomes a later brief
-rather than a vague one._
+**D8 — merit grids: narrow and sourced. Score-gated merit money ships narrow and
+honest, not broad and guessed.** A hand-curated set of schools that publish an
+automatic merit grid, each row carrying its source URL and cycle; the coach
+speaks it only for those schools and says plainly that it does not know for the
+rest. _Default: YES, narrow — and if the curated set cannot reach a useful size,
+this slice becomes a later brief rather than a vague one._
 
-**D9. Never test prep, never score prediction, never chancing.** Khan Academy is
-free and better; chancing engines are a crowded, low-trust market. _Default: YES
-— standing._
+**D9 — no prep, no prediction, no odds. Never test prep, never score prediction,
+never chancing.** Khan Academy is free and better; chancing engines are a
+crowded, low-trust market. _Default: YES — standing._
 
-**D10. Infer school-day testing from the state we already hold; ask only what
-the state cannot answer.** (Amended by Ian, 2026-09-10 — "can the coach infer
-this from residence?" Yes, and it should.)
+**D10 — infer school-day testing from state. Infer school-day testing from the
+state we already hold; ask only what the state cannot answer.** (Amended by Ian,
+2026-09-10 — "can the coach infer this from residence?" Yes, and it should.)
 
 The money profile already records the family's **state of residency**, and
 `composeSystem` already puts it in the coach's context for the in-state price.
@@ -269,18 +269,19 @@ already pays for itself twice. The one thing the state cannot settle is whether
 is the single optional question, never gating, "I don't know" accepted.
 _Default: YES — infer from state, ask only the school-level detail._
 
-**D11. No reminders or notifications in this beat.** A dated nudge is a promise
-the product must keep; it needs its own brief. _Default: DEFER._
+**D11 — no reminders this beat. No reminders or notifications in this beat.** A
+dated nudge is a promise the product must keep; it needs its own brief.
+_Default: DEFER._
 
-**D12. Store the student's own test scores.** Without a stored score the coach
-cannot say "you are 10 points from the next money band" in a later session. New
-table, so **DDL at /ship's gate**; invited, declinable, never gating, and
-removable — the money-profile pattern. _Default: YES, store._
+**D12 — store her own scores. Store the student's own test scores.** Without a
+stored score the coach cannot say "you are 10 points from the next money band"
+in a later session. New table, so **DDL at /ship's gate**; invited, declinable,
+never gating, and removable — the money-profile pattern. _Default: YES, store._
 
-**D13. The scope is college entrance tests, not "the SAT".** (Added by Ian,
-2026-09-10.) Every slice, every table and every sentence of copy is written for
-the family of admissions tests, with the SAT as one member and never the default
-noun.
+**D13 — the whole test family, not the SAT. The scope is college entrance tests,
+not "the SAT".** (Added by Ian, 2026-09-10.) Every slice, every table and every
+sentence of copy is written for the family of admissions tests, with the SAT as
+one member and never the default noun.
 
 - **SAT and ACT are first-class and symmetric** — both calendars, both
   registration deadlines, both score-release lags, both fee-waiver programmes
@@ -303,10 +304,11 @@ noun.
 
 _Default: YES — test-family scope, SAT never the default noun._
 
-**D14. The four score mechanics are encoded as explicit guardrails.** (Added
-2026-09-10, from the research's "most likely to be got subtly wrong" list.)
-These are where a fluent model produces confident, costly errors, so they are
-written as rules rather than left to the model's judgement:
+**D14 — four score-mechanic guardrails. The four score mechanics are encoded as
+explicit guardrails.** (Added 2026-09-10, from the research's "most likely to be
+got subtly wrong" list.) These are where a fluent model produces confident,
+costly errors, so they are written as rules rather than left to the model's
+judgement:
 
 1. **Score Choice is per test date, and does not apply to the free score sends
    chosen at registration.** Advising "just send your best" while four free
@@ -508,9 +510,10 @@ Committed decisions are immutable; a changed decision is a new numbered one.
 These were taken by Ian on 2026-09-12 in EXECUTE, and bind every remaining
 slice.
 
-**D21. Dates are formatted in ONE place, and the format is US-centric.** Ian:
-_"Dates are tricky... we should have a single place where we format dates. And
-we should start with a US-centric format e.g. Sep 12, 2026."_
+**D21 — one date seam, US format. Dates are formatted in ONE place, and the
+format is US-centric.** Ian: _"Dates are tricky... we should have a single place
+where we format dates. And we should start with a US-centric format e.g. Sep 12,
+2026."_
 
 The repo currently renders a user-facing date in at least four ways, and this
 brief added one of them:
@@ -527,11 +530,12 @@ decision is **one seam, not four**, at `Sep 12, 2026`, with the
 partial-precision forms derived from the same place rather than hand-written
 beside it. It is carried by a new slice, `test/04.5/one-date-seam`.
 
-**D22. This brief is not delivered against a calendar, and it is not designed
-for one user.** Ian: his daughter is a **high-school junior**, and _"she's just
-an example / test user. Do not design specifically for her."_ And on whether to
-pull the PSAT slice forward because its October window is near: _"No. We are not
-trying to deliver by certain dates. We'll be done when we're done."_
+**D22 — no calendar pressure, no single user. This brief is not delivered
+against a calendar, and it is not designed for one user.** Ian: his daughter is
+a **high-school junior**, and _"she's just an example / test user. Do not design
+specifically for her."_ And on whether to pull the PSAT slice forward because
+its October window is near: _"No. We are not trying to deliver by certain dates.
+We'll be done when we're done."_
 
 Two consequences, both binding:
 
