@@ -4458,27 +4458,8 @@ class CollegeCostChatToolTest {
   }
 
   // ---------------------------------------------------------------------------
-  // The legend itself (RFC 192): its size, and the rules it must NOT carry
+  // The legend itself (RFC 192): the rules it must NOT carry
   // ---------------------------------------------------------------------------
-
-  @Test
-  fun `the tool description stays within its legend byte ceiling`() {
-    // The PUBLISHED description, exactly as every other assertion in this file
-    // reads it. Budgeting the constant instead would leave the budget measuring
-    // a string the model is never sent, which is the one thing a budget must not
-    // do.
-    val bytes =
-      tool.definition
-        .getValue("description")
-        .jsonPrimitive.content
-        .toByteArray()
-        .size
-
-    assertTrue(
-      bytes <= LEGEND_BYTE_CEILING,
-      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
-    )
-  }
 
   @Test
   fun `the description is a legend, not a rulebook`() {
@@ -4494,12 +4475,14 @@ class CollegeCostChatToolTest {
     //
     // BE HONEST ABOUT WHAT THIS LIST IS: a tripwire on known regressions, not
     // the guard. It matches PHRASINGS, so a behavioural rule written in new words
-    // walks straight past it. The guard that actually bites is
-    // [LEGEND_BYTE_CEILING] — behaviour is what made the old description 18,580
-    // bytes, and prose cannot be added to a full budget without someone
-    // consciously raising the number. This list's job is narrower and still worth
-    // it: it names the exact sentences that have already been here once, and one
-    // of them (RFC 191's) was re-added to this constant and nearly shipped twice.
+    // walks straight past it. There is NO size guard behind it, deliberately:
+    // RFC 203 deleted the byte ceiling that used to sit here, because a number
+    // the next honest change must raise is not a limit. The size of this legend
+    // is judged by a person at the /ship gate, where the value the bytes buy can
+    // be weighed; do not add a ceiling back. This list's job is narrower and
+    // still worth it: it names the exact sentences that have already been here
+    // once, and one of them (RFC 191's) was re-added to the description and
+    // nearly shipped twice.
     listOf(
       "never estimate",
       "never re-raise",
@@ -4519,31 +4502,6 @@ class CollegeCostChatToolTest {
         "the legend says what a key MEANS, never what to say to the family: [$behaviour]",
       )
     }
-  }
-
-  private companion object {
-    /**
-     * The byte budget for the rendered legend (RFC 192 D1), MEASURED here by
-     * setting this constant to 0 and reading the failure.
-     *
-     * `CollegeCostChatTool.DESCRIPTION` was 18,580 bytes on this branch's base
-     * `main@d2fc8bdf`, when it was half schema legend and half a second copy of
-     * the coach prompt's behavioural rules. (The RFC's inventory measured 18,386
-     * on `main@493dd34f`; RFC 191's tier-grouping sentence, 194 bytes, landed on
-     * the description in between.)
-     *
-     * The contract is `CostReportPageTest.WORD_CEILING`'s: the number is what
-     * the artifact really costs today, not a target, so adding a key means
-     * consciously RAISING it -- and asking the same question that one asks, is
-     * this key worth its bytes? What it refuses is the silent regrowth: a
-     * behavioural paragraph appended here because an append is the safe edit.
-     *
-     * It is the measurement ITSELF, never a rounded one: every byte of headroom
-     * is a sentence that can be appended with nobody raising the number, which
-     * is the one edit this budget exists to make visible. The legend is built
-     * from compile-time constants alone, so an exact ratchet cannot flake.
-     */
-    const val LEGEND_BYTE_CEILING = 6845
   }
 }
 

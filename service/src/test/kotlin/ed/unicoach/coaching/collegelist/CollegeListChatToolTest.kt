@@ -121,23 +121,6 @@ class CollegeListChatToolTest {
   }
 
   @Test
-  fun `the tool description stays within its legend byte ceiling`() {
-    // The PUBLISHED description, not the constant: a budget must measure the
-    // string the model is actually sent.
-    val bytes =
-      tool.definition
-        .getValue("description")
-        .jsonPrimitive.content
-        .toByteArray()
-        .size
-
-    assertTrue(
-      bytes <= LEGEND_BYTE_CEILING,
-      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
-    )
-  }
-
-  @Test
   fun `the description is a legend, not a rulebook`() {
     val description =
       tool.definition
@@ -577,14 +560,5 @@ class CollegeListChatToolTest {
 
     val overBound = execute(student, """{"action":"update","college_id":"${college.value}","reasons":"${"r".repeat(2049)}"}""")
     assertEquals("reasons must be non-empty and at most [2048] characters", errorOf(overBound), "got $overBound")
-  }
-
-  companion object {
-    /**
-     * The MEASURED size of the legend that ships (RFC 199 D4), not a budget
-     * with headroom: 472 bytes, down from the 867-byte rulebook it replaced.
-     * Adding a key means consciously raising this number.
-     */
-    const val LEGEND_BYTE_CEILING = 472
   }
 }

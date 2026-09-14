@@ -1070,14 +1070,24 @@ class CostReportPageTest {
   }
 
   @Test
-  fun `a three-school report says every fact it holds in fewer than fifteen hundred words`() {
-    // D13: the budget lives in a test, not in an RFC. RFC 188 measured this
-    // fixture at 1,767 words before it and 1,530 after; the assertion is a
-    // RATCHET -- a repeat added back to the renderer fails here.
+  fun `a three-school report's word count is measured and printed, never asserted`() {
+    // Brief 0009 D20 deleted the ceiling this test used to assert (RFC 203).
+    // `WORD_CEILING` moved 1,767 -> 1,530 -> 1,450 -> 1,401 -> 1,404, the last
+    // step UPWARD: every slice ratcheted it to whatever it had just measured, so
+    // a threshold edited by the change it constrains asserted nothing and taxed
+    // the next honest sentence. The MEASUREMENT is worth keeping and the GATE is
+    // not, so this prints the number and lets a person judge growth at the /ship
+    // gate, where the value the words buy can actually be weighed.
+    //
+    // Read it out of the captured standard output of this test:
+    //   grep -h MEASURE public-web/build/test-results/test/*.xml
     val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
 
     val words = visibleWordsOf(body)
-    assertTrue(words <= WORD_CEILING, "the three-school page reads [$words] words, over [$WORD_CEILING]")
+    println(
+      "[MEASURE] three-school cost report: [$words] visible words " +
+        "(RFC 203 deleted the ceiling; it had moved 1,767 -> 1,530 -> 1,450 -> 1,401 -> 1,404)",
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -2160,42 +2170,6 @@ class CostReportPageTest {
   }
 
   private companion object {
-    /**
-     * The word budget for the three-school page (brief 0009 D9/D13), measured
-     * on [verboseState] + [verboseCampus] + [verbosePrivate].
-     *
-     * The number is the one each slice actually LEFT the page at, not the one it
-     * hoped for. RFC 188 took it from 1,767 words to 1,530; RFC 190 -- citing
-     * each block once instead of re-naming the school, its cycle and its
-     * document at every borrowing figure -- took it from 1,530 to 1,450, which
-     * is 80 words of pure repetition off three schools. RFC 191 says each
-     * ASSURANCE TIER once for the set of figures it covers rather than inside
-     * every school's debt paragraph, and takes it from 1,450 to 1,401. Every
-     * number was MEASURED here, on the same three verbose fixtures, by setting
-     * this constant to 0 and reading the failure.
-     *
-     * Brief 0009 wrote `<= 1,170` for RFC 191's slice. That number came off the
-     * superseded 1,793-word chain the brief itself retired (SD1, SD2, SD5) and
-     * is NOT reachable by grouping tier sentences: three sentences of thirty
-     * words were printed, one is printed, and the block that names the figures
-     * they cover costs eleven. The run reports the miss rather than weakening
-     * the assertion.
-     *
-     * RFC 196 takes it from 1,401 to 1,404, and the three words are NOT words.
-     * The link text is `CdsCitation.citedAs` -- the string the page already
-     * printed -- so a parent reads exactly what they read before. What changed
-     * is the INSTRUMENT: [visibleWordsOf] replaces every tag with a space, so
-     * the sentence-final `.` after each merit block's `</a>` is now its own
-     * token. Three schools, three stray full stops. The instrument was left
-     * alone rather than adjusted to flatter the number -- re-baselining it would
-     * silently move every figure in the chain above.
-     *
-     * A ceiling set at a number the page does not meet is a test that is either
-     * failing or lying; this one ratchets what was really won and refuses a
-     * regression.
-     */
-    const val WORD_CEILING = 1404
-
     /** One school's own Common Data Set file, and a second one, so a link cannot pass on the other's url. */
     const val MERIT_URL = "https://example.test/ashford-merit-cds.pdf"
     const val BORROWING_URL = "https://example.test/ashford-borrowing-cds.pdf"

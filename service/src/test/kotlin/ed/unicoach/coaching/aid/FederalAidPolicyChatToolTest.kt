@@ -202,24 +202,6 @@ class FederalAidPolicyChatToolTest {
   }
 
   @Test
-  fun `the tool description stays within its legend byte ceiling`() {
-    // The PUBLISHED description, exactly as every other assertion in this file
-    // reads it: budgeting the constant instead would measure a string the model
-    // is never sent.
-    val bytes =
-      tool.definition
-        .getValue("description")
-        .jsonPrimitive.content
-        .toByteArray()
-        .size
-
-    assertTrue(
-      bytes <= LEGEND_BYTE_CEILING,
-      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
-    )
-  }
-
-  @Test
   fun `the description is a legend, not a rulebook`() {
     val description =
       tool.definition
@@ -233,9 +215,11 @@ class FederalAidPolicyChatToolTest {
     //
     // BE HONEST ABOUT WHAT THIS LIST IS: a tripwire on known regressions, not
     // the guard. It matches PHRASINGS, so a behavioural rule written in new
-    // words walks straight past it. The guard that bites is
-    // [LEGEND_BYTE_CEILING], which prose cannot be added to without someone
-    // consciously raising the number.
+    // words walks straight past it. There is NO size guard behind it,
+    // deliberately: RFC 203 deleted the byte ceiling that used to sit here,
+    // because a number the next honest change must raise is not a limit. The
+    // size of this legend is judged by a person at the /ship gate; do not add a
+    // ceiling back.
     listOf(
       "Use it whenever",
       "always say which award year",
@@ -263,14 +247,4 @@ class FederalAidPolicyChatToolTest {
       val result = (tool as ed.unicoach.chat.ChatTool).execute(buildJsonObject {})
       assertTrue(result["error"]!!.jsonPrimitive.content.contains("student-scoped"), "got $result")
     }
-
-  companion object {
-    /**
-     * The MEASURED size of the legend that ships (RFC 199 D4), not a budget
-     * with headroom: 1,359 bytes, down from the 1,389-byte rulebook it
-     * replaced. Adding a key means consciously raising this number, with the
-     * same question asked -- is this key worth its bytes?
-     */
-    const val LEGEND_BYTE_CEILING = 1359
-  }
 }

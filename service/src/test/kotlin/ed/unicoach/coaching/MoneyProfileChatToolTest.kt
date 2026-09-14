@@ -32,13 +32,6 @@ import kotlin.test.assertTrue
 
 class MoneyProfileChatToolTest {
   companion object {
-    /**
-     * The MEASURED size of the legend that ships (RFC 199 D4), not a budget
-     * with headroom: 621 bytes, down from the 929-byte rulebook it replaced.
-     * Adding a field means consciously raising this number.
-     */
-    const val LEGEND_BYTE_CEILING = 621
-
     private lateinit var connection: Connection
     private lateinit var database: Database
 
@@ -151,23 +144,6 @@ class MoneyProfileChatToolTest {
         "$flag must carry const: true",
       )
     }
-  }
-
-  @Test
-  fun `the tool description stays within its legend byte ceiling`() {
-    // The PUBLISHED description, not the constant: a budget must measure the
-    // string the model is actually sent.
-    val bytes =
-      tool.definition
-        .getValue("description")
-        .jsonPrimitive.content
-        .toByteArray()
-        .size
-
-    assertTrue(
-      bytes <= LEGEND_BYTE_CEILING,
-      "the legend renders [$bytes] bytes, over the ceiling of [$LEGEND_BYTE_CEILING]",
-    )
   }
 
   @Test
