@@ -360,6 +360,56 @@ judgement:
 
 _Default: YES — guardrails, not judgement._
 
+**D23 — one partial-date storage pattern. Variable-precision dates are stored as
+a real `DATE` plus a precision, and spoken in Kotlin only as `PartialDate`.**
+(Ian, 2026-09-14: _"Option C is fine. But we must use a custom type in kotlin,
+never a data clump of the data and the precision. I think we already have this
+type in kotlin, right?"_ — yes: `PartialDate` in `:db` models, a sealed
+interface of `YearOnly` / `YearAndMonth` / `FullDate`, whose own KDoc already
+names test dates as its intended reuse.)
+
+Three hand-rolled copies of the same shape exist today —
+`students.expected_high_school_graduation_*` (schema `0005`), `CdsMonthDay`, and
+the fourth that `test/06` was about to add. The Kotlin half was already shared;
+only the SQL half was copied, and that asymmetry is the whole defect.
+
+The storage becomes a `DATE` normalised to the start of the period plus a
+`date_precision` domain (`year` | `month` | `day`), with one shared
+`is_period_start` CHECK. It is the only option a database can USE: "not in the
+future", ordering, a plain index and a join against the test calendar are each
+one predicate. A composite type was rejected because the DAOs are hand-written
+JDBC and a composite returns as a Postgres wire string — a hand-rolled format to
+remove a hand-rolled format.
+
+**The binding constraint on the Kotlin side:** the `(date, precision)` pair
+**never escapes the data-access layer**. It is decoded into `PartialDate` on
+read and encoded on write; nothing above the DAO sees a precision column, and no
+caller can hold a date whose precision and value disagree. That is also what
+disarms this shape's one danger — a stored `2026-01-01` looking precise —
+because the only thing above storage is a `YearOnly` with no month to leak.
+
+**D24 — one declinable-answer component, and the status is derived rather than
+stored.** (Ian, 2026-09-14: _"Let's stop duplicating this. We should refactor to
+a single pattern / component."_)
+
+`AnswerStatus` is one Kotlin enum with one decode site and four hand-written
+`TEXT + CHECK IN` copies in the schema, plus a renderer written against
+`MoneyProfile` specifically. The component is a `DOMAIN answer_status AS TEXT`
+with the vocabulary written once — the argument this repo already makes in
+`0054`'s own comment ("declared ONCE as a DOMAIN … not eighteen edits") — a
+`value_iff_answered(status, has_value)` function instead of four copied
+expressions, and a renderer taking `(status, value, label)` rather than a
+profile.
+
+And where the values live in a SIBLING table, the status is **not stored at
+all**: persist only the refusal, and derive "answered" from the existence of a
+live row. CLAUDE.md already says a derived figure is computed at read time and
+never stored, and deriving it makes the contradictory state unrepresentable
+rather than merely policed by a service and a test.
+
+Both components are carried by `test/06.1/one-answer-one-date`, which BLOCKS
+`test/06`.
+
 ## Corrections to the record (2026-09-10)
 
 Written down because the brief asserted them to Ian before they were verified.

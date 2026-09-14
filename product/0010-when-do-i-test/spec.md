@@ -393,6 +393,67 @@ follow-on; whether `admin-web` adopts the shared seam or keeps its own.
 school on her list sees the same date shape in the coach's opening line, in her
 school's deadline, and in the testing timeline.
 
+### `test/06.1/one-answer-one-date`
+
+**Needs:**
+
+- BLOCKS test/06/your-scores — technical. `test/06` was parked at its gate
+  because its table was about to add a fourth hand-rolled variable-precision
+  date and a fourth copy of the declinable-answer pattern. Both components must
+  exist before the table that consumes them is written; building them afterwards
+  means shipping the duplicate and promising to remove it, which is how a third
+  copy became a fourth.
+
+**What and why.** Two shapes in this repo are shared in Kotlin and copied in
+SQL, and this brief was about to copy both again. D23 and D24 decide what they
+become; this slice builds them and migrates the existing copies. It ships no
+user-visible behaviour, and that is the point — the surface is identical in
+every option, so the slice is judged on whether the seam moved, not on whether
+the work did.
+
+**Foundations.** `PartialDate` (`:db` models, a sealed interface already
+domain-agnostic by its own KDoc), `AnswerStatus` and `MoneyProfile` (RFC 134),
+the `academic_year` / `cds_source_year` / `slug` domains as the precedent for
+declaring a vocabulary once, `students.expected_high_school_graduation_*`
+(schema `0005`).
+
+**Decided here (D23, D24).**
+
+- `DATE` normalised to the period start, plus a `date_precision` domain, plus
+  one shared `is_period_start` CHECK. **DDL at /ship's gate.**
+- `DOMAIN answer_status AS TEXT`, one `value_iff_answered` function, and a
+  renderer that takes `(status, value, label)` rather than a `MoneyProfile`.
+- **`students` migrates in this slice**, not later. Shipping the component and
+  leaving the duplicate is the thing Ian objected to.
+- The `(date, precision)` pair never escapes the DAO.
+
+**Left to /ship's design.** Whether the answer-status domain and the date
+precision domain land in one migration or two; whether the money tables' status
+columns retype in the same run or in a follow-on (measure whether retyping a
+`TEXT` column to a domain over `TEXT` rewrites the table or only validates it —
+both money tables are one row per student, so it is a footnote either way);
+where the shared test helper for partial dates lives.
+
+**Acceptance criteria.**
+
+- One definition of each vocabulary in the schema. A new table declaring its own
+  copy of either fails review, and the domains are the only way to spell them.
+- `students` reads and writes through the new storage with **no change above the
+  DAO**, because every layer already holds a `PartialDate`. The ~37 raw-SQL
+  inserts across the test corpus move onto a shared helper rather than being
+  hand-edited into the new shape.
+- A stored `2026-01-01` at year precision can never be rendered as a month or a
+  day. **The guard for this lives outside the files this slice rewrites** — the
+  standing rule that the artifact under change cannot be its own witness.
+- No user-visible behaviour changes. The graduation-date sentences RFC 186
+  landed render byte-identically before and after; a test pins that.
+- **Door:** none of its own. It is consumed by `test/06`, and every existing
+  date and declinable answer keeps its current door.
+
+**First-session test.** Unchanged from today: a student with a year-only
+graduation date on file hears her year of school and never hears an invented
+month.
+
 ### `test/05/your-state-already-pays`
 
 **Needs:**
