@@ -72,10 +72,16 @@ extracted private helper, a swapped implementation.
 | `code-review-no-sentinels`                    |
 | `code-review-reuse-hardened-primitives`       |
 | `code-review-parameterize-bounds`             |
+| `code-review-single-source-of-truth`          |
 
 `structured-payloads` and `unit-encapsulation` are the two most likely to belong
 in Tier 1 — introducing a domain type can ripple to every call site. They sit
 here because in practice the type lands next to its use.
+
+`single-source-of-truth` sits here for the same reason: its characteristic fix
+is "delete a literal, call the source", contained to one file whenever the
+source is reachable. When it is not reachable, the fix threads the value and the
+finding is structural — but that is the exception, not the typical case.
 
 ## Tier 3 — 1–4 lines
 

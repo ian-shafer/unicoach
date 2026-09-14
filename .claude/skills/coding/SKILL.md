@@ -119,6 +119,20 @@ description: Global baseline philosophies for programming safety and data integr
   same-level named steps and strictly delegate detail to focused executors, so a
   reader grasps the whole shape at a glance and descends into a named step only
   for detail. Applies recursively, at every level.
+- **Single source of truth**: Every piece of data has exactly one home — a
+  database column, a config value, or the return of a function — and every other
+  site DERIVES it from that home rather than restating it. Look for the home
+  before you create one: a new constant, column, literal or copied sentence that
+  states a fact the system already holds is a violation regardless of intent,
+  and it is a violation EVEN WHEN IT IS CURRENTLY CORRECT, because the property
+  at issue is agreement over time, not correctness today. Store data in its most
+  normalized and pure form — a CIP code, not a field-of-study name; an
+  identifier, not its label — and derive the label at the boundary where it is
+  shown. The fix is to READ THE SOURCE, not to extract a helper; if the home
+  cannot be reached from the site, the unreachability IS the defect, so thread
+  it or move the site. Does not apply to a test's expected value, a deliberate
+  pin against an immutable record, a derived store with a stated reason that is
+  rebuilt wholesale, or verbatim quotation of a binding text.
 - **Use Standard Verbs**: Function names should be limited to domain nouns
   (e.g., "user", "session") and standard, recognizable verbs like create,
   decrypt, delete, encrypt, execute, generate, get, handle, list, map, set, or
