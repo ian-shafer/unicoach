@@ -5,6 +5,7 @@ import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
+import ed.unicoach.web.render.WHO_PAYS_PATH
 import ed.unicoach.web.render.respondCostReportPage
 import ed.unicoach.web.render.respondHomePage
 import ed.unicoach.web.render.respondNotFoundPage
@@ -13,6 +14,7 @@ import ed.unicoach.web.render.respondServiceUnavailablePage
 import ed.unicoach.web.render.respondTermsPage
 import ed.unicoach.web.render.respondVerifyEmailConfirm
 import ed.unicoach.web.render.respondVerifyEmailResult
+import ed.unicoach.web.render.respondWhoPaysPage
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.MissReason
@@ -116,6 +118,7 @@ fun Application.installPublicWebRouting(
     get("/") { call.respondHomePage() }
     get("/terms") { call.respondTermsPage() }
     get("/privacy") { call.respondPrivacyPage() }
+    get(WHO_PAYS_PATH) { call.respondWhoPaysPage() }
 
     // Side-effect-free confirm step: a non-blank token renders the confirm form;
     // an absent/blank token renders InvalidToken directly. No backend call.

@@ -63,6 +63,9 @@ fun FlowContent.siteHeader() {
       a(href = "/") { +"Home" }
       a(href = "/terms") { +"Terms" }
       a(href = "/privacy") { +"Privacy" }
+      // Label and path both read from the page itself, so the header cannot
+      // name it one thing while the page calls itself another.
+      a(href = WHO_PAYS_PATH) { +whoPaysPage.title }
     }
   }
 }

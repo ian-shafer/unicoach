@@ -62,7 +62,8 @@ main {
   margin-bottom: 0.5rem;
 }
 
-.legal h2 {
+.legal h2,
+.guide h2 {
   margin-top: 1.75rem;
 }
 
@@ -89,7 +90,8 @@ a {
    living it came from (the `data-label` the page writes), so a figure is never
    read under the wrong column. */
 
-.report h1 {
+.report h1,
+.guide h1 {
   margin-bottom: 0.25rem;
 }
 
@@ -242,4 +244,41 @@ a {
     color: var(--muted);
     font-size: 0.85rem;
   }
+}
+
+/* RFC 204 — the explainer pages. One measure, the same type scale as the legal
+   pages, and two quiet marks: the "as of" line under the title, and the `[n]`
+   reference markers that tie a claim to the page it was read from. The body
+   carries no outbound links on purpose, so every URL sits in the source list at
+   the foot, where the reader can weigh them together. */
+
+.guide-as-of {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 0;
+}
+
+.guide-standfirst {
+  font-size: 1.1rem;
+  color: var(--muted);
+}
+
+.guide-ref {
+  color: var(--accent);
+  font-size: 0.75rem;
+  padding-left: 0.15rem;
+}
+
+.guide-sources {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  padding-left: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.guide-sources li {
+  margin-bottom: 0.6rem;
+  overflow-wrap: anywhere;
 }
