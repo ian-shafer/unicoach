@@ -10,16 +10,19 @@ Four DISCOVER agents reported 2026-09-14/15: `discover/repo-grounding.md` (the
 code), and `discover/state-deadlines-a|b|c.md` plus
 `discover/state-deadlines-summary.md` (the data). The load-bearing corrections:
 
-| The brief assumed                                          | What is true                                                                                                                                                                                                                                                  |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The federal-aid tool reads `aid_policy_facts`              | It reads `policy_parameters` (schema 0077, INTEGER-valued, 24 slugs). `aid_policy_facts` was DROPPED by 0087.                                                                                                                                                 |
-| `public-web` would need a new read path                    | `public-web` already depends on `:db` and `:service` in-process and owns a `Database` at boot (RFC 155 D-E). One shared read service, no HTTP hop, no new config.                                                                                             |
-| Nothing in `public-web` renders a cited claim              | `CostReportPage.kt`'s `sourceLink` already does. Only the **"as of" date half** is missing.                                                                                                                                                                   |
-| Per-school FAFSA coverage is 272 (or 278)                  | **219 of 366 CDS-filing colleges**, measured on the committed seed. 272 and 278 are dated measurements of a corpus that shrank upstream. State it as measured, never hardcode it.                                                                             |
-| Region grouping needs new vocabulary                       | `us_states.ipeds_region -> ipeds_regions.name` already exists (schema 0060). Join at read time. But an FK to `us_states` is a TRAP: those rows come from the ingest, not a migration, so a seed migration referencing them cannot apply to the test database. |
-| Citations hang off `source_documents`                      | Unusable here: its `college_id` is NOT NULL and a state agency belongs to no college. Use the per-row `source_name`/`source_url` shape from 0077.                                                                                                             |
-| The admission-test calendar's staleness rule can be copied | It cannot. Deadlines **recur annually**, so the live set is the AWARD YEAR, not the date; and `currentAwardYear()`'s July-1 rule would serve last cycle's deadlines for nine months a year. Needs its own `currentFilingYear` clock.                          |
-| Only one slice may edit the coach prompt at a time         | **Retracted by Ian** (brief 0011 spec). Two slices adding paragraphs is an ordinary rebase; the second lander reads the first's paragraph.                                                                                                                    |
+| The brief assumed                                                          | What is true                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The federal-aid tool reads `aid_policy_facts`                              | It reads `policy_parameters` (schema 0077, INTEGER-valued, 24 slugs). `aid_policy_facts` was DROPPED by 0087.                                                                                                                                                 |
+| `public-web` would need a new read path                                    | `public-web` already depends on `:db` and `:service` in-process and owns a `Database` at boot (RFC 155 D-E). One shared read service, no HTTP hop, no new config.                                                                                             |
+| Nothing in `public-web` renders a cited claim                              | `CostReportPage.kt`'s `sourceLink` already does. Only the **"as of" date half** is missing.                                                                                                                                                                   |
+| Per-school FAFSA coverage is 272 (or 278)                                  | **219 of 366 CDS-filing colleges**, measured on the committed seed. 272 and 278 are dated measurements of a corpus that shrank upstream. State it as measured, never hardcode it.                                                                             |
+| Region grouping needs new vocabulary                                       | `us_states.ipeds_region -> ipeds_regions.name` already exists (schema 0060). Join at read time. But an FK to `us_states` is a TRAP: those rows come from the ingest, not a migration, so a seed migration referencing them cannot apply to the test database. |
+| Citations hang off `source_documents`                                      | Unusable here: its `college_id` is NOT NULL and a state agency belongs to no college. Use the per-row `source_name`/`source_url` shape from 0077.                                                                                                             |
+| The admission-test calendar's staleness rule can be copied                 | It cannot. Deadlines **recur annually**, so the live set is the AWARD YEAR, not the date; and `currentAwardYear()`'s July-1 rule would serve last cycle's deadlines for nine months a year. Needs its own `currentFilingYear` clock.                          |
+| Only one slice may edit the coach prompt at a time                         | **Retracted by Ian** (brief 0011 spec). Two slices adding paragraphs is an ordinary rebase; the second lander reads the first's paragraph.                                                                                                                    |
+| `beyond/09` (who pays) is unlanded, so this page builds the citation layer | It **LANDED as RFC 204** on 2026-09-15. `fafsa/04` inherits `ExplainerPage.kt`, where a claim with no URL and no fetch date does not compile. It must still ADD a cited-table block; there is no table case.                                                  |
+| Citations hang off per-row `source_url` columns                            | Only until `external_documents` lands (brief 0010 `test/05.1`, in flight in another session) — the only model that can cite a JURISDICTION. `test/05.2` states that a table declaring its own `source_url` fails review. See gate-2 D16.                      |
+| `us_states` can simply be joined                                           | Not yet: it is dropped and refilled by the import run, so a migrated-only database has no rows. `test/05.3/own-our-codebooks` is the fix. See gate-2 D10.                                                                                                     |
 
 ## The dataset we already hold
 
@@ -47,7 +50,15 @@ the US Virgin Islands were not researched.
 
 ## `fafsa/01/the-deadline-table`
 
-**Needs:** —
+**Needs:**
+
+- PREFER test/05.1/external-documents — product judgement. That slice builds the
+  one home for a citation, and it is the only model in the repo that can cite a
+  JURISDICTION rather than a college, which is this table's hard case; its
+  `document_captures` also dates a snapshot, which 7 of our rows need because
+  the agency blocks machine reading. Shipping our own `source_url` columns first
+  means shipping a seam `test/05.2` says fails review and a later migration must
+  undo. Overridable by Ian (gate-2 D16).
 
 **What:** The table the whole beat stands on: `fafsa_filing_deadlines`, plus the
 Kotlin models, the two enums and the `currentFilingYear` clock. No rows yet.
@@ -142,6 +153,12 @@ by name in `PROVENANCE.json` as needing human eyes.
   testable on fixtures, but its superseded-cycle and expired arms and the region
   grouping are only honestly exercised against the real seeded rows, and a
   second fixture corpus can drift from the CSV. Overridable by Ian.
+- PREFER test/05.3/own-our-codebooks — product judgement. The region grouping
+  joins `us_states`, which today is dropped and refilled by the import run, so a
+  migrated-only database has no rows and the grouping cannot be tested honestly
+  against one. That slice seeds the codebooks at migration time. The alternative
+  — carrying our own region column — invents a second vocabulary for a fact the
+  database already owns. Overridable by Ian (gate-2 D10).
 
 **What:** `FafsaDeadlineService` in `:service` — the single answer both doors
 render: the live set for the filing year, region grouping joined from
@@ -177,53 +194,56 @@ jurisdictions we hold nothing for come back as a list, never as silence.
   the service returns and derives nothing; without it the page would grow its
   own expiry rule, which is exactly the disagreement D4 forbids.
 
-Not written as an edge, because the board cannot see it: brief 0011's
-`beyond/09/who-pays-for-college-advice` is specced but its spec is not on
-`main`, so naming it here is a hard error. The relationship is real and is a
-CONFLICTS, not an order — both slices build the cited-claim rendering layer and
-both touch the same CSS and the same region of `Routing.kt` and `render/`. First
-mover builds it, the second inherits it. Whichever starts second re-reads this
-paragraph and expects a rebase.
-
 **What:** `GET /fafsa` — the public explainer, with the state-and-region date
 table as its centre. Product intent, in Ian's words: we do not make people read
 dry federal and state documents; we consolidate and share.
 
-**Foundations:** `Routing.kt` (one line), `render/PrivacyPage.kt` (the page
-shape), `Layout.kt`/`siteLayout` (chrome), `CostReportPage.kt`'s `sourceLink`
-(the cited-claim renderer that already exists), `LegalPagesTest.kt` (the test
-shape). Content comes from `research/fafsa-domain.md` and
-`research/support-landscape.md`, both cited per claim.
+**Foundations — and this changed while the brief was being written.** Brief
+0011's `beyond/09/who-pays-for-college-advice` **LANDED as RFC 204** on
+2026-09-15, so this slice is no longer the first explainer and does NOT build
+the citation layer. It inherits `render/ExplainerPage.kt`: a typed page model
+where `Claim` cannot exist without an `ExplainerSource` carrying a publisher, a
+title, an https URL and a fetch date — so "a load-bearing sentence with no URL
+and no fetch date DOES NOT COMPILE" — plus the rendered `As of <date>` line, the
+generated sources list, and the third-party-leak sweep. Also `Routing.kt` (one
+line), `Layout.kt`/`siteLayout`, `WhoPaysPage.kt` as the worked content example,
+and `LegalPagesTest.kt` for the test shape. Content comes from
+`research/fafsa-domain.md` and `research/support-landscape.md`.
 
 **Decided here:** the page carries (a) what the FAFSA is now — the Student Aid
 Index, the contributor model, and the consent rule whose failure mode is total
 (one contributor refusing IRS consent ends federal aid, Pell included); (b) the
 edge cases no competitor page covers — divorced or separated parents (the
+more-than-half-support rule, NOT "the custodial parent"), a parent with no
+Social Security number, dependency; (c) the dates: federal first, then every
+jurisdiction grouped by region. **D6 is on this page, early and plainly: the
+FAFSA is free at studentaid.gov, and unicoach never fills it in, submits it, or
+touches credentials.** No lead capture, no email wall, no ad, no scores or
+ranks. A claim the research marked unverified may not appear.
 
-> 50%-support rule, NOT "custodial parent"), a parent with no Social Security
-> number, dependency; (c) the dates: federal, then every jurisdiction grouped by
-> region. **D6 is on this page, early and plainly: the FAFSA is free at
-> studentaid.gov, and unicoach never fills it in, submits it, or touches
-> credentials.** No lead capture, no email wall, no ad, no scores or ranks.
-> Every load-bearing claim carries a public URL and a visible "as of" date. A
-> claim the research marked unverified may not appear. **Left to /ship:** the
-> prose voice, the table's mobile layout, and whether the page joins the header
-> nav or the footer.
+**The one thing this slice must ADD to the inherited model:** `ExplainerBlock`
+has three cases — prose, a sourced claim, and a link to one of our own pages —
+and none of them is a TABLE. A 51-row table whose every row carries its own
+agency citation and its own "as we read it on" date cannot be expressed as prose
+blocks without losing the per-row source. So this slice extends the explainer
+model with a cited-table block, in the same spirit as the existing type: a row
+that cannot name where it came from must not compile. **Left to /ship:** that
+type's exact shape, the table's mobile layout, and whether the page joins the
+header nav or the footer.
 
 **Acceptance:** a person with no account reaches `/fafsa` and sees every one of
 the 51 jurisdictions — a date where there is one, the agency's own words where
 the rule is words, an explicit "this state publishes no deadline" where that is
-verified, and OUR OWN admission where we have not verified it. Where a state
-also demands its own application, the page says so — a table showing one date
-per state would make families miss half the work. Every external claim resolves
-to a live URL recorded in the page's source. The page states the FAFSA is free
-before it states anything else about filing. The test asserts the rendered
-jurisdiction count, so a silently half-rendered table fails.
+verified, and, where we could not get an answer, our own sentence saying we
+tried and could not (D9). Where a state also demands its own application, the
+page says so — a table showing one date per state would make families miss half
+the work. Every external claim resolves to a live URL recorded in the page's own
+source. The page states the FAFSA is free before it states anything else about
+filing. The test asserts the rendered jurisdiction count, so a silently
+half-rendered table fails.
 
 **First session:** a parent with no account, in one visit, learns what the form
 now is, what their state's date is, and that we did not charge them to know it.
-
----
 
 ## `fafsa/05/the-coach-speaks-the-same-dates`
 
@@ -286,22 +306,22 @@ home for cited prose; prompt v35 lines 160-166 and 194; `AidPolicyWire`'s
 
 **Decided here:** every rule the coach states carries the document it came from
 (the FSA Handbook's Application and Verification Guide, or statute). The
-divorced-parent rule is stated as the >50%-support rule and explicitly NOT as
-"the custodial parent", because the legacy web is wrong and families repeat it.
-D6 is restated in the coach's own voice: the FAFSA is free, we never fill it in
-or ask for credentials, and where the answer needs an institution the coach says
-which office to call and exactly what to ask. Per-school coverage is stated
-honestly as measured (219 of 366 filing colleges today), never as a hardcoded
-number. **Left to /ship:** which rules earn tool-edge prose versus a prompt
-sentence, and the exact paragraph placement.
+divorced-parent rule is stated as the more-than-half-support rule and explicitly
+NOT as "the custodial parent", because the legacy web is wrong and families
+repeat it. D6 is restated in the coach's own voice: the FAFSA is free, we never
+fill it in or ask for credentials, and where the answer needs an institution the
+coach says which office to call and exactly what to ask. Per-school coverage is
+stated honestly as measured (219 of 366 filing colleges today), never as a
+hardcoded number. **Left to /ship:** which rules earn tool-edge prose versus a
+prompt sentence, and the exact paragraph placement.
 
 **Acceptance:** asked "my parents are divorced, whose information goes on the
-form?", the coach gives the >50%-support rule with its source and names the
-stepparent consequence; asked about a parent with no Social Security number, it
-says an account can be created and does not guess at the current process beyond
-what is cited; it never states a dependency answer the statute does not support;
-it says the FAFSA is free the first time filing comes up. It asks the family for
-nothing to answer any of these.
+form?", the coach gives the more-than-half-support rule with its source and
+names the stepparent consequence; asked about a parent with no Social Security
+number, it says an account can be created and does not guess at the current
+process beyond what is cited; it never states a dependency answer the statute
+does not support; it says the FAFSA is free the first time filing comes up. It
+asks the family for nothing to answer any of these.
 
 **First session:** a parent asks the question they were too embarrassed to ask a
 counsellor, and gets a cited answer in the first session.
@@ -316,15 +336,25 @@ Defaults pre-chosen. Decision numbering continues from gate 1 (D1-D7).
   `03` the one read service, `04` the page, `05` the coach's dates, `06` the
   coach's process answers. `fafsa/06` needs nothing and can start immediately in
   parallel, which is the cheapest early value if the data work slips.
-- **D9 — an unverified date never ships as a fact.** A row the harvest could not
-  verify against the publisher's own page is not committed. The page prints
-  those jurisdictions with our own admission that we have not verified them yet,
-  naming the agency to call. Today that is four: Arkansas, Delaware, North
-  Carolina, New Hampshire. We do not need a fourth kind in the table for this: a
-  missing row IS the unknown, and the page turns it into our sentence.
-- **D10 — group by the regions the database already has.**
-  `us_states.ipeds_region` exists and is joined at read time, so "grouped by
-  region" costs nothing and no new vocabulary is invented.
+- **D9 — an unverified date never ships as a fact, and we say we tried.**
+  AMENDED BY IAN: the page does not say "we have not verified this" — it says we
+  TRIED to verify it and could not, which is the true sentence and a different
+  one. A row the harvest could not confirm against the publisher's own page is
+  not committed. For those jurisdictions the page says we went to the agency's
+  own page and could not get an answer, names the agency to call, and links what
+  we tried. Today that is four: Arkansas, Delaware, North Carolina, New
+  Hampshire — all four block machine reading, which is itself worth saying. No
+  fourth kind is needed in the table: a missing row IS the unknown, and the page
+  turns it into our own sentence.
+- **D10 — regions come from `us_states`, once unicoach owns it.** AMENDED BY
+  IAN: `us_states` today is dropped and refilled from external data, so a
+  migrated-only database (the test database included) has no rows to group by.
+  Brief 0010's `test/05.3/own-our-codebooks` is the fix — it seeds the codebooks
+  at migration time and adds the foreign key `test/05` could not have. We do not
+  invent a second region vocabulary to route around it; `fafsa/03` carries a
+  PREFER on that slice, and `fafsa/01` re-decides the foreign key at its /ship
+  gate depending on whether it has landed (a key is strictly stronger than a
+  regex, by `test/05.3`'s own reasoning).
 - **D11 — one cycle at launch.** The corpus ships the award year now being
   filed. The 2027-28 rows the harvest already found are added when their
   publishers confirm them, by the same generator. The build fails when the
@@ -343,6 +373,19 @@ Defaults pre-chosen. Decision numbering continues from gate 1 (D1-D7).
 - **D15 — the deadline table is shown to Ian as DDL at `fafsa/01`'s /ship gate**
   (brief 0001 D10, standing). The proposed DDL is already written, in
   `discover/repo-grounding.md` §2.2, and is presented as-is.
+
+- **D16 — the citation shape waits for `external_documents`, or knowingly does
+  not.** Ian flagged that another session is building `external_documents`
+  (brief 0010, `test/05.1`). It is the right home for this data and was designed
+  for exactly our hard case: it can "hold a citation about a jurisdiction",
+  which `source_documents` cannot, and its `document_captures` dates a snapshot
+  — which 7 of our rows need, being archived copies of agency pages that block
+  machine reading. `test/05.2` then states the rule outright: a table declaring
+  its own `source_url` **fails review**. Our proposed DDL declares two such
+  columns. So either `fafsa/01` waits, or it ships a seam that a later migration
+  must undo. **Recommended: `fafsa/01` carries a PREFER on `test/05.1`** —
+  overridable, so you can start it anyway and accept the debt knowingly rather
+  than by accident.
 
 Ledger (one line per landed slice, appended as each lands):
 

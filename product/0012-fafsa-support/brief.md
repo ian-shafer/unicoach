@@ -2,12 +2,17 @@
 
 Status:
 
-- Phase: **DISCOVER** — gate 1 **APPROVED with one amendment, 2026-09-14** (D4
-  reversed by Ian: consolidate the state deadlines ourselves). Three research
-  reports in `research/`; DISCOVER agents dispatched 2026-09-14.
+- Phase: **SPEC & SLICE — gate 2 presented, amended once, awaiting Ian.**
+  `spec.md` holds six slices `fafsa/01`-`fafsa/06` and decisions D8-D16;
+  `slice-board` parses them clean and reports `fafsa/01` and `fafsa/06`
+  startable. Gate 1 was **APPROVED with one amendment, 2026-09-14** (D4 reversed
+  by Ian: consolidate the state deadlines ourselves). Research in `research/`,
+  DISCOVER in `discover/` (including the 51-jurisdiction deadline corpus).
 - Gate 1 (prioritisation): **APPROVED 2026-09-14, D4 amended** — seven decisions
   D1-D7 below.
-- Gate 2 (spec): not reached.
+- Gate 2 (spec): **presented 2026-09-14, amended 2026-09-15** — D9 (say we tried
+  and could not) and D10 (`us_states` is not ours yet) amended by Ian, and D16
+  added after he flagged the in-flight `external_documents` table.
 - Handle: `fafsa` (slice IDs `fafsa/NN/name`).
 - Ledger: (empty — nothing specced, nothing landed)
 
