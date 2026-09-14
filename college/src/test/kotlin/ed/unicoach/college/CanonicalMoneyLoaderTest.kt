@@ -24,7 +24,8 @@ import kotlin.test.assertTrue
 
 /**
  * [CanonicalMoneyLoader] (RFC 158): the mapping table over the shared fixture
- * CSV (which carries `PrivacySuppressed`, `NA` and blank cells on purpose),
+ * CSV (which carries both suppression sentinels -- `PS` and the archived
+ * `PrivacySuppressed` -- plus `NA` and blank cells on purpose),
  * the three loader fatals (P3 pairing, P6 blend routing, banding a
  * non-banding measure), the no-blend and one-year-per-row stored shapes, and
  * rebuild idempotency (P12).
@@ -107,12 +108,14 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `PrivacySuppressed survives the fill as suppressed_by_publisher, never a silent null`() {
+  fun `both suppression sentinels survive the fill as suppressed_by_publisher, never a silent null`() {
     val result = fill()
-    // 330300 (public) has NPT43_PUB = PrivacySuppressed; 440400 has
-    // GRAD_DEBT_MDN = PrivacySuppressed. The whole point of D3: these are
-    // DIFFERENT facts from "not reported", and today's toIntOrNull collapse
-    // loses them.
+    // 330300 (public) has NPT43_PUB = PrivacySuppressed, the publisher's
+    // ARCHIVED spelling; 440400 has GRAD_DEBT_MDN = PS, the spelling the
+    // Scorecard writes today (RFC 206). One fixture cell per sentinel, so the
+    // legacy arm and the live arm are covered by the same assertion. The whole
+    // point of D3: these are DIFFERENT facts from "not reported", and today's
+    // toIntOrNull collapse loses them.
     assertEquals(2, result.cohortMoneyStatStatusCounts[FigureStatus.SUPPRESSED_BY_PUBLISHER])
     val suppressed =
       query(
@@ -128,6 +131,21 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
         it.getInt(1)
       }.single(),
     )
+  }
+
+  @Test
+  fun `the fill counts the publisher's suppressions by column, apart from the coercions`() {
+    val result = fill()
+    // BY COLUMN (RFC 206): the status totals above say two suppressed rows
+    // landed, not which column carried them. BOTH columns appear -- the
+    // domain-checked gross cell GRAD_DEBT_MDN and the domain-free net price
+    // NPT43_PUB (a negative net price is valid, so that column has no domain
+    // to check). A count that named only the first would read as the whole
+    // and be half of it.
+    assertEquals(mapOf("NPT43_PUB" to 1, "GRAD_DEBT_MDN" to 1), result.cellsSuppressedByPublisher)
+    // And the coercion tally is untouched by any of it: this fixture coerces
+    // nothing, exactly as it did before the suppression arm existed.
+    assertEquals(emptyMap(), result.fieldsCoercedToNull)
   }
 
   @Test

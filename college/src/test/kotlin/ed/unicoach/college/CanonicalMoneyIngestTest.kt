@@ -53,9 +53,16 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
     assertEquals(0, vocabulary.inserted)
     assertEquals(vocabulary.rows, vocabulary.unchanged)
 
-    // The fixture's PrivacySuppressed cells survive as their own status --
-    // the slice's first-session fact, read from the run's own report.
-    assertTrue((report.canonicalMoney.cohortMoneyStatStatusCounts[FigureStatus.SUPPRESSED_BY_PUBLISHER] ?: 0) > 0)
+    // The fixture's suppressed cells survive a WHOLE INGEST as their own
+    // status -- the slice's first-session fact, read from the run's own
+    // report. Both spellings, end to end: GRAD_DEBT_MDN carries `PS`, the
+    // sentinel the Scorecard actually writes, and NPT43_PUB carries the
+    // archived `PrivacySuppressed` (RFC 206).
+    assertEquals(2, report.canonicalMoney.cohortMoneyStatStatusCounts[FigureStatus.SUPPRESSED_BY_PUBLISHER])
+    assertEquals(
+      mapOf("NPT43_PUB" to 1, "GRAD_DEBT_MDN" to 1),
+      report.canonicalMoney.cellsSuppressedByPublisher,
+    )
 
     // The tuition pair is ONE row per college on an IPEDS-less run -- the
     // out-of-state cell, which carries no residency ambiguity; the blends sit

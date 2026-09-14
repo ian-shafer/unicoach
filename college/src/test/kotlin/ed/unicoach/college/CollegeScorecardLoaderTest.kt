@@ -426,8 +426,14 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
           "junk-band",
           "UNITID" to "930003",
           "INSTNM" to "Junk Band College",
-          "SATVR25" to CsvIngestSupport.PRIVACY_SUPPRESSED,
-          "SATVR75" to CsvIngestSupport.PRIVACY_SUPPRESSED,
+          // The literal, not a constant: RFC 206 replaced the single
+          // `PRIVACY_SUPPRESSED` with a SET of spellings, and this test does
+          // not care which sentinel it is. What it needs is a cell that is
+          // PRESENT and unparseable as an Int -- the pair readers below have
+          // no suppression status to keep, so every such cell is one thing to
+          // them: a published band we could not read.
+          "SATVR25" to "PrivacySuppressed",
+          "SATVR75" to "PrivacySuppressed",
           "SATMT25" to "NA",
           "SATMT75" to "1,200",
           "ACTCM25" to "25",
@@ -475,8 +481,8 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
           "mixed-band",
           "UNITID" to "930005",
           "INSTNM" to "Mixed Band College",
-          // Blank lower, unreadable upper...
-          "SATVR75" to CsvIngestSupport.PRIVACY_SUPPRESSED,
+          // Blank lower, unreadable upper (the literal, per the case above)...
+          "SATVR75" to "PrivacySuppressed",
           // ...and the other way round, so neither ordering is the tested one.
           "SATMT25" to "NA",
           "ACTCM25" to "25",

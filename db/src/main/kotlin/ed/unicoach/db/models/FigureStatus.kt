@@ -26,7 +26,7 @@ enum class FigureStatus(
   /** The cell cannot apply to this institution, and the source says so. */
   NOT_APPLICABLE("not_applicable", false),
 
-  /** The publisher suppressed a reported figure (Scorecard `PrivacySuppressed`). */
+  /** The publisher suppressed a reported figure, and the source says so; the ingest maps its own suppression sentinels to this. */
   SUPPRESSED_BY_PUBLISHER("suppressed_by_publisher", false),
 
   /** A source we ingest carries the cell and we deliberately skip it; reserved -- the v1 Scorecard fill never emits it (P7). */

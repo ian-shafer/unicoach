@@ -254,8 +254,8 @@ enum class PairDropReason(
   INVERTED("inverted"),
 
   /**
-   * AT LEAST ONE cell present and unparseable -- `PrivacySuppressed`, `NA`,
-   * `1,200` -- and neither cell survived. Every per-cell reader nulls such a
+   * AT LEAST ONE cell present and unparseable -- a [SUPPRESSION_SENTINELS]
+   * member, `NA`, `1,200` -- and neither cell survived. Every per-cell reader nulls such a
    * cell silently (it is the blank-cell idiom and is not a domain coercion), so
    * without this reason a corrupt published band and a school that publishes
    * none reach the database as the same six nulls, with nothing counted
@@ -291,6 +291,41 @@ data class PairDrop(
 )
 
 /**
+ * Per-column counts of WHY a status-preserving read produced no value (RFC
+ * 206).
+ *
+ * ONE object rather than two parallel maps threaded side by side, because it
+ * is one fact with two arms (brief 0011 D37): a cell that bore no usable value
+ * either carried a number this loader refused ([coercedToNull]) or carried the
+ * publisher's suppression sentinel ([suppressedByPublisher]). They are never
+ * both, and a column that stops carrying one of them is exactly the regression
+ * RFC 206 exists to make visible -- which the per-STATUS row totals cannot
+ * show, because they do not name the column.
+ *
+ * BOTH arms are keyed by the SOURCE COLUMN the cell was read from, so the two
+ * counts of one column can be read side by side and neither needs a second
+ * name to be looked up by.
+ */
+internal class CellAbsenceTally {
+  private val coerced = mutableMapOf<String, Int>()
+  private val suppressed = mutableMapOf<String, Int>()
+
+  /** Mechanism A's tally: a valid value outside the column's domain, nulled. */
+  fun recordCoercedToNull(column: String) {
+    coerced.merge(column, 1, Int::plus)
+  }
+
+  /** A cell the publisher withheld: never a coercion, and never school silence. */
+  fun recordSuppressedByPublisher(column: String) {
+    suppressed.merge(column, 1, Int::plus)
+  }
+
+  val coercedToNull: Map<String, Int> get() = coerced.toMap()
+
+  val suppressedByPublisher: Map<String, Int> get() = suppressed.toMap()
+}
+
+/**
  * The source-family-agnostic half of the ingest machinery (RFC 144): digests,
  * header assertion, CSV parsing and cell coercion, the per-row savepoint, the
  * upsert-failure classifier, and the phase tracker. Lifted verbatim out of
@@ -305,8 +340,39 @@ internal object CsvIngestSupport {
   /** The per-row savepoint name; source-family neutral, so two loaders never collide. */
   private const val ROW_SAVEPOINT = "ingest_row"
 
-  /** The Scorecard's suppression sentinel, byte for byte -- the one non-numeric cell with its own status (RFC 158). */
-  const val PRIVACY_SUPPRESSED = "PrivacySuppressed"
+  /**
+   * The Scorecard's suppression sentinels, byte for byte -- the only
+   * non-numeric cells with their own status (RFC 158).
+   *
+   * TWO spellings, and the second is not dead weight (RFC 206):
+   *
+   * - `PS` is what the publisher writes TODAY, in both the institution file
+   *   and the field-of-study file. Recognising only the other one is why every
+   *   suppressed `GRAD_DEBT_MDN` cell was stored as "the school did not report
+   *   this" about a figure the publisher withheld. The count for the cohort
+   *   measured while writing RFC 206 is in that RFC; it is a dated snapshot of
+   *   a fetched, gitignored file, not a figure this repo can check.
+   * - `PrivacySuppressed` is the spelling earlier cohort files used. It is
+   *   KEPT, not replaced: dropping it would reclassify an archived file's
+   *   suppressions as school silence -- this same defect, in reverse.
+   *
+   * Membership is EXACT. [stringOrNull]'s trim is the only normalisation; no
+   * case-folding, no prefix or substring match. A sentinel set that guesses is
+   * how a legitimate value becomes a suppression.
+   */
+  val SUPPRESSION_SENTINELS = setOf("PS", "PrivacySuppressed")
+
+  /**
+   * The publisher's NULL sentinels, byte for byte: with a blank cell, the only
+   * spellings of "the school did not report this" this seam expects.
+   *
+   * Membership is EXACT, exactly as for [SUPPRESSION_SENTINELS]. The set exists
+   * so a present token in NEITHER set is a spelling nobody has taught this seam
+   * -- which is all `PS` ever was, for years, until RFC 206 -- and can be said
+   * out loud instead of being passed off as school silence. It changes no
+   * status: both sets of tokens still read as [StatusfulCell.NotReported].
+   */
+  val NULL_SENTINELS = setOf("NULL", "NA")
 
   /** The provenance digest algorithm: `college_index_build.sources.sha256` is this hash. */
   private const val DIGEST_ALGORITHM = "SHA-256"
@@ -386,7 +452,7 @@ internal object CsvIngestSupport {
 
   /**
    * A status-preserving cell reading (RFC 158): the value, or WHY there is no
-   * value. [intOrNull] collapses `"PrivacySuppressed"`, `"NULL"`, `"NA"` and a
+   * value. [intOrNull] collapses a suppression sentinel, `"NULL"`, `"NA"` and a
    * blank into one indistinguishable `null`; the canonical money store keys
    * absence on its reason (D3), so the canonical fill reads through these
    * variants instead. The existing readers are untouched -- every `colleges`
@@ -398,7 +464,7 @@ internal object CsvIngestSupport {
       val value: T,
     ) : StatusfulCell<T>
 
-    /** The publisher's `PrivacySuppressed` sentinel: `suppressed_by_publisher`. */
+    /** One of the publisher's [SUPPRESSION_SENTINELS]: `suppressed_by_publisher`. */
     data object SuppressedByPublisher : StatusfulCell<Nothing>
 
     /** A blank cell or a publisher null sentinel (`NULL`/`NA`), or a
@@ -410,46 +476,119 @@ internal object CsvIngestSupport {
   /**
    * The one sentinel-to-status mapping (D3's one home): blank and the
    * publisher null sentinels ("NULL", "NA", anything [parse] refuses) read as
-   * not-reported with the reason kept, `PrivacySuppressed` keeps its own
-   * reading. The int/double pair below differ only in [parse].
+   * not-reported with the reason kept, a [SUPPRESSION_SENTINELS] member keeps
+   * its own reading. The int/double pair below differ only in [parse].
+   *
+   * The suppression is tallied HERE, where it is RECOGNISED, and under the
+   * SOURCE column it was read from (RFC 206). Counting it further down -- in
+   * the domain reader, say -- would count only the columns that happen to
+   * carry a domain. The net-price cells carry none at all (a negative net
+   * price is valid), so every suppression they ever carry -- the archived
+   * institution files spell one, and the committed fixture keeps it -- would
+   * be missing from a figure that reads as a complete one. A partial count
+   * printed as a whole is the error class this RFC exists to remove, not one
+   * to add.
    */
   private fun <T : Any> statusfulCell(
     record: CSVRecord,
     column: String,
+    tally: CellAbsenceTally,
     parse: (String) -> T?,
   ): StatusfulCell<T> {
     val raw = stringOrNull(record, column) ?: return StatusfulCell.NotReported
-    if (raw == PRIVACY_SUPPRESSED) return StatusfulCell.SuppressedByPublisher
-    val value = parse(raw) ?: return StatusfulCell.NotReported
+    if (raw in SUPPRESSION_SENTINELS) {
+      tally.recordSuppressedByPublisher(column)
+      return StatusfulCell.SuppressedByPublisher
+    }
+    val value = parse(raw) ?: return mapToNotReported(record, column, raw)
     return StatusfulCell.Reported(value)
   }
 
   /**
+   * [StatusfulCell.NotReported] for a PRESENT cell that bore no readable value,
+   * with a token this seam does not know NAMED in the log.
+   *
+   * A blank cell never arrives here -- [stringOrNull] has already turned it into
+   * `null` -- and a [NULL_SENTINELS] member is school silence spelled the way
+   * the publisher spells it, so both stay quiet. Anything else is a token the
+   * seam has not been taught, and mapping it silently to absence is the exact
+   * defect RFC 206 was written to repair: `PS` took that path for years and
+   * every one of those cells reached families as "this school did not report
+   * it". The status is unchanged -- this only refuses to be silent about it.
+   *
+   * WARN, not DEBUG, and the sibling per-row coercion line at [logCoercedCell]
+   * is the contrast that settles it: that one is DEBUG because a run tally
+   * carries the same fact to the operator summary, so the per-cell line is only
+   * ever detail. This one has no tally by design, so the log line IS the
+   * report -- a level nobody enables by default would be the silence again,
+   * spelled differently.
+   */
+  private fun mapToNotReported(
+    record: CSVRecord,
+    column: String,
+    raw: String,
+  ): StatusfulCell<Nothing> {
+    if (raw !in NULL_SENTINELS) {
+      logger.warn(
+        "Unrecognised non-numeric cell read as not-reported [column={}] [line={}] [value={}]",
+        column,
+        record.recordNumber,
+        raw,
+      )
+    }
+    return StatusfulCell.NotReported
+  }
+
+  /**
    * Mechanism A over a status-preserving read: a valid value outside
-   * `[min, max]` keeps the coercion tally by [columnName] and lands as
+   * `[min, max]` keeps the coercion tally by [column] and lands as
    * [StatusfulCell.NotReported] -- coerced-away is "no usable report", never a
-   * fabricated suppression. A suppressed or absent reading passes through
-   * untouched: it has no value to be out of domain.
+   * fabricated suppression. A suppressed reading passes through UNTOUCHED and
+   * is not tallied again here: it has no value to be out of domain, and
+   * [statusfulCell] already counted it on the other arm of [tally] (RFC 206).
+   * An absent reading is tallied on neither -- the row-level status counts
+   * already say how many there were.
+   *
+   * ONE name keys both arms: the source column the cell was read from. There
+   * used to be a second `columnName` parameter for the coercion arm, and every
+   * live call site passed the same string twice -- two adjacent `String`
+   * parameters with opposite meanings, where a transposed call compiles, reads
+   * the wrong column and mis-keys the tally. A name that is always the other
+   * name is not a name.
    */
   private fun <T : Comparable<T>> StatusfulCell<T>.coercedToDomain(
     recordNumber: Long,
     min: T,
     max: T,
-    columnName: String,
-    coercions: MutableMap<String, Int>,
-  ): StatusfulCell<T> {
-    if (this is StatusfulCell.Reported && (value < min || value > max)) {
-      logCoercion(columnName, recordNumber, value, min, max, coercions)
-      return StatusfulCell.NotReported
+    column: String,
+    tally: CellAbsenceTally,
+  ): StatusfulCell<T> =
+    when (this) {
+      is StatusfulCell.Reported -> {
+        if (value < min || value > max) {
+          tally.recordCoercedToNull(column)
+          logCoercedCell(column, recordNumber, value, min, max)
+          StatusfulCell.NotReported
+        } else {
+          this
+        }
+      }
+
+      StatusfulCell.SuppressedByPublisher -> {
+        this
+      }
+
+      StatusfulCell.NotReported -> {
+        this
+      }
     }
-    return this
-  }
 
   /** [intOrNull] with the absence reason preserved; see [StatusfulCell]. */
   fun statusfulIntCell(
     record: CSVRecord,
     column: String,
-  ): StatusfulCell<Int> = statusfulCell(record, column, String::toIntOrNull)
+    tally: CellAbsenceTally,
+  ): StatusfulCell<Int> = statusfulCell(record, column, tally, String::toIntOrNull)
 
   /** Mechanism A over a status-preserving int read; see [coercedToDomain]. */
   fun statusfulIntCellInDomain(
@@ -457,15 +596,15 @@ internal object CsvIngestSupport {
     column: String,
     min: Int,
     max: Int,
-    columnName: String,
-    coercions: MutableMap<String, Int>,
-  ): StatusfulCell<Int> = statusfulIntCell(record, column).coercedToDomain(record.recordNumber, min, max, columnName, coercions)
+    tally: CellAbsenceTally,
+  ): StatusfulCell<Int> = statusfulIntCell(record, column, tally).coercedToDomain(record.recordNumber, min, max, column, tally)
 
   /** [doubleOrNull] with the absence reason preserved; see [StatusfulCell]. */
   fun statusfulDoubleCell(
     record: CSVRecord,
     column: String,
-  ): StatusfulCell<Double> = statusfulCell(record, column, String::toDoubleOrNull)
+    tally: CellAbsenceTally,
+  ): StatusfulCell<Double> = statusfulCell(record, column, tally, String::toDoubleOrNull)
 
   /** Mechanism A over a status-preserving double read; see [coercedToDomain]. */
   fun statusfulDoubleCellInDomain(
@@ -473,9 +612,8 @@ internal object CsvIngestSupport {
     column: String,
     min: Double,
     max: Double,
-    columnName: String,
-    coercions: MutableMap<String, Int>,
-  ): StatusfulCell<Double> = statusfulDoubleCell(record, column).coercedToDomain(record.recordNumber, min, max, columnName, coercions)
+    tally: CellAbsenceTally,
+  ): StatusfulCell<Double> = statusfulDoubleCell(record, column, tally).coercedToDomain(record.recordNumber, min, max, column, tally)
 
   fun doubleOrNull(
     record: CSVRecord,
@@ -576,7 +714,8 @@ internal object CsvIngestSupport {
    * What is wrong with this pair, or null when nothing is (RFC 195).
    *
    * The third arm is the one a per-cell reader cannot see. A cell that is
-   * PRESENT and unparseable -- `PrivacySuppressed`, `NA`, `1,200` -- is nulled
+   * PRESENT and unparseable -- a [SUPPRESSION_SENTINELS] member, `NA`,
+   * `1,200` -- is nulled
    * by [intOrNull] with no tally, because a cell that does not parse is the
    * ordinary blank-cell idiom everywhere else in this file. For a pair it is
    * not ordinary: it is a published band we could not read, and it arrives at
@@ -716,8 +855,24 @@ internal object CsvIngestSupport {
     coercions: MutableMap<String, Int>,
   ) {
     coercions.merge(columnName, 1, Int::plus)
+    logCoercedCell(columnName, line, value, min, max)
+  }
+
+  /**
+   * The per-cell DEBUG line alone, without the tally. Split out because the
+   * status-preserving readers keep their count in a [CellAbsenceTally] and the
+   * optional-metric readers keep theirs in a bare map (RFC 206): two counters,
+   * one sentence, said in one place.
+   */
+  private fun logCoercedCell(
+    columnName: String,
+    line: Long,
+    value: Any,
+    min: Any,
+    max: Any,
+  ) {
     logger.debug(
-      "Coercing out-of-domain optional metric to null [column={}] [line={}] [value={}] [domain=[{}, {}]]",
+      "Coercing out-of-domain cell to null [column={}] [line={}] [value={}] [domainMin={}] [domainMax={}]",
       columnName,
       line,
       value,

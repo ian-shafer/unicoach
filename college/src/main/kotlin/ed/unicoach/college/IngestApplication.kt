@@ -544,33 +544,7 @@ fun main(args: Array<String>) {
         )
       }
     println(report.humanSummary())
-    // The canonical-money summary (RFC 158, P11) goes to the LOG -- stderr,
-    // per bin/ conventions -- naming the row counts and the per-status
-    // breakdown, keyed by our status slugs. stdout keeps exactly the lines it
-    // printed before this phase existed.
-    logger.info(
-      "canonical money: [{}] price_figures [{}] by source [{}]; [{}] cohort_money_stats [{}]; " +
-        "[{}] cohort_population_counts [{}]; IPEDS SFA: [{}] staged cell(s) over [{}] college(s); " +
-        "[{}] college(s), [{}] malformed row(s), [{}] row(s) without " +
-        "a college, [{}] row(s) without a CONTROL (control-keyed cells skipped), " +
-        "[{}] in-state tuition cell(s) withheld (IPEDS residency tiers differ, RFC 183 D1), " +
-        "[{}] withheld for want of any staged IC_AY residency evidence",
-      report.canonicalMoney.priceFigureRows,
-      report.canonicalMoney.priceFigureStatusCounts.mapKeys { it.key.value },
-      report.canonicalMoney.priceFigureSourceCounts.mapKeys { it.key.value },
-      report.canonicalMoney.cohortMoneyStatRows,
-      report.canonicalMoney.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
-      report.canonicalMoney.cohortPopulationCountRows,
-      report.canonicalMoney.cohortPopulationCountStatusCounts.mapKeys { it.key.value },
-      report.canonicalMoney.sfaCellsRead,
-      report.canonicalMoney.sfaCollegesMatched,
-      report.canonicalMoney.collegesMatched,
-      report.canonicalMoney.rowsMalformed,
-      report.canonicalMoney.rowsWithoutCollege,
-      report.canonicalMoney.rowsWithoutControl,
-      report.canonicalMoney.inStateTuitionWithheld,
-      report.canonicalMoney.inStateTuitionUnevidenced,
-    )
+    logCanonicalMoneyRun(report.canonicalMoney)
     val transientSkips =
       report.colleges.transientSkips + report.programs.transientSkips +
         (report.ipeds?.let { it.attributes.transientSkips + it.census.transientSkips + it.charges.transientSkips } ?: 0)
@@ -706,6 +680,45 @@ fun main(args: Array<String>) {
 private fun openDatabase(): Database {
   val config = AppConfig.load("common.conf", "db.conf").getOrThrow()
   return Database(DatabaseConfig.from(config).getOrThrow())
+}
+
+/**
+ * The canonical-money summary line (RFC 158, P11), beside the `logCds*` helpers
+ * and for the same reason: `main` states the run's shape, not its wording.
+ *
+ * It goes to the LOG -- stderr, per the `bin/` conventions -- so stdout keeps
+ * exactly the lines it printed before this phase existed.
+ */
+private fun logCanonicalMoneyRun(money: CanonicalMoneyLoader.FillResult) {
+  logger.info(
+    "canonical money: [{}] price_figures [{}] by source [{}]; [{}] cohort_money_stats [{}]; " +
+      "[{}] cohort_population_counts [{}]; IPEDS SFA: [{}] staged cell(s) over [{}] college(s); " +
+      "[{}] college(s), [{}] malformed row(s), [{}] row(s) without " +
+      "a college, [{}] row(s) without a CONTROL (control-keyed cells skipped), " +
+      "[{}] in-state tuition cell(s) withheld (IPEDS residency tiers differ, RFC 183 D1), " +
+      "[{}] withheld for want of any staged IC_AY residency evidence; " +
+      "publisher-suppressed cell(s) READ, by column [{}] (RFC 206: reads, " +
+      "not rows -- a cell no mapping read is in no column's count)",
+    money.priceFigureRows,
+    money.priceFigureStatusCounts.mapKeys { it.key.value },
+    money.priceFigureSourceCounts.mapKeys { it.key.value },
+    money.cohortMoneyStatRows,
+    money.cohortMoneyStatStatusCounts.mapKeys { it.key.value },
+    money.cohortPopulationCountRows,
+    money.cohortPopulationCountStatusCounts.mapKeys { it.key.value },
+    money.sfaCellsRead,
+    money.sfaCollegesMatched,
+    money.collegesMatched,
+    money.rowsMalformed,
+    money.rowsWithoutCollege,
+    money.rowsWithoutControl,
+    money.inStateTuitionWithheld,
+    money.inStateTuitionUnevidenced,
+    // By COLUMN: the per-status totals above say how many suppressed rows
+    // landed, never which column carried them, and a column that stops
+    // carrying suppressions is the RFC 206 defect returning unseen.
+    money.cellsSuppressedByPublisher,
+  )
 }
 
 private fun logCdsRun(result: CdsSeedLoader.LoadResult) {

@@ -71,7 +71,7 @@ import java.util.UUID
  *
  * The fill writes rows only for cells in the active source mapping's domain
  * (P7): within that domain every matched college gets a row with a value or a
- * status (`PrivacySuppressed` -> `suppressed_by_publisher`, blank/`NULL` ->
+ * status (a suppression sentinel -> `suppressed_by_publisher`, blank/`NULL` ->
  * `not_reported_by_institution`, domain-coerced -> `not_reported_by_institution`
  * with mechanism A's tally). Cells no ingested source carries get NO row, and
  * the v1 fill emits `not_collected_by_us` never.
@@ -232,8 +232,20 @@ class CanonicalMoneyLoader internal constructor(
      * the corpus must not read like a healthy run.
      */
     val inStateTuitionWrittenUnmeasured: Int,
-    /** Mechanism A's tally over the status-preserving reads, by cell name. */
+    /** Mechanism A's tally over the status-preserving reads, by source column. */
     val fieldsCoercedToNull: Map<String, Int>,
+    /**
+     * Cells this fill read as the publisher's own suppression, by column name
+     * (RFC 206).
+     *
+     * The per-STATUS totals beside it say HOW MANY suppressed rows the fill
+     * wrote; they cannot say WHICH COLUMN carried them, and a column that
+     * silently stops carrying suppressions is the exact regression that put
+     * every withheld median-debt figure in the database as school silence
+     * (RFC 206 records the count for the cohort it measured). Counted by
+     * column so the next ingest states it.
+     */
+    val cellsSuppressedByPublisher: Map<String, Int>,
     /**
      * Staged IC_AY rows this fill could not map and PASSED OVER, by the drift
      * that made them unmappable (RFC 161; brief 0006 D6).
@@ -279,7 +291,7 @@ class CanonicalMoneyLoader internal constructor(
       val prices = LinkedHashMap<PriceKey, NewPriceFigure>()
       val stats = LinkedHashMap<StatKey, NewCohortMoneyStat>()
       val counts = LinkedHashMap<CountKey, NewCohortPopulationCount>()
-      val coercions = mutableMapOf<String, Int>()
+      val absences = CellAbsenceTally()
       var sfaFill = SfaFill()
       val matched = mutableSetOf<UUID>()
       var scorecard = ScorecardLosses()
@@ -327,7 +339,7 @@ class CanonicalMoneyLoader internal constructor(
             // at the level that owns source precedence -- never re-derived
             // inside the pass that only maps a CSV.
             val residency = ScorecardResidencyEvidence.of(prices, ipedsFiledResidencyTiers)
-            scorecard = mapScorecardCsv(institutionCsv, collegeIds, coercions, prices, stats, matched, residency)
+            scorecard = mapScorecardCsv(institutionCsv, collegeIds, absences, prices, stats, matched, residency)
           }
 
           // The IPEDS SFA fill (RFC 162), FIRST in the ordered list: where SFA
@@ -390,7 +402,8 @@ class CanonicalMoneyLoader internal constructor(
           inStateTuitionWithheld = scorecard.inStateTuitionWithheld,
           inStateTuitionUnevidenced = scorecard.inStateTuitionUnevidenced,
           inStateTuitionWrittenUnmeasured = scorecard.inStateTuitionWrittenUnmeasured,
-          fieldsCoercedToNull = coercions.toMap(),
+          fieldsCoercedToNull = absences.coercedToNull,
+          cellsSuppressedByPublisher = absences.suppressedByPublisher,
           ipedsChargesIgnored =
             ipedsChargesIgnored.entries
               .sortedBy { it.key.slug }
@@ -433,7 +446,9 @@ class CanonicalMoneyLoader internal constructor(
         "[{}] withheld for want of any staged IC_AY residency evidence; " +
         "[{}] in-state tuition cell(s) written with no IPEDS tier pair filed for that college " +
         "(RFC 183 D1: written, and COUNTED, because it was never measured); " +
-        "coercions [{}]; [{}] staged IC_AY row(s) passed over as stale [{}]",
+        "coercions [{}]; publisher-suppressed cell(s) READ [{}] " +
+        "(reads, not rows: a cell a guard above this seam never read is in no column's count); " +
+        "[{}] staged IC_AY row(s) passed over as stale [{}]",
       result.priceFigureRows,
       result.priceFigureStatusCounts.mapKeys { it.key.value },
       result.priceFigureSourceCounts.mapKeys { it.key.value },
@@ -455,6 +470,7 @@ class CanonicalMoneyLoader internal constructor(
       result.inStateTuitionUnevidenced,
       result.inStateTuitionWrittenUnmeasured,
       result.fieldsCoercedToNull,
+      result.cellsSuppressedByPublisher,
       result.ipedsChargesIgnoredRows,
       // Slugs at the edge, like the status and source maps above it.
       result.ipedsChargesIgnored.mapKeys { it.key.slug },
@@ -914,7 +930,7 @@ class CanonicalMoneyLoader internal constructor(
   private fun mapScorecardCsv(
     institutionCsv: File,
     collegeIds: Map<Int, CollegeId>,
-    coercions: MutableMap<String, Int>,
+    absences: CellAbsenceTally,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
     stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
     matched: MutableSet<UUID>,
@@ -943,7 +959,7 @@ class CanonicalMoneyLoader internal constructor(
         // not a policy set it has to adjudicate.
         val inStateTuition = residency.inStateTuitionFor(collegeId)
         inStateTuitionTally.record(collegeId, inStateTuition)
-        val controlMissing = mapScorecardRow(record, collegeId, coercions, prices, stats, inStateTuition)
+        val controlMissing = mapScorecardRow(record, collegeId, absences, prices, stats, inStateTuition)
         if (controlMissing) rowsWithoutControl++
       }
     }
@@ -1060,14 +1076,14 @@ class CanonicalMoneyLoader internal constructor(
   private fun mapScorecardRow(
     record: CSVRecord,
     collegeId: UUID,
-    coercions: MutableMap<String, Int>,
+    absences: CellAbsenceTally,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
     stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
     inStateTuition: ScorecardResidencyEvidence.InStateTuition,
   ): Boolean {
-    mapScorecardPrices(record, collegeId, coercions, prices, inStateTuition)
+    mapScorecardPrices(record, collegeId, absences, prices, inStateTuition)
     val control = intOrNull(record, CONTROL)
-    mapScorecardStats(record, collegeId, public = control?.let { it == CONTROL_PUBLIC }, coercions, stats)
+    mapScorecardStats(record, collegeId, public = control?.let { it == CONTROL_PUBLIC }, absences, stats)
     return control == null
   }
 
@@ -1086,7 +1102,7 @@ class CanonicalMoneyLoader internal constructor(
   private fun mapScorecardPrices(
     record: CSVRecord,
     collegeId: UUID,
-    coercions: MutableMap<String, Int>,
+    absences: CellAbsenceTally,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
     inStateTuition: ScorecardResidencyEvidence.InStateTuition,
   ) {
@@ -1106,15 +1122,15 @@ class CanonicalMoneyLoader internal constructor(
           // (RFC 183): a write site that picked a constant by hand could stamp
           // a charge column with the blended cohort's year and pass every test.
           academicYear = ScorecardInstitutionColumns.datedYearOf(column),
-          reading = grossCell(record, column, coercions).reading(),
+          reading = grossCell(record, column, absences).reading(),
           source = MoneySource.SCORECARD,
           // Through the registry, never straight off the constant: the fill may
           // write only a cell id [ScorecardInstitutionColumns.LOADED_VARIABLES]
           // names, so a column added here without a tier stops the fill (RFC
           // 179).
           sourceVariable = ScorecardInstitutionColumns.loadedVariableOf(column),
-          // The Scorecard publishes no per-cell imputation code; its one
-          // sentinel (`PrivacySuppressed`) is already carried by the status.
+          // The Scorecard publishes no per-cell imputation code; its
+          // suppression sentinel is already carried by the status.
           publisherFlag = null,
         )
       // Upstream-wins (P8): the first source to write a key keeps it.
@@ -1428,7 +1444,7 @@ class CanonicalMoneyLoader internal constructor(
     record: CSVRecord,
     collegeId: UUID,
     public: Boolean?,
-    coercions: MutableMap<String, Int>,
+    absences: CellAbsenceTally,
     stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
   ) {
     fun stat(
@@ -1476,7 +1492,7 @@ class CanonicalMoneyLoader internal constructor(
         address = PUBLISHED_COST_BLEND,
         residencyScope = blendScope,
         incomeBand = null,
-        cell = grossCell(record, COSTT4_A, coercions).toDouble(),
+        cell = grossCell(record, COSTT4_A, absences).toDouble(),
         sourceVariable = COSTT4_A,
       )
 
@@ -1492,7 +1508,7 @@ class CanonicalMoneyLoader internal constructor(
           address = CohortAddresses.AVG_NET_PRICE,
           residencyScope = blendScope,
           incomeBand = band,
-          cell = statusfulIntCell(record, column).toDouble(),
+          cell = statusfulIntCell(record, column, absences).toDouble(),
           sourceVariable = column,
         )
       }
@@ -1507,21 +1523,21 @@ class CanonicalMoneyLoader internal constructor(
       address = CohortAddresses.PELL_SHARE,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
-      cell = statusfulDoubleCellInDomain(record, PCTPELL, RATE_MIN, RATE_MAX, PCTPELL, coercions),
+      cell = statusfulDoubleCellInDomain(record, PCTPELL, RATE_MIN, RATE_MAX, absences),
       sourceVariable = PCTPELL,
     )
     stat(
       address = CohortAddresses.MEDIAN_DEBT_AT_COMPLETION,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
-      cell = grossCell(record, GRAD_DEBT_MDN, coercions).toDouble(),
+      cell = grossCell(record, GRAD_DEBT_MDN, absences).toDouble(),
       sourceVariable = GRAD_DEBT_MDN,
     )
     stat(
       address = CohortAddresses.MEDIAN_EARNINGS_10Y,
       residencyScope = CohortResidencyScope.ALL,
       incomeBand = null,
-      cell = grossCell(record, MD_EARN_WNE_P10, coercions).toDouble(),
+      cell = grossCell(record, MD_EARN_WNE_P10, absences).toDouble(),
       sourceVariable = MD_EARN_WNE_P10,
     )
   }
@@ -1530,8 +1546,8 @@ class CanonicalMoneyLoader internal constructor(
   private fun grossCell(
     record: CSVRecord,
     column: String,
-    coercions: MutableMap<String, Int>,
-  ): StatusfulCell<Int> = statusfulIntCellInDomain(record, column, GROSS_USD_MIN, GROSS_USD_MAX, column, coercions)
+    absences: CellAbsenceTally,
+  ): StatusfulCell<Int> = statusfulIntCellInDomain(record, column, GROSS_USD_MIN, GROSS_USD_MAX, absences)
 
   /** The natural key of a `price_figures` row, for first-write-wins (P8). */
   private data class PriceKey(
