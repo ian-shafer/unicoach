@@ -83,7 +83,7 @@ Each slice is a self-contained /ship instruction. `Needs:` lines are read by
 
 ### `web/01/the-shell`
 
-**Needs: —**
+**Needs:** —
 
 **What and why.** The responsive shell every later page renders into: layout,
 navigation, and the CSS system that makes the 90% claim achievable. Today
@@ -118,9 +118,11 @@ readable single column; the same URL on a desktop is not a stretched phone page.
 
 ### `web/02/sign-in`
 
-**Needs: `web/01` — PREFER: sign-in pages can be built against today's minimal
-layout, but the shell slice would restyle them immediately; building them in the
-other order pays for the same markup twice.**
+**Needs:**
+
+- PREFER web/01/the-shell — sign-in pages can be built against today's minimal
+  layout, but the shell slice would restyle them immediately; building them in
+  the other order pays for the same markup twice.
 
 **What and why.** A student or parent signs in on the web and stays signed in.
 This is the gate every later slice sits behind.
@@ -157,9 +159,11 @@ marketing page.
 
 ### `web/03/the-typescript-rail`
 
-**Needs: `web/01` — PREFER: the rail's first real consumer is the chat view, and
-its output is a static asset served by the shell; landing it before the shell
-would pin asset paths that the shell then moves.**
+**Needs:**
+
+- PREFER web/01/the-shell — the rail's first real consumer is the chat view, and
+  its output is a static asset served by the shell; landing it before the shell
+  would pin asset paths that the shell then moves.
 
 **What and why.** The build path for every line of client-side TypeScript we
 will ever ship. It exists as its own slice because the chat view is hard enough
@@ -195,9 +199,12 @@ hashed asset served at the right URL.
 
 ### `web/04/the-chat`
 
-**Needs: `web/02` — BLOCKS: every coaching call resolves a student from the
-session; there is no anonymous coaching path.** **Needs: `web/03` — BLOCKS: the
-streaming client is TypeScript and needs the build rail to reach the browser.**
+**Needs:**
+
+- BLOCKS web/02/sign-in — every coaching call resolves a student from the
+  session; there is no anonymous coaching path.
+- BLOCKS web/03/the-typescript-rail — the streaming client is TypeScript and
+  needs the build rail to reach the browser.
 
 **What and why. This is the slice where Unicoach becomes usable in a browser.**
 A student types to the coach and watches the reply arrive.
@@ -249,8 +256,10 @@ browser.
 
 ### `web/05/session-form-state`
 
-**Needs: `web/02` — BLOCKS: form state is keyed on a session and D5 mints no
-anonymous sessions, so there is nothing to key on before sign-in.**
+**Needs:**
+
+- BLOCKS web/02/sign-in — form state is keyed on a session and D5 mints no
+  anonymous sessions, so there is nothing to key on before sign-in.
 
 **What and why.** The mechanism behind D4 and D12: wherever a session exists,
 every form stores its data in it, so a validation error or a page navigation
@@ -292,8 +301,10 @@ the read-through/clear points in the request lifecycle.
 
 ### `web/06/onboarding`
 
-**Needs: `web/05` — BLOCKS: D12 requires session-backed drafts wherever a
-session exists, and this is the first form behind sign-in.**
+**Needs:**
+
+- BLOCKS web/05/session-form-state — D12 requires session-backed drafts wherever
+  a session exists, and this is the first form behind sign-in.
 
 **What and why.** After first sign-in, the web invites the student to say when
 they graduate and, optionally, answer the money questions — the same shape the
@@ -323,10 +334,12 @@ and is talking to the coach within one screen.
 
 ### `web/07/your-details`
 
-**Needs: `web/05` — BLOCKS: the money form is the largest draft in the product
-and is the reason the form-state budget is measured.** **Needs: `web/06` —
-CONFLICTS: both edit the onboarding/money form components; expect a rebase, not
-an ordering.**
+**Needs:**
+
+- BLOCKS web/05/session-form-state — the money form is the largest draft in the
+  product and is the reason the form-state budget is measured.
+- CONFLICTS web/06/onboarding — both edit the onboarding and money form
+  components; expect a rebase, not an ordering.
 
 **What and why.** The iOS "Your details" screen on the web: the money profile a
 family can review and change at any time.
@@ -355,8 +368,11 @@ still there.
 
 ### `web/08/college-list`
 
-**Needs: `web/05` — BLOCKS: the add/edit forms must hold drafts.** **Needs:
-`web/07` — CONFLICTS: shared form components; a rebase risk, not an order.**
+**Needs:**
+
+- BLOCKS web/05/session-form-state — the add and edit forms must hold drafts.
+- CONFLICTS web/07/your-details — shared form components; a rebase risk, not an
+  order.
 
 **What and why.** The student's college list on the web: browse, search, add,
 edit, remove.
@@ -384,8 +400,10 @@ sees it in their list without a horizontal scrollbar anywhere.
 
 ### `web/09/conversations`
 
-**Needs: `web/04` — BLOCKS: the list's only purpose is navigating into the chat
-page, which that slice creates.**
+**Needs:**
+
+- BLOCKS web/04/the-chat — the list's only purpose is navigating into the chat
+  page, which that slice creates.
 
 **What and why.** History: past conversations, openable, archivable, deletable.
 
@@ -403,8 +421,9 @@ a desktop browser and keeps talking.
 
 ### `web/10/settings-and-allowance`
 
-**Needs: `web/02` — BLOCKS: every setting is a property of the signed-in
-account.**
+**Needs:**
+
+- BLOCKS web/02/sign-in — every setting is a property of the signed-in account.
 
 **What and why.** Settings on the web, plus the honest page a web user meets
 when the free allowance runs out.
@@ -434,8 +453,10 @@ allowance and is told, without spin, exactly how to continue.
 
 ### `web/11/sso`
 
-**Needs: `web/02` — BLOCKS: shares the sign-in pages and the session it
-establishes.**
+**Needs:**
+
+- BLOCKS web/02/sign-in — shares the sign-in pages and the session it
+  establishes.
 
 **What and why.** Google and Apple sign-in on the web, so an iOS user who signed
 up with Apple can get in at all.
@@ -462,7 +483,9 @@ opens the site and gets in.
 
 ### `web/12/password-reset`
 
-**Needs: `web/02` — BLOCKS: shares the auth surface.**
+**Needs:**
+
+- BLOCKS web/02/sign-in — shares the auth surface.
 
 **What and why.** There is NO password-reset route anywhere in the backend
 today. On iOS that is survivable behind SSO; on the web it strands users.
