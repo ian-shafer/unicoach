@@ -4,8 +4,8 @@
 
 ## Status
 
-- **Phase:** EXECUTE — **wave 1 COMPLETE** (RFC 186 + RFC 187, both landed
-  2026-09-11). Wave 2 held pending a sibling brief's prompt-deletion pass.
+- **Phase:** EXECUTE — **waves 1 and 2 COMPLETE** (RFCs 186, 187, 195, 197).
+  Next startable: `test/04.5/one-date-seam`, `test/05`, `test/06`.
 - **Gate 1 (prioritisation):** **APPROVED by Ian 2026-09-10, verbatim:
   "approve".** All fourteen decisions taken at their defaults. D4, D10 and D13
   already carried Ian's pre-approval amendments (explain the stakes once; infer
@@ -48,13 +48,45 @@ _(one line per landed slice: ID, RFC, SHAs, one-line what.)_
        v29 (rollback COACHING_SYSTEM_PROMPT_VERSION=v28). Executed: 1,734 tests,
        0 failures on the landed tree; 18 added; 19 files, +1503/-96.
 
-**Wave 1 is complete.** Wave 2 (`test/03`, `test/04`) is held by agreement with
-the sibling `/chart say-it-once` session until its
-`concise/03/one-rule-one-home` — a pure DELETION pass on
-`prompts/coach-system-prompt.md` — has landed. A deletion rebased across
-additions can silently drop a sentence that landed minutes earlier, and no test
-catches it; an add/add rebase has no such failure mode. Only the deletion needs
-a window.
+    test/04/the-testing-calendar LANDED as RFC 197 (main@131fb5ef + c5f52d78,
+       2026-09-13) — admission_test_administrations, 15 hand-typed SAT/ACT rows
+       for 2026-27 committed as a CSV with a PROVENANCE.json and generated into a
+       seed migration by bin/test-calendar-seed; the admission_test_timeline tool
+       works back from the earliest deadline on the student's list through score
+       release to the day registration closes, and shows the working. Past the
+       calendar's expiry it refuses to name a date and points at College Board
+       and ACT; a test fails when any live row is within 90 days of expiry. Coach
+       prompt v34 (rollback COACHING_SYSTEM_PROMPT_VERSION=v33, PARTIAL — the pin
+       drops the paragraph but leaves the tool registered, which is why the
+       refusal and the four guardrails also live in the tool's description).
+       Executed: 3,064 tests, 0 failures; 1,050 shell assertions.
+
+    test/03/the-range-not-the-average LANDED as RFC 195 (main@d9e60e33 +
+       8a6edd18, 2026-09-14) — six 25th/75th percentile score columns on colleges
+       and a fifth score_bands section on college_admissions_profile: the coach
+       speaks the range a school's admitted class actually scored in, with a
+       quarter above and a quarter below beside it, instead of an average that
+       reads like a bar. Bands for 1,039 of 6,273 colleges; where only an SAT
+       average exists it is spoken and labelled as an average (D16/D-A); where a
+       stored band violates the migration's own CHECKs the section is refused,
+       logged, and the school named in data_availability. Coach prompt v35
+       (rollback COACHING_SYSTEM_PROMPT_VERSION=v34) — the "score ranges are not
+       things we hold" sentence is corrected, the correction RFC 197 declined for
+       the right reason. Executed: 3,217 tests, 0 failures.
+
+**Waves 1 and 2 are complete: four slices landed, RFCs 186, 187, 195 and 197.**
+The question the brief was opened for is answered by a test: for a student with
+one school closing Early Action on 1 November, the coach names SAT 3 October
+(scores 16 October) as the last usable sitting and **18 September** as the day
+registration closes — and names the ACT beside it, 17 October with registration
+closing 11 September, because naming only the SAT would make the SAT the default
+noun (D13).
+
+Wave 2 was held, by agreement with the sibling `/chart say-it-once` session,
+until its `concise/03/one-rule-one-home` — a pure DELETION pass on the same
+prompt file — had landed. A deletion rebased across additions can silently drop
+a sentence that landed minutes earlier and no test catches it; an add/add rebase
+cannot. Only the deletion needed a window.
 
 ## The question
 
