@@ -542,9 +542,12 @@ domain or a reference table; whether captures carry a checksum.
 - BLOCKS test/05.1/external-documents — technical. There is nothing to migrate
   the eight tables ONTO until the model exists.
 
-**Status:** SPECCED, not scheduled. **A candidate for its own brief**: it
-touches the money layer, the ingest and three committed seeds, and its blast
-radius is wider than anything else in brief 0010.
+**Status:** DEFERRED
+
+Parked by intent, not by a dependency: it is specced but not scheduled, and it
+is **a candidate for its own brief** — it touches the money layer, the ingest
+and three committed seeds, and its blast radius is wider than anything else in
+brief 0010.
 
 **What and why.** Move every table that carries its own citation columns onto
 `external_documents`: the three CDS tables (`0054`), `policy_parameters`
