@@ -457,7 +457,7 @@
   collegedata.fyi, a THIRD PARTY, so RFC 170's "our mirror" comment is
   inaccurate and is /chart's to decide.
 
-  concise/12/budgets-are-not-tests LANDED as RFC 203 (main@192ea2a9 + <DOCSHA>,
+  concise/12/budgets-are-not-tests LANDED as RFC 203 (main@192ea2a9 + 35c80f31,
   2026-09-14) — the five numeric size ceilings are DELETED (D20, Ian's own
   decision, superseding D13). `WORD_CEILING` had moved **1,767 -> 1,530 -> 1,450
   -> 1,401 -> 1,404** and the last step was UPWARD: no slice met its spec's
