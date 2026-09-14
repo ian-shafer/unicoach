@@ -1169,3 +1169,96 @@ reach.
 
 **First-session test.** A student opens a conversation about essays or deadlines
 and is not asked their household income.
+
+---
+
+## D20 — the numeric size ceilings are DELETED (Ian, 2026-09-11). Supersedes D13.
+
+Recorded verbatim in substance; D13 stands as committed and is not edited.
+
+D13 required "a rendered word-count assertion in `CostReportPageTest` and a
+payload byte-budget assertion in `CollegeCostChatToolTest`, both on fixed
+fixtures", because "a budget that only exists in an RFC is a number nobody
+re-checks". **The reasoning was sound; the mechanism failed, measurably.**
+
+`WORD_CEILING` moved **1,767 → 1,530 → 1,450 → 1,401 → 1,404**. The last step
+was **UPWARD**. No slice met its spec's target; each ratcheted the constant to
+whatever it had just measured. **A threshold edited by the change it constrains
+asserts nothing — it records history and taxes every later change.** Brief
+0011's `beyond/07` would have had to raise a ceiling to add a sentence a parent
+wants.
+
+**The deeper error:** size is only meaningful against the value it carries, and
+no test can compute the value. This brief's real finding was that **repetition
+has zero value** — not that words are expensive. The ceilings generalised that
+into "all words are expensive", so they block the honest sentence and the third
+restatement identically.
+
+**Keep the measurement, drop the gate.** The page test still computes and PRINTS
+its word count and asserts nothing. Drift stays visible, an RFC records the
+number beside the last landed one, and growth is judged by a person at the gate
+— where the value half of the ratio lives.
+
+**No corpus change.** A general review principle was drafted and rejected: one
+incident is not enough to codify a lens, and writing a rule to police an
+artifact we are deleting is the same over-fitting one level up.
+
+### This supersedes P2, and I should say so plainly
+
+**P2** in this file nominated _"a ratchet constant is the measurement exactly,
+never measurement plus headroom"_. I argued that exactness is what makes "raise
+this consciously" a true statement, and I made `concise/03` withdraw 57 bytes of
+headroom on that reasoning.
+
+D20 shows the whole mechanism was wrong, not its calibration. Conscious raising
+happened **every single time** — five times, once upward — and meant nothing,
+because the run raising it was the run it constrained. **P2 is retired.** The
+surviving, narrower lesson is D20's own: a limit the next honest change must
+edit is not a limit.
+
+---
+
+## `concise/12/budgets-are-not-tests`
+
+**Needs:** —
+
+**What to build and why.** Delete the five numeric size assertions named in D20,
+keep every property test, and leave the page's word count as a printed
+measurement with no assertion. One sentence of intent: **a limit that the next
+honest change must edit is not a limit, and it costs more than the verbosity it
+failed to prevent.**
+
+**Decided here.** Exactly these five constants and their `assertTrue` call
+sites; nothing else moves:
+
+| constant                     | file                                                 |                  line |
+| ---------------------------- | ---------------------------------------------------- | --------------------: |
+| `WORD_CEILING = 1404`        | `public-web/.../CostReportPageTest.kt`               | 2197 (assert at 1080) |
+| `LEGEND_BYTE_CEILING = 6845` | `service/.../costs/CollegeCostChatToolTest.kt`       |                  4546 |
+| `LEGEND_BYTE_CEILING = 1359` | `service/.../aid/FederalAidPolicyChatToolTest.kt`    |                   274 |
+| `LEGEND_BYTE_CEILING = 621`  | `service/.../MoneyProfileChatToolTest.kt`            |                    40 |
+| `LEGEND_BYTE_CEILING = 472`  | `service/.../collegelist/CollegeListChatToolTest.kt` |                   588 |
+
+**KEEP every property test unchanged** — they assert what we MEAN, cannot be
+satisfied by editing a constant, and cost a good change nothing: "legend, not a
+rulebook"; "every figure the page speaks a kind for is covered by exactly one
+sentence"; the MANDATORY_SURVEY / VOLUNTARY_SELF_REPORT sentences rendering zero
+times; RFC 196's one-`href` source sweep.
+
+**Left to /ship's design phase.** Whether the printed measurement goes to stdout
+or the test log.
+
+**Acceptance criteria.**
+
+- The five constants and their assertions are gone; **no property test
+  changes**.
+- The rendered word count is still computed and still visible in test output.
+- **No production code changes**, so there is no behaviour change and the
+  rollback is a revert.
+- The RFC states the **1,767 → 1,404 chain** as its evidence, so a future run
+  does not reintroduce a budget test believing it was never tried.
+
+**Reachability / the door.** None — this is test-only. Nothing a family sees
+changes.
+
+**First-session test.** Unchanged by construction.
