@@ -1022,36 +1022,20 @@ class CoachingService(
   private fun monthName(month: Month): String = month.getDisplayName(TextStyle.FULL, Locale.US)
 
   /**
-   * One money-profile field line: `answered (value)` | `declined` |
-   * `unanswered` (RFC 134). An `answered` status with no value violates the
-   * schema's value-iff-answered CHECK — row corruption, surfaced as
-   * [CorruptPersistedValueException] naming the [column] and [profile] row
-   * (the DAO's convention for a corrupt read), never rendered into the prompt.
+   * One money-profile field line, through the shared renderer (RFC 209): the
+   * three arms and their exact words live in [renderDeclinableAnswer], which
+   * takes an answer rather than a money profile, so the next surface with a
+   * declinable answer calls it instead of writing a fourth ladder.
+   *
+   * This wrapper is all that is money-specific: naming the cell a corrupt read
+   * sits in, which only this caller knows.
    */
   private fun renderMoneyField(
     status: AnswerStatus,
     value: String?,
     column: String,
     profile: MoneyProfile,
-  ): String =
-    when (status) {
-      AnswerStatus.ANSWERED -> {
-        value?.let { "answered ($it)" }
-          ?: throw CorruptPersistedValueException(
-            "null",
-            ValidationError.InvalidFormat(expected = "a value present when status is 'answered'"),
-            location = "money_profiles.$column (row ${profile.id.value})",
-          )
-      }
-
-      AnswerStatus.DECLINED -> {
-        "declined"
-      }
-
-      AnswerStatus.UNANSWERED -> {
-        "unanswered"
-      }
-    }
+  ): String = renderDeclinableAnswer(status, value, "money_profiles.$column (row ${profile.id.value})")
 
   /**
    * Marks the commitments disclosed in this turn's opener (RFC 93) fulfilled

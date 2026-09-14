@@ -19,6 +19,7 @@ import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.newCollegeFixture
 import ed.unicoach.db.models.ClaimId
 import ed.unicoach.db.models.ClaimKind
@@ -254,9 +255,7 @@ class SynthesisServiceTest {
     val studentId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
       stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sy-$userId@test.com', 'Sy User', 'ahash')")
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return StudentId(studentId)
   }

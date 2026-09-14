@@ -6,6 +6,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.IncomeBand
@@ -76,9 +77,7 @@ class MoneyProfileChatToolTest {
       stmt.execute(
         "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'mpt-$userId@test.com', 'MPT User', 'ahash')",
       )
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return StudentId(studentId)
   }

@@ -14,9 +14,11 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.time.LocalDate
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class StudentsDaoTest {
@@ -144,27 +146,29 @@ class StudentsDaoTest {
   }
 
   @Test
-  fun `constraint backstops reject month out of range orphan day and impossible date`() {
+  fun `constraint backstops reject an unknown precision and a date that is not its period start`() {
     val u = createUser()
 
+    // The storage backstop RFC 209 replaced the three decomposed CHECKs with:
+    // the `date_precision` domain refuses a word outside the vocabulary, and
+    // `is_period_start` refuses a date that carries a month or a day the
+    // precision says was never recorded.
     fun insertRaw(
-      year: Int,
-      month: Int?,
-      day: Int?,
+      on: LocalDate,
+      precision: String,
     ): java.sql.SQLException? =
       try {
         connection
           .prepareStatement(
             """
-            INSERT INTO students (user_id, expected_high_school_graduation_year,
-              expected_high_school_graduation_month, expected_high_school_graduation_day)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO students (user_id, expected_high_school_graduation_on,
+              expected_high_school_graduation_precision)
+            VALUES (?, ?, ?)
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, u.value)
-            stmt.setInt(2, year)
-            if (month != null) stmt.setInt(3, month) else stmt.setNull(3, java.sql.Types.SMALLINT)
-            if (day != null) stmt.setInt(4, day) else stmt.setNull(4, java.sql.Types.SMALLINT)
+            stmt.setObject(2, on)
+            stmt.setString(3, precision)
             stmt.executeUpdate()
           }
         null
@@ -175,9 +179,17 @@ class StudentsDaoTest {
 
     connection.autoCommit = false
     try {
-      assertNotNull(insertRaw(2028, 13, null), "month 13 should be rejected")
-      assertNotNull(insertRaw(2028, null, 15), "orphan day should be rejected")
-      assertNotNull(insertRaw(2028, 2, 31), "Feb 31 should be rejected")
+      assertNotNull(insertRaw(LocalDate.of(2028, 1, 1), "decade"), "an unknown precision should be rejected")
+      assertNotNull(
+        insertRaw(LocalDate.of(2028, 6, 15), "year"),
+        "a year-precision date that is not 1 January should be rejected",
+      )
+      assertNotNull(
+        insertRaw(LocalDate.of(2028, 6, 15), "month"),
+        "a month-precision date that is not the 1st should be rejected",
+      )
+      // The three legal shapes still insert.
+      assertNull(insertRaw(LocalDate.of(2028, 1, 1), "year"), "a year-precision 1 January should be accepted")
     } finally {
       connection.rollback()
       connection.autoCommit = true
@@ -188,31 +200,33 @@ class StudentsDaoTest {
   fun `findById on a corrupt graduation date returns failure with CorruptPersistedValueException`() {
     val u = createUser()
 
-    // The CHECK constraints mirror PartialDate.of, so a corrupt row is unreachable
-    // through a constraint-valid insert. Force it transactionally: drop the two
-    // constraints the month-null/day-non-null row violates, insert the corrupt row,
-    // read it back through the same connection, then roll everything back. DDL is
-    // transactional in Postgres, so the dropped constraints and corrupt row vanish.
+    // `is_period_start` mirrors PartialDateColumns.decode, so a corrupt row is
+    // unreachable through a constraint-valid insert. Force it transactionally:
+    // drop the one constraint the row violates, insert it, read it back through
+    // the same connection, then roll everything back. DDL is transactional in
+    // Postgres, so the dropped constraint and the corrupt row vanish.
+    //
+    // What makes this the test worth having: the row LOOKS readable. A reader
+    // that trusted the precision would hand back "2028" and throw away a June
+    // nobody could then recover. The DAO refuses it instead.
     connection.autoCommit = false
     try {
       connection.createStatement().use { stmt ->
-        stmt.execute("ALTER TABLE students DROP CONSTRAINT grad_day_requires_month")
-        stmt.execute("ALTER TABLE students DROP CONSTRAINT grad_date_valid")
+        stmt.execute("ALTER TABLE students DROP CONSTRAINT grad_date_is_period_start")
       }
 
       val studentId =
         connection
           .prepareStatement(
             """
-            INSERT INTO students (user_id, expected_high_school_graduation_year,
-              expected_high_school_graduation_month, expected_high_school_graduation_day)
-            VALUES (?, ?, NULL, ?)
+            INSERT INTO students (user_id, expected_high_school_graduation_on,
+              expected_high_school_graduation_precision)
+            VALUES (?, ?, 'year')
             RETURNING id
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, u.value)
-            stmt.setInt(2, 2028)
-            stmt.setInt(3, 15)
+            stmt.setObject(2, LocalDate.of(2028, 6, 15))
             stmt.executeQuery().use { rs ->
               rs.next()
               StudentId(UUID.fromString(rs.getString("id")))
@@ -231,8 +245,8 @@ class StudentsDaoTest {
         "Expected the carried error to be InvalidFormat, got ${error.error}",
       )
       assertTrue(
-        error.value.contains("month=null") && error.value.contains("day=15"),
-        "Expected the carried value to name the offending columns, got '${error.value}'",
+        error.value.contains("on=2028-06-15") && error.value.contains("precision=year"),
+        "Expected the carried value to name the offending pair, got '${error.value}'",
       )
     } finally {
       connection.rollback()

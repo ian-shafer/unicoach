@@ -10,6 +10,7 @@ import ed.unicoach.chat.LogOnlyChatProvider
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.exhaustedBudgetService
 import ed.unicoach.coaching.budget.generousBudgetService
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
@@ -17,6 +18,7 @@ import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CommitmentDisclosure
@@ -29,6 +31,7 @@ import ed.unicoach.db.models.FitSuggestionStatus
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewFitSuggestion
+import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CompletableDeferred
@@ -58,7 +61,6 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
-import java.sql.Types
 import java.time.Instant
 import java.time.InstantSource
 import java.time.Month
@@ -325,20 +327,11 @@ class CoachingServiceTest {
     // The graduation date is parameterised (RFC 186) so a test can place the
     // student in a grade; the default is the year-only 2028 every existing case
     // was written against, which is also the shape signup records most often.
-    // Bound rather than interpolated: a nullable month and day would otherwise
-    // need this fixture to spell SQL's NULL itself.
-    connection
-      .prepareStatement(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year, " +
-          "expected_high_school_graduation_month, expected_high_school_graduation_day) VALUES (?, ?, ?, ?, ?)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, userId)
-        stmt.setInt(3, graduationYear)
-        stmt.setObject(4, graduationMonth, Types.SMALLINT)
-        stmt.setObject(5, graduationDay, Types.SMALLINT)
-        stmt.executeUpdate()
-      }
+    // The three ints are the CALLER's vocabulary and stay; the storage shape is
+    // the fixture's business (RFC 209).
+    val graduation =
+      (PartialDate.of(graduationYear, graduationMonth, graduationDay) as ValidationResult.Valid).value
+    StudentRowFixture.insert(connection, studentId, userId, graduation)
     return StudentId(studentId)
   }
 

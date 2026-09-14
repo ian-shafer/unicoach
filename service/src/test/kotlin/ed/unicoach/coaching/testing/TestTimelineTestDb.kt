@@ -3,6 +3,7 @@ package ed.unicoach.coaching.testing
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.admissions.AdmissionsTestDb
 import ed.unicoach.db.dao.AdmissionTestCalendarFixture
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.NewAdmissionTestAdministration
 import ed.unicoach.db.models.ScoreRelease
@@ -40,14 +41,11 @@ object TestTimelineTestDb {
   /** A student with the graduation year this test means, stated rather than inherited from a shared default. */
   fun createStudent(graduationYear: Int = DEFAULT_GRADUATION_YEAR): StudentId {
     val studentId = AdmissionsTestDb.createStudent()
-    CoachingTestDb.connection.createStatement().use { stmt ->
-      // `version = version + 1` is not optional: `students` carries the OCC
-      // trigger, which refuses an UPDATE that does not advance the version.
-      stmt.executeUpdate(
-        "UPDATE students SET expected_high_school_graduation_year = $graduationYear, version = version + 1 " +
-          "WHERE id = '${studentId.value}'",
-      )
-    }
+    StudentRowFixture.updateGraduation(
+      CoachingTestDb.connection,
+      studentId.value,
+      StudentRowFixture.graduationYear(graduationYear),
+    )
     return studentId
   }
 

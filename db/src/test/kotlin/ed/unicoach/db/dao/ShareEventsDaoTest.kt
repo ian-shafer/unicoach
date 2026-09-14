@@ -65,9 +65,7 @@ class ShareEventsDaoTest {
     val studentId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
       stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'se-$userId@test.com', 'Se User', 'ahash')")
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return StudentId(studentId)
   }

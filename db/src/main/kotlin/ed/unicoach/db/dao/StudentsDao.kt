@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
+import ed.unicoach.db.models.PartialDateColumns
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentEdit
@@ -21,29 +22,32 @@ object StudentsDao :
   OccDeletable<Student, StudentId>,
   VersionHistory<StudentId, Version<Student>> {
   /**
-   * Reconstructs the [PartialDate] from the decomposed columns. The DB
-   * constraints already guarantee a valid partial date is persisted, so an
-   * `Invalid` result here indicates row corruption, not user input. Surfaced as
-   * a [CorruptPersistedValueException] (a [ed.unicoach.error.PermanentError])
-   * carrying the offending decomposed columns and the structured
+   * Reconstructs the [PartialDate] from the two storage columns -- a `DATE` at
+   * the start of the recorded period, and the precision it was recorded at
+   * (RFC 209). The schema's `is_period_start` CHECK and the `date_precision`
+   * domain already guarantee a valid pair is persisted, so an `Invalid` result
+   * here indicates row corruption, not user input. Surfaced as a
+   * [CorruptPersistedValueException] (a [ed.unicoach.error.PermanentError])
+   * carrying the offending pair and the structured
    * [ed.unicoach.common.models.ValidationError], never a user-facing validation
-   * failure.
+   * failure -- and never silently shortened to the precision the row claims.
+   *
+   * This is the ONLY reader of the pair. Above it nothing sees a `LocalDate` or
+   * a precision: the caller gets a [PartialDate], so a date whose value and
+   * precision disagree cannot exist outside this method (brief 0010 D23).
    */
   private fun mapGraduationDate(rs: ResultSet): PartialDate {
-    val year = rs.getInt("expected_high_school_graduation_year")
-    val monthRaw = rs.getInt("expected_high_school_graduation_month")
-    val month = if (rs.wasNull()) null else monthRaw
-    val dayRaw = rs.getInt("expected_high_school_graduation_day")
-    val day = if (rs.wasNull()) null else dayRaw
+    val periodStart = rs.getDate("expected_high_school_graduation_on").toLocalDate()
+    val precision = rs.getString("expected_high_school_graduation_precision")
 
-    return when (val result = PartialDate.of(year, month, day)) {
+    return when (val result = PartialDateColumns.decode(periodStart, precision)) {
       is ValidationResult.Valid -> {
         result.value
       }
 
       is ValidationResult.Invalid -> {
         throw CorruptPersistedValueException(
-          value = "year=$year month=$month day=$day",
+          value = "on=$periodStart precision=$precision",
           error = result.error,
         )
       }
@@ -174,8 +178,10 @@ object StudentsDao :
     )
 
   /**
-   * Builds the three decomposed grad-date columns as independent single-column
+   * Builds the two grad-date storage columns as independent single-column
    * binders, optionally prefixed by another column (the `user_id` on create).
+   * The encode side of [mapGraduationDate]: both directions go through
+   * [PartialDateColumns], so the pair is written exactly as it is read.
    */
   private fun gradDateColumns(
     prefix: Pair<String, Bind>? = null,
@@ -183,9 +189,14 @@ object StudentsDao :
   ): Map<String, Bind> {
     val cols = linkedMapOf<String, Bind>()
     if (prefix != null) cols[prefix.first] = prefix.second
-    cols["expected_high_school_graduation_year"] = { stmt, i -> stmt.setInt(i, date.year.value) }
-    cols["expected_high_school_graduation_month"] = { stmt, i -> stmt.setIntOrNull(i, date.month?.value) }
-    cols["expected_high_school_graduation_day"] = { stmt, i -> stmt.setIntOrNull(i, date.day) }
+    cols["expected_high_school_graduation_on"] = { stmt, i ->
+      stmt.setObject(i, PartialDateColumns.periodStart(date))
+    }
+    // setString, not setObject: `date_precision` is a domain over TEXT, so the
+    // driver's varchar parameter is assignment-cast to it by Postgres.
+    cols["expected_high_school_graduation_precision"] = { stmt, i ->
+      stmt.setString(i, PartialDateColumns.precision(date).value)
+    }
     return cols
   }
 
@@ -274,7 +285,8 @@ object StudentsDao :
   /**
    * SQLSTATE discrimination for create/update operations.
    * - `23505` on the total unique index -> [StudentAlreadyExistsException].
-   * - `22008` / `23514` on the grad-date constraints -> [ConstraintViolationException]
+   * - `22008` / `23514` on the grad-date constraint (`grad_date_is_period_start`)
+   *   or the `date_precision` domain -> [ConstraintViolationException]
    *   (the existing validation-failure pathway: a permanent, caller-correctable error).
    * - `23503` (FK) -> [NotFoundException] (owning user absent).
    * - `40001` (OCC) and others -> general mapping ([mapDatabaseError]).

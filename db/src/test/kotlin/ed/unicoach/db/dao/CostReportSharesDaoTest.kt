@@ -70,14 +70,7 @@ class CostReportSharesDaoTest {
         stmt.setString(2, "crs-$userId@test.com")
         stmt.executeUpdate()
       }
-    connection
-      .prepareStatement(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES (?, ?, 2028)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, userId)
-        stmt.executeUpdate()
-      }
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 

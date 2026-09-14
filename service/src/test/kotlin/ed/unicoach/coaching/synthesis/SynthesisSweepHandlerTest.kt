@@ -3,6 +3,7 @@ package ed.unicoach.coaching.synthesis
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.queue.JobResult
 import ed.unicoach.queue.JobType
 import ed.unicoach.queue.NewJob
@@ -66,12 +67,7 @@ class SynthesisSweepHandlerTest {
       stmt.execute(
         "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sweep-$userId@test.com', 'Sweep User', 'ahash')",
       )
-      stmt.execute(
-        """
-        INSERT INTO students (id, user_id, expected_high_school_graduation_year)
-        VALUES ('$studentId', '$userId', 2028)
-        """.trimIndent(),
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return studentId.toString()
   }

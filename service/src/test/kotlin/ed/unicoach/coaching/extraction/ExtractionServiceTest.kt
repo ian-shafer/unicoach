@@ -10,6 +10,7 @@ import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
 import kotlinx.coroutines.flow.Flow
@@ -257,9 +258,7 @@ class ExtractionServiceTest {
     val studentId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
       stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'ex-$userId@test.com', 'Ex User', 'ahash')")
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return studentId
   }

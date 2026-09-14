@@ -9,6 +9,7 @@ import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CountingSqlSession
 import ed.unicoach.db.dao.SourceDocumentsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.MoneySource
@@ -91,9 +92,7 @@ object CoachingTestDb {
         "INSERT INTO users (id, email, name, password_hash) VALUES " +
           "('$userId', '$label-$userId@test.com', 'Test User', 'ahash')",
       )
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return StudentId(studentId)
   }

@@ -13,6 +13,7 @@ import ed.unicoach.db.dao.ClaimsDao
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.ClaimKind
 import ed.unicoach.db.models.ClaimOrigin
 import ed.unicoach.db.models.ClaimSubject
@@ -120,9 +121,7 @@ class FitLensHandlerTest {
     val studentId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
       stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'flh-$userId@test.com', 'FLH', 'ahash')")
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return StudentId(studentId)
   }

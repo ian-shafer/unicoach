@@ -93,12 +93,7 @@ class ConvosDaoTest {
       stmt.execute(
         "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'conv-$userId@test.com', 'Conv User', 'ahash')",
       )
-      stmt.execute(
-        """
-        INSERT INTO students (id, user_id, expected_high_school_graduation_year)
-        VALUES ('$studentId', '$userId', 2028)
-        """.trimIndent(),
-      )
+      StudentRowFixture.insert(connection, studentId, userId)
     }
     return StudentId(studentId)
   }
