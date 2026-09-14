@@ -1,0 +1,34 @@
+{
+  "checked_on": "2026-09-11",
+  "source": "hand-typed from the publishers' own pages",
+  "cycle": "2026-27",
+  "expires_on": "2027-07-31",
+  "note": "There is no machine-readable feed for the SAT or ACT calendar anywhere. Every row in administrations.csv was read by a human from the page named in its own dates_source_url / score_release_source_url column on checked_on, and is committed so that a refresh is reviewable in a diff. Past expires_on the coach refuses to name a date and points at the publishers; a test fails when any row is within 90 days of expires_on or past it.",
+  "sources": [
+    {
+      "publisher": "College Board",
+      "url": "https://satsuite.collegeboard.org/sat/dates-deadlines",
+      "read": "SAT Weekend test dates, registration deadlines, and the combined deadline for changes, regular cancellation and late registration",
+      "deadline_time": "11:59 p.m. ET, U.S."
+    },
+    {
+      "publisher": "College Board",
+      "url": "https://satsuite.collegeboard.org/scores/score-release-dates",
+      "read": "student score release dates, published for fall 2026 only",
+      "gap": "no student score release is published for the 2027-03-06, 2027-05-01 or 2027-06-05 sittings; those cells are empty and must stay empty"
+    },
+    {
+      "publisher": "ACT",
+      "url": "https://www.act.org/content/act/en/products-and-services/the-act/registration/test-dates.html",
+      "read": "2026-2027 national test dates, registration deadline, late deadline, and paper initial score release",
+      "deadline_time": "11:59 pm Central Time"
+    }
+  ],
+  "not_committed": "Both publishers also show a next-cycle list and both mark it provisional (College Board \"Anticipated SAT Weekend 2027-28 Test Dates\"; ACT \"Projected 2027-2028 National Test Dates ... subject to change\"). Provisional dates are not committed.",
+  "rows": {
+    "administrations.csv": 15
+  },
+  "sha256": {
+    "administrations.csv": "22762399034e8932c60d9bd75d0d12cff5439c3bb6272a76f28e432a27bf8571"
+  }
+}

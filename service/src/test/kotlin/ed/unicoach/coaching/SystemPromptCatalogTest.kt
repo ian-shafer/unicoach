@@ -19,6 +19,7 @@ import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
 import ed.unicoach.coaching.report.ShareCostReportChatTool
 import ed.unicoach.coaching.report.StopCostReportOffersChatTool
 import ed.unicoach.coaching.synthesis.SynthesisConfig
+import ed.unicoach.coaching.testing.AdmissionTestTimelineChatTool
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.college.FindCollegeTool
 import ed.unicoach.college.SimilarCollegesTool
@@ -218,6 +219,7 @@ class SystemPromptCatalogTest {
       COLLEGE_LIST("The student's college list is theirs"),
       FIGURE_STATUS("When a figure has no amount"),
       ADMISSIONS("A school also publishes what it looks for and when it"),
+      TESTING_TIMELINE("When they ask when to take a test"),
       LIVING_ARRANGEMENT("When a school reports its costs by living arrangement,"),
       SEARCH("When a student names something they want to study, search"),
       COMPARISON("When two or more schools appear together, the cost tool"),
@@ -249,6 +251,15 @@ class SystemPromptCatalogTest {
      * failure this class exists to make loud.
      */
     private val ADMISSIONS_TOOL_NAME = CollegeAdmissionsChatTool.TOOL_NAME
+
+    /**
+     * The admission-test timeline tool the RFC 197 paragraph names, read from the
+     * tool itself on the same precedent as [ADMISSIONS_TOOL_NAME]: the pairing
+     * under test is SEEDED COPY versus SHIPPING TOOL, and a literal here would
+     * keep passing after a rename, leaving the seeded prompt routing the coach to
+     * a tool that no longer exists.
+     */
+    private val TEST_TIMELINE_TOOL_NAME = AdmissionTestTimelineChatTool.TOOL_NAME
 
     /**
      * The two search-side tools the v12 paragraph routes between (RFC 154), read
@@ -2957,6 +2968,170 @@ class SystemPromptCatalogTest {
     assertTrue(paragraph.contains(literal), "$why -- [$literal] is not in the paragraph: [$paragraph]")
   }
 
+  /**
+   * The paragraph routes the coach to the tool by the tool's OWN name, and
+   * forbids the thing the tool exists to replace: a date named from memory.
+   *
+   * The name is read from [TEST_TIMELINE_TOOL_NAME] and never retyped -- the
+   * pairing under test is seeded copy versus shipping tool.
+   */
+  @Test
+  fun `the testing-timeline paragraph routes to the tool and forbids a date from memory`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      TEST_TIMELINE_TOOL_NAME,
+      "the coach cannot call a tool the prompt never names",
+    )
+    assertParagraphStates(
+      paragraph,
+      "never name a test date, a registration deadline or a score-release date from memory",
+      "every date a family acts on comes from the tool, and the prompt is where that is stated",
+    )
+    assertParagraphKeepsTheStandingCopyRules("testing timeline", paragraph)
+  }
+
+  /**
+   * D13 SYMMETRY, in the copy: the two tests are named together and neither is
+   * the default. The payload half of the same rule is asserted in
+   * `TestTimelineServiceTest`.
+   */
+  @Test
+  fun `the testing-timeline paragraph names both tests together and makes neither the default`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "The SAT and the ACT both come back and you say both",
+      "both tests come back from the tool, so the coach says both",
+    )
+    assertParagraphStates(
+      paragraph,
+      "neither is the default",
+      "in a dozen states the ACT is the test the student will actually sit",
+    )
+  }
+
+  /**
+   * D14, guardrail one: Score Choice is per TEST DATE, and it does not cover the
+   * free score sends the student already chose at registration. Telling a family
+   * to "just send your best" is wrong advice whenever a send is already queued.
+   */
+  @Test
+  fun `the testing-timeline paragraph states that Score Choice does not cover the sends chosen at registration`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "Score Choice lets them choose which SAT test DATE to send",
+      "Score Choice is per test date, not per section and not per score",
+    )
+    assertParagraphStates(
+      paragraph,
+      "it does not cover the free score sends they chose when they registered",
+      "a send already queued at registration goes whatever Score Choice says",
+    )
+  }
+
+  /**
+   * D14, guardrail two, and the correction RFC 197 made to its own brief: we hold
+   * NO school's superscore policy, so the copy says to check that school's page
+   * rather than instructing a claim no tool in this repo can source -- and says it
+   * can differ for scholarship money at the same school.
+   */
+  @Test
+  fun `the testing-timeline paragraph holds no superscore rule and says it can differ for scholarships`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "we hold it for no school",
+      "instructing a superscore policy from a record would instruct a claim nothing here can source",
+    )
+    assertParagraphStates(
+      paragraph,
+      "it can differ for admission and for scholarship money at the same school",
+      "a school that superscores for admission may not for merit money",
+    )
+  }
+
+  /** D14, guardrail three: a self-reported score carries revocation risk, stated generally because it is general. */
+  @Test
+  fun `the testing-timeline paragraph states the revocation risk on a self-reported score`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "reserve the right to withdraw an offer if the official score does not match it",
+      "a self-reported score that does not match the official one can cost the offer",
+    )
+  }
+
+  /**
+   * D14, guardrail four: the fee waiver is one per lifetime, carries unlimited
+   * free sends, and is its OWN earlier deadline -- which is the guardrail made
+   * into a date by `fee_waiver_by`.
+   */
+  @Test
+  fun `the testing-timeline paragraph states the fee waiver is one per lifetime and its own earlier deadline`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "one per lifetime and carries unlimited free score reports",
+      "the waiver's own terms, which no tool returns",
+    )
+    assertParagraphStates(
+      paragraph,
+      "treat the waiver as its own, earlier deadline",
+      "fee_waiver_by is guidance and an earlier deadline, not a published one",
+    )
+  }
+
+  /**
+   * The expiry refusal, in the copy: past expiry the coach says our calendar is
+   * out of date, sends them to both publishers, and names no date of its own.
+   * The executed half is `TestTimelineServiceTest`; this is the half that decides
+   * what the coach SAYS about it.
+   */
+  @Test
+  fun `the testing-timeline paragraph states the expiry refusal and names both publishers`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "say plainly that our calendar is out of date",
+      "a stale calendar is our failure to state, not a date to guess",
+    )
+    assertParagraphStates(paragraph, "College Board", "the refusal has to say where the current dates live")
+    assertParagraphStates(paragraph, "ACT for the dates", "and it has to say it for both tests")
+    assertParagraphStates(paragraph, "name no date of your own", "the refusal is only a refusal if no date comes with it")
+  }
+
+  /**
+   * The year on a resolved deadline is OURS (RFC 197 section 5). The schools
+   * publish a month and a day and no year, and this is the one paragraph that
+   * says where the year came from and tells the family to confirm it.
+   */
+  @Test
+  fun `the testing-timeline paragraph says the year on a resolved deadline is ours`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "the year on a resolved deadline is OURS, worked out from the graduation date they gave us",
+      "the school published no year, so the coach must not attribute ours to it",
+    )
+    assertParagraphStates(
+      paragraph,
+      "confirm the exact date on the school's own page",
+      "our arithmetic is a prompt to check, never the school's own statement",
+    )
+  }
+
+  /** A sitting with no announced score release is the publisher's silence, and the coach never guesses past it. */
+  @Test
+  fun `the testing-timeline paragraph forbids guessing past an unannounced score release`() {
+    assertParagraphStates(
+      testingTimelineParagraph(),
+      "never guess whether those scores would arrive in time",
+      "an unannounced score release is a silence to report, not a verdict to infer",
+    )
+  }
+
   private fun admissionsParagraph(): String = paragraphAt(CoachParagraph.ADMISSIONS)
 
   /**
@@ -2990,4 +3165,10 @@ class SystemPromptCatalogTest {
    * to the source-jargon sentence that closes it.
    */
   private fun moneyParagraph(): String = paragraphAt(CoachParagraph.COST)
+
+  /**
+   * The admission-test timeline paragraph, as the served body carries it: from its
+   * opening words to the living-arrangement paragraph that follows it.
+   */
+  private fun testingTimelineParagraph(): String = paragraphAt(CoachParagraph.TESTING_TIMELINE)
 }

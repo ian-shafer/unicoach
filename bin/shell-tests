@@ -36,6 +36,8 @@ the first failure:
   prompt-seed-scripts-tests
                       ~3s  the coach prompt seed generator, no cluster at all
   docs-scripts-tests 4.6s  the /chart documentation land path, no cluster at all
+  test-calendar-seed-scripts-tests
+                      ~2s  the SAT/ACT calendar seed generator, no cluster at all
   q-scripts-tests    ~12s  queue ops tools, shared cluster
   db-scripts-tests   ~15s  db/cluster lifecycle, its OWN private cluster
   scripts-tests      ~63s  daemon/ops/deploy scripts, shared cluster + built
@@ -80,6 +82,13 @@ fi
 # temp dir (RFC 201). It is the gate on the path /chart and /slice now take to
 # main, and on bin/pre-commit's refusal to commit in the root checkout.
 "$PROJECT_ROOT/bin/docs-scripts-tests"
+# And again: bin/test-calendar-seed reads one CSV and writes one file, so this
+# harness needs only a temp directory (RFC 197). Its refusals -- the exact-header
+# rule, the nine CHECK mirrors, the duplicate natural key, the cycle-agreement
+# rule -- are reachable ONLY from a bad CSV, so they are executed here and
+# nowhere else. Its name ends in `scripts-tests` so the anti-orphan sweep in
+# bin/scripts-tests derives it and asserts this very line exists.
+"$PROJECT_ROOT/bin/test-calendar-seed-scripts-tests"
 "$PROJECT_ROOT/bin/q-scripts-tests"
 # db-scripts-tests builds its own private env file and sets ENV_FILE, which
 # bin/common rejects as mutually exclusive with an inherited ENV_FILES. Clear the

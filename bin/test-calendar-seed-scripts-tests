@@ -1,0 +1,661 @@
+#!/usr/bin/env bash
+# test-calendar-seed-scripts-tests — shell assertions over bin/test-calendar-seed
+# (RFC 197).
+#
+# The `-scripts-tests` suffix is load-bearing, not decoration. bin/scripts-tests
+# sweeps `bin/*scripts-tests` and asserts each one is named in bin/shell-tests,
+# because an orphaned harness looks exactly like a passing one.
+#
+# THE SUBJECT IS A VALIDATOR NOTHING ELSE EVER FEEDS A BAD ROW. The generator
+# turns db/seed/test-calendar/administrations.csv into a seed migration, and its
+# whole safety argument is that a typed date which cannot be true is a REVIEW
+# error naming its line number rather than a migration that fails at apply time
+# in somebody else's db-reset. Every one of those refusals is reachable only from
+# a bad CSV, so this file is the only place they are ever executed. Before it,
+# the header refusal, the eleven CHECK mirrors, the duplicate-key refusal, the
+# `-n` exit-3 contract and the stdout-silence claim had all never run.
+#
+# Three properties cannot be eyeballed and are the reason each has its own case:
+#
+#   1. A NORMAL RUN WRITES NOTHING TO STDOUT. That is the repo's bin/ rule, and
+#      here it is also a wiring claim: the generated file names travel out of awk
+#      ON STDOUT and are captured by `names="$(generate)"` in main. A lost
+#      capture prints them to the caller, and nothing else would notice.
+#   2. IT REPORTS EVERY FAULT IN ONE PASS. The script's own header says a
+#      validator that stops at the first offender turns a five-line fix into five
+#      runs. That is a claim about a run with several faults in it, and only a
+#      run with several faults in it can check it.
+#   3. A REFUSAL WRITES NOTHING. It generates into a temp directory and copies
+#      afterwards, so a refused CSV must leave the schema directory and ORDER
+#      byte for byte as they were.
+#
+# NO POSTGRES, NO GRADLE AND NO WORKTREE. Every run that can WRITE is routed by
+# the EXPLICIT -c and -d options into a throwaway temp tree, so this harness
+# cannot half-move itself onto the real corpus: bin/test-calendar-seed defaults
+# both paths to $PROJECT_ROOT, and an assertion that forgot one would rewrite the
+# operator's own seed and ORDER file with nothing printed to say so.
+#
+# ONE case is deliberately aimed at the real tree, and it is the last one: `-n`
+# against the committed CSV and the committed db/schema. Until it existed, every
+# assertion here fed the generator a temp fixture, so a stale or hand-edited
+# db/schema/seed-admission-test-calendar-*.sql passed the whole harness -- and
+# "the CSV is the source, the SQL is an artifact" is a claim about the COMMITTED
+# files or it is not a claim at all. It is safe because `-n` writes nothing,
+# which two cases above assert.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+test-calendar-seed-scripts-tests [options]
+
+Runs the shell assertions over bin/test-calendar-seed: the usage band, the
+header refusal, every CHECK mirror by line number, the duplicate key, the
+multi-fault pass, the write-nothing-on-refusal rule, the failed-write refusals,
+the ORDER contract read through bin/common, the two-cycle refresh path, the
+DDL-to-generator mirror check, the -n exit-3 contract, the idempotent happy path
+and -n against the COMMITTED tree. Needs no database, no daemon and no worktree:
+every run that can write is routed into a throwaway temp tree by -c and -d.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: test-calendar-seed-scripts-tests accepts no positional arguments."
+fi
+
+CALENDAR_SEED="$PROJECT_ROOT/bin/test-calendar-seed"
+[ -x "$CALENDAR_SEED" ] || fail_test "test-calendar-seed is missing or not executable [$CALENDAR_SEED]"
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+SCHEMA="$FIXTURE_DIR/schema"
+CSV="$FIXTURE_DIR/administrations.csv"
+seed_out="$FIXTURE_DIR/seed.out"
+seed_err="$FIXTURE_DIR/seed.err"
+seed_status=0
+
+# The cycle every fixture row below carries, and the file it therefore generates.
+# Named once: the script derives the file name from the CYCLE COLUMN, so a
+# harness that retyped the name would still pass if the derivation broke.
+readonly FIXTURE_CYCLE="2026-27"
+readonly SEED_NAME="seed-admission-test-calendar-$FIXTURE_CYCLE.sql"
+
+# The header READ OUT OF THE SCRIPT, never retyped. Every reordering and rename
+# below is derived from this one string, so a harness fixture cannot go on
+# asserting a refusal of a header the generator stopped expecting.
+EXPECTED_HEADER="$(sed -nE "s/^readonly EXPECTED_HEADER='(.*)'$/\1/p" "$CALENDAR_SEED")"
+[ -n "$EXPECTED_HEADER" ] ||
+  fail_test "the harness could not read EXPECTED_HEADER out of [$CALENDAR_SEED]"
+
+# Two rows that are true: the SAT and ACT sittings the RFC's own worked example
+# turns on, with test urls rather than the publishers' (this file asserts the
+# VALIDATOR, and a fixture that quoted the real pages would read as data).
+readonly GOOD_SAT_ROW="sat,$FIXTURE_CYCLE,2026-10-03,2026-09-18,2026-09-22,2026-10-16,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31"
+readonly GOOD_ACT_ROW="act,$FIXTURE_CYCLE,2026-10-17,2026-09-11,2026-09-29,2026-10-27,https://example.test/act-dates,https://example.test/act-scores,2026-09-11,2027-07-31"
+
+# A CSV: the generator's own header, then the rows this case means.
+write_csv() { # write_csv <file> <row>...
+  local file="$1"
+  shift
+  printf '%s\n' "$EXPECTED_HEADER" "$@" > "$file"
+}
+
+# A throwaway schema directory with an EMPTY ORDER. Empty on purpose: every
+# assertion about what a run appended is then a statement about this run, and
+# not about a line some earlier case left behind.
+reset_fixture() {
+  rm -rf "$SCHEMA"
+  mkdir -p "$SCHEMA"
+  : > "$SCHEMA/ORDER"
+  write_csv "$CSV" "$GOOD_SAT_ROW" "$GOOD_ACT_ROW"
+}
+
+# Records BOTH halves of the answer -- the status in $seed_status, stderr in
+# $seed_err -- and keeps stdout in its own file rather than merging the two. A
+# refusal assertion that greps a merged stream passes on a script that printed
+# its diagnostics to stdout, which is the one thing this file exists to catch.
+run_seed() { # run_seed <args>...
+  seed_status=0
+  "$CALENDAR_SEED" "$@" > "$seed_out" 2> "$seed_err" || seed_status=$?
+}
+
+# How many times <line> appears in the fixture ORDER file. `grep -Fxq` answers
+# "at least once", and the bug a second run has is "twice".
+order_count() { # order_count <line>
+  grep -Fxc "$1" "$SCHEMA/ORDER" 2> /dev/null || true
+}
+
+# The whole refusal contract for ONE bad row, as one assertion.
+#
+# The bad row is always LINE 3, with a true row above it on line 2, so "the fault
+# names its line" is a real count rather than a constant that would be right by
+# accident for every fixture with one row in it.
+assert_row_refused() { # assert_row_refused <what it is> <bad row> <message fragment>
+  local label="$1" row="$2" fragment="$3"
+  reset_fixture
+  write_csv "$CSV" "$GOOD_SAT_ROW" "$row"
+  run_seed -c "$CSV" -d "$SCHEMA"
+
+  [ "$seed_status" -eq 1 ] ||
+    fail_test "$label exited $seed_status, expected 1: $(cat "$seed_err")"
+  grep -qF "line 3: " "$seed_err" ||
+    fail_test "$label did not name the offending line; said [$(cat "$seed_err")]"
+  grep -qF "$fragment" "$seed_err" ||
+    fail_test "$label did not say why; said [$(cat "$seed_err")]"
+  [ ! -s "$seed_out" ] ||
+    fail_test "$label wrote to stdout: [$(cat "$seed_out")]"
+  [ ! -e "$SCHEMA/$SEED_NAME" ] ||
+    fail_test "$label wrote a seed anyway: [$(ls "$SCHEMA")]"
+  [ ! -s "$SCHEMA/ORDER" ] ||
+    fail_test "$label appended to ORDER: [$(cat "$SCHEMA/ORDER")]"
+  pass_test "$label"
+}
+
+echo "==== test-calendar-seed: it must PARSE under the bash a bare checkout has ===="
+
+# 0. The precedent bin/prompt-seed-scripts-tests set: macOS `/usr/bin/env bash`
+# is bash 3.2, and a construct only bash 5 can parse is not a lenient script, it
+# is a syntax error where a refusal should be. `/bin/bash` is named explicitly
+# because the point is the SYSTEM interpreter; inside the Nix dev shell a bare
+# `bash` is 5.x and would assert nothing.
+assert_success "bin/test-calendar-seed parses under the system bash (/bin/bash -n)" \
+  /bin/bash -n "$CALENDAR_SEED"
+assert_success "bin/test-calendar-seed-scripts-tests parses under the system bash (/bin/bash -n)" \
+  /bin/bash -n "$PROJECT_ROOT/bin/test-calendar-seed-scripts-tests"
+
+echo ""
+echo "==== test-calendar-seed: the usage band ===="
+
+reset_fixture
+
+# 1. The reserved usage codes from bin/functions, so a caller who invoked the
+# script wrongly is distinguishable from a run that faulted. Named by their
+# variables and never by their numbers: a harness that agreed with a number
+# rather than with bin/functions would keep passing after the band moved.
+#
+# Every one is ROUTED with -c and -d even though all five refuse before either
+# path is used. That is the point: an assertion that is a no-op against the
+# fixture today must not become a write against the operator's real db/schema
+# the day one of these refusals moves a line later.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$CALENDAR_SEED" -c "$CSV" -d "$SCHEMA" -Z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-c with no value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$CALENDAR_SEED" -d "$SCHEMA" -c
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a positional argument exits EXIT_UNEXPECTED_ARG" \
+  "$CALENDAR_SEED" -c "$CSV" -d "$SCHEMA" stray
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c naming a file that is not there exits EXIT_INVALID_ARG_VALUE" \
+  "$CALENDAR_SEED" -c "$FIXTURE_DIR/no-such-file.csv" -d "$SCHEMA"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d naming a directory that is not there exits EXIT_INVALID_ARG_VALUE" \
+  "$CALENDAR_SEED" -c "$CSV" -d "$FIXTURE_DIR/no-such-dir"
+
+# 2. -h is the ONE thing the caller asked for by name, so it is the one thing
+# that goes to stdout -- and it exits 0, because asking for help is not an error.
+help_out="$("$CALENDAR_SEED" -h 2> "$seed_err")" ||
+  fail_test "-h should exit 0: $(cat "$seed_err")"
+[ -n "$help_out" ] || fail_test "-h printed nothing to stdout"
+case "$help_out" in
+*"test-calendar-seed [options]"*) ;;
+*) fail_test "-h printed something that is not the usage text: [$help_out]" ;;
+esac
+pass_test "-h exits 0 and prints the usage to stdout"
+
+echo ""
+echo "==== test-calendar-seed: the header, asserted exactly and in order ===="
+
+# 3. A REORDERED header. Two columns swapped is the fault the exact-header rule
+# exists for: read positionally, it moves a registration deadline into a
+# score-release date and every row still "parses". The swapped header is DERIVED
+# from the script's own, so this fixture cannot drift away from the real one.
+reset_fixture
+reordered_header="$(printf '%s\n' "$EXPECTED_HEADER" | awk -F, '{ t = $1; $1 = $2; $2 = t; print }' OFS=,)"
+[ "$reordered_header" != "$EXPECTED_HEADER" ] ||
+  fail_test "the harness failed to derive a reordered header from [$EXPECTED_HEADER]"
+printf '%s\n' "$reordered_header" "$GOOD_SAT_ROW" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a reordered header exited $seed_status, expected 1"
+grep -qF "the CSV header is not the header this generator expects" "$seed_err" ||
+  fail_test "the reordered-header refusal did not say what was wrong; said [$(cat "$seed_err")]"
+grep -qF "expected: [$EXPECTED_HEADER]" "$seed_err" ||
+  fail_test "the refusal did not show the header it expected; said [$(cat "$seed_err")]"
+grep -qF "found:    [$reordered_header]" "$seed_err" ||
+  fail_test "the refusal did not show the header it found; said [$(cat "$seed_err")]"
+[ ! -s "$seed_out" ] || fail_test "the header refusal wrote to stdout: [$(cat "$seed_out")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the header refusal wrote a seed anyway"
+[ ! -s "$SCHEMA/ORDER" ] || fail_test "the header refusal appended to ORDER"
+pass_test "a reordered header is refused, showing expected and found, and nothing is written"
+
+# 4. A RENAMED column, which reads as the same fault and must not read as a
+# missing one: the column count still matches, so only the exact comparison sees
+# it.
+reset_fixture
+renamed_header="${EXPECTED_HEADER/checked_on/checked_at}"
+[ "$renamed_header" != "$EXPECTED_HEADER" ] ||
+  fail_test "the harness failed to derive a renamed header from [$EXPECTED_HEADER]"
+printf '%s\n' "$renamed_header" "$GOOD_SAT_ROW" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a renamed column exited $seed_status, expected 1"
+grep -qF "found:    [$renamed_header]" "$seed_err" ||
+  fail_test "the renamed-column refusal did not show what it found; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the renamed-column refusal wrote a seed anyway"
+pass_test "a renamed column is refused, showing expected and found"
+
+echo ""
+echo "==== test-calendar-seed: one case per CHECK it mirrors ===="
+
+# 5. Every CHECK constraint on admission_test_administrations, one assertion
+# each, each naming its own line. They are the reason the script validates
+# BEFORE it writes: unchecked, each of these is a migration that fails at apply
+# time in a db-reset belonging to whoever pulls next.
+assert_row_refused "a test that is neither sat nor act is refused by line" \
+  "xat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/x-dates,https://example.test/x-scores,2026-09-11,2027-07-31" \
+  "is not one of sat, act"
+
+assert_row_refused "a cycle that is not of the form 2026-27 is refused by line" \
+  "sat,2026-2027,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "is not of the form 2026-27"
+
+# 2027-02-30 matches the yyyy-mm-dd SHAPE and is not a day that exists. A
+# validator that only pattern-matched would accept it and hand Postgres a date
+# literal that fails at apply time.
+assert_row_refused "a date that matches the shape but is not on the calendar is refused by line" \
+  "sat,$FIXTURE_CYCLE,2027-02-30,2027-02-10,2027-02-20,2027-03-16,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "is not a real yyyy-mm-dd date"
+
+assert_row_refused "a registration deadline that is not before the test date is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-11-07,,2026-11-20,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "is not before test_date"
+
+assert_row_refused "a late deadline after the test date is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-11-08,2026-11-20,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "is not after registration_deadline"
+
+assert_row_refused "a score release that is not after the test date is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-07,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "is not after test_date"
+
+# The citation rule, both ways round. A fact with no citation is what this brief
+# exists to prevent; a citation with no fact under it is not data.
+assert_row_refused "a score-release date with no source url is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat-dates,,2026-09-11,2027-07-31" \
+  "must be present together or absent together"
+
+assert_row_refused "a score-release source url with no date is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "must be present together or absent together"
+
+assert_row_refused "an expiry that is not after the day a human checked is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2026-09-11" \
+  "is not after checked_on"
+
+assert_row_refused "a source url that is not https is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,http://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "is not an https url"
+
+# The arity check is what catches an embedded comma, which is the other way a
+# naive split slides every cell one column left.
+assert_row_refused "a row with the wrong number of columns is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat-dates,2026-09-11,2027-07-31" \
+  "[9] columns, expected [10]"
+
+# And a quoted cell is refused outright rather than mis-split: the generator
+# reads this file by splitting on commas, which is only correct while no cell is
+# quoted, so the assumption is asserted instead of assumed.
+assert_row_refused "a quoted cell is refused by line rather than mis-split" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,\"https://example.test/sat-dates\",https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "a double quote"
+
+# A byte outside printable ASCII is refused BEFORE the escaper sees it. The
+# escaper doubles apostrophes and nothing else, which is correct only while
+# `standard_conforming_strings` is on, so a control byte or a backslash in a cell
+# is a SQL literal whose meaning depends on a server setting. This seed is
+# applied to every database.
+assert_row_refused "a non-printable byte is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat$(printf '\t')dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "not printable ASCII"
+
+assert_row_refused "a smart quote pasted from the publisher page is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat$(printf '\342\200\231')dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "not printable ASCII"
+
+assert_row_refused "a backslash is refused by line" \
+  "sat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat\\dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "backslash"
+
+# `2026-99` matches ^[0-9]{4}-[0-9]{2}$ and is not an academic year -- and the
+# SEED FILE NAME is derived from this column, so the shape alone is not enough.
+# The rule is mirrored in the DDL's cycle CHECK; the two must stay identical.
+assert_row_refused "a cycle whose halves are not consecutive years is refused by line" \
+  "sat,2026-99,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "does not name two consecutive years"
+
+assert_row_refused "a cycle ending 00 that is not the next year is refused by line" \
+  "sat,2026-00,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "does not name two consecutive years"
+
+# checked_on and expires_on are ONE fact about one reading session, typed once
+# per row. A refresh that updated fourteen rows and missed the fifteenth would
+# expire the whole cycle from the oldest row, with every other check green -- so
+# the rows of a cycle must agree, and the refusal names the line it disagrees
+# with.
+assert_row_refused "a row whose checked_on disagrees with its cycle is refused by line" \
+  "act,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/act-dates,https://example.test/act-scores,2026-09-12,2027-07-31" \
+  "disagrees with [2026-09-11] on line [2]"
+
+assert_row_refused "a row whose expires_on disagrees with its cycle is refused by line" \
+  "act,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/act-dates,https://example.test/act-scores,2026-09-11,2027-08-31" \
+  "disagrees with [2027-07-31] on line [2]"
+
+echo ""
+echo "==== test-calendar-seed: the natural key, and every fault in one pass ===="
+
+# 6. A duplicate (test, test_date) is the UNIQUE constraint mirrored, and the
+# refusal names BOTH lines -- the one to delete is only obvious next to the one
+# to keep.
+reset_fixture
+write_csv "$CSV" "$GOOD_SAT_ROW" "$GOOD_SAT_ROW"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a duplicate (test, test_date) exited $seed_status, expected 1"
+grep -qF "line 3: duplicate (test, test_date) ([sat], [2026-10-03]), first seen at line [2]" "$seed_err" ||
+  fail_test "the duplicate refusal did not name both lines; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the duplicate refusal wrote a seed anyway"
+pass_test "a duplicate (test, test_date) is refused, naming both line numbers"
+
+# 7. THE CLAIM THE SCRIPT'S OWN HEADER MAKES: "a validator that stops at the
+# first offender turns a five-line fix into five runs". Three distinct faults on
+# three distinct lines, and ONE run must name all three -- otherwise the header
+# is describing a script somebody else wrote.
+reset_fixture
+write_csv "$CSV" \
+  "xat,$FIXTURE_CYCLE,2026-11-07,2026-10-23,2026-10-27,2026-11-20,https://example.test/x-dates,https://example.test/x-scores,2026-09-11,2027-07-31" \
+  "sat,2026-2027,2026-12-05,2026-11-20,2026-11-24,2026-12-18,https://example.test/sat-dates,https://example.test/sat-scores,2026-09-11,2027-07-31" \
+  "act,$FIXTURE_CYCLE,2026-12-12,2026-11-06,2026-11-29,2026-12-22,http://example.test/act-dates,https://example.test/act-scores,2026-09-11,2027-07-31"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "three faults exited $seed_status, expected 1"
+grep -qF "line 2: test [xat] is not one of sat, act" "$seed_err" ||
+  fail_test "the first fault was not reported; said [$(cat "$seed_err")]"
+grep -qF "line 3: cycle [2026-2027] is not of the form 2026-27" "$seed_err" ||
+  fail_test "the second fault was not reported; said [$(cat "$seed_err")]"
+grep -qF "line 4: dates_source_url [http://example.test/act-dates] is not an https url" "$seed_err" ||
+  fail_test "the third fault was not reported; said [$(cat "$seed_err")]"
+grep -qF "[3] fault(s)" "$seed_err" ||
+  fail_test "the summary did not count all three faults; said [$(cat "$seed_err")]"
+pass_test "three distinct faults on three lines are ALL reported in one run"
+
+echo ""
+echo "==== test-calendar-seed: a refusal writes nothing ===="
+
+# 8. Not "no seed was created" -- the earlier cases cover that against an empty
+# directory. This one refuses against a schema directory that ALREADY holds a
+# correct seed and a populated ORDER, which is the real tree, and asserts both
+# are byte for byte what they were. It generates into a temp directory and
+# copies afterwards; a future refactor that wrote in place and rolled back on
+# failure would leave a half-written migration exactly here.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.before"
+cp "$SCHEMA/ORDER" "$FIXTURE_DIR/order.before"
+write_csv "$CSV" "$GOOD_SAT_ROW" \
+  "act,$FIXTURE_CYCLE,2026-12-12,2026-12-13,,2026-12-22,https://example.test/act-dates,https://example.test/act-scores,2026-09-11,2027-07-31"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "the refused run exited $seed_status, expected 1"
+cmp -s "$FIXTURE_DIR/seed.before" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the refusal rewrote the seed it refused to replace: [$(diff "$FIXTURE_DIR/seed.before" "$SCHEMA/$SEED_NAME" | head -4)]"
+cmp -s "$FIXTURE_DIR/order.before" "$SCHEMA/ORDER" ||
+  fail_test "the refusal changed ORDER: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "a refused CSV leaves the schema directory and ORDER byte for byte unchanged"
+
+echo ""
+echo "==== test-calendar-seed: -n, which must decide and write nothing ===="
+
+# 9. A tree that IS what the CSV generates: exit 0, and not a byte moved.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.current"
+cp "$SCHEMA/ORDER" "$FIXTURE_DIR/order.current"
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq 0 ] || fail_test "-n on a correct tree exited $seed_status: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/seed.current" "$SCHEMA/$SEED_NAME" || fail_test "-n rewrote the seed"
+cmp -s "$FIXTURE_DIR/order.current" "$SCHEMA/ORDER" || fail_test "-n rewrote ORDER"
+[ ! -s "$seed_out" ] || fail_test "-n wrote to stdout: [$(cat "$seed_out")]"
+pass_test "-n on a correct tree exits 0 and writes nothing"
+
+# 10. And the verdict it exists for. The seed is gone -- a stale or hand-deleted
+# tree -- so -n must say so with EXIT_SEED_WOULD_CHANGE and STILL write nothing:
+# a dry run that repaired the tree would report a state it had just created.
+rm -f "$SCHEMA/$SEED_NAME"
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on a tree missing its seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "-n wrote the seed it was only asked about"
+cmp -s "$FIXTURE_DIR/order.current" "$SCHEMA/ORDER" || fail_test "-n changed ORDER on a dry run"
+pass_test "-n on a tree whose seed is missing exits EXIT_SEED_WOULD_CHANGE and still writes nothing"
+
+echo ""
+echo "==== test-calendar-seed: the happy path, and stdout ===="
+
+# 11. The bin/ rule, and the wiring it protects. The generated file names travel
+# out of awk ON STDOUT and are captured by `names="$(generate)"`; the product of
+# a normal run is a FILE, so the caller's stdout must be byte-empty. Asserted as
+# emptiness and not as "looks fine": a lost capture prints the names here.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the happy path failed: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] ||
+  fail_test "test-calendar-seed wrote to stdout on a normal run: [$(cat "$seed_out")]"
+grep -qF "test-calendar-seed: done." "$seed_err" ||
+  fail_test "the closing summary is not on stderr; stderr says [$(cat "$seed_err")]"
+pass_test "a normal run writes NOTHING to stdout, and its summary to stderr"
+
+[ -f "$SCHEMA/$SEED_NAME" ] ||
+  fail_test "the run did not write [$SEED_NAME]; the directory holds [$(ls "$SCHEMA")]"
+grep -qF "INSERT INTO admission_test_administrations" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the generated file is not the seed migration: [$(head -20 "$SCHEMA/$SEED_NAME")]"
+grep -qF "ON CONFLICT (test, test_date) DO UPDATE SET" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the generated seed does not upsert on the natural key"
+grep -Fxq "$SEED_NAME" "$SCHEMA/ORDER" ||
+  fail_test "the ORDER line was not appended; ORDER is [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "the seed is generated and its ORDER line is appended"
+
+# 12. Derived, so re-runnable: a phase-6 fix loop re-enters and runs it again. A
+# second pass must not move a byte of the seed, and must not append the ORDER
+# line a second time -- a doubled line is a migration applied twice.
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.first"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the second run failed: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/seed.first" "$SCHEMA/$SEED_NAME" ||
+  fail_test "a second run changed the generated seed: [$(diff "$FIXTURE_DIR/seed.first" "$SCHEMA/$SEED_NAME" | head -4)]"
+appended="$(order_count "$SEED_NAME")"
+[ "$appended" = "1" ] ||
+  fail_test "the ORDER line appears $appended times after two runs, expected exactly 1: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "a second run is byte-identical and appends the ORDER line exactly once, not twice"
+
+echo ""
+echo "==== test-calendar-seed: ORDER is bin/common's, not this script's ===="
+
+# 13. THE DEFECT bin/prompt-seed ALREADY SHIPPED, asserted here so this script
+# cannot ship it again. "Is this name already in ORDER?" answered with
+# `grep -Fxq` is a question about BYTES: an ORDER line carrying a CR from a CRLF
+# checkout reads as ABSENT, the run appends a SECOND line for one migration, and
+# bin/db-migrate refuses a corpus this script had just called correct.
+#
+# Asked of bin/common instead, the same corpus is read once and the near-miss
+# line is an INVALID migration filename -- so the run REFUSES with
+# EXIT_SCHEMA_ORDER_DRIFT and appends nothing.
+reset_fixture
+printf '%s\r\n' "$SEED_NAME" > "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SCHEMA_ORDER_DRIFT" ] ||
+  fail_test "a CR-terminated ORDER line exited $seed_status, expected $EXIT_SCHEMA_ORDER_DRIFT: $(cat "$seed_err")"
+[ "$(order_count "$SEED_NAME")" = "0" ] ||
+  fail_test "the run appended a second line beside the CR-terminated one: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ "$(wc -l < "$SCHEMA/ORDER")" -eq 1 ] ||
+  fail_test "ORDER no longer holds exactly the one line it started with: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ ! -s "$seed_out" ] || fail_test "the ORDER refusal wrote to stdout: [$(cat "$seed_out")]"
+pass_test "a CR-terminated ORDER line is REFUSED, not read as absent and appended beside"
+
+# 14. And a corpus that already lists one name twice: appending to it would
+# compound a corruption into a second duplicate, so the refusal comes before any
+# write and not after the seed is on disk.
+reset_fixture
+printf '%s\n' "$SEED_NAME" "$SEED_NAME" > "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SCHEMA_ORDER_DRIFT" ] ||
+  fail_test "a duplicated ORDER line exited $seed_status, expected $EXIT_SCHEMA_ORDER_DRIFT: $(cat "$seed_err")"
+[ ! -e "$SCHEMA/$SEED_NAME" ] ||
+  fail_test "the run wrote a seed into a corpus it had refused"
+grep -qF "listed more than once" "$seed_err" ||
+  fail_test "the refusal did not report the duplicate; said [$(cat "$seed_err")]"
+pass_test "an ORDER that already lists a name twice is refused before anything is written"
+
+echo ""
+echo "==== test-calendar-seed: a failed WRITE is never reported as a success ===="
+
+# 15. `cmp -s` has THREE answers -- 0 same, 1 differs, >1 cannot compare -- and
+# folding the last two together means an EXISTING seed this process cannot read
+# is silently overwritten. An unreadable seed is a fault to report, not a file to
+# replace on the assumption that it differed.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+chmod 000 "$SCHEMA/$SEED_NAME"
+run_seed -c "$CSV" -d "$SCHEMA"
+chmod 644 "$SCHEMA/$SEED_NAME"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "an unreadable existing seed exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "cmp exited" "$seed_err" ||
+  fail_test "the refusal did not report cmp's status; said [$(cat "$seed_err")]"
+pass_test "an existing seed that cannot be COMPARED is reported, not silently overwritten"
+
+# 16. A failed copy used to log "wrote [...]" and exit 0, so the operator was
+# told the artifact was regenerated when the directory still held the stale one.
+reset_fixture
+rm -f "$SCHEMA/$SEED_NAME"
+chmod 500 "$SCHEMA"
+run_seed -c "$CSV" -d "$SCHEMA"
+chmod 700 "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a copy into a read-only schema directory exited $seed_status, expected 1: $(cat "$seed_err")"
+if grep -qF "wrote [" "$seed_err"; then
+  fail_test "the run reported writing a seed it could not copy; said [$(cat "$seed_err")]"
+fi
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the seed exists after a copy that failed"
+pass_test "a copy that fails is FATAL, and is never logged as a write"
+
+# 17. And the append. A seed on disk that ORDER does not declare is never
+# applied, so an unwritable ORDER is a fault even though the seed itself landed.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+: > "$SCHEMA/ORDER"
+chmod 400 "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+chmod 644 "$SCHEMA/ORDER"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "an unwritable ORDER exited $seed_status, expected 1: $(cat "$seed_err")"
+if grep -qF "appended [" "$seed_err"; then
+  fail_test "the run reported an append it could not make; said [$(cat "$seed_err")]"
+fi
+pass_test "an ORDER line that cannot be appended is FATAL, and is never logged as appended"
+
+echo ""
+echo "==== test-calendar-seed: the refresh story, which is a SECOND cycle ===="
+
+# 18. One seed per cycle is the entire documented refresh path: next year's
+# calendar arrives as rows APPENDED to the CSV, never as an edit to a landed
+# seed. Every fixture above is single-cycle, so until this case the multi-cycle
+# loop -- two files, two ORDER lines, per-cycle row counts -- had never run.
+#
+# The second cycle carries its OWN reading session: checked_on and expires_on
+# must agree WITHIN a cycle and are free to differ BETWEEN cycles, which is the
+# whole point of typing them per row.
+readonly SECOND_CYCLE="2027-28"
+readonly SECOND_SEED_NAME="seed-admission-test-calendar-$SECOND_CYCLE.sql"
+reset_fixture
+write_csv "$CSV" "$GOOD_SAT_ROW" "$GOOD_ACT_ROW" \
+  "sat,$SECOND_CYCLE,2027-10-02,2027-09-17,2027-09-21,2027-10-15,https://example.test/sat-dates,https://example.test/sat-scores,2027-09-10,2028-07-31" \
+  "act,$SECOND_CYCLE,2027-10-16,2027-09-10,2027-09-24,2027-10-26,https://example.test/act-dates,https://example.test/act-scores,2027-09-10,2028-07-31"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "a two-cycle CSV exited $seed_status: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] || fail_test "the two-cycle run wrote to stdout: [$(cat "$seed_out")]"
+[ -f "$SCHEMA/$SEED_NAME" ] ||
+  fail_test "the first cycle's seed is missing; the directory holds [$(ls "$SCHEMA")]"
+[ -f "$SCHEMA/$SECOND_SEED_NAME" ] ||
+  fail_test "the second cycle's seed is missing; the directory holds [$(ls "$SCHEMA")]"
+[ "$(order_count "$SEED_NAME")" = "1" ] ||
+  fail_test "the first cycle's ORDER line is not there exactly once: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ "$(order_count "$SECOND_SEED_NAME")" = "1" ] ||
+  fail_test "the second cycle's ORDER line is not there exactly once: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+# Each seed holds ONLY its own cycle's rows: a per-cycle grouping that leaked
+# would still produce two files and two ORDER lines.
+if grep -qF "'$SECOND_CYCLE'" "$SCHEMA/$SEED_NAME"; then
+  fail_test "the first cycle's seed carries rows from [$SECOND_CYCLE]"
+fi
+if grep -qF "'$FIXTURE_CYCLE'" "$SCHEMA/$SECOND_SEED_NAME"; then
+  fail_test "the second cycle's seed carries rows from [$FIXTURE_CYCLE]"
+fi
+pass_test "a second cycle generates its own seed and its own single ORDER line"
+
+echo ""
+echo "==== test-calendar-seed: the CHECK mirrors, tied to the DDL ===="
+
+# 19. The nine CHECK constraints exist TWICE -- once in
+# db/schema/create-admission-test-calendar.sql, once in this generator's awk --
+# and nothing but a comment tag ties them. Without this case a TWELFTH CHECK
+# could land unmirrored in silence: the DDL would refuse a row at apply time in
+# somebody else's db-reset, which is the exact failure the generator's own header
+# says it exists to prevent.
+#
+# Set equality, not just a count: a mirror whose constraint was RENAMED or
+# removed is as wrong as a constraint with no mirror, and the message names the
+# offender either way. The floor is what stops the case passing vacuously if
+# either grep stops matching.
+CALENDAR_DDL="$PROJECT_ROOT/db/schema/create-admission-test-calendar.sql"
+[ -f "$CALENDAR_DDL" ] || fail_test "the calendar DDL is missing [$CALENDAR_DDL]"
+ddl_checks="$(grep -oE 'CONSTRAINT admission_test_administrations_[a-z0-9_]+_check' "$CALENDAR_DDL" |
+  sed 's/^CONSTRAINT //' | sort -u)"
+mirrored_checks="$(grep -oE '# MIRRORS admission_test_administrations_[a-z0-9_]+_check' "$CALENDAR_SEED" |
+  sed 's/^# MIRRORS //' | sort -u)"
+ddl_check_count="$(printf '%s\n' "$ddl_checks" | grep -c . || true)"
+[ "$ddl_check_count" -ge 9 ] ||
+  fail_test "only [$ddl_check_count] CHECK constraint(s) were read out of [$CALENDAR_DDL]; the grep no longer matches the DDL, so this case would pass vacuously"
+[ "$ddl_checks" = "$mirrored_checks" ] ||
+  fail_test "the generator does not mirror the DDL's CHECK constraints one for one. DDL: [$(printf '%s' "$ddl_checks" | tr '\n' ' ')] mirrored: [$(printf '%s' "$mirrored_checks" | tr '\n' ' ')]"
+pass_test "every CHECK in the calendar DDL is mirrored by name in the generator, and none extra"
+
+echo ""
+echo "==== test-calendar-seed: the COMMITTED tree, which is the whole claim ===="
+
+# 20. The one case that is NOT routed into the fixture tree, and the only one
+# that can be: every assertion above feeds the generator a temp CSV, so a stale
+# or hand-edited db/schema/seed-admission-test-calendar-*.sql passed every one of
+# them. "The CSV is the source and the SQL is an artifact" is a claim about the
+# COMMITTED files, and `-n` against the real tree is what makes it true.
+#
+# Safe to point at the real tree precisely because it is `-n`: a dry run writes
+# nothing (asserted twice above), so the worst outcome here is a non-zero exit
+# telling the operator the two have diverged.
+run_seed -n
+[ "$seed_status" -eq 0 ] ||
+  fail_test "the committed seed is not what the committed CSV generates (bin/test-calendar-seed -n exited $seed_status). Run: nix develop -c bin/test-calendar-seed. Said: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] ||
+  fail_test "-n against the real tree wrote to stdout: [$(cat "$seed_out")]"
+pass_test "the COMMITTED seed is exactly what the COMMITTED CSV generates (-n on the real tree)"
+
+end_tests

@@ -13,9 +13,6 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
-import java.time.Month
-import java.time.format.TextStyle
-import java.util.Locale
 
 /**
  * The `college_admissions_profile` chat tool (RFC 148): the coach's read path
@@ -225,10 +222,7 @@ class CollegeAdmissionsChatTool(
      * plainly rather than being completed with a guessed day. The cycle carries
      * no year, so no year is ever rendered into a date.
      */
-    fun datePhrase(date: CdsMonthDay): String {
-      val month = Month.of(date.month).getDisplayName(TextStyle.FULL, Locale.US)
-      return date.day?.let { "$month $it" } ?: "$month, day not reported"
-    }
+    fun datePhrase(date: CdsMonthDay): String = date.phrase
 
     /** The offered flag and its words, emitted together so the boolean is never alone in the model's context. */
     fun offeredLabel(round: DeadlineRound): String =

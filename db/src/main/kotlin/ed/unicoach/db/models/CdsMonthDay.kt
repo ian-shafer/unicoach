@@ -1,6 +1,8 @@
 package ed.unicoach.db.models
 
 import java.time.Month
+import java.time.format.TextStyle
+import java.util.Locale
 
 /**
  * A cycle-relative CDS month/day (RFC 140). CDS reports application dates
@@ -25,6 +27,23 @@ data class CdsMonthDay(
   init {
     require(isCalendarPair(month, day)) { "[$month]/[$day] is not a real calendar month/day" }
   }
+
+  /**
+   * This pair as a phrase, never a pair of bare numbers: "November 1", or
+   * "January, day not reported" for the month-only case that is legal CDS
+   * reporting and is NOT completed with a guessed day.
+   *
+   * It lives ON the pair rather than in one renderer because two surfaces now
+   * say it -- `CollegeAdmissionsChatTool` and the admission-test timeline -- and
+   * a service reaching into another feature's JSON adapter for a formatter is a
+   * dependency pointing the wrong way. No year is ever rendered: the pair
+   * carries none.
+   */
+  val phrase: String
+    get() {
+      val monthName = Month.of(month).getDisplayName(TextStyle.FULL, Locale.US)
+      return day?.let { "$monthName $it" } ?: "$monthName, day not reported"
+    }
 
   companion object {
     /**

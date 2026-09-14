@@ -33,6 +33,8 @@ import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
 import ed.unicoach.coaching.report.ShareCostReportChatTool
 import ed.unicoach.coaching.report.ShareTokenDeriver
 import ed.unicoach.coaching.report.StopCostReportOffersChatTool
+import ed.unicoach.coaching.testing.AdmissionTestTimelineChatTool
+import ed.unicoach.coaching.testing.TestTimelineService
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
@@ -398,6 +400,12 @@ fun Application.appModule(
         // the opted_out share event, not a link — so it stands even when the
         // two doors above decline.
         StopCostReportOffersChatTool(costReportShareService),
+        // "When do I need to take the SATs" (RFC 197): the national SAT/ACT
+        // calendar worked back from the earliest deadline on the student's own
+        // list. No clock argument, like every other site -- production reads the
+        // real one through the InstantSource.system() default, and only a test
+        // pins it.
+        AdmissionTestTimelineChatTool(TestTimelineService(database)),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the

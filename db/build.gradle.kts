@@ -16,6 +16,10 @@ dependencies {
   // the file the ingest loads — rather than re-typing the vocabulary.
   testFixturesImplementation(libs.kotlinx.serialization.json)
 
+  // AdmissionTestCalendarFixture reads db/seed/test-calendar/administrations.csv
+  // with a real CSV reader rather than a hand-rolled split (RFC 197).
+  testFixturesImplementation(libs.commons.csv)
+
   testImplementation(libs.kotlin.test.junit5)
   // CountingSqlSession: :db's own DAO tests assert the batching contract with the
   // same decorator its dependants do, rather than keeping a second copy of it.

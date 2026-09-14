@@ -1,0 +1,450 @@
+#!/usr/bin/env bash
+# test-calendar-seed — generate the admission-test calendar seed migration from
+# the file a human actually edits, db/seed/test-calendar/administrations.csv
+# (RFC 197, slice test/04/the-testing-calendar).
+#
+# There is no machine-readable feed for the SAT or ACT calendar anywhere: both
+# publishers put it in an HTML table and nothing else. So the calendar is
+# HAND-TYPED, and brief 0010 D19 says hand-typed data lives in a committed CSV
+# with a PROVENANCE.json, because hand-typed data has to be reviewable in a diff.
+#
+# WHY A GENERATED MIGRATION AND NOT AN INGEST PHASE. The CDS seed — the other
+# committed CSV in this tree — is loaded by the ingest binary. That leaves its
+# rows absent from the test database (bin/test runs db-reset: drop, create,
+# migrate, and never ingests) and absent from a deployed database until a full
+# college re-ingest runs. For a yearly thirty-row hand edit that is a second
+# staleness gap, in the one feature whose whole point is that staleness is a
+# build failure. Generating a migration from the CSV keeps every word of D19 and
+# additionally puts the rows in every database the migrations touch.
+#
+# THE CSV IS THE SOURCE; THE SQL IS AN ARTIFACT. Never hand-edit the generated
+# seed: edit the CSV and re-run this. `-n` refuses a tree that differs from what
+# this run generates, so a hand-edited or stale seed is caught rather than
+# served.
+#
+# IT VALIDATES BEFORE IT WRITES, AND IT REPORTS EVERY FAULT IN ONE PASS. Each
+# CHECK constraint in db/schema/create-admission-test-calendar.sql is mirrored
+# here, so a typo is a REVIEW error naming its line number rather than a
+# migration that fails at apply time in somebody else's db-reset. A validator
+# that stops at the first offender turns a five-line fix into five runs.
+source "$(dirname "$0")/common"
+
+strip_git_hook_env
+
+help() {
+  cat << 'EOF'
+test-calendar-seed [options]
+
+Generates <schema-dir>/seed-admission-test-calendar-<cycle>.sql from the authored
+source file db/seed/test-calendar/administrations.csv, one seed per cycle present
+in the CSV, and appends each new ORDER line.
+
+The CSV is the source of truth and the SQL is a generated artifact: edit the CSV
+and re-run this, never the other way round. Every CHECK constraint on
+admission_test_administrations is re-checked here first, so a typed date that
+cannot be true is named by its line number before anything is written.
+
+Options:
+  -c: The authored CSV (default: $PROJECT_ROOT/db/seed/test-calendar/administrations.csv)
+  -d: The schema directory to generate into (default: $PROJECT_ROOT/db/schema)
+  -n: Dry run. Writes nothing; exits 3 if the tree differs from what a real run
+      would generate, 0 if it is already correct.
+  -h: Help
+
+Exit codes:
+  0   the seeds and their ORDER lines are correct, or were written
+  1   refused: the CSV is not usable, or the corpus cannot be written
+  3   -n only: the tree differs from what would be generated
+  9   refused: ORDER cannot be appended to safely (run bin/db-status)
+  10, 11, 20, 22  usage errors
+EOF
+  exit 0
+}
+
+CSV_ARG="$PROJECT_ROOT/db/seed/test-calendar/administrations.csv"
+SCHEMA_DIR_ARG="$PROJECT_ROOT/db/schema"
+DRY_RUN=""
+
+parse_args() {
+  local OPTIND OPTARG opt
+  while getopts ":c:d:nh" opt; do
+    case "$opt" in
+    c) CSV_ARG="$OPTARG" ;;
+    d) SCHEMA_DIR_ARG="$OPTARG" ;;
+    n) DRY_RUN=1 ;;
+    h) help ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+    :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  if [ "$#" -gt 0 ]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "test-calendar-seed does not accept positional arguments: [$*]"
+  fi
+
+  [ -n "$CSV_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "option -c requires a non-empty path"
+  [ -n "$SCHEMA_DIR_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "option -d requires a non-empty schema directory"
+  [ -f "$CSV_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "calendar CSV not found [$CSV_ARG]"
+  [ -s "$CSV_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "calendar CSV is empty [$CSV_ARG]"
+  [ -d "$SCHEMA_DIR_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "schema directory not found [$SCHEMA_DIR_ARG]"
+
+  SCHEMA_DIR="$(cd "$SCHEMA_DIR_ARG" && pwd -P)"
+  ORDER_FILE="$SCHEMA_DIR/ORDER"
+  [ -f "$ORDER_FILE" ] ||
+    fatal "[$ORDER_FILE] does not exist, so a generated seed could never be applied"
+
+  assert_order_is_appendable
+}
+
+# ── The ORDER contract, read through its owner ─────────────────────────────────
+# bin/common is the declared sole owner of what ORDER is, what a legal migration
+# filename is and what counts as a disagreement, so this script ASKS rather than
+# answering "is this name already listed?" with its own `grep -Fxq`.
+#
+# bin/prompt-seed records that exact re-implementation as a defect that already
+# shipped: `grep -Fxq` answers "is there a line whose bytes are exactly this", so
+# an ORDER line carrying a trailing space or a CR from a CRLF checkout reads as
+# ABSENT — the append below then writes a SECOND line for one migration, and
+# bin/db-migrate refuses two steps later a corpus this script had just called
+# correct.
+#
+# schema_order_file_is_corrupt and not the wider schema_order_has_drift: a
+# generator that is about to write a migration and append its line IS the
+# "on disk but not yet listed" state, so the wide predicate would refuse every
+# first run. Refused up front, beside the other refusals, and never mid-write.
+assert_order_is_appendable() {
+  schema_order_scan "$SCHEMA_DIR"
+  if schema_order_file_is_corrupt; then
+    fatal -s "$EXIT_SCHEMA_ORDER_DRIFT" \
+      "[$ORDER_FILE] cannot be appended to safely:"$'\n'"$(schema_order_drift_report)"$'\n'"  Fix it and re-run. \`bin/db-status\` reports the same corpus without refusing it."
+  fi
+}
+
+# The header this generator was written against, exactly and in order. A CSV
+# with a different header is REFUSED rather than read positionally: a reordered
+# column would silently move a registration deadline into a score-release date.
+readonly EXPECTED_HEADER='test,cycle,test_date,registration_deadline,late_registration_deadline,score_release_date,dates_source_url,score_release_source_url,checked_on,expires_on'
+
+# One awk pass: validate every row, then emit the generated SQL per cycle.
+#
+# A naive comma split is only correct while no cell can contain a comma or a
+# quote, so that is asserted rather than assumed — a quoted cell is refused, and
+# the row arity check catches an embedded comma as a column-count fault.
+#
+# Every refusal is written to stderr and CAPTURED by the caller, which re-emits
+# each line through `log-error`: awk's faults are diagnostics of THIS script, and
+# every diagnostic in bin/ reaches the operator through bin/functions' helpers.
+# Passing them through raw mixed unprefixed faults with `[ERROR]`-prefixed shell
+# diagnostics in one refused run. This is the bin/prompt-seed shape (read_body).
+#
+# Each check that mirrors a CHECK constraint in
+# db/schema/create-admission-test-calendar.sql carries a `MIRRORS <constraint>`
+# comment. The two are one rule typed twice, and nothing but that tag ties them:
+# bin/test-calendar-seed-scripts-tests reads the constraint names out of the DDL
+# and asserts this file mirrors exactly those, so a twelfth CHECK cannot go
+# unmirrored in silence.
+generate() {
+  local complaint line status=0 faults=0
+
+  : > "$NAMES_FILE" ||
+    fatal "could not create [$NAMES_FILE] to collect the generated file names; nothing was written."
+
+  # `2>&1 > "$NAMES_FILE"` — in that order — sends stderr to the command
+  # substitution and stdout, which is the list of generated names, to the file.
+  # LC_ALL=C because the printable-ASCII refusal below is a statement about
+  # BYTES, and a multibyte locale would let awk read one offending byte as a
+  # character it considers ordinary.
+  complaint="$(LC_ALL=C awk -v expected="$EXPECTED_HEADER" -v outdir="$OUT_DIR" -v src="$CSV_REL" '
+    function fail(line, msg) { printf "  line %d: %s\n", line, msg > "/dev/stderr"; bad++ }
+
+    function is_iso_date(s,   y, m, d, dim) {
+      if (s !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) return 0
+      y = substr(s, 1, 4) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+      if (m < 1 || m > 12 || d < 1) return 0
+      split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ")
+      if (m == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))) return d <= 29
+      return d <= dim[m]
+    }
+
+    # Verb-led, on the bin/prompt-seed awk precedent: each one RETURNS the SQL
+    # literal for a cell, and `sqlq(x)` read like a noun for a value.
+    function get_quoted(s) { gsub(/\x27/, "\x27\x27", s); return "\x27" s "\x27" }
+    function get_date_or_null(s) { return s == "" ? "NULL" : "DATE " get_quoted(s) }
+    function get_text_or_null(s) { return s == "" ? "NULL" : get_quoted(s) }
+
+    NR == 1 {
+      if ($0 != expected) {
+        print "test-calendar-seed: the CSV header is not the header this generator expects." > "/dev/stderr"
+        printf "  expected: [%s]\n", expected > "/dev/stderr"
+        printf "  found:    [%s]\n", $0 > "/dev/stderr"
+        exit 1
+      }
+      ncol = split(expected, hdr, ",")
+      header_ok = 1
+      next
+    }
+
+    # Refused BEFORE the quote rule and before any cell reaches get_quoted:
+    # doubling apostrophes is the whole escaper, and that is correct only while
+    # standard_conforming_strings is on and no cell carries a backslash or a
+    # control byte. This SQL is applied to every database, so a byte outside
+    # printable ASCII — a CR from a CRLF checkout, a tab, a smart quote pasted
+    # from the publisher page, a backslash — is a fault named by its line rather
+    # than a literal whose meaning depends on a server setting.
+    /[^ -~]/ || /\\/ {
+      fail(NR, "a byte that is not printable ASCII, or a backslash: the escaper here doubles apostrophes and nothing else, so any other byte would be a SQL literal whose meaning depends on the server\x27s standard_conforming_strings")
+      next
+    }
+
+    /"/ { fail(NR, "a double quote: this generator reads the CSV by splitting on commas, which is only correct while no cell is quoted") ; next }
+
+    {
+      n = split($0, f, ",")
+      if (n != ncol) { fail(NR, sprintf("[%d] columns, expected [%d]", n, ncol)); next }
+
+      test = f[1]; cycle = f[2]; td = f[3]; reg = f[4]; late = f[5]
+      rel = f[6]; durl = f[7]; surl = f[8]; checked = f[9]; expires = f[10]
+
+      # MIRRORS admission_test_administrations_test_check
+      if (test != "sat" && test != "act")
+        fail(NR, sprintf("test [%s] is not one of sat, act", test))
+
+      # MIRRORS admission_test_administrations_cycle_format_check
+      #
+      # The shape AND the arithmetic: `2026-99` and `2026-00` match
+      # ^[0-9]{4}-[0-9]{2}$ and are not academic years, and the SEED FILE NAME is
+      # derived from this column. The second half must be the first half\x27s next
+      # year mod 100. The DDL\x27s cycle CHECK is tightened the same way in this
+      # RFC -- the DDL now reads
+      # `SUBSTRING(cycle FROM 6 FOR 2)::INT = (SUBSTRING(cycle FROM 1 FOR 4)::INT + 1) % 100`,
+      # which is this same arithmetic. The two are MIRRORS of one rule and must be
+      # changed together, which is what the MIRRORS tag above ties them by.
+      if (cycle !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]$/) {
+        fail(NR, sprintf("cycle [%s] is not of the form 2026-27", cycle))
+      } else if (substr(cycle, 6, 2) != sprintf("%02d", (substr(cycle, 1, 4) + 1) % 100)) {
+        fail(NR, sprintf("cycle [%s] does not name two consecutive years: expected [%s-%s]", cycle,
+          substr(cycle, 1, 4), sprintf("%02d", (substr(cycle, 1, 4) + 1) % 100)))
+      }
+
+      if (!is_iso_date(td))     fail(NR, sprintf("test_date [%s] is not a real yyyy-mm-dd date", td))
+      if (!is_iso_date(reg))    fail(NR, sprintf("registration_deadline [%s] is not a real yyyy-mm-dd date", reg))
+      if (!is_iso_date(checked)) fail(NR, sprintf("checked_on [%s] is not a real yyyy-mm-dd date", checked))
+      if (!is_iso_date(expires)) fail(NR, sprintf("expires_on [%s] is not a real yyyy-mm-dd date", expires))
+      if (late != "" && !is_iso_date(late)) fail(NR, sprintf("late_registration_deadline [%s] is not a real yyyy-mm-dd date", late))
+      if (rel  != "" && !is_iso_date(rel))  fail(NR, sprintf("score_release_date [%s] is not a real yyyy-mm-dd date", rel))
+
+      # An ISO date sorts lexicographically, so these are the DDL CHECKs.
+      #
+      # MIRRORS admission_test_administrations_registration_before_test_check
+      if (reg >= td) fail(NR, sprintf("registration_deadline [%s] is not before test_date [%s]", reg, td))
+      # MIRRORS admission_test_administrations_late_deadline_check
+      if (late != "" && (late <= reg || late > td))
+        fail(NR, sprintf("late_registration_deadline [%s] is not after registration_deadline [%s] and on or before test_date [%s]", late, reg, td))
+      # MIRRORS admission_test_administrations_score_release_after_test_check
+      if (rel != "" && rel <= td)
+        fail(NR, sprintf("score_release_date [%s] is not after test_date [%s]", rel, td))
+      # MIRRORS admission_test_administrations_score_release_citation_check
+      if ((rel == "") != (surl == ""))
+        fail(NR, "score_release_date and score_release_source_url must be present together or absent together: a citation with no fact under it is not data")
+      # MIRRORS admission_test_administrations_expiry_after_checked_check
+      if (expires <= checked)
+        fail(NR, sprintf("expires_on [%s] is not after checked_on [%s]", expires, checked))
+      # MIRRORS admission_test_administrations_dates_source_url_check
+      if (durl !~ /^https:\/\//)
+        fail(NR, sprintf("dates_source_url [%s] is not an https url", durl))
+      # MIRRORS admission_test_administrations_score_release_url_check
+      #
+      # The NULL half of the DDL CHECK is the `surl != ""` guard: an absent
+      # citation is legal here and is refused by the citation rule above, which is
+      # the one that decides whether it may be absent at all.
+      if (surl != "" && surl !~ /^https:\/\//)
+        fail(NR, sprintf("score_release_source_url [%s] is not an https url", surl))
+
+      key = test "\t" td
+      if (key in seen) fail(NR, sprintf("duplicate (test, test_date) ([%s], [%s]), first seen at line [%d]", test, td, seen[key]))
+      seen[key] = NR
+
+      # checked_on and expires_on are ONE fact about one reading session, typed
+      # once per row: a human read the publisher page on a day, and the calendar
+      # they read expires on a day. A refresh that updated fourteen rows and
+      # missed the fifteenth would silently expire the whole cycle — the staleness
+      # test fires on the OLDEST row — with every other check still green. So the
+      # rows of a cycle must agree, and the refusal names the line to fix and the
+      # line it disagrees with.
+      if (cycle in cycle_checked) {
+        if (checked != cycle_checked[cycle])
+          fail(NR, sprintf("checked_on [%s] disagrees with [%s] on line [%d]: every row of cycle [%s] records ONE reading session, so a refresh that missed a row is a fault and not a mixture", checked, cycle_checked[cycle], cycle_line[cycle], cycle))
+        if (expires != cycle_expires[cycle])
+          fail(NR, sprintf("expires_on [%s] disagrees with [%s] on line [%d]: every row of cycle [%s] expires together, and the earliest expiry is what fails the build", expires, cycle_expires[cycle], cycle_line[cycle], cycle))
+      } else {
+        cycle_checked[cycle] = checked
+        cycle_expires[cycle] = expires
+        cycle_line[cycle] = NR
+      }
+
+      if (!(cycle in cycle_rows)) cycles[++ncycles] = cycle
+      cycle_rows[cycle]++
+      values[cycle] = values[cycle] sprintf("%s  (%s, %s, DATE %s, DATE %s, %s, %s, %s, %s, DATE %s, DATE %s)",
+        (cycle_rows[cycle] == 1 ? "" : ",\n"),
+        get_quoted(test), get_quoted(cycle), get_quoted(td), get_quoted(reg), get_date_or_null(late), get_date_or_null(rel),
+        get_quoted(durl), get_text_or_null(surl), get_quoted(checked), get_quoted(expires))
+    }
+
+    # Gated on header_ok, because awk runs END even after a rule called `exit`:
+    # a bad header used to ALSO print "the CSV has a header and no rows", which
+    # is a second diagnosis of a file this run never read past line 1.
+    END {
+      if (!header_ok) exit 1
+      if (NR < 2) { print "test-calendar-seed: the CSV has a header and no rows." > "/dev/stderr"; exit 1 }
+      if (bad) {
+        printf "test-calendar-seed: [%d] fault(s) in [%s]; nothing was written.\n", bad, src > "/dev/stderr"
+        exit 1
+      }
+      for (i = 1; i <= ncycles; i++) {
+        c = cycles[i]
+        out = outdir "/seed-admission-test-calendar-" c ".sql"
+        printf "-- GENERATED FILE -- do not edit.\n" > out
+        printf "--\n" > out
+        printf "-- Written by bin/test-calendar-seed from %s.\n", src > out
+        printf "-- The CSV is the source a human edits and reviews in a diff; this file is an\n" > out
+        printf "-- artifact of it. To change a date, change the CSV and re-run the script.\n" > out
+        printf "--\n" > out
+        printf "-- Cycle %s: %d SAT and ACT administrations, each with the publisher page it was\n", c, cycle_rows[c] > out
+        printf "-- read from and the date a human read it. Upserts on the natural key, so a\n" > out
+        printf "-- corrected row lands as a new generated seed and never as an edit to this one.\n" > out
+        printf "\n" > out
+        printf "INSERT INTO admission_test_administrations\n" > out
+        printf "    (test, cycle, test_date, registration_deadline, late_registration_deadline,\n" > out
+        printf "     score_release_date, dates_source_url, score_release_source_url,\n" > out
+        printf "     checked_on, expires_on)\n" > out
+        printf "VALUES\n" > out
+        printf "%s\n", values[c] > out
+        printf "ON CONFLICT (test, test_date) DO UPDATE SET\n" > out
+        printf "    cycle                      = EXCLUDED.cycle,\n" > out
+        printf "    registration_deadline      = EXCLUDED.registration_deadline,\n" > out
+        printf "    late_registration_deadline = EXCLUDED.late_registration_deadline,\n" > out
+        printf "    score_release_date         = EXCLUDED.score_release_date,\n" > out
+        printf "    dates_source_url           = EXCLUDED.dates_source_url,\n" > out
+        printf "    score_release_source_url   = EXCLUDED.score_release_source_url,\n" > out
+        printf "    checked_on                 = EXCLUDED.checked_on,\n" > out
+        printf "    expires_on                 = EXCLUDED.expires_on;\n" > out
+        # close() is awk\x27s ONLY error channel for a redirected write: a full
+        # disk or a read-only TMPDIR yields a TRUNCATED seed, which was then
+        # copied into the schema directory and logged as written.
+        if (close(out) != 0) {
+          printf "test-calendar-seed: could not finish writing [%s]; the seed for cycle %s may be truncated.\n", out, c > "/dev/stderr"
+          exit 1
+        }
+        printf "seed-admission-test-calendar-%s.sql\n", c
+      }
+    }
+  ' "$CSV_PATH" 2>&1 > "$NAMES_FILE")" || status=$?
+
+  # A here-string on an EMPTY complaint is still one empty line, and an awk that
+  # died without saying anything has no line to re-emit.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    faults=$((faults + 1))
+    log-error "$line"
+  done <<< "$complaint"
+
+  # The status is CARRIED rather than flattened into "the faults are above". awk
+  # exiting 1 after reporting is a refused CSV; awk dying on a signal, or exiting
+  # non-zero with nothing to say, is this script failing — and an operator told
+  # to go read faults that are not there has been sent to the wrong file.
+  if [ "$status" -ne 0 ]; then
+    [ "$faults" -gt 0 ] ||
+      fatal "could not read [$CSV_REL]: awk exited [$status] without reporting a fault, so it did not refuse the CSV, it died. Nothing was written."
+    fatal "refused [$CSV_REL]: [$faults] diagnostic line(s) are above and nothing was written"
+  fi
+  [ "$faults" -eq 0 ] ||
+    fatal "the generator reported [$faults] diagnostic line(s) for [$CSV_REL] and still exited 0, which is a bug in this script; nothing has been copied into [$SCHEMA_DIR]."
+}
+
+main() {
+  parse_args "$@"
+
+  CSV_PATH="$(cd "$(dirname "$CSV_ARG")" && pwd -P)/$(basename "$CSV_ARG")"
+  CSV_REL="${CSV_PATH#"$PROJECT_ROOT"/}"
+
+  # Generated into a scratch directory first, so a validation failure or a dry
+  # run never leaves a half-written migration behind.
+  #
+  # `mktemp -d` is CHECKED, and so is the name it reports. An unchecked failure
+  # left OUT_DIR empty, which made every path below relative to $PWD and aimed
+  # the cleanup `rm -rf` at the current directory.
+  OUT_DIR="$(mktemp -d)" ||
+    fatal "could not create a temporary directory to generate into; nothing was written."
+  [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] ||
+    fatal "[mktemp -d] reported success but named no usable directory [$OUT_DIR]; refusing to run with an empty scratch path, because every generated path and the cleanup would then be relative to [$PWD]."
+  # EXIT INT TERM, matching bin/test-calendar-seed-scripts-tests: on EXIT alone a
+  # ^C left the scratch directory behind.
+  trap 'rm -rf "$OUT_DIR"' EXIT INT TERM
+
+  NAMES_FILE="$OUT_DIR/names"
+  generate
+
+  local names name changed=0 status
+  names="$(cat "$NAMES_FILE")" ||
+    fatal "could not read the generated file names back from [$NAMES_FILE]; nothing has been copied into [$SCHEMA_DIR]."
+  [ -n "$names" ] ||
+    fatal "the generator named no seed for [$CSV_REL] and did not refuse it, which is a bug in this script; nothing has been copied into [$SCHEMA_DIR]."
+
+  for name in $names; do
+    # `cmp -s` has THREE answers — 0 same, 1 differs, >1 cannot compare — and
+    # folding the last two together silently overwrote an existing seed this
+    # process could not read.
+    status=1
+    if [ -f "$SCHEMA_DIR/$name" ]; then
+      status=0
+      cmp -s "$OUT_DIR/$name" "$SCHEMA_DIR/$name" || status=$?
+      [ "$status" -le 1 ] ||
+        fatal "could not compare [$SCHEMA_DIR/$name] with what [$CSV_REL] generates: cmp exited [$status], reported above. Nothing has been written."
+    fi
+
+    if [ "$status" -eq 0 ]; then
+      log-info "test-calendar-seed: [$name] is already what this CSV generates."
+    else
+      changed=1
+      if [ -n "$DRY_RUN" ]; then
+        log-error "test-calendar-seed: [$SCHEMA_DIR/$name] is not what [$CSV_REL] generates."
+        log-error "  Run: nix develop -c bin/test-calendar-seed"
+      else
+        cp "$OUT_DIR/$name" "$SCHEMA_DIR/$name" ||
+          fatal "could not write [$SCHEMA_DIR/$name]; cp's own error is above. [$SCHEMA_DIR] may hold a partial copy of it."
+        log-info "test-calendar-seed: wrote [$SCHEMA_DIR/$name]."
+      fi
+    fi
+
+    # Asked of bin/common, which read the file once, and never of `grep -Fxq`:
+    # see assert_order_is_appendable above for the defect that costs.
+    if schema_order_lists "$name"; then
+      continue
+    fi
+    changed=1
+    if [ -n "$DRY_RUN" ]; then
+      log-error "test-calendar-seed: [$ORDER_FILE] does not declare [$name], so the seed would never be applied."
+    else
+      printf '%s\n' "$name" >> "$ORDER_FILE" ||
+        fatal "could not append [$name] to [$ORDER_FILE]; the seed is in [$SCHEMA_DIR] and nothing declares it, so it would never be applied. Add the line by hand or re-run."
+      log-info "test-calendar-seed: appended [$name] to [$ORDER_FILE]."
+      # The append made the scan behind schema_order_lists stale, and the next
+      # cycle asks the same question. Re-read the corpus rather than reasoning
+      # about what this loop just did.
+      assert_order_is_appendable
+    fi
+  done
+
+  if [ -n "$DRY_RUN" ] && [ "$changed" -eq 1 ]; then
+    exit "$EXIT_SEED_WOULD_CHANGE"
+  fi
+  log-info "test-calendar-seed: done."
+}
+
+main "$@"

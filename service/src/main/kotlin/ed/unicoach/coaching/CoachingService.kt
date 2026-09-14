@@ -17,7 +17,6 @@ import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.MoneyProfilesDao
-import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.ArchiveScope
@@ -53,7 +52,6 @@ import org.slf4j.LoggerFactory
 import java.time.InstantSource
 import java.time.LocalDate
 import java.time.Month
-import java.time.ZoneId
 import java.time.format.TextStyle
 import java.util.Locale
 
@@ -104,27 +102,6 @@ class CoachingService(
   private val logger = LoggerFactory.getLogger(CoachingService::class.java)
 
   companion object {
-    /**
-     * The timezone every date the coach is told is expressed in: the one
-     * College Board and ACT publish and enforce their deadlines in (RFC 186,
-     * brief 0010 D15). Per-student inference from the residency state was
-     * rejected -- it is wrong for the split-timezone states and buys nothing
-     * at date granularity, because the coach speaks dates and never hours.
-     */
-    private val COACH_ZONE: ZoneId = ZoneId.of("America/New_York")
-
-    /**
-     * [COACH_ZONE] in the words the coach says it, DERIVED rather than typed:
-     * "Eastern Time". A literal here would go on claiming Eastern after someone
-     * moved the constant.
-     *
-     * The same words are also written into
-     * `prompts/coach-system-prompt.md`, which no constant can reach: that copy
-     * says the coach talks in dates rather than hours and names the publishers'
-     * timezone, and it has to be edited by hand if this zone ever moves.
-     */
-    private val COACH_ZONE_LABEL: String = COACH_ZONE.getDisplayName(TextStyle.FULL, Locale.US)
-
     const val MESSAGE_MAX_LENGTH = 100_000
     const val NAME_DERIVATION_MAX = 80
     private const val MESSAGE_FIELD = "message"
@@ -890,38 +867,23 @@ class CoachingService(
 
   /**
    * The student's expected high-school graduation date, for the date block
-   * (RFC 186).
+   * (RFC 186) -- [graduationDateOf], which is the one home for the two rules
+   * this read turns on (ALL rather than ACTIVE, and a missing row as a located
+   * [IllegalStateException]).
    *
-   * Unlike [activeMoneyProfile] this read is NOT absence-tolerant, and unlike
-   * [openExplicitCommitments] it does not hand the DAO's own failure straight
-   * up: `convos.student_id` is a foreign key, so the turn reached here with an
-   * authenticated student whose row cannot be missing. If it is, the bare
-   * `NotFoundException("Record not found")` would be answered to the caller as
-   * a 404 on the CONVO and logged at debug -- a corrupt database reported as an
-   * ordinary miss. Naming the row makes it the 500 it is, with the student in
-   * the message and the DAO's exception as the cause.
+   * It moved out of this class when the admission-test timeline needed the same
+   * read and copied it verbatim (RFC 197). The clause below is the only thing
+   * the two calls differ by, which is exactly why one function takes it.
    */
   private fun graduationDate(
     session: ed.unicoach.db.dao.SqlSession,
     studentId: StudentId,
   ): PartialDate =
-    StudentsDao
-      // ALL, not the default ACTIVE: the foreign key guarantees the ROW, not
-      // that `deleted_at` is still null, and a student soft-deleted between the
-      // route resolving them and this pre-flight is the boundary's refusal to
-      // make, not a corrupt-database fault. The two sibling student reads
-      // (SynthesisService, FitLensService) read the same way.
-      .findById(session, studentId, ed.unicoach.db.models.SoftDeleteScope.ALL)
-      .getOrElse { cause ->
-        if (cause is ed.unicoach.db.dao.NotFoundException) {
-          throw IllegalStateException(
-            "no students row for student [${studentId.value}] while composing the coach date block, " +
-              "though convos.student_id foreign-keys to it",
-            cause,
-          )
-        }
-        throw cause
-      }.expectedHighSchoolGraduationDate
+    graduationDateOf(
+      session,
+      studentId,
+      "composing the coach date block, though convos.student_id foreign-keys to it",
+    )
 
   /**
    * Composes the outgoing system text: the prompt body, then the date block
@@ -1049,14 +1011,12 @@ class CoachingService(
     }
 
   /**
-   * Today, as a date (RFC 186, brief 0010 D15). The ONE home for the rule that
-   * the zone is the SERVICE's and never the injected clock's:
-   * `LocalDate.now(clock)` would let a caller decide what day it is, and
-   * UTC-today is not a US family's today -- between 20:00 and midnight Eastern,
-   * UTC has already turned over, and a coach reading it would tell an East
-   * Coast student that tonight's deadline passed yesterday.
+   * Today, as a date (RFC 186, brief 0010 D15) -- [coachToday], which is now the
+   * one home for the rule that the zone is OURS and never the injected clock's.
+   * It moved out of this class with [COACH_ZONE] when a second coach-facing date
+   * reader arrived (RFC 197 D15): one decision, one home.
    */
-  private fun today(): LocalDate = LocalDate.ofInstant(clock.instant(), COACH_ZONE)
+  private fun today(): LocalDate = clock.coachToday()
 
   /** "June", not "JUNE" and not "6": the coach reads this line aloud. */
   private fun monthName(month: Month): String = month.getDisplayName(TextStyle.FULL, Locale.US)
