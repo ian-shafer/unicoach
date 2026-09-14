@@ -187,7 +187,12 @@ Four conditions, each from a real failure:
    text VERBATIM. Not a summary — a gate result is exactly where the skill's
    two-hops-of-paraphrase warning bites.
 2. **The child logs to disk as well as replying**, so a stall still leaves
-   evidence and `agent_observe` shows where it stopped.
+   evidence and `agent_observe` shows where it stopped. Log **under `<rs>/`**:
+   `ship-land` copies the whole run scratch to
+   `$ORIGINAL_CHECKOUT/.scratch/ship-archive/<run-id>/` BEFORE it removes the
+   worktree, so a land log written there survives the teardown and is read from
+   the archive afterwards. A run that reports its gate numbers were lost with
+   the worktree has not looked.
 3. **The tree is frozen while a child runs a gate.** Editing a file a child is
    executing invalidates its run: bash reads a script incrementally, and that
    run has to be thrown away. Whoever runs the gate owns the tree until it
