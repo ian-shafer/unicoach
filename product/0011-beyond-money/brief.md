@@ -12,9 +12,9 @@ Status:
   corrections; the load-bearing 16 are tabulated in `spec.md`'s preamble).
 - Gate 1 (prioritisation): **APPROVED by Ian 2026-09-10 (verbatim: "Okay. I
   approve this gate") — 23 decisions.**
-- Gate 2 (spec): not reached.
+- Gate 2 (spec): **APPROVED by Ian 2026-09-11** (verbatim: "approve").
 - Handle: `beyond` (slice IDs `beyond/NN.S/name`).
-- Ledger: (empty — nothing specced, nothing landed)
+- Ledger: see the **Ledger** section at the end of this brief.
 
 ## The question
 
@@ -546,3 +546,15 @@ nudge, never a bare repeat.
       unicoach including the AI-sycophancy part. Static, no account, no cookie, no form.
       The page content is a typed value, so an unsourced claim does not compile; 15 tests
       hold it. Full suite 3,280 executed, 0 failures.
+
+    beyond/02/the-suppression-sentinel LANDED as RFC 206 (main@da0c308a + 95f4da3f,
+      2026-09-14) — the college ingest now reads `PS`, the two-letter code the College
+      Scorecard actually writes for a figure it withholds for privacy; it recognised only
+      the archived spelling `PrivacySuppressed`, so 1,228 suppressed debt cells read as
+      school silence and families were told "This school did not report this figure".
+      Both spellings are matched exactly, the per-column absence counts are kept at the
+      seam that recognises the sentinel (so the domain-free net-price columns count too),
+      an unrecognised token is now logged by column, line and value instead of passing as
+      silence, and the three CSV fixtures stop spelling a sentinel the source never emits.
+      Loader only: the stored statuses move on the next `bin/ingest-colleges` run. Full
+      suite 3,271 executed, 0 failures; the gate re-ran it and passed.
