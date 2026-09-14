@@ -452,6 +452,37 @@ statute backs the requirement and the grade, its board rule backs the test.
 Carried by `test/05.1/external-documents`, with the migration of the other eight
 tables in `test/05.2/one-home-for-every-citation`.
 
+**D27 — unicoach owns its codebooks, so unicoach populates them, at migration
+time.** (Ian, 2026-09-14, diagnosing a blocked run rather than accepting its
+workaround: _"`filled by the data-import run` this is the problem. Unicoach owns
+the us_states table. so it should populate it."_)
+
+`test/05` asked for a foreign key from its state column into `us_states`, and it
+could not have one. `us_states` is CREATED by a migration and FILLED by the
+data-import run, so a seed that arrives at migration time points at an empty
+table — the run's suite never reached a test, and 112 of 113 migrations applied
+before the seed was refused with
+`Key (state)=(AL) is not present in table
+"us_states"`. That is true of a fresh
+production database too, not only the test one; the two tables that already key
+into `us_states` escape it because their rows also arrive at import time.
+
+The codebooks are ours. `0060` creates eleven of them — `us_states`,
+`ipeds_regions`, `nces_locales`, the two Carnegie tables, religious
+affiliations, athletic associations, football conferences,
+`admission_test_policies`, `cip_codes`, `codebook_sources` — from authored
+files, and things already key into them (`colleges.state`, `colleges.locale`,
+the search index's region, locale and test-policy columns). So the fix is not a
+new mechanism: it is the pattern this brief invented twice for its own
+hand-maintained data — a committed file, a GENERATED seed migration — applied to
+the tables that had it backwards.
+
+**Interim, approved by Ian in the same breath:** `test/05` ships with the
+two-letter format rule on the column, and its own test that reads every state
+code in the committed file against the published codebook file. A typo still
+fails the build, in the file where the fix is rather than at migration time. The
+key arrives with `test/05.3/own-our-codebooks`.
+
 ## Corrections to the record (2026-09-10)
 
 Written down because the brief asserted them to Ian before they were verified.

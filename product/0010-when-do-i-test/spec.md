@@ -566,6 +566,52 @@ at /ship's gate**, and it will be the largest migration this brief has proposed.
   ones.
 - **Door:** none. Nothing a family sees changes.
 
+### `test/05.3/own-our-codebooks`
+
+**Needs:**
+
+- BLOCKS test/05/your-state-already-pays — technical. This slice adds the
+  foreign key `test/05` could not have; there is nothing to key until
+  `test/05`'s table exists.
+
+**What and why.** D27. The published codebooks are unicoach's own reference
+data, created by a migration and filled by the data-import run — so anything
+seeded at migration time cannot key into them. `test/05` hit it as a hard
+failure: 112 of 113 migrations applied and the seed was refused,
+`Key (state)=(AL) is not present
+in table "us_states"`. The same trap waits for
+every future table that wants a codebook key, and it is silent until something
+tries.
+
+**Foundations.** `0060` (the eleven codebook tables and their authored sources),
+`0067` (`colleges.state` and `colleges.locale` keys), `0064` (the search index's
+region, locale and test-policy keys), and the committed-file-plus-generated-seed
+pattern RFC 197 and RFC 208 each invented for their own data.
+
+**Decided here.** Seed the codebooks at MIGRATION time from their authored
+files, with the seed generated rather than hand-written, and then add the keys
+that could not exist before — `test/05`'s state column first, because it is the
+one with a named debt. **DDL at /ship's gate.** One writer, not two: what
+changes is WHEN the codebook is written, which is the actual defect.
+
+**Left to /ship's design.** Whether all eleven codebooks move at once or only
+those something keys into; whether the import run keeps writing them at all, or
+becomes a re-ingest that upserts what the migration already placed; whether
+`codebook_sources` needs the same treatment or is genuinely import-time data.
+
+**Acceptance criteria.**
+
+- A freshly migrated database — with NO import run — holds the codebooks, and
+  `test/05`'s seed applies against it. An executed test proves it on a database
+  built by migration alone, because that is the case that failed.
+- `admission_test_state_programmes.state` becomes a real foreign key, and the
+  interim format rule is deleted rather than left beside it (RFC 208's own
+  reasoning: a key is strictly stronger than a regex).
+- No codebook row changes value. This slice moves WHEN they are written, never
+  WHAT they say, pinned by comparing a migrated-only database against a
+  migrated-then-imported one.
+- **Door:** none. Nothing a family sees changes.
+
 ### `test/06/your-scores`
 
 **Needs:**
