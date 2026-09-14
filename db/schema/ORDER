@@ -107,3 +107,5 @@ record-source-url-status.sql
 create-admission-test-calendar.sql
 seed-admission-test-calendar-2026-27.sql
 seed-coach-system-prompt-v34.sql
+add-college-score-bands.sql
+seed-coach-system-prompt-v35.sql

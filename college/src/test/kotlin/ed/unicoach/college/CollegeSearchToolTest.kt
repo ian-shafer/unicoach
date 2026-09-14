@@ -97,6 +97,12 @@ class CollegeSearchToolTest {
       undergradEnrollmentHeadcount = 2000,
       admissionRateShare = 0.4,
       satAverageEquivalentScore = null,
+      satReading25thPercentileScore = null,
+      satReading75thPercentileScore = null,
+      satMath25thPercentileScore = null,
+      satMath75thPercentileScore = null,
+      actComposite25thPercentileScore = null,
+      actComposite75thPercentileScore = null,
       completionRate150pct4yrShare = 0.7,
       website = null,
     )

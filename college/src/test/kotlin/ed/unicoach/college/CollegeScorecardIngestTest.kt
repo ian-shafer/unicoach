@@ -55,6 +55,22 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
       "pell_share",
     )
 
+  /**
+   * The six percentile score-band columns RFC 195 added to the countable
+   * allowlist, named here so the pre-`0094` axis this suite reconstructs is
+   * the axis that actually existed then -- a run before either change had
+   * never heard of them.
+   */
+  private val scoreBandColumns =
+    setOf(
+      "sat_reading_25th_percentile_score",
+      "sat_reading_75th_percentile_score",
+      "sat_math_25th_percentile_score",
+      "sat_math_75th_percentile_score",
+      "act_composite_25th_percentile_score",
+      "act_composite_75th_percentile_score",
+    )
+
   private val loader = CollegeScorecardLoader(database)
   private val institutionCsv = fixture("scorecard-institutions-fixture.csv")
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
@@ -455,10 +471,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // 176 the drop of the publisher money columns — each is exactly the
     // derivation change method_version exists to record.
     assertEquals(
-      9,
+      10,
       row.methodVersion,
-      "RFC 176 took the method version to 9: the institution phase writes no money, so `non_null` carries " +
-        "[${CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.size}] keys, not 28",
+      "RFC 195 took the method version to 10: the institution phase writes the six percentile score bands, so " +
+        "`non_null` carries [${CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.size}] keys, not 10 and not 28",
     )
     assertTrue(
       row.rowsIngested.contains("\"inserted\": 5"),
@@ -522,22 +538,24 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `the change summary carries ten non-money keys at method version 9, and an older row keeps its own`() {
+  fun `the change summary carries sixteen non-money keys at method version 10, and an older row keeps its own`() {
     // RFC 176 D7. The `non_null` axis fell from 28 keys to 10 when money left
     // `colleges`. TEN, not the twelve an earlier draft of D7 claimed: all
     // EIGHTEEN of the dropped columns were in this list, median earnings and
-    // Pell share among them, and 28 - 18 = 10. There is now ONE list -- the
-    // loader DERIVES its summary columns from
+    // Pell share among them, and 28 - 18 = 10. RFC 195 then took it to
+    // SIXTEEN: the six percentile score bands are countable `colleges`
+    // columns like every other optional Scorecard metric. There is ONE list --
+    // the loader DERIVES its summary columns from
     // `CollegesDao.NON_NULL_COUNTABLE_COLUMNS`, which is the one that becomes
-    // SQL -- so the eighteen left in a single edit and no second copy can hold
-    // a name that would fail the run with 42703 AFTER the load.
+    // SQL -- so both changes were a single edit and no second copy can hold a
+    // name that would fail the run with 42703 AFTER the load.
     val report = ingest()
     assertEquals(
       CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.toSet(),
       report.nonNullAfter.keys,
       "the summary counts exactly the allowlist",
     )
-    assertEquals(10, report.nonNullAfter.size, "ten keys, not twenty-eight")
+    assertEquals(16, report.nonNullAfter.size, "sixteen keys: the ten non-money survivors plus RFC 195's six bands")
     for (column in CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS) {
       assertTrue(
         column !in publisherMoneyColumns,
@@ -548,7 +566,12 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The append-only half of the contract, asserted rather than promised: a
     // build row written the old way keeps its 28 keys and is still readable,
     // because migration 0094 does nothing to `change_summary`.
-    val legacyKeys = publisherMoneyColumns.toList() + CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS
+    // The pre-0094 axis, rebuilt: the eighteen dropped money columns plus the
+    // ten that survived them -- which is this list MINUS the six bands, since
+    // no pre-0094 run had ever heard of them.
+    val legacyKeys =
+      publisherMoneyColumns.toList() +
+        CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.filterNot { it in scoreBandColumns }
     assertEquals(28, legacyKeys.size, "the pre-0094 axis carried twenty-eight keys: the ten survivors plus the eighteen dropped")
     // Built with the same library `CollegeScorecardLoader.changeSummaryJson`
     // writes with, so the escaping is the platform's and the axis is a real

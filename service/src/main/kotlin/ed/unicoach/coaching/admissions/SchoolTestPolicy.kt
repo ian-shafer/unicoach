@@ -140,6 +140,20 @@ object TestPolicyCopy {
   const val POLICY_GAP_IS_OURS: String = "a gap in our data"
 
   /**
+   * Where a family goes when WE do not hold a fact -- the closing clause of
+   * every "we do not have this" sentence in this package.
+   *
+   * Named beside [POLICY_GAP_IS_OURS] because the two travel together and for
+   * the same reason: RFC 195's score-band section says the same thing about a
+   * different silence, and a second hand-typed copy of this clause is a second
+   * place for the two sections to drift into sending a family somewhere else.
+   * [CONFIRM_ON_THE_SCHOOLS_PAGE] above is the other half of a DIFFERENT
+   * sentence -- confirming a fact we DO hold -- and is deliberately not reused
+   * here.
+   */
+  const val THE_SCHOOLS_OWN_PAGE_HAS_IT: String = "the school's own admissions page is where to find it."
+
+  /**
    * The sentence that rides with EVERY rendered policy (D17). It is named by
    * the section rather than by the tool description on purpose: a rule stated
    * once in a tool's prose is a rule the model may or may not have in mind when
@@ -166,7 +180,7 @@ object TestPolicyCopy {
    */
   const val NOT_REPORTED: String =
     "we do not have this school's test policy, which is $POLICY_GAP_IS_OURS and not a statement that the " +
-      "school requires no test score; the school's own admissions page is where to find it."
+      "school requires no test score; $THE_SCHOOLS_OWN_PAGE_HAS_IT"
 }
 
 /**

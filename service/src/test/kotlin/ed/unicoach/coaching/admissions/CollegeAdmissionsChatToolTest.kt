@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -58,6 +60,8 @@ class CollegeAdmissionsChatToolTest {
 
   private fun testPolicyOf(college: JsonObject): JsonObject? = college[AdmissionsField.TEST_POLICY.wireName]?.jsonObject
 
+  private fun scoreBandsOf(college: JsonObject): JsonObject? = college[AdmissionsField.SCORE_BANDS.wireName]?.jsonObject
+
   private fun roundsOf(college: JsonObject) =
     college
       .getValue(AdmissionsField.DEADLINES.wireName)
@@ -82,7 +86,16 @@ class CollegeAdmissionsChatToolTest {
     student: StudentId,
     name: String = "Wire University",
   ): CollegeId {
-    val id = AdmissionsTestDb.seedListedCollege(student, name)
+    // The bands are part of "fully reporting" since RFC 195: a section left
+    // absent is a section the RFC 143 guard below never walks.
+    val id =
+      AdmissionsTestDb.seedListedCollege(
+        student,
+        name,
+        satReadingBand = 620 to 700,
+        satMathBand = 640 to 750,
+        actBand = 28 to 33,
+      )
     AdmissionsTestDb.seedMeritAid(
       id,
       firstTimeFullTimeFreshmenHeadcount = 2000,
@@ -144,6 +157,43 @@ class CollegeAdmissionsChatToolTest {
       AdmissionsField.TEST_POLICY.wireName in CollegeQueryVocabulary.FIELD_NAMES,
       "the section key must be the same word search_colleges filters on: [${AdmissionsField.TEST_POLICY.wireName}] " +
         "is not in [${CollegeQueryVocabulary.FIELD_NAMES}]",
+    )
+    // RFC 195: the band ethos rides the description too -- the cohort is
+    // said, the band is per school, an average is never a threshold, and the
+    // silence is ours.
+    assertTrue(
+      description.contains(AdmissionsField.SCORE_BANDS.wireName),
+      "the description must name the section it is stating rules about: [$description]",
+    )
+    assertTrue(
+      description.contains("never turn a band into a chance of admission"),
+      "D9: a band is never a chance of admission: [$description]",
+    )
+    assertTrue(
+      description.contains("carry one school's band to another school"),
+      "one school's band is never generalised to the list: [$description]",
+    )
+    assertTrue(
+      description.contains("never compare a student to it"),
+      "D9: nothing compares the student to the figures: [$description]",
+    )
+    assertTrue(
+      description.contains(ScoreBandCopy.NOT_REPORTED),
+      "the absent-band sentence is the copy object's, never retyped here: [$description]",
+    )
+    // Every key the description points a sentence at is interpolated from
+    // [ScoreBandWire], so renaming one fails the payload test INSTEAD of
+    // leaving the model reading a key that no longer exists.
+    for (key in listOf(
+      ScoreBandWire.NOT_A_CUT_OFF_KEY,
+      ScoreBandWire.ADMITTED_AVERAGE_KEY,
+      ScoreBandWire.ADMITTED_AVERAGE_LABEL_KEY,
+    )) {
+      assertTrue(description.contains(key), "the description must name the key it instructs about: [$key]")
+    }
+    assertFalse(
+      description.contains(" ${MeritAidWire.AVERAGE_LABEL_KEY} says it"),
+      "the average-label instruction must point at the band section's own key, not merit_aid's: [$description]",
     )
     assertFalse(
       description.contains("without need"),
@@ -219,6 +269,10 @@ class CollegeAdmissionsChatToolTest {
         AdmissionsField.MERIT_AID.wireName,
         AdmissionsField.ADMISSION_FACTORS.wireName,
         AdmissionsField.TEST_POLICY.wireName,
+        // RFC 195: between the policy and the deadlines, because "does this
+        // school want a score" and "what did the scores look like" are one
+        // thought and the second is meaningless before the first.
+        AdmissionsField.SCORE_BANDS.wireName,
         AdmissionsField.DEADLINES.wireName,
         "data_availability",
       ),
@@ -534,7 +588,10 @@ class CollegeAdmissionsChatToolTest {
     // The THREE CDS sections. The test policy is deliberately not among them:
     // it is one federal survey with no per-school document, so it carries its
     // own citation type and is asserted on its own terms below (RFC 187).
-    val cdsFields = AdmissionsField.entries - AdmissionsField.TEST_POLICY
+    // The score bands are excluded with it, and for the same kind of reason:
+    // one federal file with one cohort, cited as itself rather than as the
+    // school's own document (RFC 195).
+    val cdsFields = AdmissionsField.entries - AdmissionsField.TEST_POLICY - AdmissionsField.SCORE_BANDS
     val citations =
       cdsFields.map { field ->
         rendered
@@ -706,6 +763,153 @@ class CollegeAdmissionsChatToolTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Score bands (RFC 195)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a school's bands reach the wire as numbers AND as sentences, with the cohort and the qualifier`() {
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(
+      student,
+      "Range University",
+      satReadingBand = 620 to 700,
+      satMathBand = 640 to 750,
+      actBand = 28 to 33,
+    )
+
+    val college = collegesOf(execute(student)).single()
+    val section = scoreBandsOf(college)
+    assertNotNull(section)
+    val bands = section.getValue(ScoreBandWire.BANDS_KEY).jsonArray.map { it.jsonObject }
+    assertEquals(
+      ScoredTest.entries.map { it.wireName },
+      bands.map { it.getValue(ScoreBandWire.TEST_KEY).jsonPrimitive.content },
+      "the two SAT sections then the ACT -- the order a family hears them in",
+    )
+    // D-C: the measure-bearing numbers ARE on the wire, so a model compares
+    // figures rather than parsing English.
+    val reading = bands.first()
+    assertEquals(620, reading.getValue(ScoreBandWire.SCORE_25TH_KEY).jsonPrimitive.int)
+    assertEquals(700, reading.getValue(ScoreBandWire.SCORE_75TH_KEY).jsonPrimitive.int)
+    // ...and so is the sentence, computed from those same two numbers.
+    val statement = reading.getValue(ScoreBandWire.STATEMENT_KEY).jsonPrimitive.content
+    assertEquals(ScoreBandCopy.statementOf(assertIs<ScoreBandResult.Band>(ScoreBand.of(ScoredTest.SAT_READING, 620, 700)).band), statement)
+    assertTrue(statement.contains("620") && statement.contains("700"), "the sentence carries the figures: [$statement]")
+    assertTrue(
+      statement.contains(ScoreBandCitation.COHORT_TERM),
+      "the cohort is INSIDE the sentence, never a bare year beside it: [$statement]",
+    )
+    assertTrue(statement.contains(ScoredTest.SAT_READING.label), "and the test it is about: [$statement]")
+
+    // The qualifier rides the section, once, and is not optional.
+    assertEquals(ScoreBandCopy.NOT_A_CUT_OFF, section.getValue(ScoreBandWire.NOT_A_CUT_OFF_KEY).jsonPrimitive.content)
+    assertEquals(
+      ScoreBandCitation.citedAs,
+      section
+        .getValue(ScoreBandWire.SOURCE_KEY)
+        .jsonObject
+        .getValue("cited_as")
+        .jsonPrimitive.content,
+      "the federal file names itself and its cohort, never the school's own document",
+    )
+    assertNull(section[ScoreBandWire.ADMITTED_AVERAGE_KEY], "a school with a band is never shown an average too")
+    assertFalse(
+      AdmissionsField.SCORE_BANDS.wireName in availabilityOf(college),
+      "a rendered section must not also be named as a silence: ${availabilityOf(college)}",
+    )
+  }
+
+  @Test
+  fun `an average-only section emits no bands array and no band qualifier`() {
+    // The 88-college shape (D-A), and the default-seeded college's shape too:
+    // an average, no band. An empty `bands` array would be furniture, and
+    // "a quarter of admitted students scored below the lower number" beside no
+    // numbers qualifies nothing -- a standing sentence about figures that are
+    // not there is exactly how a model comes to believe it has a range.
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(student, "Average Only College", satAverageEquivalentScore = 1310)
+
+    val section = assertNotNull(scoreBandsOf(collegesOf(execute(student)).single()))
+    assertNull(section[ScoreBandWire.BANDS_KEY], "no band means no bands key, not an empty array")
+    assertNull(section[ScoreBandWire.NOT_A_CUT_OFF_KEY], "the standing qualifier rides bands, and there are none")
+    assertEquals(
+      setOf(ScoreBandWire.ADMITTED_AVERAGE_KEY, ScoreBandWire.SOURCE_KEY),
+      section.keys,
+      "an average-only section is the average and its citation, and nothing else",
+    )
+  }
+
+  @Test
+  fun `a school with no score at all is an absent section and a named silence`() {
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(student, "No Score College", satAverageEquivalentScore = null)
+
+    val college = collegesOf(execute(student)).single()
+    assertNull(scoreBandsOf(college), "an absent key, never an empty object")
+    assertTrue(
+      AdmissionsField.SCORE_BANDS.wireName in availabilityOf(college),
+      "the gap is OURS and must be sayable: ${availabilityOf(college)}",
+    )
+  }
+
+  @Test
+  fun `D16 renders the average as an average, and never beside a band for the same test`() {
+    val student = AdmissionsTestDb.createStudent()
+    // Both directions in one test, because the failure mode is showing BOTH.
+    AdmissionsTestDb.seedListedCollege(
+      student,
+      "Average College",
+      satAverageEquivalentScore = 1310,
+      actBand = 28 to 33,
+    )
+    AdmissionsTestDb.seedListedCollege(
+      student,
+      "Banded College",
+      satAverageEquivalentScore = 1310,
+      satReadingBand = 620 to 700,
+      satMathBand = 640 to 750,
+    )
+
+    val byName = collegesOf(execute(student)).associateBy { it.getValue("name").jsonPrimitive.content }
+    val average = scoreBandsOf(byName.getValue("Average College"))
+    assertNotNull(average)
+    val averageObject = average.getValue(ScoreBandWire.ADMITTED_AVERAGE_KEY).jsonObject
+    assertEquals(1310, averageObject.getValue(ScoreBandWire.ADMITTED_AVERAGE_SCORE_KEY).jsonPrimitive.int)
+    assertEquals(
+      ScoreBandCopy.AVERAGE_LABEL,
+      averageObject.getValue(ScoreBandWire.ADMITTED_AVERAGE_LABEL_KEY).jsonPrimitive.content,
+      "the label key is the section's OWN -- `average_label` belongs to merit_aid in this same payload",
+    )
+    assertTrue(
+      averageObject
+        .getValue(ScoreBandWire.STATEMENT_KEY)
+        .jsonPrimitive.content
+        .contains(ScoreBandCopy.AVERAGE_IS_NOT_A_TARGET),
+      "an average always arrives with what it is NOT",
+    )
+    // The ACT band it publishes is beside the average, and no SAT band was
+    // invented from the average (D-A).
+    assertEquals(
+      listOf(ScoredTest.ACT_COMPOSITE.wireName),
+      average
+        .getValue(ScoreBandWire.BANDS_KEY)
+        .jsonArray
+        .map {
+          it.jsonObject
+            .getValue(ScoreBandWire.TEST_KEY)
+            .jsonPrimitive.content
+        },
+    )
+
+    val banded = scoreBandsOf(byName.getValue("Banded College"))
+    assertNotNull(banded)
+    assertNull(
+      banded[ScoreBandWire.ADMITTED_AVERAGE_KEY],
+      "a school with an SAT band is never also shown the SAT average",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
   // The RFC 143 guard (D9)
   // ---------------------------------------------------------------------------
 
@@ -737,6 +941,19 @@ class CollegeAdmissionsChatToolTest {
       emptySet(),
       MeritAidWire.NUMERIC_KEYS - meritOf(college)!!.keys,
       "every merit measure the allowlist sanctions must be in the payload",
+    )
+    // The two percentile keys RFC 195 admitted to the allowlist are on the
+    // wire, so the guard above walked them rather than sleeping through an
+    // absent section.
+    assertEquals(
+      emptySet(),
+      setOf(ScoreBandWire.SCORE_25TH_KEY, ScoreBandWire.SCORE_75TH_KEY) -
+        scoreBandsOf(college)!!
+          .getValue(ScoreBandWire.BANDS_KEY)
+          .jsonArray
+          .first()
+          .jsonObject.keys,
+      "every score key the allowlist sanctions must be in the payload",
     )
 
     // Positive control: the guard must react to every shape it exists to catch,

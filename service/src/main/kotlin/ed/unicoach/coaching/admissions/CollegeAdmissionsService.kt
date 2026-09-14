@@ -247,6 +247,7 @@ data class CollegeAdmissions(
   val meritAid: MeritPractice?,
   val factors: AdmissionFactorGrid?,
   val testPolicy: SchoolTestPolicy?,
+  val scoreBands: SchoolScoreBands?,
   val deadlines: DeadlineSchedule?,
 ) {
   /**
@@ -268,6 +269,7 @@ data class CollegeAdmissions(
         if (meritAid == null) add(AdmissionsField.MERIT_AID)
         if (factors == null) add(AdmissionsField.ADMISSION_FACTORS)
         if (testPolicy == null) add(AdmissionsField.TEST_POLICY)
+        if (scoreBands == null) add(AdmissionsField.SCORE_BANDS)
         if (deadlines == null) add(AdmissionsField.DEADLINES)
       }
 }
@@ -329,6 +331,12 @@ class CollegeAdmissionsService(
    * three CDS tables, the IPEDS test policy), and still six whatever the list's
    * length. `CollegeAdmissionsServiceTest` asserts that number absolutely, so a
    * seventh read cannot be added without this sentence being edited with it.
+   * RFC 195's `score_bands` section added a FIFTH section and NO statement:
+   * its six columns are on the `colleges` row the selection already read, so
+   * [AdmissionsRows] gained no field and this count did not move. A section
+   * that needs a table is a seventh statement and an edit to this sentence,
+   * together.
+   *
    * [getForStudent] is this function plus the connection and the `Result`
    * wrapper, and nothing else.
    */
@@ -422,6 +430,20 @@ class CollegeAdmissionsService(
    * [CollegeAdmissions.notReported] rather than left as a silence the model has
    * to interpret. A row of all-null measures counts as unreported: a citation
    * with no facts under it is not data.
+   *
+   * FIVE SECTIONS, FIVE ONE-LINE STEPS. Each `*Of` function owns everything
+   * its own section knows -- the "a citation with no facts under it is not
+   * data" rule, and the log line that makes the suppression findable -- so
+   * this body is the list of sections and nothing else.
+   *
+   * [scoreBandsOf] is the one built from the `colleges` row itself and from no
+   * reference table (RFC 195): the six band columns and
+   * `sat_average_equivalent_score` ride the row [StudentCollegeSelection] has
+   * already read, which is why the fifth section adds no query, no field to
+   * [AdmissionsRows] and no statement to the count this service's KDoc
+   * promises. The D16 fallback (D-A) is [SchoolScoreBands.from]'s, exactly as
+   * the decode is [SchoolTestPolicy.from]'s: a promise a type makes about its
+   * own contents has to be kept by the type.
    */
   private fun admissionsOf(
     college: College,
@@ -440,10 +462,11 @@ class CollegeAdmissionsService(
       listStatus = listStatus,
       // Each factory owns the "a citation with no facts under it is not data"
       // rule for its own section and returns null when it holds; the unreported
-      // list is then derived from these four, not restated beside them.
+      // list is then derived from these five, not restated beside them.
       meritAid = meritOf(college, merit),
       factors = factorsOf(college, factors),
       testPolicy = testPolicyOf(college, testPolicy, hasIpedsRow),
+      scoreBands = scoreBandsOf(college),
       deadlines = scheduleOf(college, deadlines),
     )
 
@@ -528,6 +551,45 @@ class CollegeAdmissionsService(
         )
       }
     }
+  }
+
+  /**
+   * One school's score-band section (RFC 195), with the corpus defects it
+   * found on the way named in the log.
+   *
+   * It exists for the [ScoreBandResult.Malformed] arm and for nothing else. A
+   * stored pair that is half a band, inverted, or outside its published scale
+   * violates a `colleges` CHECK -- `colleges_*_band_paired_check`,
+   * `_ordered_check`, and the per-column domain check -- so such a row means
+   * the CHECK was dropped or something wrote past it. That is the same kind of
+   * fact [testPolicyOf] warns about, said the same way: the college, the test,
+   * and the two stored values, so an operator can find the row.
+   *
+   * ORDINARY ABSENCE IS NOT LOGGED, which is why the distinction had to be a
+   * value ([ScoreBandResult]) before this function could be written. 5,234 of
+   * the snapshot's 6,273 colleges publish no score at all; a line for each
+   * would be 83% of the corpus restating what the federal file is, and the
+   * three lines that matter would be unfindable inside it.
+   *
+   * INTERNAL rather than private, because the malformed row cannot be created
+   * in a database that has the CHECKs: the only honest test of this behaviour
+   * hands it a [College] directly.
+   */
+  internal fun scoreBandsOf(college: College): SchoolScoreBands? {
+    val results = ScoreBand.resultsOf(college)
+    for (result in results) {
+      if (result !is ScoreBandResult.Malformed) continue
+      logger.warn(
+        "stored score band violates the colleges CHECKs -- band suppressed: " +
+          "college=[{}] test=[{}] lower=[{}] upper=[{}] reason=[{}]",
+        college.id.value,
+        result.test.wireName,
+        result.lower,
+        result.upper,
+        result.reason.value,
+      )
+    }
+    return SchoolScoreBands.from(college, results)
   }
 
   /** One school's factor grid, or null when the stored row answers no row of the C7 grid -- logged for the same reason as [meritOf]. */

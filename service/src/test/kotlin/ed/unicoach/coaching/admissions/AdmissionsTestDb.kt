@@ -60,9 +60,26 @@ object AdmissionsTestDb {
 
   fun createStudent(): StudentId = CoachingTestDb.createStudent("admissions")
 
+  /**
+   * A college row, with its published score bands as parameters (RFC 195).
+   *
+   * The bands are PAIRS, because the schema is: `colleges` CHECKs that a 25th
+   * and a 75th are present or absent together, so a fixture that took six
+   * independent integers could seed a row the database would refuse -- and the
+   * refusal would read as a broken test rather than as the rule it is.
+   *
+   * The DEFAULT is the D16 shape: an admitted-student average and no band at
+   * all. It is the corpus's majority shape among schools that report anything
+   * (1,037 averages against 949 SAT bands), and it keeps every suite that only
+   * needs a college to exist away from this section's subject.
+   */
   fun seedCollege(
     name: String,
     state: String = "MA",
+    satAverageEquivalentScore: Int? = 1200,
+    satReadingBand: Pair<Int, Int>? = null,
+    satMathBand: Pair<Int, Int>? = null,
+    actBand: Pair<Int, Int>? = null,
   ): CollegeId {
     val ipedsUnitId = nextIpedsUnitId++
     return CollegesDao
@@ -81,7 +98,13 @@ object AdmissionsTestDb {
           control = 2,
           undergradEnrollmentHeadcount = 5000,
           admissionRateShare = 0.5,
-          satAverageEquivalentScore = 1200,
+          satAverageEquivalentScore = satAverageEquivalentScore,
+          satReading25thPercentileScore = satReadingBand?.first,
+          satReading75thPercentileScore = satReadingBand?.second,
+          satMath25thPercentileScore = satMathBand?.first,
+          satMath75thPercentileScore = satMathBand?.second,
+          actComposite25thPercentileScore = actBand?.first,
+          actComposite75thPercentileScore = actBand?.second,
           completionRate150pct4yrShare = 0.7,
           website = "https://test$ipedsUnitId.edu",
         ),
@@ -100,7 +123,18 @@ object AdmissionsTestDb {
     student: StudentId,
     name: String,
     status: CollegeListEntryStatus = CollegeListEntryStatus.CONSIDERING,
-  ): CollegeId = seedCollege(name).also { addToCollegeList(student, it, status) }
+    satAverageEquivalentScore: Int? = 1200,
+    satReadingBand: Pair<Int, Int>? = null,
+    satMathBand: Pair<Int, Int>? = null,
+    actBand: Pair<Int, Int>? = null,
+  ): CollegeId =
+    seedCollege(
+      name = name,
+      satAverageEquivalentScore = satAverageEquivalentScore,
+      satReadingBand = satReadingBand,
+      satMathBand = satMathBand,
+      actBand = actBand,
+    ).also { addToCollegeList(student, it, status) }
 
   /** One CDS merit-aid row, through the shared seeder both tools' suites use. */
   fun seedMeritAid(

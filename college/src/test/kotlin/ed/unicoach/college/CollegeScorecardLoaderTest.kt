@@ -8,6 +8,7 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import kotlinx.coroutines.runBlocking
+import org.apache.commons.csv.CSVFormat
 import org.junit.jupiter.api.Test
 import java.io.File
 import java.sql.SQLException
@@ -257,12 +258,294 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // money off `colleges`, and the canonical fill applies its own domain to
       // the same cells. So mechanism A is asserted here on what this phase
       // still parses.
-      assertEquals(setOf("admission_rate_share"), result.fieldsCoercedToNull.keys)
+      assertEquals(
+        setOf("admission_rate_share", "act_composite_25th_percentile_score", "act_composite_75th_percentile_score"),
+        result.fieldsCoercedToNull.keys,
+        "and on the two score-band cells RFC 195 added, whose fixture values 0 and 41 are outside the ACT scale",
+      )
 
       val college = withSession { CollegesDao.findByIpedsUnitId(it, 600600).getOrThrow() }
       assertNotNull(college)
       assertNull(college.admissionRateShare)
     }
+
+  @Test
+  fun `the six percentile score bands load as published`() =
+    runBlocking {
+      // Row 110100 carries all six cells (RFC 195), with three DIFFERENT pairs
+      // so a mapper that crossed two columns shows up as a wrong number.
+      loader.load(institutionCsv, fieldsCsv)
+
+      val banded = withSession { CollegesDao.findByIpedsUnitId(it, 110100).getOrThrow() }
+      assertNotNull(banded)
+      assertEquals(560, banded.satReading25thPercentileScore, "SATVR25")
+      assertEquals(660, banded.satReading75thPercentileScore, "SATVR75")
+      assertEquals(570, banded.satMath25thPercentileScore, "SATMT25")
+      assertEquals(670, banded.satMath75thPercentileScore, "SATMT75")
+      assertEquals(22, banded.actComposite25thPercentileScore, "ACTCM25")
+      assertEquals(28, banded.actComposite75thPercentileScore, "ACTCM75")
+
+      // Row 330300 leaves all six cells blank -- the 5,234-of-6,273 case. Six
+      // nulls, and the college still loads: a school with no published score
+      // is not a broken row.
+      val silent = withSession { CollegesDao.findByIpedsUnitId(it, 330300).getOrThrow() }
+      assertNotNull(silent)
+      assertNull(silent.satReading25thPercentileScore)
+      assertNull(silent.satReading75thPercentileScore)
+      assertNull(silent.satMath25thPercentileScore)
+      assertNull(silent.satMath75thPercentileScore)
+      assertNull(silent.actComposite25thPercentileScore)
+      assertNull(silent.actComposite75thPercentileScore)
+    }
+
+  @Test
+  fun `an out-of-domain score band is coerced to null and counted, and the run does not fail`() =
+    runBlocking {
+      // The coercion fixture's ACT cells are 0 and 41 -- both outside the
+      // published 1-36 scale (RFC 195). Mechanism A applies to them exactly as
+      // it does to ADM_RATE: nulled, counted, and the institution still loads.
+      val coercion = fixture("scorecard-institutions-coercion-fixture.csv")
+      val result = loader.load(coercion, fixture("scorecard-fields-empty-fixture.csv"))
+
+      assertEquals(1, result.collegesLoaded, "an unusable band must never cost the whole college")
+      assertEquals(1, result.fieldsCoercedToNull["act_composite_25th_percentile_score"])
+      assertEquals(1, result.fieldsCoercedToNull["act_composite_75th_percentile_score"])
+
+      val college = withSession { CollegesDao.findByIpedsUnitId(it, 600600).getOrThrow() }
+      assertNotNull(college)
+      assertNull(college.actComposite25thPercentileScore)
+      assertNull(college.actComposite75thPercentileScore)
+      // The SAT cells of the same row are in domain and are kept: a coercion
+      // is per cell, not per row.
+      assertEquals(560, college.satReading25thPercentileScore)
+      assertEquals(670, college.satMath75thPercentileScore)
+    }
+
+  @Test
+  fun `half a published band is dropped whole, so the college still loads`() =
+    runBlocking {
+      // `colleges` CHECKs that a band is a pair, so a row carrying one half
+      // would be REJECTED AT THE INSERT and the ingest would lose the whole
+      // school over one unusable score. The loader drops the band instead, and
+      // counts the drop under the band's own name so the run says a band was
+      // lost. The pinned snapshot has no such row -- 0 mismatches over 6,273
+      // -- which is exactly why the guard has to be tested by hand.
+      val institutions =
+        institutionCsv(
+          "half-band",
+          "UNITID" to "930001",
+          "INSTNM" to "Half Band College",
+          // A 25th with no 75th, and a 75th with no 25th: both directions.
+          "SATVR25" to "600",
+          "SATMT75" to "700",
+          "ACTCM25" to "25",
+          "ACTCM75" to "31",
+        )
+
+      val result = loader.load(institutions, fixture("scorecard-fields-empty-fixture.csv"))
+      assertEquals(1, result.collegesLoaded, "the college must survive a half band")
+      // The drops are read from their OWN tally, keyed by the band and the
+      // reason. No suffix, and so no test that has to parse a key to learn
+      // what it counts -- which is what reading them out of
+      // `fieldsCoercedToNull` cost.
+      assertEquals(
+        mapOf(
+          PairDrop("sat_reading", PairDropReason.HALF_A_PAIR) to 1,
+          PairDrop("sat_math", PairDropReason.HALF_A_PAIR) to 1,
+        ),
+        result.pairsDropped,
+        "both dropped bands are counted, by band and by reason",
+      )
+      assertTrue(
+        result.fieldsCoercedToNull.keys.none { it.contains("band_dropped") },
+        "a dropped band is not a coerced column: ${result.fieldsCoercedToNull.keys}",
+      )
+
+      val college = withSession { CollegesDao.findByIpedsUnitId(it, 930001).getOrThrow() }
+      assertNotNull(college)
+      assertNull(college.satReading25thPercentileScore, "the surviving half is dropped with its partner")
+      assertNull(college.satMath75thPercentileScore)
+      // The COMPLETE band on the same row is untouched: the rule is per band.
+      assertEquals(25, college.actComposite25thPercentileScore)
+      assertEquals(31, college.actComposite75thPercentileScore)
+    }
+
+  @Test
+  fun `an inverted published band is dropped whole, so the college still loads`() =
+    runBlocking {
+      // The failure this guards is NOT a missing band: `colleges` CHECKs that a
+      // band is ORDERED, so an inverted pair passes both domain reads, is mapped,
+      // and is then rejected AT THE UPSERT -- and the run loses the whole COLLEGE,
+      // its name, its location and its enrolment, over one unusable score.
+      // The pinned snapshot has no such row (0 mismatches over 6,273), so this
+      // case exists only because it is built here.
+      val institutions =
+        institutionCsv(
+          "inverted-band",
+          "UNITID" to "930002",
+          "INSTNM" to "Inverted Band College",
+          // Both in domain, both present -- and the wrong way round.
+          "SATVR25" to "700",
+          "SATVR75" to "600",
+          "ACTCM25" to "25",
+          "ACTCM75" to "31",
+        )
+
+      val result = loader.load(institutions, fixture("scorecard-fields-empty-fixture.csv"))
+      assertEquals(1, result.collegesLoaded, "an inverted band must never cost the whole college")
+      assertEquals(emptyMap(), result.skipsByReason, "and must not be a skip: ${result.skipsByReason}")
+      assertEquals(
+        mapOf(PairDrop("sat_reading", PairDropReason.INVERTED) to 1),
+        result.pairsDropped,
+        // The reason is kept DISTINCT from the half-pair case: they are two
+        // different faults in the published file and an operator acts on them
+        // differently.
+        "an inverted pair is counted under its own reason",
+      )
+
+      val college = withSession { CollegesDao.findByIpedsUnitId(it, 930002).getOrThrow() }
+      assertNotNull(college)
+      assertNull(college.satReading25thPercentileScore, "an inverted pair is not a range, so neither half is kept")
+      assertNull(college.satReading75thPercentileScore)
+      // The band that IS a range on the same row is untouched: the rule is per band.
+      assertEquals(25, college.actComposite25thPercentileScore)
+      assertEquals(31, college.actComposite75thPercentileScore)
+    }
+
+  @Test
+  fun `a band whose two cells are both unreadable is counted, not silently absent`() =
+    runBlocking {
+      // The case no per-cell reader can see. `PrivacySuppressed`, `NA` and a
+      // thousands-separated number are all PRESENT and all unparseable, so
+      // each cell is nulled by the blank-cell idiom with no tally anywhere --
+      // and the row reaches `colleges` as six nulls, indistinguishable from
+      // the 5,234 schools that publish no score at all. A published band we
+      // could not read is exactly what the drop counter exists to show.
+      val institutions =
+        institutionCsv(
+          "junk-band",
+          "UNITID" to "930003",
+          "INSTNM" to "Junk Band College",
+          "SATVR25" to CsvIngestSupport.PRIVACY_SUPPRESSED,
+          "SATVR75" to CsvIngestSupport.PRIVACY_SUPPRESSED,
+          "SATMT25" to "NA",
+          "SATMT75" to "1,200",
+          "ACTCM25" to "25",
+          "ACTCM75" to "31",
+        )
+
+      val result = loader.load(institutions, fixture("scorecard-fields-empty-fixture.csv"))
+      assertEquals(1, result.collegesLoaded, "an unreadable band must never cost the whole college")
+      assertEquals(
+        mapOf(
+          PairDrop("sat_reading", PairDropReason.UNREADABLE) to 1,
+          PairDrop("sat_math", PairDropReason.UNREADABLE) to 1,
+        ),
+        result.pairsDropped,
+        "both corrupt bands are counted, and neither is confused with a school that publishes none",
+      )
+      // The BLANK band is NOT counted: a school that publishes no score is
+      // ordinary, and counting it would bury the two rows above.
+      val blank =
+        loader.load(
+          institutionCsv("blank-band", "UNITID" to "930004", "INSTNM" to "Blank Band College"),
+          fixture("scorecard-fields-empty-fixture.csv"),
+        )
+      assertEquals(emptyMap(), blank.pairsDropped, "no published score is not a dropped band")
+
+      val college = withSession { CollegesDao.findByIpedsUnitId(it, 930003).getOrThrow() }
+      assertNotNull(college)
+      assertNull(college.satReading25thPercentileScore)
+      assertNull(college.satMath75thPercentileScore)
+      assertEquals(25, college.actComposite25thPercentileScore, "the readable band on the same row is untouched")
+    }
+
+  @Test
+  fun `a band with one blank cell and one unreadable cell is counted, not silently absent`() =
+    runBlocking {
+      // The MIXED pair, one cell over from the both-junk case above. A blank
+      // beside a `PrivacySuppressed` resolves to the same two nulls, no earlier
+      // reason matches -- "half a pair" needs one cell to SURVIVE -- and under
+      // an `&&` on both cells being unreadable the row reached `colleges` as
+      // two nulls nothing counted anywhere. This school DID publish something
+      // for this band and we could not read it, which is the whole point of the
+      // tally.
+      val institutions =
+        institutionCsv(
+          "mixed-band",
+          "UNITID" to "930005",
+          "INSTNM" to "Mixed Band College",
+          // Blank lower, unreadable upper...
+          "SATVR75" to CsvIngestSupport.PRIVACY_SUPPRESSED,
+          // ...and the other way round, so neither ordering is the tested one.
+          "SATMT25" to "NA",
+          "ACTCM25" to "25",
+          "ACTCM75" to "31",
+        )
+
+      val result = loader.load(institutions, fixture("scorecard-fields-empty-fixture.csv"))
+      assertEquals(1, result.collegesLoaded, "a mixed unreadable band must never cost the whole college")
+      assertEquals(
+        mapOf(
+          PairDrop("sat_reading", PairDropReason.UNREADABLE) to 1,
+          PairDrop("sat_math", PairDropReason.UNREADABLE) to 1,
+        ),
+        result.pairsDropped,
+        "one present-but-unreadable cell is enough: the band was published and is lost",
+      )
+
+      val college = withSession { CollegesDao.findByIpedsUnitId(it, 930005).getOrThrow() }
+      assertNotNull(college)
+      assertNull(college.satReading75thPercentileScore)
+      assertNull(college.satMath25thPercentileScore)
+      assertEquals(25, college.actComposite25thPercentileScore, "the readable band on the same row is untouched")
+    }
+
+  /**
+   * One institution CSV holding a single row, written through the module's own
+   * CSV writer.
+   *
+   * `joinToString(",")` quotes NOTHING: one cell containing a comma shifts
+   * every later column, and the test then asserts confidently about the wrong
+   * variable. `CSVFormat.DEFAULT` is already on this classpath and already
+   * used by sibling tests for exactly this reason.
+   *
+   * The five required identity cells are defaulted here so each caller writes
+   * only the cells its own case is about.
+   */
+  private fun institutionCsv(
+    name: String,
+    vararg cells: Pair<String, String>,
+  ): File {
+    val row =
+      mapOf(
+        "CITY" to "Townsville",
+        "STABBR" to "CA",
+        "CONTROL" to "1",
+      ) + cells.toMap()
+    val file = File.createTempFile("$name-institutions", ".csv")
+    file.deleteOnExit()
+    CSVFormat.DEFAULT.print(file, Charsets.UTF_8).use { printer ->
+      printer.printRecord(CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS)
+      printer.printRecord(CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS.map { row[it] ?: "" })
+    }
+    return file
+  }
+
+  @Test
+  fun `the required institution columns name all six score-band variables`() {
+    // A snapshot that drops one of them must fail LOUDLY, before any write,
+    // rather than loading 6,273 colleges with a silently empty band (RFC 195).
+    // The coverage test above proves the mappers read nothing outside this
+    // list; this one proves the list names these six by their published
+    // variable names.
+    assertEquals(
+      emptySet(),
+      setOf("SATVR25", "SATVR75", "SATMT25", "SATMT75", "ACTCM25", "ACTCM75") -
+        CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS.toSet(),
+      "every score-band variable must be asserted in the header: ${CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS}",
+    )
+  }
 
   @Test
   fun `blank optional fields become null`() =

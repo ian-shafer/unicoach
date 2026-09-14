@@ -22,6 +22,7 @@ import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
+import ed.unicoach.db.models.PublishedScoreScale
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -173,6 +174,11 @@ class CollegeScorecardLoader(
     val unchanged: Int,
     val skipsByReason: Map<SkipReason, Int>,
     val fieldsCoercedToNull: Map<String, Int>,
+    /**
+     * Published PAIRS dropped whole (RFC 195), by band and reason -- its own
+     * tally beside [fieldsCoercedToNull]; [PairDrop] carries why.
+     */
+    val pairsDropped: Map<PairDrop, Int>,
   ) {
     /** Rows that reached the DB — the three upsert outcomes, summed. */
     val loaded: Int get() = inserted + changed + unchanged
@@ -203,6 +209,9 @@ class CollegeScorecardLoader(
     val programsLoaded: Int get() = programs.upserted
     val skipsByReason: Map<SkipReason, Int> get() = mergeCounts(colleges.skipsByReason, programs.skipsByReason)
     val fieldsCoercedToNull: Map<String, Int> get() = mergeCounts(colleges.fieldsCoercedToNull, programs.fieldsCoercedToNull)
+
+    /** The institution file's dropped pairs; the field-of-study file reads no pair. */
+    val pairsDropped: Map<PairDrop, Int> get() = colleges.pairsDropped
     val transientSkips: Int get() = skipsByReason[SkipReason.Transient] ?: 0
     val permanentSkips: Int get() = skipsByReason.filterKeys { it != SkipReason.Transient }.values.sum()
   }
@@ -216,6 +225,7 @@ class CollegeScorecardLoader(
       unchanged = unchanged,
       skipsByReason = skipsByReason.toMap(),
       fieldsCoercedToNull = fieldsCoercedToNull.toMap(),
+      pairsDropped = pairsDropped.toMap(),
     )
 
   /** The one [LoadCount]→result mapping for the field-of-study file. */
@@ -338,6 +348,9 @@ class CollegeScorecardLoader(
           // Coercions are tallied for every mapped row (mechanism A nulled a cell
           // and did not skip), independent of the later upsert outcome.
           count.recordCoercions(mapped.coercions)
+          // ... and so are the pairs this row lost whole, in their own tally
+          // (RFC 195); [PairDrop] carries why it is its own tally.
+          count.recordPairDrops(mapped.pairsDropped)
           val result = upsertWithSavepoint(session) { CollegesDao.upsert(session, newCollege) }
           if (result.isFailure) {
             val error = result.exceptionOrNull()
@@ -1504,11 +1517,16 @@ class CollegeScorecardLoader(
     count: LoadCount,
   ) {
     logger.info(
-      "Load summary [{}]: [loaded={}] [skips={}] [coercions={}]",
+      // The dropped pairs are named in the SUMMARY and not only in the
+      // per-row DEBUG line, which a production run does not keep: a band the
+      // run could not read is exactly the thing that must survive into the
+      // one line an operator reads (RFC 195).
+      "Load summary [{}]: [loaded={}] [skips={}] [coercions={}] [pairs_dropped={}]",
       file,
       count.loaded,
       count.skipsByReason,
       count.fieldsCoercedToNull,
+      count.pairsDropped,
     )
   }
 
@@ -1551,6 +1569,22 @@ class CollegeScorecardLoader(
     }
 
     val coercions = mutableMapOf<String, Int>()
+    val pairsDropped = mutableMapOf<PairDrop, Int>()
+    // Read BEFORE the constructor call so each band is one named value there
+    // rather than two expressions a reader has to pair up by eye. Each band
+    // reads ITSELF -- its columns, its `colleges` names and its published
+    // scale travel together on [ScoreBandVariable] -- so no call site can
+    // hand the SAT scale to the ACT band.
+    //
+    // Over `entries`, not three hand-written calls: the read side of this
+    // slice already iterates its own enum, and a fourth band added to
+    // [ScoreBandVariable] and forgotten here would be a band nothing ever
+    // reads, counts or coerces. `getValue` below then fails loudly rather
+    // than storing a null.
+    val bands = ScoreBandVariable.entries.associateWith { it.readBand(record, coercions, pairsDropped) }
+    val satReading = bands.getValue(ScoreBandVariable.SAT_READING)
+    val satMath = bands.getValue(ScoreBandVariable.SAT_MATH)
+    val actComposite = bands.getValue(ScoreBandVariable.ACT_COMPOSITE)
     val college =
       NewCollege(
         ipedsUnitId = ipedsUnitId,
@@ -1569,6 +1603,15 @@ class CollegeScorecardLoader(
           intInDomainOrNull(record, COL_UGDS, 0, Int.MAX_VALUE, "undergrad_enrollment_headcount", coercions),
         admissionRateShare = doubleInDomainOrNull(record, COL_ADM_RATE, RATE_MIN, RATE_MAX, "admission_rate_share", coercions),
         satAverageEquivalentScore = intInDomainOrNull(record, COL_SAT_AVG, 0, Int.MAX_VALUE, "sat_average_equivalent_score", coercions),
+        // The three percentile bands (RFC 195), each read as a PAIR in its
+        // published scale -- see [CsvIngestSupport.intPairInDomainOrNull] for
+        // why a pair and not six independent reads.
+        satReading25thPercentileScore = satReading.lower,
+        satReading75thPercentileScore = satReading.upper,
+        satMath25thPercentileScore = satMath.lower,
+        satMath75thPercentileScore = satMath.upper,
+        actComposite25thPercentileScore = actComposite.lower,
+        actComposite75thPercentileScore = actComposite.upper,
         completionRate150pct4yrShare =
           doubleInDomainOrNull(
             record,
@@ -1580,7 +1623,10 @@ class CollegeScorecardLoader(
           ),
         website = stringOrNull(record, COL_INSTURL),
       )
-    return MapResult.Mapped(college, coercions)
+    // `toMap()` on both: the accumulators are this function's own mutable
+    // scratch, and handing one out under a read-only type leaves the caller
+    // holding a map that can still change under it.
+    return MapResult.Mapped(college, coercions.toMap(), pairsDropped.toMap())
   }
 
   /** The validated key/required columns of a field-of-study row, resolved to a
@@ -1692,8 +1738,15 @@ class CollegeScorecardLoader(
      * from 28 keys to 10. The log is append-only and untouched by the
      * migration, so a version-8 row keeps its 28 keys; this number is what
      * makes a 10-key row a DIFFERENT derivation rather than a truncated one.
+     *
+     * 10 = RFC 195's six percentile score bands on `colleges` (migration
+     * `add-college-score-bands.sql`). The institution phase parses and writes
+     * six more columns and `change_summary`'s `non_null` axis rises from 10
+     * keys to 16, so a version-9 row is a different SHAPE rather than a run
+     * that happened to find no bands -- which is exactly what a reader would
+     * otherwise conclude from six absent keys.
      */
-    const val METHOD_VERSION = 9
+    const val METHOD_VERSION = 10
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")
@@ -1757,6 +1810,20 @@ class CollegeScorecardLoader(
     private const val COL_UGDS = "UGDS"
     private const val COL_ADM_RATE = "ADM_RATE"
     private const val COL_SAT_AVG = "SAT_AVG"
+
+    // The six published percentile score bands (RFC 195). `SATVR*` is SAT
+    // critical reading and `SATMT*` SAT math, per the dictionary's
+    // `Institution_Data_Dictionary` sheet; `ACTCM*` is the ACT cumulative
+    // (composite). This loader's own constants, not
+    // [ScorecardInstitutionColumns] members: that home exists for the columns
+    // the canonical-money fill re-parses from the same file, and a score is
+    // not money.
+    private const val COL_SATVR25 = "SATVR25"
+    private const val COL_SATVR75 = "SATVR75"
+    private const val COL_SATMT25 = "SATMT25"
+    private const val COL_SATMT75 = "SATMT75"
+    private const val COL_ACTCM25 = "ACTCM25"
+    private const val COL_ACTCM75 = "ACTCM75"
     private const val COL_COSTT4_A = ScorecardInstitutionColumns.COSTT4_A
     private const val COL_TUITIONFEE_IN = ScorecardInstitutionColumns.TUITIONFEE_IN
     private const val COL_TUITIONFEE_OUT = ScorecardInstitutionColumns.TUITIONFEE_OUT
@@ -1818,6 +1885,12 @@ class CollegeScorecardLoader(
         COL_UGDS,
         COL_ADM_RATE,
         COL_SAT_AVG,
+        COL_SATVR25,
+        COL_SATVR75,
+        COL_SATMT25,
+        COL_SATMT75,
+        COL_ACTCM25,
+        COL_ACTCM75,
         COL_COSTT4_A,
         COL_TUITIONFEE_IN,
         COL_TUITIONFEE_OUT,
@@ -1848,16 +1921,17 @@ class CollegeScorecardLoader(
      * reject, and a countable column added to one side cannot be silently
      * uncounted by the other.
      *
-     * Ten keys, not twenty-eight: RFC 176 dropped the eighteen money names
-     * with the columns themselves (migration `0094`), and deriving is what
-     * made that ONE edit. The money axis of the provenance is
+     * Sixteen keys, not twenty-eight: RFC 176 dropped the eighteen money
+     * names with the columns themselves (migration `0094`) and RFC 195 added
+     * the six percentile score bands, and deriving is what made each of those
+     * ONE edit. The money axis of the provenance is
      * `canonical_money_summary` instead, written by the canonical fill from
      * the same CSV.
      *
-     * `college_index_build.change_summary` is append-only and the migration
-     * does nothing to it, so a build row written before this change keeps its
-     * twenty-eight keys and stays readable. [METHOD_VERSION] 9 is what tells
-     * the two row shapes apart.
+     * `college_index_build.change_summary` is append-only and no migration
+     * touches it, so a build row written before either change keeps the key
+     * set it was written with and stays readable. [METHOD_VERSION] is what
+     * tells the shapes apart: 28 keys at 8, 10 at 9, 16 at 10.
      */
     internal val NON_NULL_SUMMARY_COLUMNS: List<String> = CollegesDao.NON_NULL_COUNTABLE_COLUMNS.toList()
 
@@ -1871,6 +1945,83 @@ class CollegeScorecardLoader(
     private const val LOCALE_MAX = 43
     private const val RATE_MIN = ScorecardInstitutionColumns.RATE_MIN
     private const val RATE_MAX = ScorecardInstitutionColumns.RATE_MAX
+
+    /**
+     * The three published percentile bands (RFC 195), each carrying everything
+     * a read of it needs: its two Scorecard variables, the two `colleges`
+     * columns they land in, the name a DROPPED band is counted under, and its
+     * OWN published scale.
+     *
+     * The scale travels with the band on purpose. As four loose constants, the
+     * only thing stopping `ACTCM25` being read against 200..800 was the order
+     * of two arguments at a call site; here the SAT scale is not in scope when
+     * the ACT band reads itself. The RANGES themselves are not written here at
+     * all -- they are [PublishedScoreScale]'s, in `:db` beside the row that
+     * stores them, so the loader, the service and the migration test read one
+     * home rather than three literals nothing compares.
+     *
+     * The column names are written out rather than assembled from a stem. A
+     * tally key built by string arithmetic can stop naming the column it
+     * describes -- rename `sat_reading_25th_percentile_score` and the literal
+     * here fails to match, loudly, where a `"${stem}_25th_percentile_score"`
+     * would silently keep counting under a name nothing has.
+     *
+     * [pairName] carries NO suffix. It names the band in a tally that counts
+     * dropped bands and nothing else ([LoadCount.pairsDropped]), so it does
+     * not have to be told apart from a column name by its ending.
+     */
+    private enum class ScoreBandVariable(
+      val lowerColumn: String,
+      val upperColumn: String,
+      val lowerColumnName: String,
+      val upperColumnName: String,
+      val pairName: String,
+      val scale: IntRange,
+    ) {
+      SAT_READING(
+        lowerColumn = COL_SATVR25,
+        upperColumn = COL_SATVR75,
+        lowerColumnName = "sat_reading_25th_percentile_score",
+        upperColumnName = "sat_reading_75th_percentile_score",
+        pairName = "sat_reading",
+        scale = PublishedScoreScale.SAT_SECTION,
+      ),
+      SAT_MATH(
+        lowerColumn = COL_SATMT25,
+        upperColumn = COL_SATMT75,
+        lowerColumnName = "sat_math_25th_percentile_score",
+        upperColumnName = "sat_math_75th_percentile_score",
+        pairName = "sat_math",
+        scale = PublishedScoreScale.SAT_SECTION,
+      ),
+      ACT_COMPOSITE(
+        lowerColumn = COL_ACTCM25,
+        upperColumn = COL_ACTCM75,
+        lowerColumnName = "act_composite_25th_percentile_score",
+        upperColumnName = "act_composite_75th_percentile_score",
+        pairName = "act_composite",
+        scale = PublishedScoreScale.ACT_COMPOSITE,
+      ),
+      ;
+
+      /** This band's two cells, both or neither, through the shared paired reader. */
+      fun readBand(
+        record: CSVRecord,
+        coercions: MutableMap<String, Int>,
+        pairsDropped: MutableMap<PairDrop, Int>,
+      ): CellPair =
+        CsvIngestSupport.intPairInDomainOrNull(
+          record = record,
+          lowerColumn = lowerColumn,
+          upperColumn = upperColumn,
+          scale = scale,
+          lowerColumnName = lowerColumnName,
+          upperColumnName = upperColumnName,
+          pairName = pairName,
+          coercions = coercions,
+          pairsDropped = pairsDropped,
+        )
+    }
 
     private const val CREDENTIAL_LEVEL_MIN = 1
     private const val CREDENTIAL_LEVEL_MAX = 8

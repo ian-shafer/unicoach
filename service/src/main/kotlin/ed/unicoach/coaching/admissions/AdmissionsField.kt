@@ -24,6 +24,14 @@ package ed.unicoach.coaching.admissions
  * `CollegeAdmissionsChatToolTest`, so the two spellings cannot drift in
  * silence.
  *
+ * [SCORE_BANDS] (RFC 195) sits immediately AFTER [TEST_POLICY], and the
+ * adjacency is the product decision: "does this school want a score" and "what
+ * did the scores look like" are one thought, and the second is meaningless
+ * before the first -- a range read by a student applying to a test-blind school
+ * is a number about nothing. It carries the published 25th/75th percentile
+ * bands and, when the school publishes no SAT band, the admitted-student
+ * average in its place (D16).
+ *
  * [MERIT_AID] reads its key from [MeritAidWire], the section's own home, because
  * `college_cost_profile` renders that same sub-object under that same key: two
  * independently typed literals could drift and only one of the two tools would
@@ -35,5 +43,6 @@ enum class AdmissionsField(
   MERIT_AID(MeritAidWire.KEY),
   ADMISSION_FACTORS("admission_factors"),
   TEST_POLICY("test_policy"),
+  SCORE_BANDS("score_bands"),
   DEADLINES("deadlines"),
 }

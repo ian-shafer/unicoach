@@ -158,6 +158,12 @@ internal sealed interface MapResult<out T> {
   data class Mapped<T>(
     val value: T,
     val coercions: Map<String, Int>,
+    /**
+     * The PAIRS this row lost whole, tallied by band and reason (RFC 195) --
+     * its own map and not three more keys in [coercions]; [PairDrop] carries
+     * why. Defaulted, because only a loader that reads a pair has any.
+     */
+    val pairsDropped: Map<PairDrop, Int> = emptyMap(),
   ) : MapResult<T>
 
   data class Skipped(
@@ -174,6 +180,17 @@ internal class LoadCount {
   var unchanged: Int = 0
   val skipsByReason: MutableMap<SkipReason, Int> = mutableMapOf()
   val fieldsCoercedToNull: MutableMap<String, Int> = mutableMapOf()
+
+  /**
+   * Bands this file lost whole, by band and by reason (RFC 195) -- its own
+   * tally beside [fieldsCoercedToNull]; [PairDrop] carries why.
+   *
+   * This map is the DURABLE record of a dropped pair: the per-drop line is
+   * DEBUG and a production run does not keep it, so if the run summary does
+   * not carry the count, a corrupt published band is a thing nobody can
+   * observe afterwards.
+   */
+  val pairsDropped: MutableMap<PairDrop, Int> = mutableMapOf()
 
   fun recordSkip(reason: SkipReason) {
     skipsByReason.merge(reason, 1, Int::plus)
@@ -197,7 +214,81 @@ internal class LoadCount {
   fun recordCoercions(coercions: Map<String, Int>) {
     for ((column, n) in coercions) fieldsCoercedToNull.merge(column, n, Int::plus)
   }
+
+  fun recordPairDrops(drops: Map<PairDrop, Int>) {
+    for ((drop, n) in drops) pairsDropped.merge(drop, n, Int::plus)
+  }
 }
+
+/**
+ * The two cells of one optional PAIR as [CsvIngestSupport.intPairInDomainOrNull]
+ * resolved them: both present, or both null -- never one (RFC 195).
+ *
+ * A type rather than `Pair<Int?, Int?>`, because `first`/`second` at a
+ * construction site is exactly where a transposition writes the upper value
+ * into the lower column, and no CHECK catches a pair that is still ordered.
+ */
+data class CellPair(
+  val lower: Int?,
+  val upper: Int?,
+)
+
+/**
+ * WHY a pair was dropped whole (RFC 195). A typed reason rather than prose,
+ * because the reason is tallied in the run summary and read by a test: a
+ * sentence is a thing a reader greps for and a rewording silently breaks.
+ *
+ * The three are kept DISTINCT because they are three different faults in the
+ * published file, and an operator acts on them differently: half a pair is a
+ * publisher that stopped mid-record, an inverted pair is two columns the wrong
+ * way round, and an unreadable pair is a school whose band is corrupt in a way
+ * that is otherwise indistinguishable from a school that publishes none.
+ */
+enum class PairDropReason(
+  val value: String,
+) {
+  /** One cell usable, the other not. Half a range is not a range. */
+  HALF_A_PAIR("half_a_pair"),
+
+  /** Both cells usable and `upper < lower`. Two numbers the wrong way round describe nothing. */
+  INVERTED("inverted"),
+
+  /**
+   * AT LEAST ONE cell present and unparseable -- `PrivacySuppressed`, `NA`,
+   * `1,200` -- and neither cell survived. Every per-cell reader nulls such a
+   * cell silently (it is the blank-cell idiom and is not a domain coercion), so
+   * without this reason a corrupt published band and a school that publishes
+   * none reach the database as the same six nulls, with nothing counted
+   * anywhere.
+   *
+   * EITHER, not both: a blank cell beside a `PrivacySuppressed` one is still a
+   * band this row published and we could not read. A wholly BLANK pair is not
+   * this -- see [CsvIngestSupport.classifyPairDrop].
+   */
+  UNREADABLE("unreadable"),
+}
+
+/**
+ * One kind of dropped pair: WHICH band, and WHY (RFC 195). THE ONE HOME of the
+ * argument for a separate tally -- every other mention of this map points here.
+ *
+ * A dropped band is counted in its OWN map and not as three more keys in
+ * `fieldsCoercedToNull`, because the two count different events: a coercion
+ * says "column X was coerced to null", and every key in that map is a
+ * `colleges` column name. A dropped band is ONE event about TWO columns, so it
+ * is not a column that fell to null and it has no column name to be filed
+ * under.
+ *
+ * [band] is therefore the band's own name with no suffix on it --
+ * `sat_reading`, not `sat_reading_band_dropped`. The suffix existed only to
+ * keep the key distinguishable inside `fieldsCoercedToNull`, which meant the
+ * only way to read the tally back was to parse a key for its ending. This map
+ * counts nothing else, so the name can be the name.
+ */
+data class PairDrop(
+  val band: String,
+  val reason: PairDropReason,
+)
 
 /**
  * The source-family-agnostic half of the ingest machinery (RFC 144): digests,
@@ -412,6 +503,162 @@ internal object CsvIngestSupport {
       return null
     }
     return value
+  }
+
+  /**
+   * Mechanism A for an optional PAIR of bounded int cells: both, or NEITHER.
+   *
+   * Some measures are a RANGE rather than two numbers that happen to sit beside
+   * each other -- a 25th/75th percentile score band is the case this was
+   * written for (RFC 195) -- and a range has two properties no per-cell read
+   * can express:
+   *
+   * - it is a PAIR. Half a range is not a range.
+   * - it is ORDERED. `upper >= lower`, or the two cells describe nothing.
+   *
+   * Both rules live HERE rather than at a call site because both are true in
+   * any domain, and because the cost of getting them wrong is paid by a
+   * different row than the one at fault: a table that CHECKs the pairing and
+   * the ordering rejects the whole INSERT, so `upsertWithSavepoint` records a
+   * skip and the run loses the entity -- its name, its location, everything --
+   * over one unusable measure. Dropping the PAIR keeps the row.
+   *
+   * `>=`, not `>`: a range whose two ends land on the same value is a real
+   * narrow population, not a fault. That is the same boundary the `colleges`
+   * CHECKs draw.
+   *
+   * The body reads read / read / classify / act, on the
+   * `val reason = classifyUpsertFailure(error)` precedent in this same file:
+   * [classifyPairDrop] decides WHAT this pair is and [recordPairDrop] decides
+   * what happens to it, so neither question is answered inside the other.
+   *
+   * [scale] is ONE range rather than a `min` and a `max`, because two int
+   * parameters of the same type beside each other are transposable in silence
+   * and an inverted domain admits nothing at all.
+   *
+   * Each cell is first coerced by [intInDomainOrNull], so an out-of-domain half
+   * is tallied under its own column name; a pair then dropped is tallied ONCE
+   * more in [pairsDropped] under [pairName] with its [PairDropReason]. That
+   * tally is a separate accumulator from [coercions] because it counts a
+   * different event -- see [PairDrop].
+   *
+   * [lowerColumnName]/[upperColumnName] are the DESTINATION column names, the
+   * same argument [intInDomainOrNull] calls `columnName`, and they are not
+   * [lowerColumn]/[upperColumn]: the source CSV header (`SATVR25`) and the
+   * `colleges` column it lands in (`sat_reading_25th_percentile_score`) are two
+   * different names for two different things, sitting next to each other here.
+   */
+  fun intPairInDomainOrNull(
+    record: CSVRecord,
+    lowerColumn: String,
+    upperColumn: String,
+    scale: IntRange,
+    lowerColumnName: String,
+    upperColumnName: String,
+    pairName: String,
+    coercions: MutableMap<String, Int>,
+    pairsDropped: MutableMap<PairDrop, Int>,
+  ): CellPair {
+    val lower = intInDomainOrNull(record, lowerColumn, scale.first, scale.last, lowerColumnName, coercions)
+    val upper = intInDomainOrNull(record, upperColumn, scale.first, scale.last, upperColumnName, coercions)
+    val reason = classifyPairDrop(record, lowerColumn, upperColumn, lower, upper)
+    return when (reason) {
+      // The VALID outcome, spelled out. It used to be the `when`'s `else` arm,
+      // which made "this pair is a range" the thing that happened when no
+      // refusal matched rather than a case anyone wrote down.
+      null -> CellPair(lower, upper)
+
+      else -> recordPairDrop(record, lowerColumn, upperColumn, lower, upper, pairName, reason, pairsDropped)
+    }
+  }
+
+  /**
+   * What is wrong with this pair, or null when nothing is (RFC 195).
+   *
+   * The third arm is the one a per-cell reader cannot see. A cell that is
+   * PRESENT and unparseable -- `PrivacySuppressed`, `NA`, `1,200` -- is nulled
+   * by [intOrNull] with no tally, because a cell that does not parse is the
+   * ordinary blank-cell idiom everywhere else in this file. For a pair it is
+   * not ordinary: it is a published band we could not read, and it arrives at
+   * the database looking exactly like a school that publishes no band.
+   *
+   * EITHER cell is enough, and the MIXED pair is why. A blank cell beside a
+   * `PrivacySuppressed` one resolves to two nulls just as two junk cells do,
+   * and an `&&` here made that row silent: neither half survives, no earlier
+   * arm matches, and the loss reaches `colleges` as two nulls nothing counted.
+   * A wholly BLANK pair stays uncounted -- that is a school reporting nothing,
+   * which is ordinary and would bury the corrupt rows this tally exists for.
+   *
+   * It is deliberately NOT extended to cells that parsed and were coerced for
+   * being out of domain: those are already counted, by name, under their own
+   * two columns.
+   */
+  private fun classifyPairDrop(
+    record: CSVRecord,
+    lowerColumn: String,
+    upperColumn: String,
+    lower: Int?,
+    upper: Int?,
+  ): PairDropReason? =
+    when {
+      (lower == null) != (upper == null) -> {
+        PairDropReason.HALF_A_PAIR
+      }
+
+      lower != null && upper != null && upper < lower -> {
+        PairDropReason.INVERTED
+      }
+
+      lower == null && upper == null && (isUnreadable(record, lowerColumn) || isUnreadable(record, upperColumn)) -> {
+        PairDropReason.UNREADABLE
+      }
+
+      else -> {
+        null
+      }
+    }
+
+  /** True when the cell is PRESENT and is not an integer -- written, but not readable as a number. */
+  private fun isUnreadable(
+    record: CSVRecord,
+    column: String,
+  ): Boolean {
+    val raw = stringOrNull(record, column) ?: return false
+    return raw.toIntOrNull() == null
+  }
+
+  /**
+   * Drops a pair whole: the DEBUG line for this row, the durable tally for the
+   * run, and two nulls.
+   *
+   * DEBUG and not WARN, and that is the one choice here worth stating. The
+   * durable record of a lost band is the run tally in [LoadCount.pairsDropped],
+   * which the summary always prints; this line is the per-row drill-down an
+   * operator turns on once the summary has told them there is something to
+   * look for.
+   */
+  private fun recordPairDrop(
+    record: CSVRecord,
+    lowerColumn: String,
+    upperColumn: String,
+    lower: Int?,
+    upper: Int?,
+    pairName: String,
+    reason: PairDropReason,
+    pairsDropped: MutableMap<PairDrop, Int>,
+  ): CellPair {
+    logger.debug(
+      "Dropping pair [line={}] [pair={}] [columns={}/{}] [lower={}] [upper={}]: {}",
+      record.recordNumber,
+      pairName,
+      lowerColumn,
+      upperColumn,
+      lower,
+      upper,
+      reason.value,
+    )
+    pairsDropped.merge(PairDrop(pairName, reason), 1, Int::plus)
+    return CellPair(null, null)
   }
 
   /** Mechanism A for a bounded **optional** double metric; see [intInDomainOrNull]. */

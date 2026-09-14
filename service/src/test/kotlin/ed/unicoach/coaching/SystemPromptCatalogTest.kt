@@ -1158,6 +1158,50 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The score-range rule (RFC 195), asserted in the AUTHORED file beside the
+   * test-policy rule it sits next to — [authoredAdmissionsParagraph] says why
+   * this is the authored body rather than the pinned row.
+   *
+   * Before this slice the block ended "...scholarship score rules, athletics
+   * rules and score ranges are not things we hold", which was TRUE until
+   * `score_bands` existed and false the moment it landed. RFC 197 read the tree
+   * at its own land, saw no `SCORE_BANDS` on [AdmissionsField], and correctly
+   * left the sentence alone; correcting it fell to whichever slice landed the
+   * section. This test is what stops it drifting back.
+   *
+   * The probes are DERIVED from the wire vocabulary, not retyped, for the same
+   * reason the test-policy probes are: a renamed section must fail here rather
+   * than leave the prompt instructing the coach to read a key that no longer
+   * exists.
+   */
+  @Test
+  fun `the authored admissions paragraph says a range comes from the school's own section, or not at all`() {
+    val paragraph = authoredAdmissionsParagraph()
+
+    assertFalse(
+      paragraph.contains("score ranges are not things we hold"),
+      "we hold score ranges now: the sentence that says we do not is false the moment score_bands ships",
+    )
+    assertTrue(
+      paragraph.contains("only from that school's own ${AdmissionsField.SCORE_BANDS.wireName} section"),
+      "a range comes from THAT school's section, never from memory -- the test_policy rule, applied to figures",
+    )
+    assertTrue(
+      paragraph.contains("Score ranges we sometimes do hold"),
+      "SOMETIMES: we hold a band for about a sixth of the corpus, and we refuse one we cannot trust, so a " +
+        "sentence promising we hold ranges would over-claim for exactly the schools where we say nothing",
+    )
+    assertTrue(
+      paragraph.contains("we do not have it for that school rather than anything about the school itself"),
+      "an absent section is OUR gap -- the rule TestPolicyCopy.POLICY_GAP_IS_OURS states for the policy",
+    )
+    assertTrue(
+      paragraph.contains("scholarship score rules and athletics rules are not things we hold"),
+      "the two things we genuinely do not hold stay in the sentence; only the score-range clause moved out",
+    )
+  }
+
+  /**
    * The explain-once block and the standing scope rules (RFC 187, brief
    * decisions D4/D9/D13), asserted in the AUTHORED file — see
    * [authoredAdmissionsParagraph].

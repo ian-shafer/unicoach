@@ -185,6 +185,15 @@ object CollegesDao :
       undergradEnrollmentHeadcount = rs.intOrNull("undergrad_enrollment_headcount"),
       admissionRateShare = rs.doubleOrNull("admission_rate_share"),
       satAverageEquivalentScore = rs.intOrNull("sat_average_equivalent_score"),
+      // The six percentile bands (RFC 195). Read here and nowhere else: every
+      // `College` read in this file is `SELECT *`, so this mapper IS the full
+      // row -- including the `colleges_versions` read behind [listVersions].
+      satReading25thPercentileScore = rs.intOrNull("sat_reading_25th_percentile_score"),
+      satReading75thPercentileScore = rs.intOrNull("sat_reading_75th_percentile_score"),
+      satMath25thPercentileScore = rs.intOrNull("sat_math_25th_percentile_score"),
+      satMath75thPercentileScore = rs.intOrNull("sat_math_75th_percentile_score"),
+      actComposite25thPercentileScore = rs.intOrNull("act_composite_25th_percentile_score"),
+      actComposite75thPercentileScore = rs.intOrNull("act_composite_75th_percentile_score"),
       completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
       website = rs.getString("website"),
       aliases = rs.getStringList("aliases"),
@@ -341,9 +350,12 @@ object CollegesDao :
         INSERT INTO colleges (
           ipeds_unit_id, opeid, name, city, state, region, locale, latitude, longitude,
           control, undergrad_enrollment_headcount, admission_rate_share, sat_average_equivalent_score,
+          sat_reading_25th_percentile_score, sat_reading_75th_percentile_score,
+          sat_math_25th_percentile_score, sat_math_75th_percentile_score,
+          act_composite_25th_percentile_score, act_composite_75th_percentile_score,
           completion_rate_150pct_4yr_share, website
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (ipeds_unit_id) DO UPDATE SET
           opeid = EXCLUDED.opeid,
           name = EXCLUDED.name,
@@ -357,6 +369,12 @@ object CollegesDao :
           undergrad_enrollment_headcount = EXCLUDED.undergrad_enrollment_headcount,
           admission_rate_share = EXCLUDED.admission_rate_share,
           sat_average_equivalent_score = EXCLUDED.sat_average_equivalent_score,
+          sat_reading_25th_percentile_score = EXCLUDED.sat_reading_25th_percentile_score,
+          sat_reading_75th_percentile_score = EXCLUDED.sat_reading_75th_percentile_score,
+          sat_math_25th_percentile_score = EXCLUDED.sat_math_25th_percentile_score,
+          sat_math_75th_percentile_score = EXCLUDED.sat_math_75th_percentile_score,
+          act_composite_25th_percentile_score = EXCLUDED.act_composite_25th_percentile_score,
+          act_composite_75th_percentile_score = EXCLUDED.act_composite_75th_percentile_score,
           completion_rate_150pct_4yr_share = EXCLUDED.completion_rate_150pct_4yr_share,
           website = EXCLUDED.website,
           version = colleges.version + 1
@@ -364,13 +382,21 @@ object CollegesDao :
           colleges.opeid, colleges.name, colleges.city, colleges.state,
           colleges.region, colleges.locale, colleges.latitude, colleges.longitude,
           colleges.control, colleges.undergrad_enrollment_headcount, colleges.admission_rate_share,
-          colleges.sat_average_equivalent_score, colleges.completion_rate_150pct_4yr_share,
+          colleges.sat_average_equivalent_score,
+          colleges.sat_reading_25th_percentile_score, colleges.sat_reading_75th_percentile_score,
+          colleges.sat_math_25th_percentile_score, colleges.sat_math_75th_percentile_score,
+          colleges.act_composite_25th_percentile_score, colleges.act_composite_75th_percentile_score,
+          colleges.completion_rate_150pct_4yr_share,
           colleges.website, colleges.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
           EXCLUDED.region, EXCLUDED.locale, EXCLUDED.latitude, EXCLUDED.longitude,
           EXCLUDED.control, EXCLUDED.undergrad_enrollment_headcount, EXCLUDED.admission_rate_share,
-          EXCLUDED.sat_average_equivalent_score, EXCLUDED.completion_rate_150pct_4yr_share,
+          EXCLUDED.sat_average_equivalent_score,
+          EXCLUDED.sat_reading_25th_percentile_score, EXCLUDED.sat_reading_75th_percentile_score,
+          EXCLUDED.sat_math_25th_percentile_score, EXCLUDED.sat_math_75th_percentile_score,
+          EXCLUDED.act_composite_25th_percentile_score, EXCLUDED.act_composite_75th_percentile_score,
+          EXCLUDED.completion_rate_150pct_4yr_share,
           EXCLUDED.website, EXCLUDED.ipeds_unit_id
         )
         RETURNING *
@@ -404,6 +430,12 @@ object CollegesDao :
         stmt.setIntOrNull(next(), input.undergradEnrollmentHeadcount)
         stmt.setDoubleOrNull(next(), input.admissionRateShare)
         stmt.setIntOrNull(next(), input.satAverageEquivalentScore)
+        stmt.setIntOrNull(next(), input.satReading25thPercentileScore)
+        stmt.setIntOrNull(next(), input.satReading75thPercentileScore)
+        stmt.setIntOrNull(next(), input.satMath25thPercentileScore)
+        stmt.setIntOrNull(next(), input.satMath75thPercentileScore)
+        stmt.setIntOrNull(next(), input.actComposite25thPercentileScore)
+        stmt.setIntOrNull(next(), input.actComposite75thPercentileScore)
         stmt.setDoubleOrNull(next(), input.completionRate150pct4yrShare)
         stmt.setStringOrNull(next(), input.website)
         // The UNION ALL arm's own `WHERE ipeds_unit_id = ?` -- positionally last.
@@ -3244,6 +3276,10 @@ object CollegesDao :
    * AFTER the load. Its twin, `CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS`,
    * is the same list and shrank in the same commit. The money axis of the
    * provenance is `canonical_money_summary`.
+   *
+   * It grew by the six percentile score bands in RFC 195, which is the mirror
+   * of the same rule: a countable column added to `colleges` and not named
+   * here is a column the ingest summary silently stops reporting on.
    */
   val NON_NULL_COUNTABLE_COLUMNS: Set<String> =
     setOf(
@@ -3255,6 +3291,16 @@ object CollegesDao :
       "undergrad_enrollment_headcount",
       "admission_rate_share",
       "sat_average_equivalent_score",
+      // The six percentile bands (RFC 195), counted like every other optional
+      // Scorecard cell so the ingest change summary reports how many colleges
+      // publish a band -- 1,039 of 6,273 in the pinned snapshot, against
+      // `sat_average_equivalent_score`'s 1,037.
+      "sat_reading_25th_percentile_score",
+      "sat_reading_75th_percentile_score",
+      "sat_math_25th_percentile_score",
+      "sat_math_75th_percentile_score",
+      "act_composite_25th_percentile_score",
+      "act_composite_75th_percentile_score",
       "completion_rate_150pct_4yr_share",
       "website",
     )

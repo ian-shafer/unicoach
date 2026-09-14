@@ -134,6 +134,45 @@ and the digest above is typed beside that test. `PROVENANCE.json` deliberately
 carries none of this: the fetcher writes that file whole and would erase a
 hand-added key.
 
+## The six percentile score-band variables (RFC 195)
+
+`SATVR25`, `SATVR75`, `SATMT25`, `SATMT75`, `ACTCM25` and `ACTCM75` are read
+from the institution file into `colleges` by `CollegeScorecardLoader`. Their
+date is the publisher's own, read from the same workbook as the table above —
+`CollegeScorecardDataDictionary.xlsx` (727,278 bytes), sheet
+`Most_Recent_Inst_Cohort_Map`, which dates all six, and `SAT_AVG` with them, to:
+
+> **Fall 2024, reported in IPEDS DCY2024-25**
+
+and sheet `Institution_Data_Dictionary`, which gives `SOURCE = IPEDS` for all
+six, labels `SATVR*` _critical reading_, `SATMT*` _math_, and `ACTCM*` the ACT
+_cumulative_ score.
+
+So the honest date of a band is an **entering-cohort term** — autumn 2024 — and
+not an academic year. It lives in ONE constant, `ScoreBandCitation.COHORT_TERM`
+(`service/.../admissions/SchoolScoreBands.kt`), which quotes the cell above in
+its KDoc; every sentence the coach says about a band takes the term from there.
+Beside it, `COHORT_SNAPSHOT_RELEASE` records the release that cell was read from
+— `06102026`, the `release` in `PROVENANCE.json` — and `ScoreBandCopyTest`
+asserts the two agree, so a re-fetch that moves the data fails a test instead of
+leaving the sentence dated to a cohort nobody checked.
+
+**They are deliberately NOT added to `dictionary-variable-sources.csv`**, and
+the reason is that file's own contract rather than an oversight:
+
+- `ScorecardDictionaryPinTest` asserts that the file's key set **equals**
+  `ScorecardInstitutionColumns.LOADED_VARIABLES` — the canonical-money fill's
+  registry. A band is not money and is not in that registry, so adding a row for
+  it fails that test, correctly: the file is the money seam's pin, not a general
+  dictionary.
+- Its `Cohort` type parses **`AcadYr` strings only**. "Fall 2024" is a term, not
+  an academic year, so the one thing a row there would have to state is the one
+  thing that column cannot hold — and the nearest legal value would silently
+  re-date the band by a year.
+
+A later snapshot that moves the cohort therefore moves `COHORT_TERM` and this
+section, in one edit, with the cell above quoted from the new workbook.
+
 ## Regenerating
 
 Re-run the fetcher; it discovers the current release, downloads it, and rewrites

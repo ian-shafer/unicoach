@@ -59,6 +59,12 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
               undergradEnrollmentHeadcount = null,
               admissionRateShare = null,
               satAverageEquivalentScore = null,
+              satReading25thPercentileScore = null,
+              satReading75thPercentileScore = null,
+              satMath25thPercentileScore = null,
+              satMath75thPercentileScore = null,
+              actComposite25thPercentileScore = null,
+              actComposite75thPercentileScore = null,
               completionRate150pct4yrShare = null,
               website = null,
             ),
@@ -429,9 +435,10 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     // RFC 169's: the index gained four published-price columns and
     // `canonical-money` moved ahead of `search-index` to feed them.
     assertEquals(
-      9,
+      10,
       row.methodVersion,
-      "RFC 176 took the method version to 9: the institution phase writes no money, so `non_null` carries 10 keys, not 28",
+      "RFC 195 took the method version to 10: the institution phase writes six percentile score bands, so " +
+        "`non_null` carries 16 keys, not 10 and not 28",
     )
     assertTrue(row.sources.contains("ipeds-hd-joined-fixture.csv"), "sources names the HD file: ${row.sources}")
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")

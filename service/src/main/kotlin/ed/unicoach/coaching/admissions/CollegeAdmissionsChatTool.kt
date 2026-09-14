@@ -18,9 +18,11 @@ import org.slf4j.LoggerFactory
  * The `college_admissions_profile` chat tool (RFC 148): the coach's read path
  * into what the student's listed schools published about themselves in their
  * own Common Data Set -- the non-need (merit) money they hand out, what the
- * admission office says it weighs, and when each round is due -- plus the one
- * fact that is NOT theirs to publish: the admission-test policy each of them
- * reported to the federal IPEDS survey (RFC 187). Read-only --
+ * admission office says it weighs, and when each round is due -- plus the two
+ * facts that are NOT theirs to publish: the admission-test policy each of them
+ * reported to the federal IPEDS survey (RFC 187), and the published 25th/75th
+ * percentile score bands of the class each of them admitted (RFC 195).
+ * Read-only --
  * it writes nothing. Total by the [ed.unicoach.chat.ChatTool] contract:
  * malformed input returns a structured `{ "error": ... }` object the model
  * reads, never a throw.
@@ -95,11 +97,12 @@ class CollegeAdmissionsChatTool(
     }
 
   /**
-   * One college. The four sections are emitted in the order the coach should
+   * One college. The five sections are emitted in the order the coach should
    * reach for them (RFC 145): the money first, then what the school weighs --
-   * the C7 grid and then whether it wanted a test score at all -- then when it
-   * is all due. A section this school does not report is ABSENT and is named in
-   * `data_availability`, never emitted as an empty object.
+   * the C7 grid, then whether it wanted a test score at all, then what those
+   * scores looked like -- then when it is all due. A section this school does
+   * not report is ABSENT and is named in `data_availability`, never emitted as
+   * an empty object.
    */
   private fun collegeObject(admissions: CollegeAdmissions): JsonObject =
     buildJsonObject {
@@ -111,6 +114,7 @@ class CollegeAdmissionsChatTool(
       admissions.meritAid?.let { put(AdmissionsField.MERIT_AID.wireName, MeritAidWire.objectOf(it)) }
       admissions.factors?.let { put(AdmissionsField.ADMISSION_FACTORS.wireName, factorsObject(it)) }
       admissions.testPolicy?.let { put(AdmissionsField.TEST_POLICY.wireName, testPolicyObject(it)) }
+      admissions.scoreBands?.let { put(AdmissionsField.SCORE_BANDS.wireName, ScoreBandWire.objectOf(it)) }
       admissions.deadlines?.let { put(AdmissionsField.DEADLINES.wireName, deadlinesObject(it)) }
       putJsonArray("data_availability") {
         admissions.notReported.forEach { add(JsonPrimitive(it.wireName)) }
@@ -208,13 +212,26 @@ class CollegeAdmissionsChatTool(
 
     /**
      * The keys this tool emits whose value is a NUMBER by contract -- the
-     * merit measures and the result count. Everything else it renders is a
-     * string by construction (spoken ratings, spoken round names, date
-     * phrases, the cycle label), which is the point of the rendering rules
-     * rather than a coincidence: the RFC 143 guard reads this list, so a new
-     * numeric key has to be admitted here deliberately.
+     * merit measures, the two percentile scores, the D16 admitted average and
+     * the result count. Everything else it renders is a string by construction
+     * (spoken ratings, spoken round names, date phrases, the cycle label),
+     * which is the point of the rendering rules rather than a coincidence: the
+     * RFC 143 guard reads this list, so a new numeric key has to be admitted
+     * here deliberately.
+     *
+     * THE THREE SCORE KEYS ARE ADMITTED ON PURPOSE (RFC 195 D-C), and they are
+     * the first figures here that are not money. The guard exists to catch a
+     * SOURCE CODE arriving as a bare number -- a `1` that means New England, a
+     * quintile index, a `month` with no `day` -- and its test is "a number
+     * whose key does not name a measure". These keys name their measure
+     * exactly: a 25th-percentile score, a 75th-percentile score, an admitted
+     * average. They are admitted rather than avoided because the alternative
+     * is a model comparing a student's figure against English prose, which is
+     * the arithmetic error this section exists to prevent; every one of them
+     * arrives beside a sentence that says what it is, and
+     * [ScoreBandCopy.NOT_A_CUT_OFF] says what it is not.
      */
-    val NUMBERS_BY_CONTRACT: Set<String> = MeritAidWire.NUMERIC_KEYS + setOf("count")
+    val NUMBERS_BY_CONTRACT: Set<String> = MeritAidWire.NUMERIC_KEYS + ScoreBandWire.NUMERIC_KEYS + setOf("count")
 
     /**
      * A CDS date as a phrase, never a pair of bare numbers. A month with no day
@@ -266,6 +283,17 @@ class CollegeAdmissionsChatTool(
         "the year its source cites, and nothing else: say the year, say the confirm_with_school sentence with " +
         "it, and never carry one school's policy over to another school on the list. When " +
         "${AdmissionsField.TEST_POLICY.wireName} is named in data_availability, ${TestPolicyCopy.NOT_REPORTED} " +
+        "${AdmissionsField.SCORE_BANDS.wireName} is what THAT school's admitted class actually scored: each band " +
+        "is the middle half of admitted students, so say the cohort the source cites with the numbers, always say " +
+        "the ${ScoreBandWire.NOT_A_CUT_OFF_KEY} sentence with them, and never turn a band into a chance of " +
+        "admission or into a score the student has to reach. Never carry one school's band to another school on " +
+        "the list. When a school publishes no SAT band you USUALLY get ${ScoreBandWire.ADMITTED_AVERAGE_KEY} " +
+        "instead - usually and not always, because we hold no average for some of those schools - and it is an " +
+        "average and never a threshold: say it the way ${ScoreBandWire.ADMITTED_AVERAGE_LABEL_KEY} says it, " +
+        "never subtract from it, never compare a student to it, and never present it as a range. If " +
+        "${ScoreBandWire.ADMITTED_AVERAGE_KEY} is absent we hold no average for that school, so say nothing " +
+        "about one. You will never get an average and a band for the same test. When " +
+        "${AdmissionsField.SCORE_BANDS.wireName} is named in data_availability, ${ScoreBandCopy.NOT_REPORTED} " +
         "Read-only: this tool changes nothing."
   }
 }

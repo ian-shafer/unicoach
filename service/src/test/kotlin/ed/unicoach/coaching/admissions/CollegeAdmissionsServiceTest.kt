@@ -1,7 +1,10 @@
 package ed.unicoach.coaching.admissions
 
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.college.AdmissionTestPolicy
+import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
 import ed.unicoach.db.models.CollegeId
@@ -13,6 +16,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -559,6 +564,225 @@ class CollegeAdmissionsServiceTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Score bands (RFC 195)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a college with published bands reports them, and says nothing about an average`() {
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(
+      student,
+      "Banded College",
+      satReadingBand = 620 to 700,
+      satMathBand = 640 to 750,
+      actBand = 28 to 33,
+    )
+
+    val section = read(student).colleges.single().scoreBands
+    assertNotNull(section)
+    val byTest = section.bands.associateBy { it.test }
+    assertEquals(620, byTest.getValue(ScoredTest.SAT_READING).lower)
+    assertEquals(700, byTest.getValue(ScoredTest.SAT_READING).upper)
+    assertEquals(640, byTest.getValue(ScoredTest.SAT_MATH).lower)
+    assertEquals(750, byTest.getValue(ScoredTest.SAT_MATH).upper)
+    assertEquals(28, byTest.getValue(ScoredTest.ACT_COMPOSITE).lower)
+    assertEquals(33, byTest.getValue(ScoredTest.ACT_COMPOSITE).upper)
+    // D16, the direction the failure mode runs: a school with a band gets NO
+    // average, even though this fixture publishes one. Showing both is how a
+    // family comes to read the average as the bar.
+    assertNull(section.average, "a band and an average for the same test is what D16 forbids")
+    assertEquals(
+      ScoredTest.entries,
+      section.bands.map { it.test },
+      "the bands are rendered in ScoredTest declaration order -- the two SAT sections, then the ACT",
+    )
+  }
+
+  @Test
+  fun `a college with no score at all renders no section and says so`() {
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(student, "No Score College", satAverageEquivalentScore = null)
+
+    val admissions = read(student).colleges.single()
+    assertNull(admissions.scoreBands, "no band and no average is not a section")
+    assertTrue(
+      AdmissionsField.SCORE_BANDS in admissions.notReported,
+      "our silence must be sayable: ${admissions.notReported}",
+    )
+  }
+
+  @Test
+  fun `the admitted average stands in for a missing SAT band, per test family`() {
+    // D-A, and the measured shape it exists for: 88 colleges publish an SAT
+    // average and no SAT band, and ALL 88 publish an ACT band. A rule of "an
+    // average only when the school has no band of any kind" would therefore
+    // never fire once, and those 88 students would be told nothing about the
+    // SAT at the very school they asked about.
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(
+      student,
+      "ACT Only College",
+      satAverageEquivalentScore = 1310,
+      actBand = 28 to 33,
+    )
+
+    val section = read(student).colleges.single().scoreBands
+    assertNotNull(section)
+    assertEquals(
+      listOf(ScoredTest.ACT_COMPOSITE),
+      section.bands.map { it.test },
+      "the school publishes no SAT band, and none is fabricated from the average",
+    )
+    assertEquals(28, section.bands.single().lower, "the ACT band it DOES publish is unaffected")
+    assertEquals(1310, section.average?.score, "the average stands in for the missing SAT band, beside the ACT band")
+    assertTrue(
+      section.bands.none { it.test.family == ScoreFamily.SAT },
+      "D-A is decided on the FAMILY: an ACT band does not suppress an SAT-equivalent average",
+    )
+  }
+
+  @Test
+  fun `an average alone is a section, and a band alone is a section`() {
+    val student = AdmissionsTestDb.createStudent()
+    val averageOnly = AdmissionsTestDb.seedListedCollege(student, "Average Only College")
+    val bandOnly =
+      AdmissionsTestDb.seedListedCollege(
+        student,
+        "Band Only College",
+        satAverageEquivalentScore = null,
+        satReadingBand = 600 to 690,
+        satMathBand = 610 to 710,
+      )
+
+    val byId = read(student).colleges.associateBy { it.collegeId }
+    val average = byId.getValue(averageOnly).scoreBands
+    assertNotNull(average)
+    assertEquals(emptyList(), average.bands, "an average-only section carries no band at all")
+    assertEquals(1200, average.average?.score)
+
+    // The complement: two colleges publish a band and no average at all, so a
+    // section built only from the average would drop them.
+    val band = byId.getValue(bandOnly).scoreBands
+    assertNotNull(band)
+    assertNull(band.average)
+    assertEquals(600, band.bands.first { it.test == ScoredTest.SAT_READING }.lower)
+  }
+
+  @Test
+  fun `a stored band that violates the CHECKs is logged, and never becomes an average`() {
+    // The four states `ScoreBand.of` used to fold into one null. Three of them
+    // are stored rows the `colleges` CHECKs forbid -- half a pair, an inverted
+    // pair, a score outside the published scale -- so they cannot be SEEDED at
+    // all, which is the point: such a row means the CHECK was dropped or
+    // something wrote past it. The service is handed the row directly, which
+    // is the only honest way to exercise a state a correct database refuses.
+    val student = AdmissionsTestDb.createStudent()
+    val id = AdmissionsTestDb.seedListedCollege(student, "Broken Band College", satAverageEquivalentScore = 1310)
+    val stored = CollegesDao.listByIds(AdmissionsTestDb.sqlSession, listOf(id)).getOrThrow().single()
+
+    // Half an SAT reading band, and an out-of-scale SAT math band.
+    val malformed =
+      stored.copy(
+        satReading25thPercentileScore = 620,
+        satReading75thPercentileScore = null,
+        satMath25thPercentileScore = 640,
+        satMath75thPercentileScore = 1500,
+        actComposite25thPercentileScore = 28,
+        actComposite75thPercentileScore = 33,
+      )
+
+    val warnings = captureWarns { assertNotNull(service.scoreBandsOf(malformed)) }
+    val section = assertNotNull(service.scoreBandsOf(malformed))
+
+    // 1. The refusal is not silent. One line per malformed band, naming the
+    //    college, the test and BOTH stored values -- an operator cannot find a
+    //    row it is not told about.
+    assertEquals(2, warnings.size, "one warning per malformed band: $warnings")
+    val reading = assertNotNull(warnings.firstOrNull { it.contains("sat_reading") }, "$warnings")
+    assertTrue(reading.contains(id.value.toString()), "the college must be named: [$reading]")
+    assertTrue(reading.contains("lower=[620]") && reading.contains("upper=[null]"), "with its figures: [$reading]")
+    assertTrue(reading.contains(MalformedBand.HALF_A_PAIR.value), "and why it was refused: [$reading]")
+    val math = assertNotNull(warnings.firstOrNull { it.contains("sat_math") }, "$warnings")
+    assertTrue(math.contains(MalformedBand.OUT_OF_SCALE.value), "[$math]")
+
+    // 2. The refusal does not quietly change what the family is told. This
+    //    school HAS a stored SAT range; we refused to read it, so the answer
+    //    is our gap and not a different figure on a different scale.
+    assertNull(
+      section.average,
+      "a refused SAT band must never promote the school into the average path: the row holds a range",
+    )
+    assertEquals(listOf(ScoredTest.ACT_COMPOSITE), section.bands.map { it.test }, "the readable band still speaks")
+  }
+
+  @Test
+  fun `a school whose only SAT band is malformed is a named silence, not an average`() {
+    // The same rule with nothing else to say: no section at all, and the
+    // school named in `data_availability`. Our gap, said plainly.
+    val student = AdmissionsTestDb.createStudent()
+    val id = AdmissionsTestDb.seedListedCollege(student, "Only Broken College", satAverageEquivalentScore = 1310)
+    val stored = CollegesDao.listByIds(AdmissionsTestDb.sqlSession, listOf(id)).getOrThrow().single()
+    val malformed = stored.copy(satReading25thPercentileScore = 700, satReading75thPercentileScore = 620)
+
+    val warnings = captureWarns { assertNull(service.scoreBandsOf(malformed)) }
+    assertEquals(1, warnings.size, "the inverted band is reported: $warnings")
+    assertTrue(warnings.single().contains(MalformedBand.INVERTED.value), warnings.single())
+  }
+
+  @Test
+  fun `ordinary absence is not logged`() {
+    // 5,234 of the snapshot's 6,273 colleges publish no score. A line for each
+    // would be 83% of the corpus restating what the federal file is, and the
+    // three lines that matter would be unfindable inside it.
+    val student = AdmissionsTestDb.createStudent()
+    val id = AdmissionsTestDb.seedListedCollege(student, "Silent College", satAverageEquivalentScore = null)
+    val stored = CollegesDao.listByIds(AdmissionsTestDb.sqlSession, listOf(id)).getOrThrow().single()
+
+    assertEquals(emptyList(), captureWarns { assertNull(service.scoreBandsOf(stored)) }, "no score published is not a defect")
+  }
+
+  @Test
+  fun `an average outside the published composite scale is refused, not spoken`() {
+    // The only rendered figure in this section with no scale gate:
+    // `sat_average_equivalent_score` is loaded 0..Int.MAX_VALUE and its DB
+    // guard is merely non-negative, so a stored 0 reached the wire as
+    // "0 was the average score of students admitted for autumn 2024".
+    val student = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(student, "Zero Average College", satAverageEquivalentScore = 0)
+
+    val zero = read(student).colleges.single()
+    assertNull(zero.scoreBands, "0 is not an average, so there is no figure and no section")
+    assertTrue(AdmissionsField.SCORE_BANDS in zero.notReported, "and the silence is sayable: ${zero.notReported}")
+
+    // The complement, so the refusal is a scale and not a blanket: a real
+    // average on the published scale still speaks.
+    val other = AdmissionsTestDb.createStudent()
+    AdmissionsTestDb.seedListedCollege(other, "Real Average College", satAverageEquivalentScore = 1310)
+    assertEquals(
+      1310,
+      read(other)
+        .colleges
+        .single()
+        .scoreBands
+        ?.average
+        ?.score,
+    )
+  }
+
+  /** The WARNs an exercise emits, captured off the root logger -- [ed.unicoach.coaching.LlmCallLogTest]'s idiom. */
+  private fun captureWarns(exercise: () -> Unit): List<String> {
+    val root = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as ch.qos.logback.classic.Logger
+    val appender = ListAppender<ILoggingEvent>().apply { start() }
+    root.addAppender(appender)
+    try {
+      exercise()
+    } finally {
+      root.detachAppender(appender)
+    }
+    return appender.list.filter { it.level.levelStr == "WARN" }.map { it.formattedMessage }
+  }
+
+  // ---------------------------------------------------------------------------
   // Batching
   // ---------------------------------------------------------------------------
 
@@ -567,12 +791,21 @@ class CollegeAdmissionsServiceTest {
     val student = AdmissionsTestDb.createStudent()
     val ids =
       (1..5).map { n ->
-        AdmissionsTestDb.seedListedCollege(student, "Batch College $n").also {
-          AdmissionsTestDb.seedMeritAid(it)
-          AdmissionsTestDb.seedFactors(it)
-          AdmissionsTestDb.seedDeadline(it)
-          AdmissionsTestDb.seedIpedsTestPolicy(it)
-        }
+        // Every section populated, INCLUDING the score bands: a section left
+        // absent is a section the statement count never sees.
+        AdmissionsTestDb
+          .seedListedCollege(
+            student,
+            "Batch College $n",
+            satReadingBand = 620 to 700,
+            satMathBand = 640 to 750,
+            actBand = 28 to 33,
+          ).also {
+            AdmissionsTestDb.seedMeritAid(it)
+            AdmissionsTestDb.seedFactors(it)
+            AdmissionsTestDb.seedDeadline(it)
+            AdmissionsTestDb.seedIpedsTestPolicy(it)
+          }
       }
 
     val profile = read(student, ids)
@@ -582,6 +815,9 @@ class CollegeAdmissionsServiceTest {
         it.meritAid != null && it.factors != null && it.testPolicy != null && it.deadlines != null
       },
     )
+    // RFC 195's section rides the `colleges` row the selection already read,
+    // so it is present for every one of the five and costs nothing below.
+    assertTrue(profile.colleges.all { it.scoreBands != null }, "the fifth section must be populated for all five")
     // The batch reads are keyed by college id; a duplicated id is read once.
     assertEquals(1, read(student, listOf(ids.first(), ids.first())).colleges.size)
 
@@ -610,8 +846,8 @@ class CollegeAdmissionsServiceTest {
       BATCHED_STATEMENTS,
       five.prepared.size,
       "the whole admissions read is [$BATCHED_STATEMENTS] statements -- the selection's two, the three CDS " +
-        "tables and the IPEDS test policy. It prepared [${five.prepared}]; if that is correct, say so in " +
-        "readInSession's KDoc in the same commit",
+        "tables and the IPEDS test policy, and NOT the score bands, which ride the `colleges` row (RFC 195). " +
+        "It prepared [${five.prepared}]; if that is correct, say so in readInSession's KDoc in the same commit",
     )
   }
 
