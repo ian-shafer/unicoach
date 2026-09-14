@@ -1,7 +1,9 @@
 package ed.unicoach.coaching.testing
 
+import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.HighSchoolYear
 import ed.unicoach.coaching.admissions.AdmissionsTestDb
+import ed.unicoach.db.dao.AdmissionTestStateProgrammeFixture
 import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
@@ -548,6 +550,107 @@ class TestTimelineServiceTest {
     }
 
   /**
+   * THE STATEMENT BUDGET, ABSOLUTE AND NOT MERELY RELATIVE (RFC 208 section 5,
+   * and the `CollegeAdmissionsServiceTest` precedent).
+   *
+   * [TestTimelineService.readInSession]'s own KDoc states a number, and RFC 187
+   * found a doc comment stating a count that no test could contradict -- this one
+   * had already been wrong. The count is asserted against the constant that
+   * sentence names, so a sixth read is a deliberate edit to the constant, the
+   * sentence and this assertion together.
+   *
+   * The student is fully populated on purpose: a list with a college in it, a
+   * dated round, a residency answer and a row for that state, so every one of the
+   * seven statements actually fires.
+   */
+  @Test
+  fun `the answering read costs the stated number of statements`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent(graduationYear = 2027)
+      val college = AdmissionsTestDb.seedListedCollege(student, "Budget College")
+      AdmissionsTestDb.seedDeadline(college, ApplicationRound.EARLY_ACTION, closing = CdsMonthDay(11, 1))
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+
+      val counting = CoachingTestDb.CountingSession()
+      val timeline =
+        TestTimelineTestDb
+          .serviceAt(NOON_EASTERN_2026_09_11)
+          .readInSession(counting, student, null)
+
+      assertIs<TestTimeline.Resolved>(timeline)
+      assertEquals(
+        TestTimelineService.READ_STATEMENTS,
+        counting.prepared.size,
+        "the whole answering read is [${TestTimelineService.READ_STATEMENTS}] statements -- the graduation date, " +
+          "the selection's two, the deadlines, the calendar, and the state-programme reader's money profile and " +
+          "DISTINCT ON. It prepared [${counting.prepared}]; if that is correct, say so in readInSession's KDoc " +
+          "and in READ_STATEMENTS in the same commit",
+      )
+    }
+
+  /**
+   * THE REFUSAL PAYS FOR NOTHING IT CANNOT CARRY. A [TestTimeline.NoCalendar]
+   * arm has no programme section at all (RFC 208 section 6), so the two
+   * state-programme statements are not spent on it -- which is the claim
+   * `readInSession`'s KDoc makes and the only thing that makes the number above
+   * conditional.
+   */
+  @Test
+  fun `a refusal does not pay for the state-programme read`() =
+    runTest {
+      // The SAME student shape as the budget test above: an empty list would
+      // short-circuit two of the five reads, and the two counts would then
+      // differ by something other than the state programme.
+      val student = TestTimelineTestDb.createStudent(graduationYear = 2027)
+      val college = AdmissionsTestDb.seedListedCollege(student, "Refusal College")
+      AdmissionsTestDb.seedDeadline(college, ApplicationRound.EARLY_ACTION, closing = CdsMonthDay(11, 1))
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+      TestTimelineTestDb.seedCalendar(EXPIRING_CALENDAR)
+
+      val counting = CoachingTestDb.CountingSession()
+      val timeline =
+        TestTimelineTestDb
+          .serviceAt(DAY_AFTER_THE_EXPIRY)
+          .readInSession(counting, student, null)
+
+      assertIs<TestTimeline.NoCalendar>(timeline)
+      assertEquals(
+        TestTimelineService.READ_STATEMENTS - STATE_PROGRAMME_STATEMENTS,
+        counting.prepared.size,
+        "a refusal carries no programme section, so it must not read one: [${counting.prepared}]",
+      )
+    }
+
+  /**
+   * THE STATE FACT RIDES ON THE ANSWER, and it is INFERRED: the student answered
+   * the residency question in the cost conversation and was asked nothing here.
+   */
+  @Test
+  fun `the resolved read carries the student's own state programme`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent()
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(
+        listOf(
+          AdmissionTestStateProgrammeFixture.programme(state = "TN"),
+          AdmissionTestStateProgrammeFixture.programme(state = "MA"),
+        ),
+      )
+
+      val resolved =
+        assertIs<TestTimeline.Resolved>(
+          TestTimelineTestDb.serviceAt(NOON_EASTERN_2026_09_11).getForStudent(student).getOrThrow(),
+        )
+
+      val held = assertIs<SchoolDayProgramme.Held>(resolved.schoolDayProgramme)
+      assertEquals("TN", held.row.state)
+    }
+
+  /**
    * THE CLAIM THE TWO EDGE TESTS ARE FOR, and the one `anchor == null` does not
    * make: no application-cycle year is INVENTED for a student who has no cycle.
    *
@@ -677,5 +780,12 @@ class TestTimelineServiceTest {
 
     /** One day before it, Eastern -- the same rows, and they still answer. */
     const val DAY_BEFORE_THE_EXPIRY = "2026-10-30T16:00:00Z"
+
+    /**
+     * What [SchoolDayTestingReader] costs on its own: the active money profile
+     * and the newest row per state. Named, so the refusal assertion subtracts a
+     * number that is written down rather than a literal two.
+     */
+    const val STATE_PROGRAMME_STATEMENTS = 2
   }
 }

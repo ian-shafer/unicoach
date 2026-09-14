@@ -1,6 +1,6 @@
 package ed.unicoach.db.dao
 
-import ed.unicoach.db.models.AdmissionTestAdministration.Companion.CALENDAR_REFRESH_LEAD
+import ed.unicoach.db.models.HandTypedReferenceData.REFRESH_LEAD
 import ed.unicoach.db.models.NewAdmissionTestAdministration
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -232,7 +232,7 @@ class AdmissionTestCalendarSeedTest {
       }
     val stale =
       live
-        .filter { ChronoUnit.DAYS.between(today, it.expiresOn) < CALENDAR_REFRESH_LEAD.days }
+        .filter { ChronoUnit.DAYS.between(today, it.expiresOn) < REFRESH_LEAD.days }
         .map { "[${it.test.value}] [${it.testDate}] expires_on=[${it.expiresOn}]" }
     return halfWritten + exhausted + stale
   }

@@ -3,9 +3,14 @@ package ed.unicoach.coaching.testing
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.admissions.AdmissionsTestDb
 import ed.unicoach.db.dao.AdmissionTestCalendarFixture
+import ed.unicoach.db.dao.AdmissionTestStateProgrammeFixture
+import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AdmissionTest
+import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.MoneyProfileUpsert
 import ed.unicoach.db.models.NewAdmissionTestAdministration
+import ed.unicoach.db.models.NewAdmissionTestStateProgramme
 import ed.unicoach.db.models.ScoreRelease
 import ed.unicoach.db.models.StudentId
 import java.time.Instant
@@ -36,6 +41,45 @@ object TestTimelineTestDb {
   fun reset() {
     AdmissionsTestDb.reset()
     AdmissionTestCalendarFixture.deleteAll(AdmissionsTestDb.sqlSession)
+    // The state programmes are emptied for the SAME reason as the calendar, one
+    // table along: they are migration-seeded, so `db-reset` leaves the real
+    // corpus there, and a suite that decides what one state says -- or that
+    // reads an EXPIRED row, which no committed row may ever be (D20) -- would
+    // otherwise be asserting against a mixture of its own rows and 31 shipped
+    // ones.
+    AdmissionTestStateProgrammeFixture.deleteAll(AdmissionsTestDb.sqlSession)
+  }
+
+  /** The state-programme rows this test means. Every one of them is the suite's own; nothing here reads the corpus. */
+  fun seedProgrammes(rows: List<NewAdmissionTestStateProgramme>) =
+    AdmissionTestStateProgrammeFixture.seed(AdmissionsTestDb.sqlSession, rows)
+
+  /**
+   * The student's residency state, answered -- the ONE field this feature infers
+   * from, written through the same DAO the money surface writes it with.
+   *
+   * The three residency writers below are separate calls and not one nullable
+   * parameter, because ANSWERED, UNANSWERED and DECLINED are the tri-state the
+   * whole D10 sentence turns on: a test says which of the three it means by
+   * which one it calls.
+   */
+  fun answerResidency(
+    student: StudentId,
+    state: String,
+  ) = upsertProfile(MoneyProfileUpsert(studentId = student, residency = MoneyProfileUpsert.FieldWrite.Answer(state)))
+
+  /** A profile that EXISTS with the residency question never put: the income field is written so the row is real. */
+  fun leaveResidencyUnanswered(student: StudentId) =
+    upsertProfile(
+      MoneyProfileUpsert(studentId = student, income = MoneyProfileUpsert.FieldWrite.Answer(IncomeBand.K48_TO_75K)),
+    )
+
+  /** The student was asked and chose not to say. It is never asked again, here or anywhere. */
+  fun declineResidency(student: StudentId) =
+    upsertProfile(MoneyProfileUpsert(studentId = student, residency = MoneyProfileUpsert.FieldWrite.Declined))
+
+  private fun upsertProfile(input: MoneyProfileUpsert) {
+    MoneyProfilesDao.upsertForStudent(AdmissionsTestDb.sqlSession, input).getOrThrow()
   }
 
   /** A student with the graduation year this test means, stated rather than inherited from a shared default. */

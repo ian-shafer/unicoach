@@ -1,7 +1,6 @@
 package ed.unicoach.db.models
 
 import java.time.LocalDate
-import java.time.Period
 import java.util.UUID
 
 /**
@@ -86,28 +85,11 @@ data class AdmissionTestAdministration(
   /**
    * The day this row stops being believed. Past the earliest [expiresOn] of the
    * rows that are still LIVE the read refuses to name any date and points at the
-   * publishers, and a committed row within [CALENDAR_REFRESH_LEAD] of it fails
-   * the build (D7/D20).
+   * publishers, and a committed row within
+   * [HandTypedReferenceData.REFRESH_LEAD] of it fails the build (D7/D20).
    */
   val expiresOn: LocalDate,
-) : Identifiable<AdmissionTestAdministrationId> {
-  companion object {
-    /**
-     * How far ahead of a committed row's `expires_on` the build starts failing
-     * (brief 0010 D20). Ninety days: by then both publishers have long since
-     * firmed up the next cycle, so the failure is actionable on the day it fires
-     * rather than a month later.
-     *
-     * ONE named home, referenced by the staleness guard, by the KDoc above and
-     * by the DDL header comment -- the number used to be a bare `90L` in the
-     * test and the words "90 days" in three prose blocks, so moving it would
-     * have left the prose asserting a lead time nothing enforced. A [Period]
-     * rather than a `Long`, so the unit is in the TYPE and no caller has to know
-     * from the name whether it counts days or weeks.
-     */
-    val CALENDAR_REFRESH_LEAD: Period = Period.ofDays(90)
-  }
-}
+) : Identifiable<AdmissionTestAdministrationId>
 
 /**
  * A row to write. Separate from [AdmissionTestAdministration] because the id is

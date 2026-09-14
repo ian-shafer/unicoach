@@ -1,0 +1,627 @@
+#!/usr/bin/env bash
+# test-state-programme-seed — generate the state school-day programme seed
+# migrations from the file a human actually edits,
+# db/seed/test-state-programmes/programmes.csv
+# (RFC 208, slice test/05/your-state-already-pays).
+#
+# There is no machine-readable feed for state school-day SAT and ACT programmes:
+# fifty education agencies publish fifty HTML pages and nothing else. So the
+# corpus is HAND-TYPED, and brief 0010 D19 says hand-typed data lives in a
+# committed CSV with a PROVENANCE.json, because hand-typed data has to be
+# reviewable in a diff.
+#
+# WHY A GENERATED MIGRATION AND NOT AN INGEST PHASE, on bin/test-calendar-seed's
+# reasoning and explicitly NOT the Common Data Set pattern: the CDS corpus loads
+# through the ingest binary, `bin/test` never ingests, so those rows are absent
+# from every test database until a full re-ingest runs. Generating a migration
+# from the CSV keeps every word of D19 and additionally puts the rows in every
+# database the migrations touch.
+#
+# THE CSV IS THE SOURCE; THE SQL IS AN ARTIFACT. Never hand-edit a generated
+# seed: edit the CSV and re-run this. `-n` refuses a tree that differs from what
+# this run generates, so a hand-edited or stale seed is caught rather than
+# served.
+#
+# ONE SEED PER READING SESSION, named for the ACADEMIC YEAR OF checked_on, and
+# not for a school year. One session may legitimately produce rows for two
+# school years -- a page that names 2025-26 and a page that names none, recorded
+# as the year we read it in -- so the school year cannot name the file.
+#
+# THE CORPUS IS APPEND-ONLY AND THIS SCRIPT ENFORCES IT (Ian, 2026-09-14). A
+# (state, school_year) pair that an already-generated seed in the schema
+# directory contains may not be DROPPED from the CSV and may not be REWRITTEN by
+# it. Last year's answer stays true about last year; a re-read appends a row for
+# the new school year instead of editing the old one.
+#
+# IT VALIDATES BEFORE IT WRITES, AND IT REPORTS EVERY FAULT IN ONE PASS. Each
+# CHECK constraint in db/schema/create-admission-test-state-programmes.sql is
+# mirrored here, so a typo is a REVIEW error naming its line number rather than a
+# migration that fails at apply time in somebody else's db-reset. A validator
+# that stops at the first offender turns a five-line fix into five runs.
+source "$(dirname "$0")/common"
+
+strip_git_hook_env
+
+help() {
+  cat << 'EOF'
+test-state-programme-seed [options]
+
+Generates <schema-dir>/seed-admission-test-state-programmes-<reading-year>.sql
+from the authored source file db/seed/test-state-programmes/programmes.csv, one
+seed per reading session present in it, and appends each new ORDER line.
+
+The CSV is the source of truth and the SQL is a generated artifact: edit the
+CSV and re-run this, never the other way round. Every CHECK constraint on
+admission_test_state_programmes is re-checked here first, so a row that cannot
+be true is named by its line number before anything is written, and a
+(state, school_year) an existing seed already carries can neither be dropped nor
+rewritten.
+
+Options:
+  -c: The authored programmes CSV
+      (default: $PROJECT_ROOT/db/seed/test-state-programmes/programmes.csv)
+  -d: The schema directory to generate into (default: $PROJECT_ROOT/db/schema)
+  -n: Dry run. Writes nothing; exits 3 if the tree differs from what a real run
+      would generate, 0 if it is already correct.
+  -h: Help
+
+Exit codes:
+  0   the seeds and their ORDER lines are correct, or were written
+  1   refused: the CSV is not usable, or the corpus cannot be written
+  3   -n only: the tree differs from what would be generated
+  9   refused: ORDER cannot be appended to safely (run bin/db-status)
+  10, 11, 20, 22  usage errors
+EOF
+  exit 0
+}
+
+CSV_ARG="$PROJECT_ROOT/db/seed/test-state-programmes/programmes.csv"
+SCHEMA_DIR_ARG="$PROJECT_ROOT/db/schema"
+DRY_RUN=""
+
+parse_args() {
+  local OPTIND OPTARG opt
+  while getopts ":c:d:nh" opt; do
+    case "$opt" in
+    c) CSV_ARG="$OPTARG" ;;
+    d) SCHEMA_DIR_ARG="$OPTARG" ;;
+    n) DRY_RUN=1 ;;
+    h) help ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+    :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  if [ "$#" -gt 0 ]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "test-state-programme-seed does not accept positional arguments: [$*]"
+  fi
+
+  [ -n "$CSV_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "option -c requires a non-empty path"
+  [ -n "$SCHEMA_DIR_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "option -d requires a non-empty schema directory"
+  [ -f "$CSV_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "programmes CSV not found [$CSV_ARG]"
+  [ -s "$CSV_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "programmes CSV is empty [$CSV_ARG]"
+  [ -d "$SCHEMA_DIR_ARG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "schema directory not found [$SCHEMA_DIR_ARG]"
+
+  SCHEMA_DIR="$(cd "$SCHEMA_DIR_ARG" && pwd -P)"
+  ORDER_FILE="$SCHEMA_DIR/ORDER"
+  [ -f "$ORDER_FILE" ] ||
+    fatal "[$ORDER_FILE] does not exist, so a generated seed could never be applied"
+
+  assert_order_is_appendable
+}
+
+# ── The ORDER contract, read through its owner ─────────────────────────────────
+# bin/common is the declared sole owner of what ORDER is, what a legal migration
+# filename is and what counts as a disagreement, so this script ASKS rather than
+# answering "is this name already listed?" with its own `grep -Fxq`.
+#
+# bin/prompt-seed records that exact re-implementation as a defect that already
+# shipped: `grep -Fxq` answers "is there a line whose bytes are exactly this", so
+# an ORDER line carrying a trailing space or a CR from a CRLF checkout reads as
+# ABSENT — the append below then writes a SECOND line for one migration, and
+# bin/db-migrate refuses two steps later a corpus this script had just called
+# correct.
+#
+# schema_order_file_is_corrupt and not the wider schema_order_has_drift: a
+# generator that is about to write a migration and append its line IS the
+# "on disk but not yet listed" state, so the wide predicate would refuse every
+# first run.
+assert_order_is_appendable() {
+  schema_order_scan "$SCHEMA_DIR"
+  if schema_order_file_is_corrupt; then
+    fatal -s "$EXIT_SCHEMA_ORDER_DRIFT" \
+      "[$ORDER_FILE] cannot be appended to safely:"$'\n'"$(schema_order_drift_report)"$'\n'"  Fix it and re-run. \`bin/db-status\` reports the same corpus without refusing it."
+  fi
+}
+
+# The header this generator was written against, exactly and in order. A CSV
+# with a different header is REFUSED rather than read positionally: a reordered
+# column would silently move an archive url into a source url, or a state's
+# funding claim onto the wrong test.
+#
+# One declaration, because there is one authored file, and
+# bin/test-state-programme-seed-scripts-tests READS THIS LINE to derive its
+# fixtures — a harness that retyped the header could go on asserting the refusal
+# of a header this script had stopped expecting.
+readonly EXPECTED_HEADER='state,school_year,school_year_basis,participation,school_must_offer,test_chooser,test,lowest_grade,highest_grade,state_funded,source_url,archive_url,checked_on,expires_on'
+
+# Every fault line awk wrote, re-emitted through log-error, and counted.
+#
+# awk's faults are diagnostics of THIS script, and every diagnostic in bin/
+# reaches the operator through bin/functions' helpers; passing them through raw
+# mixes unprefixed faults with `[ERROR]`-prefixed shell diagnostics in one
+# refused run. This is the bin/prompt-seed shape (read_body).
+#
+# A here-string on an EMPTY complaint is still one empty line, and an awk that
+# died without saying anything has no line to re-emit.
+report_complaint() { # report_complaint <complaint text>
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    FAULTS=$((FAULTS + 1))
+    log-error "$line"
+  done <<< "$1"
+}
+
+# ── The programmes CSV, which is the whole corpus ─────────────────────────────
+#
+# One awk pass: read every seed the schema directory already holds, then
+# validate every row of the CSV, then emit the generated SQL per reading
+# session.
+#
+# A naive comma split is only correct while no cell can contain a comma or a
+# quote, so that is asserted rather than assumed — a quoted cell is refused, and
+# the row arity check catches an embedded comma as a column-count fault.
+#
+# Each check that mirrors a CHECK constraint in
+# db/schema/create-admission-test-state-programmes.sql carries a
+# `MIRRORS <constraint>` comment. The two are one rule typed twice, and nothing
+# but that tag ties them: bin/test-state-programme-seed-scripts-tests reads the
+# constraint names out of the DDL and asserts this file mirrors exactly those, so
+# a sixteenth CHECK cannot go unmirrored in silence.
+generate_programmes() {
+  local complaint status=0
+
+  : > "$NAMES_FILE" ||
+    fatal "could not create [$NAMES_FILE] to collect the generated file names; nothing was written."
+
+  # `2>&1 > "$NAMES_FILE"` — in that order — sends stderr to the command
+  # substitution and stdout, which is the list of generated names, to the file.
+  # LC_ALL=C because the printable-ASCII refusal below is a statement about
+  # BYTES, and a multibyte locale would let awk read one offending byte as a
+  # character it considers ordinary.
+  complaint="$(LC_ALL=C awk -v expected="$EXPECTED_HEADER" -v outdir="$OUT_DIR" \
+    -v src="$CSV_REL" -v csv="$CSV_PATH" '
+    function fail(line, msg) { printf "  %s line %d: %s\n", src, line, msg > "/dev/stderr"; bad++ }
+
+    function is_iso_date(s,   y, m, d, dim) {
+      if (s !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) return 0
+      y = substr(s, 1, 4) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+      if (m < 1 || m > 12 || d < 1) return 0
+      split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ")
+      if (m == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))) return d <= 29
+      return d <= dim[m]
+    }
+
+    # The academic year of a day, under the 1 July boundary the rest of this
+    # product uses: a date before July belongs to the school year that STARTED in
+    # the previous calendar year. It names the seed file, and it is the same
+    # arithmetic the reading-year and horizon CHECKs spell in SQL.
+    function academic_year_of(d,   y, m) {
+      y = substr(d, 1, 4) + 0; m = substr(d, 6, 2) + 0
+      return m < 7 ? y - 1 : y
+    }
+
+    # Verb-led, on the bin/prompt-seed awk precedent: each one RETURNS the SQL
+    # literal for a cell.
+    function get_quoted(s) { gsub(/\x27/, "\x27\x27", s); return "\x27" s "\x27" }
+    function get_text_or_null(s) { return s == "" ? "NULL" : get_quoted(s) }
+    function get_bool_or_null(s) { return s == "" ? "NULL" : (s == "true" ? "TRUE" : "FALSE") }
+    function get_int_or_null(s) { return s == "" ? "NULL" : s + 0 }
+
+    function is_bool_or_empty(s) { return s == "" || s == "true" || s == "false" }
+    function is_int(s) { return s ~ /^[0-9]+$/ }
+
+    # ── Every seed the schema directory ALREADY holds ───────────────────────
+    #
+    # Read first, and read as data: a generated programme tuple begins
+    # `  (\x27XX\x27, 2026,`, so the pattern below matches those lines and
+    # nothing else in the file. What is kept is the whole rendered tuple, because
+    # "rewritten" means any cell of it changed and a comparison of the renderings
+    # is the one check that needs no column list.
+    FILENAME != csv {
+      if ($0 ~ /^  \(\x27[A-Z][A-Z]\x27, [0-9]+,/) {
+        line = $0
+        sub(/,$/, "", line)
+        split(line, parts, ",")
+        st = parts[1]; sub(/^  \(\x27/, "", st); sub(/\x27$/, "", st)
+        yr = parts[2] + 0
+        k = st SUBSEP yr
+        prior[k] = line
+        prior_file[k] = FILENAME
+        sub(/^.*\//, "", prior_file[k])
+      }
+      next
+    }
+
+    FNR == 1 {
+      if ($0 != expected) {
+        print "test-state-programme-seed: the programmes CSV header is not the header this generator expects." > "/dev/stderr"
+        printf "  expected: [%s]\n", expected > "/dev/stderr"
+        printf "  found:    [%s]\n", $0 > "/dev/stderr"
+        exit 1
+      }
+      ncol = split(expected, hdr, ",")
+      header_ok = 1
+      next
+    }
+
+    # Refused BEFORE any cell reaches get_quoted: doubling apostrophes is the
+    # whole escaper, and that is correct only while standard_conforming_strings
+    # is on and no cell carries a backslash or a control byte. This SQL is
+    # applied to every database, so a byte outside printable ASCII — a CR from a
+    # CRLF checkout, a tab, a smart quote pasted from a state page, a backslash —
+    # is a fault named by its line rather than a literal whose meaning depends on
+    # a server setting.
+    /[^ -~]/ || /\\/ {
+      fail(FNR, "a byte that is not printable ASCII, or a backslash: the escaper here doubles apostrophes and nothing else, so any other byte would be a SQL literal whose meaning depends on the server\x27s standard_conforming_strings")
+      next
+    }
+
+    /"/ { fail(FNR, "a double quote: this generator reads the CSV by splitting on commas, which is only correct while no cell is quoted") ; next }
+
+    {
+      n = split($0, f, ",")
+      if (n != ncol) { fail(FNR, sprintf("[%d] columns, expected [%d]", n, ncol)); next }
+
+      state = f[1]; year = f[2]; basis = f[3]; part = f[4]; must = f[5]
+      chooser = f[6]; test = f[7]; lo = f[8]; hi = f[9]; funded = f[10]
+      surl = f[11]; aurl = f[12]; checked = f[13]; expires = f[14]
+
+      # NOT a mirror of a CHECK, and deliberately not written as one: `state` is
+      # a FOREIGN KEY into us_states, and a key is strictly stronger than any
+      # shape this script could test — \x27ZZ\x27 is two capitals and is not a
+      # jurisdiction. This is the shape check that keeps a malformed cell out of
+      # the generated file name and the tuple; the database still decides whether
+      # the jurisdiction exists.
+      if (state !~ /^[A-Z][A-Z]$/)
+        fail(FNR, sprintf("state [%s] is not a two-letter USPS code; it must also be one us_states publishes, which only the database can decide", state))
+
+      # MIRRORS academic_year_check
+      #
+      # The `academic_year` DOMAIN (0087, RFC 170 D14) is a SMALLINT start year
+      # between 2000 and 2100: 2026 IS the 2026-27 school year, and the label is
+      # rendered by AcademicYear at read time. There is NO \x272026-27\x27 regex
+      # here and none in the DDL — 0087 exists so that "the second half is the
+      # first plus one" is not a rule anybody has to type twice.
+      if (!is_int(year) || year + 0 < 2000 || year + 0 > 2100) {
+        fail(FNR, sprintf("school_year [%s] is not a year in the academic_year domain (2000..2100); it is a START year, so the 2026-27 school year is 2026", year))
+      }
+
+      # MIRRORS admission_test_state_programmes_state_format_check
+      #
+      # The SHAPE only, exactly as the table now checks it. It is not a foreign
+      # key into us_states because that table is empty on a freshly migrated
+      # database (the DDL says why, and test/05.3/own-our-codebooks fixes it), so
+      # MEMBERSHIP is asserted over this same committed file by
+      # AdmissionTestStateProgrammeSeedTest, against db/data/codebooks.json.
+      if (state !~ /^[A-Z][A-Z]$/)
+        fail(FNR, sprintf("state [%s] is not a two-letter uppercase USPS code", state))
+
+      # MIRRORS admission_test_state_programmes_school_year_basis_check
+      if (basis != "stated_by_source" && basis != "reading_year")
+        fail(FNR, sprintf("school_year_basis [%s] is not one of stated_by_source, reading_year", basis))
+
+      # MIRRORS admission_test_state_programmes_participation_check
+      if (part != "required" && part != "offered")
+        fail(FNR, sprintf("participation [%s] is not one of required, offered", part))
+
+      if (!is_bool_or_empty(must))
+        fail(FNR, sprintf("school_must_offer [%s] is not true, false or empty; empty is UNKNOWN and is never false", must))
+
+      # MIRRORS admission_test_state_programmes_test_chooser_check
+      if (chooser != "state" && chooser != "district" && chooser != "student")
+        fail(FNR, sprintf("test_chooser [%s] is not one of state, district, student", chooser))
+
+      # MIRRORS admission_test_state_programmes_test_check
+      if (test != "" && test != "sat" && test != "act")
+        fail(FNR, sprintf("test [%s] is not one of sat, act, or empty", test))
+
+      # MIRRORS admission_test_state_programmes_test_pairing_check
+      #
+      # The state names a test exactly when the state is the one that chose it.
+      # Either half alone is a claim no source supports: a district-chosen row
+      # carrying \x27sat\x27 says the state chose after all, and a state-chosen
+      # row carrying no test tells a family to sit something unnamed.
+      if ((test != "") != (chooser == "state"))
+        fail(FNR, sprintf("test [%s] and test_chooser [%s] disagree: a test is named exactly when the state is the chooser", test, chooser))
+
+      # MIRRORS admission_test_state_programmes_grade_pairing_check
+      if ((lo == "") != (hi == ""))
+        fail(FNR, sprintf("lowest_grade [%s] and highest_grade [%s] must be present together or absent together: an absent grade is never completed with a guess", lo, hi))
+
+      # MIRRORS admission_test_state_programmes_grade_range_check
+      if (lo != "") {
+        if (!is_int(lo) || !is_int(hi) || lo + 0 < 9 || lo + 0 > 12 || hi + 0 < 9 || hi + 0 > 12 || lo + 0 > hi + 0)
+          fail(FNR, sprintf("grades [%s]..[%s] are not a range within 9..12 with lowest_grade first", lo, hi))
+      }
+
+      if (!is_bool_or_empty(funded))
+        fail(FNR, sprintf("state_funded [%s] is not true, false or empty; empty means the state\x27s own page does not say who pays", funded))
+
+      # MIRRORS admission_test_state_programmes_source_url_check
+      #
+      # http IS ACCEPTED (Ian, 2026-09-14: "https only -- why? We should prefer
+      # https, but not block insecure"). A state agency page served over plain
+      # http is still the state\x27s own page, and refusing it would drop a true
+      # row over a transport detail.
+      if (surl !~ /^https?:\/\//)
+        fail(FNR, sprintf("source_url [%s] is not an http or https url", surl))
+
+      # MIRRORS admission_test_state_programmes_archive_url_check
+      if (aurl != "" && aurl !~ /^https?:\/\//)
+        fail(FNR, sprintf("archive_url [%s] is not an http or https url", aurl))
+
+      if (!is_iso_date(checked)) {
+        fail(FNR, sprintf("checked_on [%s] is not a real yyyy-mm-dd date", checked))
+        next
+      }
+      if (!is_iso_date(expires))
+        fail(FNR, sprintf("expires_on [%s] is not a real yyyy-mm-dd date", expires))
+
+      # An ISO date sorts lexicographically, so this is the DDL CHECK.
+      #
+      # MIRRORS admission_test_state_programmes_expiry_after_checked_check
+      if (is_iso_date(expires) && expires <= checked)
+        fail(FNR, sprintf("expires_on [%s] is not after checked_on [%s]", expires, checked))
+
+      reading = academic_year_of(checked)
+
+      # MIRRORS admission_test_state_programmes_reading_year_check
+      #
+      # A row that says the year is OURS must carry the year we actually read it
+      # in. Without it, \x27reading_year\x27 would be an unfalsifiable label on
+      # any number in range.
+      if (basis == "reading_year" && is_int(year) && year + 0 != reading)
+        fail(FNR, sprintf("school_year [%s] is basis reading_year but checked_on [%s] falls in the [%d] school year: a row whose year is OURS carries the year we read it in", year, checked, reading))
+
+      # MIRRORS admission_test_state_programmes_school_year_horizon_check
+      #
+      # A page may legitimately name NEXT school year; it cannot name 2056. The
+      # read and the staleness guard both take the NEWEST row per state, so a
+      # typo\x27d future year would become that state\x27s permanent answer AND
+      # would never be stale.
+      if (is_int(year) && year + 0 > reading + 1)
+        fail(FNR, sprintf("school_year [%s] is beyond the year after the one checked_on [%s] falls in ([%d]): a page may name next school year and cannot name one after that", year, checked, reading + 1))
+
+      key = state SUBSEP (year + 0)
+      if (key in seen) {
+        fail(FNR, sprintf("duplicate (state, school_year) ([%s], [%s]), first seen at line [%d]", state, year, seen[key]))
+        next
+      }
+      seen[key] = FNR
+
+      # checked_on and expires_on are ONE fact about one reading session, typed
+      # once per row: a human read the state\x27s page on a day, and that reading
+      # stops being believed on a day. A refresh that updated thirty rows and
+      # missed the thirty-first would silently expire that session — the
+      # staleness guard fires on the newest row PER STATE — with every other
+      # check still green. So the rows of a session must agree, and the refusal
+      # names the line to fix and the line it disagrees with.
+      if (reading in session_checked) {
+        if (checked != session_checked[reading])
+          fail(FNR, sprintf("checked_on [%s] disagrees with [%s] on line [%d]: every row of reading session [%d] records ONE reading, so a refresh that missed a row is a fault and not a mixture", checked, session_checked[reading], session_line[reading], reading))
+        if (expires != session_expires[reading])
+          fail(FNR, sprintf("expires_on [%s] disagrees with [%s] on line [%d]: every row of reading session [%d] expires together", expires, session_expires[reading], session_line[reading], reading))
+      } else {
+        session_checked[reading] = checked
+        session_expires[reading] = expires
+        session_line[reading] = FNR
+      }
+
+      tuple = sprintf("  (%s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, DATE %s, DATE %s)",
+        get_quoted(state), year + 0, get_quoted(basis), get_quoted(part), get_bool_or_null(must),
+        get_quoted(chooser), get_text_or_null(test), get_int_or_null(lo), get_int_or_null(hi),
+        get_bool_or_null(funded), get_quoted(surl), get_text_or_null(aurl),
+        get_quoted(checked), get_quoted(expires))
+
+      # APPEND-ONLY, CHECKED AND NOT ASSUMED. A pair an existing generated seed
+      # already carries may be re-stated identically — this script is re-run all
+      # the time and must be idempotent — and may not be rewritten. The drop half
+      # is in END, because only a whole pass can know a pair is missing.
+      if (key in prior) {
+        if (prior[key] != tuple)
+          fail(FNR, sprintf("(state, school_year) ([%s], [%s]) is already in the generated seed [%s] and this row rewrites it. The corpus is append-only: a re-read is a NEW row for a new school year, not an edit to last year\x27s answer.", state, year, prior_file[key]))
+        prior_seen[key] = 1
+      }
+
+      if (!(reading in session_rows)) sessions[++nsessions] = reading
+      session_rows[reading]++
+      values[reading] = values[reading] sprintf("%s%s", (session_rows[reading] == 1 ? "" : ",\n"), tuple)
+    }
+
+    # Gated on header_ok, because awk runs END even after a rule called `exit`:
+    # a bad header must not ALSO produce "the CSV has a header and no rows",
+    # which is a second diagnosis of a file this run never read past line 1.
+    END {
+      if (!header_ok) exit 1
+
+      for (k in prior) {
+        if (!(k in seen)) {
+          split(k, kp, SUBSEP)
+          printf "  %s: (state, school_year) ([%s], [%s]) is in the generated seed [%s] and is no longer in the CSV. The corpus is append-only: it grows, and a row that was true stays true about the year it describes.\n", src, kp[1], kp[2], prior_file[k] > "/dev/stderr"
+          bad++
+        }
+      }
+
+      if (bad == 0 && nsessions == 0) {
+        print "test-state-programme-seed: the programmes CSV has a header and no rows." > "/dev/stderr"
+        exit 1
+      }
+
+      if (bad) {
+        printf "test-state-programme-seed: [%d] fault(s) in [%s]; nothing was written.\n", bad, src > "/dev/stderr"
+        exit 1
+      }
+
+      for (i = 1; i <= nsessions; i++) {
+        s = sessions[i]
+        out = outdir "/seed-admission-test-state-programmes-" s ".sql"
+        printf "-- GENERATED FILE -- do not edit.\n" > out
+        printf "--\n" > out
+        printf "-- Written by bin/test-state-programme-seed from %s.\n", src > out
+        printf "-- The CSV is the source a human edits and reviews in a diff; this file is an\n" > out
+        printf "-- artifact of it. To change a row, change the CSV and re-run the script.\n" > out
+        printf "--\n" > out
+        printf "-- Reading session %d: %d state school-day programme row(s), each with the state\n", s, session_rows[s] > out
+        printf "-- page it was read from and the day a human read it. The corpus is append-only,\n" > out
+        printf "-- so a later reading lands as a NEW seed and never as an edit to this one.\n" > out
+        printf "\n" > out
+        printf "INSERT INTO admission_test_state_programmes\n" > out
+        printf "    (state, school_year, school_year_basis, participation, school_must_offer,\n" > out
+        printf "     test_chooser, test, lowest_grade, highest_grade, state_funded,\n" > out
+        printf "     source_url, archive_url, checked_on, expires_on)\n" > out
+        printf "VALUES\n" > out
+        printf "%s\n", values[s] > out
+        printf "ON CONFLICT (state, school_year) DO UPDATE SET\n" > out
+        printf "    school_year_basis = EXCLUDED.school_year_basis,\n" > out
+        printf "    participation     = EXCLUDED.participation,\n" > out
+        printf "    school_must_offer = EXCLUDED.school_must_offer,\n" > out
+        printf "    test_chooser      = EXCLUDED.test_chooser,\n" > out
+        printf "    test              = EXCLUDED.test,\n" > out
+        printf "    lowest_grade      = EXCLUDED.lowest_grade,\n" > out
+        printf "    highest_grade     = EXCLUDED.highest_grade,\n" > out
+        printf "    state_funded      = EXCLUDED.state_funded,\n" > out
+        printf "    source_url        = EXCLUDED.source_url,\n" > out
+        printf "    archive_url       = EXCLUDED.archive_url,\n" > out
+        printf "    checked_on        = EXCLUDED.checked_on,\n" > out
+        printf "    expires_on        = EXCLUDED.expires_on;\n" > out
+        # close() is awk\x27s ONLY error channel for a redirected write: a full
+        # disk or a read-only TMPDIR yields a TRUNCATED seed, which would then be
+        # copied into the schema directory and logged as written.
+        if (close(out) != 0) {
+          printf "test-state-programme-seed: could not finish writing [%s]; the seed for reading session %d may be truncated.\n", out, s > "/dev/stderr"
+          exit 1
+        }
+        printf "seed-admission-test-state-programmes-%d.sql\n", s
+      }
+    }
+  ' ${PRIOR_SEEDS[@]+"${PRIOR_SEEDS[@]}"} "$CSV_PATH" 2>&1 > "$NAMES_FILE")" || status=$?
+
+  report_complaint "$complaint"
+
+  # The status is CARRIED rather than flattened into "the faults are above". awk
+  # exiting 1 after reporting is a refused CSV; awk dying on a signal, or exiting
+  # non-zero with nothing to say, is this script failing — and an operator told
+  # to go read faults that are not there has been sent to the wrong file.
+  if [ "$status" -ne 0 ]; then
+    [ "$FAULTS" -gt 0 ] ||
+      fatal "could not read [$CSV_REL]: awk exited [$status] without reporting a fault, so it did not refuse the CSV, it died. Nothing was written."
+    PROGRAMMES_OK=""
+  fi
+}
+
+main() {
+  parse_args "$@"
+
+  CSV_PATH="$(cd "$(dirname "$CSV_ARG")" && pwd -P)/$(basename "$CSV_ARG")"
+  CSV_REL="${CSV_PATH#"$PROJECT_ROOT"/}"
+
+  # The seeds this corpus already generated, read so that the append-only rule
+  # is CHECKED. A glob that matches nothing expands to itself, so the loop tests
+  # each name rather than trusting the shell.
+  PRIOR_SEEDS=()
+  local candidate
+  for candidate in "$SCHEMA_DIR"/seed-admission-test-state-programmes-*.sql; do
+    [ -f "$candidate" ] && PRIOR_SEEDS+=("$candidate")
+  done
+
+  # Generated into a scratch directory first, so a validation failure or a dry
+  # run never leaves a half-written migration behind.
+  #
+  # `mktemp -d` is CHECKED, and so is the name it reports. An unchecked failure
+  # left OUT_DIR empty, which made every path below relative to $PWD and aimed
+  # the cleanup `rm -rf` at the current directory.
+  OUT_DIR="$(mktemp -d)" ||
+    fatal "could not create a temporary directory to generate into; nothing was written."
+  [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] ||
+    fatal "[mktemp -d] reported success but named no usable directory [$OUT_DIR]; refusing to run with an empty scratch path, because every generated path and the cleanup would then be relative to [$PWD]."
+  # EXIT INT TERM: on EXIT alone a ^C left the scratch directory behind.
+  trap 'rm -rf "$OUT_DIR"' EXIT INT TERM
+
+  NAMES_FILE="$OUT_DIR/names"
+  FAULTS=0
+  PROGRAMMES_OK=1
+
+  generate_programmes
+
+  if [ -z "$PROGRAMMES_OK" ]; then
+    fatal "refused the authored corpus: [$FAULTS] diagnostic line(s) are above and nothing was written"
+  fi
+  [ "$FAULTS" -eq 0 ] ||
+    fatal "the generator reported [$FAULTS] diagnostic line(s) and still exited 0, which is a bug in this script; nothing has been copied into [$SCHEMA_DIR]."
+
+  local names name changed=0 status
+  names="$(cat "$NAMES_FILE")" ||
+    fatal "could not read the generated file names back from [$NAMES_FILE]; nothing has been copied into [$SCHEMA_DIR]."
+  [ -n "$names" ] ||
+    fatal "the generator named no seed for [$CSV_REL] and did not refuse it, which is a bug in this script; nothing has been copied into [$SCHEMA_DIR]."
+
+  for name in $names; do
+    # `cmp -s` has THREE answers — 0 same, 1 differs, >1 cannot compare — and
+    # folding the last two together silently overwrote an existing seed this
+    # process could not read.
+    status=1
+    if [ -f "$SCHEMA_DIR/$name" ]; then
+      status=0
+      cmp -s "$OUT_DIR/$name" "$SCHEMA_DIR/$name" || status=$?
+      [ "$status" -le 1 ] ||
+        fatal "could not compare [$SCHEMA_DIR/$name] with what [$CSV_REL] generates: cmp exited [$status], reported above. Nothing has been written."
+    fi
+
+    if [ "$status" -eq 0 ]; then
+      log-info "test-state-programme-seed: [$name] is already what this corpus generates."
+    else
+      changed=1
+      if [ -n "$DRY_RUN" ]; then
+        log-error "test-state-programme-seed: [$SCHEMA_DIR/$name] is not what [$CSV_REL] generates."
+        log-error "  Run: nix develop -c bin/test-state-programme-seed"
+      else
+        cp "$OUT_DIR/$name" "$SCHEMA_DIR/$name" ||
+          fatal "could not write [$SCHEMA_DIR/$name]; cp's own error is above. [$SCHEMA_DIR] may hold a partial copy of it."
+        log-info "test-state-programme-seed: wrote [$SCHEMA_DIR/$name]."
+      fi
+    fi
+
+    # Asked of bin/common, which read the file once, and never of `grep -Fxq`:
+    # see assert_order_is_appendable above for the defect that costs.
+    if schema_order_lists "$name"; then
+      continue
+    fi
+    changed=1
+    if [ -n "$DRY_RUN" ]; then
+      log-error "test-state-programme-seed: [$ORDER_FILE] does not declare [$name], so the seed would never be applied."
+    else
+      printf '%s\n' "$name" >> "$ORDER_FILE" ||
+        fatal "could not append [$name] to [$ORDER_FILE]; the seed is in [$SCHEMA_DIR] and nothing declares it, so it would never be applied. Add the line by hand or re-run."
+      log-info "test-state-programme-seed: appended [$name] to [$ORDER_FILE]."
+      # The append made the scan behind schema_order_lists stale, and the next
+      # name asks the same question. Re-read the corpus rather than reasoning
+      # about what this loop just did.
+      assert_order_is_appendable
+    fi
+  done
+
+  if [ -n "$DRY_RUN" ] && [ "$changed" -eq 1 ]; then
+    exit "$EXIT_SEED_WOULD_CHANGE"
+  fi
+  log-info "test-state-programme-seed: done."
+}
+
+main "$@"

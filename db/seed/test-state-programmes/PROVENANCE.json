@@ -1,0 +1,79 @@
+{
+  "checked_on": "2026-09-14",
+  "expires_on": "2027-07-31",
+  "source": "hand-typed from each state education agency's own page",
+  "note": "One row per US jurisdiction we read a STATE source for. Absence means we did not read a source; it never means the state runs no programme. Every row was written from the page named in its own source_url, fetched and read; a search result was only ever a lead. Past expires_on the coach holds no current record for that state, and a test fails when any state's newest row is within 90 days of it.",
+  "coverage": {
+    "jurisdictions_attempted": 51,
+    "rows": 36,
+    "absent": [
+      "AK",
+      "CA",
+      "FL",
+      "GA",
+      "IA",
+      "ME",
+      "MA",
+      "MO",
+      "NJ",
+      "NY",
+      "ND",
+      "OR",
+      "PA",
+      "VT",
+      "WA"
+    ],
+    "absent_note": "Every one of these was read on a primary state page in the second pass. Most name only their own state tests. Four were unreadable rather than negative in the first pass (DE, TX, UT, VA) and all four were sourced in the second."
+  },
+  "known_limits": {
+    "ND": "North Dakota would fit this table exactly, except its own page says the programme ENDED: no state-paid ACT from 2021-22 and the district option discontinued after 2023-24. We hold no row, which the coach reads out as a gap in our data -- weaker than what we actually know. There is no 'none' row and no ended-programme record in this table; see RFC 208.",
+    "OR": "Oregon runs a state-wide, state-funded, in-school exam in grade 10 under ORS 329.488, and it is the PreACT -- a practice test, not an admission test. No row: writing it down as the ACT would tell a family a college will see that score.",
+    "MO": "The state assessment list does not include the ACT; the END of Missouri's paid ACT is attested only by news, which is not a citation."
+  },
+  "judgement_calls": {
+    "UT": "The cited page says 'All Utah juniors take the ACT during school hours at no cost to families'. It says JUNIORS, not 'grade 11'; the numeric grade on this row applies the product's own equivalence (RFC 186 renders 'grade 11 (junior year)'). A second USBE document, the Accessibility, Accommodations and Participation Policy 2025-2026, states grade 11 explicitly and names the ACT, but says nothing about cost; it is recorded here rather than cited because a row cites one document.",
+    "KS": "Grades 11-12 from K.S.A. 72-5179(a), which funds the exam 'to each student enrolled in grades 11 and 12'. KSDE's own 2026-27 calendar heads every ACT window 'Grade 11 students' and schedules no grade-12 window. The statute is operative and is what the row cites; the tension is real and is recorded.",
+    "WY": "Grades 11-12: one sitting in grade 11 plus 'one optional retake during the fall semester in grade 12', which is in-programme. The /college-career-ready/workkeys/ slug is the state's own ACT & WorkKeys page; no better-named WDE URL exists.",
+    "HI": "Required, from the CURRENT HIDOE ACT testing page ('is to be administered to all students enrolled in grade 11'), not from the older ESSA plan PDF whose 'while not required' is about federal requirements.",
+    "OK": "The state chose the ACT and the district administers it. A 2020 OSDE 'district selection guidance' PDF still linked from the page describes choosing a test in place of the SAT; the SAT stopped being an option after 2023 (Oklahoma LOFT report 24-265-02), so that PDF is stale residue.",
+    "VA": "school_must_offer is true from the Code of Virginia s.22.1-79.10: every school board must run the sitting, and 'no such student shall be required to participate' -- which is why participation is 'offered'.",
+    "TX": "The state funds a choice of 'SAT, ACT, or TSIA'. TSIA is a placement test and not an admission test; the row names no test because the state chose none.",
+    "AR": "Act 724 of 2025 funds a menu (ACT, SAT, CLT), so the state chose no single test.",
+    "MN": "state_funded is false: a district may charge a student who is not eligible for a free or reduced-price meal."
+  },
+  "pages_that_refuse_automated_reading": {
+    "AZ": "azed.gov returns 403; read from the capture in archive_url.",
+    "NH": "education.nh.gov returns 403 to every client we have. The text was read from the 2023-02-02 capture in archive_url, of that same official URL. So New Hampshire's row states what that page said on 2023-02-02, however recently we looked at it, and nobody can check the live page from here. A future re-read that finds the page still blocked and no newer capture must decide whether a 2023 fact still belongs -- which is why the capture date is recorded and why checked_on is NOT quietly refreshed over it.",
+    "DE": "education.delaware.gov is behind a bot check; read from the capture in archive_url."
+  },
+  "funding_claims_rejected": "AZ (a statute letting the board budget test costs), MI (a law assigning RETAKE cost), MT and WV (2020 press releases, one about a COVID make-up sitting), RI ('free of charge' scoped to homeschooled students). None of these is a state saying it pays.",
+  "rows_by_file": {
+    "programmes.csv": 36
+  },
+  "sha256": {
+    "programmes.csv": "a296117a62c9049b0fc75d696af541bb7490e586ac759867878bf18cf7fe041c"
+  },
+  "archive_captures": {
+    "note": "An archive URL is not a spare link: it is the page AS IT WAS on the day it was captured (brief 0010 D26). Where a row was READ from the capture -- because the live page refuses every client we have -- the row's claims are as of the capture date below, not of checked_on. checked_on stays the day WE read it, because that is our re-reading cadence and is what the staleness guard measures. The row cannot yet SPEAK the capture date: giving a capture a first-class date is test/05.1/external-documents, and New Hampshire is the worked example that justifies it.",
+    "captured_on": {
+      "AZ": "2026-03-14",
+      "DE": "2025-11-08",
+      "HI": "2026-08-14",
+      "KS": "2025-07-24",
+      "NH": "2023-02-02",
+      "OK": "2026-08-13",
+      "WY": "2026-08-13"
+    },
+    "read_from_capture": [
+      "AZ",
+      "DE",
+      "NH"
+    ],
+    "capture_beside_a_readable_live_page": [
+      "HI",
+      "KS",
+      "OK",
+      "WY"
+    ]
+  }
+}

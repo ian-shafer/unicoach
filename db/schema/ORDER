@@ -111,3 +111,6 @@ add-college-score-bands.sql
 seed-coach-system-prompt-v35.sql
 create-partial-date-storage.sql
 create-answer-status-domains.sql
+create-admission-test-state-programmes.sql
+seed-admission-test-state-programmes-2026.sql
+seed-coach-system-prompt-v36.sql

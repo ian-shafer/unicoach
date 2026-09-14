@@ -1,0 +1,1023 @@
+#!/usr/bin/env bash
+# test-state-programme-seed-scripts-tests — shell assertions over
+# bin/test-state-programme-seed (RFC 208, slice test/05/your-state-already-pays).
+#
+# The `-scripts-tests` suffix is load-bearing, not decoration. bin/scripts-tests
+# sweeps `bin/*scripts-tests` and asserts each one is named in bin/shell-tests,
+# because an orphaned harness looks exactly like a passing one.
+#
+# THE SUBJECT IS A VALIDATOR NOTHING ELSE EVER FEEDS A BAD ROW. The generator
+# turns db/seed/test-state-programmes/programmes.csv into one seed migration per
+# reading session, and its whole safety argument is that a typed row which cannot
+# be true is a REVIEW error naming its line number rather than a migration that
+# fails at apply time in somebody else's db-reset. Every one of those refusals is
+# reachable ONLY from a bad CSV, so this file is the only place they are ever
+# executed. Before it, the header refusal, every CHECK mirror, the duplicate-key
+# refusal, the append-only refusal, the session-agreement rule, the `-n` exit-3
+# contract and the stdout-silence claim had all never run.
+#
+# Four properties cannot be eyeballed and are the reason each has its own case:
+#
+#   1. A NORMAL RUN WRITES NOTHING TO STDOUT. That is the repo's bin/ rule, and
+#      here it is also a wiring claim: the generated file names travel out of awk
+#      ON STDOUT and are captured by `names="$(cat "$NAMES_FILE")"` in main. A
+#      lost capture prints them to the caller, and nothing else would notice.
+#   2. IT REPORTS EVERY FAULT IN ONE PASS. The script's own header says a
+#      validator that stops at the first offender turns a five-line fix into five
+#      runs. That is a claim about a run with several faults in it, and only a
+#      run with several faults in it can check it.
+#   3. A REFUSAL WRITES NOTHING. It generates into a temp directory and copies
+#      afterwards, so a refused CSV must leave the schema directory and ORDER
+#      byte for byte as they were.
+#   4. THE CORPUS IS APPEND-ONLY. A (state, school_year) an already-generated
+#      seed carries may be re-stated identically and may be neither DROPPED nor
+#      REWRITTEN. That is a claim about a schema directory with a seed already in
+#      it, so only a two-run case can make it.
+#
+# NO POSTGRES, NO GRADLE AND NO WORKTREE. Every run that can WRITE is routed by
+# the EXPLICIT -c and -d options into a throwaway temp tree, so this harness
+# cannot half-move itself onto the real corpus: bin/test-state-programme-seed
+# defaults both paths to $PROJECT_ROOT, and an assertion that forgot one would
+# rewrite the operator's own seed and ORDER file with nothing printed to say so.
+#
+# ONE case is deliberately aimed at the real tree, and it is the last one: `-n`
+# against the committed CSV and the committed db/schema. Every other assertion
+# here feeds the generator a temp fixture, so a stale or hand-edited
+# db/schema/seed-admission-test-state-programmes-*.sql would pass the whole
+# harness -- and "the CSV is the source, the SQL is an artifact" is a claim about
+# the COMMITTED files or it is not a claim at all. It is safe because `-n` writes
+# nothing, which two cases above assert. It is GUARDED on the committed CSV
+# existing, and says loudly on stderr when it does not, because the authored
+# corpus lands in its own commit and a harness that hard-failed until then would
+# be red for a reason that is not a defect.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+test-state-programme-seed-scripts-tests [options]
+
+Runs the shell assertions over bin/test-state-programme-seed: the usage band,
+the header refusal, every CHECK mirror by line number, the duplicate key, the
+multi-fault pass, the write-nothing-on-refusal rule, the append-only refusal in
+both its directions, the ORDER contract read through bin/common, the two-session
+path, the DDL-to-generator mirror check, the -n exit-3 contract, the idempotent
+happy path and -n against the COMMITTED tree. Needs no database, no daemon and
+no worktree: every run that can write is routed into a throwaway temp tree by
+-c and -d.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: test-state-programme-seed-scripts-tests accepts no positional arguments."
+fi
+
+PROGRAMME_SEED="$PROJECT_ROOT/bin/test-state-programme-seed"
+[ -x "$PROGRAMME_SEED" ] || fail_test "test-state-programme-seed is missing or not executable [$PROGRAMME_SEED]"
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+SCHEMA="$FIXTURE_DIR/schema"
+CSV="$FIXTURE_DIR/programmes.csv"
+seed_out="$FIXTURE_DIR/seed.out"
+seed_err="$FIXTURE_DIR/seed.err"
+seed_status=0
+
+# The reading session every fixture row below belongs to, and the file it
+# therefore generates. checked_on NAMES the session -- the academic year it falls
+# in, under the 1 July boundary -- so the name is DERIVED here exactly once: a
+# harness that retyped it would still pass if that derivation broke.
+readonly FIXTURE_CHECKED="2026-09-11"
+readonly FIXTURE_EXPIRES="2027-07-31"
+readonly FIXTURE_SESSION="2026"
+readonly SEED_NAME="seed-admission-test-state-programmes-$FIXTURE_SESSION.sql"
+
+# The header READ OUT OF THE SCRIPT, never retyped. Every reordering and rename
+# below is derived from this one string, so a harness fixture cannot go on
+# asserting the refusal of a header the generator stopped expecting.
+EXPECTED_HEADER="$(sed -nE "s/^readonly EXPECTED_HEADER='(.*)'\$/\1/p" "$PROGRAMME_SEED")"
+[ -n "$EXPECTED_HEADER" ] ||
+  fail_test "the harness could not read EXPECTED_HEADER out of [$PROGRAMME_SEED]"
+
+# Two rows that are true, and they are deliberately the two shapes the design
+# turns on: Tennessee REQUIRES the sitting and lets the DISTRICT choose the test
+# (so no test is named), and a state-chosen row names one. Test urls, not the
+# states' own: this file asserts the VALIDATOR, and a fixture quoting the real
+# pages would read as data.
+readonly GOOD_TN_ROW="TN,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/tn,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+readonly GOOD_VA_ROW="VA,$FIXTURE_SESSION,stated_by_source,offered,true,state,sat,11,11,,https://example.test/va,https://example.test/va-archive,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+
+# A CSV: the generator's own header, then the rows this case means.
+write_csv() { # write_csv <file> <row>...
+  local file="$1"
+  shift
+  printf '%s\n' "$EXPECTED_HEADER" "$@" > "$file"
+}
+
+# A throwaway schema directory with an EMPTY ORDER. Empty on purpose: every
+# assertion about what a run appended is then a statement about this run, and
+# not about a line some earlier case left behind. The schema directory is
+# REMOVED and remade, so no earlier case's generated seed can make a later case's
+# append-only check fire.
+reset_fixture() {
+  rm -rf "$SCHEMA"
+  mkdir -p "$SCHEMA"
+  : > "$SCHEMA/ORDER"
+  write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_VA_ROW"
+}
+
+# Records BOTH halves of the answer -- the status in $seed_status, stderr in
+# $seed_err -- and keeps stdout in its own file rather than merging the two. A
+# refusal assertion that greps a merged stream passes on a script that printed
+# its diagnostics to stdout, which is the one thing this file exists to catch.
+run_seed() { # run_seed <args>...
+  seed_status=0
+  "$PROGRAMME_SEED" "$@" > "$seed_out" 2> "$seed_err" || seed_status=$?
+}
+
+# How many times <line> appears in the fixture ORDER file. `grep -Fxq` answers
+# "at least once", and the bug a second run has is "twice".
+order_count() { # order_count <line>
+  grep -Fxc "$1" "$SCHEMA/ORDER" 2> /dev/null || true
+}
+
+# The whole refusal contract for ONE bad row, as one assertion.
+#
+# The bad row is always LINE 3, with a true row above it on line 2, so "the fault
+# names its line" is a real count rather than a constant that would be right by
+# accident for every fixture with one row in it.
+assert_row_refused() { # assert_row_refused <what it is> <bad row> <message fragment>
+  local label="$1" row="$2" fragment="$3"
+  reset_fixture
+  write_csv "$CSV" "$GOOD_TN_ROW" "$row"
+  run_seed -c "$CSV" -d "$SCHEMA"
+
+  [ "$seed_status" -eq 1 ] ||
+    fail_test "$label exited $seed_status, expected 1: $(cat "$seed_err")"
+  grep -qF "line 3: " "$seed_err" ||
+    fail_test "$label did not name the offending line; said [$(cat "$seed_err")]"
+  grep -qF "$fragment" "$seed_err" ||
+    fail_test "$label did not say why; said [$(cat "$seed_err")]"
+  [ ! -s "$seed_out" ] ||
+    fail_test "$label wrote to stdout: [$(cat "$seed_out")]"
+  [ ! -e "$SCHEMA/$SEED_NAME" ] ||
+    fail_test "$label wrote a seed anyway: [$(ls "$SCHEMA")]"
+  [ ! -s "$SCHEMA/ORDER" ] ||
+    fail_test "$label appended to ORDER: [$(cat "$SCHEMA/ORDER")]"
+  pass_test "$label"
+}
+
+echo "==== test-state-programme-seed: it must PARSE under the bash a bare checkout has ===="
+
+# 0. The precedent bin/prompt-seed-scripts-tests set: macOS `/usr/bin/env bash`
+# is bash 3.2, and a construct only bash 5 can parse is not a lenient script, it
+# is a syntax error where a refusal should be. `/bin/bash` is named explicitly
+# because the point is the SYSTEM interpreter; inside the Nix dev shell a bare
+# `bash` is 5.x and would assert nothing.
+assert_success "bin/test-state-programme-seed parses under the system bash (/bin/bash -n)" \
+  /bin/bash -n "$PROGRAMME_SEED"
+assert_success "bin/test-state-programme-seed-scripts-tests parses under the system bash (/bin/bash -n)" \
+  /bin/bash -n "$PROJECT_ROOT/bin/test-state-programme-seed-scripts-tests"
+
+echo ""
+echo "==== test-state-programme-seed: the usage band ===="
+
+reset_fixture
+
+# 1. The reserved usage codes from bin/functions, so a caller who invoked the
+# script wrongly is distinguishable from a run that faulted. Named by their
+# variables and never by their numbers: a harness that agreed with a number
+# rather than with bin/functions would keep passing after the band moved.
+#
+# Every one is ROUTED with -c and -d even though all of them refuse before either
+# path is used. That is the point: an assertion that is a no-op against the
+# fixture today must not become a write against the operator's real db/schema the
+# day one of these refusals moves a line later.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$PROGRAMME_SEED" -c "$CSV" -d "$SCHEMA" -Z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-c with no value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$PROGRAMME_SEED" -d "$SCHEMA" -c
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-d with no value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$PROGRAMME_SEED" -c "$CSV" -d
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a positional argument exits EXIT_UNEXPECTED_ARG" \
+  "$PROGRAMME_SEED" -c "$CSV" -d "$SCHEMA" stray
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c with an EMPTY value exits EXIT_INVALID_ARG_VALUE" \
+  "$PROGRAMME_SEED" -c "" -d "$SCHEMA"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d with an EMPTY value exits EXIT_INVALID_ARG_VALUE" \
+  "$PROGRAMME_SEED" -c "$CSV" -d ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c naming a file that is not there exits EXIT_INVALID_ARG_VALUE" \
+  "$PROGRAMME_SEED" -c "$FIXTURE_DIR/no-such-file.csv" -d "$SCHEMA"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d naming a directory that is not there exits EXIT_INVALID_ARG_VALUE" \
+  "$PROGRAMME_SEED" -c "$CSV" -d "$FIXTURE_DIR/no-such-dir"
+
+# An EMPTY file is not a CSV with no rows: it has no header either, so it is a
+# usage fault rather than a corpus the validator reads and refuses.
+: > "$FIXTURE_DIR/empty.csv"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c naming an EMPTY file exits EXIT_INVALID_ARG_VALUE" \
+  "$PROGRAMME_SEED" -c "$FIXTURE_DIR/empty.csv" -d "$SCHEMA"
+
+# `-d` naming something that EXISTS and is not a directory. `[ -f ]` and `[ -d ]`
+# are different questions, and a guard that only asked "is it there" would take a
+# regular file as a schema directory and fail much later, mid-write.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d naming a FILE rather than a directory exits EXIT_INVALID_ARG_VALUE" \
+  "$PROGRAMME_SEED" -c "$CSV" -d "$CSV"
+
+# 2. -h is the ONE thing the caller asked for by name, so it is the one thing
+# that goes to stdout -- and it exits 0, because asking for help is not an error.
+help_out="$("$PROGRAMME_SEED" -h 2> "$seed_err")" ||
+  fail_test "-h should exit 0: $(cat "$seed_err")"
+[ -n "$help_out" ] || fail_test "-h printed nothing to stdout"
+case "$help_out" in
+*"test-state-programme-seed [options]"*) ;;
+*) fail_test "-h printed something that is not the usage text: [$help_out]" ;;
+esac
+pass_test "-h exits 0 and prints the usage to stdout"
+
+echo ""
+echo "==== test-state-programme-seed: the header, asserted exactly and in order ===="
+
+# 3. A REORDERED header. Two columns swapped is the fault the exact-header rule
+# exists for: read positionally, it moves an archive url into a source url, or a
+# state's funding claim onto the wrong test, and every row still "parses". The
+# swapped header is DERIVED from the script's own, so this fixture cannot drift
+# away from the real one.
+reset_fixture
+reordered_header="$(printf '%s\n' "$EXPECTED_HEADER" | awk -F, '{ t = $1; $1 = $2; $2 = t; print }' OFS=,)"
+[ "$reordered_header" != "$EXPECTED_HEADER" ] ||
+  fail_test "the harness failed to derive a reordered header from [$EXPECTED_HEADER]"
+printf '%s\n' "$reordered_header" "$GOOD_TN_ROW" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a reordered header exited $seed_status, expected 1"
+grep -qF "the programmes CSV header is not the header this generator expects" "$seed_err" ||
+  fail_test "the reordered-header refusal did not say what was wrong; said [$(cat "$seed_err")]"
+grep -qF "expected: [$EXPECTED_HEADER]" "$seed_err" ||
+  fail_test "the refusal did not show the header it expected; said [$(cat "$seed_err")]"
+grep -qF "found:    [$reordered_header]" "$seed_err" ||
+  fail_test "the refusal did not show the header it found; said [$(cat "$seed_err")]"
+[ ! -s "$seed_out" ] || fail_test "the header refusal wrote to stdout: [$(cat "$seed_out")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the header refusal wrote a seed anyway"
+[ ! -s "$SCHEMA/ORDER" ] || fail_test "the header refusal appended to ORDER"
+pass_test "a reordered programmes header is refused, showing expected and found, and nothing is written"
+
+# 4. A RENAMED column, which reads as the same fault and must not read as a
+# missing one: the column count still matches, so only the exact comparison sees
+# it.
+reset_fixture
+renamed_header="${EXPECTED_HEADER/checked_on/checked_at}"
+[ "$renamed_header" != "$EXPECTED_HEADER" ] ||
+  fail_test "the harness failed to derive a renamed header from [$EXPECTED_HEADER]"
+printf '%s\n' "$renamed_header" "$GOOD_TN_ROW" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a renamed column exited $seed_status, expected 1"
+grep -qF "found:    [$renamed_header]" "$seed_err" ||
+  fail_test "the renamed-column refusal did not show what it found; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the renamed-column refusal wrote a seed anyway"
+pass_test "a renamed column is refused, showing expected and found"
+
+# 5. A header and nothing under it. It is a DIFFERENT diagnosis from a bad
+# header, and the script gates its END block on header_ok precisely so that a bad
+# header is not ALSO reported as an empty corpus -- a second diagnosis of a file
+# the run never read past line 1.
+reset_fixture
+printf '%s\n' "$EXPECTED_HEADER" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a header with no rows exited $seed_status, expected 1"
+grep -qF "the programmes CSV has a header and no rows" "$seed_err" ||
+  fail_test "an empty corpus was not diagnosed as such; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "an empty corpus wrote a seed anyway"
+pass_test "a CSV with a header and no rows is refused, and not reported as a header fault"
+
+printf '%s\n' "$reordered_header" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+if grep -qF "has a header and no rows" "$seed_err"; then
+  fail_test "a bad header was ALSO reported as an empty corpus; said [$(cat "$seed_err")]"
+fi
+pass_test "a bad header is diagnosed ONCE, and never also as an empty corpus"
+
+echo ""
+echo "==== test-state-programme-seed: one case per CHECK it mirrors ===="
+
+# 6. Every CHECK constraint on admission_test_state_programmes, one assertion
+# each, each naming its own line. They are the reason the script validates BEFORE
+# it writes: unchecked, each of these is a migration that fails at apply time in
+# a db-reset belonging to whoever pulls next.
+
+# NOT a mirror of a CHECK, and the script says so: `state` is a FOREIGN KEY into
+# us_states. This is the shape check that keeps a malformed cell out of the
+# generated tuple; the database still decides whether the jurisdiction exists.
+assert_row_refused "a state that is not a two-letter USPS code is refused by line" \
+  "Alaska,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "is not a two-letter USPS code"
+
+# MIRRORS academic_year_check. 1999 is an integer and is not in the domain; there
+# is no '2026-27' regex anywhere, which is the whole point of 0087.
+assert_row_refused "a school_year outside the academic_year domain is refused by line" \
+  "AK,1999,stated_by_source,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "is not a year in the academic_year domain"
+
+# And a school year typed as the LABEL rather than the START year, which is the
+# mistake 0087's comment is about: it is not an integer at all.
+assert_row_refused "a school_year typed as the 2026-27 LABEL is refused by line" \
+  "AK,2026-27,stated_by_source,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "it is a START year, so the 2026-27 school year is 2026"
+
+assert_row_refused "a school_year_basis outside the two the DDL admits is refused by line" \
+  "AK,$FIXTURE_SESSION,guessed,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "school_year_basis [guessed] is not one of stated_by_source, reading_year"
+
+assert_row_refused "a participation that is neither required nor offered is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,encouraged,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "participation [encouraged] is not one of required, offered"
+
+# school_must_offer's NULL is UNKNOWN and never false, so the only legal cells
+# are true, false and empty -- and 'yes' is the shape that would otherwise be
+# read as one of them.
+assert_row_refused "a school_must_offer that is not true, false or empty is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,yes,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "school_must_offer [yes] is not true, false or empty"
+
+assert_row_refused "a test_chooser outside state, district, student is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,governor,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "test_chooser [governor] is not one of state, district, student"
+
+assert_row_refused "a test that is neither sat nor act is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,state,clt,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "test [clt] is not one of sat, act, or empty"
+
+# The pairing, both ways round, and it is the honesty of the row: a
+# district-chosen row carrying 'sat' says the state chose after all, and a
+# state-chosen row carrying no test tells a family to sit something unnamed.
+assert_row_refused "a district-chosen row that names a test is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,sat,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "a test is named exactly when the state is the chooser"
+
+assert_row_refused "a state-chosen row that names NO test is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,state,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "a test is named exactly when the state is the chooser"
+
+# Both ends of the grade range travel together or neither does: an absent grade
+# is never completed with a guess, because "your junior year" is the sentence a
+# wrong guess here breaks.
+assert_row_refused "a lowest_grade with no highest_grade is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "must be present together or absent together"
+
+assert_row_refused "a grade range outside 9..12 is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,8,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "are not a range within 9..12 with lowest_grade first"
+
+assert_row_refused "a grade range with the ends the wrong way round is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,12,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "are not a range within 9..12 with lowest_grade first"
+
+# Who pays is read from a page and never inferred, so its cell is true, false or
+# empty and nothing else. Empty means the state's own page does not say, which is
+# the commonest case in the corpus.
+assert_row_refused "a state_funded that is not true, false or empty is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,yes,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "state_funded [yes] is not true, false or empty"
+
+assert_row_refused "a source_url that is not an http or https url is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,ftp://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "source_url [ftp://example.test/ak] is not an http or https url"
+
+assert_row_refused "an empty source_url is refused by line: a row with no citation is what this corpus exists to prevent" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "source_url [] is not an http or https url"
+
+assert_row_refused "an archive_url that is not an http or https url is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak,example.test/capture,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "archive_url [example.test/capture] is not an http or https url"
+
+# PLAIN http IS ACCEPTED (Ian, 2026-09-14: "https only -- why? We should prefer
+# https, but not block insecure"). This is the one case here that asserts a row
+# is NOT refused, and it is worth its own case: the sibling generator's DDL
+# carries an `^https://` CHECK, so the obvious way to write this validator is the
+# one this RFC was told not to write.
+reset_fixture
+write_csv "$CSV" "$GOOD_TN_ROW" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,http://example.test/ak,http://example.test/ak-capture,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a plain-http state page was REFUSED (exit $seed_status); http is accepted on purpose: $(cat "$seed_err")"
+grep -qF "'http://example.test/ak'" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the http row is not in the generated seed: [$(cat "$SCHEMA/$SEED_NAME")]"
+pass_test "a state page served over plain http is ACCEPTED, not dropped over a transport detail"
+
+# 2026-02-30 matches the yyyy-mm-dd SHAPE and is not a day that exists. A
+# validator that only pattern-matched would accept it and hand Postgres a date
+# literal that fails at apply time.
+assert_row_refused "a checked_on that matches the shape but is not on the calendar is refused by line" \
+  "AK,$FIXTURE_SESSION,stated_by_source,required,,district,,11,11,true,https://example.test/ak,,2026-02-30,$FIXTURE_EXPIRES" \
+  "checked_on [2026-02-30] is not a real yyyy-mm-dd date"
+
+assert_row_refused "an expires_on that matches the shape but is not on the calendar is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,2027-13-01" \
+  "expires_on [2027-13-01] is not a real yyyy-mm-dd date"
+
+assert_row_refused "an expiry that is not after the day a human checked is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_CHECKED" \
+  "is not after checked_on"
+
+# A row that says the year is OURS must carry the year we actually read it in.
+# Without it, 'reading_year' is an unfalsifiable label on any number in range.
+assert_row_refused "a reading_year row whose year is not the year it was read in is refused by line" \
+  "AK,2025,reading_year,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "a row whose year is OURS carries the year we read it in"
+
+# A page may legitimately name NEXT school year; it cannot name 2056. The read
+# and the staleness guard both take the NEWEST row per state, so a typo'd future
+# year would become that state's permanent answer AND would never be stale.
+assert_row_refused "a school_year beyond the year after the reading year is refused by line" \
+  "AK,2030,stated_by_source,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "a page may name next school year and cannot name one after that"
+
+# And the year NEXT to the reading year is accepted, which is what makes the
+# horizon a bound rather than an equality: a state page that names the coming
+# school year is the ordinary case in this corpus.
+reset_fixture
+write_csv "$CSV" "$GOOD_TN_ROW" \
+  "AK,2027,stated_by_source,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a page naming NEXT school year was refused (exit $seed_status): $(cat "$seed_err")"
+pass_test "a stated_by_source row naming NEXT school year is accepted"
+
+# The arity check is what catches an embedded comma, which is the other way a
+# naive split slides every cell one column left.
+assert_row_refused "a row with the wrong number of columns is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "[13] columns, expected [14]"
+
+# And a quoted cell is refused outright rather than mis-split: the generator
+# reads this file by splitting on commas, which is only correct while no cell is
+# quoted, so the assumption is asserted instead of assumed.
+assert_row_refused "a quoted cell is refused by line rather than mis-split" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,\"https://example.test/ak\",,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "a double quote"
+
+# A byte outside printable ASCII is refused BEFORE the escaper sees it. The
+# escaper doubles apostrophes and nothing else, which is correct only while
+# `standard_conforming_strings` is on, so a control byte or a backslash in a cell
+# is a SQL literal whose meaning depends on a server setting. This seed is
+# applied to every database.
+assert_row_refused "a non-printable byte is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/a$(printf '\t')k,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "not printable ASCII"
+
+assert_row_refused "a smart quote pasted from a state page is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/a$(printf '\342\200\231')k,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "not printable ASCII"
+
+assert_row_refused "a backslash is refused by line" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/a\\k,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "backslash"
+
+echo ""
+echo "==== test-state-programme-seed: the reading session, which is ONE reading ===="
+
+# 7. checked_on and expires_on are ONE fact about one reading session, typed once
+# per row. A refresh that updated thirty rows and missed the thirty-first would
+# silently expire that session -- the staleness guard fires on the newest row PER
+# STATE -- with every other check green. So the rows of a session must agree, and
+# the refusal names the line to fix AND the line it disagrees with: the row to
+# change is only obvious next to the row it contradicts.
+assert_row_refused "a row whose checked_on disagrees with its session is refused, naming both lines" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak,,2026-09-12,$FIXTURE_EXPIRES" \
+  "checked_on [2026-09-12] disagrees with [$FIXTURE_CHECKED] on line [2]"
+
+assert_row_refused "a row whose expires_on disagrees with its session is refused, naming both lines" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,2027-08-31" \
+  "expires_on [2027-08-31] disagrees with [$FIXTURE_EXPIRES] on line [2]"
+
+echo ""
+echo "==== test-state-programme-seed: the natural key, and every fault in one pass ===="
+
+# 8. A duplicate (state, school_year) is the UNIQUE constraint mirrored, and the
+# refusal names BOTH lines -- the one to delete is only obvious next to the one
+# to keep.
+reset_fixture
+write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_TN_ROW"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a duplicate (state, school_year) exited $seed_status, expected 1"
+grep -qF "line 3: duplicate (state, school_year) ([TN], [$FIXTURE_SESSION]), first seen at line [2]" "$seed_err" ||
+  fail_test "the duplicate refusal did not name both lines; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the duplicate refusal wrote a seed anyway"
+pass_test "a duplicate (state, school_year) is refused, naming both line numbers"
+
+# 9. THE CLAIM THE SCRIPT'S OWN HEADER MAKES: "a validator that stops at the
+# first offender turns a five-line fix into five runs". Four distinct faults on
+# four distinct lines, and ONE run must name all four -- otherwise the header is
+# describing a script somebody else wrote.
+reset_fixture
+write_csv "$CSV" \
+  "AK,$FIXTURE_SESSION,guessed,required,,district,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "AL,$FIXTURE_SESSION,reading_year,encouraged,,district,,11,11,true,https://example.test/al,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "AR,$FIXTURE_SESSION,reading_year,required,,district,sat,11,11,true,https://example.test/ar,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "AZ,$FIXTURE_SESSION,reading_year,required,,district,,8,11,true,ftp://example.test/az,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "four bad rows exited $seed_status, expected 1"
+grep -qF "line 2: school_year_basis [guessed] is not one of" "$seed_err" ||
+  fail_test "the first fault was not reported; said [$(cat "$seed_err")]"
+grep -qF "line 3: participation [encouraged] is not one of" "$seed_err" ||
+  fail_test "the second fault was not reported; said [$(cat "$seed_err")]"
+grep -qF "line 4: test [sat] and test_chooser [district] disagree" "$seed_err" ||
+  fail_test "the third fault was not reported; said [$(cat "$seed_err")]"
+grep -qF "line 5: grades [8]..[11] are not a range" "$seed_err" ||
+  fail_test "the fourth fault was not reported; said [$(cat "$seed_err")]"
+# The fifth fault is on the SAME line as the fourth, which is the other half of
+# the claim: one pass reports every fault, not one fault per line.
+grep -qF "line 5: source_url [ftp://example.test/az] is not an http" "$seed_err" ||
+  fail_test "the second fault ON ONE LINE was not reported; said [$(cat "$seed_err")]"
+grep -qF "[5] fault(s)" "$seed_err" ||
+  fail_test "the summary did not count all five faults; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the multi-fault run wrote a seed anyway"
+pass_test "five faults across four lines are ALL reported in ONE run, and counted"
+
+echo ""
+echo "==== test-state-programme-seed: a refusal writes nothing ===="
+
+# 10. Not "no seed was created" -- the earlier cases cover that against an empty
+# directory. This one refuses against a schema directory that ALREADY holds a
+# correct seed and a populated ORDER, which is the real tree, and asserts both
+# are byte for byte what they were. It generates into a temp directory and copies
+# afterwards; a future refactor that wrote in place and rolled back on failure
+# would leave a half-written migration exactly here.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.before"
+cp "$SCHEMA/ORDER" "$FIXTURE_DIR/order.before"
+write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_VA_ROW" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,governor,,11,11,true,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "the refused run exited $seed_status, expected 1"
+cmp -s "$FIXTURE_DIR/seed.before" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the refusal rewrote the seed it refused to replace: [$(diff "$FIXTURE_DIR/seed.before" "$SCHEMA/$SEED_NAME" | head -4)]"
+cmp -s "$FIXTURE_DIR/order.before" "$SCHEMA/ORDER" ||
+  fail_test "the refusal changed ORDER: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "a refused CSV leaves the schema directory and ORDER byte for byte unchanged"
+
+echo ""
+echo "==== test-state-programme-seed: append-only, CHECKED and not assumed ===="
+
+# 11. The load-bearing decision of this table (Ian, 2026-09-14: "one row per
+# state, replaced yearly is an anti-pattern"). A (state, school_year) an
+# already-generated seed carries may not be REWRITTEN by the CSV: last year's
+# answer stays true about last year. The refusal names the seed the pair is in,
+# because "which file" is the operator's next question.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.appendonly"
+write_csv "$CSV" \
+  "TN,$FIXTURE_SESSION,reading_year,offered,,district,,11,11,true,https://example.test/tn,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES" \
+  "$GOOD_VA_ROW"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a REWRITTEN (state, school_year) exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 2: (state, school_year) ([TN], [$FIXTURE_SESSION]) is already in the generated seed [$SEED_NAME] and this row rewrites it" "$seed_err" ||
+  fail_test "the rewrite refusal did not name the line and the seed; said [$(cat "$seed_err")]"
+grep -qF "The corpus is append-only" "$seed_err" ||
+  fail_test "the rewrite refusal did not say why; said [$(cat "$seed_err")]"
+cmp -s "$FIXTURE_DIR/seed.appendonly" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the append-only refusal rewrote the seed it was protecting"
+pass_test "a CSV that REWRITES a pair an existing seed carries is refused, naming the line and the seed"
+
+# 12. And the other direction, which no single row can carry and only a whole
+# pass can know: a pair the seed holds that the CSV no longer declares at all.
+# There is no line number to name -- the fault is the ABSENCE of a line -- so the
+# refusal names the pair and its seed instead.
+write_csv "$CSV" "$GOOD_VA_ROW"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a DROPPED (state, school_year) exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "(state, school_year) ([TN], [$FIXTURE_SESSION]) is in the generated seed [$SEED_NAME] and is no longer in the CSV" "$seed_err" ||
+  fail_test "the drop refusal did not name the missing pair; said [$(cat "$seed_err")]"
+cmp -s "$FIXTURE_DIR/seed.appendonly" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the drop refusal rewrote the seed it was protecting"
+pass_test "a CSV that DROPS a pair an existing seed carries is refused, naming the pair and the seed"
+
+# 13. And the case that must NOT be refused, which is what keeps the rule usable:
+# re-stating every pair IDENTICALLY is what every re-run of this script does, so
+# an append-only check that fired on it would make the script single-use.
+write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_VA_ROW"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "re-stating the corpus unchanged was refused (exit $seed_status): $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/seed.appendonly" "$SCHEMA/$SEED_NAME" ||
+  fail_test "a re-run changed the generated seed"
+pass_test "re-stating every pair identically is accepted: the append-only rule is not a one-run lock"
+
+# 14. And APPENDING, which is the action the corpus is designed around: a new
+# state joins the same session and lands in the same seed, beside the rows that
+# were already there.
+write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_VA_ROW" \
+  "AK,$FIXTURE_SESSION,reading_year,offered,,student,,11,12,,https://example.test/ak,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "appending a new state was refused (exit $seed_status): $(cat "$seed_err")"
+grep -qF "('AK', $FIXTURE_SESSION," "$SCHEMA/$SEED_NAME" ||
+  fail_test "the appended state is not in the regenerated seed: [$(cat "$SCHEMA/$SEED_NAME")]"
+grep -qF "('TN', $FIXTURE_SESSION," "$SCHEMA/$SEED_NAME" ||
+  fail_test "the regenerated seed lost a row that was already in it"
+pass_test "APPENDING a new state to an existing session regenerates the seed with both"
+
+echo ""
+echo "==== test-state-programme-seed: -n, which must decide and write nothing ===="
+
+# 15. A tree that IS what the CSV generates: exit 0, and not a byte moved.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.current"
+cp "$SCHEMA/ORDER" "$FIXTURE_DIR/order.current"
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq 0 ] || fail_test "-n on a correct tree exited $seed_status: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/seed.current" "$SCHEMA/$SEED_NAME" || fail_test "-n rewrote the seed"
+cmp -s "$FIXTURE_DIR/order.current" "$SCHEMA/ORDER" || fail_test "-n rewrote ORDER"
+[ ! -s "$seed_out" ] || fail_test "-n wrote to stdout: [$(cat "$seed_out")]"
+pass_test "-n on a correct tree exits 0 and writes nothing"
+
+# 16. And the verdict it exists for. The seed is gone -- a stale or hand-deleted
+# tree -- so -n must say so with EXIT_SEED_WOULD_CHANGE and STILL write nothing:
+# a dry run that repaired the tree would report a state it had just created.
+rm -f "$SCHEMA/$SEED_NAME"
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on a tree missing its seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "-n wrote the seed it was only asked about"
+cmp -s "$FIXTURE_DIR/order.current" "$SCHEMA/ORDER" || fail_test "-n changed ORDER on a dry run"
+[ ! -s "$seed_out" ] || fail_test "-n wrote to stdout: [$(cat "$seed_out")]"
+pass_test "-n on a tree whose seed is missing exits EXIT_SEED_WOULD_CHANGE and still writes nothing"
+
+# 17. A HAND-EDITED seed, which is the failure the generator's own header names:
+# "never hand-edit a generated seed". The file is present and its bytes are not
+# what the corpus generates, so -n must refuse and must not quietly repair it.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.handedited.before"
+printf '%s\n' "-- a hand edit nobody generated" >> "$SCHEMA/$SEED_NAME"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.handedited"
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on a hand-edited seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/seed.handedited" "$SCHEMA/$SEED_NAME" ||
+  fail_test "-n repaired the hand-edited seed it was only asked about"
+grep -qF "is not what" "$seed_err" ||
+  fail_test "-n did not say which file disagreed; said [$(cat "$seed_err")]"
+pass_test "-n on a HAND-EDITED seed exits EXIT_SEED_WOULD_CHANGE and repairs nothing"
+
+# 18. And a real run DOES repair it, which is the other half: the CSV is the
+# source and the SQL is an artifact, so regenerating is always the fix.
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the repairing run exited $seed_status: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/seed.handedited.before" "$SCHEMA/$SEED_NAME" ||
+  fail_test "a real run did not restore the hand-edited seed to what the CSV generates"
+pass_test "a real run regenerates a hand-edited seed back to what the CSV says"
+
+# 19. -n must also refuse a seed whose ORDER line is missing, which is a
+# different defect from a missing seed and just as fatal: a migration nothing
+# declares is never applied.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+: > "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on a seed ORDER does not declare exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE"
+[ ! -s "$SCHEMA/ORDER" ] || fail_test "-n appended the ORDER line it was only asked about"
+grep -qF "does not declare [$SEED_NAME]" "$seed_err" ||
+  fail_test "-n did not report the undeclared seed; said [$(cat "$seed_err")]"
+pass_test "-n on a seed ORDER does not declare exits EXIT_SEED_WOULD_CHANGE and appends nothing"
+
+echo ""
+echo "==== test-state-programme-seed: the happy path, and stdout ===="
+
+# 20. The bin/ rule, and the wiring it protects. The generated file names travel
+# out of awk ON STDOUT into a file, and main reads them back; the product of a
+# normal run is a FILE, so the caller's stdout must be byte-empty. Asserted as
+# emptiness and not as "looks fine": a lost redirection prints the names here.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the happy path failed: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] ||
+  fail_test "test-state-programme-seed wrote to stdout on a normal run: [$(cat "$seed_out")]"
+grep -qF "test-state-programme-seed: done." "$seed_err" ||
+  fail_test "the closing summary is not on stderr; stderr says [$(cat "$seed_err")]"
+pass_test "a normal run writes NOTHING to stdout, and its summary to stderr"
+
+# 21. And the artifact itself. The natural key is what the seed upserts on, and
+# the row the corpus is FOR -- a state that requires the sitting, lets the
+# district choose and pays for it -- is rendered whole.
+[ -f "$SCHEMA/$SEED_NAME" ] ||
+  fail_test "the run did not write [$SEED_NAME]; the directory holds [$(ls "$SCHEMA")]"
+grep -qF "INSERT INTO admission_test_state_programmes" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the generated file is not the seed migration: [$(head -20 "$SCHEMA/$SEED_NAME")]"
+grep -qF "ON CONFLICT (state, school_year) DO UPDATE SET" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the generated seed does not upsert on the natural key"
+grep -qF "('TN', $FIXTURE_SESSION, 'reading_year', 'required', NULL, 'district', NULL, 11, 11, TRUE, 'https://example.test/tn', NULL, DATE '$FIXTURE_CHECKED', DATE '$FIXTURE_EXPIRES')" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the district-chooses row is not rendered as the DDL would take it: [$(cat "$SCHEMA/$SEED_NAME")]"
+grep -qF "('VA', $FIXTURE_SESSION, 'stated_by_source', 'offered', TRUE, 'state', 'sat', 11, 11, NULL, 'https://example.test/va', 'https://example.test/va-archive', DATE '$FIXTURE_CHECKED', DATE '$FIXTURE_EXPIRES')" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the state-chose row is not rendered as the DDL would take it: [$(cat "$SCHEMA/$SEED_NAME")]"
+grep -Fxq "$SEED_NAME" "$SCHEMA/ORDER" ||
+  fail_test "the ORDER line was not appended; ORDER is [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "the seed is generated with empty cells as SQL NULL, and its ORDER line is appended"
+
+# 22. An apostrophe in a cell is the ONE byte the escaper handles, and it handles
+# it by doubling. Everything else in that class is refused above, so this is the
+# only case that proves the escaper does anything at all.
+reset_fixture
+write_csv "$CSV" "$GOOD_TN_ROW" \
+  "AK,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/ak?q=governor's-office,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "an apostrophe in a cell was refused: $(cat "$seed_err")"
+grep -qF "'https://example.test/ak?q=governor''s-office'" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the apostrophe was not doubled in the SQL literal: [$(cat "$SCHEMA/$SEED_NAME")]"
+pass_test "an apostrophe in a cell is doubled, which is the whole escaper and its only job"
+
+# 23. Derived, so re-runnable: a fix loop re-enters and runs it again. A second
+# pass must not move a byte of the seed, and must not append the ORDER line a
+# second time -- a doubled line is a migration applied twice.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.first"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the second run failed: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/seed.first" "$SCHEMA/$SEED_NAME" ||
+  fail_test "a second run changed the generated seed: [$(diff "$FIXTURE_DIR/seed.first" "$SCHEMA/$SEED_NAME" | head -4)]"
+appended="$(order_count "$SEED_NAME")"
+[ "$appended" = "1" ] ||
+  fail_test "the ORDER line appears $appended times after two runs, expected exactly 1: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "a second run is byte-identical and appends the ORDER line exactly once, not twice"
+
+echo ""
+echo "==== test-state-programme-seed: ORDER is bin/common's, not this script's ===="
+
+# 24. THE DEFECT bin/prompt-seed ALREADY SHIPPED, asserted here so this script
+# cannot ship it again. "Is this name already in ORDER?" answered with
+# `grep -Fxq` is a question about BYTES: an ORDER line carrying a CR from a CRLF
+# checkout reads as ABSENT, the run appends a SECOND line for one migration, and
+# bin/db-migrate refuses a corpus this script had just called correct.
+#
+# Asked of bin/common instead, the same corpus is read once and the near-miss
+# line is an INVALID migration filename -- so the run REFUSES with
+# EXIT_SCHEMA_ORDER_DRIFT and appends nothing.
+reset_fixture
+printf '%s\r\n' "$SEED_NAME" > "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SCHEMA_ORDER_DRIFT" ] ||
+  fail_test "a CR-terminated ORDER line exited $seed_status, expected $EXIT_SCHEMA_ORDER_DRIFT: $(cat "$seed_err")"
+[ "$(order_count "$SEED_NAME")" = "0" ] ||
+  fail_test "the run appended a second line beside the CR-terminated one: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ "$(wc -l < "$SCHEMA/ORDER")" -eq 1 ] ||
+  fail_test "ORDER no longer holds exactly the one line it started with: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ ! -s "$seed_out" ] || fail_test "the ORDER refusal wrote to stdout: [$(cat "$seed_out")]"
+pass_test "a CR-terminated ORDER line is REFUSED, not read as absent and appended beside"
+
+# 25. And a corpus that already lists one name twice: appending to it would
+# compound a corruption into a second duplicate, so the refusal comes before any
+# write and not after the seed is on disk.
+reset_fixture
+printf '%s\n' "$SEED_NAME" "$SEED_NAME" > "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SCHEMA_ORDER_DRIFT" ] ||
+  fail_test "a duplicated ORDER line exited $seed_status, expected $EXIT_SCHEMA_ORDER_DRIFT: $(cat "$seed_err")"
+[ ! -e "$SCHEMA/$SEED_NAME" ] ||
+  fail_test "the run wrote a seed into a corpus it had refused"
+grep -qF "listed more than once" "$seed_err" ||
+  fail_test "the refusal did not report the duplicate; said [$(cat "$seed_err")]"
+pass_test "an ORDER that already lists a name twice is refused before anything is written"
+
+# 26. And a schema directory with NO ORDER file at all, which is not a corpus a
+# generated seed could ever be applied from.
+reset_fixture
+rm -f "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a schema directory with no ORDER exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "does not exist, so a generated seed could never be applied" "$seed_err" ||
+  fail_test "the missing-ORDER refusal did not say why; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the run wrote a seed with no ORDER to declare it"
+pass_test "a schema directory with no ORDER file is refused, and no seed is written"
+
+echo ""
+echo "==== test-state-programme-seed: a failed WRITE is never reported as a success ===="
+
+# 27. An EXISTING seed this process cannot READ is a fault to report, not a file
+# to replace on the assumption that it differed.
+#
+# WHERE it is caught is worth writing down, because it is not where the sibling
+# generator catches it. bin/test-calendar-seed meets an unreadable seed at
+# `cmp -s`, whose THREE answers -- 0 same, 1 differs, >1 cannot compare -- it is
+# careful not to fold into two. THIS script reads every already-generated seed
+# FIRST, as data, because the append-only rule needs to know which
+# (state, school_year) pairs are already landed. So awk meets the file before cmp
+# does, and its fatal is re-emitted through log-error and counted as a fault.
+#
+# What is asserted is therefore the PROPERTY and not the mechanism: the run
+# refuses, it names the file it could not read, and the seed it could not read is
+# still byte for byte what it was. The `cmp` branch downstream stays as the
+# defence it is; nothing in this script can reach it now, and an assertion
+# pretending otherwise would be asserting its own fixture.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+cp "$SCHEMA/$SEED_NAME" "$FIXTURE_DIR/seed.unreadable"
+chmod 000 "$SCHEMA/$SEED_NAME"
+run_seed -c "$CSV" -d "$SCHEMA"
+chmod 644 "$SCHEMA/$SEED_NAME"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "an unreadable existing seed exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "$SEED_NAME" "$seed_err" ||
+  fail_test "the refusal did not name the seed it could not read; said [$(cat "$seed_err")]"
+grep -qiF "permission denied" "$seed_err" ||
+  fail_test "the refusal did not say why the seed could not be read; said [$(cat "$seed_err")]"
+if grep -qF "wrote [" "$seed_err"; then
+  fail_test "the run reported writing a seed over one it could not read; said [$(cat "$seed_err")]"
+fi
+cmp -s "$FIXTURE_DIR/seed.unreadable" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the seed this run could not READ was overwritten anyway"
+pass_test "an existing seed that cannot be READ is reported by name, and is never overwritten"
+
+# 28. A failed copy used to log "wrote [...]" and exit 0, so the operator was told
+# the artifact was regenerated when the directory still held the stale one.
+reset_fixture
+rm -f "$SCHEMA/$SEED_NAME"
+chmod 500 "$SCHEMA"
+run_seed -c "$CSV" -d "$SCHEMA"
+chmod 700 "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a copy into a read-only schema directory exited $seed_status, expected 1: $(cat "$seed_err")"
+if grep -qF "wrote [" "$seed_err"; then
+  fail_test "the run reported writing a seed it could not copy; said [$(cat "$seed_err")]"
+fi
+[ ! -e "$SCHEMA/$SEED_NAME" ] || fail_test "the seed exists after a copy that failed"
+pass_test "a copy that fails is FATAL, and is never logged as a write"
+
+# 29. And the append. A seed on disk that ORDER does not declare is never
+# applied, so an unwritable ORDER is a fault even though the seed itself landed.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the setup run failed: $(cat "$seed_err")"
+: > "$SCHEMA/ORDER"
+chmod 400 "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+chmod 644 "$SCHEMA/ORDER"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "an unwritable ORDER exited $seed_status, expected 1: $(cat "$seed_err")"
+if grep -qF "appended [" "$seed_err"; then
+  fail_test "the run reported an append it could not make; said [$(cat "$seed_err")]"
+fi
+pass_test "an ORDER line that cannot be appended is FATAL, and is never logged as appended"
+
+echo ""
+echo "==== test-state-programme-seed: the refresh story, which is a SECOND session ===="
+
+# 30. ONE SEED PER READING SESSION is the entire documented refresh path: next
+# year's reading arrives as rows APPENDED to the CSV, never as an edit to a
+# landed seed. Every fixture above is single-session, so until this case the
+# multi-session loop -- two files, two ORDER lines, per-session row counts -- had
+# never run.
+#
+# The session is named by the ACADEMIC YEAR OF checked_on and never by the school
+# year, which is the difference from the sibling calendar generator: one session
+# may legitimately produce rows for two school years, so the school year cannot
+# name the file. This fixture proves exactly that -- the second session carries a
+# row whose school_year is the OLD one, read anew, and it still lands in the
+# second session's seed.
+readonly SECOND_CHECKED="2027-09-10"
+readonly SECOND_EXPIRES="2028-07-31"
+readonly SECOND_SESSION="2027"
+readonly SECOND_SEED_NAME="seed-admission-test-state-programmes-$SECOND_SESSION.sql"
+reset_fixture
+write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_VA_ROW" \
+  "TN,$SECOND_SESSION,reading_year,required,,district,,11,11,true,https://example.test/tn,,$SECOND_CHECKED,$SECOND_EXPIRES" \
+  "AK,$FIXTURE_SESSION,stated_by_source,offered,,student,,11,12,,https://example.test/ak,,$SECOND_CHECKED,$SECOND_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "a two-session CSV exited $seed_status: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] || fail_test "the two-session run wrote to stdout: [$(cat "$seed_out")]"
+[ -f "$SCHEMA/$SEED_NAME" ] ||
+  fail_test "the first session's seed is missing; the directory holds [$(ls "$SCHEMA")]"
+[ -f "$SCHEMA/$SECOND_SEED_NAME" ] ||
+  fail_test "the second session's seed is missing; the directory holds [$(ls "$SCHEMA")]"
+[ "$(order_count "$SEED_NAME")" = "1" ] ||
+  fail_test "the first session's ORDER line is not there exactly once: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+[ "$(order_count "$SECOND_SEED_NAME")" = "1" ] ||
+  fail_test "the second session's ORDER line is not there exactly once: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+# Each seed holds ONLY its own session's rows: a per-session grouping that leaked
+# would still produce two files and two ORDER lines.
+if grep -qF "DATE '$SECOND_CHECKED'" "$SCHEMA/$SEED_NAME"; then
+  fail_test "the first session's seed carries rows read on [$SECOND_CHECKED]"
+fi
+if grep -qF "DATE '$FIXTURE_CHECKED'" "$SCHEMA/$SECOND_SEED_NAME"; then
+  fail_test "the second session's seed carries rows read on [$FIXTURE_CHECKED]"
+fi
+# TWO SCHOOL YEARS IN ONE SESSION, which is why checked_on names the file.
+grep -qF "('AK', $FIXTURE_SESSION," "$SCHEMA/$SECOND_SEED_NAME" ||
+  fail_test "the [$FIXTURE_SESSION] school-year row read in session [$SECOND_SESSION] is not in that session's seed"
+grep -qF "('TN', $SECOND_SESSION," "$SCHEMA/$SECOND_SEED_NAME" ||
+  fail_test "the [$SECOND_SESSION] school-year row is not in the second session's seed"
+pass_test "a second reading session generates its own seed and ORDER line, holding BOTH school years it read"
+
+# 31. And the sessions are independent clocks: checked_on and expires_on must
+# agree WITHIN a session and are free to differ BETWEEN sessions, which is the
+# whole point of typing them per row.
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq 0 ] ||
+  fail_test "-n on the two-session tree exited $seed_status, expected 0: $(cat "$seed_err")"
+pass_test "two sessions with DIFFERENT checked_on and expires_on are both correct"
+
+echo ""
+echo "==== test-state-programme-seed: the CHECK mirrors, tied to the DDL ===="
+
+# 32. The CHECK constraints exist TWICE -- once in
+# db/schema/create-admission-test-state-programmes.sql, once in this generator's
+# awk -- and NOTHING but a comment tag ties them. Without this case a further
+# CHECK could land unmirrored in silence: the DDL would refuse a row at apply
+# time in somebody else's db-reset, which is the exact failure the generator's
+# own header says it exists to prevent.
+#
+# SET EQUALITY, not just a count: a mirror whose constraint was RENAMED or
+# removed is as wrong as a constraint with no mirror, and the message names the
+# offender either way. Both sides are DERIVED from the files, so the case follows
+# the DDL rather than a list typed here. The floor is what stops the case passing
+# vacuously if either grep stops matching.
+PROGRAMME_DDL="$PROJECT_ROOT/db/schema/create-admission-test-state-programmes.sql"
+[ -f "$PROGRAMME_DDL" ] || fail_test "the state programme DDL is missing [$PROGRAMME_DDL]"
+ddl_checks="$(grep -oE 'CONSTRAINT admission_test_state_programme[a-z0-9_]*_check' "$PROGRAMME_DDL" |
+  sed 's/^CONSTRAINT //' | sort -u)"
+mirrored_checks="$(grep -oE '# MIRRORS admission_test_state_programme[a-z0-9_]*_check' "$PROGRAMME_SEED" |
+  sed 's/^# MIRRORS //' | sort -u)"
+ddl_check_count="$(printf '%s\n' "$ddl_checks" | grep -c . || true)"
+[ "$ddl_check_count" -ge 12 ] ||
+  fail_test "only [$ddl_check_count] CHECK constraint(s) were read out of [$PROGRAMME_DDL]; the grep no longer matches the DDL, so this case would pass vacuously"
+[ "$ddl_checks" = "$mirrored_checks" ] ||
+  fail_test "the generator does not mirror the DDL's CHECK constraints one for one. DDL: [$(printf '%s' "$ddl_checks" | tr '\n' ' ')] mirrored: [$(printf '%s' "$mirrored_checks" | tr '\n' ' ')]"
+pass_test "every CHECK in the state programme DDL is mirrored by name in the generator, and none extra"
+
+# 33. And the other half of "no tag naming a constraint that does not exist": a
+# mirror may legitimately name a constraint declared in ANOTHER schema file --
+# the `academic_year` DOMAIN's own check is one, and the generator mirrors it
+# because a domain violation is a migration that fails at apply time exactly like
+# a table CHECK. What is NOT legitimate is a tag naming nothing at all, so every
+# remaining tag is resolved against the whole schema directory.
+foreign_mirrors="$(grep -oE '# MIRRORS [a-z0-9_]+' "$PROGRAMME_SEED" | sed 's/^# MIRRORS //' |
+  grep -v '^admission_test_state_programme' | sort -u || true)"
+foreign_mirror_count=0
+while IFS= read -r mirror; do
+  [ -n "$mirror" ] || continue
+  foreign_mirror_count=$((foreign_mirror_count + 1))
+  grep -rqE "CONSTRAINT $mirror( |\$)" "$PROJECT_ROOT/db/schema" ||
+    fail_test "the generator carries [# MIRRORS $mirror] and no CHECK constraint of that name is declared anywhere in db/schema"
+done <<< "$foreign_mirrors"
+pass_test "every MIRRORS tag naming a constraint outside this DDL ([$foreign_mirror_count] of them) resolves to a real one"
+
+echo ""
+echo "==== test-state-programme-seed: the COMMITTED tree, which is the whole claim ===="
+
+# 34. The one case that is NOT routed into the fixture tree, and the only one
+# that can be: every assertion above feeds the generator a temp CSV, so a stale
+# or hand-edited db/schema/seed-admission-test-state-programmes-*.sql passed every
+# one of them. "The CSV is the source and the SQL is an artifact" is a claim about
+# the COMMITTED files, and `-n` against the real tree is what makes it true.
+#
+# Safe to point at the real tree precisely because it is `-n`: a dry run writes
+# nothing (asserted repeatedly above), so the worst outcome here is a non-zero
+# exit telling the operator the two have diverged.
+#
+# GUARDED, and loudly, on the authored corpus being there at all. The CSV lands
+# in its own commit; until it does, this case has nothing to compare and a hard
+# failure here would be red for a reason that is not a defect. The warning goes
+# to stderr, like every other diagnostic in bin/, and the case counts as skipped
+# rather than passed.
+COMMITTED_CSV="$PROJECT_ROOT/db/seed/test-state-programmes/programmes.csv"
+if [ -f "$COMMITTED_CSV" ]; then
+  run_seed -n
+  [ "$seed_status" -eq 0 ] ||
+    fail_test "the committed seed is not what the committed CSV generates (bin/test-state-programme-seed -n exited $seed_status). Run: nix develop -c bin/test-state-programme-seed. Said: $(cat "$seed_err")"
+  [ ! -s "$seed_out" ] ||
+    fail_test "-n against the real tree wrote to stdout: [$(cat "$seed_out")]"
+  pass_test "the COMMITTED seed is exactly what the COMMITTED CSV generates (-n on the real tree)"
+else
+  log-warning "test-state-programme-seed-scripts-tests: [$COMMITTED_CSV] is not in the tree, so the committed-corpus case did NOT run. It becomes live the moment the authored CSV lands."
+fi
+
+end_tests

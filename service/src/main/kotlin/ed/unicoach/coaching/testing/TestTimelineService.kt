@@ -262,6 +262,17 @@ sealed interface TestTimeline {
     /** The sittings whose score release the publisher has not announced. */
     val dataAvailability: List<UnannouncedScoreRelease>,
     val unknownCollegeIds: List<CollegeId>,
+    /**
+     * What this student's own STATE does about the school-day SAT or ACT (RFC
+     * 208) -- one typed value, never a nullable row plus a reason.
+     *
+     * It is NOT nullable, because there is no case in which this read has
+     * nothing to say: a student with no money profile, a declined residency
+     * question and a state we hold no row for are three different ANSWERS
+     * ([SchoolDayProgramme]), and a null here would collapse them into the one
+     * silence the model fills for itself.
+     */
+    val schoolDayProgramme: SchoolDayProgramme,
   ) : TestTimeline
 }
 
@@ -306,8 +317,18 @@ class TestTimelineService(
 
   /**
    * The whole read on ONE session: today, the student's graduation date, their
-   * list, those schools' deadline rounds, and the calendar. Five statements,
-   * whatever the length of the list.
+   * list, those schools' deadline rounds, the calendar, and -- on the answering
+   * path -- the student's residency state and the state-programme corpus.
+   * [READ_STATEMENTS] statements, whatever the length of the list.
+   *
+   * THE NUMBER IS ASSERTED, in `TestTimelineServiceTest`, against the constant
+   * this sentence names. A statement count stated only in prose is a claim no
+   * test can contradict (RFC 187), and this one had already been wrong once.
+   *
+   * The two state-programme statements are spent only where there is an answer
+   * to attach them to. A [TestTimeline.NoCalendar] refusal carries no programme
+   * section at all (RFC 208 section 6), so it returns before them and costs
+   * [READ_STATEMENTS] minus [SchoolDayTestingReader]'s two.
    */
   internal fun readInSession(
     session: SqlSession,
@@ -357,6 +378,10 @@ class TestTimelineService(
           .filter { it.scoreRelease == null }
           .map { UnannouncedScoreRelease(it.test, it.testDate) },
       unknownCollegeIds = selection.unknown,
+      // Read HERE and not beside the reads above, because a refusal carries no
+      // programme section: two statements spent on a value the refusal arm
+      // cannot hold would be two statements spent on nothing.
+      schoolDayProgramme = SchoolDayTestingReader.read(session, studentId, today),
     )
   }
 
@@ -461,6 +486,20 @@ class TestTimelineService(
      * needed the suffix `_DAYS` to be usable, which is a name doing a type's job.
      */
     val FEE_WAIVER_LEAD: Period = Period.ofDays(14)
+
+    /**
+     * What the answering path costs, in prepared statements: the graduation
+     * date, the two the college selection takes, the schools' deadline rounds,
+     * the calendar, and [SchoolDayTestingReader]'s two -- the active money
+     * profile and the newest state-programme row per state.
+     *
+     * ABSOLUTE, and asserted. "Five colleges cost what one college costs" stays
+     * true when a sixth read is added, so a relative assertion alone would let
+     * this read grow silently past the number [readInSession]'s own KDoc
+     * promises (the `CollegeAdmissionsServiceTest` precedent). A new read is a
+     * deliberate edit here, to that sentence, and to the test, together.
+     */
+    const val READ_STATEMENTS: Int = 7
 
     /**
      * How far ahead sittings are reported. Fifteen months: one whole application

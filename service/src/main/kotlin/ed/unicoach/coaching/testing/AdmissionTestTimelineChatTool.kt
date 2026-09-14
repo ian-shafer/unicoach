@@ -5,6 +5,7 @@ import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.putCitation
 import ed.unicoach.coaching.putCollegeIdsSchema
 import ed.unicoach.db.models.AdmissionTest
+import ed.unicoach.db.models.SchoolDayTestChoice
 import ed.unicoach.db.models.StudentId
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -16,6 +17,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
+import java.time.LocalDate
 
 /**
  * The `admission_test_timeline` chat tool (RFC 197): the one read that answers
@@ -134,6 +136,10 @@ class AdmissionTestTimelineChatTool(
       putJsonArray("sittings") { timeline.sittings.forEach { add(sittingObject(it)) } }
       putJsonArray("data_availability") { timeline.dataAvailability.forEach { add(unannouncedObject(it)) } }
       put("general_sequence", if (timeline.anchor == null) JsonPrimitive(GENERAL_SEQUENCE) else JsonNull)
+      // LAST, and that is the order the RFC decided: the national calendar is
+      // the picture, and a state's in-school sitting is an exception to it
+      // rather than the way into the explanation.
+      put("school_day_programme", schoolDayObject(timeline.schoolDayProgramme))
       if (timeline.unknownCollegeIds.isNotEmpty()) {
         putJsonArray("unknown_college_ids") {
           timeline.unknownCollegeIds.forEach { add(JsonPrimitive(it.value.toString())) }
@@ -235,6 +241,103 @@ class AdmissionTestTimelineChatTool(
     put("late_or_changes_deadline_label", AdmissionTestCopy.lateDeadlineLabelOf(sitting.test))
   }
 
+  /**
+   * What this student's own STATE does about the school-day SAT or ACT (RFC 208
+   * section 6).
+   *
+   * EVERY KEY IS ALWAYS PRESENT, as an explicit `null` where there is nothing --
+   * this file's rule, and it bites hardest here: three of the four arms carry
+   * almost no data, and a section that shrank to two keys would read as a
+   * programme the renderer half-emitted rather than as the honest answer it is.
+   * [SchoolDayProgramme.why] is what says which arm this is.
+   *
+   * `held` IS `true` OR `null` AND NEVER `false`. False would be the claim that
+   * the state runs nothing, which needs a state page saying so; an absent row,
+   * a lapsed reading and an unknown state are all "we cannot say", exactly as
+   * `usable_for_anchor` above is null for the two cases that are not verdicts.
+   *
+   * The grades are STRINGS and the school year is
+   * [ed.unicoach.common.util.AcademicYear]'s own label, never a bare number:
+   * [NUMBERS_BY_CONTRACT] is empty and stays empty, and `2026` alone is a year
+   * the model would do its own arithmetic on.
+   */
+  private fun schoolDayObject(programme: SchoolDayProgramme): JsonObject =
+    buildJsonObject {
+      val row = (programme as? SchoolDayProgramme.Held)?.row
+      val choice = row?.choice
+      val chosenTest = (choice as? SchoolDayTestChoice.StateChose)?.test
+      put("state", stateOf(programme)?.let(::JsonPrimitive) ?: JsonNull)
+      // A plain BOOLEAN on every arm, never a null: "do we hold a current reading
+      // for this state" has an answer in all four cases, and a null here would be
+      // a third state the model has to guess the meaning of.
+      put("held", row != null)
+      // The code with no label of its own beside it, because the participation
+      // WORDS ride in `why` (from `SchoolDayCopy`, the one home for them) rather
+      // than as a second rendering that could disagree with the first.
+      put("participation", row?.participation?.value?.let(::JsonPrimitive) ?: JsonNull)
+      put("test_chooser", choice?.chooser?.value?.let(::JsonPrimitive) ?: JsonNull)
+      // Both null unless the STATE chose, which is the pairing `SchoolDayTestChoice`
+      // makes unrepresentable: a district-chosen row naming a test would say the
+      // state chose after all.
+      put("test", chosenTest?.value?.let(::JsonPrimitive) ?: JsonNull)
+      put("test_name", chosenTest?.displayName?.let(::JsonPrimitive) ?: JsonNull)
+      put("chooser_label", choice?.let { JsonPrimitive(SchoolDayCopy.chooserLabelOf(it.chooser)) } ?: JsonNull)
+      put(
+        "lowest_grade",
+        row
+          ?.grades
+          ?.lowest
+          ?.toString()
+          ?.let(::JsonPrimitive) ?: JsonNull,
+      )
+      put(
+        "highest_grade",
+        row
+          ?.grades
+          ?.highest
+          ?.toString()
+          ?.let(::JsonPrimitive) ?: JsonNull,
+      )
+      // Null means the page does not say who pays -- the commonest case -- and
+      // `why` says so in words. It never means the sitting is not paid for.
+      put("state_funded", row?.stateFunded?.let(::JsonPrimitive) ?: JsonNull)
+      // Null means we did not read it, and the coach says nothing either way.
+      put("school_must_offer", row?.schoolMustOffer?.let(::JsonPrimitive) ?: JsonNull)
+      put("school_year", row?.schoolYear?.label?.let(::JsonPrimitive) ?: JsonNull)
+      put("school_year_basis", row?.schoolYearBasis?.value?.let(::JsonPrimitive) ?: JsonNull)
+      put(
+        "school_year_basis_label",
+        row?.schoolYearBasis?.let { JsonPrimitive(SchoolDayCopy.schoolYearBasisLabelOf(it)) } ?: JsonNull,
+      )
+      put("source_url", row?.sourceUrl?.let(::JsonPrimitive) ?: JsonNull)
+      put("archive_url", row?.archiveUrl?.let(::JsonPrimitive) ?: JsonNull)
+      put("checked_on", row?.checkedOn?.toString()?.let(::JsonPrimitive) ?: JsonNull)
+      // The lapsed arm keeps its own expiry, because `why` names that day: a
+      // sentence carrying a date the payload does not is a date the model cannot
+      // check.
+      put("expires_on", expiresOnOf(programme)?.toString()?.let(::JsonPrimitive) ?: JsonNull)
+      put("what_the_state_cannot_answer", SchoolDayCopy.WHAT_THE_STATE_CANNOT_ANSWER)
+      put("why", whyOf(programme))
+    }
+
+  /** The state this section is about, where we know it -- the USPS code the row and the money profile agree on. */
+  private fun stateOf(programme: SchoolDayProgramme): String? =
+    when (programme) {
+      is SchoolDayProgramme.Held -> programme.row.state
+      is SchoolDayProgramme.Expired -> programme.state
+      is SchoolDayProgramme.NotHeld -> programme.state
+      is SchoolDayProgramme.StateUnknown -> null
+    }
+
+  /** The day this reading stops, or stopped, being believed -- present on the two arms that have one. */
+  private fun expiresOnOf(programme: SchoolDayProgramme): LocalDate? =
+    when (programme) {
+      is SchoolDayProgramme.Held -> programme.row.expiresOn
+      is SchoolDayProgramme.Expired -> programme.expiresOn
+      is SchoolDayProgramme.NotHeld -> null
+      is SchoolDayProgramme.StateUnknown -> null
+    }
+
   companion object {
     private val logger = LoggerFactory.getLogger(AdmissionTestTimelineChatTool::class.java)
 
@@ -317,6 +420,73 @@ class AdmissionTestTimelineChatTool(
             "and that day does not exist in ${rejection.resolvedYear}, the year of this student's application " +
             "cycle; confirm the date on the school's own page"
         }
+      }
+
+    /**
+     * Why the school-day section says what it says -- built from the typed
+     * [SchoolDayProgramme] in one `when` with no `else`, so a fifth arm cannot
+     * ship without deciding what a family is told about it.
+     *
+     * IT NAMES NO SCHOOL AND SAYS "YOUR SCHOOL" NOWHERE. Every clause is a fact
+     * about a STATE, read from that state's own page; whether one named high
+     * school runs its test day is not in this corpus and cannot be inferred from
+     * it. [SchoolDayCopy.schoolMustOfferClauseOf] is the closest any of these
+     * clauses gets, and it is still a sentence about what the state requires of
+     * every school.
+     *
+     * THE THREE NON-HELD ARMS STATE WHOSE GAP IT IS. "We hold no reading" is a
+     * fact about our data; "the state runs nothing" is a claim about a state,
+     * needs a page saying so, and is said nowhere -- it is the trust-losing
+     * answer this section exists to prevent, pointing the other way.
+     */
+    fun whyOf(programme: SchoolDayProgramme): String =
+      when (programme) {
+        is SchoolDayProgramme.Held -> {
+          val row = programme.row
+          val clauses =
+            listOfNotNull(
+              SchoolDayCopy.participationClauseOf(row.participation),
+              SchoolDayCopy.gradesClauseOf(row.grades),
+              SchoolDayCopy.chooserLabelOf(row.choice.chooser),
+              SchoolDayCopy.fundingClauseOf(row.stateFunded),
+              // Absent for the states we did not read it for, which is most of
+              // them: a null is UNKNOWN, and a sentence for it would be the
+              // invention the column's own comment forbids.
+              SchoolDayCopy.schoolMustOfferClauseOf(row.schoolMustOffer),
+              SchoolDayCopy.schoolYearBasisLabelOf(row.schoolYearBasis),
+            )
+          "we hold a current reading of this state's own page, read on ${row.checkedOn}: " +
+            clauses.joinToString("; ")
+        }
+
+        is SchoolDayProgramme.Expired -> {
+          "our reading of this state's page lapsed on ${programme.expiresOn}, so we hold no current record for " +
+            "this state -- what it says now has to come from the state's own page, and this is a gap in our " +
+            "data rather than a change we know about"
+        }
+
+        is SchoolDayProgramme.NotHeld -> {
+          "we hold no reading of a school-day admission-test programme for this state, which is a gap in our " +
+            "data and never a statement that the state runs none"
+        }
+
+        is SchoolDayProgramme.StateUnknown -> {
+          "${residencyGapOf(programme.reason)}, so we cannot say what their state does; the state is not asked " +
+            "for here, because the residency question belongs to the cost conversation and nothing in this " +
+            "answer waits on it"
+        }
+      }
+
+    /**
+     * WHICH absence of a state this is -- three sentences, because a family that
+     * declined the question is owed a different one from a family that was never
+     * asked (D10). Exhaustive with no `else`.
+     */
+    private fun residencyGapOf(gap: ResidencyGap): String =
+      when (gap) {
+        ResidencyGap.NO_PROFILE -> "we hold no money profile for this student, so we do not know which state they live in"
+        ResidencyGap.UNANSWERED -> "the residency question has not been answered, so we do not know which state they live in"
+        ResidencyGap.DECLINED -> "this student chose not to say which state they live in"
       }
 
     /**
@@ -419,7 +589,34 @@ class AdmissionTestTimelineChatTool(
         "they have no deadline, because a school that published a month with no day, or a deadline that has " +
         "already closed, is in one of those two arrays and not a school with nothing. You may still name real " +
         "dates from sittings, because the calendar is national. This tool holds no school's superscore rule and " +
-        "no scholarship score rule, so say they would have to check that school's own page. Read-only: this tool " +
-        "changes nothing."
+        "no scholarship score rule, so say they would have to check that school's own page. school_day_programme " +
+        "is what this student's own STATE does about an SAT or ACT sat inside the school day, and you read it " +
+        "before you suggest registering for a Saturday sitting. Say the national calendar first and the state's " +
+        "in-school sitting second, because the in-school sitting is an exception to that calendar and not the way " +
+        "into it. Its why sentence is built from the record we hold, so state what it says, give school_year and " +
+        "checked_on with it, and say that a state can change this from year to year and that source_url is where " +
+        "to confirm it. school_year_basis says WHOSE year school_year is - stated_by_source is the state's own " +
+        "stated year and reading_year is the year we read the page in - so say which it is and never present " +
+        "ours as theirs. state_funded true means the family does not pay for that sitting, and null means we do " +
+        "not know who pays - never that it is free. This section is about the STATE and never about their " +
+        "school: never say their school runs a test day, never name an in-school test date, and never read a " +
+        "state programme as a school's plan. school_must_offer is the ONE exception and only when it is true - " +
+        "the state requires every public high school to hold the sitting, so you may say the day will be held at " +
+        "their school - and where it is null say nothing either way, because null means we did not read it and " +
+        "never that the state does not require it. You may ask once, plainly, whether their school runs it and " +
+        "when: nothing waits on the answer, \"I don't know\" is a complete answer, and you never ask again. " +
+        "held is true only where we hold a current record and null everywhere else, and null is a gap in OUR " +
+        "data and never the state running nothing - say we hold no record for that state and invent no " +
+        "programme. Where state is null we do not know which state they live in: do not ask for it here, " +
+        "because the residency question belongs to the cost conversation and no answer of yours waits on it. " +
+        "lowest_grade and highest_grade are the grades the sitting happens in - read them against " +
+        "year_of_school to say when it comes round or that it has passed, and never guess a grade the section " +
+        "does not name. Where test_chooser is district or student the state chose no test and test is null, so " +
+        "name both tests, say who chooses from chooser_label, and never present one of them as theirs. " +
+        "what_the_state_cannot_answer is the question this record can never answer, and you say it rather than " +
+        "answering it. Where archive_url is present we ALSO hold an archived copy of that state page: offer both " +
+        "links, never present the archived copy as what the live page says today, and name no capture date for " +
+        "it, because we do not hold one - checked_on is the day WE read the page and is a different date. " +
+        "Read-only: this tool changes nothing."
   }
 }

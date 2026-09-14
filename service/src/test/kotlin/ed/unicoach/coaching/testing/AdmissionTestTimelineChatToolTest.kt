@@ -4,10 +4,16 @@ import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.coaching.COACH_ZONE_LABEL
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.AdmissionsTestDb
+import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.db.dao.AdmissionTestStateProgrammeFixture
 import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
+import ed.unicoach.db.models.SchoolDayParticipation
+import ed.unicoach.db.models.SchoolDayTestChoice
+import ed.unicoach.db.models.SchoolYearBasis
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.TestChooser
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -501,6 +507,358 @@ class AdmissionTestTimelineChatToolTest {
       )
     }
 
+  /**
+   * THE ANSWER THIS SLICE EXISTS FOR, ON THE WIRE. A junior in a state that
+   * requires the school-day sitting gets the record, whose school year it is, the
+   * page it was read from and the day a human read it -- and IS ASKED NOTHING.
+   *
+   * "Asked nothing" is asserted on the PAYLOAD and not on prose: the state was
+   * inferred from a residency answer the cost conversation already collected, so
+   * the section carries the state and puts no question of its own to the family
+   * (D10).
+   */
+  @Test
+  fun `a junior in a required state gets the record, its year, its source and its checked_on, and is asked nothing`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent(graduationYear = 2028)
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+
+      val payload = tool.execute(student, buildJsonObject {})
+      val section = schoolDaySectionOf(payload)
+
+      assertEquals("grade 11 (junior year)", payload.getValue("year_of_school").jsonPrimitive.content)
+      assertEquals("TN", section.getValue("state").jsonPrimitive.content)
+      assertEquals(
+        true,
+        section
+          .getValue("held")
+          .jsonPrimitive.content
+          .toBoolean(),
+      )
+      assertEquals("required", section.getValue("participation").jsonPrimitive.content)
+      assertEquals(
+        AcademicYear(AdmissionTestStateProgrammeFixture.DEFAULT_SCHOOL_YEAR).label,
+        section.getValue("school_year").jsonPrimitive.content,
+        "the school year is the AcademicYear label and never a bare number",
+      )
+      assertEquals(
+        SchoolDayCopy.schoolYearBasisLabelOf(SchoolYearBasis.STATED_BY_SOURCE),
+        section.getValue("school_year_basis_label").jsonPrimitive.content,
+        "whose year it is travels with the year",
+      )
+      assertTrue(
+        section
+          .getValue("source_url")
+          .jsonPrimitive.content
+          .startsWith("https://"),
+        "the state's own page must be on the wire: [$section]",
+      )
+      assertEquals(
+        AdmissionTestStateProgrammeFixture.DEFAULT_CHECKED_ON.toString(),
+        section.getValue("checked_on").jsonPrimitive.content,
+      )
+      assertEquals(
+        emptyList(),
+        section.values.filter { it.toString().contains('?') },
+        "the section asks the family for nothing: the state was inferred, not requested: [$section]",
+      )
+    }
+
+  /**
+   * EVERY KEY, ALWAYS, ON EVERY ARM. An absent key is a silence the model fills
+   * (this tool's own rule, twice found by RFC 197's review), and three of the
+   * four arms carry almost no data -- which is exactly where a renderer is
+   * tempted to omit.
+   */
+  @Test
+  fun `the school-day section carries every key on every arm, as explicit nulls`() =
+    runTest {
+      val held = TestTimelineTestDb.createStudent(graduationYear = 2028)
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(held, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+      val gap = TestTimelineTestDb.createStudent(graduationYear = 2028)
+
+      val heldKeys = schoolDaySectionOf(tool.execute(held, buildJsonObject {})).keys
+      val gapSection = schoolDaySectionOf(tool.execute(gap, buildJsonObject {}))
+
+      assertEquals(SCHOOL_DAY_KEYS, heldKeys.toList(), "the section's keys are decided, in this order")
+      assertEquals(SCHOOL_DAY_KEYS, gapSection.keys.toList(), "an arm with no record carries the same keys")
+      assertEquals(
+        emptyList(),
+        SCHOOL_DAY_KEYS.filterNot { it in gapSection },
+        "no key may be omitted on the arm that has least to say",
+      )
+      assertEquals(JsonNull, gapSection.getValue("state"))
+      // `held` is the one key that is a BOOLEAN on every arm, because "do we
+      // hold a current reading for this state" has an answer in all four cases.
+      // It is a statement about OUR data and never about the state: `why` is
+      // what says the state may well run one and we have not read it.
+      assertEquals(
+        false,
+        gapSection
+          .getValue("held")
+          .jsonPrimitive.content
+          .toBoolean(),
+        "held is false when we hold no current reading, and says nothing about what the state does",
+      )
+      assertEquals(JsonNull, gapSection.getValue("school_must_offer"))
+      assertEquals(JsonNull, gapSection.getValue("state_funded"))
+    }
+
+  /**
+   * A SENIOR PAST THE PROGRAMME'S GRADE gets the grade fact and no suggestion the
+   * sitting is ahead of them. The section states what the STATE does; when it
+   * comes round for this student is the coach's to work out from the grades and
+   * the year of school, both of which are on the wire.
+   */
+  @Test
+  fun `a senior past the programme grade gets the grade fact and no claim the sitting is ahead`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent(graduationYear = 2027)
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+
+      val payload = tool.execute(student, buildJsonObject {})
+      val section = schoolDaySectionOf(payload)
+
+      assertEquals("grade 12 (senior year)", payload.getValue("year_of_school").jsonPrimitive.content)
+      assertEquals("11", section.getValue("lowest_grade").jsonPrimitive.content)
+      assertEquals("11", section.getValue("highest_grade").jsonPrimitive.content)
+      val why = section.getValue("why").jsonPrimitive.content
+      assertEquals(
+        emptyList(),
+        WORDS_THAT_PUT_THE_SITTING_AHEAD.filter { why.contains(it) },
+        "the section states the state's grades and never places the sitting in this student's future: [$why]",
+      )
+    }
+
+  /** A student with no money profile at all: the gap is named, no state is claimed, and no programme is invented. */
+  @Test
+  fun `a student with no money profile gets no state and no invented programme`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent()
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+
+      val section = schoolDaySectionOf(tool.execute(student, buildJsonObject {}))
+
+      assertEquals(JsonNull, section.getValue("state"))
+      assertEquals(JsonNull, section.getValue("participation"))
+      assertEquals(JsonNull, section.getValue("source_url"))
+      val why = section.getValue("why").jsonPrimitive.content
+      assertTrue(why.contains("money profile"), "the gap must be named for what it is: [$why]")
+      assertTrue(
+        why.contains("residency question belongs to the cost conversation"),
+        "and the coach must be told not to ask for the state here: [$why]",
+      )
+    }
+
+  /** No school on the list is no anchor, and the state fact does not depend on one: the section is still there. */
+  @Test
+  fun `a student with an empty college list still gets the state section`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent(graduationYear = 2028)
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+
+      val payload = tool.execute(student, buildJsonObject {})
+
+      assertEquals(JsonNull, payload.getValue("anchor"), "there is no school on the list to anchor on")
+      assertEquals("TN", schoolDaySectionOf(payload).getValue("state").jsonPrimitive.content)
+    }
+
+  /**
+   * PAST GRADUATION. There is no application cycle and no year of school to place
+   * the sitting in, and the section makes no claim that needs one -- it says what
+   * the state does, and the grades are the state's.
+   */
+  @Test
+  fun `a student past graduation gets the section with no claim about their own year`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent(graduationYear = 2024)
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+
+      val payload = tool.execute(student, buildJsonObject {})
+      val why = schoolDaySectionOf(payload).getValue("why").jsonPrimitive.content
+
+      assertEquals("past their expected high-school graduation", payload.getValue("year_of_school").jsonPrimitive.content)
+      assertEquals(
+        emptyList(),
+        WORDS_THAT_PUT_THE_SITTING_AHEAD.filter { why.contains(it) },
+        "a student who has left school must read no sentence placing the sitting ahead of them: [$why]",
+      )
+    }
+
+  /** Where the state chose no test, the section names none and says who does -- both ways round (D13). */
+  @Test
+  fun `a district-chooses state and a student-chooses state each name no test and say who chooses`() =
+    runTest {
+      val districtStudent = TestTimelineTestDb.createStudent(graduationYear = 2028)
+      val studentChoiceStudent = TestTimelineTestDb.createStudent(graduationYear = 2028)
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(districtStudent, "TN")
+      TestTimelineTestDb.answerResidency(studentChoiceStudent, "SC")
+      TestTimelineTestDb.seedProgrammes(
+        listOf(
+          AdmissionTestStateProgrammeFixture.programme(state = "TN"),
+          AdmissionTestStateProgrammeFixture.programme(
+            state = "SC",
+            participation = SchoolDayParticipation.OFFERED,
+            choice = SchoolDayTestChoice.ChosenLocally(TestChooser.STUDENT),
+          ),
+        ),
+      )
+
+      val district = schoolDaySectionOf(tool.execute(districtStudent, buildJsonObject {}))
+      val studentChoice = schoolDaySectionOf(tool.execute(studentChoiceStudent, buildJsonObject {}))
+
+      assertEquals("district", district.getValue("test_chooser").jsonPrimitive.content)
+      assertEquals(JsonNull, district.getValue("test"), "a state that chose no test names none")
+      assertEquals(JsonNull, district.getValue("test_name"))
+      assertEquals("the district chooses which test", district.getValue("chooser_label").jsonPrimitive.content)
+      assertEquals("student", studentChoice.getValue("test_chooser").jsonPrimitive.content)
+      assertEquals(JsonNull, studentChoice.getValue("test"))
+      assertEquals("the student chooses which test", studentChoice.getValue("chooser_label").jsonPrimitive.content)
+      assertEquals("offered", studentChoice.getValue("participation").jsonPrimitive.content)
+    }
+
+  /**
+   * A STATE WE HOLD NO ROW FOR IS A GAP IN OUR DATA. It is never the state
+   * running nothing: that claim needs a state page saying so, and a wrong one is
+   * this slice's own failure pointing the other way.
+   */
+  @Test
+  fun `a state we hold no row for says we hold no record, never that the state runs nothing`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent(graduationYear = 2028)
+      TestTimelineTestDb.seedCommittedCalendar()
+      TestTimelineTestDb.answerResidency(student, "ND")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+
+      val section = schoolDaySectionOf(tool.execute(student, buildJsonObject {}))
+
+      assertEquals("ND", section.getValue("state").jsonPrimitive.content)
+      assertEquals(
+        false,
+        section
+          .getValue("held")
+          .jsonPrimitive.content
+          .toBoolean(),
+        "we hold no reading for this state, which is what held=false says and all it says",
+      )
+      val why = section.getValue("why").jsonPrimitive.content
+      assertTrue(why.contains("gap in our data"), "the absence must be named as ours: [$why]")
+      assertTrue(
+        why.contains("never a statement that the state runs none"),
+        "and must refuse the negative claim in the same sentence: [$why]",
+      )
+    }
+
+  /**
+   * THE PROPERTY, OVER EVERY ARM: no rendered school-day text names a school or
+   * says "your school".
+   *
+   * Asserted as a sweep rather than per case, so a sentence added later cannot
+   * reintroduce the one claim this table can never support -- whether one named
+   * high school runs its test day. The `school_must_offer` arm is included
+   * deliberately, because it is the arm that comes nearest to a school-level
+   * sentence and is the one a renderer would be tempted to write that way.
+   */
+  @Test
+  fun `no rendered school-day section names a school or says your school`() =
+    runTest {
+      val sections = everySchoolDayArm()
+      assertTrue(sections.size >= EVERY_ARM, "the sweep must cover every arm, or it proves nothing: [$sections]")
+
+      sections.forEach { section ->
+        // Every rendered value EXCEPT `what_the_state_cannot_answer`, which is
+        // the one field whose whole subject is the question we refuse to answer:
+        // it names the student's own school in order to say that this record
+        // cannot speak for it, which is the opposite of the claim swept for.
+        val rendered =
+          section
+            .filterKeys { it != "what_the_state_cannot_answer" }
+            .values
+            .filterIsInstance<JsonPrimitive>()
+            .joinToString(" ") { it.content }
+        assertEquals(
+          emptyList(),
+          WORDS_THAT_CLAIM_A_SCHOOL.filter { rendered.contains(it, ignoreCase = true) },
+          "the state answers the state's question only: [$rendered]",
+        )
+        assertTrue(
+          !rendered.contains(SCHOOL_ON_THE_LIST),
+          "no school on the student's list may be named in a state fact: [$rendered]",
+        )
+      }
+    }
+
+  /** The refusal arm is UNCHANGED: no date, and no programme section at all (RFC 208 section 6). */
+  @Test
+  fun `the refusal payload carries no school-day section`() =
+    runTest {
+      val student = TestTimelineTestDb.createStudent()
+      TestTimelineTestDb.answerResidency(student, "TN")
+      TestTimelineTestDb.seedProgrammes(listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")))
+      TestTimelineTestDb.seedCalendar(EXPIRED_CALENDAR)
+      val expiredTool = AdmissionTestTimelineChatTool(TestTimelineTestDb.serviceAt(PAST_THE_EXPIRY))
+
+      val payload = expiredTool.execute(student, buildJsonObject {})
+
+      assertTrue(
+        SCHOOL_DAY_SECTION !in payload,
+        "the refusal carries no date, and checked_on is a date: [$payload]",
+      )
+      assertEquals(
+        emptyList(),
+        DATE_PATTERN.findAll(payload.toString()).map { it.value }.toList(),
+        "a state record on a refusal would put a date back on it: [$payload]",
+      )
+    }
+
+  /** One section per arm of [SchoolDayProgramme], rendered through the real tool -- the sweep's input. */
+  private suspend fun everySchoolDayArm(): List<JsonObject> {
+    TestTimelineTestDb.seedCommittedCalendar()
+    val held = TestTimelineTestDb.createStudent(graduationYear = 2028)
+    AdmissionsTestDb.seedListedCollege(held, SCHOOL_ON_THE_LIST)
+    TestTimelineTestDb.answerResidency(held, "VA")
+    val noRow = TestTimelineTestDb.createStudent(graduationYear = 2028)
+    TestTimelineTestDb.answerResidency(noRow, "ND")
+    val lapsed = TestTimelineTestDb.createStudent(graduationYear = 2028)
+    TestTimelineTestDb.answerResidency(lapsed, "MA")
+    val declined = TestTimelineTestDb.createStudent(graduationYear = 2028)
+    TestTimelineTestDb.declineResidency(declined)
+    val noProfile = TestTimelineTestDb.createStudent(graduationYear = 2028)
+    TestTimelineTestDb.seedProgrammes(
+      listOf(
+        // The must-offer arm: the strongest sentence in the corpus, and the one
+        // nearest a school-level claim.
+        AdmissionTestStateProgrammeFixture.programme(state = "VA", schoolMustOffer = true),
+        // A LAPSED reading, and its checked_on moves with its expiry: the schema
+        // refuses a row that expired before it was read, and a fixture that
+        // ignored that would be writing a row the corpus could never hold.
+        AdmissionTestStateProgrammeFixture.programme(
+          state = "MA",
+          checkedOn = LocalDate.parse("2025-09-01"),
+          expiresOn = LocalDate.parse("2026-09-10"),
+        ),
+      ),
+    )
+
+    return listOf(held, noRow, lapsed, declined, noProfile)
+      .map { schoolDaySectionOf(tool.execute(it, buildJsonObject {})) }
+  }
+
+  /** The section under test, named once so no case reaches for the key by hand. */
+  private fun schoolDaySectionOf(payload: JsonObject): JsonObject = payload.getValue(SCHOOL_DAY_SECTION).jsonObject
+
   /** One listed school with a dated Early Action round, and the committed calendar -- the shape most of these tests want. */
   private fun listedStudentWithAnEarlyActionDeadline(): StudentId {
     val student = TestTimelineTestDb.createStudent(graduationYear = 2027)
@@ -549,6 +907,56 @@ class AdmissionTestTimelineChatToolTest {
     /** An ISO date anywhere in a payload string, `why` sentences included. */
     val DATE_PATTERN = Regex("""\d{4}-\d{2}-\d{2}""")
 
+    /** The section this RFC 208 half is about, named once. */
+    const val SCHOOL_DAY_SECTION = "school_day_programme"
+
+    /** The name of the one school on the sweep student's list -- and so a string no state fact may contain. */
+    const val SCHOOL_ON_THE_LIST = "Sweep College"
+
+    /** How many arms the property sweep must cover: held, no row, lapsed, declined, and no profile. */
+    const val EVERY_ARM = 5
+
+    /**
+     * Every key of the school-day section, in the order it is said (RFC 208
+     * section 6), asserted as a LIST so a key cannot be dropped on the arm that
+     * has least to say -- which is exactly where an omission would be invisible.
+     */
+    val SCHOOL_DAY_KEYS =
+      listOf(
+        "state",
+        "held",
+        "participation",
+        "test_chooser",
+        "test",
+        "test_name",
+        "chooser_label",
+        "lowest_grade",
+        "highest_grade",
+        "state_funded",
+        "school_must_offer",
+        "school_year",
+        "school_year_basis",
+        "school_year_basis_label",
+        "source_url",
+        "archive_url",
+        "checked_on",
+        "expires_on",
+        "what_the_state_cannot_answer",
+        "why",
+      )
+
+    /**
+     * Ways a sentence would place the state's sitting in THIS student's future.
+     * The section states what the state does and in which grades; when that comes
+     * round for one student is the coach's to work out from those grades and
+     * `year_of_school`, and a section that did it for them would be wrong for
+     * every senior and every student past graduation.
+     */
+    val WORDS_THAT_PUT_THE_SITTING_AHEAD = listOf("ahead", "this year", "next year", "coming up", "will sit")
+
+    /** The claim this table can never support: a sentence about the student's OWN school. */
+    val WORDS_THAT_CLAIM_A_SCHOOL = listOf("your school", "their school", "at school this year")
+
     /** The fields the description routes the coach through, and which the wire must therefore carry. */
     val DESCRIBED_FIELDS =
       listOf(
@@ -567,6 +975,16 @@ class AdmissionTestTimelineChatToolTest {
         "closed_deadlines",
         "refusal",
         "calendar.expired",
+        "school_day_programme",
+        "school_year_basis",
+        "state_funded",
+        "school_must_offer",
+        "chooser_label",
+        "what_the_state_cannot_answer",
+        "archive_url",
+        "checked_on",
+        "lowest_grade",
+        "highest_grade",
       )
 
     /** One live sitting whose publisher publishes no later deadline -- the real ACT/SAT shape this used to omit keys for. */

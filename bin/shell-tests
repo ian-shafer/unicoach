@@ -38,6 +38,9 @@ the first failure:
   docs-scripts-tests 4.6s  the /chart documentation land path, no cluster at all
   test-calendar-seed-scripts-tests
                       ~2s  the SAT/ACT calendar seed generator, no cluster at all
+  test-state-programme-seed-scripts-tests
+                      ~4s  the state school-day programme seed generator, no
+                           cluster at all
   q-scripts-tests    ~12s  queue ops tools, shared cluster
   db-scripts-tests   ~15s  db/cluster lifecycle, its OWN private cluster
   scripts-tests      ~63s  daemon/ops/deploy scripts, shared cluster + built
@@ -89,6 +92,15 @@ fi
 # nowhere else. Its name ends in `scripts-tests` so the anti-orphan sweep in
 # bin/scripts-tests derives it and asserts this very line exists.
 "$PROJECT_ROOT/bin/test-calendar-seed-scripts-tests"
+# And again, for the same reason: bin/test-state-programme-seed reads one CSV and
+# writes one file per reading session, so this harness needs only a temp
+# directory (RFC 208). Its refusals -- the exact-header rule, every CHECK mirror,
+# the duplicate natural key, the session-agreement rule and the APPEND-ONLY rule
+# that is this corpus's load-bearing decision -- are reachable ONLY from a bad
+# CSV, so they are executed here and nowhere else. Its name ends in
+# `scripts-tests` so the anti-orphan sweep in bin/scripts-tests derives it and
+# asserts this very line exists.
+"$PROJECT_ROOT/bin/test-state-programme-seed-scripts-tests"
 "$PROJECT_ROOT/bin/q-scripts-tests"
 # db-scripts-tests builds its own private env file and sets ENV_FILE, which
 # bin/common rejects as mutually exclusive with an inherited ENV_FILES. Clear the

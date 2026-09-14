@@ -18,8 +18,10 @@
 -- EVERY ROW EXPIRES (D7/D20). Past expires_on the coach REFUSES to name a date
 -- and points at College Board and ACT, and a test fails when any committed row
 -- that is still AHEAD of today is within AdmissionTestAdministration
--- .CALENDAR_REFRESH_LEAD of its expires_on. That constant is the one home for
--- the number; this comment names it rather than repeating it. Rot is the
+-- HandTypedReferenceData.REFRESH_LEAD of its expires_on. That constant is the
+-- one home for the number -- it moved there from this table's own model when a
+-- second hand-typed corpus (RFC 208's state programmes) needed the same ninety
+-- days; this comment names it rather than repeating it. Rot is the
 -- competitor's failure mode -- the top-ranked article for this question is 2016 and
 -- still quotes 2016-17 dates -- so we find ours in CI and not from a family who
 -- missed a date.

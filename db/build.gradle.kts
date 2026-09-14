@@ -20,6 +20,12 @@ dependencies {
   // with a real CSV reader rather than a hand-rolled split (RFC 197).
   testFixturesImplementation(libs.commons.csv)
 
+  // AdmissionTestStateProgrammeFixture builds a row whose school year IS
+  // :common's AcademicYear (RFC 208, 0087). `implementation` does not reach the
+  // test-fixtures source set, and a fixture cannot construct a model type whose
+  // own parameter type it cannot see.
+  testFixturesImplementation(project(":common"))
+
   testImplementation(libs.kotlin.test.junit5)
   // CountingSqlSession: :db's own DAO tests assert the batching contract with the
   // same decorator its dependants do, rather than keeping a second copy of it.
