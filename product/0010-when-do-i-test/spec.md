@@ -395,14 +395,8 @@ school's deadline, and in the testing timeline.
 
 ### `test/06.1/one-answer-one-date`
 
-**Needs:**
-
-- BLOCKS test/06/your-scores — technical. `test/06` was parked at its gate
-  because its table was about to add a fourth hand-rolled variable-precision
-  date and a fourth copy of the declinable-answer pattern. Both components must
-  exist before the table that consumes them is written; building them afterwards
-  means shipping the duplicate and promising to remove it, which is how a third
-  copy became a fourth.
+**Needs:** — (nothing: the two components are extracted from code that already
+exists, and no slice in this brief has to land first for them to be correct)
 
 **What and why.** Two shapes in this repo are shared in Kotlin and copied in
 SQL, and this brief was about to copy both again. D23 and D24 decide what they
@@ -495,6 +489,12 @@ school run it, and when. Never gating; "I don't know" is a complete answer.
 
 **Needs:**
 
+- BLOCKS test/06.1/one-answer-one-date — technical. This slice's table was
+  parked at its gate for adding a fourth hand-rolled variable-precision date and
+  a fourth copy of the declinable-answer pattern. Both components must exist
+  before the table that consumes them is written; building them afterwards means
+  shipping the duplicate and promising to remove it, which is how a third copy
+  became a fourth (Ian, 2026-09-14).
 - PREFER test/03/the-range-not-the-average — product judgement. A stored score
   with nothing to locate it in is a number we collected and cannot use; the band
   is what makes recording it feel worth the ask. Overridable by Ian.
