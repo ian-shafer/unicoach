@@ -171,8 +171,12 @@ columns and indexes, and the staging shape.
 vintage; the two debt columns and the earnings column are never averaged,
 combined or ratio'd; a blank and a `PS` produce different stored statuses and
 different sentences; counters for all three arms reach the operator summary.
-**No family-visible change lands in this slice** — it fills a store.
-Reachability is `beyond/05`'s job, and this slice says so.
+**The third counter is this slice's own work (D45)** — `beyond/02` landed two
+counters (coerced out of range, suppressed by publisher) plus a LOG LINE for a
+token that is neither a known blank nor a sentinel and does not parse; that arm
+becomes a counter here, because a log line is invisible until somebody already
+suspects a problem. **No family-visible change lands in this slice** — it fills
+a store. Reachability is `beyond/05`'s job, and this slice says so.
 
 ---
 

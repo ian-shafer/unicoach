@@ -558,3 +558,23 @@ nudge, never a bare repeat.
       silence, and the three CSV fixtures stop spelling a sentinel the source never emits.
       Loader only: the stored statuses move on the next `bin/ingest-colleges` run. Full
       suite 3,271 executed, 0 failures; the gate re-ran it and passed.
+
+### D45 — the third arm is a counter, not a log (Ian, 2026-09-14, verbatim: "yes")
+
+`beyond/02` landed TWO counters (values coerced out of range, values the
+publisher suppressed) plus a LOG LINE for the third arm — a present token that
+is neither a known blank nor a sentinel and does not parse. Its review asked for
+a third counter and the slice declined it correctly, as a product decision its
+gate had not covered. `beyond/03`'s acceptance text already promises "counters
+for all three arms reach the operator summary", so the spec and the code
+disagreed.
+
+**Resolved in favour of the spec: `beyond/03` BUILDS the third counter.** An
+unrecognised token is a silent data-quality failure, and a number in the
+operator summary is what makes a sudden change visible; a log line is invisible
+until somebody already suspects a problem. This is the same reasoning that gave
+the money work its withheld-figure counters — a rule that suppressed all 6,273
+colleges must not look like one that suppressed 264.
+
+`beyond/03` must therefore treat the third counter as work it owns, not as
+something it inherits.
