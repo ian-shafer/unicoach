@@ -74,13 +74,48 @@ _(one line per landed slice: ID, RFC, SHAs, one-line what.)_
        things we hold" sentence is corrected, the correction RFC 197 declined for
        the right reason. Executed: 3,217 tests, 0 failures.
 
-**Waves 1 and 2 are complete: four slices landed, RFCs 186, 187, 195 and 197.**
-The question the brief was opened for is answered by a test: for a student with
-one school closing Early Action on 1 November, the coach names SAT 3 October
-(scores 16 October) as the last usable sitting and **18 September** as the day
-registration closes — and names the ACT beside it, 17 October with registration
-closing 11 September, because naming only the SAT would make the SAT the default
-noun (D13).
+    test/06.1/one-answer-one-date LANDED as RFC 209 (main@0a7c027f + 92c214f4,
+       2026-09-14) — the two shapes this schema kept copying by hand now have one
+       definition each. A partly-known date is a real DATE at the start of the
+       period plus its precision, and Kotlin sees only PartialDate: the (date,
+       precision) pair never escapes the DAO, so no caller can hold a date whose
+       value and precision disagree, proven by a guard that sweeps every module
+       and permits exactly one file. The answer words are written ONCE:
+       answer_status_or_undecided is the base and answer_status is derived from
+       it as that list minus 'undecided', so the money spelling and the
+       subject-field spelling cannot drift. students migrated in the same run;
+       nothing above the DAO changed. Executed: 3,282 tests, 0 failures. Open:
+       intended_subject_status is not retyped — RFC 205 had not landed at the
+       final rebase, and the two ALTERs are recorded in the migration's own
+       closing comment.
+
+    test/05/your-state-already-pays LANDED as RFC 208 (main@75f5fc17 + bba0927a,
+       2026-09-14) — the coach can tell a family that their state already runs,
+       and often pays for, an admission test inside the school day, inferred from
+       the residency state the money profile already holds; it never asks for the
+       state again. admission_test_state_programmes is append-only history keyed
+       (state, school_year), so a re-read ADDS a row and last year's answer stays
+       true about last year; the read and the staleness guard both take the
+       newest row per state, which is what makes the guard both firing and
+       clearable. 36 of 51 jurisdictions, each from a state agency's own page: 27
+       require, 9 offer; 16 ACT, 13 SAT, 7 where the state chose no single test;
+       22 say who pays; 7 carry an archive link. 15 jurisdictions have no row,
+       and absence means we did not read a source, never that the state runs
+       nothing. Five funding claims were found and REJECTED because the page did
+       not say the state pays. The state column carries a format rule rather than
+       a key into us_states — that codebook is created by a migration and filled
+       by the import run, so a migration-time seed points at an empty table
+       (proven: 112 of 113 migrations applied, then the seed was refused), and
+       test/05.3/own-our-codebooks carries the key (D27). Coach prompt v36.
+       Executed: 3,302 tests, 1,616 shell assertions, 0 failures.
+
+**Waves 1, 2 and 3 are complete: six slices landed — RFCs 186, 187, 195, 197,
+208 and 209.** The question the brief was opened for is answered by a test: for
+a student with one school closing Early Action on 1 November, the coach names
+SAT 3 October (scores 16 October) as the last usable sitting and **18
+September** as the day registration closes — and names the ACT beside it, 17
+October with registration closing 11 September, because naming only the SAT
+would make the SAT the default noun (D13).
 
 Wave 2 was held, by agreement with the sibling `/chart say-it-once` session,
 until its `concise/03/one-rule-one-home` — a pure DELETION pass on the same

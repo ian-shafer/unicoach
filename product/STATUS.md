@@ -7,8 +7,36 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-14 — **BRIEF 0014 IS SPECCED: PARENTS GET REAL ACCOUNTS, AND
-THE CODE SAID FOUR OF OUR DECISIONS WERE WRONG.** Gates 1 and 2 both approved
+Updated: 2026-09-14 — **TWO MORE OF BRIEF 0010 LANDED: a state's own school-day
+testing programme, and the two shared shapes this schema kept copying by hand**
+(RFC 208 `main@75f5fc17` + `bba0927a`; RFC 209 `main@0a7c027f` + `92c214f4`).
+**RFC 208** stops the coach telling a family to pay for a Saturday their state
+has already paid for: 36 of 51 jurisdictions are recorded, each from a state
+agency's own page — 27 require the sitting of every student in a grade, 9 offer
+it; 16 ACT states, 13 SAT, 7 where the state chose no single test; 22 say who
+pays. It is inferred from the residency state the money profile already holds,
+so the family is asked for nothing. The table is **append-only history** keyed
+`(state, school_year)` — Ian: _"one row per state, replaced yearly is an
+anti-pattern because it makes data depend on outside processes"_ — and the read
+and the staleness guard both take the newest row per state, which is what makes
+the guard both fire and clear. **15 jurisdictions have no row, and absence means
+we did not read a source, never that the state runs nothing**; five funding
+claims were found and REJECTED because the page did not actually say the state
+pays. **RFC 209** gives a partly-known date one storage shape (a real `DATE` at
+the start of the period plus its precision, with `PartialDate` the only thing
+Kotlin sees) and the declinable-answer vocabulary one definition
+(`answer_status_or_undecided` as the base, `answer_status` derived as that list
+minus `undecided`, so two briefs' spellings cannot drift). `students` migrated
+in the same run and nothing above the data layer changed. **Two decisions worth
+carrying:** unicoach owns its codebooks so unicoach should populate them at
+migration time (**D27**, after a foreign key into `us_states` proved impossible
+— 112 of 113 migrations applied, then the seed was refused), and a citation is a
+DOCUMENT with its own table (**D26**), because _an archive is not a spare link,
+it is evidence with a date on it_. **Next free RFC 214** (recompute, never
+copy).
+
+Previously — **BRIEF 0014 IS SPECCED: PARENTS GET REAL ACCOUNTS, AND THE CODE
+SAID FOUR OF OUR DECISIONS WERE WRONG.** Gates 1 and 2 both approved
 (2026-09-14). A parent will hold an account, link many-to-many with students in
 either direction, switch between them, and get a coach of their own —
 `product/0014-parents-in-the-room`, handle `family`, ten slices, six waves.
