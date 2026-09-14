@@ -410,6 +410,48 @@ rather than merely policed by a service and a test.
 Both components are carried by `test/06.1/one-answer-one-date`, which BLOCKS
 `test/06`.
 
+**D26 — a citation is a DOCUMENT, and documents get their own table.** (Ian,
+2026-09-14: _"We have the need to store links to external documents. There are
+also archives (what's an archive?). Let's model this correctly in a separate
+table: external_documents. There will be a new table that maps multiple sources
+(eg for Utah) between these two tables. We'll need to do a cleanup slice to move
+all schema that points to external documents to use this new table."_)
+
+Eight tables carry their own URL columns today: the three CDS tables (`0054`),
+`policy_parameters` (`0077`), the canonical money tables (`0083`),
+`source_documents` itself (`0087`, plus RFC 200's link-rot columns), the test
+calendar this brief landed (`dates_source_url`, `score_release_source_url`), and
+the state programmes this brief is building. `source_documents` was the first
+attempt at de-duplicating them and is college-keyed, so it cannot hold a
+citation about a jurisdiction.
+
+**What an archive is, written down because the question was asked and the answer
+shapes the model.** The live URL is the publisher's page as it is now. An
+archive URL is a third-party capture of that same page **as it was on the day we
+read it** — almost always the Internet Archive. It is not a spare link. It is
+**evidence with a date on it**, and we already need it for three reasons that
+have each bitten: pages that refuse us (Arizona, New Hampshire), pages that move
+or die (measured 2026-09-13 across 441 college documents: 417 found, 15 not
+found, 9 unknown), and pages that silently change.
+
+So a capture is not an attribute of a document; it is a thing we made OF a
+document, on a date, possibly more than once. Today's single `archive_url`
+column cannot say when it was taken, which is the one thing a dated citation
+needs.
+
+**The shape:** `external_documents` (the published thing, its publisher, its
+link-rot state and when we last checked), `document_captures` (one row per
+snapshot, with its date), and **one small join table per owner** — never a
+polymorphic owner column. Every citation today is
+`NOT NULL REFERENCES
+colleges(id)`; a generic owner would downgrade that
+guarantee to a check constraint for the convenience of one new caller. The join
+carries WHICH CLAIM each document supports, which is the fact Utah needs: its
+statute backs the requirement and the grade, its board rule backs the test.
+
+Carried by `test/05.1/external-documents`, with the migration of the other eight
+tables in `test/05.2/one-home-for-every-citation`.
+
 ## Corrections to the record (2026-09-10)
 
 Written down because the brief asserted them to Ian before they were verified.

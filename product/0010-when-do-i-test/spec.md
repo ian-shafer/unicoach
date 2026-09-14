@@ -485,6 +485,87 @@ school run it, and when. Never gating; "I don't know" is a complete answer.
 
 ---
 
+### `test/05.1/external-documents`
+
+**Needs:**
+
+- BLOCKS test/05/your-state-already-pays — technical. This slice generalises the
+  citation the state programmes carry, and `test/05` ships the rows that first
+  need two documents. Building it first would have blocked a run that was
+  already implemented; building it second means Utah is held out of the seed
+  until it lands, which `test/05` records by name.
+
+**What and why.** A citation in this repo is a URL column, copied into eight
+tables, and one of them (`source_documents`) is a college-keyed attempt to
+de-duplicate the other three. None of them can hold a citation about a
+jurisdiction, and none can say WHEN a capture was taken. D26 decides the model;
+this slice builds it and adopts it for the state programmes.
+
+**Foundations.** `source_documents` (RFC 170 D13) and its link-rot columns (RFC
+200, `found` / `not_found` / `unknown` plus a checked-on date, measured across
+441 documents), `bin/cds-link-check`, the CDS seed's `source_url` +
+`archive_url` pattern.
+
+**Decided here (D26).** **DDL at /ship's gate.**
+
+- `external_documents`: one row per published document — URL, publisher, kind,
+  link-rot state, last checked.
+- `document_captures`: one row per snapshot — capture URL and the date captured.
+  A capture is a thing we made OF a document, on a date, possibly more than
+  once; a single `archive_url` column cannot date itself.
+- **One join table per owner, never a polymorphic owner**, carrying WHICH CLAIM
+  the document supports.
+- Adopt it for `admission_test_state_programmes`, and add the rows `test/05`
+  held out for being unsupportable from one page (Utah, and any the run names).
+
+**Left to /ship's design.** Whether `bin/cds-link-check` is general enough to
+check a state URL, or whether that waits; whether the publisher vocabulary is a
+domain or a reference table; whether captures carry a checksum.
+
+**Acceptance criteria.**
+
+- A row whose claims come from two documents can cite both, and each citation
+  says which claim it backs.
+- A capture carries the date it was taken, and a citation rendered from it says
+  "as it was on that date" rather than implying the live page says so today.
+- No existing citation loses a guarantee: what is `NOT NULL REFERENCES` today
+  stays a real key.
+- **Door:** none of its own — it is the same citations, correctly modelled.
+  `test/05`'s door does not change.
+
+---
+
+### `test/05.2/one-home-for-every-citation`
+
+**Needs:**
+
+- BLOCKS test/05.1/external-documents — technical. There is nothing to migrate
+  the eight tables ONTO until the model exists.
+
+**Status:** SPECCED, not scheduled. **A candidate for its own brief**: it
+touches the money layer, the ingest and three committed seeds, and its blast
+radius is wider than anything else in brief 0010.
+
+**What and why.** Move every table that carries its own citation columns onto
+`external_documents`: the three CDS tables (`0054`), `policy_parameters`
+(`0077`), the canonical money tables (`0083`), `source_documents` (`0087` —
+which becomes a join table or is retired), the test calendar (RFC 197), and the
+state programmes (RFC 208). Until this lands, the repo has two ways to cite a
+document, which is the defect D26 exists to end rather than to double.
+
+**Decided here.** Nothing new: it is D26 applied to what already exists. **DDL
+at /ship's gate**, and it will be the largest migration this brief has proposed.
+
+**Acceptance criteria.**
+
+- One way to cite a document in the schema. A table declaring its own
+  `source_url` fails review.
+- Every existing citation renders byte-identically before and after, pinned by a
+  test — this slice changes storage, never a sentence.
+- The RFC 200 link-rot check runs over every document, not only the college
+  ones.
+- **Door:** none. Nothing a family sees changes.
+
 ### `test/06/your-scores`
 
 **Needs:**
