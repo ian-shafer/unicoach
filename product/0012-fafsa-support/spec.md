@@ -50,15 +50,7 @@ the US Virgin Islands were not researched.
 
 ## `fafsa/01/the-deadline-table`
 
-**Needs:**
-
-- PREFER test/05.1/external-documents — product judgement. That slice builds the
-  one home for a citation, and it is the only model in the repo that can cite a
-  JURISDICTION rather than a college, which is this table's hard case; its
-  `document_captures` also dates a snapshot, which 7 of our rows need because
-  the agency blocks machine reading. Shipping our own `source_url` columns first
-  means shipping a seam `test/05.2` says fails review and a later migration must
-  undo. Overridable by Ian (gate-2 D16).
+**Needs:** —
 
 **What:** The table the whole beat stands on: `fafsa_filing_deadlines`, plus the
 Kotlin models, the two enums and the `currentFilingYear` clock. No rows yet.
@@ -76,11 +68,17 @@ carries a copy-pasteable DDL. Federal rows live in the same table with
 `NULLS NOT DISTINCT` on the natural key `(award_year, state, program, event)`.
 `published_text` is NOT NULL on EVERY row beside an optional `deadline_date`,
 because a DATE cannot hold "11:59 p.m. Pacific" and a reader must never mistake
-our parse for the publisher's words. Three kinds — `date`, `wording`, `none` —
-with a value-iff-kind CHECK. **No FK to `us_states`** (the seed migration would
-fail on the test database); membership is checked by the generator and the seed
-test. **Left to /ship:** the DAO's read shape, and whether `currentFilingYear`
-lives beside the clock in `FederalAidPolicyService` or in its own file.
+our parse for the publisher's words. **Citations are two foreign keys into
+`external_documents` (RFC 213), never columns of our own** — the agency's page,
+and the archived address it was read through where the agency blocks every
+client we have. `admission_test_state_programmes` adopted exactly this in
+`adopt-external-documents-for-state-programmes.sql`; copy it, including the
+check that an archive is not the same document as its source. Three kinds —
+`date`, `wording`, `none` — with a value-iff-kind CHECK. **No FK to
+`us_states`** (the seed migration would fail on the test database); membership
+is checked by the generator and the seed test. **Left to /ship:** the DAO's read
+shape, and whether `currentFilingYear` lives beside the clock in
+`FederalAidPolicyService` or in its own file.
 
 **This slice adds a table (brief 0001 D10).** Its /ship run MUST present the
 full DDL explicitly at its approval gate, not buried in the RFC. The DDL in
@@ -114,10 +112,15 @@ we do once so 51 agency pages do not become a family's homework.
 
 **Foundations:** `discover/state-deadlines-merged.csv` is the starting corpus
 (148 rows, already cited and dated) — it is INPUT, not the committed artifact.
-`bin/test-calendar-seed` + `bin/test-calendar-seed-scripts-tests` +
-`AdmissionTestCalendarSeedTest` are the template. `bin/` conventions bind:
-`getopts` short options only, all logging to stderr, the reserved usage exit
-codes from `bin/functions`.
+The template is now a LANDED SIBLING, not an analogy:
+`bin/test-state-programme-seed` + `bin/test-state-programme-seed-scripts-tests`,
+`db/seed/test-state-programmes/{programmes.csv,link-status.csv,PROVENANCE.json}`
+and `AdmissionTestStateProgrammeSeedTest` are a hand-typed, per-jurisdiction,
+cited, expiring corpus with a coverage block naming every jurisdiction it could
+not source — the same problem we have. `bin/test-calendar-seed` (RFC 197) is the
+older instance of the same shape. `bin/` conventions bind: `getopts` short
+options only, all logging to stderr, the reserved usage exit codes from
+`bin/functions`.
 
 **Decided here:** one award year at launch, the cycle now being filed. A row
 that the harvest could not verify **does not ship as a fact** (see gate-2 D9).
@@ -374,18 +377,14 @@ Defaults pre-chosen. Decision numbering continues from gate 1 (D1-D7).
   (brief 0001 D10, standing). The proposed DDL is already written, in
   `discover/repo-grounding.md` §2.2, and is presented as-is.
 
-- **D16 — the citation shape waits for `external_documents`, or knowingly does
-  not.** Ian flagged that another session is building `external_documents`
-  (brief 0010, `test/05.1`). It is the right home for this data and was designed
-  for exactly our hard case: it can "hold a citation about a jurisdiction",
-  which `source_documents` cannot, and its `document_captures` dates a snapshot
-  — which 7 of our rows need, being archived copies of agency pages that block
-  machine reading. `test/05.2` then states the rule outright: a table declaring
-  its own `source_url` **fails review**. Our proposed DDL declares two such
-  columns. So either `fafsa/01` waits, or it ships a seam that a later migration
-  must undo. **Recommended: `fafsa/01` carries a PREFER on `test/05.1`** —
-  overridable, so you can start it anyway and accept the debt knowingly rather
-  than by accident.
+- **D16 — RESOLVED, 2026-09-15: the citation is `external_documents`.** Ian
+  flagged the in-flight table; it has since landed as RFC 213, so `fafsa/01`
+  does not wait and does not ship its own `source_url`. Two nullable-then-keyed
+  foreign keys, the shape `admission_test_state_programmes` already adopted: the
+  agency's own page, and — where the agency blocks every client we have — the
+  archived address it was read through. That second key is not a special case
+  invented for us: RFC 213 decided an archived address "is just another row
+  here", and 7 of our 148 rows need exactly that.
 
 Ledger (one line per landed slice, appended as each lands):
 
