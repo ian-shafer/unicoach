@@ -3,6 +3,7 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.util.phraseOf
 import ed.unicoach.db.dao.CorruptPersistedValueException
+import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
@@ -207,6 +208,17 @@ sealed interface MoneyBasis {
 
         AnswerStatus.UNANSWERED -> {
           Unanswered
+        }
+
+        // `undecided` is the intended-subject answer (RFC 205), refused by the
+        // shared money-status rule — never folded into [Declined], which would
+        // put "the family would rather not say" on the page for a family that
+        // said no such thing.
+        AnswerStatus.UNDECIDED -> {
+          throw nonMoneyAnswerStatus(
+            AnswerStatus.UNDECIDED,
+            location = "money_profiles.[income_band_status] (assembling a money basis)",
+          )
         }
       }
   }

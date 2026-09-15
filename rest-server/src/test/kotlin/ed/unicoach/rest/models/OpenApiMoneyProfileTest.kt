@@ -31,23 +31,64 @@ class OpenApiMoneyProfileTest {
     )
   }
 
+  /**
+   * The money statuses are [AnswerStatus] MINUS [AnswerStatus.UNDECIDED], and
+   * the subtraction is the assertion (RFC 205).
+   *
+   * A plain `entries == spec` check used to hold. RFC 205 gave [AnswerStatus] a
+   * fourth value for a question where "I do not know yet" is a real answer, and
+   * the three `money_profiles` status CHECKs were deliberately left at
+   * `('unanswered','answered','declined')` — the database REFUSES `undecided` on
+   * every money column, and `MoneyProfileUndecidedRefusedTest` proves it. So
+   * keeping the old assertion would have forced `undecided` into these three
+   * published lists, where it would name a value the server cannot store: a spec
+   * that lies.
+   *
+   * Declaration order is still asserted, with the excluded member removed rather
+   * than the list sorted, so a reorder of [AnswerStatus] is still a failure here.
+   */
   @Test
-  fun `spec status enums enumerate exactly AnswerStatus's wire strings`() {
-    val expected = AnswerStatus.entries.map { it.value }
+  fun `spec money status enums enumerate AnswerStatus minus UNDECIDED`() {
+    // Read from `moneyCases`, not recomputed as `entries - UNDECIDED`. That
+    // subtraction is the RULE about which statuses money may hold, and the rule
+    // has one owner now; recomputing it here would make this guard agree with a
+    // second, independent copy rather than with the thing production uses.
+    val expected = AnswerStatus.moneyCases.map { it.value }
+    val reason =
+      "must list exactly AnswerStatus's wire strings MINUS [${AnswerStatus.UNDECIDED.value}], in " +
+        "declaration order: the money_profiles CHECKs refuse that value, so a money column can never " +
+        "hold it and the published contract must not offer it"
     assertEquals(
       expected,
       OpenApiSpec.enumValues("PublicMoneyProfile", "incomeBandStatus"),
-      "PublicMoneyProfile.incomeBandStatus must list exactly AnswerStatus's wire strings, in declaration order",
+      "PublicMoneyProfile.incomeBandStatus $reason",
     )
     assertEquals(
       expected,
       OpenApiSpec.enumValues("PublicMoneyProfile", "residencyStatus"),
-      "PublicMoneyProfile.residencyStatus must list exactly AnswerStatus's wire strings, in declaration order",
+      "PublicMoneyProfile.residencyStatus $reason",
     )
     assertEquals(
       expected,
       OpenApiSpec.enumValues("PublicMoneyProfile", "livingPlanStatus"),
-      "PublicMoneyProfile.livingPlanStatus must list exactly AnswerStatus's wire strings, in declaration order",
+      "PublicMoneyProfile.livingPlanStatus $reason",
+    )
+  }
+
+  /**
+   * The other half of the split: the INTENDED-SUBJECT status lists all four.
+   *
+   * Asserted in the same file as its money twin on purpose. The two lists differ
+   * by exactly one member, and the only thing that keeps that difference
+   * deliberate is a reader seeing both claims side by side.
+   */
+  @Test
+  fun `spec intended-subject status enum enumerates every AnswerStatus wire string`() {
+    assertEquals(
+      AnswerStatus.entries.map { it.value }.sorted(),
+      OpenApiSpec.enumValues("PublicIntendedSubjects", "status").sorted(),
+      "PublicIntendedSubjects.status must list every AnswerStatus wire string, [${AnswerStatus.UNDECIDED.value}] " +
+        "included: it is the one surface where that answer is storable",
     )
   }
 

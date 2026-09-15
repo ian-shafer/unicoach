@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000009F /* YourDetailsSubjectsTests.swift */; };
+		CC20500000000000000008B /* SubjectsClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000008F /* SubjectsClientTests.swift */; };
+		CC20500000000000000007B /* SubjectPickerViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000007F /* SubjectPickerViewModelTests.swift */; };
+		CC20500000000000000006B /* DSSubjectsRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000006F /* DSSubjectsRowTests.swift */; };
+		CC20500000000000000005B /* MockSubjectClients.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000005F /* MockSubjectClients.swift */; };
+		CC20500000000000000004B /* SubjectPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000004F /* SubjectPickerSheet.swift */; };
+		CC20500000000000000003B /* SubjectPickerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000003F /* SubjectPickerViewModel.swift */; };
+		CC20500000000000000002B /* IntendedSubjectsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000002F /* IntendedSubjectsClient.swift */; };
+		CC20500000000000000001B /* SubjectsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000001F /* SubjectsClient.swift */; };
 		DDDD00010000000000000B01 /* GoogleSignInProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00010000000000000F01 /* GoogleSignInProvider.swift */; };
 		DDDD00010000000000000B02 /* GoogleSignInButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00010000000000000F02 /* GoogleSignInButton.swift */; };
 		DDDD00010000000000000B04 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = DDDD00010000000000000D01 /* GoogleSignIn */; };
@@ -148,6 +157,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CC20500000000000000009F /* YourDetailsSubjectsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsSubjectsTests.swift; sourceTree = "<group>"; };
+		CC20500000000000000008F /* SubjectsClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectsClientTests.swift; sourceTree = "<group>"; };
+		CC20500000000000000007F /* SubjectPickerViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerViewModelTests.swift; sourceTree = "<group>"; };
+		CC20500000000000000006F /* DSSubjectsRowTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DSSubjectsRowTests.swift; sourceTree = "<group>"; };
+		CC20500000000000000005F /* MockSubjectClients.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockSubjectClients.swift; sourceTree = "<group>"; };
+		CC20500000000000000004F /* SubjectPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerSheet.swift; sourceTree = "<group>"; };
+		CC20500000000000000003F /* SubjectPickerViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerViewModel.swift; sourceTree = "<group>"; };
+		CC20500000000000000002F /* IntendedSubjectsClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IntendedSubjectsClient.swift; sourceTree = "<group>"; };
+		CC20500000000000000001F /* SubjectsClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectsClient.swift; sourceTree = "<group>"; };
 		DDDD00010000000000000F01 /* GoogleSignInProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInProvider.swift; sourceTree = "<group>"; };
 		DDDD00010000000000000F02 /* GoogleSignInButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInButton.swift; sourceTree = "<group>"; };
 		EEEE00010000000000000F01 /* SsoSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SsoSignIn.swift; sourceTree = "<group>"; };
@@ -316,6 +334,10 @@
 		54DF8AA27E5BE9829E6B2A58 /* UnicoachiOS */ = {
 			isa = PBXGroup;
 			children = (
+				CC20500000000000000004F /* SubjectPickerSheet.swift */,
+				CC20500000000000000003F /* SubjectPickerViewModel.swift */,
+				CC20500000000000000002F /* IntendedSubjectsClient.swift */,
+				CC20500000000000000001F /* SubjectsClient.swift */,
 				6BA3C895E84184F93D916BB5 /* Models.swift */,
 				6825BBE278E8DA9E9B075B91 /* AuthClient.swift */,
 				2C8A2A153A20CE21B45852C9 /* RegistrationViewModel.swift */,
@@ -414,6 +436,11 @@
 		A7EFC6E8C2CFFB91407E525F /* UnicoachiOSTests */ = {
 			isa = PBXGroup;
 			children = (
+				CC20500000000000000009F /* YourDetailsSubjectsTests.swift */,
+				CC20500000000000000008F /* SubjectsClientTests.swift */,
+				CC20500000000000000007F /* SubjectPickerViewModelTests.swift */,
+				CC20500000000000000006F /* DSSubjectsRowTests.swift */,
+				CC20500000000000000005F /* MockSubjectClients.swift */,
 				E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */,
 				883B58CD37496DA7F775524A /* RegistrationViewModelTests.swift */,
 				5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */,
@@ -603,6 +630,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CC20500000000000000004B /* SubjectPickerSheet.swift in Sources */,
+				CC20500000000000000003B /* SubjectPickerViewModel.swift in Sources */,
+				CC20500000000000000002B /* IntendedSubjectsClient.swift in Sources */,
+				CC20500000000000000001B /* SubjectsClient.swift in Sources */,
 				F42153F746F1877B7A2463BD /* Models.swift in Sources */,
 				7FADE3CF9342DBBA420151F0 /* AuthClient.swift in Sources */,
 				F419AD7AD0C4D307069ED0E4 /* RegistrationViewModel.swift in Sources */,
@@ -686,6 +717,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */,
+				CC20500000000000000008B /* SubjectsClientTests.swift in Sources */,
+				CC20500000000000000007B /* SubjectPickerViewModelTests.swift in Sources */,
+				CC20500000000000000006B /* DSSubjectsRowTests.swift in Sources */,
+				CC20500000000000000005B /* MockSubjectClients.swift in Sources */,
 				51EDF3D4D368E28FAD40A072 /* AuthClientTests.swift in Sources */,
 				3E36533C112F695B175277F4 /* RegistrationViewModelTests.swift in Sources */,
 				FCB2B11F8FF11F5448DC44A8 /* MockAuthClient.swift in Sources */,

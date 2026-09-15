@@ -15,6 +15,8 @@ struct AuthenticatedRootView: View {
     let collegeListClient: CollegeListClientProtocol
     let moneyProfileClient: MoneyProfileClientProtocol
     let vocabularyClient: VocabularyClientProtocol
+    let subjectsClient: SubjectsClientProtocol
+    let intendedSubjectsClient: IntendedSubjectsClientProtocol
     let onProfileRequired: () -> Void
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
@@ -123,6 +125,8 @@ struct AuthenticatedRootView: View {
         collegeListClient: CollegeListClientProtocol,
         moneyProfileClient: MoneyProfileClientProtocol,
         vocabularyClient: VocabularyClientProtocol,
+        subjectsClient: SubjectsClientProtocol,
+        intendedSubjectsClient: IntendedSubjectsClientProtocol,
         coachingUsageClient: CoachingUsageClientProtocol,
         subscriptionStore: SubscriptionStoreProtocol,
         transactionRecorder: TransactionRecording,
@@ -136,6 +140,8 @@ struct AuthenticatedRootView: View {
         self.collegeListClient = collegeListClient
         self.moneyProfileClient = moneyProfileClient
         self.vocabularyClient = vocabularyClient
+        self.subjectsClient = subjectsClient
+        self.intendedSubjectsClient = intendedSubjectsClient
         self.onProfileRequired = onProfileRequired
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
@@ -349,6 +355,8 @@ struct AuthenticatedRootView: View {
             YourDetailsView(
                 moneyProfileClient: moneyProfileClient,
                 vocabularyClient: vocabularyClient,
+                subjectsClient: subjectsClient,
+                intendedSubjectsClient: intendedSubjectsClient,
                 onProfileRequired: onProfileRequired,
                 // The college list keeps its own screen: the footer link is a
                 // push onto this same stack, not a second copy of the list.
@@ -467,6 +475,20 @@ private final class AuthenticatedRootPreviewVocabularyClient: VocabularyClientPr
     }
 }
 
+private final class AuthenticatedRootPreviewSubjectsClient: SubjectsClientProtocol, @unchecked Sendable {
+    func search(query: String?) async throws -> [PublicSubject] { [] }
+}
+
+private final class AuthenticatedRootPreviewIntendedSubjectsClient: IntendedSubjectsClientProtocol, @unchecked Sendable {
+    func fetch() async throws -> PublicIntendedSubjects {
+        PublicIntendedSubjects(status: AnswerStatus.unanswered.rawValue, subjects: [])
+    }
+
+    func update(_ request: UpdateIntendedSubjectsRequest) async throws -> PublicIntendedSubjects {
+        try await fetch()
+    }
+}
+
 @MainActor private var authenticatedRootPreview: some View {
     AuthenticatedRootView(
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
@@ -475,6 +497,8 @@ private final class AuthenticatedRootPreviewVocabularyClient: VocabularyClientPr
         collegeListClient: AuthenticatedRootPreviewCollegeListClient(),
         moneyProfileClient: AuthenticatedRootPreviewMoneyProfileClient(),
         vocabularyClient: AuthenticatedRootPreviewVocabularyClient(),
+        subjectsClient: AuthenticatedRootPreviewSubjectsClient(),
+        intendedSubjectsClient: AuthenticatedRootPreviewIntendedSubjectsClient(),
         coachingUsageClient: PreviewCoachingUsageClient(),
         subscriptionStore: PreviewSubscriptionStore(),
         transactionRecorder: PreviewTransactionRecorder(),

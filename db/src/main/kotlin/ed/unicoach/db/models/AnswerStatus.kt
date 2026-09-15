@@ -22,6 +22,19 @@ enum class AnswerStatus(
   UNANSWERED("unanswered"),
   ANSWERED("answered"),
   DECLINED("declined"),
+
+  /**
+   * "I don't know yet" — a real, common and useful answer at 16, and not the
+   * same sentence as [DECLINED] (RFC 205 D16/D30).
+   *
+   * Reachable ONLY on an intended-subject answer. The three `money_profiles`
+   * status CHECKs stay at `('unanswered','answered','declined')`, so the
+   * database refuses this value on every money column; the three money OpenAPI
+   * enums are therefore `entries` MINUS this one, and every exhaustive `when`
+   * over a money status states in a named branch what it does here rather than
+   * folding it silently into [DECLINED].
+   */
+  UNDECIDED("undecided"),
   ;
 
   companion object {
@@ -51,5 +64,15 @@ enum class AnswerStatus(
         hasValue -> ANSWERED
         else -> UNANSWERED
       }
+
+    /**
+     * The statuses a `money_profiles` status column may hold: [entries] MINUS
+     * [UNDECIDED], which the three money CHECKs forbid.
+     *
+     * Named once, in declaration order, because several money reads state the
+     * same rule and one of them has to say the words. The Swift client declares
+     * the same set as `AnswerStatus.moneyCases`, so the two halves cannot drift.
+     */
+    val moneyCases: List<AnswerStatus> = entries - UNDECIDED
   }
 }

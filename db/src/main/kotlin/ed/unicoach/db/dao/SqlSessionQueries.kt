@@ -553,3 +553,20 @@ internal fun SoftDeleteScope.predicate(column: String = "deleted_at"): String =
     SoftDeleteScope.DELETED -> "$column IS NOT NULL"
     SoftDeleteScope.ALL -> "TRUE"
   }
+
+/**
+ * Escapes LIKE metacharacters so caller text matches literally. Backslash FIRST,
+ * so the helper never re-escapes its own output.
+ *
+ * Backslash-as-escape is Postgres's **implicit default**: the queries that use
+ * this carry no `ESCAPE` clause and rely on it, where standard SQL would require
+ * `ESCAPE '\\'` explicitly. This function and that default are one contract, which
+ * is why it lives here rather than being re-derived per DAO -- it was written
+ * twice, byte-identically, in `CollegesDao` and `CodebooksDao`, and only one copy
+ * had a test.
+ */
+internal fun escapeLikePattern(raw: String): String =
+  raw
+    .replace("\\", "\\\\")
+    .replace("%", "\\%")
+    .replace("_", "\\_")

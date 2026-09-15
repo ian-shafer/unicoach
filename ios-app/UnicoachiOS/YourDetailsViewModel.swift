@@ -64,6 +64,20 @@ extension FieldAnswer {
             self = .answered(value)
         case .declined:
             self = .declined
+        case .undecided:
+            // RFC 205 §4, stated explicitly and never folded into `declined`:
+            // "I don't know yet" and "I'd rather not say" are different
+            // sentences. A MONEY field can never hold it — the database's
+            // three-value CHECKs refuse it — so reaching here means the server
+            // wrote a status this column may not hold. The screen degrades to
+            // "not answered" (the honest reading of a value with no meaning
+            // here) and says so in the log rather than silently.
+            yourDetailsModelLogger.error("""
+                Money-profile field carries the intended-subjects-only status \
+                [\(AnswerStatus.undecided.rawValue, privacy: .public)], reading as unanswered: \
+                field=[\(field.rawValue, privacy: .public)]
+                """)
+            self = .unanswered
         case .unanswered, .none:
             self = .unanswered
         }
@@ -158,6 +172,15 @@ enum VocabularySource: Equatable {
     case fallback
 }
 
+private extension DSSubjectChip {
+    /// The chip's identity IS the subject slug: chips are built from
+    /// `PublicSubject.slug`, and that slug is what the server stores and what a
+    /// write sends back. Named here, on the screen that knows the domain, so no
+    /// write path reads `\.id` and silently means "slug"; `DSSubjectChip`
+    /// itself stays domain-free.
+    var subjectSlug: String { id }
+}
+
 @MainActor
 final class YourDetailsViewModel: ObservableObject {
     @Published private(set) var state: YourDetailsState = .loading
@@ -191,8 +214,25 @@ final class YourDetailsViewModel: ObservableObject {
     /// response would then race the first one into `state`.
     private var writing: Set<MoneyProfileField> = []
 
+    /// What the student says they want to study, as the row renders it
+    /// (RFC 205 §7), and whether the searchable list behind it can be reached.
+    ///
+    /// `DSSubjectsAnswer` rather than a list plus two flags: a decline and an
+    /// "I don't know yet" set in CHAT must be visible here and undoable here,
+    /// and only a four-case value keeps them from arriving as an empty list.
+    @Published private(set) var subjectsAnswer: DSSubjectsAnswer = .unanswered
+    @Published private(set) var subjectsAvailability: DSListAvailability = .available
+
+    /// True while a subjects write is open, for the reason `writing` exists on
+    /// the money fields: the request is an absolute statement of the whole
+    /// answer and is safe to repeat, but two responses adopting in an order
+    /// nobody chose is not.
+    private var writingSubjects = false
+
     private let moneyProfileClient: MoneyProfileClientProtocol
     private let vocabularyClient: VocabularyClientProtocol
+    private let subjectsClient: SubjectsClientProtocol
+    private let intendedSubjectsClient: IntendedSubjectsClientProtocol
     private let onProfileRequired: () -> Void
     private let receiptDuration: Duration
     private var receiptTask: Task<Void, Never>?
@@ -203,11 +243,15 @@ final class YourDetailsViewModel: ObservableObject {
     init(
         moneyProfileClient: MoneyProfileClientProtocol,
         vocabularyClient: VocabularyClientProtocol,
+        subjectsClient: SubjectsClientProtocol,
+        intendedSubjectsClient: IntendedSubjectsClientProtocol,
         onProfileRequired: @escaping () -> Void,
         receiptDuration: Duration = .seconds(3)
     ) {
         self.moneyProfileClient = moneyProfileClient
         self.vocabularyClient = vocabularyClient
+        self.subjectsClient = subjectsClient
+        self.intendedSubjectsClient = intendedSubjectsClient
         self.onProfileRequired = onProfileRequired
         self.receiptDuration = receiptDuration
     }
@@ -223,22 +267,38 @@ final class YourDetailsViewModel: ObservableObject {
         state = .loading
         async let profileOutcome = fetchProfile()
         async let vocabularies = fetchVocabularies()
+        async let subjectListReachable = fetchSubjectListReachability()
+        async let subjectsOutcome = fetchIntendedSubjects()
         let profile = await profileOutcome
+        let subjects = await subjectsOutcome
 
         // The vocabularies are applied FIRST and unconditionally: `adopt` selects
         // each picker by matching the stored wire value against these option
         // lists, so a profile adopted before them lands on an empty menu and both
         // pickers render unselected over answers the family did give.
         applyVocabularies(await vocabularies)
+        subjectsAvailability = await subjectListReachable ? .available : .unavailable
 
-        switch profile {
-        case .success(let profile):
-            adopt(MoneyProfileAnswers(profile: profile))
-        case .failure(let error):
-            if error.knownCode == .studentProfileRequired {
-                onProfileRequired()
-                return
-            }
+        // Either read failing fails the screen, and for the same reason: this
+        // screen's whole job is to show what unicoach believes about a family,
+        // and a screen that renders "Not answered yet" over an answer it merely
+        // could not read tells them something false. The LIST is different —
+        // that degrades, because it is a menu and not an answer.
+        //
+        // Both outcomes are already typed, so they are SWITCHED rather than
+        // re-thrown: `student_profile_required` is a state this screen expects
+        // — the student has no profile yet, so this screen is the wrong one —
+        // and routing on it here keeps it out of the error channel entirely.
+        // The profile is named first in the failure patterns so that when both
+        // reads failed, the profile's error is the one shown.
+        switch (profile, subjects) {
+        case (.success(let loadedProfile), .success(let loadedSubjects)):
+            adopt(MoneyProfileAnswers(profile: loadedProfile))
+            adopt(loadedSubjects)
+        case (.failure(let error), _) where error.knownCode == .studentProfileRequired,
+             (_, .failure(let error)) where error.knownCode == .studentProfileRequired:
+            onProfileRequired()
+        case (.failure(let error), _), (_, .failure(let error)):
             state = .failed(error)
         }
     }
@@ -247,6 +307,16 @@ final class YourDetailsViewModel: ObservableObject {
         do {
             return .success(try await moneyProfileClient.fetch())
         } catch let error as ErrorResponse {
+            // Logged HERE, not where the screen decides what to show. `load`
+            // reads both this and the subjects, and when BOTH fail its tuple
+            // pattern binds only the first — deliberately, the profile's error
+            // is the one shown — so the other error would otherwise vanish with
+            // no trace anywhere, which is the worst case for diagnosing a
+            // report from a student.
+            logger.error("""
+                Money profile read failed: code=[\(error.code, privacy: .public)] \
+                status=[\(error.status ?? -1, privacy: .public)]
+                """)
             return .failure(error)
         } catch {
             // Only errors the client layer did not convert reach here, and
@@ -254,6 +324,51 @@ final class YourDetailsViewModel: ObservableObject {
             // real one is in hand.
             logger.error("Money profile read failed (unexpected): [\(error, privacy: .public)]")
             return .failure(.unexpected)
+        }
+    }
+
+    /// Reads the student's stored answer. Failure fails the screen, like the
+    /// profile read — see `load`.
+    private func fetchIntendedSubjects() async -> Result<PublicIntendedSubjects, ErrorResponse> {
+        do {
+            return .success(try await intendedSubjectsClient.fetch())
+        } catch let error as ErrorResponse {
+            // Logged for the same reason as the profile read above: when both
+            // reads fail, this is the one the screen does NOT show.
+            logger.error("""
+                Intended subjects read failed: code=[\(error.code, privacy: .public)] \
+                status=[\(error.status ?? -1, privacy: .public)]
+                """)
+            return .failure(error)
+        } catch {
+            logger.error("Intended subjects read failed (unexpected): [\(error, privacy: .public)]")
+            return .failure(.unexpected)
+        }
+    }
+
+    /// Whether the subject list could be reached, once, at load.
+    ///
+    /// It decides only what the row SAYS, never what the row OFFERS: the add
+    /// affordance survives a failed read, because the picker refetches the
+    /// list on every open and one flaky read must not remove the only control
+    /// that could retry it — or the only way to undo a decline.
+    ///
+    /// The row has to be able to SAY "the list is unavailable" while it is on
+    /// screen, before anybody opens the picker, so the only way to know is
+    /// to ask. It is the same request the picker sheet makes when it opens, and
+    /// the same cost as the vocabulary read beside it; there is no shipped
+    /// fallback list to consult instead, by design (RFC 205 §7).
+    ///
+    /// The subjects themselves are deliberately DROPPED: caching them here
+    /// would be a second, staler copy of a list the sheet fetches for itself
+    /// every time it opens.
+    private func fetchSubjectListReachability() async -> Bool {
+        do {
+            _ = try await subjectsClient.search(query: nil)
+            return true
+        } catch {
+            logger.error("Subject list unreachable, the row will say so: [\(error, privacy: .public)]")
+            return false
         }
     }
 
@@ -410,6 +525,110 @@ final class YourDetailsViewModel: ObservableObject {
     private enum ValuelessWrite {
         case declined
         case clear
+    }
+
+    // MARK: - Writes: what you want to study (RFC 205)
+
+    /// Adds one subject to the answer. The write states the WHOLE set, because
+    /// that is the only operation the route has: there is no add-one endpoint,
+    /// and inventing one client-side would be a request the server cannot
+    /// honour (RFC 205 §3).
+    ///
+    /// The cap is not re-enforced here: the screen stops OFFERING a fourth
+    /// subject (`DSSubjectsRowPresentation`), and a fourth that arrives anyway
+    /// is the server's 400, surfaced with its reason.
+    func addSubject(_ subject: PublicSubject) async {
+        var slugs = chosenSlugs
+        guard !slugs.contains(subject.slug) else { return }
+        slugs.append(subject.slug)
+        await sendSubjects(.subjects(slugs))
+    }
+
+    /// Removes one subject. Removing the LAST one submits the empty set, and
+    /// the server answers `undecided` rather than `unanswered` (D17) — we do
+    /// not re-arm an invitation the family already answered. The client does
+    /// not translate that; it adopts what comes back.
+    func removeSubject(_ chip: DSSubjectChip) async {
+        let slugs = chosenSlugs.filter { $0 != chip.subjectSlug }
+        guard slugs.count != chosenSlugs.count else { return }
+        await sendSubjects(.subjects(slugs))
+    }
+
+    /// "I don't know yet" — a real answer, recorded as one, and undoable by
+    /// choosing a subject afterwards.
+    func markSubjectsUndecided() async {
+        await sendSubjects(.undecided)
+    }
+
+    /// "Prefer not to say". Durable, and undoable from this screen: the add
+    /// affordance stays, so answering it outright is one tap (RFC 205 §7).
+    func declineSubjects() async {
+        await sendSubjects(.declined)
+    }
+
+    /// The slugs currently on the answer, in the order the server gave them.
+    private var chosenSlugs: [String] {
+        guard case .answered(let chips) = subjectsAnswer else { return [] }
+        return chips.map(\.subjectSlug)
+    }
+
+    /// The slugs the picker must not offer again — a duplicate is a 400 the
+    /// student cannot act on.
+    var chosenSubjectSlugs: Set<String> { Set(chosenSlugs) }
+
+    private func sendSubjects(_ answer: UpdateIntendedSubjectsRequest.Answer) async {
+        guard !writingSubjects else { return }
+        writingSubjects = true
+        defer { writingSubjects = false }
+
+        actionError = nil
+        do {
+            adopt(try await intendedSubjectsClient.update(UpdateIntendedSubjectsRequest(answer)))
+        } catch let error as ErrorResponse {
+            // The routing signal, not an error to show — the money writes'
+            // rule, for the same reason.
+            if error.knownCode == .studentProfileRequired {
+                onProfileRequired()
+                return
+            }
+            actionError = error
+        } catch {
+            logger.error("Intended subjects write failed (unexpected): [\(error, privacy: .public)]")
+            actionError = .unexpected
+        }
+    }
+
+    /// The one place a stored answer becomes the row's state. A status this
+    /// build has no case for becomes `.unreadable`, NOT `unanswered`: the
+    /// vocabulary is the server's, so a value this build cannot read is a real
+    /// possibility, and answering it with "Not answered yet" would print a
+    /// falsehood over an answer the student gave and invite them to give it
+    /// again. It is also logged, because an unreadable answer is a fact nobody
+    /// can act on unrecorded.
+    ///
+    /// `answered` with no subjects cannot happen (the deferred "status iff
+    /// subjects" trigger), and if it ever did, it is unreadable too: chips are
+    /// what `answered` means on this screen, so an `answered` with none of them
+    /// is a shape this build has no honest reading for either.
+    private func adopt(_ answer: PublicIntendedSubjects) {
+        let chips = answer.subjects.map { DSSubjectChip(id: $0.slug, name: $0.name) }
+        switch answer.knownStatus {
+        case .answered where !chips.isEmpty:
+            subjectsAnswer = .answered(chips)
+        case .undecided:
+            subjectsAnswer = .undecided
+        case .declined:
+            subjectsAnswer = .declined
+        case .unanswered:
+            subjectsAnswer = .unanswered
+        case .answered, .none:
+            logger.error("""
+                Unusable intended-subjects answer, shown as NO answer line: \
+                status=[\(answer.status, privacy: .public)] \
+                subjects=[\(chips.count, privacy: .public)]
+                """)
+            subjectsAnswer = .unreadable
+        }
     }
 
     /// Claims a field for one write, or reports that one is already open. A

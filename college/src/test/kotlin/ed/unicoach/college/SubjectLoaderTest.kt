@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Test
 import java.io.File
+import java.util.UUID
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -185,7 +186,84 @@ class SubjectLoaderTest : CollegeScorecardTestBase() {
     val dropped = load(listOf(NewSubject("literature", "Literature", listOf("2301"))))
     assertEquals(1, dropped.subjects)
     assertEquals(1, dropped.deleted)
+    assertEquals(0, dropped.deprecated, "nobody referenced it, so it is GONE, not kept as deprecated")
     assertEquals(listOf("literature"), withSession { CodebooksDao.subjects(it).getOrThrow() }.map { it.slug })
+  }
+
+  @Test
+  fun `a dropped subject a student references is DEPRECATED, reported apart from deleted, and the load succeeds`() {
+    seedCipCodes("511601", "230101", "260101")
+    load(
+      listOf(
+        NewSubject("nursing", "Nursing", listOf("5116")),
+        NewSubject("biology", "Biology", listOf("2601")),
+        NewSubject("literature", "Literature", listOf("2301")),
+      ),
+    )
+    answerWith("nursing")
+
+    // Both `nursing` and `biology` leave the file. Before RFC 205 D40 this load
+    // died on the foreign key `intended_subjects.subject_slug` now holds, which
+    // would have turned an edit to subjects.json into an ingest that cannot run.
+    val dropped = load(listOf(NewSubject("literature", "Literature", listOf("2301"))))
+
+    assertEquals(1, dropped.deleted, "the unreferenced drop goes")
+    assertEquals(1, dropped.deprecated, "the referenced one stays, and is reported SEPARATELY")
+    // The report says what is in the table, and the deprecated row IS in it.
+    assertEquals(2, dropped.subjects)
+    // It is offered to nobody: the read the boundary's vocabulary is built from
+    // no longer carries it.
+    assertEquals(listOf("literature"), withSession { CodebooksDao.subjects(it).getOrThrow() }.map { it.slug })
+    // And the student's answer still resolves to its name.
+    assertEquals(
+      mapOf("nursing" to "Nursing"),
+      withSession { CodebooksDao.subjectNames(it, listOf("nursing")).getOrThrow() },
+    )
+
+    // Restored by the ordinary upsert when the file carries it again.
+    val restored =
+      load(
+        listOf(
+          NewSubject("nursing", "Nursing", listOf("5116")),
+          NewSubject("literature", "Literature", listOf("2301")),
+        ),
+      )
+    assertEquals(0, restored.deprecated)
+    assertEquals(
+      listOf("literature", "nursing"),
+      withSession { CodebooksDao.subjects(it).getOrThrow() }.map { it.slug },
+    )
+  }
+
+  /**
+   * One student, answering with [slug] — the first user reference onto
+   * `subjects`, and the whole reason the reload has a deprecate path.
+   *
+   * Raw SQL: both tables are RFC 205's and this suite's subject is the LOADER,
+   * not the write API over them. The status row is required by the deferred
+   * `status iff rows` constraint trigger, so the pair lands in one transaction.
+   */
+  private fun answerWith(slug: String) {
+    val userId = UUID.randomUUID()
+    val studentId = UUID.randomUUID()
+    withSession { session ->
+      session
+        .prepareStatement(
+          """
+          WITH u AS (
+            INSERT INTO users (id, email, name, password_hash)
+            VALUES ('$userId', 'sl-$userId@test.com', 'SL User', 'ahash') RETURNING id
+          ), s AS (
+            INSERT INTO students (id, user_id, expected_high_school_graduation_on,
+              expected_high_school_graduation_precision)
+            SELECT '$studentId', id, DATE '2028-01-01', 'year' FROM u RETURNING id
+          ), a AS (
+            INSERT INTO intended_subject_status (student_id, status) SELECT id, 'answered' FROM s RETURNING student_id
+          )
+          INSERT INTO intended_subjects (student_id, subject_slug) SELECT student_id, '$slug' FROM a
+          """.trimIndent(),
+        ).use { it.execute() }
+    }
   }
 
   @Test

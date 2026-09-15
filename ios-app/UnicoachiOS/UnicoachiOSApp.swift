@@ -39,6 +39,8 @@ struct UnicoachiOSApp: App {
                         collegeListClient: viewModel.collegeListClient,
                         moneyProfileClient: viewModel.moneyProfileClient,
                         vocabularyClient: viewModel.vocabularyClient,
+                        subjectsClient: viewModel.subjectsClient,
+                        intendedSubjectsClient: viewModel.intendedSubjectsClient,
                         coachingUsageClient: viewModel.coachingUsageClient,
                         subscriptionStore: viewModel.subscriptionStore,
                         transactionRecorder: viewModel.transactionRecorder,

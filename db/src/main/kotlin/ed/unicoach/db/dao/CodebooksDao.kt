@@ -13,6 +13,7 @@ import ed.unicoach.db.models.NewNcesLocale
 import ed.unicoach.db.models.NewReligiousAffiliation
 import ed.unicoach.db.models.NewSubject
 import ed.unicoach.db.models.NewUsState
+import ed.unicoach.db.models.SubjectStatus
 import java.sql.PreparedStatement
 import java.sql.SQLException
 
@@ -498,6 +499,14 @@ object CodebooksDao {
    * every codebook row does, so a re-load of an unedited `subjects.json` leaves
    * each row byte-identical, `updated_at` included.
    *
+   * `status` is written as part of the row, which is how a subject that was
+   * DEPRECATED and then reappears in the file goes back to
+   * [SubjectStatus.ACTIVE] (D40) — by the ordinary upsert, with no separate
+   * un-deprecate path to forget to call. It is also part of the
+   * `IS DISTINCT FROM` guard, so a row that is already active and unchanged is
+   * still not written: a drop-then-restore cycle leaves the row active with no
+   * trace of a state the taxonomy no longer claims.
+   *
    * Hand-written rather than routed through [upsertDetectingChange] for the
    * [CollegeIpedsDao.upsert] reason: the primitive binds every column as a bare
    * `?`, and the `cip_prefixes` array needs a value EXPRESSION —
@@ -510,13 +519,14 @@ object CodebooksDao {
     val sql =
       """
       WITH up AS (
-        INSERT INTO subjects (slug, name, cip_prefixes)
-        VALUES (?, ?, $TEXT_ARRAY_PARAM)
+        INSERT INTO subjects (slug, name, cip_prefixes, status)
+        VALUES (?, ?, $TEXT_ARRAY_PARAM, '${SubjectStatus.ACTIVE.value}')
         ON CONFLICT (slug) DO UPDATE SET
           name = EXCLUDED.name,
-          cip_prefixes = EXCLUDED.cip_prefixes
-        WHERE (subjects.name, subjects.cip_prefixes)
-          IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.cip_prefixes)
+          cip_prefixes = EXCLUDED.cip_prefixes,
+          status = EXCLUDED.status
+        WHERE (subjects.name, subjects.cip_prefixes, subjects.status)
+          IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.cip_prefixes, EXCLUDED.status)
         RETURNING (xmax = 0) AS inserted
       )
       SELECT inserted FROM up
@@ -543,34 +553,225 @@ object CodebooksDao {
   }
 
   /**
-   * Deletes every stored subject whose slug the incoming file no longer carries,
-   * returning how many went.
+   * What one [reconcileSubjectsNotIn] did to the slugs the incoming file no
+   * longer carries. TWO numbers, not one, because they are two different
+   * outcomes and a loader report that says "3 removed" when one of them is still
+   * in the table would be wrong.
+   */
+  data class SubjectReconciliation(
+    /** Dropped, referenced by nobody, and therefore GONE — the reference tables stay reproducible from source. */
+    val deleted: Int,
+    /**
+     * Dropped but referenced by at least one student, and therefore KEPT with
+     * `status = 'deprecated'`. Counted whether or not this run was the one that
+     * flipped the column, so a second reload of the same file reports the same
+     * number rather than zero.
+     */
+    val deprecated: Int,
+  )
+
+  /**
+   * Reconciles the stored taxonomy against the slugs the incoming file carries:
+   * a dropped slug NOBODY references is deleted, a dropped slug a student
+   * references is DEPRECATED (D40).
    *
-   * Unlike a codebook row, a dropped subject needs no reference check: nothing
-   * has a foreign key onto `subjects`. `college_search_index.subject_slugs` is
-   * a materialised `slug[]` the very next rebuild recomputes, and the phase
-   * order guarantees that rebuild happens in the same run — an upsert without
-   * this delete would leave a deleted subject matching colleges forever, which
-   * is the one way editing the file could make search WORSE.
+   * This method used to be a bare `DELETE FROM subjects WHERE slug <> ALL (...)`,
+   * and its doc comment said a dropped subject needs no reference check because
+   * "nothing has a foreign key onto `subjects`". RFC 205 made that false:
+   * `intended_subjects.subject_slug` references `subjects(slug)` ON DELETE
+   * RESTRICT, so left alone, the first student answer would turn an edit to
+   * `subjects.json` into an ingest that cannot run at all.
+   *
+   * **The reference count is over ALL rows, live and soft-deleted.** The foreign
+   * key does not know about `deleted_at`: a student who added a subject and
+   * later removed it still holds the reference, and the delete still fails with
+   * `violates RESTRICT setting of foreign key constraint
+   * intended_subjects_subject_slug_fkey`. Counting only live rows would issue
+   * the DELETE anyway and kill the reload on a raw constraint violation —
+   * exactly the failure the deprecate path exists to prevent.
+   * `intended_subjects_subject_idx` is unpartitioned for this reason.
+   *
+   * `college_search_index.subject_slugs` is a materialised `slug[]` the very
+   * next rebuild recomputes, and the phase order guarantees that rebuild happens
+   * in the same run — an upsert without this reconcile would leave a dropped
+   * subject matching colleges forever, which is the one way editing the file
+   * could make search WORSE. A DEPRECATED subject is excluded from that rebuild
+   * for the same reason, so it too stops matching.
    *
    * The keep-list is bound as one jsonb array for the same reason the write
    * binds its arrays that way.
    */
-  fun deleteSubjectsNotIn(
+  fun reconcileSubjectsNotIn(
     session: SqlSession,
     keptSlugs: Collection<String>,
-  ): Result<Int> =
-    session.execute(
-      "DELETE FROM subjects WHERE slug <> ALL ($TEXT_ARRAY_PARAM)",
-    ) { stmt ->
-      jsonbArrayBinder(keptSlugs)(stmt, 1)
+  ): Result<SubjectReconciliation> =
+    droppedSubjectDependants(session, keptSlugs).mapCatching { dependants ->
+      // The CLASSIFICATION stays here and is PASSED to both writes. It has to:
+      // the delete's error mapper closes over the dependant counts read BEFORE
+      // the write, and a count is not recoverable at all once the transaction
+      // has aborted. A helper that re-read it would have nothing to read.
+      val toDeprecate = dependants.filterValues { it > 0 }.keys
+      val toDelete = dependants.filterValues { it == 0 }.keys
+      val deleted = deleteDroppedSubjects(session, toDelete, dependants)
+      deprecateDroppedSubjects(session, toDeprecate)
+      SubjectReconciliation(deleted = deleted, deprecated = toDeprecate.size)
     }
 
-  /** Every `subjects` row in slug order — the taxonomy read the boundary's vocabulary is built from. */
+  /**
+   * Deletes the dropped slugs NOBODY references, returning how many rows went.
+   *
+   * [dependants] is the whole classification this run made before the write, not
+   * just the deleted part: [mapSubjectDeleteError] closes over it so a
+   * foreign-key violation can name the slug AND say how many students depend on
+   * it. Neither is recoverable from the SQLSTATE, and the count is not
+   * recoverable at all once the transaction has aborted — which is why it is
+   * captured before the write and handed in, rather than read after.
+   *
+   * Throws the mapped error; the caller runs inside `mapCatching`.
+   */
+  private fun deleteDroppedSubjects(
+    session: SqlSession,
+    toDelete: Set<String>,
+    dependants: Map<String, Int>,
+  ): Int {
+    if (toDelete.isEmpty()) return 0
+    return session
+      .execute("DELETE FROM subjects WHERE slug = ANY ($TEXT_ARRAY_PARAM)") { stmt ->
+        jsonbArrayBinder(toDelete)(stmt, 1)
+      }.getOrElse { error -> throw mapSubjectDeleteError(error, dependants) }
+  }
+
+  /**
+   * Marks the dropped slugs a student DOES reference as `deprecated` (D40) —
+   * kept, so the answer that references them survives, and offered to nobody.
+   *
+   * Throws on failure; the caller runs inside `mapCatching`.
+   */
+  private fun deprecateDroppedSubjects(
+    session: SqlSession,
+    toDeprecate: Set<String>,
+  ) {
+    if (toDeprecate.isEmpty()) return
+    // `IS DISTINCT FROM` so a slug that is already deprecated is not rewritten:
+    // a second reload of the same file must not advance `updated_at` on a row
+    // nothing changed about.
+    session
+      .execute(
+        """
+        UPDATE subjects SET status = '${SubjectStatus.DEPRECATED.value}'
+        WHERE slug = ANY ($TEXT_ARRAY_PARAM)
+          AND status IS DISTINCT FROM '${SubjectStatus.DEPRECATED.value}'
+        """.trimIndent(),
+      ) { stmt -> jsonbArrayBinder(toDeprecate)(stmt, 1) }
+      .getOrThrow()
+  }
+
+  /**
+   * Every stored slug the incoming file no longer carries, mapped to how many
+   * `intended_subjects` rows reference it — live AND soft-deleted, because that
+   * is what the foreign key counts.
+   */
+  private fun droppedSubjectDependants(
+    session: SqlSession,
+    keptSlugs: Collection<String>,
+  ): Result<Map<String, Int>> =
+    session
+      .queryList(
+        """
+        SELECT s.slug AS slug,
+               (SELECT count(*) FROM intended_subjects i WHERE i.subject_slug = s.slug) AS dependants
+        FROM subjects s
+        WHERE s.slug <> ALL ($TEXT_ARRAY_PARAM)
+        """.trimIndent(),
+        bind = { stmt -> jsonbArrayBinder(keptSlugs)(stmt, 1) },
+        map = { rs -> rs.getString("slug") to rs.getInt("dependants") },
+      ).map { it.toMap() }
+
+  /**
+   * The subject-delete error path this slice has to close (D40): a `23503`
+   * arriving from `subjects` is a student's answer standing in the way of a
+   * taxonomy reload, and the operator needs the SLUG and the number of
+   * dependants — not a bare SQL state and not [mapCodebookWriteError]'s
+   * `us_states.ipeds_region` sentence, which cannot be what happened here.
+   *
+   * The slug is recovered by matching the server's DETAIL line
+   * (`Key (slug)=(nursing) is still referenced ...`) against the slugs
+   * [dependants] already names — the authoritative candidate set — rather than
+   * by parsing PostgreSQL's prose; [SUBJECT_KEY_DETAIL] is only the fallback
+   * for a DETAIL that names none of them. The dependant count comes from
+   * [dependants] too, the classification this run already made. Both are
+   * handed on as TYPED FIELDS of [SubjectStillReferencedException], which
+   * builds the operator's sentence from them — a caller reading the data back
+   * out of the prose would be parsing a message, which is not an interface. A
+   * slug the DETAIL does not yield leaves the whole classification in the
+   * sentence rather than nothing, because a reader with no slug at all has
+   * nowhere to start.
+   *
+   * Reaching this at all means the classification and the write disagreed —
+   * a student answered between the two statements — so it is a backstop, not
+   * the ordinary path.
+   */
+  private fun mapSubjectDeleteError(
+    error: Throwable,
+    dependants: Map<String, Int>,
+  ): Throwable {
+    val sqlException = error as? SQLException ?: (error.cause as? SQLException) ?: return error
+    // BOTH states, and neither is redundant. A plain foreign-key violation is
+    // `23503`, but the foreign key this path exists for is ON DELETE RESTRICT,
+    // and PostgreSQL raises a RESTRICT violation as its OWN state, `23001`
+    // (restrict_violation):
+    //   ERROR: update or delete on table "subjects" violates RESTRICT setting
+    //          of foreign key constraint "intended_subjects_subject_slug_fkey"
+    // Matching only `23503` made this whole named-error path DEAD CODE and
+    // handed the operator the bare `DatabaseException` D40 says must not happen.
+    // The pair is `FOREIGN_KEY_SQLSTATES` in DaoExceptions.kt, beside the named
+    // constants that explain why `23001` is not a duplicate of `23503`.
+    if (sqlException.sqlState !in FOREIGN_KEY_SQLSTATES) return error
+    val detail: String? = (sqlException as? org.postgresql.util.PSQLException)?.serverErrorMessage?.detail
+    // SEARCHED against the candidates this run already classified, not parsed:
+    // `dependants` is the authoritative set of slugs the DELETE could have been
+    // refused for, so no assumption about how PostgreSQL renders or quotes the
+    // key is needed. The regex is only the fallback for a DETAIL none of the
+    // known slugs appears in, and it too may yield nothing.
+    val slug =
+      detail?.let { line ->
+        dependants.keys.sorted().firstOrNull { line.contains("($it)") }
+          ?: SUBJECT_KEY_DETAIL.find(line)?.groupValues?.get(1)
+      }
+    // TYPED, not a sentence the caller has to grep: the slug and the counts ride
+    // as fields, and the exception builds the operator's sentence from them.
+    return SubjectStillReferencedException(
+      slug = slug,
+      dependants = dependants,
+      cause = sqlException,
+      constraint = (sqlException as? org.postgresql.util.PSQLException)?.serverErrorMessage?.constraint,
+      detail = detail,
+    )
+  }
+
+  /**
+   * The LAST resort for the offending slug: `Key (slug)=(nursing) is referenced
+   * from table "intended_subjects".` Only reached when the DETAIL names none of
+   * the slugs this run classified, which is why the parse is not the primary
+   * route — see [mapSubjectDeleteError].
+   */
+  private val SUBJECT_KEY_DETAIL = Regex("""Key \(slug\)=\(([^)]*)\)""")
+
+  /**
+   * Every ACTIVE `subjects` row in slug order — the taxonomy read the boundary's
+   * vocabulary is built from.
+   *
+   * Deprecated rows are excluded, and the exclusion belongs HERE rather than at
+   * each caller, because every caller of this function OFFERS what it returns:
+   * the chat tool's subject vocabulary, and the picker. A subject the taxonomy
+   * file no longer carries must be offered to nobody (D40) — it is kept only so
+   * the student who already chose it can still read its name, and
+   * [subjectNames] is the read for that.
+   */
   fun subjects(session: SqlSession): Result<List<NewSubject>> =
     session.queryList(
-      "SELECT slug, name, cip_prefixes FROM subjects ORDER BY slug",
-      bind = {},
+      "SELECT slug, name, cip_prefixes FROM subjects WHERE status = ? ORDER BY slug",
+      bind = { stmt -> stmt.setString(1, SubjectStatus.ACTIVE.value) },
       map = { rs ->
         NewSubject(
           slug = rs.getString("slug"),
@@ -580,7 +781,81 @@ object CodebooksDao {
       },
     )
 
-  /** The `subjects` row count, for the loader's report. */
+  /**
+   * The picker's list (RFC 205 D29): ACTIVE subjects whose [nameQuery] matches,
+   * in NAME order, at most [limit] of them.
+   *
+   * Name order, not slug order, because this list is read by a person: [subjects]
+   * orders by slug because its caller builds a vocabulary a machine consumes.
+   *
+   * [nameQuery] is null for "the whole list" — 181 rows is a browsable list and a
+   * picker that shows nothing until the student types is a worse picker. A
+   * present query matches case-insensitively as a SUBSTRING of the name, and its
+   * `%` and `_` are escaped, so a student typing `%` searches for a per-cent sign
+   * rather than matching everything.
+   *
+   * It matches the published names ONLY. No synonym is stored and none is
+   * invented (D15): a term that is not a subject comes back as no rows, and the
+   * caller refuses it with a reason rather than silently offering something near
+   * it.
+   */
+  fun searchSubjects(
+    session: SqlSession,
+    nameQuery: String?,
+    limit: Int,
+  ): Result<List<NewSubject>> =
+    session.queryList(
+      """
+      SELECT slug, name, cip_prefixes FROM subjects
+      WHERE status = ?
+        AND (CAST(? AS TEXT) IS NULL OR name ILIKE ? ESCAPE '\')
+      ORDER BY name, slug
+      LIMIT ?
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setString(1, SubjectStatus.ACTIVE.value)
+        stmt.setStringOrNull(2, nameQuery)
+        stmt.setStringOrNull(3, nameQuery?.let { "%${escapeLikePattern(it)}%" })
+        stmt.setInt(4, limit)
+      },
+      map = { rs ->
+        NewSubject(
+          slug = rs.getString("slug"),
+          name = rs.getString("name"),
+          cipPrefixes = rs.getStringList("cip_prefixes"),
+        )
+      },
+    )
+
+  /**
+   * Slug -> name for [slugs], REGARDLESS of status — the one read that must see
+   * a deprecated row.
+   *
+   * It resolves subjects a student has ALREADY chosen, so it offers nothing and
+   * excluding a deprecated row here would blank out the label on an answer the
+   * student gave in good faith. A slug with no row at all is simply absent from
+   * the map.
+   */
+  fun subjectNames(
+    session: SqlSession,
+    slugs: Collection<String>,
+  ): Result<Map<String, String>> =
+    session
+      .queryListWhereIn(
+        table = "subjects",
+        columns = "slug, name",
+        keyColumn = "slug",
+        keys = slugs,
+        bindKey = { stmt, i, slug -> stmt.setString(i, slug) },
+        map = { rs -> rs.getString("slug") to rs.getString("name") },
+      ).map { it.toMap() }
+
+  /**
+   * The `subjects` row count, for the loader's report: ALL rows, deprecated
+   * included, because the report's job is to say what is in the table. The
+   * deprecated share of it rides separately in
+   * [SubjectReconciliation.deprecated].
+   */
   fun subjectCount(session: SqlSession): Result<Int> =
     session.queryOne("SELECT count(*) AS n FROM subjects", bind = {}, map = { rs -> rs.getInt("n") })
 

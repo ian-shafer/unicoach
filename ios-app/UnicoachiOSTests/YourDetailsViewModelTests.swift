@@ -5,12 +5,16 @@ import XCTest
 final class YourDetailsViewModelTests: XCTestCase {
     private var moneyProfileClient: MockMoneyProfileClient!
     private var vocabularyClient: MockVocabularyClient!
+    private var subjectsClient: MockSubjectsClient!
+    private var intendedSubjectsClient: MockIntendedSubjectsClient!
     private var profileRequiredCount = 0
 
     override func setUp() {
         super.setUp()
         moneyProfileClient = MockMoneyProfileClient()
         vocabularyClient = MockVocabularyClient()
+        subjectsClient = MockSubjectsClient()
+        intendedSubjectsClient = MockIntendedSubjectsClient()
         profileRequiredCount = 0
     }
 
@@ -18,6 +22,8 @@ final class YourDetailsViewModelTests: XCTestCase {
         YourDetailsViewModel(
             moneyProfileClient: moneyProfileClient,
             vocabularyClient: vocabularyClient,
+            subjectsClient: subjectsClient,
+            intendedSubjectsClient: intendedSubjectsClient,
             onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 },
             // Long enough that no test races the receipt away; the receipt's
             // own expiry is not what these tests are about.
@@ -492,6 +498,8 @@ final class YourDetailsViewModelTests: XCTestCase {
         let viewModel = YourDetailsViewModel(
             moneyProfileClient: moneyProfileClient,
             vocabularyClient: vocabularyClient,
+            subjectsClient: subjectsClient,
+            intendedSubjectsClient: intendedSubjectsClient,
             onProfileRequired: {},
             receiptDuration: receiptDuration
         )

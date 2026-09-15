@@ -94,7 +94,14 @@ class SubjectLoader(
     val inserted: Int,
     val changed: Int,
     val unchanged: Int,
+    /** Dropped from the file and referenced by nobody, so removed from the table. */
     val deleted: Int,
+    /**
+     * Dropped from the file but referenced by a student, so KEPT with
+     * `status = 'deprecated'` (RFC 205 D40) — reported separately from [deleted]
+     * because "3 removed" would be wrong about a row that is still there.
+     */
+    val deprecated: Int,
     /** Distinct six-digit `cip_codes` rows the whole taxonomy expands to. */
     val expandedCipCodes: Int,
   )
@@ -122,9 +129,10 @@ class SubjectLoader(
     val array =
       root as? JsonArray
         ?: throw InvalidFileException(file.path, "the top level must be a JSON array")
-    // An EMPTY taxonomy parses clean and then WIPES the table: `load` upserts
-    // nothing and `deleteSubjectsNotIn(emptySet)` deletes every row, so the next
-    // rebuild materialises no `subject_slugs` at all and every subject filter
+    // An EMPTY taxonomy parses clean and then empties the OFFERED list: `load`
+    // upserts nothing and `reconcileSubjectsNotIn(emptySet)` deletes every
+    // unreferenced row and deprecates the rest, so the next rebuild
+    // materialises no `subject_slugs` at all and every subject filter
     // silently stops matching. The codebook loader guards its own shrink floor
     // for the same reason; here the floor is one. A taxonomy is deliberately
     // authored data — deleting it is an edit nobody makes by accident, and if
@@ -193,14 +201,15 @@ class SubjectLoader(
           UpsertOutcome.UNCHANGED -> unchanged++
         }
       }
-      val deleted = CodebooksDao.deleteSubjectsNotIn(session, subjects.map { it.slug }).getOrThrow()
+      val reconciled = CodebooksDao.reconcileSubjectsNotIn(session, subjects.map { it.slug }).getOrThrow()
       val result =
         LoadResult(
           subjects = CodebooksDao.subjectCount(session).getOrThrow(),
           inserted = inserted,
           changed = changed,
           unchanged = unchanged,
-          deleted = deleted,
+          deleted = reconciled.deleted,
+          deprecated = reconciled.deprecated,
           // Printed on EVERY run, deliberately (D51's risk): the taxonomy is
           // materialised into the index, so an edit to subjects.json changes
           // nothing until a rebuild runs. Saying how many codes the taxonomy
@@ -208,14 +217,16 @@ class SubjectLoader(
           expandedCipCodes = matches.values.sum(),
         )
       logger.info(
-        "Subjects [{}]: {} subjects ({} inserted, {} changed, {} unchanged, {} deleted) over {} CIP prefixes " +
-          "expanding to {} code match(es); the search index reflects them only after the search-index phase",
+        "Subjects [{}]: {} subjects ({} inserted, {} changed, {} unchanged, {} deleted, {} deprecated) over " +
+          "{} CIP prefixes expanding to {} code match(es); the search index reflects them only after the " +
+          "search-index phase",
         fileName,
         result.subjects,
         result.inserted,
         result.changed,
         result.unchanged,
         result.deleted,
+        result.deprecated,
         prefixes.size,
         result.expandedCipCodes,
       )

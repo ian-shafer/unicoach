@@ -9,8 +9,10 @@ import ed.unicoach.rest.routing.CoachingUsageRouteHandler
 import ed.unicoach.rest.routing.CollegeListRouteHandler
 import ed.unicoach.rest.routing.CollegeRouteHandler
 import ed.unicoach.rest.routing.ConvoRouteHandler
+import ed.unicoach.rest.routing.IntendedSubjectsRouteHandler
 import ed.unicoach.rest.routing.MoneyProfileRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
+import ed.unicoach.rest.routing.SubjectsRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
 import ed.unicoach.rest.routing.VocabularyRouteHandler
 import io.ktor.http.ContentType
@@ -59,6 +61,8 @@ fun Application.configureRouting(
   subscriptionService: ed.unicoach.subscriptions.SubscriptionService,
   appleNotificationVerifier: ed.unicoach.appstore.AppleNotificationVerifier,
   vocabularyService: ed.unicoach.vocabulary.VocabularyService,
+  subjectVocabularyService: ed.unicoach.coaching.SubjectVocabularyService,
+  intendedSubjectsService: ed.unicoach.coaching.IntendedSubjectsService,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
@@ -78,6 +82,10 @@ fun Application.configureRouting(
     AppleNotificationRouteHandler(appleNotificationVerifier, queueService)
   val vocabularyRouteHandler =
     VocabularyRouteHandler(authService, studentService, vocabularyService, sessionConfig)
+  val subjectsRouteHandler =
+    SubjectsRouteHandler(authService, studentService, subjectVocabularyService, sessionConfig)
+  val intendedSubjectsRouteHandler =
+    IntendedSubjectsRouteHandler(authService, studentService, intendedSubjectsService, sessionConfig)
   routing {
     route("/healthz") {
       get {
@@ -98,5 +106,7 @@ fun Application.configureRouting(
     subscriptionRouteHandler.registerRoutes(this)
     appleNotificationRouteHandler.registerRoutes(this)
     vocabularyRouteHandler.registerRoutes(this)
+    subjectsRouteHandler.registerRoutes(this)
+    intendedSubjectsRouteHandler.registerRoutes(this)
   }
 }

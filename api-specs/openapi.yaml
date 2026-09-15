@@ -983,6 +983,170 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/subjects:
+    get:
+      summary: List the subjects a student can say they want to study
+      description: >
+        OUR subject taxonomy — the closed, authored list a student answers with,
+        never a raw federal code. Requires an authenticated session but no
+        student profile, for the same reason the college search does not: reading
+        a published list is not an operation on the caller's own data.
+
+        `q` is OPTIONAL here, unlike the college search: the list is closed and
+        small enough to browse, and a picker that shows nothing until the student
+        types is a worse picker. A blank-but-present `q` is still a 400.
+        Subjects the taxonomy file no longer carries are excluded.
+      operationId: listSubjects
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+          description: >
+            Case-insensitive substring of the subject NAME. Omit entirely for the
+            whole list in name order; present-but-blank is a validation failure.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: >
+            Maximum results; clamped server-side to 1..200, never rejected for
+            being out of range. Absent serves the whole list.
+      responses:
+        '200':
+          description: Matching subjects, in name order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubjectListResponse'
+        '400':
+          description: Validation failure (q present but blank or too long, limit non-integer)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/students/me/intended-subjects:
+    get:
+      summary: Get what the current student wants to study
+      description: >
+        Always 200, never 404: a student nobody has asked reads as status
+        `unanswered` with an empty subject list, which is an answer about them
+        rather than a missing row.
+      operationId: getIntendedSubjects
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The caller's intended subjects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntendedSubjectsResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Replace what the current student wants to study
+      description: >
+        One operation that takes the WHOLE answer. Exactly one of `subjects`,
+        `declined` and `undecided` must be supplied; two or more, or none, is a
+        validation failure. There is no clear key: an empty `subjects` array from
+        a student who had subjects stores `undecided`, never `unanswered`.
+        `unanswered` is only ever the state of a student who was never asked and
+        no caller can write it.
+      operationId: putIntendedSubjects
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIntendedSubjectsRequest'
+      responses:
+        '200':
+          description: The full post-write answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntendedSubjectsResponse'
+        '400':
+          description: >
+            Validation failure: more subjects than `maxItems` allows, a slug
+            that is not a subject, a subject no longer offered, a duplicate slug,
+            more than one of the three keys at once, or `declined`/`undecided`
+            sent as `false` rather than omitted. The cap is not restated
+            here as a number; `maxItems` on the request schema is its one
+            published home.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/vocabularies:
     get:
       summary: Read the served vocabularies
@@ -1943,6 +2107,83 @@ components:
               description: >-
                 What kind of jurisdiction the code names, so a picker that groups its rows
                 does not call Palau a state.
+    SubjectListResponse:
+      type: object
+      required: [subjects]
+      properties:
+        subjects:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicSubject'
+    PublicSubject:
+      type: object
+      required: [slug, name]
+      description: >-
+        One subject: `slug` is the identity the client sends back and is never
+        shown to anyone; `name` is the label and may change freely, so a rename
+        never touches a student's stored answer.
+      properties:
+        slug:
+          type: string
+        name:
+          type: string
+    UpdateIntendedSubjectsRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Exactly one of subjects, declined and undecided. There is no clear key:
+        an empty subjects array is the answer "I do not know yet".
+      properties:
+        subjects:
+          type: array
+          maxItems: 3
+          nullable: true
+          items:
+            type: string
+          description: >-
+            The subject slugs, unordered and unranked. The cap is published as
+            `maxItems` on this property rather than restated here in words, so a
+            change to the server constant cannot leave a stale number in prose.
+            A drift guard pins `maxItems` to the server constant.
+        declined:
+          type: boolean
+          enum: [true]
+          description: >-
+            Literal `true`, or omit the key. This route counts the keys that are
+            PRESENT, so `false` is a surplus key and a 400 rather than a no-op;
+            omitting it is already how a caller says "not this one". The chat
+            tool publishes the same `const: true` for the same field.
+        undecided:
+          type: boolean
+          enum: [true]
+          description: >-
+            Literal `true`, or omit the key — the same presence rule as
+            `declined`.
+    PublicIntendedSubjects:
+      type: object
+      required: [status, subjects]
+      properties:
+        status:
+          type: string
+          enum: [unanswered, answered, declined, undecided]
+          description: >-
+            FOUR values, where the three money-profile statuses carry three.
+            `undecided` — "I do not know yet" — is a real answer to this question
+            and an impossible one on a money field, and the money_profiles CHECKs
+            refuse it there.
+        subjects:
+          type: array
+          description: >-
+            Always present, never null; non-empty exactly when status is
+            `answered`.
+          items:
+            $ref: '#/components/schemas/PublicSubject'
+    IntendedSubjectsResponse:
+      type: object
+      required: [intendedSubjects]
+      properties:
+        intendedSubjects:
+          $ref: '#/components/schemas/PublicIntendedSubjects'
     MoneyProfileResponse:
       type: object
       required: [profile]

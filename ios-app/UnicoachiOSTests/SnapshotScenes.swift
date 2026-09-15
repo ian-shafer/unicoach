@@ -188,14 +188,19 @@ enum SnapshotSeed {
     /// than the fallback.
     static func yourDetails(
         profile: PublicMoneyProfile? = nil,
-        fetchResult: Result<PublicMoneyProfile?, Error>? = nil
+        fetchResult: Result<PublicMoneyProfile?, Error>? = nil,
+        intendedSubjects: PublicIntendedSubjects = .unanswered
     ) -> some View {
         let moneyProfileClient = MockMoneyProfileClient()
         moneyProfileClient.fetchResult = fetchResult ?? .success(profile)
+        let intendedSubjectsClient = MockIntendedSubjectsClient()
+        intendedSubjectsClient.fetchResult = .success(intendedSubjects)
         return NavigationStack {
             YourDetailsView(
                 moneyProfileClient: moneyProfileClient,
                 vocabularyClient: MockVocabularyClient(),
+                subjectsClient: MockSubjectsClient(),
+                intendedSubjectsClient: intendedSubjectsClient,
                 onProfileRequired: {},
                 onMyColleges: {}
             )
@@ -739,11 +744,23 @@ enum SnapshotCatalogue {
             // live), and the whole-screen load failure. A taller canvas than
             // the device: the form does not scroll for a reviewer, and a
             // clipped screen cannot be reviewed.
-            SnapshotScene(name: "your-details-unanswered", size: SnapshotScene.tallCanvas(height: 1200)) {
+            SnapshotScene(name: "your-details-unanswered", size: SnapshotScene.tallCanvas(height: SnapshotScene.maxHeight)) {
                 AnyView(SnapshotSeed.yourDetails())
             },
-            SnapshotScene(name: "your-details-answered-and-declined", size: SnapshotScene.tallCanvas(height: 1200)) {
-                AnyView(SnapshotSeed.yourDetails(profile: SnapshotSeed.mixedMoneyProfile))
+            SnapshotScene(name: "your-details-answered-and-declined", size: SnapshotScene.tallCanvas(height: SnapshotScene.maxHeight)) {
+                AnyView(SnapshotSeed.yourDetails(
+                    profile: SnapshotSeed.mixedMoneyProfile,
+                    // The subjects row answered as well (RFC 205 §7), so the
+                    // chips and the two first-class choices are in the corpus
+                    // beside the money block rather than only as an empty row.
+                    intendedSubjects: .answered(["nursing", "marine-biology"])
+                ))
+            },
+            // The decline, which is the state this screen exists to make
+            // undoable: a decline set in CHAT is visible here, with the search
+            // still offered beneath it.
+            SnapshotScene(name: "your-details-subjects-declined", size: SnapshotScene.tallCanvas(height: SnapshotScene.maxHeight)) {
+                AnyView(SnapshotSeed.yourDetails(intendedSubjects: .declined))
             },
             SnapshotScene(name: "your-details-failed") {
                 AnyView(SnapshotSeed.yourDetails(

@@ -18,6 +18,7 @@ import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.SystemPromptsDao
+import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.Commitment

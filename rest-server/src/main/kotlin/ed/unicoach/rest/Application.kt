@@ -317,6 +317,15 @@ fun Application.appModule(
   // Hoisted above the tool registry (RFC 136): the chat tool and the REST
   // routes share this one instance.
   val collegeListService = CollegeListService(database)
+  // Hoisted for the same reason (RFC 205): the intended-subjects chat tool and
+  // the two REST doors read and write through one pair of services, so the
+  // taxonomy the picker offers is the taxonomy the coach resolves against.
+  val subjectVocabularyService =
+    ed.unicoach.coaching
+      .SubjectVocabularyService(database)
+  val intendedSubjectsService =
+    ed.unicoach.coaching
+      .IntendedSubjectsService(database, subjectVocabularyService)
   // The tool registry advertised on every coaching turn (RFC 94). New tools
   // append here; nothing else in the loop changes.
   // One CollegeSearchService serves both the chat tool and the REST search
@@ -406,6 +415,11 @@ fun Application.appModule(
         // real one through the InstantSource.system() default, and only a test
         // pins it.
         AdmissionTestTimelineChatTool(TestTimelineService(database)),
+        // What the student wants to STUDY (RFC 205). The same two services the
+        // REST doors use, so the chat answer and the screen answer are one
+        // answer and not two copies of it.
+        ed.unicoach.coaching
+          .IntendedSubjectsChatTool(intendedSubjectsService, subjectVocabularyService),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the
@@ -438,5 +452,7 @@ fun Application.appModule(
     subscriptionService,
     appleNotificationVerifier,
     vocabularyService,
+    subjectVocabularyService,
+    intendedSubjectsService,
   )
 }

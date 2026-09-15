@@ -2,6 +2,7 @@ package ed.unicoach.coaching
 
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.dao.CorruptPersistedValueException
+import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 
 /**
@@ -43,5 +44,18 @@ fun renderDeclinableAnswer(
 
     AnswerStatus.UNANSWERED -> {
       "unanswered"
+    }
+
+    // `undecided` belongs to the intended-subject answer (RFC 205) and no
+    // column this renderer reads can hold it -- the `answer_status` domain is
+    // `answer_status_or_undecided` MINUS this value (RFC 209), so reading it
+    // here is row corruption. Refused in the words [nonMoneyAnswerStatus]
+    // states once for every money read, naming the cell, and never rendered
+    // into the prompt as "declined": the coach must not be told a family
+    // declined a question they did not decline. The intended-subject surface,
+    // whose answer really can be undecided, has its own wording and does not
+    // call this.
+    AnswerStatus.UNDECIDED -> {
+      throw nonMoneyAnswerStatus(AnswerStatus.UNDECIDED, location = location)
     }
   }

@@ -1,5 +1,54 @@
 import SwiftUI
 
+/// The subject row's words. They live here, with the screen that asks the
+/// question, because they name the domain — subjects, and unicoach's rule about
+/// how many — and `DSSubjectsRow` takes them as parameters precisely so the
+/// design system does not have to know either thing.
+enum SubjectsRowCopy {
+    static let add = "Add a subject"
+
+    /// Said when the cap has taken the add affordance away, so the row explains
+    /// its own missing control.
+    ///
+    /// The number is SPELLED FROM THE CAP rather than typed into the sentence:
+    /// the copy and the rule it explains are then the same fact, and a changed
+    /// `PublicIntendedSubjects.maxSubjects` cannot leave the word "three"
+    /// behind. `en_US` is fixed because the rest of the sentence is English —
+    /// a localised numeral inside English copy would read worse than either.
+    static func cap(_ maxSubjects: Int) -> String {
+        "That's \(spelled(maxSubjects)) — the most unicoach asks for. Remove one to swap it."
+    }
+
+    /// Said when the load-time probe could not reach the list. It does NOT say
+    /// there is nothing to search: the add affordance is still there on
+    /// purpose, and the picker refetches the list every time it opens, so
+    /// trying again is exactly the right thing for a family to do.
+    static let listUnavailable =
+        "unicoach couldn't reach the subject list just now. What you've already chosen is shown above, "
+            + "and opening the search again may well reach it."
+
+    /// The row's own caption, above the chips. Same rule as [cap]: the number
+    /// is spelled FROM the cap, never typed into the sentence.
+    static func intro(_ maxSubjects: Int) -> String {
+        "Up to \(spelled(maxSubjects)) subjects, in no order. Change or remove them whenever you like."
+    }
+
+    /// The picker sheet's caption. It lives here, with [cap] and [intro],
+    /// because it states the same rule and must not be able to disagree with
+    /// them.
+    static func pickerIntro(_ maxSubjects: Int) -> String {
+        "Search the subjects unicoach knows. Pick up to \(spelled(maxSubjects)) — there's no ranking, "
+            + "and you can change them whenever you like."
+    }
+
+    private static func spelled(_ count: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .spellOut
+        formatter.locale = Locale(identifier: "en_US")
+        return formatter.string(from: NSNumber(value: count)) ?? String(count)
+    }
+}
+
 /// "Your details" (RFC 171): the two facts that change every number unicoach
 /// shows a family — household income band and state of residence — visible and
 /// changeable without talking to the coach.
@@ -19,17 +68,26 @@ struct YourDetailsView: View {
     /// (RFC 171 §8, D3).
     private let onMyColleges: () -> Void
 
+    /// Held so the picker sheet can be built when it is opened, rather than a
+    /// list being fetched into this screen and handed down stale.
+    private let subjectsClient: SubjectsClientProtocol
+
     init(
         moneyProfileClient: MoneyProfileClientProtocol,
         vocabularyClient: VocabularyClientProtocol,
+        subjectsClient: SubjectsClientProtocol,
+        intendedSubjectsClient: IntendedSubjectsClientProtocol,
         onProfileRequired: @escaping () -> Void,
         onMyColleges: @escaping () -> Void
     ) {
         _viewModel = StateObject(wrappedValue: YourDetailsViewModel(
             moneyProfileClient: moneyProfileClient,
             vocabularyClient: vocabularyClient,
+            subjectsClient: subjectsClient,
+            intendedSubjectsClient: intendedSubjectsClient,
             onProfileRequired: onProfileRequired
         ))
+        self.subjectsClient = subjectsClient
         self.onMyColleges = onMyColleges
     }
 
@@ -120,9 +178,58 @@ struct YourDetailsView: View {
                     fallbackNote
                 }
 
+                subjectsSection
+
                 footer
             }
             .padding(DSSpacing.lg)
+        }
+    }
+
+    /// What a student wants to study (RFC 205): one answer, given once, that
+    /// later slices turn into what search shows and what the report can say.
+    /// It is NOT money, so it sits under its own heading rather than inside the
+    /// money block above — and it speaks no figure here.
+    ///
+    /// A decline or an "I don't know yet" set in CHAT lands here as itself, and
+    /// every one of them is undoable with one tap.
+    private var subjectsSection: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.sm) {
+            Text("What you want to study")
+                .dsOverlineStyle()
+                .foregroundStyle(Color.dsTextPrimary)
+
+            Text(SubjectsRowCopy.intro(PublicIntendedSubjects.maxSubjects))
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            DSSubjectsRow(
+                label: "Subjects",
+                answer: viewModel.subjectsAnswer,
+                availability: viewModel.subjectsAvailability,
+                maxChips: PublicIntendedSubjects.maxSubjects,
+                addTitle: SubjectsRowCopy.add,
+                capNote: SubjectsRowCopy.cap,
+                listUnavailableNote: SubjectsRowCopy.listUnavailable,
+                onRemove: { chip in Task { await viewModel.removeSubject(chip) } },
+                onUndecided: { Task { await viewModel.markSubjectsUndecided() } },
+                onDecline: { Task { await viewModel.declineSubjects() } },
+                picker: { dismiss in
+                    SubjectPickerSheet(
+                        client: subjectsClient,
+                        chosen: viewModel.chosenSubjectSlugs,
+                        onSelect: { subject in
+                            // The sheet closes on the pick, and the write runs
+                            // on. A sheet held open over a spinner would only
+                            // hide the chips that are the receipt.
+                            dismiss()
+                            Task { await viewModel.addSubject(subject) }
+                        },
+                        onDismiss: dismiss
+                    )
+                }
+            )
         }
     }
 
@@ -348,11 +455,39 @@ private final class YourDetailsPreviewVocabularyClient: VocabularyClientProtocol
     }
 }
 
+private final class YourDetailsPreviewSubjectsClient: SubjectsClientProtocol, @unchecked Sendable {
+    func search(query: String?) async throws -> [PublicSubject] {
+        let subjects = [
+            PublicSubject(slug: "nursing", name: "Nursing"),
+            PublicSubject(slug: "marine-biology", name: "Marine biology"),
+            PublicSubject(slug: "neuroscience", name: "Neuroscience"),
+            PublicSubject(slug: "computer-science", name: "Computer science"),
+        ]
+        guard let query, !query.isEmpty else { return subjects }
+        return subjects.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+}
+
+private final class YourDetailsPreviewIntendedSubjectsClient: IntendedSubjectsClientProtocol, @unchecked Sendable {
+    func fetch() async throws -> PublicIntendedSubjects {
+        PublicIntendedSubjects(
+            status: AnswerStatus.answered.rawValue,
+            subjects: [PublicSubject(slug: "nursing", name: "Nursing")]
+        )
+    }
+
+    func update(_ request: UpdateIntendedSubjectsRequest) async throws -> PublicIntendedSubjects {
+        try await fetch()
+    }
+}
+
 @MainActor private var yourDetailsPreview: some View {
     NavigationStack {
         YourDetailsView(
             moneyProfileClient: YourDetailsPreviewMoneyProfileClient(),
             vocabularyClient: YourDetailsPreviewVocabularyClient(),
+            subjectsClient: YourDetailsPreviewSubjectsClient(),
+            intendedSubjectsClient: YourDetailsPreviewIntendedSubjectsClient(),
             onProfileRequired: {},
             onMyColleges: {}
         )

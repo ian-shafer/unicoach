@@ -349,10 +349,16 @@ final class MoneyProfileVocabularyTests: XCTestCase {
         let declared = declaredVocabularies(in: try specText()).map(Set.init)
         XCTAssertFalse(declared.isEmpty, "scraped no enum from openapi.yaml — the guard would pass vacuously")
 
+        // The status vocabulary is SPLIT, and both halves are asserted
+        // (RFC 205 §4). A single `allCases == spec` equality could only be
+        // satisfied by a spec that lies: `undecided` is legal on the
+        // intended-subjects answer and is refused by the database on every
+        // money column, so the three money enums must NOT list it.
         let cases: [(name: String, members: Set<String>)] = [
             ("IncomeBand", Set(IncomeBand.allCases.map(\.rawValue))),
             ("LivingPlan", Set(LivingPlan.allCases.map(\.rawValue))),
-            ("AnswerStatus", Set(AnswerStatus.allCases.map(\.rawValue))),
+            ("AnswerStatus (money: entries minus undecided)", Set(AnswerStatus.moneyCases.map(\.rawValue))),
+            ("AnswerStatus (intended subjects: all four)", Set(AnswerStatus.allCases.map(\.rawValue))),
         ]
         for testCase in cases {
             XCTAssertTrue(
@@ -360,6 +366,17 @@ final class MoneyProfileVocabularyTests: XCTestCase {
                 "[\(testCase.name)] is [\(testCase.members.sorted())], which api-specs/openapi.yaml declares nowhere"
             )
         }
+    }
+
+    /// The split itself, stated as its own fact: the money half is the whole
+    /// vocabulary minus exactly `undecided`, and the day somebody adds a fifth
+    /// status this test says which half they meant it for.
+    func testTheMoneyHalfIsTheWholeVocabularyMinusUndecided() {
+        XCTAssertEqual(
+            Set(AnswerStatus.allCases).subtracting(AnswerStatus.moneyCases),
+            [.undecided],
+            "a money field can never be 'I don't know yet' — the database refuses it (RFC 205 §4)"
+        )
     }
 }
 

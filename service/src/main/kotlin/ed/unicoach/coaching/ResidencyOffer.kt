@@ -3,6 +3,7 @@ package ed.unicoach.coaching
 import ed.unicoach.coaching.costs.PrecisionOffer
 import ed.unicoach.coaching.moneyprofile.GetMoneyProfileResult
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
+import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.UsStateCodes
@@ -132,9 +133,40 @@ internal sealed interface Residency {
         is GetMoneyProfileResult.Found -> {
           val profile = outcome.profile
           when (profile.residencyStatus) {
-            AnswerStatus.ANSWERED -> onAnswered(profile.studentId, profile.residencyState)
-            AnswerStatus.UNANSWERED -> NotAsked
-            AnswerStatus.DECLINED -> Unavailable(Cause.DECLINED)
+            AnswerStatus.ANSWERED -> {
+              onAnswered(profile.studentId, profile.residencyState)
+            }
+
+            AnswerStatus.UNANSWERED -> {
+              NotAsked
+            }
+
+            AnswerStatus.DECLINED -> {
+              Unavailable(Cause.DECLINED)
+            }
+
+            // `undecided` is an INTENDED-SUBJECT answer (RFC 205): the
+            // corruption [ed.unicoach.db.dao.nonMoneyAnswerStatus] states once,
+            // and of the same kind [Cause.CORRUPT_PROFILE] already names.
+            //
+            // This read DEGRADES where the money reads throw. Like every other
+            // corruption here it is logged and never allowed to fail a search,
+            // so it says the same thing in a log line instead of raising that
+            // exception — and it is still NAMED, never folded into
+            // [Cause.DECLINED].
+            AnswerStatus.UNDECIDED -> {
+              // The SENTENCE is built by the shared rule, not retyped here, so
+              // this log and the four money reads that THROW cannot drift apart
+              // about what the money vocabulary is. Only the disposition differs:
+              // they raise, this degrades.
+              logger.error(
+                "{} Treating the residency as unusable. profile=[{}] student=[{}]",
+                nonMoneyAnswerStatus(AnswerStatus.UNDECIDED, "money_profiles.residency_status").message,
+                profile.id.value,
+                profile.studentId.value,
+              )
+              Unavailable(Cause.CORRUPT_PROFILE)
+            }
           }
         }
       }

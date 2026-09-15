@@ -56,7 +56,7 @@ object CollegeIpedsChargesDao {
 
   /**
    * Deletes every staged row whose natural key this run did NOT WRITE — the
-   * [ed.unicoach.db.dao.CodebooksDao.deleteSubjectsNotIn] precedent, applied to
+   * [ed.unicoach.db.dao.CodebooksDao.reconcileSubjectsNotIn] precedent, applied to
    * a three-part key.
    *
    * Staging is upsert-only, so without this nothing ever leaves the table and

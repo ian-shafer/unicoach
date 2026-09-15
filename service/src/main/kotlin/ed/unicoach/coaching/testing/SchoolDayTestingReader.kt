@@ -4,6 +4,7 @@ import ed.unicoach.db.dao.AdmissionTestStateProgrammeDao
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AdmissionTestStateProgramme
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.StudentId
@@ -140,6 +141,19 @@ object SchoolDayTestingReader {
           checkNotNull(profile.residencyState) {
             "money_profiles row for student [${studentId.value}] is answered for residency and carries no state"
           }
+        }
+
+        // `undecided` is the INTENDED-SUBJECT answer (RFC 205), and the
+        // `answer_status` domain this column names is
+        // `answer_status_or_undecided` MINUS that value (RFC 209) -- so the
+        // database cannot hold it here and reading it is row corruption.
+        // Refused in the words [ed.unicoach.db.dao.nonMoneyAnswerStatus] states
+        // once for every money read, naming the cell. It is NOT a residency
+        // gap: `StateUnknown` says a family has not told us their state, and
+        // saying that over a corrupt cell would report a gap the family does
+        // not have and invite the coach to ask again.
+        AnswerStatus.UNDECIDED -> {
+          throw nonMoneyAnswerStatus(AnswerStatus.UNDECIDED, "money_profiles.residency_status")
         }
       }
 

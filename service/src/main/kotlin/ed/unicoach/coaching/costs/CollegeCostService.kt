@@ -25,6 +25,7 @@ import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.BorrowerCounts
@@ -1426,6 +1427,17 @@ class CollegeCostService(
 
       AnswerStatus.DECLINED -> {
         ComparedLivingPlan.Declined
+      }
+
+      // `undecided` is the intended-subject answer (RFC 205), refused by the
+      // shared money-status rule — deliberately NOT folded into
+      // [ComparedLivingPlan.Declined], which would tell a family they refused a
+      // question they only had no answer to.
+      AnswerStatus.UNDECIDED -> {
+        throw nonMoneyAnswerStatus(
+          AnswerStatus.UNDECIDED,
+          location = "money_profiles.living_plan_status (row [${profile.id.value}])",
+        )
       }
     }
 

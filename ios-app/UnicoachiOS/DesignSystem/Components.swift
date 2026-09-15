@@ -1358,3 +1358,322 @@ private var topBarPreview: some View {
     MotifPreviewHost()
         .preferredColorScheme(.dark)
 }
+
+// MARK: - DSSubjectsRow
+
+/// One chosen subject, as the row renders it: the identity the caller sends
+/// back (the taxonomy slug) and the label the SERVER gives it. The two travel
+/// together for the same reason `DetailOption` carries both — a chip that held
+/// only one of them would either invent copy or hand back a display string.
+struct DSSubjectChip: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+
+    init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+/// How the student answered the question this row asks. **Four cases, not a
+/// list plus two flags**: "I don't know yet" and "I'd rather not say" are
+/// different sentences, and neither is an empty list (RFC 205 D16/D30). A
+/// zero-length set that collapsed three answers into one is exactly the defect
+/// this shape prevents.
+enum DSSubjectsAnswer: Equatable, Sendable {
+    case unanswered
+    case answered([DSSubjectChip])
+    case undecided
+    case declined
+    /// The server sent a status THIS BUILD cannot read. Distinct from
+    /// `unanswered` on purpose: collapsing the two would print "Not answered
+    /// yet" over an answer the student did give, which tells them something
+    /// false about their own data and invites them to answer it again. The
+    /// server refuses the same collapse — `IntendedSubjectsDao.parseStatus`
+    /// treats an unknown stored value as corrupt rather than defaulting — and
+    /// the client is equally honest. It is not hypothetical: the status column
+    /// is due to be retyped onto a shared domain, so an older build meeting a
+    /// newer value is a real case.
+    case unreadable
+}
+
+/// Whether the searchable list behind the row can be reached. There is **no
+/// shipped fallback list** (RFC 205 §7): this is a search route over a taxonomy
+/// the app does not carry, so an unreachable list is said out loud and the row
+/// still shows what is already stored.
+enum DSListAvailability: Equatable, Sendable {
+    case available
+    case unavailable
+}
+
+/// What `DSSubjectsRow` draws, as data. Extracted from the view because every
+/// rule worth testing lives here — the cap that takes the add affordance away,
+/// which of the two first-class choices is a no-op, and whether the row must
+/// say the list is unavailable — and none of it is reachable through a SwiftUI
+/// body. The view holds no second copy of any of it.
+struct DSSubjectsRowPresentation: Equatable {
+    /// The chosen subjects, in the order the caller supplied (the server's).
+    let chips: [DSSubjectChip]
+    /// The add affordance is offered while there is **room**, and the cap is
+    /// the only thing that takes it away. At the cap it is **gone, not
+    /// disabled**: a control that cannot do anything is not an affordance, and
+    /// the caption below says why it went.
+    ///
+    /// An unreachable list does **not** take it away. A single failed probe at
+    /// load would otherwise remove, for that screen's whole life, both the only
+    /// control that can retry the list and the only way to undo a decline —
+    /// which this screen is required to support. The picker refetches the list
+    /// every time it opens and reports its own failure, so opening it after a
+    /// failed probe either works or explains itself.
+    let showsAddAffordance: Bool
+    /// Said only at the cap, so the row explains its own missing control.
+    let showsCapNote: Bool
+    /// Said only when the list could not be reached, so a family does not
+    /// conclude their subject is not offered.
+    let showsListUnavailableNote: Bool
+    /// The line that reads the stored answer back, or `nil` when the chips are
+    /// the answer and a sentence beside them would only repeat them.
+    let answerText: String?
+    /// Each first-class choice is offered except where it would be a no-op —
+    /// the `YourDetailsView` rule for its own decline control, and for the same
+    /// reason: never a one-way door, never a control that does nothing.
+    let showsUndecidedChoice: Bool
+    let showsDeclineChoice: Bool
+
+    init(answer: DSSubjectsAnswer, availability: DSListAvailability, maxChips: Int) {
+        switch answer {
+        case .answered(let chosen):
+            chips = chosen
+            // An answered set with no chips has nothing on screen to read the
+            // answer back from, so without this line the row would say nothing
+            // at all about a state the caller called answered.
+            answerText = chosen.isEmpty ? "Not answered yet" : nil
+            showsUndecidedChoice = true
+            showsDeclineChoice = true
+        case .unanswered:
+            chips = []
+            answerText = "Not answered yet"
+            showsUndecidedChoice = true
+            showsDeclineChoice = true
+        case .undecided:
+            chips = []
+            answerText = "You don't know yet"
+            showsUndecidedChoice = false
+            showsDeclineChoice = true
+        case .declined:
+            chips = []
+            answerText = "You chose not to say"
+            showsUndecidedChoice = true
+            showsDeclineChoice = false
+        case .unreadable:
+            // NO answer line: saying nothing is the only honest thing this
+            // build can say about an answer it cannot read. Both choices stay
+            // offered, because neither is known to be a no-op here and the
+            // student must keep a way to state an answer this build understands.
+            chips = []
+            answerText = nil
+            showsUndecidedChoice = true
+            showsDeclineChoice = true
+        }
+        let hasRoom = chips.count < maxChips
+        // A declined or undecided answer still offers the search: undoing
+        // either one is choosing a subject, and that is the whole of "a
+        // decline is durable and undoable from the screen" (RFC 205 §7). An
+        // unreachable list does not withdraw the offer either, for the same
+        // reason — see `showsAddAffordance`.
+        showsAddAffordance = hasRoom
+        showsCapNote = !hasRoom
+        showsListUnavailableNote = availability == .unavailable
+    }
+}
+
+/// The capped multi-select this app did not have (RFC 205 R8): a labelled row
+/// that shows the chosen subjects as removable chips, opens a searchable list
+/// to add one, and offers "I don't know yet" and "Prefer not to say" as
+/// first-class choices beside them rather than as an absence of choice.
+///
+/// **`DSPickerRow` is not extended, and must not be.** That row is
+/// single-selection by construction — a `Binding<Value>` and
+/// `.pickerStyle(.menu)` — and its own comment says what it is for: one answer
+/// out of a closed vocabulary, in one 64pt row. This control answers a
+/// different question (several subjects, from a searchable taxonomy, with
+/// two named non-answers), so it is a sibling, not a parameter.
+///
+/// The searchable list itself is injected as `picker`, exactly as `DSPickerRow`
+/// takes its `Picker`, and the copy is injected too: the design system owns the
+/// row, the chips and the layout, and owns **no** knowledge of what is being
+/// chosen, where it comes from, or how many of it the server allows. The sheet's
+/// presentation is the row's own state, because opening it is the add
+/// affordance's whole behaviour.
+struct DSSubjectsRow<Picker: View>: View {
+    private let label: String
+    private let answer: DSSubjectsAnswer
+    private let availability: DSListAvailability
+    private let maxChips: Int
+    private let addTitle: String
+    private let capNote: (Int) -> String
+    private let listUnavailableNote: String
+    private let onRemove: (DSSubjectChip) -> Void
+    private let onUndecided: () -> Void
+    private let onDecline: () -> Void
+    private let picker: (@escaping () -> Void) -> Picker
+
+    @State private var isPickerPresented = false
+
+    /// `maxChips` is a parameter rather than a constant here because the cap is
+    /// the SERVER's rule (RFC 205 §2) and the design system is not where a
+    /// server rule is allowed to live. The caller passes
+    /// `PublicIntendedSubjects.maxSubjects`.
+    ///
+    /// `addTitle`, `capNote` and `listUnavailableNote` are parameters for the
+    /// same reason, one step further: the copy names the DOMAIN — what is being
+    /// chosen, and where the list comes from — and the design system knows
+    /// neither. A row that said "subject" in its own source would be a control
+    /// only one screen could ever use.
+    ///
+    /// `capNote` is handed the cap rather than a finished sentence, so the
+    /// number a caller writes into the copy is the number this row actually
+    /// enforces. A literal in the copy and a different `maxChips` cannot drift
+    /// apart, because there is no literal.
+    ///
+    /// `picker` is handed a `dismiss` closure rather than a binding: the sheet
+    /// closes when the list says it is done, and nothing outside this row can
+    /// open or close it by writing a flag.
+    init(
+        label: String,
+        answer: DSSubjectsAnswer,
+        availability: DSListAvailability = .available,
+        maxChips: Int,
+        addTitle: String,
+        capNote: @escaping (Int) -> String,
+        listUnavailableNote: String,
+        onRemove: @escaping (DSSubjectChip) -> Void,
+        onUndecided: @escaping () -> Void,
+        onDecline: @escaping () -> Void,
+        @ViewBuilder picker: @escaping (@escaping () -> Void) -> Picker
+    ) {
+        self.label = label
+        self.answer = answer
+        self.availability = availability
+        self.maxChips = maxChips
+        self.addTitle = addTitle
+        self.capNote = capNote
+        self.listUnavailableNote = listUnavailableNote
+        self.onRemove = onRemove
+        self.onUndecided = onUndecided
+        self.onDecline = onDecline
+        self.picker = picker
+    }
+
+    private var presentation: DSSubjectsRowPresentation {
+        DSSubjectsRowPresentation(answer: answer, availability: availability, maxChips: maxChips)
+    }
+
+    var body: some View {
+        let presentation = self.presentation
+        return VStack(alignment: .leading, spacing: DSSpacing.sm) {
+            Text(label)
+                .font(.dsLabel)
+                .foregroundStyle(Color.dsTextSecondary)
+
+            if let answerText = presentation.answerText {
+                Text(answerText)
+                    .font(.dsBody)
+                    .foregroundStyle(Color.dsTextPrimary)
+                    .accessibilityIdentifier("subjectsAnswerText")
+            }
+
+            if !presentation.chips.isEmpty {
+                chips(presentation.chips)
+            }
+
+            if presentation.showsAddAffordance {
+                DSTextButton(
+                    addTitle,
+                    accessibilityIdentifier: "subjectsAddButton",
+                    accessibilityLabel: addTitle,
+                    action: { isPickerPresented = true }
+                )
+            }
+
+            if presentation.showsCapNote {
+                note(capNote(maxChips), identifier: "subjectsCapNote")
+            }
+
+            if presentation.showsListUnavailableNote {
+                note(listUnavailableNote, identifier: "subjectsListUnavailableNote")
+            }
+
+            if presentation.showsUndecidedChoice {
+                DSCaptioned("A real answer — the coach records it and moves on.") {
+                    DSTextButton(
+                        "I don't know yet",
+                        accessibilityIdentifier: "subjectsUndecidedButton",
+                        accessibilityLabel: "I don't know yet",
+                        action: onUndecided
+                    )
+                }
+            }
+
+            if presentation.showsDeclineChoice {
+                DSCaptioned("The coach stops asking about this.") {
+                    DSTextButton(
+                        "Prefer not to say",
+                        accessibilityIdentifier: "subjectsDeclineButton",
+                        accessibilityLabel: "Prefer not to say",
+                        action: onDecline
+                    )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(isPresented: $isPickerPresented) {
+            picker { isPickerPresented = false }
+        }
+    }
+
+    /// The chips themselves. A `WrappingHStack` does not exist in this app and
+    /// a capped handful of chips does not need one: they stack, each on its own
+    /// line, so a long name ("Natural resources conservation") is never
+    /// truncated to fit a row it shares.
+    private func chips(_ chips: [DSSubjectChip]) -> some View {
+        VStack(alignment: .leading, spacing: DSControl.stackGap) {
+            ForEach(chips) { chip in
+                chipView(chip)
+            }
+        }
+        .accessibilityIdentifier("subjectsChips")
+    }
+
+    private func chipView(_ chip: DSSubjectChip) -> some View {
+        HStack(spacing: DSSpacing.sm) {
+            Text(chip.name)
+                .font(.dsBody)
+                .foregroundStyle(Color.dsTextPrimary)
+            Spacer(minLength: 0)
+            Button(action: { onRemove(chip) }) {
+                Image(systemName: "xmark")
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextSecondary)
+                    // The glyph is a fraction of the target, so the 44pt floor
+                    // and a rectangular content shape over it — the
+                    // `DSTextButton` rule, for the same reason.
+                    .frame(width: DSControl.tapTarget, height: DSControl.tapTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(chip.name)")
+        }
+        .padding(.leading, DSControl.textInset)
+        .padding(.trailing, DSSpacing.xs)
+        .dsControlBox(minHeight: DSControl.tapTarget)
+    }
+
+    private func note(_ text: String, identifier: String) -> some View {
+        Text(text)
+            .font(.dsCaption)
+            .foregroundStyle(Color.dsTextSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier(identifier)
+    }
+}

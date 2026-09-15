@@ -34,6 +34,7 @@ import ed.unicoach.db.models.SimilarityAnchorOutcome
 import ed.unicoach.db.models.SimilarityAxis
 import ed.unicoach.db.models.SimilarityMatch
 import ed.unicoach.db.models.SimilarityQuery
+import ed.unicoach.db.models.SubjectStatus
 import ed.unicoach.db.models.TuitionTierReading
 import ed.unicoach.db.models.Version
 import ed.unicoach.db.models.residencyTierBasisOf
@@ -2181,19 +2182,6 @@ object CollegesDao :
     )
   }
 
-  /**
-   * Escapes LIKE metacharacters so caller text matches literally (backslash
-   * first, so it never re-escapes its own output). Backslash-as-escape is
-   * Postgres's **implicit default** — the query above carries no `ESCAPE`
-   * clause and relies on it (standard SQL would require `ESCAPE '\\'`
-   * explicitly), so this helper and that default are one contract.
-   */
-  private fun escapeLikePattern(raw: String): String =
-    raw
-      .replace("\\", "\\\\")
-      .replace("%", "\\%")
-      .replace("_", "\\_")
-
   // ---------------------------------------------------------------------------
   // Derived name words (RFC 146)
   // ---------------------------------------------------------------------------
@@ -3049,7 +3037,12 @@ object CollegesDao :
       LEFT JOIN LATERAL (
           SELECT array_agg(DISTINCT s.slug ORDER BY s.slug) AS subject_slugs
           FROM subjects s
-          WHERE EXISTS (
+          -- A DEPRECATED subject matches no college (RFC 205 D40). The taxonomy
+          -- file no longer carries it; the row survives only so the student who
+          -- already chose it can still read its name, and materialising it here
+          -- would go on matching colleges for everyone forever.
+          WHERE s.status = '${SubjectStatus.ACTIVE.value}'
+            AND EXISTS (
               SELECT 1 FROM college_programs_census pc
               WHERE pc.college_id = c.id
                 AND EXISTS (SELECT 1 FROM unnest(s.cip_prefixes) p

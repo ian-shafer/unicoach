@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationError
+import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.Id
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
@@ -12,6 +13,26 @@ sealed class DaoException(
 
 /** PostgreSQL SQLSTATE codes the write-path mappers dispatch on. */
 private const val SQLSTATE_FOREIGN_KEY_VIOLATION = "23503"
+
+/**
+ * An ON DELETE/UPDATE **RESTRICT** foreign key raises its own state, not
+ * `23503`: PostgreSQL answers `23001` (restrict_violation) for
+ * `violates RESTRICT setting of foreign key constraint ...`. A mapper that
+ * matches only `23503` therefore never sees a RESTRICT refusal and hands the
+ * caller a bare [DatabaseException] — the defect this constant exists to stop
+ * recurring. Do not "tidy" it away as a duplicate of the line above.
+ */
+private const val SQLSTATE_RESTRICT_VIOLATION = "23001"
+
+/**
+ * The two SQLSTATEs a blocked reference write can arrive as, published for the
+ * DAOs that dispatch on both: `23503` foreign_key_violation and `23001`
+ * restrict_violation, the state an ON DELETE RESTRICT foreign key actually
+ * raises. Stated here, beside the constants, so the digits are written once and
+ * a call site that copied them cannot drift from the reason they are two.
+ */
+internal val FOREIGN_KEY_SQLSTATES = setOf(SQLSTATE_FOREIGN_KEY_VIOLATION, SQLSTATE_RESTRICT_VIOLATION)
+
 private const val SQLSTATE_UNIQUE_VIOLATION = "23505"
 private const val SQLSTATE_CHECK_VIOLATION = "23514"
 
@@ -145,6 +166,32 @@ internal fun corruptValue(
   location = location,
 )
 
+/**
+ * A `money_profiles` status column holding a value its CHECK forbids -- today
+ * only [AnswerStatus.UNDECIDED], which is the INTENDED-SUBJECT answer (RFC 205)
+ * and belongs to no money field.
+ *
+ * Declared once because every money read states the same rule: the offending
+ * value is row corruption, named with its column and row, and NEVER folded into
+ * `declined`. "I don't know yet" is not "I would rather not say", and a read
+ * that quietly turns one into the other states a refusal the family never made.
+ * The expected set is [AnswerStatus.moneyCases] itself, so the sentence cannot
+ * drift from the enum.
+ *
+ * It BUILDS the exception rather than throwing it. Most callers throw it at
+ * once; [ed.unicoach.coaching.ResidencyOffer] logs it and degrades instead,
+ * because a search must not fail on a corrupt profile -- same words, different
+ * control flow.
+ */
+fun nonMoneyAnswerStatus(
+  status: AnswerStatus,
+  location: String,
+) = CorruptPersistedValueException(
+  status.value,
+  ValidationError.InvalidFormat(expected = "one of " + AnswerStatus.moneyCases.joinToString { it.value }),
+  location = location,
+)
+
 class LockAcquisitionFailureException(
   message: String = "Lock acquisition failure",
 ) : DaoException(message),
@@ -191,8 +238,56 @@ class SearchIndexNotBuiltException :
   TransientError
 
 /**
+ * A dropped subject a student's answer still references, so the taxonomy reload
+ * cannot delete it (RFC 205 D40).
+ *
+ * TYPED, not prose. The caller needs the slug and the dependant counts as data —
+ * the [UnmappedControlCodeException] shape, a counts map plus a sentence the
+ * exception builds itself — because a message is for a human and grepping one is
+ * not an interface.
+ *
+ * NOT a [NotFoundException], which is what this used to be mapped to and is the
+ * opposite of what happened: the row is very much there, and a student is
+ * holding it. [PermanentError] — retrying the same reload cannot make the
+ * student's answer go away; deprecating the slug is what resolves it.
+ *
+ * [slug] is null when the server's DETAIL line did not yield one; the sentence
+ * then carries the whole classification, because a reader with no slug at all
+ * has nowhere to start.
+ *
+ * A [slug] this run never classified has NO count, and the sentence says so
+ * rather than printing `0` — a zero there would be a sentinel AND a false
+ * statement, since zero dependants is exactly the state in which the delete
+ * would have succeeded.
+ */
+class SubjectStillReferencedException(
+  val slug: String?,
+  val dependants: Map<String, Int>,
+  cause: Throwable? = null,
+  override val constraint: String? = null,
+  override val detail: String? = null,
+) : DaoException(
+    if (slug == null) {
+      "one of the dropped subjects is still referenced by a student's intended subjects; " +
+        "dropped slugs and their dependants: " +
+        dependants.entries.sortedBy { it.key }.joinToString(", ") { "[${it.key}] -> ${it.value}" }
+    } else if (dependants[slug] == null) {
+      "subject [$slug] is still referenced by a student's intended subjects and cannot be deleted; " +
+        "this run did not classify that slug, so no dependant count for it was read " +
+        "before the write; it must be deprecated instead"
+    } else {
+      "subject [$slug] is still referenced by ${dependants[slug]} intended-subject row(s) " +
+        "and cannot be deleted; it must be deprecated instead"
+    },
+    cause,
+  ),
+  ConstraintDiagnostics,
+  PermanentError
+
+/**
  * The reference-table write-path SQLSTATE mapping: `23503` (a fact row
- * referencing an absent parent) to [NotFoundException]; `23505`/`23514`
+ * referencing an absent parent) and `23001` (a RESTRICT foreign key refusing a
+ * delete) to [NotFoundException]; `23505`/`23514`
  * (unique/check, including a domain CHECK) to [ConstraintViolationException];
  * everything else through [mapDatabaseError].
  *
@@ -209,7 +304,10 @@ fun mapReferenceWriteError(
 ): Exception {
   val serverError = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
   return when (e.sqlState) {
-    "23503" -> {
+    // `23001` alongside `23503`: a RESTRICT foreign key refusing a delete is a
+    // reference violation like any other, and it is the only state the
+    // reference-data reload path can actually see.
+    SQLSTATE_FOREIGN_KEY_VIOLATION, SQLSTATE_RESTRICT_VIOLATION -> {
       NotFoundException(
         message = missingReferenceMessage,
         cause = e,

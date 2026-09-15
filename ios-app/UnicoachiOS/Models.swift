@@ -321,6 +321,23 @@ enum AnswerStatus: String, Sendable, CaseIterable {
     case unanswered
     case answered
     case declined
+    /// "I don't know yet" (RFC 205): a real answer at 16, and not silence. It
+    /// is legal on the intended-subjects answer and **illegal on every money
+    /// field** — `money_profiles` keeps its three-value CHECKs, and the server
+    /// enum minus this case is what the three money OpenAPI enums declare. So
+    /// this vocabulary is wider than the money one on purpose, and
+    /// `MoneyProfileVocabularyTests` asserts both halves of that split rather
+    /// than one `entries == spec` equality that could only be satisfied by a
+    /// spec that lies.
+    case undecided
+}
+
+/// The money half of `AnswerStatus`: the three values a money field may hold.
+/// Named once, here, because two readers need it — the drift guard against the
+/// three money OpenAPI enums, and any money-side code that must not accept
+/// `undecided`.
+extension AnswerStatus {
+    static let moneyCases: [AnswerStatus] = allCases.filter { $0 != .undecided }
 }
 
 /// The household income bands as the server spells them
@@ -423,6 +440,108 @@ extension VocabulariesResponse {
     /// fall back to the shipped list and say the list may be incomplete.
     func entries(_ name: Name) -> [VocabularyEntry]? {
         vocabularies[name.rawValue]?.entries
+    }
+}
+
+// MARK: - Intended-subject domain models (RFC 205)
+
+/// One subject of OUR taxonomy (`db/data/subjects.json` -> the `subjects`
+/// table), as both `GET /api/v1/subjects` and the intended-subjects answer
+/// serve it: `slug` is identity and is what the client sends back, `name` is
+/// the label and may be renamed server-side without touching a stored answer
+/// (RFC 205 D38/D39).
+///
+/// No federal code appears here and none may be added: a 4-digit code cannot
+/// represent a real answer (`neuroscience` spans three prefixes at two
+/// grains), which is why the student's answer references the slug alone.
+struct PublicSubject: Codable, Equatable, Sendable, Identifiable {
+    let slug: String
+    let name: String
+
+    /// `slug` is the primary key server-side, so it is the identity here too.
+    var id: String { slug }
+}
+
+/// `GET /api/v1/subjects?q=` (RFC 205 §5). `q` is optional — the taxonomy is a
+/// closed authored list small enough to browse, and a picker that shows nothing
+/// until the student types is a worse picker — so this response is also what an
+/// unqueried list looks like.
+struct SubjectSearchResponse: Codable, Equatable, Sendable {
+    let subjects: [PublicSubject]
+}
+
+/// The student's whole answer to "what do you want to study?" (RFC 205 §6).
+///
+/// `status` arrives as a raw `String` with a `knownStatus` accessor beside it,
+/// on the `PublicSubscription.status` / `PublicMoneyProfile` precedent: a bare
+/// `enum: String, Codable` property would *throw on decode* the day the server
+/// adds a fifth state.
+///
+/// `subjects` is **always emitted** by the server, empty when the status is not
+/// `answered`, so it is not optional here. The "values iff answered" rule is
+/// the schema's own deferred constraint trigger; this type does not re-derive
+/// it, it just carries what the server said.
+struct PublicIntendedSubjects: Codable, Equatable, Sendable {
+    /// The cap the server enforces in the service AND as a deferred constraint
+    /// trigger (RFC 205 §2). Named once here because the screen needs it to
+    /// know when to stop offering "Add a subject"; it is a mirror of the
+    /// server's rule, never the authority for it — a fourth subject sent anyway
+    /// is a 400 the screen surfaces.
+    static let maxSubjects = 3
+
+    let status: String
+    let subjects: [PublicSubject]
+
+    var knownStatus: AnswerStatus? { AnswerStatus(rawValue: status) }
+}
+
+struct IntendedSubjectsResponse: Codable, Equatable, Sendable {
+    let intendedSubjects: PublicIntendedSubjects
+}
+
+/// The `PUT /api/v1/students/me/intended-subjects` body (RFC 205 §3/§6): the
+/// student's WHOLE answer, in one of three shapes. There is no add-one, no
+/// remove-one and no clear — a caller can never write `unanswered`, which is
+/// only ever the state of a student who was never asked.
+///
+/// An enum rather than three optional properties because the wire admits states
+/// the domain does not: `{"subjects":["nursing"],"declined":true}` is
+/// representable JSON and is a pooled 400. Here it cannot be written down.
+///
+/// **Exactly one key is emitted.** That is the server's "at most one of these
+/// keys" rule taken literally rather than the money profile's always-emit-the-
+/// booleans convention: this route counts the keys that are PRESENT, and a
+/// `"declined": false` beside a subject list would be a second key present.
+struct UpdateIntendedSubjectsRequest: Encodable, Equatable, Sendable {
+    /// Removing the last subject is `.subjects([])`, and the server answers
+    /// `undecided` — never `unanswered` (RFC 205 D17). The client does not
+    /// decide that; it just submits the empty set.
+    enum Answer: Equatable, Sendable {
+        case subjects([String])
+        case declined
+        case undecided
+    }
+
+    let answer: Answer
+
+    init(_ answer: Answer) {
+        self.answer = answer
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case subjects, declined, undecided
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch answer {
+        case .subjects(let slugs):
+            try container.encode(slugs, forKey: .subjects)
+        case .declined:
+            try container.encode(true, forKey: .declined)
+        case .undecided:
+            try container.encode(true, forKey: .undecided)
+        }
     }
 }
 

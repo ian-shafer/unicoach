@@ -648,6 +648,29 @@ class CollegeSearchIndexRebuildTest {
   }
 
   @Test
+  fun `a DEPRECATED subject matches no college`() {
+    SearchIndexFixture.seedCodebooks(session)
+    seedSubjects()
+    val id = insertCollege(newCollege(201020))
+    for (cip in listOf("230101", "260101")) {
+      CollegeIpedsDao
+        .upsertProgramsCensus(session, NewCollegeProgramsCensus(id, cip, 5, 12, 2023))
+        .getOrThrow()
+    }
+    // The taxonomy file no longer carries `literature`, and a student's answer
+    // keeps the row alive (RFC 205 D40 — `SubjectDeprecationTest` owns HOW the
+    // column gets set; the rebuild only has to honour it). Materialising it
+    // here would go on matching colleges for everyone forever.
+    connection.createStatement().use { it.execute("UPDATE subjects SET status = 'deprecated' WHERE slug = 'literature'") }
+    CollegesDao.rebuildSearchIndex(session).getOrThrow()
+
+    assertEquals(listOf("biology"), stringListOrNull("subject_slugs", 201020))
+    // The census itself is untouched: the college still teaches the programs,
+    // it is the SUBJECT that stopped being offered as a search word.
+    assertEquals(listOf("230101", "260101"), stringListOrNull("cip_codes", 201020))
+  }
+
+  @Test
   fun `subject_slugs is EMPTY when the programs are known and none is a subject`() {
     SearchIndexFixture.seedCodebooks(session)
     seedSubjects()

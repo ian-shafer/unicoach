@@ -234,6 +234,7 @@ class SystemPromptCatalogTest {
       NEED_AND_FORMS("When a family asks whether a school meets full financial"),
       BORROWING("Borrowing is a different question from price, and you"),
       SEARCH_RULER("A college search now ranks on one of two prices, and which"),
+      INTENDED_SUBJECTS("A student may also tell you what they want to study, and it is"),
     }
 
     /**
@@ -2155,6 +2156,61 @@ class SystemPromptCatalogTest {
       "v26 is a pre-RFC-185 row: its authored lines are joined with one space, never a line break",
     )
     assertTrue(bodyOf(v26).contains(CoachParagraph.COST), "v26 must still carry the money paragraph it was approved with")
+  }
+
+  /**
+   * The rollback THIS slice documents (RFC 205), and the one rollback assertion
+   * in this file whose target is DERIVED rather than named.
+   *
+   * Every rollback test above names an immutable row by literal label, which is
+   * right for an RFC whose own rollback sentence names a version. RFC 205's
+   * does not: its prompt paragraph "rolls back by the pin that was live at
+   * design time, read from `service.conf`". The pin is rewritten at land --
+   * `bin/prompt-seed` sets it to the label it has just generated -- so a literal
+   * here would be stale the moment another run lands first, and would then make
+   * a true-sounding claim about somebody else's row while saying nothing about
+   * the rollback of the pin that is actually live.
+   *
+   * So the target is read from the pin at test time and is always the row one
+   * below it, and the claims made about it are the ones that stay true for ANY
+   * pin: the catalog is insert-only, so the predecessor is still selectable; it
+   * is a whole prompt rather than a stub, because it still carries the money
+   * paragraph in ITS OWN dialect ([bodyOf] picks the separator from the row's
+   * version, so a pre-v27 target is not searched for a line break it cannot
+   * have); and it is a DIFFERENT body from the one being served, or the pin
+   * bought nothing and "rolling back" would change nothing.
+   */
+  @Test
+  fun `the version one below the pin is still selectable, so the pin's rollback is real`() {
+    val pinnedNumber = versionNumberOf(coaching.systemPromptVersion)
+    assertTrue(
+      pinnedNumber > 1,
+      "the pin [${pinnedRowLabel()}] is the first coach version, so it has no predecessor to roll back to",
+    )
+
+    val target = "v${pinnedNumber - 1}"
+    val row =
+      SystemPromptsDao
+        .findByNameAndVersion(session, coaching.systemPromptName, target)
+        .getOrElse { cause ->
+          fail(
+            "system_prompts has no row [${coaching.systemPromptName}/$target], the version one below the pin " +
+              "[${pinnedRowLabel()}]; the catalog is insert-only, so every version it has ever cut stays selectable " +
+              "and COACHING_SYSTEM_PROMPT_VERSION=$target is the documented rollback. Re-migrate: nix develop -c bin/test",
+            cause,
+          )
+        }
+
+    assertEquals(target, row.version, "the rollback target must be selectable by name and version")
+    assertTrue(row.body.isNotEmpty(), "[$target] must be the copy it was seeded with, not an empty row")
+    assertTrue(
+      bodyOf(row).contains(CoachParagraph.COST),
+      "[$target] must still be a whole coach prompt -- it carries the money paragraph every version since v3 has",
+    )
+    assertTrue(
+      row.body != servedBody(),
+      "[$target] and the pin [${pinnedRowLabel()}] must be different bodies, or the pin bought nothing and the rollback is a no-op",
+    )
   }
 
   /**

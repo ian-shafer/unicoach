@@ -2185,6 +2185,56 @@ class CoachingServiceTest {
       assertBodyThenDateBlockOnly(captured!!.system)
     }
 
+  /**
+   * RFC 205: the intended-subjects paragraph is REACHABLE -- it is in the text
+   * the model is handed, not merely in `prompts/coach-system-prompt.md`.
+   *
+   * `SystemPromptCatalogTest` pins the authored file against the catalog row,
+   * and the row is the first thing [composeSystem] writes. Neither of those
+   * says the paragraph reaches the provider, and reaching the provider is the
+   * only thing that makes a prompt paragraph do anything at all. So this reads
+   * the system text back off the captured [ChatRequest] -- the string the model
+   * actually sees, after composition, with the date block and every other block
+   * around it.
+   *
+   * The sentences are QUOTED rather than read from the source file, on purpose:
+   * a test that takes its expectation from the artifact under test passes for a
+   * file with the paragraph deleted, which is the one regression worth
+   * catching. A reworded paragraph fails here loudly, naming the sentence that
+   * stopped arriving.
+   */
+  @Test
+  fun `the intended-subjects paragraph reaches the model in the composed system text`() {
+    runBlocking {
+      val student = createStudent()
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      val systemText = assertNotNull(captured?.system, "the provider must have been given a system text")
+      // The paragraph rides the body, so it must arrive above every composed
+      // block: a sentence found only below the body would be someone else's.
+      assertTrue(systemText.startsWith(pinnedCoachBody), "the pinned body must still open the system text")
+
+      // One rule per line, each the sentence a later edit would drop.
+      listOf(
+        "A student may also tell you what they want to study",
+        "worth asking only when the answer would change what you say next",
+        "Say what it buys before you ask",
+        "is a real answer at sixteen and it is recorded as one",
+        "Never record a subject the student did not choose",
+        "change them, or remove them at any time",
+      ).forEach { sentence ->
+        assertTrue(
+          systemText.contains(sentence),
+          "RFC 205's intended-subjects paragraph must reach the model; the composed system text has no [$sentence]",
+        )
+      }
+    }
+  }
+
   // ===========================================================================
   // The date block (RFC 186): today, the graduation date, the year of school
   // ===========================================================================

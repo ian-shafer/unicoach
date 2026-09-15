@@ -4,6 +4,7 @@ import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.util.phraseOf
 import ed.unicoach.db.dao.CorruptPersistedValueException
+import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.LivingArrangement
@@ -665,6 +666,17 @@ data class ResidencyBasis(
 
         AnswerStatus.DECLINED -> {
           ComparedResidency.Declined
+        }
+
+        // `undecided` is the intended-subject answer (RFC 205), refused by the
+        // shared money-status rule — never folded into
+        // [ComparedResidency.Declined], which would state a refusal the family
+        // never made on every public school's line.
+        AnswerStatus.UNDECIDED -> {
+          throw nonMoneyAnswerStatus(
+            AnswerStatus.UNDECIDED,
+            location = "money_profiles.[residency_status] (assembling a comparison basis)",
+          )
         }
       }
   }

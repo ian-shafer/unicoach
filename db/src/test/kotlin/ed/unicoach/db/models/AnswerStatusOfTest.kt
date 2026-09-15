@@ -31,11 +31,31 @@ class AnswerStatusOfTest {
   }
 
   @Test
-  fun `the three words are the ones the schema spells`() {
+  fun `the three shared words are the ones the schema spells`() {
     assertEquals("unanswered", AnswerStatus.UNANSWERED.value)
     assertEquals("answered", AnswerStatus.ANSWERED.value)
     assertEquals("declined", AnswerStatus.DECLINED.value)
     assertEquals(AnswerStatus.DECLINED, AnswerStatus.fromValue("declined"))
-    assertEquals(null, AnswerStatus.fromValue("undecided"), "the money spelling excludes the fourth word")
+  }
+
+  /**
+   * RFC 205 added the fourth word to this enum, so `fromValue` now yields it —
+   * which is exactly what the two schema domains say. The narrowing this test
+   * used to make by asking `fromValue` for a null is now made by
+   * [AnswerStatus.moneyCases], the list the money reads and the money OpenAPI
+   * enums are built from: the enum carries every word the WIDER domain
+   * (`answer_status_or_undecided`) admits, and the money spelling is that list
+   * minus one. Asserting the subtraction is stronger than asserting the parse
+   * failed, because the money surfaces consume the subtraction and never
+   * consulted `fromValue` for it.
+   */
+  @Test
+  fun `the fourth word parses, and the money spelling is the list without it`() {
+    assertEquals(AnswerStatus.UNDECIDED, AnswerStatus.fromValue("undecided"))
+    assertEquals(
+      listOf("unanswered", "answered", "declined"),
+      AnswerStatus.moneyCases.map { it.value },
+      "the money spelling is every word MINUS undecided, in declaration order",
+    )
   }
 }

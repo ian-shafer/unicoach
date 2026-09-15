@@ -10,6 +10,12 @@ class AppViewModel: ObservableObject {
     let conversationClient: ConversationClientProtocol
     let collegeListClient: CollegeListClientProtocol
     let vocabularyClient: VocabularyClientProtocol
+    /// The two RFC 205 surfaces: the subject taxonomy the picker searches, and
+    /// the student's own answer. Two clients because they are two resources —
+    /// one is reference data every student sees, the other is one student's
+    /// answer.
+    let subjectsClient: SubjectsClientProtocol
+    let intendedSubjectsClient: IntendedSubjectsClientProtocol
     let googleSignInProvider: SsoSignInProviding
     let appleSignInProvider: SsoSignInProviding
     let cookieStorage: CookieStorageProtocol
@@ -86,6 +92,8 @@ class AppViewModel: ObservableObject {
         conversationClient: ConversationClientProtocol? = nil,
         collegeListClient: CollegeListClientProtocol? = nil,
         vocabularyClient: VocabularyClientProtocol? = nil,
+        subjectsClient: SubjectsClientProtocol? = nil,
+        intendedSubjectsClient: IntendedSubjectsClientProtocol? = nil,
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
         subscriptionClient: SubscriptionClientProtocol? = nil,
         subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = AppViewModel.defaultSubscriptionStore(),
@@ -98,6 +106,8 @@ class AppViewModel: ObservableObject {
         self.conversationClient = conversationClient ?? ConversationClient(apiClient: apiClient)
         self.collegeListClient = collegeListClient ?? CollegeListClient(apiClient: apiClient)
         self.vocabularyClient = vocabularyClient ?? VocabularyClient(apiClient: apiClient)
+        self.subjectsClient = subjectsClient ?? SubjectsClient(apiClient: apiClient)
+        self.intendedSubjectsClient = intendedSubjectsClient ?? IntendedSubjectsClient(apiClient: apiClient)
         self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)
         self.googleSignInProvider = googleSignInProvider
         self.appleSignInProvider = appleSignInProvider
