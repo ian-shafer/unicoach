@@ -316,6 +316,27 @@ picker. Ian: "sgtm". So the captions are new user-facing copy, drafted in
 `spec.md` and approved by Ian at gate 2 — not invented inside a /ship run, and
 not scraped from the coach fragments. COMMITTED.
 
+LEDGER (one line per landed slice, appended as each lands; `slice-board` reads
+THIS file, so the line lives here and the spec points at it):
+
+- `web/01/the-shell` LANDED as RFC 210 (main@cf4f22ba + e8249d90, 2026-09-15) —
+  the responsive shell every later web page renders into: `site.css` reorganised
+  into six labelled sections, `main` fluid from 320px to 1440px with the measure
+  held in a `--measure` custom property and a `clamp()` gutter, two breakpoints
+  (the existing 640px and a new 1024px, where only tokens change), the header
+  navigation WRAPPING instead of overflowing, one tap-target mechanism giving
+  the brand, the nav links and the footer links a 44px floor, a typed
+  `ShellWidth` seam on the one `siteLayout` (the hook `web/02`'s signed-in shell
+  will use), and public-web's first content-security policy — enforcing, no
+  `'unsafe-inline'`, set at the routing root so it rides rendered pages, the
+  static mount and the 404/503 alike, with the seam parameterised in
+  `web-common` so a second web tier adopts it rather than copying the plugin.
+  Gate answers (Ian, 2026-09-15): wrapping navigation over a hamburger,
+  enforcing over report-only, two breakpoints over three. Per D9 the tests pin
+  MECHANISMS only; **the D19 device matrix was NOT run** and is an open item.
+  Suite green: 3,372 executed, 0 failures; the pre-commit gate ran at full
+  scope.
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
