@@ -268,6 +268,28 @@ A deny hit is a reset to the last checkpoint — `scripts/ship-recover -s <rs>`.
 Everything else is a review question. Take the child's report at face value;
 re-verify only where **nothing** reported -- a stall, a kill, or a hand edit.
 
+**That includes the SUITE** (RFC 211). A child that runs
+`nix develop -c bin/test` runs it AFTER `scripts/ship-checkpoint` and EMITS the
+record itself, from the same shell, appending to `<rs>/suite-green.txt`:
+
+    nix develop -c bin/test > <rs>/suite.log 2>&1 ; echo "exit=$?" >> <rs>/suite-green.txt
+    echo "cmd=nix develop -c bin/test"        >> <rs>/suite-green.txt
+    echo "tree=$(git rev-parse HEAD^{tree})"  >> <rs>/suite-green.txt
+
+Emitted, not REPORTED. A hash retyped into a message is prose, and a child that
+runs the suite green, fixes a typo, checkpoints, and honestly reports the
+post-edit hash has produced a record for bytes nothing ever tested. `git`
+answers in the same shell as the suite, so the file is measurement. The child
+still reports the outcome in words, for Ian; phase 5 reads the file.
+
+Phase 5 then reuses it instead of re-running the same suite over bytes Gradle
+cannot distinguish. Re-running a gate a child reported green, with no edit in
+between, is distrust dressed as diligence, and it costs minutes. It is NOT a
+"second sample of a deterministic function" — the suite is DB-backed and
+CLAUDE.md itself names `-f` for flake hunting — but a second sample of a flaky
+suite over identical bytes is weak evidence, it is not free, and the
+authoritative run is the hook minutes later.
+
 An opportunistic improvement the design never mandated is not blocked here. It
 is surfaced at review as scope creep and consciously kept or reverted -- silent
 blocking loses a real insight, silent acceptance compounds drift.
@@ -307,9 +329,91 @@ tier: `<rs>/findings/lens-plan.json` (ran + skipped, with the skip reason) and
 `ship-verify-scope … | tee <rs>/findings/write-scope.txt` — so the archive shows
 the check ran, not merely that nobody complained.
 
-Then the real gate — `nix develop -c bin/test`, dispatched to a child like any
-other long command — and, for any UI change, screenshots as artifacts (see
+Then the suite — `nix develop -c bin/test`, dispatched to a child like any other
+long command — and, for any UI change, screenshots as artifacts (see
 [`references/visual-gate.md`](references/visual-gate.md)).
+
+**Run it only if the tree has MOVED in a way the suite could notice** (RFC 211).
+At the point the suite would run — after the tier fixes, which is where the tree
+stops moving inside phase 5 — check FOUR things, not two:
+
+    git status --porcelain            # empty
+    git rev-parse HEAD^{tree}         # equals tree= in <rs>/suite-green.txt
+    # exit=0 in that file
+    # cmd= is exactly "nix develop -c bin/test"
+
+All four: do **not** re-run. Cite the record as phase 5's suite evidence, name
+the tree hash in the report, and re-derive the executed count from the JUnit XML
+rather than from the child's sentence. Anything else — a different tree, a dirty
+file, a non-zero exit, a module-scoped or `-f` command, a missing or unreadable
+record — runs the suite. The default answer is always "run it".
+
+`cmd=` is not ceremony: a child that ran `bin/test rest-server` or
+`bin/test -f
+db` produces an equally valid-looking record, and reusing that
+would be strictly weaker than today while contradicting CLAUDE.md's "do not
+scope by module".
+
+**When the tree differs, ask WHAT differs.** Keyed on the raw hash alone this
+rule would fire only when literally nothing happened, and a one-word fix to an
+RFC Markdown file would buy a full suite re-run:
+
+    git diff --name-only <recorded-tree> HEAD
+
+Every path under `product/`, or `rfc/*.md`, or a `*.md` under
+`.prime/agent/skills/`: the Gradle suite's answer cannot have moved — none is a
+build input — so reuse the record. One path outside that set re-runs. This is
+RFC 194's reasoning applied to a different decision, and it is deliberately not
+shared code with it.
+
+The TREE hash is the identity, not the commit SHA, for the reason
+`ship-verified` already gives: amending, re-committing identical content, and a
+no-op rebase all preserve the tree, so the marker survives exactly the
+operations that did not change what was tested. Note that the tree can still
+move AFTER this decision — phase 6 runs `bin/prompt-seed`, `ship-order`,
+`bin/format` and a rebase — and that is fine. Phase 5's suite is not the
+authority; the hook runs after all of them, on the tree that lands.
+
+**Plain `bin/test`, and NOT `bin/test check`** (RFC 211). No module argument, no
+`-f`: Gradle's own dependency graph picks the tasks the diff invalidated, which
+is what CLAUDE.md means by "let the cache do the scoping". Phase 5 is not the
+authoritative run and must not pretend to be — **the pre-commit hook is the
+single authoritative `check` run**, and it is minutes away. Running `check` here
+proves the same thing about the same tree twice: run rfc-208 spent 4m26s on
+`bin/test`, then ~15 min on `bin/test check` whose Gradle half was
+`96/96 up-to-date`, and then the hook ran `check` a third time. Report the exit
+code and the EXECUTED count from the JUnit XML `tests=` attribute — never
+`grep -c "@Test"`, which counts commented-out annotations.
+
+**Phase 5 runs NO shell harnesses at all.** That is a deliberate, temporary gap,
+not an oversight (RFC 211). `bin/test check` is the only thing that runs
+`bin/shell-tests`, and the hook is the only thing that runs `bin/test check`. So
+a diff that touches `bin/`, `infra/`, `.prime/agent/skills/`, `db/schema/`,
+`db/seed/`, `db/data/`, `prompts/` or `.env*` gets NO harness signal until the
+commit. When it fails there, follow the shell-harness procedure in phase 6.
+
+Targeting — running only the harness a given path can break — needs a
+path-to-harness mapping, and that mapping is being built ONCE, as a real script
+with tests, by the RFC that attacks the hook's own harness cost. Phase 5 will
+re-add targeting by CALLING that script. It must never carry a second copy of
+the table: a wrong map here fails SILENTLY, because the hook catches what it
+missed, while a wrong map in the hook does not — so the copy that gets exercised
+and trusted would be the one whose errors are invisible.
+
+Close verify with `nix develop -c bin/format -c` — read-only, measured at 7.07s
+— **but only when the diff contains `.kt` or `.kts`.** Otherwise skip it.
+
+The reason is narrow and it is the only one that survives. Phase 6 already runs
+`bin/format` in WRITE mode before the commit, and for Markdown `deno fmt` is
+exhaustive: the write fixes everything the later check would report, so a
+Markdown-only run learns nothing here. Kotlin is different. `ktlint --format`
+auto-corrects what it can and LEAVES what it cannot, so a non-correctable
+violation survives the write and fails `bin/format -c` at the hook — where it
+runs CONCURRENTLY with `bin/test check`, so it discards a 10-20 minute suite run
+with it, inside the land lock. Seven seconds here against that.
+
+Not because another session's file might be in your tree: RFC 201 gave every
+writer its own worktree, so there is none.
 
 ### 6. land
 
@@ -323,9 +427,21 @@ other long command — and, for any UI change, screenshots as artifacts (see
     scripts/ship-order  -s <rs>          # re-place this run's ORDER lines
     scripts/ship-squash -s <rs>
     nix develop -c bin/format
+    git add -u                           # re-stage what the formatter rewrote
     nix develop -c git commit            # code — through the FULL hook. The gate.
     nix develop -c git commit --no-verify  # RFC markdown only, lane A
     scripts/ship-land -s <rs>            # ff-merge, then releases  ← exit
+
+**`git add -u` is not decoration** (RFC 211). `ship-squash` is
+`git reset --soft`, so the run's work lives in the INDEX; `bin/format` (write
+mode — it runs `ktlint --format` and `deno fmt`, and it is what stops a stray
+Markdown file from costing a gate run) rewrites the WORKING TREE. Without the
+re-stage the commit carries the UNFORMATTED bytes, and nothing in the gate says
+so: the hook's `bin/format -c` checks the working tree and passes,
+`bin/test check` passes, and then `ship-verified record` declines with
+`working tree differs from index` — so `ship-land`'s `ship-verified assert`
+refuses AFTER the full gate has been spent. `-u` and not `-A`: a formatter
+cannot create a file, so staging tracked modifications is exactly enough.
 
 `ship-order` is not optional: `ship-land` re-runs it as `ship-order -s <rs> -n`
 (dry run — writes nothing, exit 3 when `ORDER` would change) before the
@@ -401,9 +517,19 @@ The lock is repo-wide and serialises the whole sequence, not the `git commit`
 alone: the hook's result is only valid for the base it started on, so the rebase
 has to be inside the lock too. `ship-lock acquire` waits up to 30m and holds for
 at most 15m; `ship-land` releases it at the fast-forward. Phase 5's
-`nix develop -c bin/test` stays **outside** it — the hook re-runs the tests, and
-holding the lock through review would serialise the part of a run that has no
-reason to be serial.
+`nix develop -c bin/test` stays **outside** it — that run is incremental
+reassurance, not the gate, and holding the lock through review would serialise
+the part of a run that has no reason to be serial. The hook does not RE-run the
+suite; it IS the run (RFC 211). What reaches `main` is hook-verified exactly as
+strongly as before: `bin/pre-commit` runs `bin/format -c` and the full
+`bin/test check` — Gradle, Postgres, both `installDist` builds, and all SEVEN
+shell harnesses. Say it precisely: the hook validates the WORKING TREE, not the
+index (CLAUDE.md: "the hook validates the whole working TREE rather than the
+commit"). What ties that to the commit is `ship-verified record`'s own guard —
+it records nothing when the working tree differs from the index — so such a
+commit gets no marker and `ship-land`'s assert refuses it. RFC 211 removed a
+rehearsal, not a check. When the hook fails on a harness rather than on Gradle,
+follow the shell-harness procedure below.
 
 **A base that advanced by `product/**` commits only does NOT cost a second gate
 run** (RFC 193). Those commits never take the lock — a `docs:` commit is an
@@ -418,6 +544,33 @@ Anything else — one code path, a merge, an empty commit, a replay that conflic
 before. The fast path skips the **gate**, not the ancestry check: the
 fast-forward is still confirmed, and `main` can move again while step 3a runs.
 Say in the report which of the two happened; the run state says so too.
+
+**If the hook fails on a SHELL HARNESS** — any of the seven:
+`ship-scripts-tests`, `prompt-seed-scripts-tests`, `docs-scripts-tests`,
+`test-calendar-seed-scripts-tests`, `q-scripts-tests`, `db-scripts-tests`,
+`scripts-tests` — the answer is written down, so it is not improvised at the
+gate (RFC 211). In this order:
+
+1. **Release the lock first**, before diagnosing anything:
+   `scripts/ship-lock -s <rs> release`.
+2. **Capture the failing assertion VERBATIM** to
+   `<rs>/findings/hook-shell-failure.txt`, with the harness name and its section
+   header. The worktree is deleted at land; the hook's output is the only
+   record.
+3. **Classify, in this order.** _Environmental_ (missing `installDist` artifact,
+   a daemon another checkout stopped, a Postgres hiccup) — fix the environment,
+   change no code, re-enter phase 6 at the top. _This run's defect_ — fix,
+   `ship-checkpoint`, and re-run ONLY the harness that failed, BY ITS OWN NAME
+   from the seven above — note `bin/scripts-tests` has no prefix, so a
+   `bin/<name>-scripts-tests` template cannot name the largest and likeliest of
+   them; the full gate is the hook and it runs next anyway. _Pre-existing and
+   not this run's_ — confirm it fails at `BASE_SHA` too, from the original
+   checkout, then **stop and report to Ian**. Repairing an unrelated harness
+   inside a land is a new run with its own approval.
+4. **Re-enter the phase 6 block at the top** — `ship-lock acquire`, then
+   `ship-rebase` — never at the `git commit`.
+5. **Never `--no-verify` past it.** The `--no-verify` commits this repo permits
+   are enumerated, and this is not one of them.
 
 If the hook fails on tests, **stop and report**. That is the one place after
 approval where this skill wakes Ian — and it happens inside the critical
