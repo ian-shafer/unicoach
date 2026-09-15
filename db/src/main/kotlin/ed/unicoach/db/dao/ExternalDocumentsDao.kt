@@ -83,5 +83,37 @@ object ExternalDocumentsDao {
         },
       )
 
+  /**
+   * THE CITATION PAIR A CITED CORPUS WRITES: the page a row was read from, and
+   * the archived address it was read THROUGH where the publisher's own page
+   * opens for no client we have. One call, both ids, in the caller's
+   * transaction.
+   *
+   * IT EXISTS BECAUSE TWO CORPORA NOW ASK THE SAME QUESTION -- RFC 213's own
+   * rule for `link_status`, applied to code instead of to a vocabulary:
+   * `admission_test_state_programmes` (RFC 208) and `fafsa_filing_deadlines`
+   * (RFC 215) had the identical twelve lines, comment included, and a third
+   * cited corpus would have copied whichever it found first.
+   *
+   * IT GOES THROUGH [idOf] AND NEVER [upsert], and that is the whole policy
+   * this function carries: a caller CITING a page knows its address and knows
+   * NOTHING about whether the page is still served, so it must not overwrite a
+   * swept status with "we never asked" -- the check-that-never-ran looking like
+   * one that passed, which RFC 182 forbids.
+   *
+   * Both statements run in the caller's transaction, so a refused fact row
+   * takes its documents with it. A caller in autocommit gets two committed
+   * documents and no fact, which is untidy rather than wrong: a document row is
+   * a url and its link state, true whoever cites it.
+   */
+  fun citationIds(
+    session: SqlSession,
+    sourceUrl: String,
+    archiveUrl: String?,
+  ): Result<Pair<ExternalDocumentId, ExternalDocumentId?>> =
+    idOf(session, sourceUrl).mapCatching { sourceId ->
+      sourceId to archiveUrl?.let { idOf(session, it).getOrThrow() }
+    }
+
   private fun mapId(rs: java.sql.ResultSet): ExternalDocumentId = ExternalDocumentId(UUID.fromString(rs.getString("id")))
 }

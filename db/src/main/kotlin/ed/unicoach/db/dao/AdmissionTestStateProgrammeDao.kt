@@ -81,18 +81,15 @@ object AdmissionTestStateProgrammeDao {
     session: SqlSession,
     row: NewAdmissionTestStateProgramme,
   ): Result<AdmissionTestStateProgramme> =
-    // THE CITATION IS RESOLVED FIRST, and through [ExternalDocumentsDao.idOf]
-    // rather than its upsert: this path knows the row's two urls and knows
-    // NOTHING about whether either still resolves, so it must not overwrite a
-    // swept status with "we never asked" (RFC 182). Both statements run in the
-    // caller's transaction, so a refused programme row takes its documents with
-    // it.
+    // THE CITATION IS RESOLVED FIRST, through the ONE home for that policy:
+    // [ExternalDocumentsDao.citationIds] cites and never sweeps, so this path
+    // cannot overwrite a known link status with "we never asked" (RFC 182).
+    // These twelve lines used to be duplicated verbatim in
+    // [FafsaFilingDeadlineDao]; RFC 215 shared them the day the second corpus
+    // asked the question.
     ExternalDocumentsDao
-      .idOf(session, row.sourceUrl)
-      .mapCatching { sourceId ->
-        val archiveId = row.archiveUrl?.let { ExternalDocumentsDao.idOf(session, it).getOrThrow() }
-        sourceId to archiveId
-      }.mapCatching { (sourceId, archiveId) ->
+      .citationIds(session, row.sourceUrl, row.archiveUrl)
+      .mapCatching { (sourceId, archiveId) ->
         session
           .mutateReturning(
             """
