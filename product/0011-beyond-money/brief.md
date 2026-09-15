@@ -591,3 +591,29 @@ colleges must not look like one that suppressed 264.
 
 `beyond/03` must therefore treat the third counter as work it owns, not as
 something it inherits.
+
+### D46 — where a citation lives: a table or the type system (recorded 2026-09-14)
+
+Produced with brief 0010 while comparing RFC 204's explainer citations against
+its own `external_documents` table. Recorded because both briefs will keep
+meeting it:
+
+> **A thing that can change while nobody is looking belongs in a table with a
+> checked-on date. A thing that changes only when a human edits it belongs in
+> the type system, where the compiler is the check.**
+
+`beyond/09`'s citations are static page copy — a claim cannot be CONSTRUCTED
+without a source URL and a read date, and that is enforced at compile time.
+Brief 0010's documents are fetched pages whose RESOLVABILITY changes on its own
+(a state department began refusing machine reads with nobody editing anything),
+which no compiler can notice and only a dated check can.
+
+Two consequences for this brief:
+
+- The explainer pages must be **explicitly excluded, with that reason written
+  down**, if brief 0010's citation sweep ever runs — otherwise a reader sees
+  type-level citations and reads them as a table that escaped the migration.
+- **A shape becoming cheap to represent is not an argument that it should be
+  used.** `external_documents` makes a linked citation trivial to store; **D34
+  still stands** — the Family Cost Report cites the College Scorecard in words,
+  with no link.

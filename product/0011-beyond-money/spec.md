@@ -193,15 +193,18 @@ we suggest, and what the report can say about return.
 `StudentScopedChatTool`; RFC 171's "Your details" screen; `college_programs` as
 the vocabulary source (429 pairs, 391 at bachelor's).
 
-**Decided here:** stored as **4-digit CIP** (D15); an unordered **set capped at
-3**, no ranking (D16); a fourth status **`undecided`**, exhaustively handled
-(D30); `Clear` not exposed (D17); a new **`GET /api/v1/fields-of-study?q=`**
-(D29); both doors — chat and the screen (D17). **New table => DDL at the gate**
-(brief 0001 D10); the proposed direction is a child table keyed
-`(student_id, cip_code)` with the status on the parent. **Left to /ship:** the
-iOS multi-select control (none exists — `DSPickerRow` is single selection), and
-whether the REST grammar extends or gains a sibling route (today it 400s on more
-than one selection).
+**Decided here:** ~~stored as 4-digit CIP (D15)~~ — **SUPERSEDED by D38: stored
+as a `subjects` slug from our own 181-name taxonomy**, each name carrying CIP
+prefixes, because one name can cover several codes and a family recognises
+"nursing" where nobody recognises `51.38`. LANDED that way as RFC 205. An
+unordered **set capped at 3**, no ranking (D16); a fourth status
+**`undecided`**, exhaustively handled (D30); `Clear` not exposed (D17); a new
+**`GET /api/v1/fields-of-study?q=`** (D29); both doors — chat and the screen
+(D17). **New table => DDL at the gate** (brief 0001 D10); the proposed direction
+is a child table keyed `(student_id, cip_code)` with the status on the parent.
+**Left to /ship:** the iOS multi-select control (none exists — `DSPickerRow` is
+single selection), and whether the REST grammar extends or gains a sibling route
+(today it 400s on more than one selection).
 
 **Acceptance:** value before ask — the coach offers the question only when the
 answer would change what it says, names what it buys, and accepts "I don't know
@@ -344,8 +347,10 @@ offer (`CollegeChatToolTest.kt:119-150` pins that it never gates).
 (D21); the similarity **distance is untouched** and the SUBJECTS axis stays out
 of `DEFAULTS` (D22, C15); each result states teaches-your-field **yes / no /
 unknown**, and `NULL` is unknown — only `subject_slugs` carries a judged `{}`
-(C14); the offer reuses RFC 169's mechanism verbatim. **Left to /ship:** which
-side widens 4-digit to 6-digit, and whether results group or annotate.
+(C14); the offer reuses RFC 169's mechanism verbatim. **Left to /ship:** whether
+results group or annotate. ~~Which side widens 4-digit to 6-digit~~ is **MOOT**
+since RFC 205 landed: the answer is stored as a `subjects` slug, and
+`college_search_index.subject_slugs` already speaks that same vocabulary.
 
 **Acceptance:** a test proves no school is removed by a stored field; a test
 proves the similarity ranking is byte-identical with and without a stored field;
