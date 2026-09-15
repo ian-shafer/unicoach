@@ -440,18 +440,5 @@ the immutability rule's own shape, recorded at the two /ship approval gates.
   only open cycle" in the clock or in a test. Guidance to the run, not a licence
   to decide: a product choice about which cycle the page shows comes back here.
 
-Ledger (one line per landed slice, appended as each lands):
-
-- `fafsa/06/fafsa-process-answers` LANDED as RFC 216 (main@206013f6 + 9887c8d6,
-  2026-09-15) — the `fafsa_process` coach tool: 30 cited FAFSA process rules
-  over six topics (who files and the contributor/consent model, divorced or
-  separated parents, a contributor with no Social Security number, dependency,
-  what happens after submitting, the form is free), each carrying its publisher,
-  document, https page and the 2026-09-14 date we read it; a rule with no https
-  source does not construct. Coach prompt v38 routes to it, states the
-  more-than-half-support rule and names "the parent the student lived with" as
-  the old rule that is wrong, and says the FAFSA is free and that we never fill
-  it in, submit it or ask for a login. Gate decisions taken as recommended: a
-  sibling tool rather than more payload on `federal_aid_policy`, no tool
-  argument, no coverage number, no dated 2024 rollout copy. Suite green: 3,431
-  tests executed, 0 failures.
+Ledger: the landed-slice ledger for this brief lives in [`brief.md`](brief.md),
+which is the file `slice-board` reads. It is not duplicated here.

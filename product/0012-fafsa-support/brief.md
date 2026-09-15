@@ -183,3 +183,20 @@ Committed decisions:
   over a rot-silently page). Stable statutory facts are marked as such and cited
   once. D4's table binds this hardest: a deadline table that rots is worse than
   no table, because a family acts on it.
+
+LEDGER (one line per landed slice, appended as each lands; `slice-board` reads
+THIS file, so the line lives here and the spec points at it):
+
+- `fafsa/06/fafsa-process-answers` LANDED as RFC 216 (main@206013f6 + 15d146c2,
+  2026-09-15) — the `fafsa_process` coach tool: 30 cited FAFSA process rules
+  over six topics (who files and the contributor/consent model, divorced or
+  separated parents, a contributor with no Social Security number, dependency,
+  what happens after submitting, the form is free), each carrying its publisher,
+  its document, that publisher's own https page and 2026-09-14, the day we read
+  it; `FafsaRule` does not construct without an https source. Coach prompt v38
+  routes to it, states the more-than-half-support rule, names "the parent the
+  student lived with" as the old rule that is wrong, and says the FAFSA is free
+  and that we never fill it in, submit it or ask for a login (D6). Gate
+  decisions taken as recommended: a sibling tool rather than more payload on
+  `federal_aid_policy`, no tool argument, no coverage number, no dated 2024
+  rollout copy. Suite green: 3,431 tests executed, 0 failures.
