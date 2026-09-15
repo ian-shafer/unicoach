@@ -14,9 +14,8 @@ Status:
   and could not) and D10 (`us_states` is not ours yet) amended by Ian, and D16
   added after he flagged the in-flight `external_documents` table.
 - Handle: `fafsa` (slice IDs `fafsa/NN/name`).
-- Ledger: at the end of this file (`fafsa/06` landed as RFC 216; `fafsa/01` in
-  flight as RFC 215). `slice-board` reads the ledger from THIS file, never from
-  `spec.md`.
+- Ledger: at the end of this file (`fafsa/06` landed as RFC 216, `fafsa/01` as
+  RFC 215). `slice-board` reads the ledger from THIS file, never from `spec.md`.
 
 ## The question
 
@@ -203,7 +202,54 @@ THIS file, so the line lives here and the spec points at it):
   `federal_aid_policy`, no tool argument, no coverage number, no dated 2024
   rollout copy. Suite green: 3,431 tests executed, 0 failures.
 
+- `fafsa/01/the-deadline-table` LANDED as RFC 215 (main@a62a607e + 553c000f,
+  2026-09-15) — `fafsa_filing_deadlines`: one row per (award year, jurisdiction,
+  programme, event), federal rows as `state IS NULL` on a `NULLS NOT DISTINCT`
+  natural key; three kinds with a value-iff-kind CHECK (a published day, the
+  agency's own RULE in words, a verified absence WITH its citation);
+  `deadline_as_published` on every row, hour and time zone included; citations
+  as two foreign keys into `external_documents` (D16), archive never equal to
+  its source; `event` four long including the corrections deadline, whose
+  Federal Register / studentaid.gov one-day disagreement is stored with its
+  sources rather than resolved; `fafsa_cycle_opens_on()` as the one home for the
+  cycle bound, which refuses last cycle's date under this cycle's key; and
+  `FafsaFilingCycle`, a filing clock separate from the 1 July aid-year rule and
+  explicitly not a claim about the only open cycle. Plus `AidDeadlineEvent`,
+  `AidDeadlineKind`, the sealed `PublishedDeadline` / `DeadlineJurisdiction`
+  pair, `FafsaFilingDeadlineDao` and 17 tests. NO ROWS — `fafsa/02` types them —
+  and no door; this is the one slice of the beat a family cannot reach. Gate
+  decisions: table approved as presented PLUS a fourth event value (Ian),
+  `publisher` kept on the row, and the separate filing clock. Review (three
+  passes independently) caught the cycle window a year too wide and a state code
+  that was checkable but unchecked; both fixed before the gate. Suite green:
+  3,436 tests executed, 0 failures.
+
 ## LEARN — running notes (appended as slices land)
+
+From `fafsa/01` (RFC 215), reported by the run:
+
+- **A window constraint written to refuse "last cycle's value" must be probed
+  with LAST cycle's value, not one two cycles back.** The cycle-containment
+  CHECK shipped a year too wide and its test probed 2025 under a 2027 key, so
+  the acceptance criterion was vacuous: the exact row the RFC named as "the one
+  mistake that makes this table worse than no table" would have been ACCEPTED,
+  by a table whose test suite was green. Three review passes found it
+  independently. **Candidate for /principle.**
+- **A design that states a sharing rule must apply it to its own code.** RFC 215
+  wrote down RFC 213's rule — a vocabulary becomes shared the day a SECOND table
+  asks for it — and then copied twelve lines of citation-resolution code,
+  comment included, from the state-programme corpus. **Candidate for
+  /principle.**
+- **A test that restates a rule from another module keeps asserting a contrast
+  that has stopped existing.** The proof that the FAFSA filing clock differs
+  from the 1 July aid-year clock lived in `:db` against a hand copy of the July
+  rule. The failure direction is false REASSURANCE, not a false alarm. It moved
+  to `:service`, the only module that can see both.
+- **A four-field refusal beats a constraint name.** The schema suite reduced
+  every PostgreSQL error to its constraint name, which reports NULL for a NOT
+  NULL violation — so the "a row that cites nothing" case could only assert
+  null. Keeping SQLSTATE, DETAIL and message beside the name made that case real
+  and made every mismatch readable.
 
 From `fafsa/06` (RFC 216), reported by the run:
 
