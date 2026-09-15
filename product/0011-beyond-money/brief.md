@@ -559,6 +559,19 @@ nudge, never a bare repeat.
       Loader only: the stored statuses move on the next `bin/ingest-colleges` run. Full
       suite 3,271 executed, 0 failures; the gate re-ran it and passed.
 
+    beyond/04/your-intended-fields LANDED as RFC 205 (main@3b5eb382 + 3dc52404,
+      2026-09-15) — a student can now say what they want to study, from the coach or
+      from "Your details". A `subjects` taxonomy of published names maps to CIP
+      prefixes; a student picks up to three, or answers "I don't know yet", or prefers
+      not to say — `undecided` is a fourth `AnswerStatus` the money columns still
+      refuse, so every money `when` names it in a branch of its own. Picks are
+      append-only with soft deletes; a subject a student already chose is deprecated
+      rather than deleted when the taxonomy drops it, so the answer survives and the
+      subject is offered to nobody. New `GET /api/v1/subjects` and
+      `/api/v1/intended-subjects`, an iOS multi-select picker, and coach prompt v37.
+      Full suite 3,213 executed in the gate run, 0 failures; iOS 677 executed, 0
+      failures, 2 pre-existing skips.
+
 ### D45 — the third arm is a counter, not a log (Ian, 2026-09-14, verbatim: "yes")
 
 `beyond/02` landed TWO counters (values coerced out of range, values the
