@@ -1,3 +1,22 @@
+/* site.css — the one stylesheet public-web serves, at one URL (RFC 210).
+   Organised in six labelled sections, in cascade order:
+
+     1. tokens      — :root custom properties, including the layout scale
+     2. reset       — box-sizing, body, media defaults
+     3. layout      — the page column, the measure, the fluid gutter
+     4. chrome      — .site-header, .site-nav, .site-footer
+     5. components  — report, guide, and everything a later slice adds
+     6. breakpoints — the two media blocks, last and together
+
+   It is ONE file because splitting it needs a concatenation step, and the build
+   rail that would own it (`web/03`) depends on this slice. Labelled sections
+   cost nothing and split cleanly once there is a builder to split them with.
+   A new rule goes in the section its selector belongs to, not at the end. */
+
+/* ---------------------------------------------------------------------------
+   1. tokens
+   --------------------------------------------------------------------------- */
+
 :root {
   --bg: #ffffff;
   --fg: #1f2933;
@@ -6,10 +25,52 @@
   --border: #e4e7eb;
   --chrome-bg: #1f2933;
   --chrome-fg: #e4e7eb;
+  /* The brightest chrome foreground: the brand, and a nav link under the
+     pointer. A token rather than a literal, so the chrome has ONE palette and a
+     later theme changes it in one place. */
+  --chrome-fg-bright: #ffffff;
+
+  /* The measure is a VARIABLE, not a constant: a prose page reads at ~48rem,
+     and a page that needs the full width (the chat, the college list) sets
+     `--measure` from a body class instead of editing the `main` rule. */
+  --measure: 48rem;
+
+  /* The fluid gutter. `clamp` covers 320–1440px continuously, so the column
+     breathes at every width between the two breakpoints rather than at them. */
+  --gutter-x: clamp(1rem, 4vw, 2rem);
+  --gutter-y: 2rem;
+
+  /* The type scale, held as tokens so the 1024px block steps the whole scale
+     in one place rather than restating every selector that uses it.
+     `--font-size-root` is applied to the ROOT element (below), because `rem`
+     resolves against the root's font size and nowhere else: set on `body` it
+     would change body text and leave every `rem` literal at the browser
+     default, so the 1024px step would move almost nothing. */
+  --font-size-root: 1rem;
+  --font-size-hero: 2.25rem;
+
+  /* Anything a finger has to hit is at least this tall (Apple/Material floor). */
+  --tap-target: 44px;
+
+  /* The gap BETWEEN two wrapped chrome rows. A token, not a literal in each
+     rule: `.site-header` and `.site-nav` both wrap, and their two gaps have to
+     agree or a header row and the nav row below it read as one strip to a
+     thumb. Two hand-typed values agree only until one of them is tuned. */
+  --chrome-row-gap: 0.5rem;
 }
+
+/* ---------------------------------------------------------------------------
+   2. reset
+   --------------------------------------------------------------------------- */
 
 * {
   box-sizing: border-box;
+}
+
+/* The root font size, and so the unit every `rem` in this file is written in.
+   It lives here and not on `body` for the reason given beside the token. */
+html {
+  font-size: var(--font-size-root);
 }
 
 body {
@@ -20,40 +81,130 @@ body {
   line-height: 1.6;
 }
 
+/* Replaced media never widens the page past the viewport — the one way a fluid
+   column still produces a horizontal scrollbar on a phone. */
+img,
+svg,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+   3. layout
+   --------------------------------------------------------------------------- */
+
+/* The page column. No fixed pixel width anywhere in this section: the width is
+   the viewport's, capped by the measure, and the side padding is the fluid
+   gutter. That is the fluid-first mechanism the shell tests pin. */
+main {
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--gutter-y) var(--gutter-x);
+}
+
+/* The other end of the measure seam: a page whose content is not prose — the
+   chat, the college list — asks for the full width by naming this class on
+   `<body>` (`siteLayout(width = ShellWidth.WIDE)`), and `main` above picks it
+   up without being edited. The class name is written in exactly two places:
+   here, and on the `ShellWidth` member that renders it. */
+.wide-measure {
+  --measure: 80rem;
+}
+
+/* ---------------------------------------------------------------------------
+   4. chrome
+   --------------------------------------------------------------------------- */
+
+/* The header WRAPS rather than overflowing: however many links the nav grows
+   to, a narrow phone spends another row on them and every destination stays
+   visible and tappable. The rationale does not count the links, because the
+   count is owned by `siteHeader` and a later slice adds and removes them. No
+   disclosure menu, because one needs either JavaScript this tier does not have
+   or the checkbox hack, which lies to a screen reader about what it is. */
 .site-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  padding: 1rem 1.5rem;
+  row-gap: var(--chrome-row-gap);
+  padding: 1rem var(--gutter-x);
   background: var(--chrome-bg);
   color: var(--chrome-fg);
+}
+
+/* ONE tap-target mechanism for every link in the chrome — the brand, the nav
+   links and the footer links alike: an inline flex box at least `--tap-target`
+   tall with its text centred in it. Written once so the three cannot drift into
+   three different answers to the same question, and so a link added to the
+   chrome later inherits the floor by joining this selector list. */
+.site-header .site-brand,
+.site-header .site-nav a,
+.site-footer a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-target);
 }
 
 .site-header .site-brand {
   font-size: 1.25rem;
   font-weight: 700;
-  color: #fff;
+  color: var(--chrome-fg-bright);
   text-decoration: none;
+}
+
+/* Spacing is a GAP, not a margin on each link: a stale `margin-left` would
+   indent the first link of a wrapped second row and leave it out of line with
+   the first. The `row-gap` is what SEPARATES two wrapped rows: each row is
+   already `--tap-target` tall and the boxes would otherwise touch, so two
+   stacked rows would read as one strip to a thumb. Vertical padding cannot do
+   that job — under `box-sizing: border-box` it sits INSIDE `min-height`. */
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 1.25rem;
+  row-gap: var(--chrome-row-gap);
 }
 
 .site-header .site-nav a {
   color: var(--chrome-fg);
   text-decoration: none;
-  margin-left: 1.25rem;
 }
 
 .site-header .site-nav a:hover {
-  color: #fff;
+  color: var(--chrome-fg-bright);
 }
 
-main {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 2rem 1.5rem;
+.site-footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1.5rem var(--gutter-x);
+  text-align: center;
 }
+
+/* The one place a margin is the spacing, and deliberately so: the footer links
+   sit in centred inline flow, not in a flex row, so there is no `gap` to use.
+   The margin is SYMMETRIC, which is what makes it safe here — the failure the
+   `.site-nav` comment above rejects margins for is a one-sided `margin-left`
+   indenting the first link of a wrapped second row out of line. With an equal
+   margin on both sides every row stays centred, wrapped or not. */
+.site-footer a {
+  color: var(--muted);
+  margin: 0 0.5rem;
+}
+
+/* ---------------------------------------------------------------------------
+   5. components
+   --------------------------------------------------------------------------- */
 
 .hero h1 {
-  font-size: 2.25rem;
+  font-size: var(--font-size-hero);
   margin-bottom: 0.5rem;
 }
 
@@ -67,28 +218,13 @@ main {
   margin-top: 1.75rem;
 }
 
-a {
-  color: var(--accent);
-}
-
-.site-footer {
-  border-top: 1px solid var(--border);
-  color: var(--muted);
-  padding: 1.5rem;
-  text-align: center;
-}
-
-.site-footer a {
-  color: var(--muted);
-  margin: 0 0.5rem;
-}
-
 /* RFC 155 — the Family Cost Report. Wide screens get a real table; below the
    phone breakpoint every row stacks into a card per school, because the parent
    reading a link pasted into a message is on a phone and a five-column table
    there is unreadable. The stacked layout re-labels each value with the way of
    living it came from (the `data-label` the page writes), so a figure is never
-   read under the wrong column. */
+   read under the wrong column. The stacking rules themselves are in section 6
+   with the other media block. */
 
 .report h1,
 .guide h1 {
@@ -209,6 +345,54 @@ a {
   font-size: 0.9rem;
 }
 
+/* RFC 204 — the explainer pages. One measure, the same type scale as the legal
+   pages, and two quiet marks: the "as of" line under the title, and the `[n]`
+   reference markers that tie a claim to the page it was read from. The body
+   carries no outbound links on purpose, so every URL sits in the source list at
+   the foot, where the reader can weigh them together. */
+
+.guide-as-of {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 0;
+}
+
+.guide-standfirst {
+  font-size: 1.1rem;
+  color: var(--muted);
+}
+
+.guide-ref {
+  color: var(--accent);
+  font-size: 0.75rem;
+  padding-left: 0.15rem;
+}
+
+.guide-sources {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  padding-left: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.guide-sources li {
+  margin-bottom: 0.6rem;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------------
+   6. breakpoints
+
+   TWO, and they live together so the whole responsive behaviour is readable in
+   one place. Everything between and outside them is fluid, so 320px, 412px,
+   820px and 1440px are covered by the rules above rather than by a breakpoint
+   each. Three were permitted; each one is a place a later slice can get wrong.
+   --------------------------------------------------------------------------- */
+
+/* 640px — the phone. The report table stops being a grid and becomes one card
+   per school (RFC 155). */
 @media (max-width: 640px) {
   .report-table,
   .report-table tbody,
@@ -246,39 +430,15 @@ a {
   }
 }
 
-/* RFC 204 — the explainer pages. One measure, the same type scale as the legal
-   pages, and two quiet marks: the "as of" line under the title, and the `[n]`
-   reference markers that tie a claim to the page it was read from. The body
-   carries no outbound links on purpose, so every URL sits in the source list at
-   the foot, where the reader can weigh them together. */
-
-.guide-as-of {
-  color: var(--muted);
-  font-size: 0.9rem;
-  margin-top: 0;
-}
-
-.guide-standfirst {
-  font-size: 1.1rem;
-  color: var(--muted);
-}
-
-.guide-ref {
-  color: var(--accent);
-  font-size: 0.75rem;
-  padding-left: 0.15rem;
-}
-
-.guide-sources {
-  border-top: 1px solid var(--border);
-  padding-top: 1rem;
-  padding-left: 0;
-  list-style: none;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.guide-sources li {
-  margin-bottom: 0.6rem;
-  overflow-wrap: anywhere;
+/* 1024px — laptop and desktop. Only tokens change: the gutter and the type
+   scale step up, and every rule above picks that up without being restated.
+   `--font-size-root` steps the whole `rem` scale with it, and does so only
+   because the root element (not `body`) is what reads that token. */
+@media (min-width: 1024px) {
+  :root {
+    --gutter-x: 2.5rem;
+    --gutter-y: 2.5rem;
+    --font-size-root: 1.0625rem;
+    --font-size-hero: 2.75rem;
+  }
 }

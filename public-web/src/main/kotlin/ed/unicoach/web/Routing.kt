@@ -3,6 +3,7 @@ package ed.unicoach.web
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
+import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
 import ed.unicoach.web.render.WHO_PAYS_PATH
@@ -114,6 +115,12 @@ fun Application.installPublicWebRouting(
   }
 
   routing {
+    // At the ROOT, above every route, so the policy rides the rendered pages,
+    // the static mount AND the StatusPages 404/503 alike (RFC 210). Installed on
+    // a page route it would have covered the pages and missed exactly the
+    // responses an attacker reaches first.
+    setContentSecurityPolicy()
+
     healthRoute()
     get("/") { call.respondHomePage() }
     get("/terms") { call.respondTermsPage() }

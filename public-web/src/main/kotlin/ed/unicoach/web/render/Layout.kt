@@ -18,6 +18,41 @@ import kotlinx.html.span
 import kotlinx.html.title
 
 /**
+ * The width a page's column is read at — the whole of the `<body>`-class seam
+ * RFC 210 opened, expressed as the CHOICE a page makes rather than as the CSS
+ * class that implements it.
+ *
+ * A caller names a member; the class name is written in exactly one place per
+ * member, next to the stylesheet rule it has to agree with. A free-form class
+ * string could not offer that: a typo in it is a legal Kotlin expression that
+ * renders fine and selects nothing, so the page silently comes out at the
+ * default width. A member added here without a matching rule in `site.css`
+ * fails `ShellMechanismTest` instead.
+ *
+ * [bodyClass] is nullable because the default width is the ABSENCE of a class,
+ * not a class that happens to do nothing — and `null` is how a null-safe
+ * language says absent.
+ */
+enum class ShellWidth(
+  val bodyClass: String?,
+) {
+  /**
+   * The reading measure (~48rem): text a person reads in lines, which is every
+   * page public-web serves today. It carries no class because it is what `main`
+   * already does, so a page written before RFC 210 renders identical bytes.
+   */
+  PROSE(null),
+
+  /**
+   * The full column (`--measure: 80rem`): content that is not prose and is
+   * cramped by the reading measure — `web/02`'s signed-in shell, the chat, the
+   * college list. It widens the page by setting the token `main` already reads,
+   * so no page-specific width rule is ever written.
+   */
+  WIDE("wide-measure"),
+}
+
+/**
  * The shared HTML skeleton for every public-web page. Links the chrome-less
  * `/site.css` stylesheet from the static mount and wraps a page body — injected
  * into the `content` slot — in the identical top-level site header and footer.
@@ -28,9 +63,18 @@ import kotlinx.html.title
  * [noindex] is the one seam RFC 155 added: it emits a `robots` meta for the
  * tokenized cost report, and defaults to off so every other page renders
  * byte-identically to what it rendered before.
+ *
+ * [width] is the seam RFC 210 added, and it is why there is still ONE layout
+ * function: the signed-in shell selects the wide measure (`--measure`) instead
+ * of forking a second layout that would drift from this one. It is an ENUM and
+ * not a CSS-class string, because a misspelt class compiles, renders and
+ * silently selects no rule at all — the page simply comes out the wrong width,
+ * with every test still green. [ShellWidth.PROSE] by default, so every page
+ * that existed before renders the same markup it did.
  */
 fun HTML.siteLayout(
   pageTitle: String,
+  width: ShellWidth = ShellWidth.PROSE,
   noindex: Boolean = false,
   content: MAIN.() -> Unit,
 ) {
@@ -48,7 +92,10 @@ fun HTML.siteLayout(
     title { +"unicoach — $pageTitle" }
     link(rel = "stylesheet", href = "/site.css")
   }
-  body {
+  // `bodyClass` is `null` for the default width rather than "": kotlinx.html
+  // renders an empty `class=""` attribute for a blank string, and every page
+  // that existed before RFC 210 must keep rendering the bytes it did.
+  body(classes = width.bodyClass) {
     siteHeader()
     main { content() }
     siteFooter()
