@@ -547,12 +547,12 @@ domain or a reference table; whether captures carry a checksum.
   still allows a row with no status and no date would move the citations without
   checking them, which is the opposite of the point.
 
-**Status:** SCHEDULED (Ian, 2026-09-14). It was deferred when it looked like
-eight tables and a money-layer migration; it was MEASURED at four live carriers
-by RFC 213, and `test/05.4` has just made the table it migrates into strict. Ian
-un-deferred it on the requirement that **external data ingestion must check the
-links it adds**: this is the slice that makes that true rather than
-aspirational.
+**Scheduled** (Ian, 2026-09-14) — no `Status:` line, because `DEFERRED` is the
+only value that key takes and this slice is no longer deferred. It was parked
+when it looked like eight tables and a money-layer migration; RFC 213 MEASURED
+it at four live carriers, and `test/05.4` has just made the table it migrates
+into strict. Ian un-deferred it on one requirement: **external data ingestion
+must check the links it adds.**
 
 **The four live carriers, measured 2026-09-14 rather than assumed:**
 `source_documents` (`0087`, the Common Data Set ingest — checked today, but by
