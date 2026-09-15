@@ -7,15 +7,40 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-14 — **TWO MORE OF BRIEF 0010 LANDED: a state's own school-day
-testing programme, and the two shared shapes this schema kept copying by hand**
-(RFC 208 `main@75f5fc17` + `bba0927a`; RFC 209 `main@0a7c027f` + `92c214f4`).
-**RFC 208** stops the coach telling a family to pay for a Saturday their state
-has already paid for: 36 of 51 jurisdictions are recorded, each from a state
-agency's own page — 27 require the sitting of every student in a grade, 9 offer
-it; 16 ACT states, 13 SAT, 7 where the state chose no single test; 22 say who
-pays. It is inferred from the residency state the money profile already holds,
-so the family is asked for nothing. The table is **append-only history** keyed
+Updated: 2026-09-14 — **EVERY URL UNICOACH CITES NOW LIVES IN ONE TABLE, WITH A
+DATE BESIDE IT** (RFC 213, `main@2f9344e3` + `063b8569`). `external_documents`
+holds a url, whether it still resolves, and the day we looked — **and nothing
+else**: a document type, a publisher column and a capture table were all
+specified and cut by Ian during design, each for the same reason (_"a flag with
+no caller is a concept the product does not have yet"_). The state-programme
+table lost its two link columns and points at it instead: the page required, the
+archived address optional, the two never equal, and an archive with no page
+unrepresentable. **New tool `bin/check-link`** — hand it urls, it prints HTTP
+status codes; it fetches and does NOT judge, so the found/not-found/unknown
+reading stays with the caller. Ian's shape: urls as arguments, `-f` for a file,
+or stdin; a scheme is required because prepending one is inventing part of an
+address a human was meant to supply; `000` when there is no status at all; a
+current Chrome user agent by default with `-u` to override, **because the number
+we record is meant to predict a family's experience and a family opens the link
+in a browser**. **A real sweep of all 43 cited addresses is committed: 34 alive,
+0 dead, 9 "asked, no usable answer" with the date asked** — Arizona, Delaware
+and New Hampshire recorded as blocked-not-gone rather than dead. **Not one word
+the coach says changed**, and the prompt stays at v36. Brief 0012 (FAFSA) is
+unblocked by it. Two things named as debt: `bin/cds-link-check` still has its
+own probing code until the clean-up slice merges them, and the link status is
+recorded but spoken nowhere — whether a dead link stops being offered is a copy
+decision for the slice that owns that sentence. **Next free RFC 214**
+(recompute, never copy).
+
+Previously — **TWO MORE OF BRIEF 0010 LANDED: a state's own school-day testing
+programme, and the two shared shapes this schema kept copying by hand** (RFC 208
+`main@75f5fc17` + `bba0927a`; RFC 209 `main@0a7c027f` + `92c214f4`). **RFC 208**
+stops the coach telling a family to pay for a Saturday their state has already
+paid for: 36 of 51 jurisdictions are recorded, each from a state agency's own
+page — 27 require the sitting of every student in a grade, 9 offer it; 16 ACT
+states, 13 SAT, 7 where the state chose no single test; 22 say who pays. It is
+inferred from the residency state the money profile already holds, so the family
+is asked for nothing. The table is **append-only history** keyed
 `(state, school_year)` — Ian: _"one row per state, replaced yearly is an
 anti-pattern because it makes data depend on outside processes"_ — and the read
 and the staleness guard both take the newest row per state, which is what makes

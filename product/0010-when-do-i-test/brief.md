@@ -109,6 +109,23 @@ _(one line per landed slice: ID, RFC, SHAs, one-line what.)_
        test/05.3/own-our-codebooks carries the key (D27). Coach prompt v36.
        Executed: 3,302 tests, 1,616 shell assertions, 0 failures.
 
+    test/05.1/external-documents LANDED as RFC 213 (main@2f9344e3 + 063b8569,
+       2026-09-14) — every url we cite now lives in one table with a date beside
+       it. external_documents holds a url, whether it still resolves, and the day
+       we looked: no type, no publisher, no capture table, all three cut by Ian
+       during design. admission_test_state_programmes lost its two link columns
+       and points at it — the page required, the archived address optional, the
+       two never equal, an archive with no page unrepresentable — filled inside
+       the migration from the columns it dropped. NEW TOOL bin/check-link: hand
+       it urls, it prints HTTP status codes; it fetches and does not judge, so
+       the found/not_found/unknown reading stays with the caller. A real sweep of
+       all 43 cited addresses is committed: 34 alive, 0 dead, 9 "asked, no usable
+       answer" with the date asked (Arizona, Delaware and New Hampshire among
+       them, recorded as blocked-not-gone). NOT ONE WORD THE COACH SAYS CHANGED —
+       no service file, no prompt line, no payload key, prompt still v36.
+       Executed: 3,351 tests, 0 failures; 1,184 shell assertions including 21 new
+       for check-link, none of which resolves a public name.
+
 **Waves 1, 2 and 3 are complete: six slices landed — RFCs 186, 187, 195, 197,
 208 and 209.** The question the brief was opened for is answered by a test: for
 a student with one school closing Early Action on 1 November, the coach names
