@@ -535,6 +535,27 @@ code in the committed file against the published codebook file. A typo still
 fails the build, in the file where the fix is rather than at migration time. The
 key arrives with `test/05.3/own-our-codebooks`.
 
+**D28 — spend your time solving real, solvable problems.** (Ian, 2026-09-14,
+after cutting the fourth proposed mechanism of one afternoon: _"You're trying to
+solve a problem that is not really a big problem, and it's hard to solve."_)
+
+Four mechanisms were proposed and cut in this brief on one day: a captures
+table, then a capture EDGE, then a self-reference, then a lint that grepped SQL
+files for a `GENERATED FILE` header. The header lint was the worst, and its
+failure is instructive: it was **unsolvable by that means** — a string match
+cannot tell a file that MEANS the header from one that merely SAYS it — and it
+duplicated a check that already existed, since a test already asserts the
+committed seed is byte-identical to what the generator produces.
+
+The rule has two halves and both bite: **is the problem real**, and **can this
+mechanism actually hold it**. It is the same rule as D26's outcome ("a flag with
+no caller is a concept the product does not have yet") pointed at effort instead
+of at features.
+
+Applied immediately: the guarantee that a citation cannot exist without evidence
+needs ONE migration, not a lint and not a deletion — see
+`test/05.4/no-citation-without-a-check`.
+
 ## Corrections to the record (2026-09-10)
 
 Written down because the brief asserted them to Ian before they were verified.

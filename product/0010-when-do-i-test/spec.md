@@ -615,6 +615,63 @@ becomes a re-ingest that upserts what the migration already placed; whether
   migrated-then-imported one.
 - **Door:** none. Nothing a family sees changes.
 
+### `test/05.4/no-citation-without-a-check`
+
+**Needs:**
+
+- BLOCKS test/05.1/external-documents — technical. There is no column to tighten
+  until the table exists. (Satisfied: RFC 213 landed 2026-09-14.)
+
+**What and why.** `external_documents` landed with `url_status` defaulting to
+`'unknown'` and `url_checked_on` nullable, so
+`INSERT INTO external_documents
+(url) VALUES (...)` is legal and lands a
+citation **with no evidence at all**. Two paths already do it: the adopt
+migration's own fill, and `ExternalDocumentsDao.idOf`, which mints a row for any
+URL a caller hands it. Ian: make it impossible to store a citation nobody
+checked.
+
+**Decided here (D28).** The guarantee lands in the SCHEMA, because that is the
+only layer that can hold it — and nowhere else, because the other mechanisms
+considered were either unenforceable or duplicates:
+
+- **One migration**, appended after the seed: FAIL LOUDLY if any row has a NULL
+  date (today zero would — the committed sweep is 34 `found` and 9 dated
+  `unknown`), then `DROP DEFAULT` on `url_status`, `SET NOT NULL` on both, and
+  drop the now-redundant paired CHECK. **DDL at /ship's gate.** It must refuse
+  rather than backfill: backfilling would invent the evidence the slice exists
+  to require.
+- **`idOf` and `upsert` take the status and the date.** `idOf` is NOT deleted —
+  with the column non-null its bare insert simply cannot succeed, so the hole is
+  closed by the schema, and its one-statement shape (no read-then-write race) is
+  worth keeping.
+
+**Considered and NOT done, recorded so nobody re-proposes them:** a lint
+grepping SQL files for a `GENERATED FILE` header (a string match cannot tell a
+file that means it from one that says it, and the byte-identical seed test
+already catches drift); a content-equality test between the table and the
+committed status file (same duplication); and revoking `INSERT` from the
+application role — **the only mechanism that would make it impossible rather
+than merely refused** — which cannot be done cheaply today because
+`DATABASE_USER` is `POSTGRES_USER`, so the application connects as the owner and
+no per-table grants exist. That is real infrastructure work touching local
+development, the test harness and RDS, and it belongs in its own slice.
+
+**What it costs every future caller, accepted by Ian explicitly:** a citation
+must be swept before it can be stored. Brief 0012 (FAFSA) is the first to
+inherit it.
+
+**Acceptance criteria.**
+
+- `INSERT INTO external_documents (url) VALUES (...)` fails. An executed test
+  proves it.
+- A row may still say "asked and got no usable answer" — `unknown` WITH a date.
+  What is unrepresentable is a URL nobody checked.
+- The migration refuses a database holding a dateless row, rather than filling
+  one in. An executed test drives that case.
+- No user-visible behaviour changes and no prompt version is cut.
+- **Door:** none of its own.
+
 ### `test/06/your-scores`
 
 **Needs:**
