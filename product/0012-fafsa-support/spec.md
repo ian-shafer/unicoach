@@ -386,6 +386,60 @@ Defaults pre-chosen. Decision numbering continues from gate 1 (D1-D7).
   invented for us: RFC 213 decided an archived address "is just another row
   here", and 7 of our 148 rows need exactly that.
 
+## Decisions after gate 2 — approved by Ian 2026-09-15, verbatim: "approve both"
+
+Gate-2 decisions D8-D16 stand as written; these are NEW numbered decisions, in
+the immutability rule's own shape, recorded at the two /ship approval gates.
+
+- **D17 — a fourth event, `corrections_deadline`.** `fafsa/01`'s table allows
+  four events, not three. The federal cycle has a fourth date families act on:
+  the last day to fix an error on a filed form — 11 September 2027 for the
+  current cycle per the Federal Register, which `research/fafsa-domain.md` §2
+  records alongside studentaid.gov showing 12 September. That one-day
+  disagreement is stored with its sources, not resolved by us. Adding the value
+  at design time is one word in a CHECK; adding it after 148 rows are seeded is
+  a migration. Related and load-bearing for `fafsa/02`: the harvested corpus has
+  **zero federal rows** — all 148 are state — so every federal row is typed
+  there.
+- **D18 — the two naming calls, settled by landed precedent, not taste.** (a)
+  `event` stays `TEXT` + `CHECK` with a Kotlin `AidDeadlineEvent` enum, because
+  that IS this repo's enum shape (`CLAUDE.md`; the `IncomeBand`/`AidForm`
+  precedent). Its column comment must state what would change that, in RFC 213's
+  own terms: a vocabulary is a per-table CHECK while ONE column asks the
+  question and becomes a DOMAIN when a second table asks it. (b)
+  `published_text` is renamed **`deadline_as_published`**, following the landed
+  `AdmissionTestTimelineChatTool.closingAsPublished` ("the school's own words")
+  beside its parsed date, JSON key `closing_as_published`. Rejected:
+  `publisher_statement` (loses that it is THE DEADLINE) and `published_wording`
+  (implies the row is always words, when most rows are a date plus its source
+  sentence).
+- **D19 — the process answers get their own tool.** `fafsa/06` builds a sibling
+  `fafsa_process` tool rather than extending `federal_aid_policy`. D3's binding
+  content is NO NEW TABLE, and that is unchanged; D3's wording "extends the
+  existing tool" is superseded by measurement — `federal_aid_policy` takes no
+  arguments and returns its whole payload on every call, so 30 process rules
+  there would add roughly 7 KB to every unrelated Pell and loan answer. The tool
+  takes NO topic argument, deliberately: a topic argument would let the model
+  fetch one topic and answer a neighbouring question from memory, which is the
+  failure the slice's acceptance criteria are written against.
+- **D20 — no coverage number in the coach's words.** `fafsa/06` prints no
+  per-school FAFSA coverage figure. The coach keeps saying the per-school truth
+  it already says. A hardcoded 219 is a promise that rots the next time the seed
+  moves, and the runtime count buys a sentence a family cannot act on. This
+  narrows the slice's own acceptance wording, which asked for the measured
+  number to be stated.
+- **D21 — the 2024 rollout findings stay out of coach copy.** The auditor's
+  finding that nearly three quarters of help-line calls went unanswered, and the
+  still-open redesign of the no-Social-Security-number path, are real and dated.
+  Stated to a family in 2026 they read as facts about today. Where the current
+  process is uncertain the coach names the college's financial aid office and
+  exactly what to ask instead.
+- **D22 — two cycles are open at once, and the clock may not deny it.** From
+  October to June a senior files next year's FAFSA while a current student may
+  still file this year's. "The cycle being filed" must not be modelled as "the
+  only open cycle" in the clock or in a test. Guidance to the run, not a licence
+  to decide: a product choice about which cycle the page shows comes back here.
+
 Ledger (one line per landed slice, appended as each lands):
 
 _(empty — nothing landed yet)_
