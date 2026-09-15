@@ -41,6 +41,13 @@ object AdmissionTestStateProgrammeDao {
    * below reads the whole table, which is at most a few hundred rows and has no
    * index by design (the DDL says why). Nothing here runs a statement per row.
    *
+   * THE TWO JOINS ARE THE CITATION (RFC 213). The urls live in
+   * `external_documents` now, so the source is an INNER join -- a row with no
+   * source document cannot exist, the column is NOT NULL -- and the archive is a
+   * LEFT join, because most rows needed no archived address. The mapper reads
+   * `source_url` and `archive_url` exactly as it did when they were columns of
+   * this table, so nothing above this DAO learns that the storage moved.
+   *
    * NEWEST IS `(school_year DESC, checked_on DESC)` and both halves are load
    * bearing. The school year is which year the row is ABOUT, so it orders first;
    * `checked_on` breaks the tie a same-year correction creates, which is the
@@ -50,8 +57,11 @@ object AdmissionTestStateProgrammeDao {
     session
       .queryList(
         """
-        SELECT DISTINCT ON (state) * FROM $TABLE
-        ORDER BY state, school_year DESC, checked_on DESC
+        SELECT DISTINCT ON (p.state) p.*, s.url AS source_url, a.url AS archive_url
+        FROM $TABLE p
+        JOIN external_documents s ON s.id = p.source_document_id
+        LEFT JOIN external_documents a ON a.id = p.archive_document_id
+        ORDER BY p.state, p.school_year DESC, p.checked_on DESC
         """.trimIndent(),
         bind = {},
         map = ::mapRow,
@@ -71,61 +81,76 @@ object AdmissionTestStateProgrammeDao {
     session: SqlSession,
     row: NewAdmissionTestStateProgramme,
   ): Result<AdmissionTestStateProgramme> =
-    session
-      .mutateReturning(
-        """
-        INSERT INTO $TABLE (
-          state, school_year, school_year_basis, participation, school_must_offer,
-          test_chooser, test, lowest_grade, highest_grade, state_funded,
-          source_url, archive_url, checked_on, expires_on
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (state, school_year) DO UPDATE SET
-          school_year_basis = EXCLUDED.school_year_basis,
-          participation = EXCLUDED.participation,
-          school_must_offer = EXCLUDED.school_must_offer,
-          test_chooser = EXCLUDED.test_chooser,
-          test = EXCLUDED.test,
-          lowest_grade = EXCLUDED.lowest_grade,
-          highest_grade = EXCLUDED.highest_grade,
-          state_funded = EXCLUDED.state_funded,
-          source_url = EXCLUDED.source_url,
-          archive_url = EXCLUDED.archive_url,
-          checked_on = EXCLUDED.checked_on,
-          expires_on = EXCLUDED.expires_on
-        RETURNING *
-        """.trimIndent(),
-        bind = { stmt ->
-          // A cursor, never fourteen hand-typed ordinals
-          // ([AdmissionTestCalendarDao]'s idiom): most slots are nullable, so a
-          // one-slot renumber slip writes a row that passes every CHECK and says
-          // something else.
-          var idx = 1
-          stmt.setString(idx++, row.state)
-          stmt.setInt(idx++, row.schoolYear.firstCalendarYear)
-          stmt.setString(idx++, row.schoolYearBasis.value)
-          stmt.setString(idx++, row.participation.value)
-          stmt.setBooleanOrNull(idx++, row.schoolMustOffer)
-          stmt.setString(idx++, row.choice.chooser.value)
-          stmt.setStringOrNull(idx++, (row.choice as? SchoolDayTestChoice.StateChose)?.test?.value)
-          stmt.setIntOrNull(idx++, row.grades?.lowest)
-          stmt.setIntOrNull(idx++, row.grades?.highest)
-          stmt.setBooleanOrNull(idx++, row.stateFunded)
-          stmt.setString(idx++, row.sourceUrl)
-          stmt.setStringOrNull(idx++, row.archiveUrl)
-          stmt.setObject(idx++, row.checkedOn)
-          stmt.setObject(idx, row.expiresOn)
-        },
-        map = ::mapRow,
-        // No foreign key to name yet (the DDL says why and which slice adds
-        // it), so a bad state is a CHECK violation like any other and the
-        // mapper's constraint name is what locates it.
-        mapError = { e ->
-          mapReferenceWriteError(
-            e,
-            "[$TABLE] row for state [${row.state}] could not be written",
-          )
-        },
-      )
+    // THE CITATION IS RESOLVED FIRST, and through [ExternalDocumentsDao.idOf]
+    // rather than its upsert: this path knows the row's two urls and knows
+    // NOTHING about whether either still resolves, so it must not overwrite a
+    // swept status with "we never asked" (RFC 182). Both statements run in the
+    // caller's transaction, so a refused programme row takes its documents with
+    // it.
+    ExternalDocumentsDao
+      .idOf(session, row.sourceUrl)
+      .mapCatching { sourceId ->
+        val archiveId = row.archiveUrl?.let { ExternalDocumentsDao.idOf(session, it).getOrThrow() }
+        sourceId to archiveId
+      }.mapCatching { (sourceId, archiveId) ->
+        session
+          .mutateReturning(
+            """
+            INSERT INTO $TABLE (
+              state, school_year, school_year_basis, participation, school_must_offer,
+              test_chooser, test, lowest_grade, highest_grade, state_funded,
+              source_document_id, archive_document_id, checked_on, expires_on
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (state, school_year) DO UPDATE SET
+              school_year_basis = EXCLUDED.school_year_basis,
+              participation = EXCLUDED.participation,
+              school_must_offer = EXCLUDED.school_must_offer,
+              test_chooser = EXCLUDED.test_chooser,
+              test = EXCLUDED.test,
+              lowest_grade = EXCLUDED.lowest_grade,
+              highest_grade = EXCLUDED.highest_grade,
+              state_funded = EXCLUDED.state_funded,
+              source_document_id = EXCLUDED.source_document_id,
+              archive_document_id = EXCLUDED.archive_document_id,
+              checked_on = EXCLUDED.checked_on,
+              expires_on = EXCLUDED.expires_on
+            RETURNING *,
+              (SELECT e.url FROM external_documents e WHERE e.id = $TABLE.source_document_id) AS source_url,
+              (SELECT e.url FROM external_documents e WHERE e.id = $TABLE.archive_document_id) AS archive_url
+            """.trimIndent(),
+            bind = { stmt ->
+              // A cursor, never fourteen hand-typed ordinals
+              // ([AdmissionTestCalendarDao]'s idiom): most slots are nullable, so a
+              // one-slot renumber slip writes a row that passes every CHECK and says
+              // something else.
+              var idx = 1
+              stmt.setString(idx++, row.state)
+              stmt.setInt(idx++, row.schoolYear.firstCalendarYear)
+              stmt.setString(idx++, row.schoolYearBasis.value)
+              stmt.setString(idx++, row.participation.value)
+              stmt.setBooleanOrNull(idx++, row.schoolMustOffer)
+              stmt.setString(idx++, row.choice.chooser.value)
+              stmt.setStringOrNull(idx++, (row.choice as? SchoolDayTestChoice.StateChose)?.test?.value)
+              stmt.setIntOrNull(idx++, row.grades?.lowest)
+              stmt.setIntOrNull(idx++, row.grades?.highest)
+              stmt.setBooleanOrNull(idx++, row.stateFunded)
+              stmt.setObject(idx++, sourceId.value)
+              stmt.setObject(idx++, archiveId?.value)
+              stmt.setObject(idx++, row.checkedOn)
+              stmt.setObject(idx, row.expiresOn)
+            },
+            map = ::mapRow,
+            // The state column still has no foreign key (the DDL says why and
+            // which slice adds it), so a bad state is a CHECK violation like any
+            // other and the mapper's constraint name is what locates it.
+            mapError = { e ->
+              mapReferenceWriteError(
+                e,
+                "[$TABLE] row for state [${row.state}] could not be written",
+              )
+            },
+          ).getOrThrow()
+      }
 
   private fun mapRow(rs: ResultSet): AdmissionTestStateProgramme {
     val state = rs.getString("state")

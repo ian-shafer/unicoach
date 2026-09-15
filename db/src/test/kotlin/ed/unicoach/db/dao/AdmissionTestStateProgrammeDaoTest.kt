@@ -43,6 +43,9 @@ class AdmissionTestStateProgrammeDaoTest {
   companion object {
     private lateinit var connection: Connection
 
+    /** The page every literal-SQL row in this suite cites (RFC 213). */
+    private const val TN_SOURCE_URL = "https://tn.gov/education/testing"
+
     /**
      * A legal Tennessee row as SQL literals, which every bad row in this suite
      * is one override away from: a case that had to restate fourteen columns
@@ -60,8 +63,11 @@ class AdmissionTestStateProgrammeDaoTest {
         "lowest_grade" to "11",
         "highest_grade" to "11",
         "state_funded" to "TRUE",
-        "source_url" to "'https://tn.gov/education/testing'",
-        "archive_url" to "NULL",
+        // The citation is a REFERENCE now (RFC 213). The document is created in
+        // [setup] before every case, so a literal-SQL row can name it by url
+        // without this map having to carry an id that changes per run.
+        "source_document_id" to "(SELECT id FROM external_documents WHERE url = '$TN_SOURCE_URL')",
+        "archive_document_id" to "NULL",
         "checked_on" to "DATE '2026-09-14'",
         "expires_on" to "DATE '2027-07-31'",
       )
@@ -105,6 +111,13 @@ class AdmissionTestStateProgrammeDaoTest {
   @BeforeEach
   fun setup() {
     AdmissionTestStateProgrammeFixture.deleteAll(session)
+    // The document the literal-SQL rows below cite. It is created and never
+    // deleted: external_documents is shared by the committed corpus this suite
+    // restores, so a test that emptied it would take the corpus's citations with
+    // it.
+    connection.createStatement().use { stmt ->
+      stmt.execute("INSERT INTO external_documents (url) VALUES ('$TN_SOURCE_URL') ON CONFLICT (url) DO NOTHING")
+    }
   }
 
   @Test
@@ -134,6 +147,10 @@ class AdmissionTestStateProgrammeDaoTest {
     assertEquals(SchoolDayTestChoice.StateChose(AdmissionTest.SAT), row.choice)
     assertEquals(TestChooser.STATE, row.choice.chooser)
     assertEquals(GradeRange(11, 12), row.grades)
+    // THE CITATION SURVIVES THE MOVE (RFC 213). Both urls live in
+    // external_documents now; the read joins them back, and nothing above this
+    // DAO can tell that the storage changed.
+    assertEquals(AdmissionTestStateProgrammeFixture.defaultSourceUrl("VA"), row.sourceUrl)
     assertEquals("https://web.archive.org/va", row.archiveUrl)
     assertEquals(AdmissionTestStateProgrammeFixture.DEFAULT_CHECKED_ON, row.checkedOn)
     assertEquals(AdmissionTestStateProgrammeFixture.DEFAULT_EXPIRES_ON, row.expiresOn)
@@ -282,8 +299,15 @@ class AdmissionTestStateProgrammeDaoTest {
         "admission_test_state_programmes_test_pairing_check" to mapOf("test_chooser" to "'state'", "test" to "NULL"),
         "admission_test_state_programmes_grade_pairing_check" to mapOf("highest_grade" to "NULL"),
         "admission_test_state_programmes_grade_range_check" to mapOf("lowest_grade" to "12", "highest_grade" to "11"),
-        "admission_test_state_programmes_source_url_check" to mapOf("source_url" to "'ftp://tn.gov/testing'"),
-        "admission_test_state_programmes_archive_url_check" to mapOf("archive_url" to "'ftp://archive/tn'"),
+        // The url SHAPE checks moved to external_documents with the urls
+        // themselves (RFC 213) and are exercised in [ExternalDocumentsDaoTest].
+        // What is left here is the rule this table still owns: an archived
+        // address that IS the page is the same link twice, and a coach told to
+        // offer both links would print one url as two.
+        "admission_test_state_programmes_archive_is_not_the_source_check" to
+          mapOf(
+            "archive_document_id" to "(SELECT id FROM external_documents WHERE url = '$TN_SOURCE_URL')",
+          ),
         "admission_test_state_programmes_expiry_after_checked_check" to mapOf("expires_on" to "DATE '2026-09-14'"),
       )
 
@@ -296,6 +320,35 @@ class AdmissionTestStateProgrammeDaoTest {
       }
     assertEquals(emptyList<String>(), mismatches, "a CHECK did not refuse the row it exists to refuse")
     assertEquals(0, countRows("admission_test_state_programmes"), "no refused row may be left behind")
+  }
+
+  @Test
+  fun `a programme row cannot cite nothing, and a cited document cannot be deleted`() {
+    AdmissionTestStateProgrammeFixture.seed(
+      session,
+      listOf(AdmissionTestStateProgrammeFixture.programme(state = "TN")),
+    )
+
+    // NOT NULL, not a CHECK: a row that cites nothing is the uncitable row the
+    // corpus exists to prevent, and it is the guarantee `source_url NOT NULL`
+    // gave before the move.
+    val orphan = PROGRAMME_COLUMNS + mapOf("state" to "'KY'", "source_document_id" to "NULL")
+    val refusal = violatedConstraint(orphan)
+    assertTrue(
+      refusal != null && refusal.contains("source_document_id"),
+      "a programme row with no source document must be refused; got [$refusal]",
+    )
+
+    val failure =
+      assertFailsWith<SQLException> {
+        connection.createStatement().use { stmt ->
+          stmt.execute("DELETE FROM external_documents WHERE url = '${AdmissionTestStateProgrammeFixture.defaultSourceUrl("TN")}'")
+        }
+      }
+    // A document outlives every reading of it. Deleting one out from under a
+    // citation must fail rather than cascade: the reading is the thing that
+    // would become uncitable.
+    assertEquals("23503", (failure as? PSQLException)?.sqlState, "deleting a cited document must be refused")
   }
 
   /**

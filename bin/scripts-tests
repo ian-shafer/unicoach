@@ -4094,6 +4094,322 @@ assert_success "cds-link-check -h prints the help to stdout and exits 0" \
 stop_cdslc_server
 rm -rf "$CDSLC_DIR"
 
+# ── RFC 213: bin/check-link ──────────────────────────────────────────────────
+echo ""
+echo "==== Testing RFC 213 link checking (bin/check-link) ===="
+
+assert_success "bin/check-link parses as python3" \
+  python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/check-link').read())"
+
+# check-link FETCHES, so every arm below runs against a fixture http server this
+# harness starts on 127.0.0.1, exactly like the RFC 200 section above. NO
+# assertion here resolves a public name or leaves the loopback interface: a gate
+# that depends on somebody's DNS is a gate that fails for reasons which have
+# nothing to do with the change, and this brief lost a land to one today.
+#
+# The no-status case (`000`) is measured against a CLOSED port on that same
+# loopback address -- an immediate connection refusal, no lookup, no egress --
+# and the timeout against a route that sleeps.
+CHKL_DIR="$(mktemp -d)"
+CHKL_SERVER_PID=""
+CHKL_PORT=""
+
+write_chkl_server() {
+  cat > "$1" << 'PY'
+#!/usr/bin/env python3
+"""The fixture web bin/check-link is measured against.
+
+Binds 127.0.0.1 on an EPHEMERAL port (0) and writes the port it actually got to
+the file named by argv[1], so two checkouts running bin/scripts-tests at the
+same time cannot collide on a hardcoded number.
+
+    /ok        200
+    /gone      404
+    /no-head   405 to HEAD, 200 to GET -- the host refuses the METHOD, not the
+               file, which is the fall-through check-link makes
+    /moved     301 to /ok, so the FINAL status is what gets reported
+    /slow      sleeps, for the timeout arm
+    /count     the number of requests /ok has had, as text -- one request per
+               DISTINCT url is a promise, and counting is how it is kept honest
+
+Threading, because check-link probes several urls at once.
+"""
+
+import http.server
+import sys
+import threading
+import time
+from pathlib import Path
+
+HITS = {}
+LOCK = threading.Lock()
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def respond(self, method):
+        if self.path == "/count":
+            with LOCK:
+                body = str(HITS.get("/ok", 0)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if method == "GET":
+                self.wfile.write(body)
+            return
+
+        with LOCK:
+            HITS[self.path] = HITS.get(self.path, 0) + 1
+
+        if self.path == "/slow":
+            time.sleep(5)
+        if self.path == "/moved":
+            self.send_response(301)
+            self.send_header("Location", "/ok")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        status = 200
+        if self.path == "/gone":
+            status = 404
+        elif self.path == "/no-head":
+            status = 405 if method == "HEAD" else 200
+        body = b"fixture\n" if status == 200 else b"no\n"
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if method == "GET":
+            self.wfile.write(body)
+
+    def do_HEAD(self):
+        self.respond("HEAD")
+
+    def do_GET(self):
+        self.respond("GET")
+
+    def log_message(self, fmt, *args):
+        """Silence: the harness reads this server's stderr for nothing."""
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+Path(sys.argv[1]).write_text(f"{server.server_address[1]}\n")
+server.serve_forever()
+PY
+}
+
+# The PID goes into FOREIGN_LISTENER_PIDS so the harness's EXIT trap reaps it
+# even if an assertion below aborts the run -- a leaked listener is a socket the
+# next run inherits.
+start_chkl_server() {
+  local i
+  local port_file="$CHKL_DIR/port"
+  rm -f "$port_file"
+  python3 "$CHKL_DIR/fixture-server" "$port_file" >/dev/null 2>&1 &
+  CHKL_SERVER_PID=$!
+  FOREIGN_LISTENER_PIDS+=("$CHKL_SERVER_PID")
+  for ((i = 0; i < PORT_POLL_ATTEMPTS; i++)); do
+    if ! kill -0 "$CHKL_SERVER_PID" 2>/dev/null; then
+      wait "$CHKL_SERVER_PID" 2>/dev/null || true
+      CHKL_SERVER_PID=""
+      return 1
+    fi
+    if [ -s "$port_file" ]; then
+      CHKL_PORT="$(cat "$port_file")"
+      return 0
+    fi
+    sleep "$PORT_POLL_INTERVAL"
+  done
+  kill -9 "$CHKL_SERVER_PID" 2>/dev/null || true
+  CHKL_SERVER_PID=""
+  return 1
+}
+
+stop_chkl_server() {
+  [ -n "$CHKL_SERVER_PID" ] || return 0
+  kill "$CHKL_SERVER_PID" 2>/dev/null || true
+  wait "$CHKL_SERVER_PID" 2>/dev/null || true
+  CHKL_SERVER_PID=""
+}
+
+write_chkl_server "$CHKL_DIR/fixture-server"
+
+if ! start_chkl_server; then
+  fatal "check-link fixture server did not start"
+fi
+CHKL_BASE="http://127.0.0.1:$CHKL_PORT"
+
+# A CLOSED port on the loopback interface: the kernel refuses the connection at
+# once, so this is the no-answer case with no network and no waiting.
+CHKL_CLOSED_PORT="$(python3 - << 'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+port = s.getsockname()[1]
+s.close()
+print(port)
+PY
+)"
+
+# `<status> <TAB> <url>`, one line per INPUT line, in the caller's order, and
+# nothing else on stdout. The whole contract in one assertion.
+test_chkl_prints_status_and_url_in_input_order() {
+  local out err status expected
+  out="$(mktemp)"; err="$(mktemp)"
+  bin/check-link -c 4 -t 10 "$CHKL_BASE/gone" "$CHKL_BASE/ok" "$CHKL_BASE/no-head" > "$out" 2> "$err"
+  status=$?
+  # A 404 is a SUCCESSFUL run: the status is the product, not a verdict about it.
+  [ "$status" -eq 0 ] || { log-error "exit [$status], stderr [$(cat "$err")]"; rm -f "$out" "$err"; return 1; }
+  expected="$(printf '404\t%s\n200\t%s\n200\t%s\n' \
+    "$CHKL_BASE/gone" "$CHKL_BASE/ok" "$CHKL_BASE/no-head")"
+  if [ "$(cat "$out")" != "$expected" ]; then
+    log-error "stdout is [$(cat "$out")], expected [$expected]"; rm -f "$out" "$err"; return 1
+  fi
+  rm -f "$out" "$err"
+  return 0
+}
+assert_success "check-link prints <status><TAB><url> per line, in input order, and a 404 is a successful run" \
+  test_chkl_prints_status_and_url_in_input_order
+
+# The GET fall-through, asserted as its own arm because the 405 above could pass
+# by accident: a host that refuses the METHOD has not refused the FILE.
+assert_success "a url that refuses HEAD but serves GET reports 200" \
+  bash -c "bin/check-link -t 10 '$CHKL_BASE/no-head' 2>/dev/null | grep -qx \"200\$(printf '\t')$CHKL_BASE/no-head\""
+
+# Redirects are FOLLOWED and the final status is what is reported. A 301 is how
+# a healthy site says "we moved", and a caller that got `301` for half a corpus
+# would learn nothing.
+assert_success "a redirect is followed and the FINAL status is reported" \
+  bash -c "bin/check-link -t 10 '$CHKL_BASE/moved' 2>/dev/null | grep -qx \"200\$(printf '\t')$CHKL_BASE/moved\""
+
+# No HTTP answer at all -> 000, curl's convention, so the first column stays a
+# fixed-width number and a caller's numeric test never special-cases a word.
+assert_success "a refused connection reports 000, not a word" \
+  bash -c "bin/check-link -t 5 'http://127.0.0.1:$CHKL_CLOSED_PORT/never' 2>/dev/null | grep -qx \"000\$(printf '\t')http://127.0.0.1:$CHKL_CLOSED_PORT/never\""
+
+assert_success "a request that times out reports 000 too" \
+  bash -c "bin/check-link -t 1 '$CHKL_BASE/slow' 2>/dev/null | grep -qx \"000\$(printf '\t')$CHKL_BASE/slow\""
+
+# ONE OUTPUT LINE PER INPUT LINE, ONE REQUEST PER DISTINCT URL. A caller zips
+# this output back against the list it supplied, so a de-duplicated output would
+# misalign every line after the duplicate -- and a host asked three times for one
+# address is a rudeness with nothing to buy it.
+test_chkl_duplicates_keep_lines_not_requests() {
+  local out before after lines
+  out="$(mktemp)"
+  before="$(curl -s "$CHKL_BASE/count")"
+  bin/check-link -c 4 -t 10 "$CHKL_BASE/ok" "$CHKL_BASE/ok" "$CHKL_BASE/ok" > "$out" 2>/dev/null
+  after="$(curl -s "$CHKL_BASE/count")"
+  lines="$(wc -l < "$out" | tr -d ' ')"
+  rm -f "$out"
+  [ "$lines" -eq 3 ] || { log-error "three input lines produced [$lines] output lines"; return 1; }
+  [ "$(( after - before ))" -eq 1 ] || {
+    log-error "three identical urls cost [$(( after - before ))] requests, expected 1"
+    return 1
+  }
+  return 0
+}
+assert_success "a url listed three times prints three lines and is fetched once" \
+  test_chkl_duplicates_keep_lines_not_requests
+
+# The -f form, with the line rules: blanks skipped, comments skipped, whitespace
+# stripped. The file is the form the seed generator uses.
+test_chkl_reads_a_file_with_blanks_and_comments() {
+  local list out expected
+  list="$CHKL_DIR/urls.txt"; out="$(mktemp)"
+  {
+    echo "# the state pages, as a human would annotate them"
+    echo ""
+    echo "  $CHKL_BASE/ok  "
+    echo "$CHKL_BASE/gone"
+  } > "$list"
+  bin/check-link -t 10 -f "$list" > "$out" 2>/dev/null
+  expected="$(printf '200\t%s\n404\t%s\n' "$CHKL_BASE/ok" "$CHKL_BASE/gone")"
+  [ "$(cat "$out")" = "$expected" ] || { log-error "stdout is [$(cat "$out")]"; rm -f "$out"; return 1; }
+  rm -f "$out"
+  return 0
+}
+assert_success "check-link -f skips blank lines and comments and strips whitespace" \
+  test_chkl_reads_a_file_with_blanks_and_comments
+
+assert_success "check-link reads standard input when nothing else is given" \
+  bash -c "echo '$CHKL_BASE/ok' | bin/check-link -t 10 2>/dev/null | grep -qx \"200\$(printf '\t')$CHKL_BASE/ok\""
+
+assert_success "check-link -f - reads standard input explicitly" \
+  bash -c "echo '$CHKL_BASE/ok' | bin/check-link -t 10 -f - 2>/dev/null | grep -qx \"200\$(printf '\t')$CHKL_BASE/ok\""
+
+# EXACTLY ONE INPUT SOURCE. A caller who supplied two lists does not know which
+# one was checked, and neither would the reader of the output.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "urls AND -f together are refused, naming both" \
+  bash -c "bin/check-link -f '$CHKL_DIR/urls.txt' '$CHKL_BASE/ok' > /dev/null 2>&1"
+
+# A url with no scheme is a CALLER's mistake, not a fact about the web: prepending
+# https:// would invent part of an address somebody else was meant to supply. It
+# is refused before any request AND before any byte of stdout, so a caller never
+# gets a partial column to zip against a whole list.
+test_chkl_schemeless_url_is_refused_with_empty_stdout() {
+  local out err status
+  out="$(mktemp)"; err="$(mktemp)"
+  bin/check-link "$CHKL_BASE/ok" "example.gov/testing" > "$out" 2> "$err"
+  status=$?
+  [ "$status" -eq "$EXIT_INVALID_ARG_VALUE" ] || {
+    log-error "exit [$status], expected [$EXIT_INVALID_ARG_VALUE]"; rm -f "$out" "$err"; return 1
+  }
+  [ ! -s "$out" ] || { log-error "stdout is not empty: [$(cat "$out")]"; rm -f "$out" "$err"; return 1; }
+  grep -q "line \[2\]" "$err" || { log-error "the refusal does not name the line: [$(cat "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+  return 0
+}
+assert_success "a schemeless url is refused by line number, with nothing on stdout" \
+  test_chkl_schemeless_url_is_refused_with_empty_stdout
+
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a mailto: url is refused" \
+  bash -c "bin/check-link 'mailto:registrar@example.gov' > /dev/null 2>&1"
+
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an unreadable -f path is refused" \
+  bash -c "bin/check-link -f '$CHKL_DIR/there-is-no-such-file.txt' > /dev/null 2>&1"
+
+# The reserved band, so a caller that invoked this wrongly is distinguishable
+# from a run that faulted.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits 10" \
+  bash -c "bin/check-link -Z > /dev/null 2>&1"
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "an option with no value exits 11" \
+  bash -c "bin/check-link -f > /dev/null 2>&1"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an empty -u is refused rather than silently defaulted" \
+  bash -c "bin/check-link -u '' '$CHKL_BASE/ok' > /dev/null 2>&1"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a -c outside 1-64 is refused" \
+  bash -c "bin/check-link -c 999 '$CHKL_BASE/ok' > /dev/null 2>&1"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a non-numeric -t is refused" \
+  bash -c "bin/check-link -t soon '$CHKL_BASE/ok' > /dev/null 2>&1"
+# No urls, and stdin is NOT a terminal here (the harness redirects), so this is
+# the empty-stdin case rather than the tty case: either way it ends, and it never
+# hangs waiting for input nobody is typing.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "a run with no urls at all exits 21" \
+  bash -c "bin/check-link < /dev/null > /dev/null 2>&1"
+
+# -h is the ONE thing this script puts on stdout, and it prints the agent it
+# would send, so nobody has to read the source to learn what was sent.
+test_chkl_help_exits_zero_on_stdout() {
+  local out err status
+  out="$(mktemp)"; err="$(mktemp)"
+  bin/check-link -h > "$out" 2> "$err"
+  status=$?
+  [ "$status" -eq 0 ] || { log-error "-h exited [$status]"; rm -f "$out" "$err"; return 1; }
+  grep -q -- "-u AGENT" "$out" || { log-error "-h does not document -u: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
+  grep -q "Mozilla/5.0" "$out" || { log-error "-h does not print the default agent"; rm -f "$out" "$err"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -3 "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+  return 0
+}
+assert_success "check-link -h prints the help, and the agent it sends, to stdout" \
+  test_chkl_help_exits_zero_on_stdout
+
+stop_chkl_server
+rm -rf "$CHKL_DIR"
+
 # ── RFC 147: published codebooks (bin/fetch-codebooks) ───────────────────────
 echo ""
 echo "==== Testing RFC 147 codebook generation ===="

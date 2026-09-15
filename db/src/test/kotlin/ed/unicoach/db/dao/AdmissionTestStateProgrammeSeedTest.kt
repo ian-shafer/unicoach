@@ -179,6 +179,77 @@ class AdmissionTestStateProgrammeSeedTest {
   }
 
   /**
+   * THE SWEEP IS PART OF THE CORPUS, AND IT IS CHECKED HERE RATHER THAN AT
+   * APPLY TIME (RFC 213). `db/seed/test-state-programmes/link-status.csv` is
+   * what `bin/test-state-programme-seed -k` recorded when an operator last
+   * asked every url in the corpus whether it still resolves, and the generated
+   * migration writes it into `external_documents`. So a hand-edited, stale or
+   * partial file is a fault in a committed FILE -- where the fix is -- and not a
+   * surprise in somebody's `db-reset`.
+   *
+   * IT IS NOT IN PROVENANCE.json, deliberately. That manifest describes what a
+   * HUMAN typed and when they read the pages; this file is a machine's answer to
+   * a question about those same urls, re-derivable by re-running the sweep.
+   */
+  @Test
+  fun `every url in the corpus was swept, and no claim to know is undated`() {
+    assertTrue(
+      AdmissionTestStateProgrammeFixture.LINK_STATUS_FILE.isFile,
+      "the committed sweep was not found at [${AdmissionTestStateProgrammeFixture.LINK_STATUS_FILE.path}]",
+    )
+    val cited =
+      rows
+        .flatMap { listOfNotNull(it.sourceUrl, it.archiveUrl) }
+        .toSet()
+    val swept = AdmissionTestStateProgrammeFixture.committedLinkStatuses()
+
+    assertEquals(
+      cited,
+      swept.keys,
+      "link-status.csv and programmes.csv disagree about which urls exist; " +
+        "re-run [nix develop -c bin/test-state-programme-seed -k]",
+    )
+
+    val undated =
+      swept
+        .filterValues { (status, checkedOn) -> status != "unknown" && checkedOn == null }
+        .keys
+    assertEquals(
+      emptySet<String>(),
+      undated,
+      "a url claims a status with no day it was looked at: you cannot claim to know without saying when (RFC 200)",
+    )
+
+    val outsideVocabulary = swept.values.map { it.first }.toSet() - setOf("unknown", "found", "not_found")
+    assertEquals(emptySet<String>(), outsideVocabulary, "link-status.csv carries a status the link_status domain refuses")
+  }
+
+  /**
+   * The deliberately unlike cases (brief 0010 D22), so no assertion here is
+   * fitted to one state's shape: a row read through an archived address, and a
+   * row with no archived address at all, must BOTH be ordinary rows of this
+   * corpus.
+   */
+  @Test
+  fun `a row read through an archived address and a row with none are both ordinary rows`() {
+    val withArchive = rows.filter { it.archiveUrl != null }
+    val withoutArchive = rows.filter { it.archiveUrl == null }
+
+    assertTrue(withArchive.isNotEmpty(), "the corpus holds at least one row read through an archived address")
+    assertTrue(withoutArchive.isNotEmpty(), "the corpus holds at least one row with no archived address")
+
+    // An archived address is an ordinary document: a url, checked like any
+    // other. Never the same url as the page it archives -- that is the same link
+    // twice, and the table's own CHECK refuses it.
+    val archiveEqualsSource = rows.filter { it.archiveUrl != null && it.archiveUrl == it.sourceUrl }
+    assertEquals(
+      emptyList<NewAdmissionTestStateProgramme>(),
+      archiveEqualsSource,
+      "an archived address that IS the page is the same link twice",
+    )
+  }
+
+  /**
    * THE HEADER IS AUTHORED TWICE, in two languages: as
    * [AdmissionTestStateProgrammeFixture.HEADER] here and as the awk generator's
    * own `EXPECTED_HEADER` line in `bin/test-state-programme-seed`. Neither can

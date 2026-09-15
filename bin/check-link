@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""check-link: hand it urls, it prints the HTTP status of each one.
+
+RFC 213 (brief 0010 slice `test/05.1/external-documents`). `external_documents`
+records a url and whether that url still resolves, so something has to ASK. This
+is that something, and its whole interface is the one bin/cds-link-check does
+not have: it takes URLS, not a seed directory to harvest a column out of.
+
+IT FETCHES. IT DOES NOT JUDGE. The `found` / `not_found` / `unknown` vocabulary
+belongs to RFC 200 and to `cds-link-check`, which reads codes and decides what
+they mean for a family's link. Those three words appear nowhere in this file and
+must not: a status is what a server said, and what to do about a 403 is the
+caller's question. So a 404 is a SUCCESSFUL run -- the status is the product.
+
+Usage:
+
+    check-link [-f FILE] [-u AGENT] [-c N] [-t N] [-h] [URL...]
+
+      URL...    one or more urls to check
+      -f FILE   read urls from FILE, one per line; "-f -" reads standard input
+      -u AGENT  user agent to send (default: the current Chrome string this
+                help prints at the end)
+      -c N      concurrent requests, 1-64 (default: 16)
+      -t N      per-request timeout in seconds, 1-300 (default: 30)
+      -h        this help, on stdout
+
+EXACTLY ONE INPUT SOURCE per run: the positional urls, or -f FILE, or standard
+input. Positionals AND -f together is a usage error naming both, never a silent
+merge and never a silent precedence -- two sources of truth about what is being
+checked is the defect this whole RFC is about. Standard input is used when
+nothing else is given AND stdin is not a terminal; typed bare at a prompt this
+script does NOT hang waiting for input nobody is typing (a script that waits
+forever looks exactly like a hung network probe, the one thing this tool must
+never be mistaken for), it fatals and prints the three forms.
+
+LINES: leading and trailing whitespace is stripped, a blank line is skipped, and
+a line whose first non-space character is `#` is a comment. Duplicates produce
+ONE OUTPUT LINE PER INPUT LINE, in input order, but only ONE request per
+distinct url: a caller zips this output back against the list it supplied, so a
+dropped line would misalign every line after it, while a host should be asked
+once however many times the caller listed the address.
+
+A URL MUST CARRY AN http:// OR https:// SCHEME, and is refused before any
+request otherwise, naming the line and its number, with nothing written to
+stdout. Prepending a scheme would be us inventing part of an address a human was
+meant to supply; `example.com:8080/x` parses as a scheme named `example.com`, so
+a schemeless input cannot be validated, only guessed at; and `external_documents`
+carries CHECK (url ~ '^https?://'), so accepting one would make the checker and
+the table disagree about what a url is. http stays ACCEPTED and https merely
+preferred: the requirement is that the scheme is STATED, not that it is secure.
+
+OUTPUT is `<status><TAB><url>`, one line per input line, no header, on stdout and
+nothing else on stdout -- a tab makes `cut -f1` and `awk '$1 >= 400'` work, and a
+url never contains one. A url that got NO HTTP answer at all -- a timeout, a DNS
+failure, a TLS fault, a refused connection -- prints `000`, curl's %{http_code}
+convention, which keeps the first column a fixed-width number so a caller's
+numeric test never special-cases a word. The lost detail is not lost: the TYPE
+and a bounded reason go to stderr, one warning per url.
+
+LOGGING GOES TO STDERR, all of it, including the closing summary -- the bin/
+rule. stdout carries the status lines a caller asked for, and the help answering
+-h; nothing else.
+
+EXIT 0 whenever every input line got an output line, `000` lines included. This
+script fails only on a usage mistake (the band bin/functions reserves: 10, 11,
+20, 21, 22), an unreadable or non-file -f path (22), or no input at all (21). A
+network fault on one url never changes the exit code, because a caller checking
+43 addresses wants 43 answers. The consequence, stated rather than left implicit:
+a machine with no egress returns all `000` and exits 0, so A CALLER MUST APPLY ITS
+OWN PLAUSIBILITY BAR. The script with the expectations is the one that can tell a
+check that could not run from one that passed; this one has none.
+"""
+
+import collections
+import concurrent.futures
+import ssl
+import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
+# the log-* family, fatal, and the post-getopt guard suite. Resolved against
+# THIS script's own directory rather than the caller's cwd, because these
+# scripts are run from anywhere.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402
+    EXIT_INVALID_ARG_VALUE,
+    EXIT_MISSING_REQUIRED_ARG,
+    fatal,
+    log_info,
+    log_warning,
+    parse_short_options,
+)
+
+SCRIPT_NAME = "check-link"
+GETOPT_SPEC = "hf:u:c:t:"
+
+# A CURRENT CHROME STRING, and that is a PRODUCT decision, not a disguise.
+#
+# The question this script answers is "can a family open this link?", and a
+# family opens it in a browser. A script-shaped agent answers a different
+# question and answers ours WRONGLY: New Hampshire's and Arizona's education
+# departments return 403 to every script we have, and their pages are not gone --
+# an honest-but-script agent would record a live page as unreachable, which is a
+# worse answer than the one a family actually experiences.
+#
+# What makes that defensible rather than rude is the SHAPE of the work: one
+# request per url we already cite, at most two concurrent per host (below), run
+# by hand a couple of times a year. That is not load and it is not a crawl.
+#
+# It does not chase Chrome's version number; servers rarely read it. -u overrides
+# it, and an empty -u is refused rather than falling back here silently, so the
+# identity that was sent is always visible in the command that produced the run.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+# The schemes a url may carry. Stated as a set rather than as a startswith, so
+# `mailto:`, `ftp://` and the empty scheme are one rule with one message.
+ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+# A HEAD many hosts refuse outright. The host is refusing the METHOD, not the
+# file, so the single pass falls through to a ranged GET rather than recording
+# the refusal as the answer.
+HEAD_FALLBACK_STATUSES = frozenset({400, 403, 405, 501})
+
+# How much of a document we are willing to pull to learn it is served -- a
+# LENGTH. Nobody needs 40 MB to prove a url resolves. The `Range` header wants
+# the last byte's INCLUSIVE offset, which is this minus one, DERIVED at the use
+# site: a range and a read that disagree is a whole-file download nobody notices.
+PROBE_BYTE_BUDGET = 2048
+
+# What is printed when there was no HTTP answer at all. Three digits, because the
+# column is a number in every other row and a caller's `$1 >= 400` must not meet
+# a word.
+NO_ANSWER_STATUS = "000"
+
+# How much of a transport fault's message is kept. Enough for the host, the errno
+# and the certificate detail; bounded, because some TLS faults arrive as a
+# paragraph and a log line is read by a person.
+MAX_FAULT_DETAIL_CHARS = 200
+
+# The politeness bound, and it holds WHATEVER -c says. 43 addresses over 40
+# domains is not a load, but a caller who hands this 400 urls on one host should
+# not have to know to lower -c. A cap, not a sleep: an inter-request delay is a
+# throttle nobody asked for.
+MAX_PER_HOST = 2
+
+DEFAULT_WORKERS = 16
+MIN_WORKERS = 1
+MAX_WORKERS = 64
+DEFAULT_TIMEOUT_SECONDS = 30
+MIN_TIMEOUT_SECONDS = 1
+MAX_TIMEOUT_SECONDS = 300
+
+
+def bounded_int(raw, option, low, high):
+    """An integer option inside its bounds, or a usage fault (22).
+
+    getopt gives the grammar and nothing else, so the SHAPE of a value is checked
+    here: "-c banana" and "-c 0" are both an operator mistake, and neither may
+    pass quietly into a run that touches other people's web servers.
+    """
+    try:
+        value = int(raw)
+    except ValueError:
+        fatal(
+            f"{SCRIPT_NAME}: option [{option}] wants an integer, not [{raw}]",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    if value < low or value > high:
+        fatal(
+            f"{SCRIPT_NAME}: option [{option}] must be between [{low}] and [{high}], not [{value}]",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    return value
+
+
+def bounded_reason(error):
+    """One exception's message, flattened to a single bounded line.
+
+    A log line is read by a human, so a multi-line certificate dump is squeezed
+    to spaces and cut.
+    """
+    reason = " ".join(str(error).split())
+    return reason[:MAX_FAULT_DETAIL_CHARS] if reason else None
+
+
+class Line:
+    """One INPUT line that survived the blank/comment filter.
+
+    It carries its own 1-based number, because the number a refusal quotes has to
+    be the one in the operator's file -- blank lines and comments included -- and
+    that is unrecoverable once the list has been filtered.
+    """
+
+    def __init__(self, number, url):
+        self.number = number
+        self.url = url
+
+
+def read_lines(handle, origin):
+    """The urls in a stream, as [Line], numbered by their position in it.
+
+    Blank lines and `#` comments are dropped HERE rather than at the use site, so
+    every reader downstream sees a list whose length is the number of output
+    lines this run owes its caller.
+    """
+    lines = []
+    for number, raw in enumerate(handle, start=1):
+        url = raw.strip()
+        if not url or url.startswith("#"):
+            continue
+        lines.append(Line(number, url))
+    if not lines:
+        fatal(
+            f"{SCRIPT_NAME}: {origin} holds no urls (blank lines and [#] comments are skipped)",
+            status=EXIT_MISSING_REQUIRED_ARG,
+        )
+    return lines
+
+
+def read_file(path):
+    """The urls in a -f path. An unreadable or non-file path is a usage fault (22).
+
+    A directory, a missing file and a permission fault are the same mistake to
+    the operator -- the thing they named is not a list of urls -- and each is
+    said with the reason the OS gave, because "cannot read it" and "it is a
+    directory" send them to different places.
+    """
+    if not path.is_file():
+        fatal(
+            f"{SCRIPT_NAME}: option [-f] names [{path}], which is not a readable file",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    try:
+        with path.open(encoding="utf-8") as handle:
+            return read_lines(handle, f"[{path}]")
+    except OSError as error:
+        fatal(
+            f"{SCRIPT_NAME}: cannot read [{path}]: [{type(error).__name__}] [{error}]",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    except UnicodeDecodeError as error:
+        fatal(
+            f"{SCRIPT_NAME}: [{path}] is not UTF-8 text ([{error.reason}] at byte [{error.start}]), "
+            f"so it is not a list of urls",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+
+
+def input_lines(options, positional):
+    """The run's urls, from EXACTLY ONE of the three sources.
+
+    The precedence question is refused rather than answered: positionals AND -f
+    together names both and exits, because a caller who supplied two lists does
+    not know which one this checked, and neither would the reader of the output.
+    """
+    if positional and "-f" in options:
+        fatal(
+            f"{SCRIPT_NAME}: both [{len(positional)}] url arguments and [-f {options['-f']}] were "
+            f"given; this script takes urls from EXACTLY ONE source, so drop one of them",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    if positional:
+        # Numbered from 1 like any other source: the operand's position IS its
+        # line number, so a refusal reads the same whichever form was used.
+        return read_lines(positional, "the command line")
+    if "-f" in options:
+        if options["-f"] == "-":
+            return read_lines(sys.stdin, "standard input")
+        return read_file(Path(options["-f"]))
+    if sys.stdin.isatty():
+        fatal(
+            f"{SCRIPT_NAME}: no urls. Give them as arguments "
+            f"([{SCRIPT_NAME} https://example.gov/a https://example.gov/b]), in a file "
+            f"([{SCRIPT_NAME} -f urls.txt]), or on standard input "
+            f"([cat urls.txt | {SCRIPT_NAME}], the same as [-f -])",
+            status=EXIT_MISSING_REQUIRED_ARG,
+        )
+    return read_lines(sys.stdin, "standard input")
+
+
+def refuse_bad_schemes(lines):
+    """Every url carries http:// or https://, or the run ends before any request.
+
+    BEFORE any request, and before any byte of stdout: a run that printed three
+    statuses and then died on the fourth line hands its caller a partial column
+    to zip against a whole list.
+    """
+    for line in lines:
+        parsed = urllib.parse.urlparse(line.url)
+        if parsed.scheme not in ALLOWED_SCHEMES:
+            found = f"[{parsed.scheme}]" if parsed.scheme else "no scheme at all"
+            fatal(
+                f"{SCRIPT_NAME}: line [{line.number}], [{line.url}]: a url must carry "
+                f"[http://] or [https://] and this carries {found}. The scheme is not "
+                f"guessed -- prepending one invents part of an address somebody else was "
+                f"meant to supply",
+                status=EXIT_INVALID_ARG_VALUE,
+            )
+        if not parsed.netloc:
+            fatal(
+                f"{SCRIPT_NAME}: line [{line.number}], [{line.url}]: a url must name a host, "
+                f"and this one names none",
+                status=EXIT_INVALID_ARG_VALUE,
+            )
+
+
+class HopLoggingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follows redirects exactly as the stdlib does, and SAYS each hop on stderr.
+
+    Following is the default because a 301 is how a healthy site says "we moved",
+    and a caller that gets `301` back for half a corpus has learned nothing. The
+    hop is not hidden by that: a 301 into a parking domain is visible to the
+    human reading the run, on the channel every other diagnostic uses.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        log_info(f"{SCRIPT_NAME}: {code} -> {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# One opener for the run. The stdlib's HARDENED default TLS context, verification
+# and all: a certificate we cannot verify is exactly the "no usable answer" case,
+# which prints 000 and says why. Turning verification off would instead let an
+# interception proxy answer 404 AS the publisher, which is a worse lie than a
+# missing answer.
+OPENER = urllib.request.build_opener(
+    HopLoggingRedirectHandler(),
+    urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+)
+
+
+class HostLimiter:
+    """At most [MAX_PER_HOST] requests in flight per host, whatever -c says.
+
+    A semaphore per host, created under one lock: -c sizes the POOL, which is a
+    bound on this machine's work, and it is not the bound the other end
+    experiences. 400 urls on one host with -c 64 must not become 64 concurrent
+    requests at one publisher because the caller did not think to lower a flag.
+    """
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.lock = threading.Lock()
+        self.semaphores = {}
+
+    def for_host(self, host):
+        with self.lock:
+            if host not in self.semaphores:
+                self.semaphores[host] = threading.Semaphore(self.limit)
+            return self.semaphores[host]
+
+
+def request_status(url, method, agent, timeout):
+    """One request's status as an int, or None when there was no HTTP answer.
+
+    None IS the absence; there is no in-band string for it here, so the fall-
+    through below asks a number and the renderer is the only place `000` is
+    spelled.
+    """
+    headers = {"User-Agent": agent, "Accept": "*/*"}
+    if method == "GET":
+        # Enough of the document to prove it is served, and no more. A host that
+        # ignores the range answers 200 and we stop reading anyway. The end
+        # offset is INCLUSIVE, so it is the budget minus one, derived here.
+        headers["Range"] = f"bytes=0-{PROBE_BYTE_BUDGET - 1}"
+    request = urllib.request.Request(url, method=method, headers=headers)
+    try:
+        with OPENER.open(request, timeout=timeout) as response:
+            if method == "GET":
+                response.read(PROBE_BYTE_BUDGET)
+            return response.status
+    except urllib.error.HTTPError as error:
+        # An HTTP ANSWER, not a fault: 404 and 403 are what this script is for.
+        error.close()
+        return error.code
+    except Exception as error:  # noqa: BLE001 -- every transport fault is one outcome: no answer
+        # The TYPE and the REASON, because a warning that says only [URLError]
+        # cannot tell a blocked egress from a publisher dropping the connection,
+        # and the reason exists nowhere else once this frame returns.
+        log_warning(
+            f"{SCRIPT_NAME}: [{method}] [{url}]: no HTTP answer, reporting [{NO_ANSWER_STATUS}]: "
+            f"[{type(error).__name__}] [{bounded_reason(error)}]",
+        )
+        return None
+
+
+def check(url, agent, timeout, limiter):
+    """ONE PASS: HEAD, falling through to a ranged GET where the host refuses the
+    METHOD (400, 403, 405, 501).
+
+    One pass, one answer, no verdict. A caller that wants two readings runs this
+    twice and decides, which is exactly the judgement this script refuses to
+    make.
+    """
+    host = urllib.parse.urlparse(url).netloc.lower()
+    with limiter.for_host(host):
+        status = request_status(url, "HEAD", agent, timeout)
+        if status in HEAD_FALLBACK_STATUSES:
+            status = request_status(url, "GET", agent, timeout)
+    return NO_ANSWER_STATUS if status is None else str(status)
+
+
+def statuses_for(urls, agent, timeout, workers):
+    """{url: status} over the DISTINCT urls, `workers` at a time.
+
+    Distinct is the point: a caller listing one address three times is asking one
+    question, and the host is asked once. The per-line output is rebuilt from
+    this map afterwards, in the caller's own order.
+    """
+    limiter = HostLimiter(MAX_PER_HOST)
+    log_info(f"{SCRIPT_NAME}: checking {len(urls)} distinct urls, {workers} at a time...")
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(check, url, agent, timeout, limiter): url for url in urls}
+        for done in concurrent.futures.as_completed(futures):
+            results[futures[done]] = done.result()
+    return results
+
+
+def report(rows):
+    """The closing summary, on STDERR with every other diagnostic.
+
+    Counts by the leading digit plus the `000`s, because "3 of 43 answered 4xx"
+    is the sentence an operator reads; the per-url detail is already on stdout,
+    where the caller's own tooling reads it.
+    """
+    counts = collections.Counter(
+        NO_ANSWER_STATUS if status == NO_ANSWER_STATUS else f"{status[0]}xx" for _, status in rows
+    )
+    breakdown = ", ".join(f"{count} {band}" for band, count in sorted(counts.items()))
+    log_info(f"{SCRIPT_NAME}: {len(rows)} lines checked -- {breakdown}")
+
+
+def help_text():
+    """The module docstring WITH the agent this run would actually send.
+
+    The agent is a constant in this file, and a help text that describes it as "a
+    current Chrome string" without printing it makes an operator read the source
+    to learn what was sent. Assembled here rather than interpolated into the
+    docstring itself, because the docstring is also this module's documentation
+    and a format placeholder in it would be read by every other reader too.
+    """
+    return f"{__doc__}\nThe user agent this run sends unless -u says otherwise:\n\n    {DEFAULT_USER_AGENT}\n"
+
+
+def main(argv):
+    options, positional = parse_short_options(
+        argv, GETOPT_SPEC, help_text(), SCRIPT_NAME, allow_positional=True, stdin_option="-f"
+    )
+    # Validated BEFORE anything is read or requested: an out-of-range -c is a
+    # mistake about the run as a whole, and reporting it after a file has been
+    # parsed tells the operator about the wrong thing first.
+    workers = bounded_int(options["-c"], "-c", MIN_WORKERS, MAX_WORKERS) if "-c" in options else DEFAULT_WORKERS
+    timeout = (
+        bounded_int(options["-t"], "-t", MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS)
+        if "-t" in options
+        else DEFAULT_TIMEOUT_SECONDS
+    )
+    # An EMPTY -u never reaches here: parse_short_options refuses an empty value
+    # for every option that takes one, so the default is never a silent
+    # substitute for what the caller meant to send.
+    agent = options.get("-u", DEFAULT_USER_AGENT)
+
+    lines = input_lines(options, positional)
+    refuse_bad_schemes(lines)
+
+    # Sorted only to make the request ORDER deterministic; the OUTPUT order below
+    # is the caller's, rebuilt from the line list.
+    distinct = sorted({line.url for line in lines})
+    results = statuses_for(distinct, agent, timeout, min(workers, len(distinct)))
+
+    rows = [(line.url, results[line.url]) for line in lines]
+    for url, status in rows:
+        print(f"{status}\t{url}")
+    report(rows)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

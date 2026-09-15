@@ -462,9 +462,26 @@ def value_options(spec):
     ]
 
 
-def parse_short_options(argv, spec, doc, script_name):
-    """{option: value} from argv for a script whose grammar is short options and
-    NO positionals, fataling in the reserved band on any usage mistake.
+def parse_short_options(argv, spec, doc, script_name, allow_positional=False, stdin_option=None):
+    """{option: value} from argv, fataling in the reserved band on any usage
+    mistake -- and, for a script that declares operands, those operands too.
+
+    POSITIONALS ARE OPT-IN. By default this is a grammar of short options and
+    NOTHING else: an operand is an argument beyond the grammar and dies on
+    EXIT_UNEXPECTED_ARG (20), which is what the three original callers declare.
+    A script whose subject IS its operands (bin/check-link takes urls) passes
+    `allow_positional=True` and gets `(options, positional)` back instead of
+    `options` alone. The return SHAPE follows the parameter, so no existing
+    caller has to unpack a tuple it never asked for, and a caller that does ask
+    cannot forget the operands it requested were handed to it.
+
+    `stdin_option` names the ONE option, if any, whose value may be the literal
+    "-", the conventional spelling of standard input (bin/check-link's `-f -`).
+    It is opt-in for the same reason: the "a value beginning with - is a dropped
+    operand" guard below is what stops `-o -F` making a directory named `-F`,
+    and a caller that does not READ standard input has no business accepting a
+    bare dash as a path. A lone "-" is not an option -- getopt itself hands it
+    back as an operand -- so the exemption is exactly one string wide.
 
     The GRAMMAR is getopt.getopt -- the stdlib's model of the getopts builtin
     every bash script in bin/ parses with, so a python3 script in bin/ follows
@@ -528,11 +545,13 @@ def parse_short_options(argv, spec, doc, script_name):
         print(doc)
         sys.exit(0)
 
-    # getopt hands back everything after the options as operands. These scripts
-    # declare none, so any of them is an argument beyond the grammar -- 20, the
-    # code bin/functions reserves for exactly that, and NOT the 10 an unknown
+    # getopt hands back everything after the options as operands. A script that
+    # did not declare them has been given an argument beyond its grammar -- 20,
+    # the code bin/functions reserves for exactly that, and NOT the 10 an unknown
     # option gets: a mistyped option and a stray word are different mistakes.
-    if positional:
+    # A script that DID declare them (allow_positional) is handed them below,
+    # unjudged: what counts as a valid operand is the caller's rule, not getopt's.
+    if positional and not allow_positional:
         fatal(
             f"{script_name}: unexpected argument {bracketed(positional)}; this script takes options "
             f"only [{spec.replace(':', ' <value>')}]",
@@ -558,11 +577,11 @@ def parse_short_options(argv, spec, doc, script_name):
                     f"directory is meant, say so with [.]",
                     status=EXIT_INVALID_ARG_VALUE,
                 )
-            if raw.startswith("-"):
+            if raw.startswith("-") and not (option == stdin_option and raw == "-"):
                 fatal(
                     f"{script_name}: option [{option}] was given [{raw}], which is another option: "
                     f"its value was left out",
                     status=EXIT_INVALID_ARG_VALUE,
                 )
         options[option] = raw
-    return options
+    return (options, positional) if allow_positional else options

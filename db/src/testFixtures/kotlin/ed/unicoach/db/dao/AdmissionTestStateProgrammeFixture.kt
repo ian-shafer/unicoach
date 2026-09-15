@@ -60,7 +60,7 @@ object AdmissionTestStateProgrammeFixture {
     choice: SchoolDayTestChoice = SchoolDayTestChoice.ChosenLocally(TestChooser.DISTRICT),
     grades: GradeRange? = GradeRange(ELEVENTH_GRADE, ELEVENTH_GRADE),
     stateFunded: Boolean? = true,
-    sourceUrl: String = "https://example-education.$state.gov/school-day-testing",
+    sourceUrl: String = defaultSourceUrl(state),
     archiveUrl: String? = null,
     checkedOn: LocalDate = DEFAULT_CHECKED_ON,
     expiresOn: LocalDate = DEFAULT_EXPIRES_ON,
@@ -82,6 +82,15 @@ object AdmissionTestStateProgrammeFixture {
 
   /** A state that chose the test itself, which is the other half of the pairing [SchoolDayTestChoice] makes unrepresentable. */
   fun stateChose(test: AdmissionTest): SchoolDayTestChoice = SchoolDayTestChoice.StateChose(test)
+
+  /**
+   * The page a fixture row cites when the case is not about the citation.
+   *
+   * NAMED, because since RFC 213 the url is a row of `external_documents` and a
+   * suite that wants to assert the citation survived the join has to be able to
+   * say which url it expects without re-typing the format.
+   */
+  fun defaultSourceUrl(state: String): String = "https://example-education.$state.gov/school-day-testing"
 
   /** Empties the corpus. NAMED and called by the caller, never hidden inside a `seed` verb ([AdmissionTestCalendarFixture]'s rule). */
   fun deleteAll(session: SqlSession) {
@@ -121,6 +130,14 @@ object AdmissionTestStateProgrammeFixture {
   /** Its manifest: the reading session's dates, the coverage, the judgement calls, the capture dates, `rows` and `sha256`. */
   val PROVENANCE_FILE: File = File(COMMITTED_DIR, "PROVENANCE.json")
 
+  /**
+   * The sweep `bin/test-state-programme-seed -k` wrote: every url the corpus
+   * cites, its link status and the day we asked (RFC 213). A generated artifact
+   * of a committed source, like the seed migrations, and deliberately absent
+   * from PROVENANCE.json, which describes what a HUMAN typed.
+   */
+  val LINK_STATUS_FILE: File = File(COMMITTED_DIR, "link-status.csv")
+
   /** The CSV's name as `PROVENANCE.json` keys it -- one spelling for the reader and the manifest assertions. */
   val CSV_NAME: String = CSV_FILE.name
 
@@ -152,6 +169,32 @@ object AdmissionTestStateProgrammeFixture {
       "checked_on",
       "expires_on",
     )
+
+  /**
+   * The committed link sweep, `url -> (status, the day it was asked)`, from
+   * `link-status.csv` (RFC 213).
+   *
+   * It lives HERE rather than in the suite that asserts over it because the CSV
+   * reader is here: `:db`'s test source set does not see commons-csv, and a
+   * hand-rolled split would be a second CSV parser in a repo that already
+   * refuses second copies of a rule.
+   */
+  fun committedLinkStatuses(): Map<String, Pair<String, LocalDate?>> =
+    CSVFormat.DEFAULT
+      .builder()
+      .setHeader()
+      .setSkipHeaderRecord(true)
+      .build()
+      .parse(LINK_STATUS_FILE.reader())
+      .use { parser ->
+        parser.associate { record ->
+          record.get("url") to
+            Pair(
+              record.get("url_status"),
+              record.get("url_checked_on").let { if (it.isEmpty()) null else LocalDate.parse(it) },
+            )
+        }
+      }
 
   /**
    * The committed rows, parsed with a REAL CSV reader (`commons-csv`), on

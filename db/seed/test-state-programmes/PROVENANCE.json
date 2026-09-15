@@ -54,7 +54,7 @@
     "programmes.csv": "a296117a62c9049b0fc75d696af541bb7490e586ac759867878bf18cf7fe041c"
   },
   "archive_captures": {
-    "note": "An archive URL is not a spare link: it is the page AS IT WAS on the day it was captured (brief 0010 D26). Where a row was READ from the capture -- because the live page refuses every client we have -- the row's claims are as of the capture date below, not of checked_on. checked_on stays the day WE read it, because that is our re-reading cadence and is what the staleness guard measures. The row cannot yet SPEAK the capture date: giving a capture a first-class date is test/05.1/external-documents, and New Hampshire is the worked example that justifies it.",
+    "note": "An archive URL is not a spare link: it is the page AS IT WAS on the day it was captured (brief 0010 D26). Where a row was READ from the capture -- because the live page refuses every client we have -- the row's claims are as of the capture date below, not of checked_on. checked_on stays the day WE read it, because that is our re-reading cadence and is what the staleness guard measures. THE CAPTURE DATE IS STILL NOT A FIELD, and that was decided rather than deferred: RFC 213 moved both urls into external_documents and deliberately added no capture date and no capture table, because to this product an archived address is HOW a human reached the content and not a kind of thing the product reasons about (Ian, 2026-09-14: \"what does capture actually mean to unicoach?\"). So the dates below stay the record, here, where the person re-reading the row next year is already looking -- and New Hampshire is still read from a February 2023 page however recently we looked at it.",
     "captured_on": {
       "AZ": "2026-03-14",
       "DE": "2025-11-08",

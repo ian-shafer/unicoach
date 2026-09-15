@@ -16,7 +16,7 @@
 # refusal, the append-only refusal, the session-agreement rule, the `-n` exit-3
 # contract and the stdout-silence claim had all never run.
 #
-# Four properties cannot be eyeballed and are the reason each has its own case:
+# Six properties cannot be eyeballed and are the reason each has its own case:
 #
 #   1. A NORMAL RUN WRITES NOTHING TO STDOUT. That is the repo's bin/ rule, and
 #      here it is also a wiring claim: the generated file names travel out of awk
@@ -33,6 +33,19 @@
 #      seed carries may be re-stated identically and may be neither DROPPED nor
 #      REWRITTEN. That is a claim about a schema directory with a seed already in
 #      it, so only a two-run case can make it.
+#   5. THE GENERATOR EMITS TWO CITATION SHAPES, and which one it emits depends on
+#      the reading session. A session at or before
+#      LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR carries the source_url and
+#      archive_url COLUMNS, because its migration applies before RFC 213 drops
+#      them; a later session carries two foreign keys into external_documents.
+#      One fixture spans both in one run, which is the only way to assert the
+#      boundary is a boundary and not a switch somebody flipped.
+#   6. THE SWEEP IS OPT-IN AND NO ASSERTION HERE TOUCHES THE NETWORK. `-k` is
+#      exercised only where it is REFUSED before any url is collected -- with -n,
+#      and with a positional after it (which is also how "-k takes no value" is
+#      proved). Its file-reading half, the link-status.csv the sweep writes, is
+#      asserted in full from fixtures. Nothing in this harness runs
+#      bin/check-link, so the gate cannot flake on somebody's DNS.
 #
 # NO POSTGRES, NO GRADLE AND NO WORKTREE. Every run that can WRITE is routed by
 # the EXPLICIT -c and -d options into a throwaway temp tree, so this harness
@@ -63,9 +76,11 @@ the header refusal, every CHECK mirror by line number, the duplicate key, the
 multi-fault pass, the write-nothing-on-refusal rule, the append-only refusal in
 both its directions, the ORDER contract read through bin/common, the two-session
 path, the DDL-to-generator mirror check, the -n exit-3 contract, the idempotent
-happy path and -n against the COMMITTED tree. Needs no database, no daemon and
-no worktree: every run that can write is routed into a throwaway temp tree by
--c and -d.
+happy path, the two citation shapes either side of the legacy reading year, the
+link-status.csv source and its generated seed, and -n against the COMMITTED tree.
+Needs no database, no daemon and no worktree: every run that can write is routed
+into a throwaway temp tree by -c and -d, and NO assertion touches the network --
+-k is exercised only where it is refused before any url is collected.
 
 Options:
   -h: Help
@@ -119,6 +134,23 @@ EXPECTED_HEADER="$(sed -nE "s/^readonly EXPECTED_HEADER='(.*)'\$/\1/p" "$PROGRAM
 # (so no test is named), and a state-chosen row names one. Test urls, not the
 # states' own: this file asserts the VALIDATOR, and a fixture quoting the real
 # pages would read as data.
+# The boundary between the two citation shapes, READ OUT OF THE SCRIPT and never
+# retyped: a session at or before it carries the url columns
+# admission_test_state_programmes had when its seed landed, and a later session
+# carries two foreign keys into external_documents (RFC 213). A harness that
+# typed 2026 here would go on asserting the old shape after the constant moved.
+LEGACY_YEAR="$(sed -nE 's/^readonly LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR=([0-9]+)$/\1/p' "$PROGRAMME_SEED")"
+[ -n "$LEGACY_YEAR" ] ||
+  fail_test "the harness could not read LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR out of [$PROGRAMME_SEED]"
+
+# The header of the swept file, read out of the script for the same reason.
+EXPECTED_LINK_STATUS_HEADER="$(sed -nE "s/^readonly EXPECTED_LINK_STATUS_HEADER='(.*)'\$/\1/p" "$PROGRAMME_SEED")"
+[ -n "$EXPECTED_LINK_STATUS_HEADER" ] ||
+  fail_test "the harness could not read EXPECTED_LINK_STATUS_HEADER out of [$PROGRAMME_SEED]"
+
+# The swept file lives BESIDE the authored one, so -c routes it too.
+LINK_STATUS="$FIXTURE_DIR/link-status.csv"
+
 readonly GOOD_TN_ROW="TN,$FIXTURE_SESSION,reading_year,required,,district,,11,11,true,https://example.test/tn,,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
 readonly GOOD_VA_ROW="VA,$FIXTURE_SESSION,stated_by_source,offered,true,state,sat,11,11,,https://example.test/va,https://example.test/va-archive,$FIXTURE_CHECKED,$FIXTURE_EXPIRES"
 
@@ -138,7 +170,15 @@ reset_fixture() {
   rm -rf "$SCHEMA"
   mkdir -p "$SCHEMA"
   : > "$SCHEMA/ORDER"
+  # The swept file goes with it. It is OPTIONAL input, so a case that left one
+  # behind would hand the next case a link-status seed it never asked for.
+  rm -f "$LINK_STATUS"
   write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_VA_ROW"
+}
+
+# A link-status CSV: the generator's own header, then the rows this case means.
+write_link_status() { # write_link_status <row>...
+  printf '%s\n' "$EXPECTED_LINK_STATUS_HEADER" "$@" > "$LINK_STATUS"
 }
 
 # Records BOTH halves of the answer -- the status in $seed_status, stderr in
@@ -224,6 +264,21 @@ assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c naming a file that is not there e
   "$PROGRAMME_SEED" -c "$FIXTURE_DIR/no-such-file.csv" -d "$SCHEMA"
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d naming a directory that is not there exits EXIT_INVALID_ARG_VALUE" \
   "$PROGRAMME_SEED" -c "$CSV" -d "$FIXTURE_DIR/no-such-dir"
+
+# -k TAKES NO VALUE, and the proof is that the word after it is still read as a
+# positional. A `k:` typo in the getopts spec would swallow `stray` and this run
+# would go on to SWEEP THE NETWORK, which is the one thing this harness must
+# never do -- so the assertion is also the guard. It is refused in parse_args,
+# before any url is collected.
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "-k takes no value, so the word after it is still a positional" \
+  "$PROGRAMME_SEED" -c "$CSV" -d "$SCHEMA" -k stray
+
+# -n promises the run writes nothing and -k's whole product is a rewritten
+# link-status.csv. Refused together, in parse_args, before anything is fetched.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-k with -n exits EXIT_INVALID_ARG_VALUE rather than sweeping or lying" \
+  "$PROGRAMME_SEED" -c "$CSV" -d "$SCHEMA" -k -n
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-n with -k exits EXIT_INVALID_ARG_VALUE whichever order they are given in" \
+  "$PROGRAMME_SEED" -c "$CSV" -d "$SCHEMA" -n -k
 
 # An EMPTY file is not a CSV with no rows: it has no header either, so it is a
 # usage fault rather than a corpus the validator reads and refuses.
@@ -991,9 +1046,242 @@ done <<< "$foreign_mirrors"
 pass_test "every MIRRORS tag naming a constraint outside this DDL ([$foreign_mirror_count] of them) resolves to a real one"
 
 echo ""
+echo "==== test-state-programme-seed: the two citation shapes, and the boundary between them ===="
+
+# 35. THE DELICATE PART OF RFC 213, and it is a claim about HISTORY.
+# admission_test_state_programmes no longer has source_url and archive_url: it
+# has source_document_id and archive_document_id, two foreign keys into
+# external_documents. But the migration that drops the columns sits AFTER
+# seed-admission-test-state-programmes-2026.sql in db/schema/ORDER, so that seed
+# applies to the table as it WAS and must go on being generated exactly as it
+# landed.
+#
+# So the generator is per-session, and the boundary is
+# LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR. ONE fixture exercises both sides
+# in one run, which is the only way to assert that the boundary is a boundary
+# rather than a global switch somebody flipped.
+[ "$FIXTURE_SESSION" -le "$LEGACY_YEAR" ] ||
+  fail_test "this harness's fixture session [$FIXTURE_SESSION] is after the legacy year [$LEGACY_YEAR], so every case above is asserting the NEW shape while claiming to assert the old one"
+
+LATER_SESSION=$((LEGACY_YEAR + 2))
+LATER_CHECKED="$LATER_SESSION-09-11"
+LATER_EXPIRES="$((LATER_SESSION + 1))-07-31"
+LATER_SEED_NAME="seed-admission-test-state-programmes-$LATER_SESSION.sql"
+
+reset_fixture
+write_csv "$CSV" "$GOOD_TN_ROW" "$GOOD_VA_ROW" \
+  "TN,$LATER_SESSION,reading_year,required,,district,,11,11,true,https://example.test/tn-later,,$LATER_CHECKED,$LATER_EXPIRES" \
+  "VA,$LATER_SESSION,reading_year,offered,true,state,sat,11,11,,https://example.test/va-later,https://example.test/va-later-archive,$LATER_CHECKED,$LATER_EXPIRES"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a CSV spanning both shapes exited $seed_status: $(cat "$seed_err")"
+
+# The legacy side: url columns, and NOT a document id or an external_documents
+# row anywhere in the file.
+grep -qF "     source_url, archive_url, checked_on, expires_on)" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the session at the legacy year [$FIXTURE_SESSION] did not keep the url columns: [$(cat "$SCHEMA/$SEED_NAME")]"
+grep -qF "'https://example.test/va-archive'" "$SCHEMA/$SEED_NAME" ||
+  fail_test "the legacy session did not render its archive url as a literal: [$(cat "$SCHEMA/$SEED_NAME")]"
+if grep -qF "external_documents" "$SCHEMA/$SEED_NAME"; then
+  fail_test "the session at the legacy year mentions external_documents, which does not exist yet when it applies: [$(cat "$SCHEMA/$SEED_NAME")]"
+fi
+pass_test "a reading session at or before the legacy year still emits the url COLUMNS, and never names external_documents"
+
+# The later side: the urls are upserted first, and each id is subselected by url.
+grep -qF "INSERT INTO external_documents (url)" "$SCHEMA/$LATER_SEED_NAME" ||
+  fail_test "the session after the legacy year did not upsert its documents: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+grep -qF "ON CONFLICT (url) DO NOTHING;" "$SCHEMA/$LATER_SEED_NAME" ||
+  fail_test "the document upsert is not ON CONFLICT (url) DO NOTHING, so re-stating a url would reset a swept status: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+grep -qF "     source_document_id, archive_document_id, checked_on, expires_on)" "$SCHEMA/$LATER_SEED_NAME" ||
+  fail_test "the session after the legacy year did not switch to the two foreign keys: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+# EVERY distinct url of the session, source and archive alike: an archived
+# address is a document like any other, and a row citing one the upsert never
+# inserted would violate the foreign key at apply time.
+for url in https://example.test/tn-later https://example.test/va-later https://example.test/va-later-archive; do
+  grep -qF "    ('$url')" "$SCHEMA/$LATER_SEED_NAME" ||
+    fail_test "[$url] is not upserted into external_documents by the later session: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+done
+# A row with no archived address carries NULL, and never a subselect for ''.
+grep -qF "('TN', $LATER_SESSION, 'reading_year', 'required', NULL, 'district', NULL, 11, 11, TRUE, (SELECT id FROM external_documents WHERE url = 'https://example.test/tn-later'), NULL, DATE '$LATER_CHECKED', DATE '$LATER_EXPIRES')" "$SCHEMA/$LATER_SEED_NAME" ||
+  fail_test "the no-archive row is not rendered with a subselected source id and a NULL archive: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+grep -qF "('VA', $LATER_SESSION, 'reading_year', 'offered', TRUE, 'state', 'sat', 11, 11, NULL, (SELECT id FROM external_documents WHERE url = 'https://example.test/va-later'), (SELECT id FROM external_documents WHERE url = 'https://example.test/va-later-archive'), DATE '$LATER_CHECKED', DATE '$LATER_EXPIRES')" "$SCHEMA/$LATER_SEED_NAME" ||
+  fail_test "the archived row is not rendered with both ids subselected: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+grep -qF "    source_document_id  = EXCLUDED.source_document_id," "$SCHEMA/$LATER_SEED_NAME" ||
+  fail_test "the later session's upsert does not set source_document_id: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+grep -qF "    archive_document_id = EXCLUDED.archive_document_id," "$SCHEMA/$LATER_SEED_NAME" ||
+  fail_test "the later session's upsert does not set archive_document_id: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+if grep -qF "source_url" "$SCHEMA/$LATER_SEED_NAME"; then
+  fail_test "the session after the legacy year still names source_url, a column the table no longer has: [$(cat "$SCHEMA/$LATER_SEED_NAME")]"
+fi
+pass_test "a reading session after the legacy year upserts its documents and cites them by SUBSELECTED id, with NULL where no archive was needed"
+
+echo ""
+echo "==== test-state-programme-seed: link-status.csv, a second source and its artifact ===="
+
+readonly LINK_SEED_NAME="seed-external-document-link-status-$FIXTURE_SESSION.sql"
+
+# 36. NO SWEPT FILE IS NOT A FAULT, and it is also the proof that the sweep is
+# opt-in: a normal run with no link-status.csv beside the CSV writes no
+# link-status seed, and does NOT create one by going to the network.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a run with no link-status.csv exited $seed_status: $(cat "$seed_err")"
+[ ! -e "$LINK_STATUS" ] ||
+  fail_test "a run WITHOUT -k created [$LINK_STATUS]; the sweep is opt-in and must never run by default"
+[ ! -e "$SCHEMA/$LINK_SEED_NAME" ] ||
+  fail_test "a run with no swept file wrote a link-status seed anyway"
+grep -qF "is not in the tree, so no link-status seed is generated" "$seed_err" ||
+  fail_test "the run did not say why no link-status seed was generated; said [$(cat "$seed_err")]"
+pass_test "with no link-status.csv beside the CSV, no link-status seed is generated and nothing is fetched"
+
+# 37. And with one, it is a GENERATED artifact of a committed source exactly like
+# the programme seeds: written, declared in ORDER, and upserting on the url.
+reset_fixture
+write_link_status \
+  "https://example.test/tn,found,$FIXTURE_CHECKED" \
+  "https://example.test/va,not_found,$FIXTURE_CHECKED" \
+  "https://example.test/va-archive,unknown,$FIXTURE_CHECKED"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "a swept file was refused (exit $seed_status): $(cat "$seed_err")"
+[ ! -s "$seed_out" ] || fail_test "the link-status run wrote to stdout: [$(cat "$seed_out")]"
+[ -f "$SCHEMA/$LINK_SEED_NAME" ] ||
+  fail_test "the link-status seed was not written; the directory holds [$(ls "$SCHEMA")]"
+grep -qF "INSERT INTO external_documents (url, url_status, url_checked_on)" "$SCHEMA/$LINK_SEED_NAME" ||
+  fail_test "the link-status seed is not the upsert it should be: [$(cat "$SCHEMA/$LINK_SEED_NAME")]"
+grep -qF "    ('https://example.test/tn', 'found', DATE '$FIXTURE_CHECKED')," "$SCHEMA/$LINK_SEED_NAME" ||
+  fail_test "the found row is not rendered as the DDL would take it: [$(cat "$SCHEMA/$LINK_SEED_NAME")]"
+grep -qF "    ('https://example.test/va-archive', 'unknown', DATE '$FIXTURE_CHECKED')" "$SCHEMA/$LINK_SEED_NAME" ||
+  fail_test "the dated-unknown row is not rendered: [$(cat "$SCHEMA/$LINK_SEED_NAME")]"
+grep -qF "    url_status     = EXCLUDED.url_status," "$SCHEMA/$LINK_SEED_NAME" ||
+  fail_test "the link-status seed does not update the status on conflict: [$(cat "$SCHEMA/$LINK_SEED_NAME")]"
+[ "$(order_count "$LINK_SEED_NAME")" = "1" ] ||
+  fail_test "the link-status seed's ORDER line is not there exactly once: [$(tr '\n' ' ' < "$SCHEMA/ORDER")]"
+pass_test "a swept link-status.csv generates its seed, upserting on the url, and its ORDER line is appended once"
+
+# 38. -n covers it too, because it is an artifact of a committed source and a
+# hand-edited one is the same defect as a hand-edited programme seed.
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq 0 ] ||
+  fail_test "-n on a correct link-status tree exited $seed_status: $(cat "$seed_err")"
+cp "$SCHEMA/$LINK_SEED_NAME" "$FIXTURE_DIR/link-seed.before"
+printf '%s\n' "-- a hand edit nobody generated" >> "$SCHEMA/$LINK_SEED_NAME"
+run_seed -c "$CSV" -d "$SCHEMA" -n
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n on a hand-edited link-status seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE: $(cat "$seed_err")"
+grep -qF "$LINK_SEED_NAME" "$seed_err" ||
+  fail_test "-n did not name the link-status seed that disagreed; said [$(cat "$seed_err")]"
+if cmp -s "$FIXTURE_DIR/link-seed.before" "$SCHEMA/$LINK_SEED_NAME"; then
+  fail_test "-n repaired the hand-edited link-status seed it was only asked about"
+fi
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the repairing run exited $seed_status: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/link-seed.before" "$SCHEMA/$LINK_SEED_NAME" ||
+  fail_test "a real run did not restore the hand-edited link-status seed"
+pass_test "-n refuses a HAND-EDITED link-status seed and repairs nothing; a real run regenerates it"
+
+# 39. THE ONE RULE THE TABLE ITSELF CARRIES: you cannot claim to know without
+# saying when you looked (external_documents_checked_when_known). Unchecked, this
+# is a migration that fails at apply time in somebody else's db-reset.
+#
+# This file is stricter than the CHECK, on purpose, and the message says why:
+# it is the record of a SWEEP, so every row carries the day it was asked, and
+# "we never asked" is a url that is not in the file at all.
+reset_fixture
+write_link_status \
+  "https://example.test/tn,found," \
+  "https://example.test/va,unknown,$FIXTURE_CHECKED"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a found row with no date exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 2: url_checked_on is empty for url [https://example.test/tn]" "$seed_err" ||
+  fail_test "the dateless refusal did not name the line and the url; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$LINK_SEED_NAME" ] ||
+  fail_test "the dateless refusal wrote a link-status seed anyway"
+[ ! -e "$SCHEMA/$SEED_NAME" ] ||
+  fail_test "a refused link-status CSV still let the programme seed be written; a refusal writes NOTHING"
+pass_test "a link-status row with a status and NO date is refused, naming its line and its url"
+
+# 40. The DOMAIN, mirrored: link_status admits exactly three words, and 'dead' is
+# the plausible fourth somebody would type.
+reset_fixture
+write_link_status "https://example.test/tn,dead,$FIXTURE_CHECKED"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a bogus url_status exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 2: url_status [dead] is not one of unknown, found, not_found" "$seed_err" ||
+  fail_test "the url_status refusal did not say why; said [$(cat "$seed_err")]"
+pass_test "a url_status outside the link_status domain is refused by line"
+
+# 41. The url is the KEY, so one document is one row. Two rows for one url is a
+# file that says two things and an upsert whose last writer wins in silence.
+reset_fixture
+write_link_status \
+  "https://example.test/tn,found,$FIXTURE_CHECKED" \
+  "https://example.test/tn,not_found,$FIXTURE_CHECKED"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a duplicate url exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 3: duplicate url [https://example.test/tn], first seen at line [2]" "$seed_err" ||
+  fail_test "the duplicate-url refusal did not name both lines; said [$(cat "$seed_err")]"
+pass_test "a duplicated url in link-status.csv is refused, naming both line numbers"
+
+# 42. And a url that is not a url. The table CHECKs the scheme, bin/check-link
+# refuses one without it, and so does this: the three agree about what a url is.
+reset_fixture
+write_link_status "example.test/tn,found,$FIXTURE_CHECKED"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a schemeless url exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 2: url [example.test/tn] is not an http or https url" "$seed_err" ||
+  fail_test "the schemeless-url refusal did not say why; said [$(cat "$seed_err")]"
+pass_test "a link-status url with no http(s) scheme is refused by line"
+
+# 43. A date that matches the SHAPE and is not a day, which is the fault a
+# pattern-only validator hands to Postgres as a literal that fails at apply time.
+reset_fixture
+write_link_status "https://example.test/tn,found,2026-02-30"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "an impossible date exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 2: url_checked_on [2026-02-30] is not a real yyyy-mm-dd date" "$seed_err" ||
+  fail_test "the impossible-date refusal did not say why; said [$(cat "$seed_err")]"
+pass_test "a link-status url_checked_on that is not on the calendar is refused by line"
+
+# 44. And the header, exactly and in order, for the reason the programmes header
+# is asserted: read positionally, a swap puts a date in the status column.
+reset_fixture
+reordered_link_header="$(printf '%s\n' "$EXPECTED_LINK_STATUS_HEADER" | awk -F, '{ t = $2; $2 = $3; $3 = t; print }' OFS=,)"
+[ "$reordered_link_header" != "$EXPECTED_LINK_STATUS_HEADER" ] ||
+  fail_test "the harness failed to derive a reordered link-status header"
+printf '%s\n' "$reordered_link_header" "https://example.test/tn,found,$FIXTURE_CHECKED" > "$LINK_STATUS"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a reordered link-status header exited $seed_status, expected 1"
+grep -qF "the link-status CSV header is not the header this generator expects" "$seed_err" ||
+  fail_test "the link-status header refusal did not say what was wrong; said [$(cat "$seed_err")]"
+grep -qF "found:    [$reordered_link_header]" "$seed_err" ||
+  fail_test "the refusal did not show the header it found; said [$(cat "$seed_err")]"
+[ ! -e "$SCHEMA/$LINK_SEED_NAME" ] || fail_test "the header refusal wrote a link-status seed anyway"
+pass_test "a reordered link-status header is refused, showing expected and found, and nothing is written"
+
+# 45. The seed is named for the READING YEAR of its dates, like every other seed
+# here, so a second sweep lands as its own file rather than editing a landed one.
+reset_fixture
+later_link_checked="$LATER_SESSION-09-11"
+write_link_status \
+  "https://example.test/tn,found,$FIXTURE_CHECKED" \
+  "https://example.test/va,found,$later_link_checked"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "a two-session link-status file exited $seed_status: $(cat "$seed_err")"
+[ -f "$SCHEMA/$LINK_SEED_NAME" ] ||
+  fail_test "the first sweep's link-status seed is missing; the directory holds [$(ls "$SCHEMA")]"
+[ -f "$SCHEMA/seed-external-document-link-status-$LATER_SESSION.sql" ] ||
+  fail_test "the later sweep's link-status seed is missing; the directory holds [$(ls "$SCHEMA")]"
+if grep -qF "DATE '$later_link_checked'" "$SCHEMA/$LINK_SEED_NAME"; then
+  fail_test "the [$FIXTURE_SESSION] link-status seed carries a row checked on [$later_link_checked]"
+fi
+pass_test "link-status rows are filed by the READING YEAR of the day they were checked, one seed each"
+
+echo ""
 echo "==== test-state-programme-seed: the COMMITTED tree, which is the whole claim ===="
 
-# 34. The one case that is NOT routed into the fixture tree, and the only one
+# 46. The one case that is NOT routed into the fixture tree, and the only one
 # that can be: every assertion above feeds the generator a temp CSV, so a stale
 # or hand-edited db/schema/seed-admission-test-state-programmes-*.sql passed every
 # one of them. "The CSV is the source and the SQL is an artifact" is a claim about

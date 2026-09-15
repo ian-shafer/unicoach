@@ -33,6 +33,42 @@
 # it. Last year's answer stays true about last year; a re-read appends a row for
 # the new school year instead of editing the old one.
 #
+# TWO SHAPES, AND THE OLDER ONE IS HISTORY THIS GENERATOR MUST REPRODUCE
+# (RFC 213, slice test/05.1/external-documents). admission_test_state_programmes
+# no longer carries `source_url` and `archive_url`: it carries
+# `source_document_id NOT NULL` and `archive_document_id NULL`, two foreign keys
+# into external_documents. The columns are dropped by
+# db/schema/adopt-external-documents-for-state-programmes.sql, whose line in
+# db/schema/ORDER sits AFTER seed-admission-test-state-programmes-2026.sql.
+#
+# So the 2026 seed applies to a table that still HAS the url columns and does not
+# yet have the document ids, and its ORDER line cannot move: a migration corpus
+# is replayed from the top on every db-reset, and re-ordering a landed migration
+# is not a thing this repo does. That file must therefore stay byte-identical to
+# what is committed, url literals and all, and this generator must go on
+# producing it.
+#
+# LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR below is that boundary, written
+# once. A reading session AT OR BEFORE it emits the url columns; every LATER
+# session emits the external_documents upsert and the two subselected document
+# ids. A generator that must reproduce history is not a wart here -- it is the
+# same rule as the append-only corpus one screen up: what landed stays landed,
+# and the new shape arrives in the NEXT session's file.
+#
+# IT ALSO REGENERATES THE LINK-STATUS SEED, from a second committed file,
+# db/seed/test-state-programmes/link-status.csv -- the sweep an operator ran with
+# bin/check-link. That file is a source like programmes.csv and
+# seed-external-document-link-status-<reading-year>.sql is an artifact of it, so
+# `-n` checks it exactly as it checks the programme seeds.
+#
+# THE SWEEP ITSELF IS OPT-IN AND IS `-k`. Without it this script touches NO
+# network: it reads committed files and writes generated ones. With it, it hands
+# bin/check-link every distinct url of programmes.csv -- source and archive
+# alike, because an archived address is a document like any other -- applies THIS
+# repo's reading of the codes (RFC 200's vocabulary, which belongs to the caller
+# and not to the checker) and rewrites link-status.csv for a human to review in a
+# diff.
+#
 # IT VALIDATES BEFORE IT WRITES, AND IT REPORTS EVERY FAULT IN ONE PASS. Each
 # CHECK constraint in db/schema/create-admission-test-state-programmes.sql is
 # mirrored here, so a typo is a REVIEW error naming its line number rather than a
@@ -48,7 +84,15 @@ test-state-programme-seed [options]
 
 Generates <schema-dir>/seed-admission-test-state-programmes-<reading-year>.sql
 from the authored source file db/seed/test-state-programmes/programmes.csv, one
-seed per reading session present in it, and appends each new ORDER line.
+seed per reading session present in it, and appends each new ORDER line. A
+session at or before the reading year named by
+LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR in this script carries the url
+columns admission_test_state_programmes had then; a later session carries
+external_documents rows and the two document ids that replaced them.
+
+It also generates
+<schema-dir>/seed-external-document-link-status-<reading-year>.sql from
+db/seed/test-state-programmes/link-status.csv, when that swept file is present.
 
 The CSV is the source of truth and the SQL is a generated artifact: edit the
 CSV and re-run this, never the other way round. Every CHECK constraint on
@@ -61,13 +105,18 @@ Options:
   -c: The authored programmes CSV
       (default: $PROJECT_ROOT/db/seed/test-state-programmes/programmes.csv)
   -d: The schema directory to generate into (default: $PROJECT_ROOT/db/schema)
+  -k: Check every url the programmes CSV cites, through bin/check-link, and
+      rewrite link-status.csv beside it. THE ONLY OPTION THAT TOUCHES THE
+      NETWORK, and it is never on by default. Refused with -n, which writes
+      nothing.
   -n: Dry run. Writes nothing; exits 3 if the tree differs from what a real run
       would generate, 0 if it is already correct.
   -h: Help
 
 Exit codes:
   0   the seeds and their ORDER lines are correct, or were written
-  1   refused: the CSV is not usable, or the corpus cannot be written
+  1   refused: a source file is not usable, the sweep answered for nothing, or
+      the corpus cannot be written
   3   -n only: the tree differs from what would be generated
   9   refused: ORDER cannot be appended to safely (run bin/db-status)
   10, 11, 20, 22  usage errors
@@ -78,13 +127,24 @@ EOF
 CSV_ARG="$PROJECT_ROOT/db/seed/test-state-programmes/programmes.csv"
 SCHEMA_DIR_ARG="$PROJECT_ROOT/db/schema"
 DRY_RUN=""
+CHECK_LINKS=""
+
+# THE BOUNDARY BETWEEN THE TWO SHAPES, WRITTEN ONCE. See the header: the seed for
+# this reading year applies BEFORE
+# adopt-external-documents-for-state-programmes.sql drops the url columns, so it
+# must go on being generated exactly as it landed. Every LATER session is
+# generated against the table as it is now, with two foreign keys into
+# external_documents. Moving this number rewrites a landed migration and is not a
+# thing to do: a new shape belongs to the next session, not to last year's file.
+readonly LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR=2026
 
 parse_args() {
   local OPTIND OPTARG opt
-  while getopts ":c:d:nh" opt; do
+  while getopts ":c:d:knh" opt; do
     case "$opt" in
     c) CSV_ARG="$OPTARG" ;;
     d) SCHEMA_DIR_ARG="$OPTARG" ;;
+    k) CHECK_LINKS=1 ;;
     n) DRY_RUN=1 ;;
     h) help ;;
     \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
@@ -96,6 +156,12 @@ parse_args() {
   if [ "$#" -gt 0 ]; then
     fatal -s "$EXIT_UNEXPECTED_ARG" "test-state-programme-seed does not accept positional arguments: [$*]"
   fi
+
+  # -n is a promise that the run writes NOTHING, and -k's whole product is a
+  # rewritten link-status.csv. Taking both would either break the promise or
+  # sweep 43 addresses and throw the answers away; both are worse than refusing.
+  [ -z "$CHECK_LINKS" ] || [ -z "$DRY_RUN" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "options -k and -n are mutually exclusive: -k's product is a rewritten link-status.csv and -n writes nothing"
 
   [ -n "$CSV_ARG" ] ||
     fatal -s "$EXIT_INVALID_ARG_VALUE" "option -c requires a non-empty path"
@@ -151,6 +217,11 @@ assert_order_is_appendable() {
 # of a header this script had stopped expecting.
 readonly EXPECTED_HEADER='state,school_year,school_year_basis,participation,school_must_offer,test_chooser,test,lowest_grade,highest_grade,state_funded,source_url,archive_url,checked_on,expires_on'
 
+# The header of the SWEPT file, on the same terms: declared once, and read out of
+# this line by the harness rather than retyped there. It is the column order
+# external_documents itself names them in.
+readonly EXPECTED_LINK_STATUS_HEADER='url,url_status,url_checked_on'
+
 # Every fault line awk wrote, re-emitted through log-error, and counted.
 #
 # awk's faults are diagnostics of THIS script, and every diagnostic in bin/
@@ -197,7 +268,8 @@ generate_programmes() {
   # BYTES, and a multibyte locale would let awk read one offending byte as a
   # character it considers ordinary.
   complaint="$(LC_ALL=C awk -v expected="$EXPECTED_HEADER" -v outdir="$OUT_DIR" \
-    -v src="$CSV_REL" -v csv="$CSV_PATH" '
+    -v src="$CSV_REL" -v csv="$CSV_PATH" \
+    -v legacy_year="$LEGACY_URL_COLUMN_SEED_THROUGH_READING_YEAR" '
     function fail(line, msg) { printf "  %s line %d: %s\n", src, line, msg > "/dev/stderr"; bad++ }
 
     function is_iso_date(s,   y, m, d, dim) {
@@ -224,6 +296,24 @@ generate_programmes() {
     function get_text_or_null(s) { return s == "" ? "NULL" : get_quoted(s) }
     function get_bool_or_null(s) { return s == "" ? "NULL" : (s == "true" ? "TRUE" : "FALSE") }
     function get_int_or_null(s) { return s == "" ? "NULL" : s + 0 }
+
+    # The document id of a url, as a subselect rather than a literal. The id is
+    # a uuidv7 the DATABASE mints, so a generated file cannot know it: the row
+    # that cites a document looks it up by the one thing both files agree on,
+    # which is the url itself -- the natural key external_documents is built on.
+    function get_document_id(u) {
+      return "(SELECT id FROM external_documents WHERE url = " get_quoted(u) ")"
+    }
+    function get_document_id_or_null(u) { return u == "" ? "NULL" : get_document_id(u) }
+
+    # Every distinct url of a session, in first-seen order, so the
+    # external_documents block of a seed is stable across runs.
+    function remember_url(s, u,   i) {
+      if (u == "" || ((s, u) in url_seen)) return
+      url_seen[s, u] = 1
+      i = ++url_count[s]
+      url_list[s, i] = u
+    }
 
     function is_bool_or_empty(s) { return s == "" || s == "true" || s == "false" }
     function is_int(s) { return s ~ /^[0-9]+$/ }
@@ -425,11 +515,27 @@ generate_programmes() {
         session_line[reading] = FNR
       }
 
-      tuple = sprintf("  (%s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, DATE %s, DATE %s)",
-        get_quoted(state), year + 0, get_quoted(basis), get_quoted(part), get_bool_or_null(must),
-        get_quoted(chooser), get_text_or_null(test), get_int_or_null(lo), get_int_or_null(hi),
-        get_bool_or_null(funded), get_quoted(surl), get_text_or_null(aurl),
-        get_quoted(checked), get_quoted(expires))
+      # THE TWO SHAPES. A session at or before legacy_year is written against the
+      # table as it was when that seed landed -- two url columns -- because its
+      # migration applies before the columns are dropped and its ORDER line
+      # cannot move. A later session is written against the table as it is:
+      # two foreign keys into external_documents, looked up by url. The file
+      # header above says why at length.
+      if (reading <= legacy_year + 0) {
+        tuple = sprintf("  (%s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, DATE %s, DATE %s)",
+          get_quoted(state), year + 0, get_quoted(basis), get_quoted(part), get_bool_or_null(must),
+          get_quoted(chooser), get_text_or_null(test), get_int_or_null(lo), get_int_or_null(hi),
+          get_bool_or_null(funded), get_quoted(surl), get_text_or_null(aurl),
+          get_quoted(checked), get_quoted(expires))
+      } else {
+        tuple = sprintf("  (%s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, DATE %s, DATE %s)",
+          get_quoted(state), year + 0, get_quoted(basis), get_quoted(part), get_bool_or_null(must),
+          get_quoted(chooser), get_text_or_null(test), get_int_or_null(lo), get_int_or_null(hi),
+          get_bool_or_null(funded), get_document_id(surl), get_document_id_or_null(aurl),
+          get_quoted(checked), get_quoted(expires))
+        remember_url(reading, surl)
+        remember_url(reading, aurl)
+      }
 
       # APPEND-ONLY, CHECKED AND NOT ASSUMED. A pair an existing generated seed
       # already carries may be re-stated identically — this script is re-run all
@@ -482,11 +588,38 @@ generate_programmes() {
         printf "-- Reading session %d: %d state school-day programme row(s), each with the state\n", s, session_rows[s] > out
         printf "-- page it was read from and the day a human read it. The corpus is append-only,\n" > out
         printf "-- so a later reading lands as a NEW seed and never as an edit to this one.\n" > out
+        # NOTHING IS ADDED TO A LEGACY SEED\x27S HEADER, not even a sentence saying
+        # which shape it is. seed-admission-test-state-programmes-2026.sql is
+        # committed, applied and landed, and this generator must reproduce it BYTE
+        # FOR BYTE or `-n` refuses the tree it has just regenerated. The reason it
+        # carries the url columns is written once, at the top of this script,
+        # where a reader of the generator will look for it.
+        if (s > legacy_year + 0) {
+          printf "--\n" > out
+          printf "-- Reading session %d is after reading year %d, so each row cites its documents\n", s, legacy_year + 0 > out
+          printf "-- by foreign key into external_documents (RFC 213). The urls are upserted\n" > out
+          printf "-- first, and each id is SUBSELECTED by url, because the id is a uuidv7 the\n" > out
+          printf "-- database mints and a generated file cannot know it.\n" > out
+        }
         printf "\n" > out
+
+        if (s > legacy_year + 0) {
+          printf "INSERT INTO external_documents (url)\nVALUES\n" > out
+          for (u = 1; u <= url_count[s]; u++)
+            printf "    (%s)%s\n", get_quoted(url_list[s, u]), (u == url_count[s] ? "" : ",") > out
+          # DO NOTHING and not DO UPDATE: a url this seed cites may already have
+          # been swept, and re-stating it must never reset url_status to the
+          # default. The link-status seed is the ONLY writer of that pair.
+          printf "ON CONFLICT (url) DO NOTHING;\n\n" > out
+        }
+
         printf "INSERT INTO admission_test_state_programmes\n" > out
         printf "    (state, school_year, school_year_basis, participation, school_must_offer,\n" > out
         printf "     test_chooser, test, lowest_grade, highest_grade, state_funded,\n" > out
-        printf "     source_url, archive_url, checked_on, expires_on)\n" > out
+        if (s <= legacy_year + 0)
+          printf "     source_url, archive_url, checked_on, expires_on)\n" > out
+        else
+          printf "     source_document_id, archive_document_id, checked_on, expires_on)\n" > out
         printf "VALUES\n" > out
         printf "%s\n", values[s] > out
         printf "ON CONFLICT (state, school_year) DO UPDATE SET\n" > out
@@ -498,8 +631,13 @@ generate_programmes() {
         printf "    lowest_grade      = EXCLUDED.lowest_grade,\n" > out
         printf "    highest_grade     = EXCLUDED.highest_grade,\n" > out
         printf "    state_funded      = EXCLUDED.state_funded,\n" > out
-        printf "    source_url        = EXCLUDED.source_url,\n" > out
-        printf "    archive_url       = EXCLUDED.archive_url,\n" > out
+        if (s <= legacy_year + 0) {
+          printf "    source_url        = EXCLUDED.source_url,\n" > out
+          printf "    archive_url       = EXCLUDED.archive_url,\n" > out
+        } else {
+          printf "    source_document_id  = EXCLUDED.source_document_id,\n" > out
+          printf "    archive_document_id = EXCLUDED.archive_document_id,\n" > out
+        }
         printf "    checked_on        = EXCLUDED.checked_on,\n" > out
         printf "    expires_on        = EXCLUDED.expires_on;\n" > out
         # close() is awk\x27s ONLY error channel for a redirected write: a full
@@ -523,7 +661,250 @@ generate_programmes() {
   if [ "$status" -ne 0 ]; then
     [ "$FAULTS" -gt 0 ] ||
       fatal "could not read [$CSV_REL]: awk exited [$status] without reporting a fault, so it did not refuse the CSV, it died. Nothing was written."
-    PROGRAMMES_OK=""
+    SOURCES_OK=""
+  fi
+}
+
+# ── The link sweep, which is the only thing here that touches the network ─────
+#
+# OPT-IN, AND ITS OWN JUDGEMENT. bin/check-link fetches and reports what a server
+# said; the found/not_found/unknown vocabulary is RFC 200's and belongs to the
+# CALLER, so the mapping lives here and nowhere in the checker:
+#
+#     2xx                     found
+#     404, 410                not_found
+#     everything else         unknown, WITH the date we asked
+#
+# A 403, a 5xx, a 000 (no HTTP answer at all) is "we asked and got no usable
+# answer", which keeps the link. Arizona's, Delaware's and New Hampshire's
+# education departments refuse every client we have, and recording their live
+# pages as DEAD would be a worse answer than the one a family experiences.
+#
+# AND THE PLAUSIBILITY BAR IS OURS TOO. check-link exits 0 on a machine with no
+# egress, having printed 000 for everything, because a caller checking 43
+# addresses wants 43 answers. This script has the expectations, so this script is
+# where "nothing answered at all" must refuse to overwrite a reviewed file:
+# without it one run on a laptop with no network would record the whole corpus as
+# unreachable, which is RFC 182's rule broken in the direction that looks like
+# data.
+sweep_links() {
+  local check_link="$PROJECT_ROOT/bin/check-link"
+  [ -x "$check_link" ] ||
+    fatal "[-k] needs [$check_link], which is missing or not executable; link-status.csv was not touched."
+
+  local urls="$OUT_DIR/urls" answers="$OUT_DIR/answers" rows="$OUT_DIR/link-status.csv"
+  local status=0 asked found not_found unknown today
+
+  # BOTH url columns, because an archived address is a document like any other
+  # and rots like any other. Sorted and de-duplicated, so the committed file has
+  # one row per document and diffs line by line.
+  LC_ALL=C awk -F, 'FNR > 1 { print $11; if ($12 != "") print $12 }' "$CSV_PATH" |
+    LC_ALL=C sort -u > "$urls" ||
+    fatal "could not collect the cited urls out of [$CSV_REL]; link-status.csv was not touched."
+
+  asked="$(grep -c . "$urls" || true)"
+  [ "$asked" -gt 0 ] ||
+    fatal "[$CSV_REL] cites no urls at all, so there is nothing to check; link-status.csv was not touched."
+
+  log-info "test-state-programme-seed: asking bin/check-link about [$asked] distinct url(s) cited by [$CSV_REL]."
+  "$check_link" -f "$urls" > "$answers" || status=$?
+  [ "$status" -eq 0 ] ||
+    fatal "bin/check-link exited [$status], so this sweep has no answers to record; link-status.csv was not touched."
+
+  # America/New_York, the coach zone this product reads dates in: the day we
+  # asked is a day in the WORLD, and a sweep run at 21:00 Pacific must not be
+  # dated tomorrow.
+  today="$(TZ=America/New_York date +%Y-%m-%d)" ||
+    fatal "could not read today's date in America/New_York; link-status.csv was not touched."
+
+  LC_ALL=C awk -F'\t' -v today="$today" '
+    function verdict(code) {
+      if (code ~ /^2[0-9][0-9]$/) return "found"
+      if (code == "404" || code == "410") return "not_found"
+      return "unknown"
+    }
+    NF >= 2 {
+      code = $1
+      url = $2
+      state = verdict(code)
+      if (state != "found")
+        printf "  %s answered [%s], recorded as [%s]\n", url, code, state > "/dev/stderr"
+      printf "%s,%s,%s\n", url, state, today
+    }
+  ' "$answers" > "$rows" ||
+    fatal "could not read bin/check-link's answers back; link-status.csv was not touched."
+
+  found="$(grep -c ",found,$today\$" "$rows" || true)"
+  not_found="$(grep -c ",not_found,$today\$" "$rows" || true)"
+  unknown="$(grep -c ",unknown,$today\$" "$rows" || true)"
+
+  [ "$((found + not_found + unknown))" -eq "$asked" ] ||
+    fatal "bin/check-link answered for [$((found + not_found + unknown))] of the [$asked] url(s) asked about; link-status.csv was not touched."
+
+  # THE REFUSAL, and it is the point of the bar: zero found over the whole corpus
+  # is what a machine with no egress looks like, not what a dead corpus looks
+  # like. Forty-three real state pages do not all disappear on one afternoon.
+  [ "$found" -gt 0 ] ||
+    fatal "nothing answered: [0] of [$asked] url(s) were found ([$not_found] not_found, [$unknown] unknown). That is what a machine with no network egress looks like, so link-status.csv was NOT overwritten."
+
+  {
+    printf '%s\n' "$EXPECTED_LINK_STATUS_HEADER"
+    cat "$rows"
+  } > "$OUT_DIR/link-status.written" ||
+    fatal "could not assemble the swept link-status file; [$LINK_STATUS_REL] was not touched."
+
+  mv "$OUT_DIR/link-status.written" "$LINK_STATUS_CSV" ||
+    fatal "could not write [$LINK_STATUS_REL]; mv's own error is above."
+
+  log-info "test-state-programme-seed: wrote [$LINK_STATUS_REL] on [$today]: [$found] found, [$not_found] not_found, [$unknown] unknown of [$asked] url(s)."
+}
+
+# ── The swept file, which is a source exactly like the programmes CSV ─────────
+#
+# One seed per reading year of the DATES in it, named like the programme seeds,
+# so `-n` refuses a hand-edited or stale link-status seed in the same breath.
+#
+# EVERY ROW CARRIES A DATE, which is stricter than the table's CHECK and is the
+# rule this FILE needs. external_documents allows unknown with NO date, and that
+# state means "we never asked" -- which this corpus expresses by the url being
+# ABSENT from a file that is the record of a sweep (RFC 213: "a url absent from
+# it stays unknown with NO date"). A dated row and a missing row say the two
+# different things; a dateless row would say neither, and could not be filed
+# under a reading year at all.
+generate_link_status() {
+  local complaint status=0
+
+  [ -f "$LINK_STATUS_CSV" ] || {
+    log-info "test-state-programme-seed: [$LINK_STATUS_REL] is not in the tree, so no link-status seed is generated. Run this script with -k to sweep the cited urls."
+    return 0
+  }
+
+  complaint="$(LC_ALL=C awk -v expected="$EXPECTED_LINK_STATUS_HEADER" -v outdir="$OUT_DIR" \
+    -v src="$LINK_STATUS_REL" '
+    function fail(line, msg) { printf "  %s line %d: %s\n", src, line, msg > "/dev/stderr"; bad++ }
+
+    function is_iso_date(s,   y, m, d, dim) {
+      if (s !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) return 0
+      y = substr(s, 1, 4) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+      if (m < 1 || m > 12 || d < 1) return 0
+      split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ")
+      if (m == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))) return d <= 29
+      return d <= dim[m]
+    }
+
+    function academic_year_of(d,   y, m) {
+      y = substr(d, 1, 4) + 0; m = substr(d, 6, 2) + 0
+      return m < 7 ? y - 1 : y
+    }
+
+    function get_quoted(s) { gsub(/\x27/, "\x27\x27", s); return "\x27" s "\x27" }
+
+    FNR == 1 {
+      if ($0 != expected) {
+        print "test-state-programme-seed: the link-status CSV header is not the header this generator expects." > "/dev/stderr"
+        printf "  expected: [%s]\n", expected > "/dev/stderr"
+        printf "  found:    [%s]\n", $0 > "/dev/stderr"
+        exit 1
+      }
+      ncol = split(expected, hdr, ",")
+      header_ok = 1
+      next
+    }
+
+    # The same byte rules the programmes CSV carries, and for the same reason:
+    # the escaper doubles apostrophes and nothing else.
+    /[^ -~]/ || /\\/ {
+      fail(FNR, "a byte that is not printable ASCII, or a backslash: the escaper here doubles apostrophes and nothing else")
+      next
+    }
+    /"/ { fail(FNR, "a double quote: this generator reads the CSV by splitting on commas, which is only correct while no cell is quoted"); next }
+
+    {
+      n = split($0, f, ",")
+      if (n != ncol) { fail(FNR, sprintf("[%d] columns, expected [%d]", n, ncol)); next }
+
+      url = f[1]; state = f[2]; checked = f[3]
+
+      # MIRRORS external_documents_url_shape_check (and the nonempty check with
+      # it: an empty cell has no scheme either).
+      if (url !~ /^https?:\/\//)
+        fail(FNR, sprintf("url [%s] is not an http or https url", url))
+
+      # MIRRORS link_status_check, the DOMAIN every url-bearing table now shares.
+      if (state != "unknown" && state != "found" && state != "not_found")
+        fail(FNR, sprintf("url_status [%s] is not one of unknown, found, not_found", state))
+
+      # MIRRORS external_documents_checked_when_known, and then some: see this
+      # function\x27s comment for why a dateless row is refused here even where
+      # the table would take it.
+      if (checked == "") {
+        fail(FNR, sprintf("url_checked_on is empty for url [%s]: this file is the record of a sweep, so every row says the day it was asked. \"We never asked\" is a url that is NOT in this file.", url))
+        next
+      }
+      if (!is_iso_date(checked)) {
+        fail(FNR, sprintf("url_checked_on [%s] is not a real yyyy-mm-dd date", checked))
+        next
+      }
+
+      if (url in seen) {
+        fail(FNR, sprintf("duplicate url [%s], first seen at line [%d]: one document is one row, because the url is the key", url, seen[url]))
+        next
+      }
+      seen[url] = FNR
+
+      reading = academic_year_of(checked)
+      if (!(reading in rows)) sessions[++nsessions] = reading
+      rows[reading]++
+      values[reading] = values[reading] sprintf("%s    (%s, %s, DATE %s)",
+        (rows[reading] == 1 ? "" : ",\n"), get_quoted(url), get_quoted(state), get_quoted(checked))
+    }
+
+    END {
+      if (!header_ok) exit 1
+
+      if (bad == 0 && nsessions == 0) {
+        print "test-state-programme-seed: the link-status CSV has a header and no rows." > "/dev/stderr"
+        exit 1
+      }
+      if (bad) {
+        printf "test-state-programme-seed: [%d] fault(s) in [%s]; nothing was written.\n", bad, src > "/dev/stderr"
+        exit 1
+      }
+
+      for (i = 1; i <= nsessions; i++) {
+        s = sessions[i]
+        out = outdir "/seed-external-document-link-status-" s ".sql"
+        printf "-- GENERATED FILE -- do not edit.\n" > out
+        printf "--\n" > out
+        printf "-- Written by bin/test-state-programme-seed from %s.\n", src > out
+        printf "-- That file is the reviewed record of a link sweep an operator ran with\n" > out
+        printf "-- bin/check-link (bin/test-state-programme-seed -k); this file is an artifact\n" > out
+        printf "-- of it. To change a row, re-run the sweep and review the CSV diff.\n" > out
+        printf "--\n" > out
+        printf "-- Reading session %d: %d document(s) we asked about, and what the server said\n", s, rows[s] > out
+        printf "-- on the day named. A url that is NOT here was never asked about, and keeps the\n" > out
+        printf "-- truthful unknown-with-no-date the migration gave it.\n" > out
+        printf "\n" > out
+        printf "INSERT INTO external_documents (url, url_status, url_checked_on)\nVALUES\n" > out
+        printf "%s\n", values[s] > out
+        printf "ON CONFLICT (url) DO UPDATE SET\n" > out
+        printf "    url_status     = EXCLUDED.url_status,\n" > out
+        printf "    url_checked_on = EXCLUDED.url_checked_on;\n" > out
+        if (close(out) != 0) {
+          printf "test-state-programme-seed: could not finish writing [%s]; the link-status seed for reading session %d may be truncated.\n", out, s > "/dev/stderr"
+          exit 1
+        }
+        printf "seed-external-document-link-status-%d.sql\n", s
+      }
+    }
+  ' "$LINK_STATUS_CSV" 2>&1 >> "$NAMES_FILE")" || status=$?
+
+  report_complaint "$complaint"
+
+  if [ "$status" -ne 0 ]; then
+    [ "$FAULTS" -gt 0 ] ||
+      fatal "could not read [$LINK_STATUS_REL]: awk exited [$status] without reporting a fault, so it did not refuse the CSV, it died. Nothing was written."
+    SOURCES_OK=""
   fi
 }
 
@@ -532,6 +913,12 @@ main() {
 
   CSV_PATH="$(cd "$(dirname "$CSV_ARG")" && pwd -P)/$(basename "$CSV_ARG")"
   CSV_REL="${CSV_PATH#"$PROJECT_ROOT"/}"
+
+  # The swept file lives BESIDE the authored one, so -c routes both: a harness
+  # that pointed this script at a fixture CSV and still read the operator's real
+  # sweep would be asserting two trees at once.
+  LINK_STATUS_CSV="$(dirname "$CSV_PATH")/link-status.csv"
+  LINK_STATUS_REL="${LINK_STATUS_CSV#"$PROJECT_ROOT"/}"
 
   # The seeds this corpus already generated, read so that the append-only rule
   # is CHECKED. A glob that matches nothing expands to itself, so the loop tests
@@ -557,11 +944,20 @@ main() {
 
   NAMES_FILE="$OUT_DIR/names"
   FAULTS=0
-  PROGRAMMES_OK=1
+  SOURCES_OK=1
 
   generate_programmes
 
-  if [ -z "$PROGRAMMES_OK" ]; then
+  # The sweep runs only after the authored corpus is known good, and only with
+  # -k. Sweeping urls out of a CSV this run has just refused would write a
+  # reviewed file from a corpus nobody accepted.
+  if [ -n "$CHECK_LINKS" ] && [ -n "$SOURCES_OK" ] && [ "$FAULTS" -eq 0 ]; then
+    sweep_links
+  fi
+
+  generate_link_status
+
+  if [ -z "$SOURCES_OK" ]; then
     fatal "refused the authored corpus: [$FAULTS] diagnostic line(s) are above and nothing was written"
   fi
   [ "$FAULTS" -eq 0 ] ||
