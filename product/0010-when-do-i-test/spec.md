@@ -540,21 +540,39 @@ domain or a reference table; whether captures carry a checksum.
 **Needs:**
 
 - BLOCKS test/05.1/external-documents — technical. There is nothing to migrate
-  the eight tables ONTO until the model exists.
+  the remaining carriers ONTO until the model exists. (Satisfied: RFC 213 landed
+  2026-09-14.)
+- BLOCKS test/05.4/no-citation-without-a-check — technical. This slice's whole
+  value depends on the target being STRICT: migrating a url into a table that
+  still allows a row with no status and no date would move the citations without
+  checking them, which is the opposite of the point.
 
-**Status:** DEFERRED
+**Status:** SCHEDULED (Ian, 2026-09-14). It was deferred when it looked like
+eight tables and a money-layer migration; it was MEASURED at four live carriers
+by RFC 213, and `test/05.4` has just made the table it migrates into strict. Ian
+un-deferred it on the requirement that **external data ingestion must check the
+links it adds**: this is the slice that makes that true rather than
+aspirational.
 
-Parked by intent, not by a dependency: it is specced but not scheduled, and it
-is **a candidate for its own brief** — it touches the money layer, the ingest
-and three committed seeds, and its blast radius is wider than anything else in
-brief 0010.
+**The four live carriers, measured 2026-09-14 rather than assumed:**
+`source_documents` (`0087`, the Common Data Set ingest — checked today, but by
+`cds-link-check`'s OWN copy of the fetching code), the canonical money tables
+(`0083`), `policy_parameters` (`0077`), and `admission_test_administrations`
+(RFC 197, two url columns). **Two of those four are not link-checked at all.**
+The three CDS admissions tables lost their url columns in an earlier migration
+and the state programmes moved in RFC 213, so both are already done.
 
-**What and why.** Move every table that carries its own citation columns onto
-`external_documents`: the three CDS tables (`0054`), `policy_parameters`
-(`0077`), the canonical money tables (`0083`), `source_documents` (`0087` —
-which becomes a join table or is retired), the test calendar (RFC 197), and the
-state programmes (RFC 208). Until this lands, the repo has two ways to cite a
-document, which is the defect D26 exists to end rather than to double.
+**What and why.** Move the four remaining carriers onto `external_documents`,
+and fold `bin/cds-link-check` onto `bin/check-link` while that corpus is open —
+it is the one place a conversion can be verified against its own committed
+result. Until this lands the repo has two ways to cite a document and two ways
+to fetch a url, which is the defect D26 exists to end rather than to double.
+
+**The guarantee it completes, and the reason Ian scheduled it:** `test/05.4`
+makes a row in `external_documents` impossible without a status and a date. Once
+every external url LIVES there, "every external link we store has been through
+`check-link`" stops being a rule anybody has to remember and becomes a property
+of where the data is kept.
 
 **Decided here.** Nothing new: it is D26 applied to what already exists. **DDL
 at /ship's gate**, and it will be the largest migration this brief has proposed.
