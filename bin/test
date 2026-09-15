@@ -26,15 +26,24 @@ gate. (Kotlin lint/format is not here — it lives in bin/format, the repo's sin
 ktlint avenue; the hook runs `bin/format -c` alongside this.)
 
 `check` additionally builds the rest-server/queue-worker installDist artifacts
-and runs bin/shell-tests (ship-scripts-tests, q-scripts-tests, db-scripts-tests,
-scripts-tests) — ~118s cold — before the database reset. Those harnesses stop
-THIS checkout's rest-server and queue-worker daemons. Bare `bin/test` runs none
-of them and says so.
+and runs bin/shell-tests before the database reset. Those harnesses stop THIS
+checkout's rest-server and queue-worker daemons. Bare `bin/test` runs none of
+them and says so.
+
+There are NINE harnesses; they are listed by `bin/shell-tests -h` and not
+duplicated here. An earlier version of this help named four of them and a
+"~118s cold" figure, and both went stale without anyone noticing -- which is
+why this text now points at the one place that knows (RFC 214).
+
+`-n NAME` (repeatable) runs only the named harnesses, and is meaningful only
+with `check`. bin/pre-commit passes it the set bin/gate-scope says the staged
+diff can break.
 
 Modules:
   common web-common db net auth queue queue-worker cron rest-server service email chat appstore admin-web public-web college
 
 Options:
+  -n NAME   run only this shell harness (repeatable; requires `check`)
   -t GLOB   Gradle test filter (requires exactly one module)
   -f        Force re-run, bypass the build cache (--rerun-tasks)
   -v        Verbose Gradle output (--info)
@@ -57,6 +66,7 @@ SELECTED=()
 TASK="test"
 TESTS_GLOB=""
 HAS_TESTS=false
+HARNESSES=()
 FORCE=false
 VERBOSE=false
 CONTINUE=false
@@ -67,10 +77,11 @@ CONTINUE=false
 # before each inner getopts run (OPTIND is not auto-reset within one shell).
 while [ "$#" -gt 0 ]; do
   OPTIND=1
-  while getopts ":ht:fvc" opt; do
+  while getopts ":ht:n:fvc" opt; do
     case "$opt" in
     h) help ;;
     t) TESTS_GLOB="$OPTARG"; HAS_TESTS=true ;;
+    n) HARNESSES+=("$OPTARG") ;;
     f) FORCE=true ;;
     v) VERBOSE=true ;;
     c) CONTINUE=true ;;
@@ -96,6 +107,14 @@ while [ "$#" -gt 0 ]; do
     shift
   fi
 done
+
+# -n names shell harnesses, and bare `bin/test` runs none of them. Without
+# `check` it would silently do nothing, so it is a usage error rather than a
+# no-op -- a caller that asked for a narrowed harness set and got no harnesses
+# at all has been told the opposite of the truth.
+if [ "${#HARNESSES[@]}" -gt 0 ] && [ "$TASK" != "check" ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" -- "-n names a shell harness and requires the \`check\` keyword; bare bin/test runs no harnesses"
+fi
 
 # --tests filters a single test task; it is meaningless across multiple tasks.
 if [ "$HAS_TESTS" = true ] && [ "${#SELECTED[@]}" -ne 1 ]; then
@@ -133,9 +152,13 @@ done
 # them first (Gradle no-ops it warm) rather than let a month-old binary satisfy it.
 if [ "$TASK" = "check" ]; then
   "$PROJECT_ROOT/gradlew" :rest-server:installDist :queue-worker:installDist
-  "$PROJECT_ROOT/bin/shell-tests"
+  SHELL_TESTS_ARGS=()
+  for harness in ${HARNESSES[@]+"${HARNESSES[@]}"}; do
+    SHELL_TESTS_ARGS+=(-n "$harness")
+  done
+  "$PROJECT_ROOT/bin/shell-tests" ${SHELL_TESTS_ARGS[@]+"${SHELL_TESTS_ARGS[@]}"}
 else
-  log-info "Skipping shell script-test harnesses (bin/shell-tests: ship-scripts-tests, q-scripts-tests, db-scripts-tests, scripts-tests) — they run under \`bin/test check\`, which is what the pre-commit hook runs."
+  log-info "Skipping the shell script-test harnesses (bin/shell-tests) — they run under \`bin/test check\`, which is what the pre-commit hook runs. \`bin/shell-tests -h\` lists them."
 fi
 
 "$PROJECT_ROOT/bin/db-reset"

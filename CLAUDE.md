@@ -90,6 +90,27 @@ boundary. The hook logs which scope it chose, by name, so the two kinds of
 commit are distinguishable afterwards. You do not ask for this and cannot ask
 for it; it is not a flag.
 
+**And the hook now runs only the harnesses a diff can break** (RFC 214).
+`bin/gate-scope` classifies the staged set as a whole and `bin/pre-commit` obeys
+it: a Markdown-only commit outside a module `src/` tree runs `bin/format -c`
+alone; a `.prime/**` script commit runs the three harnesses that observe
+`.prime/`; an `infra/`-only commit runs `bin/format -c` alone; a commit entirely
+inside Gradle modules' `src/` trees runs Gradle plus `bin/scripts-tests`.
+Anything unrecognised, anything mixed, an empty index, and a rename crossing a
+scope boundary all run **everything**. A new `bin/*scripts-tests` the map does
+not name **fails the gate by name** rather than silently never running.
+
+That map is a correctness claim, not a config table, and it lives in ONE script
+with its own harness — never a second copy, because a wrong map that something
+downstream catches fails silently and a wrong map in the hook does not. **No
+commit that ran a narrow scope records a `ship-verified` marker**; only `full`
+does.
+
+**`infra/` is now ungated** (RFC 214). The `tofu fmt -check` / `validate` pair
+left `bin/scripts-tests` on an explicit decision — a commit gate should not
+reach the public internet — and lives in `bin/infra-check`. Nothing runs it for
+you: `nix develop -c bin/infra-check` before you commit an `infra/` change.
+
 Note that this is a **different claim** from the `--no-verify` RFC-doc commit
 above, and the difference is the point. That one is safe because an earlier run
 **already checked** that content. This one is safe because **`product/**` is not
@@ -171,15 +192,25 @@ but the test DB.
 
 `bin/test check` — the form the pre-commit hook runs, i.e. the gate on what
 reaches `main` — additionally builds the `rest-server`/`queue-worker`
-`installDist` artifacts and runs `bin/shell-tests`, the aggregator over
-`bin/ship-scripts-tests`, `bin/q-scripts-tests`, `bin/db-scripts-tests`, and
-`bin/scripts-tests` (RFC 115). That is ~280 shell assertions and roughly two
-extra minutes cold, most of it `scripts-tests`. Bare `bin/test` runs none of
-them and prints one line saying so, so the tight loop stays as fast as it was;
-the cost is that a `bin/` or `infra/` edit can look green locally and fail at
-the hook. Run `nix develop -c
-bin/shell-tests` directly while iterating on
-those.
+`installDist` artifacts and runs `bin/shell-tests`, the aggregator over the
+shell script-test harnesses (RFC 115). **Do not look for the list of them
+here.** `bin/shell-tests -h` is the one place that knows; this file used to name
+four of the harnesses and "~280 shell assertions" and both went stale without
+anyone noticing, which is the whole reason RFC 214's map derives the set from
+the filesystem instead of from prose.
+
+Measured individually on 2026-09-14 at load 3.2–3.4, the harnesses took **639s
+in total and executed 1,541 assertions**, of which `db-scripts-tests` was 284s
+and `scripts-tests` 269s — 87% of the cost in two harnesses. `bin/shell-tests`'s
+help no longer publishes per-harness figures for the same reason this paragraph
+dates and load-stamps its own: the old published numbers were quiet-machine
+figures and `db-scripts-tests` ran ~19x its.
+
+Bare `bin/test` runs none of them and prints one line saying so, so the tight
+loop stays as fast as it was; the cost is that a `bin/` edit can look green
+locally and fail at the hook. Run `nix develop -c
+bin/shell-tests` directly
+while iterating on those, and `bin/shell-tests -n <name>` to run just one.
 
 Be aware that `scripts-tests` **stops this checkout's `rest-server` and
 `queue-worker` daemons** on exit. Daemon identity is per-checkout (`var/run/`

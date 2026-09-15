@@ -1,0 +1,634 @@
+#!/usr/bin/env bash
+# gate-scope-scripts-tests — shell assertions over bin/gate-scope (RFC 214), the
+# single path-to-harness map the commit gate reads.
+#
+# WHAT IS BEING PROTECTED. gate-scope's table is a CORRECTNESS CLAIM: a row that
+# is too narrow lets a defect reach main with the gate reporting green, which is
+# the one failure mode nobody sees. So these assertions come in two kinds.
+#
+#  * CLASSIFICATION. Throwaway `git init` repos with a known staged set, run
+#    through the REAL bin/gate-scope, asserting its three stdout lines. Every row
+#    of the table, plus the five fail-closed directions the header of
+#    bin/gate-scope names: unrecognised path, mixed set, empty index, a rename
+#    across a scope boundary, and an undeclared harness.
+#  * CROSS-SWEEPS. Assertions over the REAL bin/*scripts-tests files, no fixture.
+#    These are what keep the map honest as the harnesses change: a harness that
+#    starts reading .prime/ and is not named in PRIME_HARNESSES fails the build,
+#    rather than silently never running for a .prime/ commit.
+#
+# NO DATABASE, NO DAEMON, NO WORKTREE OF THE REAL REPO. Every classification case
+# runs against a throwaway repo under mktemp -d, in the style of
+# bin/docs-scripts-tests.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+gate-scope-scripts-tests [options]
+
+Runs the shell assertions over bin/gate-scope: the classification of a staged
+set into a scope, the five fail-closed rules, the usage grammar, and the
+cross-sweeps that hold the table against the real bin/*scripts-tests files.
+Needs no database, no daemon and no worktree of this repo.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: gate-scope-scripts-tests accepts no positional arguments."
+fi
+
+GATE_SCOPE="$PROJECT_ROOT/bin/gate-scope"
+[ -x "$GATE_SCOPE" ] || fail_test "gate-scope is missing or not executable [$GATE_SCOPE]"
+
+# This harness runs inside the pre-commit hook (git commit -> bin/pre-commit ->
+# bin/test check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
+# GIT_INDEX_FILE are exported and OUTRANK `git -C`. Without this strip every
+# fixture below would stage into the REAL index being committed.
+strip_git_hook_env
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+# A fresh git repo, printed on stdout. Called in a command substitution, so the
+# unique directory comes from mktemp and not from a counter (a counter
+# incremented in a subshell dies with it and hands every caller one directory --
+# the trap bin/docs-scripts-tests documents).
+gs_repo() {
+  local repo
+  repo="$(mktemp -d "$FIXTURE_DIR/repo.XXXXXX")"
+  git init -q -b main "$repo" > /dev/null
+  git -C "$repo" config user.email "tests@example.com"
+  git -C "$repo" config user.name "gate-scope-scripts-tests"
+  printf '%s\n' "$repo"
+}
+
+# gate-scope reads the module list from settings.gradle.kts, so a fixture that
+# exercises a module-source row needs one. It is deliberately NOT staged: what is
+# classified is the index, and an unstaged file must not appear in it.
+gs_modules() { # <repo>
+  cat > "$1/settings.gradle.kts" << 'EOF'
+rootProject.name = "fixture"
+include("service")
+include("db")
+include("rest-server")
+EOF
+}
+
+# Write each path and stage it. `git add --` because a fixture path may begin
+# with a space or contain a newline, and those cases are the point.
+gs_stage() { # <repo> <relpath...>
+  local repo="$1" path
+  shift
+  for path in "$@"; do
+    mkdir -p "$repo/$(dirname "$path")"
+    printf 'x\n' > "$repo/$path"
+    git -C "$repo" add -- "$path"
+  done
+}
+
+gs_commit() { # <repo> <message>
+  git -C "$1" add -A > /dev/null
+  git -C "$1" -c user.email=tests@example.com -c user.name=gate-scope-scripts-tests \
+    commit -qm "$2" --no-verify > /dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Running the subject
+# ---------------------------------------------------------------------------
+
+# Runs gate-scope over <repo> (or the script named in $GS_SCRIPT, which the
+# anti-orphan cases repoint at a copy) and leaves the answer in globals.
+GS_SCRIPT=""
+gs_classify() { # <repo>
+  local script="${GS_SCRIPT:-$GATE_SCOPE}"
+  GS_OUT="$(mktemp "$FIXTURE_DIR/out.XXXXXX")"
+  GS_ERR="$(mktemp "$FIXTURE_DIR/err.XXXXXX")"
+  GS_STATUS=0
+  "$script" -r "$1" > "$GS_OUT" 2> "$GS_ERR" || GS_STATUS=$?
+  GS_SCOPE="$(sed -n 's/^scope=//p' "$GS_OUT")"
+  GS_GRADLE="$(sed -n 's/^gradle=//p' "$GS_OUT")"
+  GS_HARNESSES="$(sed -n 's/^harnesses=//p' "$GS_OUT")"
+}
+
+# The whole contract of one run: exit 0, exactly the three key=value lines on
+# stdout and nothing else, and the three values.
+gs_expect() { # <repo> <scope> <gradle> <harnesses>
+  local lines
+  gs_classify "$1"
+  [ "$GS_STATUS" -eq 0 ] ||
+    { log-error "gate-scope exited [$GS_STATUS]: [$(head -3 "$GS_ERR")]"; return 1; }
+  lines="$(wc -l < "$GS_OUT" | tr -d ' ')"
+  [ "$lines" -eq 3 ] ||
+    { log-error "expected 3 stdout lines, got [$lines]: [$(cat "$GS_OUT")]"; return 1; }
+  grep -qvE '^(scope|gradle|harnesses)=' "$GS_OUT" &&
+    { log-error "stdout carries a non key=value line: [$(cat "$GS_OUT")]"; return 1; }
+  [ "$GS_SCOPE" = "$2" ] ||
+    { log-error "scope=[$GS_SCOPE], expected [$2] (reason: $(cat "$GS_ERR"))"; return 1; }
+  [ "$GS_GRADLE" = "$3" ] ||
+    { log-error "gradle=[$GS_GRADLE], expected [$3]"; return 1; }
+  [ "$GS_HARNESSES" = "$4" ] ||
+    { log-error "harnesses=[$GS_HARNESSES], expected [$4]"; return 1; }
+  return 0
+}
+
+# The commonest shape: build a repo, stage these paths, expect this scope.
+gs_case() { # <scope> <gradle> <harnesses> <relpath...>
+  local scope="$1" gradle="$2" harnesses="$3" repo
+  shift 3
+  repo="$(gs_repo)"
+  gs_stage "$repo" "$@"
+  gs_expect "$repo" "$scope" "$gradle" "$harnesses"
+}
+
+# The same, with a settings.gradle.kts in place.
+gs_module_case() { # <scope> <gradle> <harnesses> <relpath...>
+  local scope="$1" gradle="$2" harnesses="$3" repo
+  shift 3
+  repo="$(gs_repo)"
+  gs_modules "$repo"
+  gs_stage "$repo" "$@"
+  gs_expect "$repo" "$scope" "$gradle" "$harnesses"
+}
+
+PRIME_SCOPE_HARNESSES="ship-scripts-tests docs-scripts-tests db-scripts-tests"
+
+# A product/ path that is not Markdown, so it reaches the product-docs row.
+PRODUCT_PATH="product/0001-brief/research/table.csv"
+
+echo "==== classification: the empty index and the docs rows ===="
+
+# Rule 3. A universal test over an empty set passes vacuously, and a vacuous pass
+# is the silent green this whole script exists to prevent.
+test_empty_index() {
+  local repo
+  repo="$(gs_repo)"
+  gs_expect "$repo" full yes ALL
+}
+assert_success "an empty index is full/yes/ALL, not a vacuous narrow pass" test_empty_index
+
+# A NON-Markdown product/ path, and that is not an accident. Every path the
+# /chart layer actually writes is a .md, so the markdown-docs row above matches
+# FIRST and product-docs is never the answer for a real brief. The two rows emit
+# the identical `no` / `` pair, so nothing is lost -- but the product-docs row
+# has to be exercised through a path only IT can claim, or the assertion would be
+# measuring the markdown row a second time.
+assert_success "one non-Markdown product/ path is product-docs, no Gradle, no harnesses" \
+  gs_case product-docs no "" "$PRODUCT_PATH"
+
+assert_success "an all-Markdown product/ diff is markdown-docs, which emits the same answer" \
+  gs_case markdown-docs no "" "product/0001-brief/brief.md"
+
+assert_success "a .prime SKILL.md alone is markdown-docs" \
+  gs_case markdown-docs no "" ".prime/agent/skills/ship/SKILL.md"
+
+assert_success "an rfc/NNN-x.md alone is markdown-docs" \
+  gs_case markdown-docs no "" "rfc/214-gate-scope.md"
+
+assert_success "CLAUDE.md alone is markdown-docs" \
+  gs_case markdown-docs no "" "CLAUDE.md"
+
+assert_success "two Markdown files in different directories are markdown-docs" \
+  gs_case markdown-docs no "" "CLAUDE.md" "rfc/README.md"
+
+# A delete is a staged path like any other, and the classification must not
+# depend on the file still existing on disk -- a docs deletion is a commit
+# someone really makes.
+test_deleted_markdown() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "rfc/214-gate-scope.md"
+  gs_commit "$repo" base
+  git -C "$repo" rm -q -- "rfc/214-gate-scope.md"
+  gs_expect "$repo" markdown-docs no ""
+}
+assert_success "a delete-only diff of one Markdown file is markdown-docs" test_deleted_markdown
+
+# The deliberate src/ exclusion. gate-scope refuses to guess whether Gradle
+# hashes a .md that sits inside a Kotlin source set, so such a path is NOT
+# Markdown for this table's purposes.
+#
+# DEVIATION FROM THE BRIEF, stated rather than glossed: the brief predicted
+# `full`. The exclusion only removes the path from ALL_MARKDOWN; the path is
+# still under a module's src/ tree, so the next row that matches is
+# `module-source` -- which is what gate-scope emits, and which is SAFE: it keeps
+# gradle=yes, the whole point of the exclusion. The load-bearing claims are
+# asserted explicitly below: not markdown-docs, and Gradle still runs.
+test_invariants_md_in_a_src_tree() {
+  local repo
+  repo="$(gs_repo)"
+  gs_modules "$repo"
+  gs_stage "$repo" "service/src/main/kotlin/ed/unicoach/INVARIANTS.md"
+  gs_expect "$repo" module-source yes "scripts-tests" || return 1
+  [ "$GS_SCOPE" != "markdown-docs" ] || return 1
+  [ "$GS_GRADLE" = "yes" ]
+}
+assert_success "a .md inside a module src/ tree is NOT markdown-docs and keeps gradle=yes" \
+  test_invariants_md_in_a_src_tree
+
+echo "==== classification: prime-scripts ===="
+
+assert_success "one .prime script is prime-scripts, with the three observing harnesses" \
+  gs_case prime-scripts no "$PRIME_SCOPE_HARNESSES" ".prime/agent/skills/ship/scripts/ship-lock"
+
+assert_success "a .prime Markdown file plus a .prime script is prime-scripts, not markdown-docs" \
+  gs_case prime-scripts no "$PRIME_SCOPE_HARNESSES" \
+  ".prime/agent/skills/ship/SKILL.md" ".prime/agent/skills/ship/scripts/ship-lock"
+
+# A .prime .md AND a product/ .md: every path is Markdown, so the markdown-docs
+# row matches FIRST and wins -- before product-docs, and before prime-scripts.
+#
+# That is safe, and the order is deliberate: where two rows could both match, the
+# WEAKER claim wins. markdown-docs and product-docs emit the identical answer
+# (no Gradle, no harnesses), so nothing is lost there. Against prime-scripts the
+# markdown row is the weaker one, and it is justified by a different piece of
+# evidence: the Markdown claim is about a file's READERS -- nothing but
+# `deno fmt` reads a .md in this repo, and bin/format -c runs on every path
+# through bin/pre-commit -- not about which directory it sits in.
+assert_success "a .prime Markdown file plus a product/ doc is markdown-docs (the weaker row wins)" \
+  gs_case markdown-docs no "" ".prime/agent/skills/ship/SKILL.md" "product/0001-brief/brief.md"
+
+echo "==== classification: module-source, ios-app, and the full fallbacks ===="
+
+assert_success "one module src .kt is module-source, gradle=yes, scripts-tests" \
+  gs_module_case module-source yes "scripts-tests" "service/src/main/kotlin/X.kt"
+
+assert_success "two files in one module's src tree are module-source" \
+  gs_module_case module-source yes "scripts-tests" \
+  "service/src/main/kotlin/X.kt" "service/src/test/kotlin/XTest.kt"
+
+assert_success "files in two different modules' src trees are module-source" \
+  gs_module_case module-source yes "scripts-tests" \
+  "service/src/main/kotlin/X.kt" "db/src/main/kotlin/Y.kt"
+
+# settings.gradle.kts is the source of truth for what a module is. A src/ path
+# under a directory it does not name falls back to full, which is the safe
+# direction.
+assert_success "a src/ path under a directory settings.gradle.kts does not name is full" \
+  gs_module_case full yes ALL "nope/src/main/kotlin/X.kt"
+
+assert_success "one bin/ path is full" \
+  gs_case full yes ALL "bin/gate-scope"
+
+# db IS a module in the fixture, but db/schema/ is not db/src/: a migration is a
+# build input no narrow row claims.
+assert_success "one db/schema/ path is full" \
+  gs_module_case full yes ALL "db/schema/add-thing.sql"
+
+# NOT a narrow row, and the absence is the assertion. An `infra` scope was
+# proposed and removed: bin/scripts-tests really does observe infra/ -- it greps
+# infra/files/deploy-on-instance.sh, loops over infra/files/unicoach-*.service,
+# seds infra/rds.tf, and runs infra/files/render-env.sh and `bash -n` over
+# infra/files/*.sh. Removing the tofu assertions did not make infra/ unobserved.
+assert_success "one infra/ path alone is full -- bin/scripts-tests observes infra/" \
+  gs_case full yes ALL "infra/rds.tf"
+
+# Rule 2: the diff is judged AS A WHOLE. Two narrow paths from different rows are
+# not two narrow commits.
+assert_success "infra/ plus a .kt is full" \
+  gs_module_case full yes ALL "infra/rds.tf" "service/src/main/kotlin/X.kt"
+
+assert_success "a .kt plus a Markdown file is full" \
+  gs_module_case full yes ALL "service/src/main/kotlin/X.kt" "CLAUDE.md"
+
+# Scope `ios-app`. None of the harnesses bin/shell-tests runs mentions ios-app,
+# it is not a Gradle module, and bin/ios-scripts-tests -- the one thing that does
+# read the real ios-app/env files -- is carved out of bin/shell-tests by name and
+# never ran at the gate anyway.
+assert_success "one ios-app Swift file is ios-app, no Gradle, no harnesses" \
+  gs_case ios-app no "" "ios-app/UnicoachiOS/A.swift"
+
+assert_success "two ios-app paths are ios-app" \
+  gs_case ios-app no "" "ios-app/UnicoachiOS/A.swift" "ios-app/env/prod.env"
+
+assert_success "an ios-app path plus a .kt is full" \
+  gs_module_case full yes ALL "ios-app/UnicoachiOS/A.swift" "service/src/main/kotlin/X.kt"
+
+# ios-app/DESIGN.md ALONE is markdown-docs, not ios-app: the markdown row is
+# checked FIRST, and where two rows both match the weaker claim wins. Both rows
+# emit the same `no` / `` pair here, so the choice costs nothing -- but the
+# markdown row rests on different evidence (nothing but `deno fmt` reads a .md,
+# and bin/format -c runs on every path through bin/pre-commit), which is the
+# claim that stays true if the ios-app row is ever narrowed.
+assert_success "ios-app/DESIGN.md alone is markdown-docs, not ios-app" \
+  gs_case markdown-docs no "" "ios-app/DESIGN.md"
+
+echo "==== fail-closed: renames and pathological names ===="
+
+# Rule 4. --no-renames decomposes a rename into its delete and its add, so BOTH
+# sides are classified. Without it --name-only prints only the DESTINATION, and a
+# script would be smuggled into bin/ wearing the source path's scope.
+test_rename_out_of_prime() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" ".prime/x/SKILL.md"
+  gs_commit "$repo" base
+  mkdir -p "$repo/bin"
+  git -C "$repo" mv -- ".prime/x/SKILL.md" "bin/x"
+  gs_expect "$repo" full yes ALL
+}
+assert_success "a rename from .prime/x/SKILL.md to bin/x is full, not markdown-docs" \
+  test_rename_out_of_prime
+
+# The same mechanism the other way: both sides are inside .prime/, so the set is
+# still all-.prime -- but no longer all-Markdown, because the destination is a
+# script. prime-scripts, and the three observing harnesses run.
+test_rename_inside_prime_md_to_script() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" ".prime/x/SKILL.md"
+  gs_commit "$repo" base
+  git -C "$repo" mv -- ".prime/x/SKILL.md" ".prime/x/tool"
+  gs_expect "$repo" prime-scripts no "$PRIME_SCOPE_HARNESSES"
+}
+assert_success "a rename inside .prime/ from a .md to a script is prime-scripts" \
+  test_rename_inside_prime_md_to_script
+
+# -z with `read -r -d ''`. If the newline split the path in two, the second half
+# ("ird") would be outside .prime/ and the answer would be `full`; prime-scripts
+# is therefore the assertion that the path stayed whole.
+test_newline_in_a_path() {
+  local repo path
+  repo="$(gs_repo)"
+  path=$'.prime/we\nird'
+  gs_stage "$repo" "$path"
+  local staged=() entry
+  while IFS= read -r -d '' entry; do staged+=("$entry"); done \
+    < <(git -C "$repo" diff --cached --name-only -z --no-renames)
+  [ "${#staged[@]}" -eq 1 ] && [ "${staged[0]}" = "$path" ] ||
+    { log-error "the fixture staged [${#staged[@]}] path(s), expected the one newline-bearing path"; return 1; }
+  gs_expect "$repo" prime-scripts no "$PRIME_SCOPE_HARNESSES"
+}
+assert_success "a path containing a newline is classified whole, not split in two" \
+  test_newline_in_a_path
+
+# A top-level directory whose name has a LEADING SPACE is not .prime/, and the
+# `case` must not treat it as one. This is a demonstrated defect shape in this
+# repo, not a hypothetical.
+assert_success "a top-level directory named ' .prime' (leading space) is full, not prime-scripts" \
+  gs_case full yes ALL " .prime/agent/skills/ship/scripts/ship-lock"
+
+echo "==== fail-closed: rule 5, the anti-orphan sweep ===="
+
+# gate-scope sweeps "$PROJECT_ROOT"/bin/*scripts-tests -- the checkout the SCRIPT
+# lives in, not the repository -r names. bin/common derives PROJECT_ROOT from
+# bin/common's own location, so the honest way to exercise the sweep is to run a
+# COPY of gate-scope out of a fixture bin/ alongside copies of the two files it
+# sources. Nothing in bin/gate-scope is changed to make this testable.
+gs_guard_root() {
+  local root
+  root="$(mktemp -d "$FIXTURE_DIR/guard.XXXXXX")"
+  mkdir -p "$root/bin"
+  cp "$PROJECT_ROOT/bin/gate-scope" "$PROJECT_ROOT/bin/common" "$PROJECT_ROOT/bin/functions" "$root/bin/"
+  # The copy sources bin/common, which layers the dotenvs relative to the
+  # fixture's own PROJECT_ROOT, so the fixture carries them too.
+  cp "$PROJECT_ROOT/.env" "$PROJECT_ROOT/.env.dev" "$PROJECT_ROOT/.env.test" "$root/"
+  cp "$PROJECT_ROOT/settings.gradle.kts" "$root/"
+  git init -q -b main "$root" > /dev/null
+  git -C "$root" config user.email "tests@example.com"
+  git -C "$root" config user.name "gate-scope-scripts-tests"
+  printf '%s\n' "$root"
+}
+
+GUARD_ROOT="$(gs_guard_root)"
+GUARD_SCOPE="$GUARD_ROOT/bin/gate-scope"
+
+# Sanity: the copy is a working gate-scope before any orphan is planted. Without
+# this, a fatal below could be the fixture failing to run at all.
+test_guard_copy_works() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "$PRODUCT_PATH"
+  GS_SCRIPT="$GUARD_SCOPE" gs_classify "$repo"
+  [ "$GS_STATUS" -eq 0 ] ||
+    { log-error "the copied gate-scope exited [$GS_STATUS]: [$(head -5 "$GS_ERR")]"; return 1; }
+  [ "$GS_SCOPE" = "product-docs" ]
+}
+assert_success "the fixture copy of gate-scope runs and classifies normally" test_guard_copy_works
+
+: > "$GUARD_ROOT/bin/zzz-scripts-tests"
+
+# The orphan must halt an EMPTY-index (`full`) run too. Failing only on a narrow
+# diff would hide the orphan exactly when it costs least and surprise someone
+# later, when it costs most.
+test_orphan_fatals_on_a_full_diff() {
+  local repo
+  repo="$(gs_repo)"
+  GS_SCRIPT="$GUARD_SCOPE" gs_classify "$repo"
+  [ "$GS_STATUS" -ne 0 ] ||
+    { log-error "an undeclared harness did not fail a full diff; stdout [$(cat "$GS_OUT")]"; return 1; }
+  grep -q 'zzz-scripts-tests' "$GS_ERR" ||
+    { log-error "the fatal does not name the harness: [$(cat "$GS_ERR")]"; return 1; }
+  [ ! -s "$GS_OUT" ] ||
+    { log-error "a fatal run still wrote to stdout: [$(cat "$GS_OUT")]"; return 1; }
+}
+assert_success "an undeclared bin/*scripts-tests fatals by name on a full diff" \
+  test_orphan_fatals_on_a_full_diff
+
+test_orphan_fatals_on_a_narrow_diff() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "$PRODUCT_PATH"
+  GS_SCRIPT="$GUARD_SCOPE" gs_classify "$repo"
+  [ "$GS_STATUS" -ne 0 ] ||
+    { log-error "an undeclared harness did not fail a narrow diff; stdout [$(cat "$GS_OUT")]"; return 1; }
+  grep -q 'zzz-scripts-tests' "$GS_ERR"
+}
+assert_success "an undeclared bin/*scripts-tests fatals by name on a narrow diff too" \
+  test_orphan_fatals_on_a_narrow_diff
+
+rm -f "$GUARD_ROOT/bin/zzz-scripts-tests"
+: > "$GUARD_ROOT/bin/ios-scripts-tests"
+
+# The one deliberate exclusion, carved out BY NAME so a future omission cannot be
+# swallowed by a pattern.
+test_ios_is_carved_out() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "$PRODUCT_PATH"
+  GS_SCRIPT="$GUARD_SCOPE" gs_classify "$repo"
+  [ "$GS_STATUS" -eq 0 ] ||
+    { log-error "ios-scripts-tests caused a fatal: [$(cat "$GS_ERR")]"; return 1; }
+  [ "$GS_SCOPE" = "product-docs" ]
+}
+assert_success "bin/ios-scripts-tests present causes no fatal (carved out by name)" \
+  test_ios_is_carved_out
+
+rm -f "$GUARD_ROOT/bin/ios-scripts-tests"
+GS_SCRIPT=""
+
+echo "==== cross-sweeps over the real bin/*scripts-tests ===="
+
+# BOTH SIDES ARE DERIVED. Hardcoding the three names here and comparing them to
+# the three names in gate-scope would assert nothing at all: the test would agree
+# with itself while the harnesses drifted underneath both.
+#
+# THIS FILE IS EXCLUDED FROM THE MENTION SWEEPS, by name, and the reason is worth
+# stating because an exclusion is exactly how a sweep goes quiet. The strings
+# `.prime/...` above are FIXTURE PATHS inside throwaway repos under mktemp; this
+# harness never reads, runs or stages anything in the real .prime/ tree, so no
+# change under .prime/ can change its result. What it does observe is bin/ -- the
+# harness files themselves -- and bin/ is `full` in every scope. The exclusion is
+# by exact name, so it cannot swallow any other harness.
+SWEEP_EXCLUSIONS=(gate-scope-scripts-tests)
+
+# The declared lists, read out of bin/gate-scope's source.
+declared_value() { # <variable name>
+  sed -n 's/^'"$1"'="\(.*\)"$/\1/p' "$GATE_SCOPE"
+}
+
+declared_array() { # <variable name>
+  sed -n '/^'"$1"'=(/,/^)/p' "$GATE_SCOPE" | sed -e '1d' -e '$d' -e 's/[[:space:]]//g' -e '/^$/d'
+}
+
+DECLARED_PRIME="$(declared_value PRIME_HARNESSES)"
+DECLARED_MODULE_SOURCE="$(declared_value MODULE_SOURCE_HARNESSES)"
+DECLARED_KNOWN=()
+while IFS= read -r line; do
+  [ -n "$line" ] && DECLARED_KNOWN+=("$line")
+done < <(declared_array KNOWN_HARNESSES)
+
+# Each derivation must actually have found something. A sed that stopped matching
+# would otherwise turn every sweep below into a loop over nothing.
+test_declarations_were_read() {
+  [ -n "$DECLARED_PRIME" ] || { log-error "could not read PRIME_HARNESSES out of bin/gate-scope"; return 1; }
+  [ -n "$DECLARED_MODULE_SOURCE" ] || { log-error "could not read MODULE_SOURCE_HARNESSES"; return 1; }
+  [ "${#DECLARED_KNOWN[@]}" -ge 2 ] || { log-error "could not read KNOWN_HARNESSES"; return 1; }
+}
+assert_success "the three declarations are readable out of bin/gate-scope" \
+  test_declarations_were_read
+
+# The sweep gate-scope's own comment describes: by literal `.prime/` MENTION, not
+# by resolved path, because ship- and docs-scripts-tests compose their targets
+# through a variable ("$SHIP_SCRIPTS/ship-lock") and an exact-path map would not
+# see them at all.
+test_every_prime_mentioning_harness_is_declared() {
+  local path harness found=0 missing=()
+  for path in "$PROJECT_ROOT"/bin/*scripts-tests; do
+    [ -e "$path" ] || continue
+    harness="$(basename "$path")"
+    list_contains "$harness" "${SWEEP_EXCLUSIONS[@]}" && continue
+    grep -q '\.prime/' "$path" || continue
+    found=$((found + 1))
+    list_contains "$harness" $DECLARED_PRIME || missing+=("$harness")
+  done
+  [ "$found" -gt 0 ] ||
+    { log-error "no harness mentions .prime/ -- the sweep found nothing to check"; return 1; }
+  [ "${#missing[@]}" -eq 0 ] ||
+    { log-error "harness(es) reading .prime/ but absent from PRIME_HARNESSES: ${missing[*]}"; return 1; }
+}
+assert_success "every bin/*scripts-tests that mentions .prime/ is named in PRIME_HARNESSES" \
+  test_every_prime_mentioning_harness_is_declared
+
+# The residue gate-scope's markdown-docs row states: its evidence is that no
+# harness reads a real .md. A harness that named a literal .prime/**/*.md path
+# would break that, and the markdown row would then be skipping a harness that
+# observes the change. Nothing does today; this is what keeps it that way.
+test_no_harness_names_a_prime_markdown_path() {
+  local path harness hits offenders=()
+  for path in "$PROJECT_ROOT"/bin/*scripts-tests; do
+    [ -e "$path" ] || continue
+    harness="$(basename "$path")"
+    list_contains "$harness" "${SWEEP_EXCLUSIONS[@]}" && continue
+    hits="$(grep -o '\.prime/[^ "'"'"']*\.md' "$path" || true)"
+    [ -z "$hits" ] || offenders+=("$harness: $(printf '%s' "$hits" | tr '\n' ' ')")
+  done
+  [ "${#offenders[@]}" -eq 0 ] ||
+    { log-error "harness(es) naming a literal .prime/**.md path: ${offenders[*]}"; return 1; }
+}
+assert_success "no bin/*scripts-tests names a literal path under .prime/ ending .md" \
+  test_no_harness_names_a_prime_markdown_path
+
+# A declared name that does not exist, or is not executable, is a narrow scope
+# promising to run something the gate cannot run.
+test_declared_harnesses_exist_and_run() {
+  local harness broken=()
+  for harness in $DECLARED_PRIME $DECLARED_MODULE_SOURCE; do
+    [ -x "$PROJECT_ROOT/bin/$harness" ] || broken+=("$harness")
+  done
+  [ "${#broken[@]}" -eq 0 ] ||
+    { log-error "declared harness(es) missing or not executable in bin/: ${broken[*]}"; return 1; }
+}
+assert_success "every name in PRIME_HARNESSES and MODULE_SOURCE_HARNESSES is an executable in bin/" \
+  test_declared_harnesses_exist_and_run
+
+# The static half of rule 5, over the REAL bin/: gate-scope fatals at run time,
+# and this says the same thing at test time, with the name.
+test_every_real_harness_is_known() {
+  local path harness unknown=()
+  for path in "$PROJECT_ROOT"/bin/*scripts-tests; do
+    [ -e "$path" ] || continue
+    harness="$(basename "$path")"
+    [ "$harness" = "ios-scripts-tests" ] && continue
+    list_contains "$harness" "${DECLARED_KNOWN[@]}" || unknown+=("$harness")
+  done
+  [ "${#unknown[@]}" -eq 0 ] ||
+    { log-error "harness(es) absent from KNOWN_HARNESSES: ${unknown[*]}"; return 1; }
+}
+assert_success "every bin/*scripts-tests except ios-scripts-tests is in KNOWN_HARNESSES" \
+  test_every_real_harness_is_known
+
+echo "==== the grammar and the streams ===="
+
+USAGE_REPO="$(gs_repo)"
+NON_GIT_DIR="$(mktemp -d "$FIXTURE_DIR/plain.XXXXXX")"
+
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "gate-scope rejects an unknown option" \
+  "$GATE_SCOPE" -Z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "gate-scope rejects -r with no value" \
+  "$GATE_SCOPE" -r
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "gate-scope rejects a positional argument" \
+  "$GATE_SCOPE" -r "$USAGE_REPO" extra
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "gate-scope rejects an empty -r" \
+  "$GATE_SCOPE" -r ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "gate-scope rejects a -r that does not exist" \
+  "$GATE_SCOPE" -r "$FIXTURE_DIR/no-such-directory"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "gate-scope rejects a -r that is not a git repository" \
+  "$GATE_SCOPE" -r "$NON_GIT_DIR"
+
+# stdout carries only what the caller explicitly asked for, and -h is the one
+# thing they can ask for.
+test_help_on_stdout() {
+  local out err
+  out="$(mktemp "$FIXTURE_DIR/h-out.XXXXXX")"; err="$(mktemp "$FIXTURE_DIR/h-err.XXXXXX")"
+  "$GATE_SCOPE" -h > "$out" 2> "$err" || { log-error "-h exited non-zero"; return 1; }
+  grep -q 'gate-scope \[options\]' "$out" || { log-error "-h wrote no help to stdout"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -2 "$err")]"; return 1; }
+}
+assert_success "gate-scope -h writes help to stdout, exits 0, and leaves stderr empty" \
+  test_help_on_stdout
+
+# The emptiness is the assertion. This is exactly what regresses when someone
+# moves the reason line back onto stdout, and the caller -- bin/pre-commit --
+# parses stdout.
+test_streams_are_separated() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "ios-app/UnicoachiOS/A.swift"
+  gs_expect "$repo" ios-app no "" || return 1
+  [ -s "$GS_ERR" ] || { log-error "no reason was written to stderr"; return 1; }
+  grep -q 'gate scope: ios-app' "$GS_ERR" ||
+    { log-error "stderr does not carry the reason: [$(cat "$GS_ERR")]"; return 1; }
+  grep -q 'ios-app' "$GS_OUT" && [ "$(wc -l < "$GS_OUT" | tr -d ' ')" -eq 3 ]
+}
+assert_success "a normal run writes only the three key=value lines to stdout, the reason to stderr" \
+  test_streams_are_separated
+
+end_tests

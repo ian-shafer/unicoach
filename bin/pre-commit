@@ -7,14 +7,21 @@ help() {
 pre-commit [options]
 
 Native validation script run before committing. Runs two gates concurrently:
-the Gradle test suite (bin/test check) and the format/lint check (bin/format -c,
-the repo's single ktlint + deno fmt avenue).
+the test suite and the format/lint check (bin/format -c, the repo's single
+ktlint + deno fmt avenue).
 
-When EVERY staged path is under product/ the test half is skipped and only
-bin/format -c runs: nothing under product/ is a build input, so bin/test check
-cannot change its answer. Anything else -- a mixed set, an empty index, a rename
-crossing the product/ boundary -- runs the full gate. The classification is
-logged to stderr by name.
+WHAT the test half runs is decided by bin/gate-scope, which classifies the
+staged set as a whole and says whether Gradle is needed and which shell
+harnesses can observe those paths (RFC 214). A Markdown-only commit runs
+bin/format -c alone; a .prime/ script commit runs the three harnesses that
+observe .prime/; a commit inside a Gradle module's src/ tree runs Gradle and
+bin/scripts-tests; anything unrecognised, mixed, or an empty index runs
+everything. bin/format -c runs on EVERY path -- it is the only Markdown gate in
+the repo.
+
+The chosen scope is logged to stderr by name, so two commits that ran different
+gates are distinguishable from the hook output alone. A commit that did not run
+the FULL gate records no ship-verified marker.
 
 Options:
   -h: Help
@@ -119,36 +126,94 @@ if ! "$PROJECT_ROOT/bin/is-nix"; then
 fi
 
 # Classify the staged set BEFORE anything starts, and log which gate this run is
-# (RFC 194). A commit that skipped the test half and one that ran it must be
-# distinguishable from the hook output alone -- the same reason RFC 183 logs its
-# withholding rather than withholding silently.
-DOCS_ONLY=0
-if staged_changes_are_product_docs_only "$PROJECT_ROOT"; then
-  DOCS_ONLY=1
-  log-info "gate scope: product-docs-only -- every staged path is under product/; running bin/format -c only, skipping bin/test check (product/ is not a build input)."
-else
-  log-info "gate scope: full -- running bin/format -c and bin/test check concurrently."
+# (RFC 194, RFC 214). A commit that skipped part of the gate and one that ran all
+# of it must be distinguishable from the hook output alone -- the same reason
+# RFC 183 logs its withholding rather than withholding silently.
+#
+# ONE QUESTION, ONE SCRIPT. bin/gate-scope owns the whole path-to-what-runs map
+# and this is its only caller today; /ship phase 5 may call the SAME script later.
+# The hook must never grow its own copy of the table: a wrong map here does not
+# fail silently (nothing downstream catches it), which is exactly why the map
+# lives in one tested place with its own harness.
+#
+# gate-scope fatals on a bin/*scripts-tests it does not know, so a failure here
+# stops the commit rather than quietly running a smaller set.
+GATE_SCOPE_OUT="$("$PROJECT_ROOT/bin/gate-scope")" || {
+  log-error "bin/gate-scope could not classify the staged set; refusing to guess what to run."
+  exit 2
+}
+SCOPE=""
+GRADLE=""
+HARNESSES=""
+while IFS='=' read -r key value; do
+  case "$key" in
+  scope) SCOPE="$value" ;;
+  gradle) GRADLE="$value" ;;
+  harnesses) HARNESSES="$value" ;;
+  # A line gate-scope grew that this reader does not know is a contract change
+  # between two files that must agree. Refusing beats ignoring: ignoring would
+  # run the old gate shape against a new answer and say nothing.
+  *) fatal "bin/gate-scope emitted an unrecognised line [$key=$value]" ;;
+  esac
+done <<< "$GATE_SCOPE_OUT"
+
+if [ -z "$SCOPE" ] || [ -z "$GRADLE" ]; then
+  fatal "bin/gate-scope did not report a scope and a gradle decision"
 fi
 
-# Two concurrent gates: the test suite, and the format/lint check. ktlint lives
+# Two concurrent gates: the test half, and the format/lint check. ktlint lives
 # only in bin/format (no Gradle ktlint plugin), so `bin/format -c` is the single
-# Kotlin+Markdown lint gate; `bin/test check` runs the Gradle tests.
+# Kotlin+Markdown lint gate.
 #
-# bin/format -c runs on BOTH paths. It is the only Markdown gate in the repo and
-# costs ~8s, which is why the product-docs exemption skips the test half and not
-# the hook: a blanket --no-verify would take the one check those commits need.
+# bin/format -c runs on EVERY path. It is the only Markdown gate in the repo and
+# costs ~8s, which is why a narrow scope skips the test half and not the hook: a
+# blanket --no-verify would take the one check those commits need.
+#
+# Three shapes, and which one runs is gate-scope's answer, not this script's
+# judgement:
+#
+#   gradle=yes  -> bin/test check, narrowed with -n when the harness set is not
+#                  ALL. This is the unchanged full gate when scope=full.
+#   gradle=no + harnesses -> bin/shell-tests directly. No Gradle task graph, no
+#                  installDist, no db-reset: a diff that cannot move any of them
+#                  should not pay for them.
+#   gradle=no, no harnesses -> bin/format -c alone.
 TEST_STATUS=0
 LINT_STATUS=0
+TEST_PID=""
 
-if [ "$DOCS_ONLY" -eq 0 ]; then
-  "$PROJECT_ROOT/bin/test" check &
+TEST_CMD=()
+if [ "$GRADLE" = "yes" ]; then
+  TEST_CMD=("$PROJECT_ROOT/bin/test" check)
+  if [ -n "$HARNESSES" ] && [ "$HARNESSES" != "ALL" ]; then
+    for harness in $HARNESSES; do
+      TEST_CMD+=(-n "$harness")
+    done
+  fi
+elif [ -n "$HARNESSES" ] && [ "$HARNESSES" != "ALL" ]; then
+  TEST_CMD=("$PROJECT_ROOT/bin/shell-tests")
+  for harness in $HARNESSES; do
+    TEST_CMD+=(-n "$harness")
+  done
+elif [ "$HARNESSES" = "ALL" ]; then
+  # gradle=no with harnesses=ALL is not a shape any row produces, and guessing
+  # which half to skip is exactly the silent-wrong-answer this script must not
+  # produce. Refuse.
+  fatal "bin/gate-scope reported gradle=no with harnesses=ALL, which is not a gate shape this hook knows"
+fi
+
+if [ "${#TEST_CMD[@]}" -gt 0 ]; then
+  log-info "test half: ${TEST_CMD[*]}"
+  "${TEST_CMD[@]}" &
   TEST_PID=$!
+else
+  log-info "test half: nothing to run for scope [$SCOPE]; bin/format -c is the whole gate."
 fi
 
 "$PROJECT_ROOT/bin/format" -c &
 LINT_PID=$!
 
-if [ "$DOCS_ONLY" -eq 0 ]; then
+if [ -n "$TEST_PID" ]; then
   wait $TEST_PID || TEST_STATUS=$?
 fi
 wait $LINT_PID || LINT_STATUS=$?
@@ -194,15 +259,21 @@ fi
 # the commit sha, means an amend or a rebase that preserves content stays
 # verified while any content change does not. Inert for anything that does not
 # ask: the marker lives inside .git and nothing else reads it.
-# NOT recorded on the product-docs-only path. The marker means "the full
-# pre-commit gate passed on this tree"; recording it after skipping the tests
-# would put a lie in the one file that stops unverified code landing, and a
-# marker that can lie is worse than no marker. The failure this accepts is the
-# safe direction: a /ship run whose branch TIP were a product-only commit is
-# refused at land, and one re-commit fixes it.
+# NOT recorded on ANY narrow scope -- only on `full` (RFC 194, widened by
+# RFC 214). The marker means "the full pre-commit gate passed on this tree";
+# recording it after skipping any part of the gate would put a lie in the one
+# file that stops unverified code landing, and a marker that can lie is worse
+# than no marker. The failure this accepts is the safe direction: a /ship run
+# whose branch TIP is a narrow-scope commit is refused at land, and one
+# re-commit fixes it. In practice a /ship run lands its code commit first and
+# its RFC Markdown second, and the second is already --no-verify.
+#
+# Keyed on scope=full, NOT on "did the test half run at all". A module-source
+# commit runs Gradle in full and one harness of nine; that is a real gate and a
+# useful one, and it is still not THE gate, so it records nothing.
 SHIP_VERIFIED="$PROJECT_ROOT/.prime/agent/skills/ship/scripts/ship-verified"
-if [ "$DOCS_ONLY" -eq 1 ]; then
-  log-info "product-docs-only run: not recording a verified tree (the full gate did not run)."
+if [ "$SCOPE" != "full" ]; then
+  log-info "scope [$SCOPE]: not recording a verified tree (the full gate did not run)."
 elif [ -x "$SHIP_VERIFIED" ]; then
   "$SHIP_VERIFIED" record || log-info "warning: could not record verified tree (continuing)"
 fi

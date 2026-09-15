@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# The single path-to-harness map (RFC 214). Given a repository's STAGED set, says
+# what the commit gate must run: whether Gradle is needed, and which of the shell
+# harnesses in bin/shell-tests can observe those paths.
+#
+# THIS IS A CORRECTNESS CLAIM, NOT A CONFIGURATION TABLE. If a row here is wrong,
+# a defect reaches main and the gate reports green -- the worst failure this repo
+# can have, because it is silent. So every narrow row below cites the EVIDENCE
+# that no excluded harness observes those paths, and the script is fail-closed in
+# five directions:
+#
+#   1. an unrecognised path  -> full
+#   2. a MIXED set           -> full (the diff is judged AS A WHOLE, never per file)
+#   3. an EMPTY staged set   -> full (a vacuous pass is not a pass)
+#   4. a rename crossing a scope boundary -> full (--no-renames, so both sides are
+#      classified: a delete on one side and an add on the other)
+#   5. a bin/*scripts-tests this table does not name -> FATAL, by name, whatever
+#      the diff. Mirrors the anti-orphan sweep in bin/scripts-tests.
+#
+# ONE SCRIPT, NEVER TWO TABLES. RFC 211's deferred D2 binds this: a wrong map in
+# /ship phase 5 fails SILENTLY because the hook catches what it missed, while a
+# wrong map in the hook does not -- so the duplicated copy that got trusted would
+# be the one whose errors are invisible. bin/pre-commit is the only caller today;
+# phase 5 may CALL this script later. It must never carry a copy of the table.
+#
+# RFC 194's product/** rule is not reimplemented here. This script CALLS
+# bin/functions' staged_changes_are_product_docs_only, which was written and
+# tested for that claim. Rewriting it would have been the second table.
+
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+gate-scope [options]
+
+Classifies a repository's STAGED set and prints what the commit gate must run.
+bin/pre-commit is its caller.
+
+Writes exactly three key=value lines to stdout:
+
+  scope=<name>              full | markdown-docs | product-docs | prime-scripts
+                            | ios-app | module-source
+  gradle=yes|no             whether bin/test check's Gradle half must run
+  harnesses=ALL|<names>|    which bin/shell-tests harnesses must run; ALL means
+                            "whatever bin/shell-tests runs", so a newly added
+                            harness is covered with no edit here; an empty value
+                            means none
+
+The reason for the classification is written to stderr, in words.
+
+Anything not recognised, any mixed set, and an empty index are all `full`. A
+bin/*scripts-tests that this script's table does not name is a fatal error,
+whatever the diff.
+
+Options:
+  -r DIR  repository to classify (default: this checkout)
+  -h      Help
+EOF
+  exit 0
+}
+
+REPO="$PROJECT_ROOT"
+
+while getopts ":r:h" opt; do
+  case "$opt" in
+  r) REPO="$OPTARG" ;;
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: gate-scope accepts no positional arguments."
+fi
+
+if [ -z "$REPO" ]; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-r] requires a non-empty directory"
+fi
+if [ ! -d "$REPO" ]; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "not a directory [$REPO]"
+fi
+if ! git -C "$REPO" rev-parse --git-dir > /dev/null 2>&1; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "not a git repository [$REPO]"
+fi
+
+# ---------------------------------------------------------------------------
+# The table.
+# ---------------------------------------------------------------------------
+# Every harness bin/shell-tests runs, and the scopes each one belongs to. A
+# harness named in NO narrow scope simply never runs for a narrow scope; it is
+# still covered by `full`, which is `ALL`.
+#
+# KNOWN_HARNESSES is what makes rule 5 work: it is compared against the
+# filesystem, so a harness added to bin/ and wired into bin/shell-tests but not
+# declared here halts the gate by name rather than silently never running.
+KNOWN_HARNESSES=(
+  ship-scripts-tests
+  prompt-seed-scripts-tests
+  docs-scripts-tests
+  test-calendar-seed-scripts-tests
+  test-state-programme-seed-scripts-tests
+  gate-scope-scripts-tests
+  q-scripts-tests
+  db-scripts-tests
+  scripts-tests
+)
+
+# ios-scripts-tests is the ONE deliberate exclusion, carved out BY NAME rather
+# than by a pattern so a future omission cannot be swallowed by the carve-out:
+# it drives system Xcode and refuses to run inside the Nix dev shell (RFC 114),
+# which is where the gate runs. bin/scripts-tests' own anti-orphan sweep excludes
+# it for the same reason and in the same way.
+HARNESS_EXCLUSIONS=(ios-scripts-tests)
+
+# Scope `prime-scripts`: the harnesses that OBSERVE .prime/.
+#
+# EVIDENCE, and the third name is the one an instruction to write this script got
+# wrong. bin/db-scripts-tests:1770 EXECUTES the real
+# .prime/agent/skills/ship/scripts/ship-order against a throwaway git fixture, to
+# make bin/common's ORDER reader and ship-order's ORDER writer meet. A map naming
+# only ship- and docs-scripts-tests would land a ship-order change green with its
+# one contract test never run.
+#
+# The sweep behind this list is by literal `.prime/` MENTION, not by resolved
+# path, and that is deliberate: bin/ship-scripts-tests builds its targets as
+# SHIP_SCRIPTS="$PROJECT_ROOT/.prime/agent/skills/ship/scripts" and then
+# "$SHIP_SCRIPTS/ship-lock", and bin/docs-scripts-tests does the same through
+# CHART_SCRIPTS. An exact-path map would not see those targets at all. Directory
+# mention survives variable composition; exact matching does not. The harness
+# bin/gate-scope-scripts-tests re-runs that sweep over the REAL harness files, so
+# a future harness that starts reading .prime/ fails the build until this list
+# catches up.
+PRIME_HARNESSES="ship-scripts-tests docs-scripts-tests db-scripts-tests"
+
+# Scope `module-source`: the harnesses that OBSERVE compiled Kotlin.
+#
+# EVIDENCE for what is KEPT: bin/scripts-tests boots the REAL built rest-server
+# and queue-worker (test_daemon_wrapper "rest-server" / "queue-worker") and
+# asserts they come up and answer. That is genuine observation of compiled
+# Kotlin, so a module-source diff runs it. It is 269s of the 639s this table is
+# trying to avoid, and it is kept anyway, because the evidence says to keep it.
+#
+# EVIDENCE for what is EXCLUDED: none of the other harnesses references a built
+# artifact, a daemon wrapper, or a module src path. The three apparent exceptions
+# were read rather than counted -- prompt-seed-scripts-tests CREATES
+# service/src/main/resources/service.conf inside its own fixture repo and never
+# reads the real one; docs-scripts-tests' only .kt hit is a fixture file named
+# " product/x.kt" with a leading space; q-scripts-tests drives bin/q-* through
+# psql and never starts the JVM.
+MODULE_SOURCE_HARNESSES="scripts-tests"
+
+# ---------------------------------------------------------------------------
+# Rule 5: the anti-orphan sweep. Runs BEFORE any classification, so a repository
+# with an undeclared harness fails whatever the diff is -- including a `full`
+# one. Failing only on a narrow path would hide it exactly when it matters least
+# and let it surprise someone later.
+#
+# The glob is `*scripts-tests`, not `*-scripts-tests`, for the reason
+# bin/scripts-tests already documents: the hyphenated form silently misses
+# bin/scripts-tests itself, the most expensive harness of the set.
+# ---------------------------------------------------------------------------
+# Membership by exact NAME. bin/tests-common has a list_contains, but that file
+# is a TEST helper -- it defines pass_test/fail_test and a TOTAL_TESTS counter --
+# and a production script in the gate path has no business sourcing it.
+# `${a[@]+"${a[@]}"}` and not the tidier `"${a[@]}"` at every array expansion in
+# this script: bash 3.2 treats the expansion of an EMPTY array as an UNBOUND
+# variable, so `set -u` aborts on an ordinary empty state. bin/common carries the
+# same note for the same reason.
+name_in() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+for harness_path in "$PROJECT_ROOT"/bin/*scripts-tests; do
+  [ -e "$harness_path" ] || continue
+  harness="$(basename "$harness_path")"
+  name_in "$harness" ${HARNESS_EXCLUSIONS[@]+"${HARNESS_EXCLUSIONS[@]}"} && continue
+  if ! name_in "$harness" ${KNOWN_HARNESSES[@]+"${KNOWN_HARNESSES[@]}"}; then
+    fatal "bin/gate-scope does not know the harness [$harness]. Every bin/*scripts-tests must be declared in KNOWN_HARNESSES and placed in whichever narrow scopes can observe it, or a narrow-scope commit would silently never run it. Add it and say which scopes see it."
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# The staged set.
+#
+# -z with `IFS= read -r -d ''`: a pathname containing a newline, or a directory
+# named " .prime" with a LEADING SPACE, must not be able to dodge a glob. That is
+# a demonstrated defect in this repo, not a hypothetical (RFC 193).
+#
+# --no-renames: a rename is classified on BOTH sides, as a delete and an add, so
+# `git mv .prime/x/SKILL.md bin/x` is `full` rather than inheriting the source
+# path's scope.
+# ---------------------------------------------------------------------------
+STAGED=()
+while IFS= read -r -d '' staged_path; do
+  STAGED+=("$staged_path")
+done < <(git -C "$REPO" diff --cached --name-only -z --no-renames)
+
+# The Gradle modules, read from settings.gradle.kts -- the SOURCE OF TRUTH for
+# what a module is, rather than a third copy of the list that bin/test also
+# carries. A module that is added to the build and not here would only ever make
+# this script fall back to `full`, which is the safe direction.
+MODULES=()
+while IFS= read -r module; do
+  [ -n "$module" ] && MODULES+=("$module")
+done < <(sed -n 's/^include("\([^"]*\)").*/\1/p' "$REPO/settings.gradle.kts" 2> /dev/null)
+
+# Is $1 a path under a Gradle module's src/ tree?
+is_module_source() {
+  local path="$1" module
+  for module in ${MODULES[@]+"${MODULES[@]}"}; do
+    case "$path" in
+    "$module"/src/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+emit() {
+  local scope="$1" gradle="$2" harnesses="$3" reason="$4"
+  log-info "gate scope: $scope -- $reason"
+  echo "scope=$scope"
+  echo "gradle=$gradle"
+  echo "harnesses=$harnesses"
+  exit 0
+}
+
+# Rule 3: an empty index is `full`, not a vacuous pass. The same answer
+# staged_changes_are_product_docs_only gives, for the same reason.
+if [ "${#STAGED[@]}" -eq 0 ]; then
+  emit full yes ALL "the index is empty, and an empty set is not a narrow one"
+fi
+
+# Classify the whole set at once. Each flag stays true only while EVERY path
+# qualifies, which is rule 2: a mixed set collapses to `full` because no flag
+# survives it.
+ALL_MARKDOWN=1
+ALL_PRIME=1
+ALL_IOS_APP=1
+ALL_MODULE_SOURCE=1
+for staged_path in ${STAGED[@]+"${STAGED[@]}"}; do
+  # Markdown, but NOT inside a module's src/ tree. Those ~10 INVARIANTS.md files
+  # live in Kotlin source directories and this script will not guess whether
+  # Gradle hashes them as source-set inputs. Excluding them costs nothing --
+  # CLAUDE.md retired those files in 2026-08 -- and guessing could cost a silent
+  # skip of the whole Gradle half.
+  case "$staged_path" in
+  *.md)
+    # Written as an `if` and not `is_module_source ... && ALL_MARKDOWN=0`. That
+    # form is correct under `set -e` -- the failing command is not the one
+    # following the final && -- but a reader has to derive that to trust it, and
+    # a later edit that appends anything after it would turn a silent exemption
+    # into an aborted scan.
+    if is_module_source "$staged_path"; then
+      ALL_MARKDOWN=0
+    fi
+    ;;
+  *) ALL_MARKDOWN=0 ;;
+  esac
+  case "$staged_path" in
+  .prime/*) ;;
+  *) ALL_PRIME=0 ;;
+  esac
+  case "$staged_path" in
+  ios-app/*) ;;
+  *) ALL_IOS_APP=0 ;;
+  esac
+  is_module_source "$staged_path" || ALL_MODULE_SOURCE=0
+done
+
+# Order matters only where two rows could both match, and where they can the
+# WEAKER claim must win. All-Markdown under .prime/ is markdown-docs, which runs
+# fewer harnesses than prime-scripts; that is safe because the Markdown claim is
+# about the file's readers, not its directory.
+
+# Scope `markdown-docs`.
+#
+# EVIDENCE: no harness reads any real .md in this repository. The only mentions
+# are three comments (bin/INVARIANTS.md, CLAUDE.md) and one fixture -- 
+# bin/ship-scripts-tests writes rfc/999-x.md inside a throwaway repo to assert
+# that the product/ predicate rejects rfc/. Markdown's only executable
+# consequence here is `deno fmt`, and bin/format -c runs on EVERY path through
+# bin/pre-commit, including this one; bin/common's MARKDOWN_FMT_PATHS already
+# covers **/*.md, .claude and .prime.
+#
+# The residue, stated rather than glossed: a harness that composed a Markdown
+# path from a variable would escape the sweep in bin/gate-scope-scripts-tests.
+# None does, the sweep fails the build on any literal one, and a variable one
+# would have to be written deliberately.
+if [ "$ALL_MARKDOWN" -eq 1 ]; then
+  emit markdown-docs no "" "every staged path is Markdown outside a module src/ tree; nothing but deno fmt reads a .md here, and bin/format -c still runs"
+fi
+
+# Scope `product-docs` (RFC 194). Its predicate, not a copy of it.
+if staged_changes_are_product_docs_only "$REPO"; then
+  emit product-docs no "" "every staged path is under product/, which is not a build input at all (RFC 194)"
+fi
+
+# Scope `prime-scripts`.
+#
+# A WEAKER CLAIM THAN RFC 194's, and written as one. product/** is safe because
+# it is not a build input AT ALL. .prime/ is not in that class -- it holds
+# executable scripts that harnesses run -- so this row is safe not because
+# nothing observes .prime/ but because the things that observe it are NAMED AND
+# RUN. That is a claim about a list, and a list can go stale, which is what the
+# anti-orphan sweep above and the cross-sweep in the harness are for.
+if [ "$ALL_PRIME" -eq 1 ]; then
+  emit prime-scripts no "$PRIME_HARNESSES" "every staged path is under .prime/; the harnesses that observe .prime/ are named and run, and no Gradle input is touched"
+fi
+
+# Scope `ios-app`.
+#
+# EVIDENCE: of the harnesses bin/shell-tests actually runs, NONE mentions
+# ios-app at all -- bin/scripts-tests' only two `ios` hits are the
+# HARNESS_EXCLUSIONS name, not a path. ios-app is not a Gradle module
+# (settings.gradle.kts does not include it) and no build file references it; the
+# only Kotlin mentions anywhere are two COMMENTS in rest-server tests pointing at
+# Swift files. It is Swift, an Xcode project and some env files.
+#
+# bin/ios-scripts-tests DOES read the real ios-app/env/prod*.env files -- and it
+# is carved out of bin/shell-tests BY NAME (RFC 114: it drives system Xcode and
+# refuses inside the Nix dev shell, which is where the gate runs). So it never
+# ran at the gate before this row and does not now. The honest statement of what
+# changes for an iOS commit: it stops paying for a Kotlin-and-Postgres gate that
+# cannot observe it, and its own coverage -- a human running
+# `bin/ios-scripts-tests` outside the dev shell -- is exactly what it was.
+if [ "$ALL_IOS_APP" -eq 1 ]; then
+  emit ios-app no "" "every staged path is under ios-app/, which is Swift and an Xcode project: not a Gradle module, and mentioned by no harness the gate runs"
+fi
+
+# Scope `module-source`.
+if [ "$ALL_MODULE_SOURCE" -eq 1 ]; then
+  emit module-source yes "$MODULE_SOURCE_HARNESSES" "every staged path is under a Gradle module's src/ tree; Gradle runs in full, and scripts-tests runs because it boots the built rest-server and queue-worker"
+fi
+
+# Rules 1, 2 and 4 all land here.
+emit full yes ALL "the staged set is mixed or contains a path no narrow scope recognises"

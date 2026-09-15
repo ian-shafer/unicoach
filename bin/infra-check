@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Static validation of infra/ -- `tofu fmt -check` and `tofu validate`.
+#
+# THIS IS NOT PART OF ANY GATE, AND THAT IS THE POINT (RFC 214). These two
+# assertions used to live in bin/scripts-tests, so every commit in this
+# repository paid for them. They were removed from the gate by an explicit
+# operator decision: a commit gate should not reach the public internet, and a
+# check that cannot run offline is worse than an absent one. The removal is not
+# a speed optimisation -- since 2cfe0be9 the pair costs 1-2s warm, and RFC 214
+# claims no time saving from it.
+#
+# The consequence, stated plainly rather than implied: infra/ is now UNGATED.
+# Nothing runs these checks unless a human runs this script. Whoever changes
+# infra/ runs `nix develop -c bin/infra-check` before committing. There is no CI
+# here to catch it afterwards.
+#
+# THE PROVIDERS COME FROM A PLUGIN CACHE, NOT FROM THE NETWORK.
+# A lock file pins VERSIONS, not BINARIES: with a throwaway TF_DATA_DIR and no
+# plugin cache, every run DOWNLOADS hashicorp/aws from the registry and then
+# deletes it. Measured 2026-09-14: 10s, 9s and 9s for three cold runs against 2s
+# once a cache existed, with the log line changing from `Installing
+# hashicorp/aws v5.100.0...` to `Using hashicorp/aws v5.100.0 from the shared
+# cache directory`. That one silent download failed two consecutive land
+# attempts on a tree whose entire diff was Markdown.
+#
+# The cache is SHARED PER MACHINE, at $HOME/.terraform.d/plugin-cache (OpenTofu's
+# own conventional location), overridable by an inherited TF_PLUGIN_CACHE_DIR.
+# Measured: the cache is 670M, so one copy per machine rather than one per
+# checkout across ~10 worktrees.
+#
+# The concurrency caveat, stated rather than hidden: a plugin cache is documented
+# as NOT concurrency-safe, so two checkouts populating the SAME provider at the
+# same instant could collide. That window is one COLD start per machine, roughly
+# ten seconds wide, after which every run only READS the cache, which is safe.
+#
+# THE OUTPUT IS CAPTURED, NOT DISCARDED, and printed only on failure. The old
+# `>/dev/null 2>&1` on both commands is what made those two land failures
+# unfixable by whoever hit them: one red line, no message, on a step that talks
+# to the network.
+
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+infra-check [options]
+
+Runs OpenTofu's static checks over infra/: `fmt -check` then, after an
+`init -backend=false` into a throwaway TF_DATA_DIR, `validate`. Needs no AWS
+credentials and no remote state. Providers come from the shared plugin cache at
+$HOME/.terraform.d/plugin-cache (override with TF_PLUGIN_CACHE_DIR); the first
+run on a machine populates it from the registry and is therefore the one run
+that needs the network.
+
+NOT run by bin/pre-commit, bin/test or bin/shell-tests. infra/ is ungated unless
+you run this (RFC 214). Run it before committing an infra/ change.
+
+Exit status:
+  0  both checks passed
+  1  a check failed, or the toolchain is missing; the captured output is printed
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: infra-check accepts no positional arguments."
+fi
+
+if ! command -v tofu > /dev/null 2>&1; then
+  fatal "tofu is not on PATH. Run this inside the dev shell: nix develop -c bin/infra-check"
+fi
+
+INFRA_DIR="$PROJECT_ROOT/infra"
+if [ ! -d "$INFRA_DIR" ]; then
+  fatal "no infra directory at [$INFRA_DIR]"
+fi
+
+STATUS=0
+
+log-info "checking formatting: tofu -chdir=infra fmt -check"
+FMT_OUT="$(tofu -chdir="$INFRA_DIR" fmt -check 2>&1)" || {
+  log-error "tofu fmt -check failed. Files needing formatting:"
+  printf '%s\n' "$FMT_OUT" >&2
+  STATUS=1
+}
+
+log-info "validating: tofu -chdir=infra init -backend=false, then validate"
+TF_DATA="$(mktemp -d)"
+CACHE="${TF_PLUGIN_CACHE_DIR:-$HOME/.terraform.d/plugin-cache}"
+mkdir -p "$CACHE"
+VALIDATE_RC=0
+VALIDATE_OUT="$(
+  {
+    export TF_DATA_DIR="$TF_DATA" TF_PLUGIN_CACHE_DIR="$CACHE"
+    tofu -chdir="$INFRA_DIR" init -backend=false -input=false \
+      && tofu -chdir="$INFRA_DIR" validate
+  } 2>&1
+)" || VALIDATE_RC=$?
+rm -rf "$TF_DATA"
+
+if [ "$VALIDATE_RC" -ne 0 ]; then
+  log-error "tofu init/validate failed with exit [$VALIDATE_RC]. Output follows."
+  log-error "A registry or network error here is an environment failure, not a defect in infra/."
+  printf '%s\n' "$VALIDATE_OUT" >&2
+  STATUS=1
+fi
+
+if [ "$STATUS" -ne 0 ]; then
+  log-error "infra-check failed."
+  exit 1
+fi
+
+log-info "infra-check passed: tofu fmt -check and tofu validate both clean."
