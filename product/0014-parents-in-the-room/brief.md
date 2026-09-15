@@ -12,6 +12,18 @@ Status:
   to happen; the student does not need to do more. agree with all other
   decisions" — D2 amended accordingly (the invite IS the inviter's consent; no
   counter-acceptance step); D1, D3-D9 approved on defaults.
+- **Post-gate decisions (Ian, 2026-09-14): D18, D19, D20** — recorded in
+  `spec.md`. **D18 SUPERSEDES D12**: parent signup from the Family Cost Report
+  is a REQUIREMENT, not a deferred nicety ("otherwise the report is a dead end
+  for the parents"), so `family/10/claim-from-the-report` is scheduled in wave
+  4, inside the first beat. **D19** answers the consent question D18 forces: the
+  report link is multi-use, forwardable and unexpiring, and RFC 155 D-F says it
+  "is not proof of who sent it", so claiming an account from it is immediate but
+  the LINK is a request the student approves — the one place this brief does not
+  apply "sharing is consent", because that rule was written for a link minted
+  for one named recipient. **D20** closes a spec defect the brief shipped with:
+  the coach's existing share moment was never mentioned, so nothing said which
+  of two doors it should offer; new slice `family/02.5/the-coach-asks-once`.
 - Gate 2 (spec): **APPROVED by Ian 2026-09-14 — 8 decisions (D10-D17), all on
   their defaults.** Ian was asked whether an MVP for launch (parents register
   and link with students) was in scope, was shown that it completes at the end

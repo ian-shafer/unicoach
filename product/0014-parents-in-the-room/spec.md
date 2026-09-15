@@ -162,6 +162,47 @@ of the ceiling statement.
 message from their kid, reads what they are being asked to join, and either
 accepts or does not — without creating an account to find out what it is.
 
+### `family/02.5/the-coach-asks-once`
+
+**Needs:**
+
+- BLOCKS family/02/invite-and-accept — the coach offers an invite, so the invite
+  must exist to be offered.
+- CONFLICTS family/06/the-parent-coach — both edit
+  `prompts/coach-system-prompt.md` and so both mint a coach prompt version from
+  the same file. Different regions of it; a rebase risk, **not** an order.
+
+**What and why.** D20. The student's coach gains one sanctioned moment to offer
+linking a parent, alongside — not instead of — the existing offer to share the
+Family Cost Report. Decimal step because D20 was appended after the order was
+set.
+
+**Foundations.** `prompts/coach-system-prompt.md` (the share-offer block, and
+the opening-reflection rule), `share_cost_report`, `revoke_cost_report_share`,
+`stop_cost_report_offers`, and RFC 160's one-sanctioned-moment discipline, which
+this slice copies rather than reinvents.
+
+**Decided here.** The report-share offer is **unchanged**. The invite offer is
+its own moment, raised once, and it explains what linking adds over the report
+link — a parent gets their own coach; the student can sever one parent without
+killing the link for everyone. The existing opt-out covers both offers (D20): a
+student who said stop is not asked again through a second door.
+
+**Acceptance criteria.**
+
+- A student who has called `stop_cost_report_offers` receives no invite offer
+  either — tested, because this is the failure the slice exists to prevent.
+- The coach raises the invite at most once per the same discipline that governs
+  the share offer, and never in an opening message about money (the standing
+  never-open-with-money rule).
+- The share offer's behaviour is byte-for-byte unchanged, pinned by the existing
+  tests.
+- Mints a coach prompt version, with the rollback version named.
+- **Reachable:** the student's chat.
+
+**First-session test.** A student who has just compared schools is offered,
+once, the option to bring a parent in properly — and never asked twice.
+
 ### `family/03/the-parent-account`
 
 **Needs:**
@@ -445,12 +486,81 @@ roles.
 **First-session test.** Not a first session — but a parent who wants out gets
 out, in the app, without email.
 
+### `family/10/claim-from-the-report`
+
+**Needs:**
+
+- BLOCKS family/03/the-parent-account — the parent who claims must land in a
+  real parent account; there is nowhere to arrive until one exists.
+- BLOCKS family/01/the-link — claiming ends in a link row (D19: a requested
+  one), so the table and its states must exist.
+- CONFLICTS family/02/invite-and-accept — both edit the public-web entry pages
+  and the same account-creation path. A rebase risk, not an order.
+
+**What and why.** D18, Ian's requirement: _"Parents should be able to sign up
+from the report link too. that is a requirement. otherwise the report is a dead
+end for the parents."_ Today a parent opens the Family Cost Report, reads the
+truest thing unicoach has ever told them, and the page ends. That parent is the
+warmest audience the product will ever have — they arrived holding a real number
+about their own child — and the page says nothing about what else exists.
+
+**Foundations.** `cost_report_shares` (0073) and the `/report` route
+(`public-web/.../Routing.kt:148,201-232`); the invite machinery from
+`family/02`; the parent account from `family/03`.
+
+**This slice needs an RFC that supersedes RFC 155 D-G**, and the RFC must say so
+by name. D-G suppressed the in-chat **precision-offer** cue on the page, with
+the reason: _"A logged-out parent cannot answer it, and a page that asks them to
+would be selling, not informing."_ That reasoning is correct and is NOT
+overturned here. The distinction the new RFC must draw, honestly: the suppressed
+cue asked the **parent to supply the student's missing data**, which is both
+useless (they cannot answer as the student) and extractive. A parent signup
+offer asks nothing about the student and supplies nothing to the student — it
+offers the parent **their own** product. If the implementing run cannot make
+that distinction hold in the copy, the copy is wrong, not the rule.
+
+**RFC 155 D-F still binds, and it shapes the whole slice:** the page shows no
+student identity, because **the link is not proof of who sent it**. It is
+multi-use, forwardable, and has no expiry. So the claim CTA may not name the
+student, and — see D19 — claiming may not silently link the claimant to them.
+
+**Decided here.** The report page offers the parent an account. Signing up
+succeeds on its own: the parent lands in the parent product with real value
+(D1's money coaching, college search) **whether or not any link is ever
+approved**, because a signup that dead-ends pending someone else's tap is the
+same dead end one step later. The link itself follows D19.
+
+**Left to /ship's design phase.** The CTA's placement and copy; whether the
+claim carries the token forward through signup or mints a short-lived successor;
+how the student is notified of a request.
+
+**Acceptance criteria.**
+
+- **Supersedes RFC 155 D-G explicitly, by name, with the distinction argued —
+  not asserted.** D-F is upheld: no student identity appears on the page, before
+  or after the CTA.
+- A parent who signs up from the report has a working account at the end of it,
+  with no link and no pending anything required to use it.
+- **Value before ask** (standing D12): the CTA appears **after** the report,
+  never as a gate in front of it. A parent who ignores it loses nothing, and the
+  report keeps working exactly as it does today for someone with no account.
+- The link that results follows D19 and is tested for the forwarded-link case: a
+  person who was forwarded the link and claims an account does **not** become a
+  linked supporter on their own say-so.
+- A student who has used `stop_cost_report_offers` is not pestered through this
+  path either (D20).
+- **Reachable:** the public-web report page — the door parents already walk
+  through today.
+
+**First-session test.** A parent opens the link their kid sent, reads what
+college will actually cost them, and can keep going instead of closing the tab.
+
 ## Deferred, with reasons (not dependencies)
 
-- **`family/10/claim-your-account`** — turning the cost-report share link into a
-  parent-signup on-ramp. **Status: DEFERRED** by D12: the link carries no
-  identity and cannot learn one, and RFC 155's D-F/D-G forbid the CTA in code,
-  so this needs a new RFC superseding them. Valuable; not first.
+- _(`family/10/claim-your-account` was deferred here by D12. **D18 supersedes
+  that**: Ian made parent signup from the report a requirement — "otherwise the
+  report is a dead end for the parents" — and the slice is now scheduled above
+  as `family/10/claim-from-the-report`.)_
 - **`family/11/the-parent-deadline-track`** — the parent's own FAFSA-contributor
   deadlines (FSA ID, contributor section and IRS consent, CSS Profile
   financials, verification, the PLUS decision), including the mixed-status and
@@ -483,6 +593,47 @@ something no other product gives them. Everything before it is the machinery
 that makes it honest.
 
 ---
+
+## Appended decisions (post-gate, 2026-09-14)
+
+Gate decisions are immutable, so a changed decision is a NEW numbered decision
+(chart non-negotiable 7). These were raised by Ian after gate 2 closed.
+
+- **D18 — the report is a signup door. SUPERSEDES D12.** Ian, verbatim:
+  _"Parents should be able to sign up from the report link too. that is a
+  requirement. otherwise the report is a dead end for the parents."_ D12
+  deferred the claim on-ramp; it is now a **requirement** and a scheduled slice,
+  `family/10/claim-from-the-report`, in wave 4 — inside the first beat, not
+  after it. D12 stands as committed and is superseded, not edited.
+
+- **D19 — claiming an account does not, by itself, link you to the student.**
+  The consent question D18 forces, and the one place this brief does NOT follow
+  "sharing is consent" (D2). The reason is a property of THIS link and not a
+  change of heart: the invite link of D2/D7 is minted for one recipient,
+  consume-once and expiring, so sharing it IS an act aimed at a person. The
+  report link is **one live link per student, multi-use, forwardable, and
+  unexpiring** — RFC 155 D-F says in terms that it _"is not proof of who sent
+  it"_. It reaches grandparents, a counsellor, a neighbour, whoever a parent
+  forwards it to. Auto-linking its holder would let anyone holding a forwarded
+  link become a supporter of a child, which is the one outcome this brief must
+  not produce. **So:** signup from the report is immediate and unconditional;
+  the LINK to that student is a **request the student approves in one tap**. The
+  student's approval is the same consent D2 requires, collected at the only
+  moment it can honestly be collected. A parent whose request is not approved
+  keeps a full parent account.
+
+- **D20 — the coach keeps its share moment, and asks about linking separately.**
+  The coach today has a sanctioned share moment — an opening reflection plus
+  `share_cost_report`, `revoke_cost_report_share` and `stop_cost_report_offers`,
+  including "never raise it again" if the student declines. This brief's spec
+  did not mention it, which was a spec defect: after this brief there are two
+  ways to bring a parent in and nothing told the coach which to offer. The
+  report link stays the low-friction first step and is unchanged; the account
+  invite is offered separately, when a student wants ongoing support or after a
+  parent has opened the report — never as a precondition for looking, per the
+  standing value-before-ask rule. **A student who has opted out of share offers
+  is not pestered about invites instead.** Carried by a new slice,
+  `family/02.5/the-coach-asks-once`.
 
 # Gate 2 decisions (APPROVED 2026-09-14)
 
