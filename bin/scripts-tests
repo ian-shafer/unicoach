@@ -1993,20 +1993,63 @@ done
 # OpenTofu static validation of infra/ (ops.tf + the iam.tf/outputs.tf edits).
 # fmt -check is purely static. validate needs the providers installed, so init
 # first with -backend=false (no remote state, no AWS) into a throwaway TF_DATA_DIR
-# so the developer's real infra/.terraform is left untouched; providers resolve
-# offline from the tracked infra/.terraform.lock.hcl. Both must exit 0.
+# so the developer's real infra/.terraform is left untouched. Both must exit 0.
+#
+# THE PROVIDERS COME FROM A PER-CHECKOUT PLUGIN CACHE, NOT FROM THE NETWORK.
+# An earlier version of this comment claimed they "resolve offline from the
+# tracked infra/.terraform.lock.hcl". That was FALSE, and expensively so. A lock
+# file pins VERSIONS, not BINARIES: with a throwaway TF_DATA_DIR and no plugin
+# cache, every gate run DOWNLOADED hashicorp/aws from the registry and then
+# deleted it. Measured 2026-09-14: 10s, 9s and 9s for three cold runs against 2s
+# once a cache existed, with the log line changing from `Installing
+# hashicorp/aws v5.100.0...` to `Using hashicorp/aws v5.100.0 from the shared
+# cache directory`. So the one assertion in this whole harness that reached the
+# public internet was also the one that failed under load, twice in a row, on two
+# consecutive land attempts, on a tree whose entire diff was Markdown.
+#
+# The cache is SHARED PER MACHINE, at $HOME/.terraform.d/plugin-cache (OpenTofu's
+# own conventional location), overridable by an inherited TF_PLUGIN_CACHE_DIR.
+# Measured: the cache is 670M. Per-CHECKOUT would be correct-by-construction --
+# bin/scripts-tests is serial within a checkout, so no lock would be needed -- but
+# this machine carries ~10 worktrees, so it would mean ~6.7G of byte-identical
+# provider copies. One copy is the better everyday trade.
+#
+# The concurrency caveat, stated rather than hidden: a plugin cache is documented
+# as NOT concurrency-safe, so two checkouts populating the SAME provider at the
+# same instant could collide. That window is one COLD start per machine, roughly
+# ten seconds wide, after which every run only READS the cache, which is safe. It
+# is not zero. It is accepted because the symptom is now visible: if it ever
+# happens, the captured output says so instead of printing one blank red line.
+#
+# THE OUTPUT IS CAPTURED, NOT DISCARDED, and printed only on failure. The old
+# `>/dev/null 2>&1` on both commands is what made those two land failures
+# unfixable by whoever hit them: one red line, no message, on a step that talks
+# to the network. A gate that can reject a commit while printing nothing teaches
+# the reader that the failure is random, which is how a deterministic dependency
+# on the registry came to be filed as a flake.
 assert_success "tofu -chdir=infra fmt -check passes" \
   tofu -chdir="$PROJECT_ROOT/infra" fmt -check
 test_tofu_validate() {
-  local tf_data rc=0
+  local tf_data cache out rc=0
   tf_data="$(mktemp -d)"
-  (
-    export TF_DATA_DIR="$tf_data"
-    tofu -chdir="$PROJECT_ROOT/infra" init -backend=false -input=false >/dev/null 2>&1 \
-      && tofu -chdir="$PROJECT_ROOT/infra" validate >/dev/null 2>&1
-  ) || rc=$?
+  cache="${TF_PLUGIN_CACHE_DIR:-$HOME/.terraform.d/plugin-cache}"
+  mkdir -p "$cache"
+  out="$(
+    {
+      export TF_DATA_DIR="$tf_data" TF_PLUGIN_CACHE_DIR="$cache"
+      tofu -chdir="$PROJECT_ROOT/infra" init -backend=false -input=false \
+        && tofu -chdir="$PROJECT_ROOT/infra" validate
+    } 2>&1
+  )" || rc=$?
   rm -rf "$tf_data"
-  [ "$rc" -eq 0 ]
+  if [ "$rc" -ne 0 ]; then
+    echo "tofu init/validate failed with exit [$rc]. Output follows -- this is the"
+    echo "diagnostic the old >/dev/null discarded. A registry/network error here is"
+    echo "an environment failure, not a defect in infra/."
+    echo "$out"
+    return 1
+  fi
+  return 0
 }
 assert_success "tofu -chdir=infra validate passes (init -backend=false, no AWS)" test_tofu_validate
 
