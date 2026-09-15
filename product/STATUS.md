@@ -554,7 +554,11 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    `family/06/the-parent-coach`. **Two of these slices are launch-blocking for
    reasons unrelated to parents:** in-app account deletion is required by Apple
    and is unmet today (`family/09`), and there is no age floor at all
-   (`family/08`).
+   (`family/08`). **Post-gate D18 (Ian): a parent can sign up FROM the Family
+   Cost Report — the report must not be a dead end** — so
+   `family/10/claim-from-the-report` is in the first beat, and D19 says claiming
+   gives an account immediately while the LINK is a request the student
+   approves, because that link is forwardable and is not proof of who sent it.
 
 2. **UNICOACH GOES TO THE WEB — GATES 1 AND 2 CLOSED, TWELVE SLICES READY (brief
    0012, 2026-09-14).** The iOS app duplicated into `public-web` so a family can
