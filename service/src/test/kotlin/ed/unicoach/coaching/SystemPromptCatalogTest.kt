@@ -4,6 +4,7 @@ import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.coaching.admissions.AdmissionsField
 import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
 import ed.unicoach.coaching.admissions.TestPolicyCopy
+import ed.unicoach.coaching.aid.FafsaProcessChatTool
 import ed.unicoach.coaching.aid.FederalAidPolicyChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
@@ -230,6 +231,7 @@ class SystemPromptCatalogTest {
       COST_REPORT("When the student and you have actually compared what"),
       RESIDENCY_BASIS("At a public school, the published price and the price"),
       FEDERAL_AID("When a family asks about the Pell Grant or federal student"),
+      FAFSA_PROCESS("When a family asks who files the FAFSA, whose information"),
       SHARE_NUDGE("When your opening reflections include one about sharing"),
       NEED_AND_FORMS("When a family asks whether a school meets full financial"),
       BORROWING("Borrowing is a different question from price, and you"),
@@ -296,6 +298,15 @@ class SystemPromptCatalogTest {
      * under test is SEEDED COPY versus SHIPPING TOOL.
      */
     private val FEDERAL_AID_TOOL_NAME = FederalAidPolicyChatTool.TOOL_NAME
+
+    /**
+     * The FAFSA-process tool the RFC 216 paragraph routes to, read from the tool
+     * itself on the same precedent as [ADMISSIONS_TOOL_NAME]: the pairing under
+     * test is SEEDED COPY versus SHIPPING TOOL, and a literal here would keep
+     * passing after a rename, leaving the prompt naming a tool the registry
+     * does not serve.
+     */
+    private val FAFSA_PROCESS_TOOL_NAME = FafsaProcessChatTool.TOOL_NAME
 
     /**
      * The opt-out tool the v17 paragraph names (RFC 160), read from the tool
@@ -1876,6 +1887,75 @@ class SystemPromptCatalogTest {
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
     assertFalse(CODE_EQUALS_WORD.containsMatchIn(paragraph), "the new paragraph must transcribe no source codebook")
+  }
+
+  private fun fafsaProcessParagraph(): String = paragraphAt(CoachParagraph.FAFSA_PROCESS)
+
+  /**
+   * The FAFSA-process paragraph (RFC 216), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
+   *
+   * The paragraph says nothing about a figure, so unlike its federal-aid
+   * neighbour it can call the standing copy-rule helper: the banned word
+   * `award` is not in it, and the helper is the only thing that keeps the rest
+   * of the standing rules from being retyped and quietly skipped.
+   */
+  @Test
+  fun `the served FAFSA-process paragraph routes to the tool and refuses the old divorced-parent rule`() {
+    val paragraph = fafsaProcessParagraph()
+
+    // Seeded copy versus SHIPPING tool name: a literal here would keep passing
+    // after a rename, leaving the prompt naming a tool the registry does not
+    // serve.
+    assertTrue(paragraph.contains(FAFSA_PROCESS_TOOL_NAME), "the paragraph must name the FAFSA-process tool")
+    assertTrue(
+      paragraph.contains("rather than from memory"),
+      "the process rules come from the tool, never remembered (RFC 216 §6.1)",
+    )
+    assertTrue(
+      paragraph.contains("the document it came from and the day we read that document"),
+      "every rule is spoken with its citation and its fetch date (RFC 216 §6.2)",
+    )
+    assertTrue(
+      paragraph.contains("more-than-half-support rule") && paragraph.contains("more than half of the student's support"),
+      "the divorced-parent answer is the support rule, said in those words",
+    )
+    // The legacy web is saturated with the old heuristic and families repeat
+    // it, so the paragraph must refuse it by name rather than merely omit it.
+    assertTrue(
+      paragraph.contains("never the parent the student lived with"),
+      "RFC 216: the old lived-with rule is named as wrong, not left unmentioned",
+    )
+    assertFalse(
+      paragraph.contains("custodial parent"),
+      "the custodial-parent heuristic is never stated as the answer",
+    )
+    assertTrue(
+      paragraph.contains("stepparent consequence"),
+      "a remarried parent brings a second contributor, and the coach says so",
+    )
+    assertTrue(
+      paragraph.contains("Never state a dependency answer the tool does not carry"),
+      "the dependency answer is the tool's, never the model's",
+    )
+    assertTrue(
+      paragraph.contains("the FAFSA is free") &&
+        paragraph.contains("we never fill it in") &&
+        paragraph.contains("never ask a family for a StudentAid.gov login"),
+      "the form is free and we never touch it: no credential is ever asked for",
+    )
+    assertTrue(
+      paragraph.contains("the college's financial aid office"),
+      "where the answer belongs to an institution, the coach names the office to call",
+    )
+    // The per-college half is the cost tool's, and it is named by the keys the
+    // shipping code emits rather than by retyped literals.
+    assertTrue(paragraph.contains(AidPolicyWire.FORMS_KEY), "the paragraph must name the forms list it defers to")
+    assertTrue(paragraph.contains(AidPolicyWire.KEY), "and the section that list lives in")
+    assertTrue(paragraph.contains(CollegeCostChatTool.TOOL_NAME), "and the tool that section rides on")
+
+    assertParagraphKeepsTheStandingCopyRules("the FAFSA-process paragraph", paragraph)
+    assertFalse(Regex("H\\.\\d").containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
   }
 
   /**

@@ -403,6 +403,12 @@ fun Application.appModule(
             ed.unicoach.coaching.aid
               .FederalAidPolicyService(database),
           ),
+        // The process half of the same subject (RFC 216): the cited FAFSA rules
+        // -- who files, consent, divorced or separated parents, dependency,
+        // what happens after submitting. A sibling of the tool above rather
+        // than more payload on it, and a curated corpus, so it reads nothing.
+        ed.unicoach.coaching.aid
+          .FafsaProcessChatTool(),
         ShareCostReportChatTool(costReportShareService),
         RevokeCostReportShareChatTool(costReportShareService),
         // "Never suggest sharing again" (RFC 160): needs no secret — it writes
