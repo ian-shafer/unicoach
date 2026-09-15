@@ -264,8 +264,12 @@ in chat gets the same date the page shows, and never a date from the model's
 memory.
 
 **Foundations:** `AdmissionTestTimelineChatTool` + its registration in
-`rest-server/Application.kt` are the exact precedent; prompt v35 lines 160-166
-are where FAFSA routing already lives.
+`rest-server/Application.kt` are the exact precedent. FAFSA routing already
+lives in the coach prompt — **re-measure it, do not copy a line number from
+here.** The prompt was v35 when this slice was written and is v38 since RFC 216;
+v37 and v38 both inserted paragraphs, so every line number in this paragraph has
+moved twice. `fafsa/06` also added its own routing paragraph, which this slice
+sits beside rather than edits.
 
 **Decided here:** the coach never states a FAFSA deadline from memory; when the
 service refuses, the coach says which of the three reasons it is and points at
@@ -302,9 +306,13 @@ requires. Product intent: these are the questions static pages answer worst and
 the official help line answers least (about three quarters of calls went
 unanswered at the 2024 peak).
 
-**Foundations:** `FederalAidPolicyChatTool`'s framing-statement consts are the
-home for cited prose; prompt v35 lines 160-166 and 194; `AidPolicyWire`'s
-`required_forms`; `research/fafsa-domain.md` §4 and
+**Foundations:** LANDED — see the ledger. The prose did NOT go into
+`FederalAidPolicyChatTool`'s consts as this paragraph originally said; D19
+supersedes that, and the rules live in a sibling `fafsa_process` tool with its
+own copy file, because the existing tool returns its whole payload on every call
+and 30 process rules would ride on every unrelated Pell and loan answer.
+Remaining foundations as written: prompt v35 lines 160-166 and 194;
+`AidPolicyWire`'s `required_forms`; `research/fafsa-domain.md` §4 and
 `research/support-landscape.md` §5 for the rules and their citations.
 
 **Decided here:** every rule the coach states carries the document it came from

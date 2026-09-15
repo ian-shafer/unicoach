@@ -14,7 +14,9 @@ Status:
   and could not) and D10 (`us_states` is not ours yet) amended by Ian, and D16
   added after he flagged the in-flight `external_documents` table.
 - Handle: `fafsa` (slice IDs `fafsa/NN/name`).
-- Ledger: (empty — nothing specced, nothing landed)
+- Ledger: at the end of this file (`fafsa/06` landed as RFC 216; `fafsa/01` in
+  flight as RFC 215). `slice-board` reads the ledger from THIS file, never from
+  `spec.md`.
 
 ## The question
 
@@ -200,3 +202,24 @@ THIS file, so the line lives here and the spec points at it):
   decisions taken as recommended: a sibling tool rather than more payload on
   `federal_aid_policy`, no tool argument, no coverage number, no dated 2024
   rollout copy. Suite green: 3,431 tests executed, 0 failures.
+
+## LEARN — running notes (appended as slices land)
+
+From `fafsa/06` (RFC 216), reported by the run:
+
+- **A generated artifact regenerated BEFORE a rebase is stale after it.** The
+  v38 prompt seed was generated, then the run rebased onto a `main` carrying
+  v37, and the stale seed surfaced as three unrelated-looking test failures. The
+  lesson is "regenerate every generated file AFTER the final rebase, never
+  before", and no review principle says it yet. **Candidate for /principle.**
+- **A repo-wide literal ban can fire on prose outside its scope.** The
+  money-attribution guard fired on the statutory free-form rule. The run took
+  that guard's own documented per-line exemption with a written reason rather
+  than reword a true sentence or widen the guard — the right call, but made on
+  taste alone. **Candidate for /principle.**
+- **The ledger belongs in `brief.md`, not `spec.md`.** `slice-board` reads only
+  `brief.md`, so a ledger written into `spec.md` left a landed slice printing as
+  READY. Fixed here; worth carrying into the next brief from the start.
+- **Eight row models each carry their own "where did this come from" fields**
+  (noted by RFC 215's review, which correctly declined to fix it as out of
+  scope). A ninth copy is one slice away. **Candidate for its own brief.**
