@@ -448,5 +448,36 @@ the immutability rule's own shape, recorded at the two /ship approval gates.
   only open cycle" in the clock or in a test. Guidance to the run, not a licence
   to decide: a product choice about which cycle the page shows comes back here.
 
+## Decisions after the RFC 215 land — /chart's call, 2026-09-15
+
+- **D23 — every date names its cycle, and each jurisdiction shows the newest
+  cycle we VERIFIED.** RFC 215's run surfaced the product question D22 refused
+  to let it decide: two FAFSA cycles are open together from October to June, so
+  which does a family see? Measured on the harvest: **all 51 jurisdictions have
+  2026-27 rows; only 18 have any 2027-28 row and only 11 of those are
+  verified.** So "show the cycle a senior is filing" would blank 40
+  jurisdictions, and "show one cycle for everybody" would tell a senior about a
+  form they are not filing. The answer is per-jurisdiction and labelled: show
+  the newest cycle we hold a VERIFIED row for, name that cycle in the row, and
+  never show an unverified date at all (D9). The page then carries one sentence
+  explaining the overlap — states publish the next cycle's dates through the
+  autumn, so a state showing the current cycle's date is showing the only date
+  its agency has published. This binds `fafsa/03` (which decides the live set)
+  and `fafsa/04` (which renders it); the coach inherits it through the service.
+- **D24 — four drift corrections, binding on `fafsa/02` before it types a row.**
+  The landed code won over this spec, per the repo's own rule: (a) the CSV needs
+  a `publisher` column, because `external_documents` holds no publisher and the
+  page would otherwise print bare urls; (b) the generated seed must create the
+  `external_documents` rows FIRST and reference them by id — it may not write a
+  url onto a deadline row; (c) the validator mirrors the LANDED constraint
+  names, including `deadline_as_published` and the trimmed-text rules, not the
+  names in `discover/repo-grounding.md` §2.2; (d) the cycle window is
+  `award_year - 1`, not the research report's `award_year - 2` — that widening
+  was the defect three reviewers caught. And the standing gap: the harvest has
+  **zero federal rows**, so the federal open date, final deadline and
+  corrections deadline are all still to be typed, with the Federal Register as
+  the source and the studentaid.gov one-day disagreement stored rather than
+  resolved (D17).
+
 Ledger: the landed-slice ledger for this brief lives in [`brief.md`](brief.md),
 which is the file `slice-board` reads. It is not duplicated here.
