@@ -648,6 +648,50 @@ Gate decisions are immutable, so a changed decision is a NEW numbered decision
   is not pestered about invites instead.** Carried by a new slice,
   `family/02.5/the-coach-asks-once`.
 
+## Appended decisions (post-/ship, 2026-09-15)
+
+_Decided by Ian at RFC 221's approval gate, while `family/01/the-link` was being
+built. Recorded here because they change words every later slice uses. D6 stands
+as committed and is SUPERSEDED, not edited._
+
+- **D21 — the adult side is its own entity, and a link references IT, never a
+  user account.** D6 described one table carrying a parent's `user_id`. It is
+  two tables: `supporters`, one row per adult user — mirroring `students`, which
+  is already a row per user rather than a flag on `users` — and
+  `supporter_student_links`. The reason is that the adult side needs a home of
+  its own within this brief: the parent's coach scope
+  (`family/06/the-parent-coach`) and the meter and billing answer
+  (`family/03.5/who-pays`) both hang off it, and a link pointing at `users`
+  would have to be migrated, with live rows in it, the moment either arrived. It
+  also settles the question `family/03/the-parent-account` left open — whether
+  parent-ness is a column, a derived property of the link table, or client-side
+  state. It is none of those: it is one row, found by `user_id` in one indexed
+  lookup, and it is true of an adult who has signed up and linked nobody yet.
+
+- **D22 — the schema vocabulary is neutral; the relationship word is honest.**
+  D6 named `parent` as the role column's only value. Ian's call: "It's not
+  necessarily parents. But most of the time it will be parents." So the ENTITY
+  is a supporter, and the per-link `relationship` carries four words — `parent`,
+  `guardian`, `grandparent`, `supporter`. The catch-all is `supporter`,
+  deliberately NOT `other`: a person who supports a student is described by what
+  they do, not by failing to match the first three. **This is a schema decision,
+  not a copy decision.** No user-facing surface asks the question yet, and the
+  product today still says "parent" wherever it speaks to a family; a slice that
+  wants to ASK for the relationship, or to render the four words, is specifying
+  new copy and needs its own decision. `relationship` is also deliberately not
+  part of the link's uniqueness rule — it describes the person, it does not make
+  a second link — and it is correctable in place, with the old word kept in the
+  history table.
+
+**Drift this creates, for whoever runs the next slices.** Every slice below
+still says "parent" and "the link table". They are not wrong about intent, but
+the code that landed names `supporters`, `supporter_student_links`,
+`supporter_id` and `relationship`. `family/02/invite-and-accept` is the first
+affected — it writes the link row, so it inherits both decisions, and it must
+also create the `supporters` row for an adult who has never supported anybody
+before. `family/03`, `family/04`, `family/06` and `family/09` read or sever
+those rows.
+
 # Gate 2 decisions (APPROVED 2026-09-14)
 
 _Approved by Ian 2026-09-14, all on their defaults. Verbatim: "approve but no

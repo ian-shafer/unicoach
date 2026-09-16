@@ -32,7 +32,27 @@ Status:
   **D16 therefore stands as committed — the first beat ends at
   `family/07/the-money-plan`, one beat, not two cuts.**
 - Handle: **`family`** (slice IDs `family/NN.S/name`).
+- **Post-/ship decisions (Ian, 2026-09-15): D21, D22** — recorded in `spec.md`,
+  taken at RFC 221's approval gate and SUPERSEDING D6. **D21**: the adult side
+  is its own entity (`supporters`, one row per adult user, mirroring
+  `students`), and a link references that entity, never a user account — the
+  parent coach (`family/06`) and the billing answer (`family/03.5`) both need a
+  home on it, and it settles `family/03`'s open question about where parent-ness
+  lives. **D22**: the schema vocabulary is neutral and the relationship word is
+  honest — `supporter_student_links.relationship` carries `parent`, `guardian`,
+  `grandparent`, `supporter`, with `supporter` as the catch-all rather than
+  `other`. Ian's framing: "It's not necessarily parents. But most of the time it
+  will be parents." No user-facing copy changes; every surface still says
+  "parent" until a slice specifies otherwise.
 - Ledger:
+  - `family/01/the-link` LANDED as RFC 221 (`main@27b447f4` + `f650f058`,
+    2026-09-15) — the link spine: `supporters` (one row per adult user) and
+    `supporter_student_links` (many-to-many onto students, four relationship
+    words, soft-delete unlink with a PARTIAL active-pair unique index so
+    re-linking works), both versioned with history tables, plus database guards
+    refusing a self-link, a link to a closed account, a physical delete, a
+    frozen column change and an update that does not advance version. No door:
+    nothing reaches these tables until `family/02/invite-and-accept`.
   - `family/08/the-age-floor` LANDED as RFC 222 (`main@0925c195` + `22e6b091`,
     2026-09-15) — a neutral date-of-birth question on the iOS onboarding form
     and a 13+ floor enforced in Kotlin at student creation, so every sign-in
