@@ -33,8 +33,16 @@ private const val SQLSTATE_RESTRICT_VIOLATION = "23001"
  */
 internal val FOREIGN_KEY_SQLSTATES = setOf(SQLSTATE_FOREIGN_KEY_VIOLATION, SQLSTATE_RESTRICT_VIOLATION)
 
-private const val SQLSTATE_UNIQUE_VIOLATION = "23505"
+internal const val SQLSTATE_UNIQUE_VIOLATION = "23505"
 private const val SQLSTATE_CHECK_VIOLATION = "23514"
+
+/**
+ * `raise_exception` — the state a bare PL/pgSQL `RAISE EXCEPTION` produces, and
+ * so the state EVERY trigger guard in this schema raises. It says only "a
+ * trigger refused this write"; WHICH rule refused it is the constraint name the
+ * `RAISE` supplies with `USING CONSTRAINT = ...`, not the SQLSTATE.
+ */
+internal const val SQLSTATE_RAISE_EXCEPTION = "P0001"
 
 /**
  * A write failure carrying PostgreSQL's own diagnostics: the violated
@@ -94,6 +102,70 @@ class DuplicateEmailException(
 class StudentAlreadyExistsException(
   message: String = "Student already exists for user",
 ) : DaoException(message),
+  PermanentError
+
+/**
+ * A user already has a `supporters` row (RFC 221) — the
+ * [StudentAlreadyExistsException] precedent for the other side of the family.
+ *
+ * Named, because `supporters_user_id_unique_idx` is TOTAL: a soft-deleted
+ * supporter keeps its `user_id` forever, so "this user is already a supporter"
+ * is a state a caller must be able to recognise WITHOUT string-matching an
+ * index name out of a [ConstraintViolationException].
+ */
+class SupporterAlreadyExistsException(
+  message: String = "Supporter already exists for user",
+) : DaoException(message),
+  PermanentError
+
+/**
+ * The three refusals of the `supporter_student_links` endpoint guards (RFC 221),
+ * each arriving as its own type.
+ *
+ * All three are raised by a PL/pgSQL trigger as `P0001`, which is one SQLSTATE
+ * for three different rules. The trigger therefore names a CONSTRAINT on every
+ * `RAISE`, and these types are what those names map to — so a caller branches on
+ * a type, never on a substring of an English sentence that a later migration is
+ * free to reword.
+ *
+ * [PermanentError] for all three: the invite path never offers a student their
+ * own account and never offers a closed one, so each is a programming error
+ * rather than a race, and retrying the identical write cannot succeed.
+ *
+ * The server's own message is carried through as the message, because the guard
+ * names BOTH endpoint ids in it — which endpoint is closed is useless without
+ * knowing which link was being minted. It is NULLABLE for that reason only: a
+ * refusal whose server message is absent still gets its type, falling back to
+ * the constant sentence above, because the CONSTRAINT name alone identifies
+ * which rule refused the write.
+ */
+class SelfSupporterLinkException(
+  message: String? = null,
+  cause: Throwable? = null,
+  override val constraint: String? = null,
+  override val detail: String? = null,
+) : DaoException(message ?: "A student may not be their own supporter", cause),
+  ConstraintDiagnostics,
+  PermanentError
+
+/** A link was minted to a supporter whose account is closed. See [SelfSupporterLinkException]. */
+class ClosedSupporterLinkException(
+  message: String? = null,
+  cause: Throwable? = null,
+  override val constraint: String? = null,
+  override val detail: String? = null,
+) : DaoException(message ?: "A link may not be created to a closed supporter", cause),
+  ConstraintDiagnostics,
+  PermanentError
+
+/** A link was minted to a student whose account is closed. See [SelfSupporterLinkException]. */
+class ClosedStudentLinkException(
+  message: String? = null,
+  cause: Throwable? = null,
+  override val constraint: String? = null,
+  override val detail: String? = null,
+) : DaoException(message ?: "A link may not be created to a closed student", cause),
+  ConstraintDiagnostics,
   PermanentError
 
 /**
