@@ -100,8 +100,15 @@ class FafsaFilingDeadlineSchemaTest {
       // The two documents the literal-SQL rows cite. They are created and never
       // deleted: external_documents is shared with every other corpus, so a
       // suite that emptied it would take their citations with it.
-      stmt.execute("INSERT INTO external_documents (url) VALUES ('$SOURCE_URL') ON CONFLICT (url) DO NOTHING")
-      stmt.execute("INSERT INTO external_documents (url) VALUES ('$ARCHIVE_URL') ON CONFLICT (url) DO NOTHING")
+      // They state their evidence like every other writer since RFC 220: a
+      // fixture is not exempt, and a bare insert here is refused by the column
+      // exactly as one in production would be.
+      listOf(SOURCE_URL, ARCHIVE_URL).forEach { url ->
+        stmt.execute(
+          "INSERT INTO external_documents (url, url_status, url_checked_on) " +
+            "VALUES ('$url', 'found', DATE '2026-09-14') ON CONFLICT (url) DO NOTHING",
+        )
+      }
     }
   }
 

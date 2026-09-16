@@ -115,8 +115,15 @@ class AdmissionTestStateProgrammeDaoTest {
     // deleted: external_documents is shared by the committed corpus this suite
     // restores, so a test that emptied it would take the corpus's citations with
     // it.
+    //
+    // IT STATES ITS EVIDENCE like every other writer since RFC 220 -- a fixture
+    // is not exempt from the rule, and a bare insert here is refused by the
+    // column exactly as one in production would be.
     connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO external_documents (url) VALUES ('$TN_SOURCE_URL') ON CONFLICT (url) DO NOTHING")
+      stmt.execute(
+        "INSERT INTO external_documents (url, url_status, url_checked_on) " +
+          "VALUES ('$TN_SOURCE_URL', 'found', DATE '2026-09-14') ON CONFLICT (url) DO NOTHING",
+      )
     }
   }
 

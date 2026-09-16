@@ -87,8 +87,12 @@ object AdmissionTestStateProgrammeDao {
     // These twelve lines used to be duplicated verbatim in
     // [FafsaFilingDeadlineDao]; RFC 215 shared them the day the second corpus
     // asked the question.
+    //
+    // `checked_on` IS THE EVIDENCE IT STATES (RFC 220): the day a person opened
+    // these pages and wrote this row from what they served. A citation with no
+    // evidence at all can no longer be stored, and this path has that one fact.
     ExternalDocumentsDao
-      .citationIds(session, row.sourceUrl, row.archiveUrl)
+      .citationIds(session, row.sourceUrl, row.archiveUrl, row.checkedOn)
       .mapCatching { (sourceId, archiveId) ->
         session
           .mutateReturning(

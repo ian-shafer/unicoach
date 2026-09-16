@@ -95,8 +95,12 @@ object FafsaFilingDeadlineDao {
     // cannot overwrite a known link status with "we never asked" (RFC 182). It
     // is shared with the state-programme corpus rather than copied from it --
     // the same rule RFC 213 states for a vocabulary, applied to code.
+    //
+    // `checked_on` IS THE EVIDENCE IT STATES (RFC 220): the day a person opened
+    // these pages and wrote this row from what they served. A citation with no
+    // evidence at all can no longer be stored, and this path has that one fact.
     ExternalDocumentsDao
-      .citationIds(session, row.sourceUrl, row.archiveUrl)
+      .citationIds(session, row.sourceUrl, row.archiveUrl, row.checkedOn)
       .mapCatching { (sourceId, archiveId) ->
         session
           .mutateReturning(

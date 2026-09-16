@@ -32,26 +32,28 @@ value class ExternalDocumentId(
  * fetches a document on its own, and the reads that need the url JOIN this table
  * for it. One arrives with the first caller that needs it.
  *
- * [urlStatus] has NO default, deliberately. "We never asked" is a real,
- * defensible answer and the database's own default, but it is an answer a caller
- * should have to SAY -- a defaulted status is how a check that never ran comes
- * to look like one that passed (RFC 182).
+ * [urlStatus] has NO default, deliberately, and [urlCheckedOn] is not nullable
+ * (RFC 220). "We never asked" was a real answer and the database's own default,
+ * and that is exactly what made it dangerous: a defaulted status with no date is
+ * how a check that never ran comes to look like one that passed (RFC 182). The
+ * column is NOT NULL now, so a citation carries the evidence for it or it cannot
+ * be stored, and the mistake is a compile error rather than a run-time refusal.
+ *
+ * What is still sayable is unchanged: UNKNOWN with a date -- we asked and got no
+ * usable answer -- is an ordinary value here, and nine of our rows hold it.
  */
 data class NewExternalDocument(
   val url: String,
   val urlStatus: SourceUrlStatus,
-  val urlCheckedOn: LocalDate?,
+  val urlCheckedOn: LocalDate,
 ) {
   init {
     // The Kotlin halves of the table's own CHECKs, so a fixture or a loader is
-    // refused where it is written rather than at the statement.
+    // refused where it is written rather than at the statement. There is no
+    // third check for a missing date: [urlCheckedOn]'s TYPE is that check now.
     require(url.isNotEmpty()) { "external document url is empty: an empty url is a url-shaped absence" }
     require(url.startsWith("http://") || url.startsWith("https://")) {
       "external document url [$url] has no http(s) scheme: the scheme is stated, never guessed at"
-    }
-    require(!urlStatus.requiresCheckedOn || urlCheckedOn != null) {
-      "external document [$url] claims status [${urlStatus.value}] with no checked-on date: " +
-        "you cannot claim to know without saying when you looked"
     }
   }
 }

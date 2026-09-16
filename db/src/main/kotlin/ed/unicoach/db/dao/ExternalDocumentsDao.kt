@@ -2,7 +2,9 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.ExternalDocumentId
 import ed.unicoach.db.models.NewExternalDocument
+import ed.unicoach.db.models.SourceUrlStatus
 import java.sql.PreparedStatement
+import java.time.LocalDate
 import java.util.UUID
 
 /**
@@ -21,10 +23,12 @@ import java.util.UUID
  *    status pair, for [SourceDocumentsDao.upsert]'s reason: the pair is a fact
  *    about the url this statement is writing, and leaving a previous run's
  *    verdict in place would attach yesterday's answer to today's url.
- *  * [idOf] is for a caller that is merely CITING and knows nothing about
- *    whether the page is still served. It must not overwrite a swept status with
- *    "we never asked", which is precisely the check-that-never-ran-looking-like-
- *    one-that-passed failure RFC 182 names.
+ *  * [idOf] is for a caller that is merely CITING. It states the evidence it has
+ *    for a document we do not yet hold -- since RFC 220 there is no way to store
+ *    one without evidence -- but it must not overwrite what a SWEEP established,
+ *    which is precisely the check-that-never-ran-looking-like-one-that-passed
+ *    failure RFC 182 names. So its evidence is written on insert and never on
+ *    conflict.
  */
 object ExternalDocumentsDao {
   fun upsert(
@@ -44,7 +48,7 @@ object ExternalDocumentsDao {
         bind = { stmt: PreparedStatement ->
           stmt.setString(1, input.url)
           stmt.setString(2, input.urlStatus.value)
-          stmt.setDateOrNull(3, input.urlCheckedOn)
+          stmt.setObject(3, input.urlCheckedOn)
         },
         map = ::mapId,
         mapError = { e ->
@@ -53,8 +57,16 @@ object ExternalDocumentsDao {
       )
 
   /**
-   * The id of the document at [url], creating the row where we do not hold one
-   * and touching NOTHING else about it.
+   * The id of the document [input] describes, creating the row where we do not
+   * hold one and touching NOTHING else about it.
+   *
+   * IT STILL TAKES THE EVIDENCE (RFC 220). There is no such thing as storing a
+   * url with no status and no date any more -- the columns are NOT NULL with no
+   * default -- so a citing caller states what it knows, and what it knows is
+   * used ONLY when the document is new to us. The conflict arm is unchanged, so
+   * this call still cannot record "we never asked" over an answer a sweep got
+   * (RFC 182); that is what makes it, and not [upsert], the right call for a
+   * caller that is merely citing.
    *
    * The conflict arm assigns the url to itself. That is not a no-op statement
    * dressed up: `ON CONFLICT ... DO NOTHING` returns no row, so a caller would
@@ -66,20 +78,24 @@ object ExternalDocumentsDao {
    */
   fun idOf(
     session: SqlSession,
-    url: String,
+    input: NewExternalDocument,
   ): Result<ExternalDocumentId> =
     session
       .mutateReturning(
         """
-        INSERT INTO external_documents (url)
-        VALUES (?)
+        INSERT INTO external_documents (url, url_status, url_checked_on)
+        VALUES (?, ?, ?)
         ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url
         RETURNING id
         """.trimIndent(),
-        bind = { stmt: PreparedStatement -> stmt.setString(1, url) },
+        bind = { stmt: PreparedStatement ->
+          stmt.setString(1, input.url)
+          stmt.setString(2, input.urlStatus.value)
+          stmt.setObject(3, input.urlCheckedOn)
+        },
         map = ::mapId,
         mapError = { e ->
-          mapReferenceWriteError(e, "[external_documents] row for url [$url] could not be cited")
+          mapReferenceWriteError(e, "[external_documents] row for url [${input.url}] could not be cited")
         },
       )
 
@@ -105,14 +121,23 @@ object ExternalDocumentsDao {
    * takes its documents with it. A caller in autocommit gets two committed
    * documents and no fact, which is untidy rather than wrong: a document row is
    * a url and its link state, true whoever cites it.
+   *
+   * [readOn] IS THE EVIDENCE, AND IT IS THE CITED ROW'S OWN READING DATE
+   * (RFC 220). A citation cannot be stored with no evidence at all any more, so
+   * a cited corpus states the one fact it genuinely has: a person opened these
+   * pages on that day and wrote the row from what they served, which is FOUND on
+   * that day. It is recorded only where the document is new to us -- [idOf]
+   * leaves an existing row alone -- so a swept verdict is never overwritten by
+   * it.
    */
   fun citationIds(
     session: SqlSession,
     sourceUrl: String,
     archiveUrl: String?,
+    readOn: LocalDate,
   ): Result<Pair<ExternalDocumentId, ExternalDocumentId?>> =
-    idOf(session, sourceUrl).mapCatching { sourceId ->
-      sourceId to archiveUrl?.let { idOf(session, it).getOrThrow() }
+    idOf(session, NewExternalDocument(sourceUrl, SourceUrlStatus.FOUND, readOn)).mapCatching { sourceId ->
+      sourceId to archiveUrl?.let { idOf(session, NewExternalDocument(it, SourceUrlStatus.FOUND, readOn)).getOrThrow() }
     }
 
   private fun mapId(rs: java.sql.ResultSet): ExternalDocumentId = ExternalDocumentId(UUID.fromString(rs.getString("id")))

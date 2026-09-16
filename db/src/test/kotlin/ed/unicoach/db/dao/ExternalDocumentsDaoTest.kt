@@ -6,6 +6,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -30,6 +31,25 @@ class ExternalDocumentsDaoTest {
 
     /** Every url this suite writes starts here, and nothing else in the tree does. */
     private const val PREFIX = "https://external-documents-test.invalid/"
+
+    /** Postgres' code for "a required value was not supplied". */
+    private const val NOT_NULL_VIOLATION = "23502"
+
+    /** How [refusalOf] names that refusal, since it carries no constraint name of its own. */
+    private const val NOT_NULL_ON = "NOT NULL on %s"
+
+    /**
+     * The evidence a citation has carried since RFC 220, for the tests that are
+     * about something else entirely.
+     */
+    private val EVIDENCE = mapOf("url_status" to "'found'", "url_checked_on" to "DATE '2026-09-14'")
+
+    /**
+     * The migration under test, executed verbatim rather than quoted
+     * ([SourceUrlStatusSchemaPinTest]'s relative path idiom: the test's working
+     * directory is the `db` module).
+     */
+    private val MIGRATION = File("schema/require-a-check-on-every-external-document.sql")
 
     @JvmStatic
     @BeforeAll
@@ -100,56 +120,74 @@ class ExternalDocumentsDaoTest {
     val url = "${PREFIX}cited-page"
     ExternalDocumentsDao.upsert(session, NewExternalDocument(url, SourceUrlStatus.FOUND, LocalDate.parse("2026-09-14"))).getOrThrow()
 
-    ExternalDocumentsDao.idOf(session, url).getOrThrow()
+    ExternalDocumentsDao
+      .idOf(session, NewExternalDocument(url, SourceUrlStatus.NOT_FOUND, LocalDate.parse("2026-10-01")))
+      .getOrThrow()
 
-    // A caller that is merely CITING knows nothing about whether the page is
-    // still served, and must not be able to record "we never asked" over an
-    // answer somebody got. That is the check-that-never-ran-looking-like-one-
-    // that-passed failure RFC 182 names.
+    // A caller that is merely CITING must not be able to record what it happens
+    // to believe over an answer a sweep got. That is the check-that-never-ran-
+    // looking-like-one-that-passed failure RFC 182 names. Since RFC 220 the
+    // citer always carries evidence, so this is the stronger version of the same
+    // claim: even a contradicting verdict does not land on an existing row.
     assertEquals("found", statusOf(url))
     assertEquals(LocalDate.parse("2026-09-14"), checkedOnOf(url))
   }
 
   @Test
-  fun `citing a url we do not hold creates it as never asked`() {
+  fun `citing a url we do not hold creates it with the evidence the citer supplied`() {
     val url = "${PREFIX}new-page"
 
-    ExternalDocumentsDao.idOf(session, url).getOrThrow()
+    ExternalDocumentsDao
+      .idOf(session, NewExternalDocument(url, SourceUrlStatus.FOUND, LocalDate.parse("2026-09-14")))
+      .getOrThrow()
 
-    assertEquals("unknown", statusOf(url))
-    // NULL is "we never asked". A date here would be "we asked and got no usable
-    // answer", and the two must stay distinguishable.
-    assertNull(checkedOnOf(url))
+    // There is no "never asked" row to create any more (RFC 220). A citer states
+    // what it knows, and for a document nothing has swept that is what the row
+    // holds.
+    assertEquals("found", statusOf(url))
+    assertEquals(LocalDate.parse("2026-09-14"), checkedOnOf(url))
   }
 
   @Test
-  fun `a status we could not establish keeps its date, and one we never asked for has none`() {
+  fun `a status we could not establish still keeps its date`() {
     val asked = "${PREFIX}asked-no-answer"
-    val neverAsked = "${PREFIX}never-asked"
 
     ExternalDocumentsDao
       .upsert(session, NewExternalDocument(asked, SourceUrlStatus.UNKNOWN, LocalDate.parse("2026-09-14")))
       .getOrThrow()
-    ExternalDocumentsDao.upsert(session, NewExternalDocument(neverAsked, SourceUrlStatus.UNKNOWN, null)).getOrThrow()
 
-    assertEquals(LocalDate.parse("2026-09-14"), checkedOnOf(asked), "a 403 is asked-and-no-usable-answer, on a day")
-    assertNull(checkedOnOf(neverAsked))
-    // Both are `unknown` and both keep their link. The DATE is the whole
-    // distinction, which is why there are three states and not four.
+    // A 403, a timeout, a DNS fault: we asked and got no usable answer, on a
+    // day. That row is exactly as storable as it ever was -- nine of the
+    // committed corpus's rows hold it. What RFC 220 removed is the FOURTH state,
+    // a url nobody checked, and it removed it by making the date required.
     assertEquals("unknown", statusOf(asked))
-    assertEquals("unknown", statusOf(neverAsked))
+    assertEquals(LocalDate.parse("2026-09-14"), checkedOnOf(asked), "a 403 is asked-and-no-usable-answer, on a day")
   }
 
   @Test
-  fun `a claim to know with no day it was looked at is refused, in Kotlin and in the database`() {
-    val url = "${PREFIX}undated-claim"
+  fun `a citation with no evidence at all is refused by the columns themselves`() {
+    // The acceptance criterion of RFC 220, driven as written. The DEFAULT is
+    // gone, so a url on its own leaves url_status NULL and its own NOT NULL --
+    // which the table has always had -- refuses the row.
+    assertEquals(
+      NOT_NULL_ON.format("url_status"),
+      refusalOf(mapOf("url" to "'${PREFIX}bare-insert'")),
+      "INSERT INTO external_documents (url) VALUES (...) must fail",
+    )
 
-    assertFailsWith<IllegalArgumentException> {
-      NewExternalDocument(url, SourceUrlStatus.FOUND, null)
-    }
+    // And a status with no day it was established on.
+    assertEquals(
+      NOT_NULL_ON.format("url_checked_on"),
+      refusalOf(mapOf("url" to "'${PREFIX}undated-claim'", "url_status" to "'found'")),
+      "you cannot claim to know without saying when you looked",
+    )
 
-    val refusal = violatedConstraint(mapOf("url" to "'$url'", "url_status" to "'found'", "url_checked_on" to "NULL"))
-    assertEquals("external_documents_checked_when_known", refusal)
+    // The pair CHECK that used to carry half of this is gone, because a NOT NULL
+    // date makes it trivially true. Nothing may re-add it silently.
+    assertNull(
+      refusalOf(mapOf("url" to "'${PREFIX}unknown-with-a-date'", "url_status" to "'unknown'", "url_checked_on" to "DATE '2026-09-14'")),
+      "unknown WITH a date is a first-class row and must still insert",
+    )
   }
 
   @Test
@@ -176,7 +214,9 @@ class ExternalDocumentsDaoTest {
   fun `http is accepted, because six of our seven archived addresses are http`() {
     val url = "${PREFIX}plain-http".replace("https://", "http://")
 
-    ExternalDocumentsDao.idOf(session, url).getOrThrow()
+    ExternalDocumentsDao
+      .idOf(session, NewExternalDocument(url, SourceUrlStatus.FOUND, LocalDate.parse("2026-09-14")))
+      .getOrThrow()
 
     assertTrue(countRows("external_documents", "url = '$url'") == 1, "http is accepted; https is preferred, not required")
     connection.createStatement().use { stmt -> stmt.execute("DELETE FROM external_documents WHERE url = '$url'") }
@@ -190,7 +230,83 @@ class ExternalDocumentsDaoTest {
     assertEquals("link_status_check", refusal)
   }
 
-  private fun violatedConstraint(columns: Map<String, String>): String? =
+  @Test
+  fun `the migration refuses a database holding a dateless row, and invents nothing`() {
+    // The case cannot be reached forwards -- the whole point of the migration is
+    // that a dateless row can no longer be written -- so it is staged backwards,
+    // inside ONE transaction that is always rolled back: the table is returned
+    // to its pre-migration shape, given the row the migration exists to refuse,
+    // and then the COMMITTED migration file is executed verbatim. A copy of the
+    // SQL in this test would prove only that the copy refuses.
+    val url = "${PREFIX}dateless"
+    val refusal =
+      connection.autoCommitOff {
+        connection.createStatement().use { stmt ->
+          stmt.execute(
+            """
+            ALTER TABLE external_documents
+                ALTER COLUMN url_status SET DEFAULT 'unknown',
+                ALTER COLUMN url_checked_on DROP NOT NULL,
+                ADD CONSTRAINT external_documents_checked_when_known
+                    CHECK (url_status = 'unknown' OR url_checked_on IS NOT NULL)
+            """.trimIndent(),
+          )
+          stmt.execute("INSERT INTO external_documents (url) VALUES ('$url')")
+        }
+
+        val raised =
+          assertFailsWith<SQLException> {
+            connection.createStatement().use { stmt -> stmt.execute(MIGRATION.readText()) }
+          }
+        raised
+      }
+
+    assertEquals("P0001", refusal.sqlState, "the guard refuses by raising, not by any incidental failure")
+    assertTrue(
+      refusal.message!!.contains("holds [1] row(s) with no url_checked_on"),
+      "the refusal names how many rows it found; got: ${refusal.message}",
+    )
+    assertTrue(
+      refusal.message!!.contains("bin/check-link"),
+      "the refusal names the tool that produces the missing answer; got: ${refusal.message}",
+    )
+
+    // Rolled back: the staged row is gone, and so is the old shape. Asserted,
+    // never assumed -- a leaked ALTER would reopen the hole for every later test
+    // in this Gradle invocation.
+    assertEquals(0, countRows("external_documents", "url = '$url'"))
+    assertEquals(
+      NOT_NULL_ON.format("url_checked_on"),
+      refusalOf(mapOf("url" to "'${PREFIX}after-rollback'", "url_status" to "'found'")),
+      "the tightened schema survives the rolled-back transaction",
+    )
+  }
+
+  /**
+   * Runs [body] in one explicit transaction and ALWAYS rolls it back, restoring
+   * auto-commit whatever happened. The DDL above takes an ACCESS EXCLUSIVE lock
+   * on one table for the few milliseconds it is held.
+   */
+  private fun <T> Connection.autoCommitOff(body: () -> T): T {
+    autoCommit = false
+    try {
+      return body()
+    } finally {
+      rollback()
+      autoCommit = true
+    }
+  }
+
+  /**
+   * The refusal an INSERT of EXACTLY [columns] earns, as one stable string: the
+   * constraint or domain name where one is named, `NOT NULL on <column>` where a
+   * required value is missing, and null where the row inserted.
+   *
+   * A NOT NULL violation carries no constraint NAME, only a column, so a helper
+   * that read `constraint` alone would report every one of them identically and
+   * a test asserting on it would pass for the wrong reason.
+   */
+  private fun refusalOf(columns: Map<String, String>): String? =
     try {
       connection.createStatement().use { stmt ->
         stmt.execute(
@@ -200,9 +316,20 @@ class ExternalDocumentsDaoTest {
       }
       null
     } catch (e: SQLException) {
-      (e as? org.postgresql.util.PSQLException)?.serverErrorMessage?.constraint
-        ?: "a [${e.sqlState}] with no constraint name: ${e.message}"
+      val server = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
+      when {
+        server?.constraint != null -> server.constraint
+        e.sqlState == NOT_NULL_VIOLATION && server?.column != null -> NOT_NULL_ON.format(server.column)
+        else -> "a [${e.sqlState}] with no constraint name: ${e.message}"
+      }
     }
+
+  /**
+   * As [refusalOf], but supplying the evidence every row has required since
+   * RFC 220, so a test about the URL is refused BY the url rule rather than by
+   * the missing status it did not mean to omit.
+   */
+  private fun violatedConstraint(columns: Map<String, String>): String? = refusalOf(EVIDENCE + columns)
 
   private fun statusOf(url: String): String? = scalar("SELECT url_status FROM external_documents WHERE url = '$url'")
 
