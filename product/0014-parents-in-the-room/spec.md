@@ -456,6 +456,19 @@ path — suspend, confirm, delete — because the parent channel will generate "
 **First-session test.** A 12-year-old cannot create a student account, and is
 told why in words a 12-year-old understands.
 
+**LANDED as RFC 222** (`main@0925c195` + `22e6b091`, 2026-09-15). Two things the
+run decided that this spec did not: the column is `date_of_birth DATE NOT NULL`
+on `students` and `students_versions`, backfilled to `2009-07-10` — **Ian's call
+at the approval gate**, verbatim _"Option B — make it mandatory for all rows. We
+do not have real users, so this is okay"_ — so no code path carries an "unknown
+age" case, and the sentinel is a pre-launch artefact that will look like real
+data later. And the refusal is **403 `age_requirement_not_met`**, not 400,
+because the request was well-formed and refused on its merits; a malformed or
+impossible date stays a 400 validation error. The escalation path D5 asked for
+is `policy/under-13-actual-knowledge.md`: suspend on the signal, confirm with a
+deadline, delete if unconfirmed — a human runbook, with no automation. **No age
+gate on the parent side** — a parent account is an adult account.
+
 ### `family/09/the-deletion-partition`
 
 **Needs:**

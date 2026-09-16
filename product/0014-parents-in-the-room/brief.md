@@ -32,7 +32,13 @@ Status:
   **D16 therefore stands as committed — the first beat ends at
   `family/07/the-money-plan`, one beat, not two cuts.**
 - Handle: **`family`** (slice IDs `family/NN.S/name`).
-- Ledger: (empty — nothing specced, nothing landed)
+- Ledger:
+  - `family/08/the-age-floor` LANDED as RFC 222 (`main@0925c195` + `22e6b091`,
+    2026-09-15) — a neutral date-of-birth question on the iOS onboarding form
+    and a 13+ floor enforced in Kotlin at student creation, so every sign-in
+    path is covered; under-13 is refused with `403 age_requirement_not_met` and
+    writes nothing, and the under-13 actual-knowledge runbook
+    (`policy/under-13-actual-knowledge.md`) is written down.
 - **Renumbered 0012 -> 0014 on 2026-09-14, before landing.** Two sibling
   sessions took `0012-fafsa-support` and `0013-unicoach-on-the-web` while this
   brief was between its gates. Slice IDs are unaffected — they key off the
