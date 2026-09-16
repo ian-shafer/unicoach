@@ -13,6 +13,21 @@ class OnboardingViewModel: ObservableObject {
     static let yearWindowBack = 4
     static let yearWindowForward = 8
 
+    /// The birth-year window: a full century back from the initialization year,
+    /// which in production is the current one. It ends AT that year rather than
+    /// short of it, because the offered list must not itself state the age rule
+    /// — the server owns the floor, and a list that stops thirteen years back
+    /// would announce the answer the form is asking for (RFC 222).
+    static let birthYearWindowBack = 100
+
+    /// The inline message shown under the date-of-birth rows when the form is
+    /// submitted with the date incomplete.
+    ///
+    /// It names the MISSING ANSWER and nothing else. The age rule's wording is
+    /// the server's, shown verbatim in the banner, so this app mints no age
+    /// copy of its own (RFC 222).
+    static let dateOfBirthRequiredMessage = String(localized: "Select your date of birth.")
+
     /// The months a year has. Named because three things read it — the picker's
     /// options, the clamp, and the month-name lookup — and a bare `1 ... 12`
     /// retyped at each is how they come to disagree.
@@ -24,6 +39,11 @@ class OnboardingViewModel: ObservableObject {
     /// symbols still come from the user's own calendar — that is a reading, not
     /// arithmetic.
     private static let calendar = Calendar(identifier: .gregorian)
+
+    /// The year `birthDayRange` asks about while no birth year is chosen. Leap
+    /// deliberately — see `birthDayRange`. Any leap year answers the same
+    /// question; 2000 is one.
+    private static let leapYearStandIn = 2000
 
     /// Year, not `.full`: a US high-school student reliably knows the year and
     /// often not the month, so the honest default is also the cheapest first
@@ -39,6 +59,26 @@ class OnboardingViewModel: ObservableObject {
     @Published var day: Int = 1 {
         didSet { clampDay() }
     }
+    /// The date of birth, in three parts, ALL starting empty (RFC 222).
+    ///
+    /// `nil` rather than a pre-selected year is the whole design of this field:
+    /// a screen that opens on a plausible adult birth year invites the answer it
+    /// wants, and a neutral age screen is what keeps this product outside
+    /// COPPA's consent machinery. Emptiness is therefore a state the form must
+    /// carry — hence three optionals and an inline error — not one a default
+    /// quietly removes.
+    @Published var birthYear: Int? {
+        didSet { clampBirthDay() }
+    }
+    @Published var birthMonth: Int? {
+        didSet { clampBirthMonth() }
+    }
+    @Published var birthDay: Int? {
+        didSet { clampBirthDay() }
+    }
+    /// The inline error under the date-of-birth rows: set only by `submit()`
+    /// finding the date incomplete, and cleared at the head of the next submit.
+    @Published var dateOfBirthError: String?
     /// The two optional answers, `nil` until the student picks one. `nil` means
     /// UNANSWERED, never declined: this screen writes values or writes nothing
     /// (RFC 163). Declining is a chat action, taken knowingly and permanently.
@@ -46,6 +86,16 @@ class OnboardingViewModel: ObservableObject {
     @Published var incomeBand: IncomeBand?
     @Published var isLoading = false
     @Published var errorResponse: ErrorResponse?
+
+    /// The year this screen was CONSTRUCTED in — in production the current one
+    /// — and the anchor the birth-year menu is built from.
+    ///
+    /// Deliberately NOT `year`: that one is the graduation year the student
+    /// edits, so anchoring on it would let a student who picks graduation 2034
+    /// be offered birth years the server rejects as future dates, and one who
+    /// picks 2022 lose the four most recent ones. A birth-year menu must not
+    /// move when an unrelated field does (RFC 222).
+    private let constructionYear: Int
 
     private let studentClient: StudentClientProtocol
     private let moneyProfileClient: MoneyProfileClientProtocol
@@ -62,6 +112,7 @@ class OnboardingViewModel: ObservableObject {
         self.moneyProfileClient = moneyProfileClient
         self.onComplete = onComplete
         self.year = year
+        self.constructionYear = year
     }
 
     var yearRange: ClosedRange<Int> {
@@ -72,16 +123,43 @@ class OnboardingViewModel: ObservableObject {
         1 ... daysInMonth(year: year, month: month)
     }
 
+    /// A century back from the initialization year, most recent first: the
+    /// order a birth-year menu is read in, and the one that keeps a plausible
+    /// student's year within a short scroll of the top. No year is selected,
+    /// so ordering costs nothing in neutrality — it is a reading order, not a
+    /// default (RFC 222).
+    var birthYearOptions: [Int] {
+        Array(((constructionYear - Self.birthYearWindowBack) ... constructionYear).reversed())
+    }
+
+    /// The days the birth-day menu offers. With no birth year chosen yet the
+    /// length of February is undecidable, so it is asked of a LEAP year: a
+    /// student picking the day before the year must still be able to pick their
+    /// own birthday, and `clampBirthDay` takes 29 back if the year they then
+    /// choose is a common one.
+    var birthDayRange: ClosedRange<Int> {
+        1 ... daysInMonth(
+            year: birthYear ?? Self.leapYearStandIn,
+            month: birthMonth ?? Self.monthRange.lowerBound
+        )
+    }
+
+    /// The date of birth as the wire's full ISO date, or `nil` while any of the
+    /// three parts is unanswered. `nil` is the ONLY thing that stops the
+    /// request: there is no half-date to send and none is sent.
+    var dateOfBirthISO: String? {
+        guard let birthYear, let birthMonth, let birthDay else { return nil }
+        return Self.fullISODate(year: birthYear, month: birthMonth, day: birthDay)
+    }
+
     var isoDate: String {
-        let paddedMonth = String(format: "%02d", month)
-        let paddedDay = String(format: "%02d", day)
         switch precision {
         case .year:
             return String(format: "%04d", year)
         case .yearMonth:
-            return "\(String(format: "%04d", year))-\(paddedMonth)"
+            return String(format: "%04d-%02d", year, month)
         case .full:
-            return "\(String(format: "%04d", year))-\(paddedMonth)-\(paddedDay)"
+            return Self.fullISODate(year: year, month: month, day: day)
         }
     }
 
@@ -93,10 +171,21 @@ class OnboardingViewModel: ObservableObject {
     /// required, so a failed create stops here with the error on screen.
     func submit() async {
         errorResponse = nil
+        dateOfBirthError = nil
+
+        // Before `isLoading`, and before any client is touched: an incomplete
+        // date of birth is refused by the FORM, so a submit with nothing chosen
+        // makes no network call at all. The server's age rule judges a date; it
+        // has nothing to judge here.
+        guard let dateOfBirth = dateOfBirthISO else {
+            dateOfBirthError = Self.dateOfBirthRequiredMessage
+            return
+        }
+
         isLoading = true
         defer { isLoading = false }
 
-        guard await ensureStudentProfile() else { return }
+        guard await ensureStudentProfile(dateOfBirth: dateOfBirth) else { return }
 
         await updateMoneyProfileIfAnswered()
         onComplete()
@@ -112,8 +201,16 @@ class OnboardingViewModel: ObservableObject {
     /// arrives as a thrown `ErrorResponse` because that is how this REST surface
     /// reports it, so a **scoped** `catch ... where` tells the two outcomes
     /// apart in the pattern rather than inside the error arm.
-    private func ensureStudentProfile() async -> Bool {
-        let request = CreateStudentRequest(expectedHighSchoolGraduationDate: isoDate)
+    /// A refusal on age arrives here as an ordinary `ErrorResponse` — a 403
+    /// with the server's own sentence — so the last `catch` arm already does
+    /// the right thing: the message goes in the banner verbatim, `onComplete()`
+    /// is not called, and the student stays on a form they can correct. No arm
+    /// of its own, and no second wording of the rule in Swift (RFC 222).
+    private func ensureStudentProfile(dateOfBirth: String) async -> Bool {
+        let request = CreateStudentRequest(
+            expectedHighSchoolGraduationDate: isoDate,
+            dateOfBirth: dateOfBirth
+        )
         do {
             _ = try await studentClient.createStudent(request: request)
             return true
@@ -124,6 +221,18 @@ class OnboardingViewModel: ObservableObject {
             return true
         } catch let error as ErrorResponse {
             logger.error("Student creation failed: code=[\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")
+            // A refusal that NAMES the date goes to the date. A 400
+            // `validation_error` carries its one useful sentence in
+            // `fieldErrors`; its `message` is the generic "Invalid student
+            // parameters", which tells the student nothing about the answer
+            // that was refused. Shown on the same inline control the
+            // incomplete-date guard uses (`RegistrationView` precedent).
+            // Everything else — the 403 age refusal included, whose sentence
+            // IS its `message` — keeps the banner.
+            if let fieldMessage = error.fieldError(for: "dateOfBirth") {
+                dateOfBirthError = fieldMessage
+                return false
+            }
             errorResponse = error
             return false
         } catch {
@@ -200,17 +309,56 @@ class OnboardingViewModel: ObservableObject {
         return fieldErrors.map { "\($0.field): \($0.message)" }.joined(separator: "; ")
     }
 
+    /// `value` held inside `range`, at both ends. One shape for all four clamps
+    /// below, so that "held inside its range" is written once and cannot drift
+    /// between the graduation-date fields and the birth-date ones.
+    private static func clamped(_ value: Int, into range: ClosedRange<Int>) -> Int {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    /// A full `YYYY-MM-DD` wire date. Named for the precision it builds rather
+    /// than `isoDate`, which is the instance property that renders whichever
+    /// precision the graduation-date form is on — and calls this for its full
+    /// arm.
+    private static func fullISODate(year: Int, month: Int, day: Int) -> String {
+        String(format: "%04d-%02d-%02d", year, month, day)
+    }
 
     /// The day, held inside the month it belongs to — at **both** ends, because
     /// `2028-06-00` is as sendable a string as `2028-06-31`. A picker cannot
     /// offer 0, but the property is public state and `dayRange` is the
     /// authority, not whichever control happens to be bound to it.
     private func clampDay() {
-        let range = dayRange
-        let clamped = min(max(day, range.lowerBound), range.upperBound)
+        let clamped = Self.clamped(day, into: dayRange)
         if day != clamped {
             day = clamped
         }
+    }
+
+    /// The birth day, held inside the month it belongs to, over optional state.
+    /// An unanswered day has nothing to hold, so `nil` is left alone: it is the
+    /// field's starting state, not a value out of range.
+    private func clampBirthDay() {
+        guard let birthDay else { return }
+        let clamped = Self.clamped(birthDay, into: birthDayRange)
+        if birthDay != clamped {
+            self.birthDay = clamped
+        }
+    }
+
+    /// The birth month, held inside the year, then the birth day re-clamped,
+    /// including the deliberate re-entrancy.
+    private func clampBirthMonth() {
+        guard let birthMonth else { return }
+        let clamped = Self.clamped(birthMonth, into: Self.monthRange)
+        if birthMonth != clamped {
+            // Re-entrant by design, as in `clampMonth`: the assignment fires this
+            // `didSet` again, finds the value already in range, and falls through
+            // to `clampBirthDay()` on the second pass.
+            self.birthMonth = clamped
+            return
+        }
+        clampBirthDay()
     }
 
     /// The month, held inside the year — and then the day re-clamped, because a
@@ -221,7 +369,7 @@ class OnboardingViewModel: ObservableObject {
     /// deleted it and bound `month` straight to a picker, which made the
     /// property itself the only place the invariant can live.
     private func clampMonth() {
-        let clamped = min(max(month, Self.monthRange.lowerBound), Self.monthRange.upperBound)
+        let clamped = Self.clamped(month, into: Self.monthRange)
         if month != clamped {
             // Re-entrant by design: the assignment fires this `didSet` again,
             // finds the value already in range, and falls through to the clamp

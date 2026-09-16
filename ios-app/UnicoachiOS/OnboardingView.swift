@@ -51,6 +51,10 @@ struct OnboardingView: View {
                     // form submits.
                     StepIndicator(count: 3, current: 1)
 
+                    // Above the graduation date, because it is the answer that
+                    // decides whether there is an account at all (RFC 222).
+                    dateOfBirthSection
+
                     graduationSection
 
                     optionalSection
@@ -74,6 +78,69 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.dsBackground)
+    }
+
+    // MARK: - The age floor (RFC 222)
+
+    /// Three empty menus and a heading — no caption, and no sentence about the
+    /// rule. The screen must not say what answer it is hoping for: the FTC's
+    /// neutral-age-screen guidance is the reason this field exists at all, and
+    /// the refusal's wording is the server's, shown in the banner below.
+    private var dateOfBirthSection: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.md) {
+            Text("When were you born?")
+                .font(.dsDisplay)
+                .foregroundStyle(Color.dsTextPrimary)
+
+            VStack(spacing: DSControl.stackGap) {
+                birthYearRow
+                birthMonthRow
+                birthDayRow
+            }
+
+            // The inline half of the refusal pair: an incomplete date is the
+            // form's own to refuse and never reaches the server, so it is said
+            // where the answer is missing rather than in the banner, which is
+            // the SERVER's voice on this screen.
+            if let dateOfBirthError = viewModel.dateOfBirthError {
+                FieldErrorText(dateOfBirthError)
+            }
+        }
+    }
+
+    /// The optional-selection `DSPickerRow`, so "no answer yet" is a row the
+    /// student can see and the field can open empty.
+    private var birthYearRow: some View {
+        DSPickerRow(
+            label: "Year",
+            options: viewModel.birthYearOptions,
+            selection: $viewModel.birthYear,
+            title: { String(format: "%04d", $0) },
+            accessibilityIdentifier: "birthYearPicker",
+            accessibilityLabel: "Birth year"
+        )
+    }
+
+    private var birthMonthRow: some View {
+        DSPickerRow(
+            label: "Month",
+            options: Array(OnboardingViewModel.monthRange),
+            selection: $viewModel.birthMonth,
+            title: monthName,
+            accessibilityIdentifier: "birthMonthPicker",
+            accessibilityLabel: "Birth month"
+        )
+    }
+
+    private var birthDayRow: some View {
+        DSPickerRow(
+            label: "Day",
+            options: Array(viewModel.birthDayRange),
+            selection: $viewModel.birthDay,
+            title: { "\($0)" },
+            accessibilityIdentifier: "birthDayPicker",
+            accessibilityLabel: "Birth day"
+        )
     }
 
     // MARK: - The one required answer
@@ -254,7 +321,14 @@ extension IncomeBand {
 
 private final class OnboardingPreviewStudentClient: StudentClientProtocol, @unchecked Sendable {
     func createStudent(request: CreateStudentRequest) async throws -> PublicStudent {
-        PublicStudent(id: UUID(), expectedHighSchoolGraduationDate: request.expectedHighSchoolGraduationDate, version: 1, createdAt: Date(), updatedAt: Date())
+        PublicStudent(
+            id: UUID(),
+            expectedHighSchoolGraduationDate: request.expectedHighSchoolGraduationDate,
+            dateOfBirth: request.dateOfBirth,
+            version: 1,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
     }
     func fetchProfile() async throws -> PublicStudent? { nil }
 }

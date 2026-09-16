@@ -34,6 +34,7 @@ class AppViewModelTests: XCTestCase {
         PublicStudent(
             id: UUID(),
             expectedHighSchoolGraduationDate: "2028",
+            dateOfBirth: "2009-07-10",
             version: 1,
             createdAt: Date(timeIntervalSince1970: 0),
             updatedAt: Date(timeIntervalSince1970: 0)

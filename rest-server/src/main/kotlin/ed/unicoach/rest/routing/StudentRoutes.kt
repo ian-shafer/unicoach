@@ -34,6 +34,7 @@ private fun toPublicStudent(student: Student): PublicStudent =
   PublicStudent(
     id = student.id.value,
     expectedHighSchoolGraduationDate = student.expectedHighSchoolGraduationDate.toIso(),
+    dateOfBirth = student.dateOfBirth.toString(),
     version = student.version,
     createdAt = student.createdAt,
     updatedAt = student.updatedAt,
@@ -45,6 +46,18 @@ private suspend fun RoutingContext.respondStudentNotFound() {
 
 private suspend fun RoutingContext.respondValidationFailure(fieldErrors: List<FieldError>) {
   call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_ERROR, "Invalid student parameters", fieldErrors))
+}
+
+private suspend fun RoutingContext.respondUnderMinimumAge() {
+  call.respond(
+    HttpStatusCode.Forbidden,
+    ErrorResponse(
+      ErrorCode.AGE_REQUIREMENT_NOT_MET,
+      // The floor is stated once, by its owner: raising it there must change this sentence too.
+      "unicoach is for students who are ${StudentService.MINIMUM_AGE_YEARS} or older. " +
+        "Ask a parent to get in touch if you think this is wrong.",
+    ),
+  )
 }
 
 class StudentRouteHandler(
@@ -75,13 +88,24 @@ class StudentRouteHandler(
     }
 
     val request = call.receive<CreateStudentRequest>()
-    when (val outcome = studentService.createStudent(user.id, request.expectedHighSchoolGraduationDate).getOrThrow()) {
+    val outcome =
+      studentService
+        .createStudent(
+          userId = user.id,
+          graduationDateIso = request.expectedHighSchoolGraduationDate,
+          dateOfBirthIso = request.dateOfBirth,
+        ).getOrThrow()
+    when (outcome) {
       is CreateStudentResult.Success -> {
         call.respond(HttpStatusCode.Created, StudentResponse(toPublicStudent(outcome.student)))
       }
 
       is CreateStudentResult.ValidationFailure -> {
         respondValidationFailure(outcome.fieldErrors)
+      }
+
+      is CreateStudentResult.UnderMinimumAge -> {
+        respondUnderMinimumAge()
       }
 
       is CreateStudentResult.AlreadyExists -> {

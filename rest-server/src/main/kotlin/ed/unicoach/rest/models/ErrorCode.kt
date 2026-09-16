@@ -57,6 +57,10 @@ enum class ErrorCode(
   // email rather than the local account's.
   ACCOUNT_EMAIL_NOT_VERIFIED("account_email_not_verified"),
 
+  // The 13+ age floor at student creation (RFC 222). 403, not 400: the request
+  // was well formed and was refused on its merits.
+  AGE_REQUIREMENT_NOT_MET("age_requirement_not_met"),
+
   // Apple subscription verify (RFC 110)
   SUBSCRIPTION_NOT_FOUND("subscription_not_found"),
   SUBSCRIPTION_OWNED_BY_OTHER_ACCOUNT("subscription_owned_by_other_account"),

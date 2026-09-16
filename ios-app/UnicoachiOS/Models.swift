@@ -73,6 +73,13 @@ enum ServerErrorCode: String {
     case subscriptionOwnedByOtherAccount = "subscription_owned_by_other_account"
     case validationFailed = "validation_failed"
     case payloadTooLarge = "payload_too_large"
+    /// The 403 `POST /api/v1/students` answers when the date of birth is under
+    /// the age floor (RFC 222). The screen shows the server's message verbatim
+    /// in its banner and keeps the student on the form, so nothing BRANCHES on
+    /// this code — it is named here because a refusal this client cannot name
+    /// is one its tests cannot tell apart from any other 4xx, and because the
+    /// enum is this app's record of the wire vocabulary.
+    case ageRequirementNotMet = "age_requirement_not_met"
     /// A 409 from a turn endpoint: the account has no student profile, so the
     /// root state machine routes back to onboarding. Named here because
     /// `ConversationViewModel.handle` branches on `knownCode`, and a code it
@@ -150,11 +157,19 @@ struct ChangeEmailResponse: Codable {
 
 struct CreateStudentRequest: Codable {
     let expectedHighSchoolGraduationDate: String
+    /// The student's date of birth as a FULL ISO date, `YYYY-MM-DD`, always
+    /// sent (RFC 222). Not the variable-precision string the graduation date
+    /// carries: "year only" cannot decide the age floor in the year a student
+    /// turns 13, and the server refuses the request without it.
+    let dateOfBirth: String
 }
 
 struct PublicStudent: Codable, Equatable {
     let id: UUID
     let expectedHighSchoolGraduationDate: String
+    /// `YYYY-MM-DD`, non-optional: the column is `NOT NULL` and every row has
+    /// one (RFC 222), so no reader here branches on a missing age.
+    let dateOfBirth: String
     let version: Int
     let createdAt: Date
     let updatedAt: Date

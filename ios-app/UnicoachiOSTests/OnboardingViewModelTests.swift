@@ -18,19 +18,47 @@ class OnboardingViewModelTests: XCTestCase {
         mockMoneyProfileClient = MockMoneyProfileClient()
     }
 
-    private func makeViewModel(year: Int = 2028, onComplete: @escaping () -> Void = {}) -> OnboardingViewModel {
-        OnboardingViewModel(
+    /// A pinned date of birth, comfortably over the floor, written as a
+    /// LITERAL. The server owns the age rule against its own clock; a fixture
+    /// derived from `Date()` would drift and make these tests say something
+    /// different every year (RFC 222).
+    static let birthYear = 2009
+    static let birthMonth = 7
+    static let birthDay = 10
+    static let birthDateISO = "2009-07-10"
+
+    /// Every test that expects a request to LEAVE this screen must answer the
+    /// date of birth, because an unanswered one is refused by the form before
+    /// any client is touched. Defaulted on, so each test says only what it is
+    /// about; the tests that are about the empty date pass `false`.
+    private func makeViewModel(
+        year: Int = 2028,
+        dateOfBirthAnswered: Bool = true,
+        onComplete: @escaping () -> Void = {}
+    ) -> OnboardingViewModel {
+        let viewModel = OnboardingViewModel(
             studentClient: mockStudentClient,
             moneyProfileClient: mockMoneyProfileClient,
             onComplete: onComplete,
             year: year
         )
+        if dateOfBirthAnswered {
+            Self.answerDateOfBirth(viewModel)
+        }
+        return viewModel
+    }
+
+    private static func answerDateOfBirth(_ viewModel: OnboardingViewModel) {
+        viewModel.birthYear = birthYear
+        viewModel.birthMonth = birthMonth
+        viewModel.birthDay = birthDay
     }
 
     private func makeStudent() -> PublicStudent {
         PublicStudent(
             id: UUID(),
             expectedHighSchoolGraduationDate: "2028-06-15",
+            dateOfBirth: Self.birthDateISO,
             version: 1,
             createdAt: Date(timeIntervalSince1970: 0),
             updatedAt: Date(timeIntervalSince1970: 0)
@@ -100,6 +128,7 @@ class OnboardingViewModelTests: XCTestCase {
             onComplete: { completed = true },
             year: 2028
         )
+        Self.answerDateOfBirth(viewModel)
         viewModel.precision = .full
         viewModel.month = 6
         viewModel.day = 15
@@ -131,6 +160,7 @@ class OnboardingViewModelTests: XCTestCase {
                 onComplete: {},
                 year: 2028
             )
+            Self.answerDateOfBirth(viewModel)
             testCase.configure(viewModel)
 
             await viewModel.submit()
@@ -383,6 +413,221 @@ class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(mockMoneyProfileClient.updateCallCount, 0)
         XCTAssertFalse(completed)
         XCTAssertEqual(viewModel.errorResponse?.knownCode, .validationFailed)
+    }
+
+    // MARK: - The age floor: date of birth (RFC 222)
+
+    /// The field's whole design in one assertion: nothing is pre-selected. A
+    /// default birth year would nudge the answer the form is asking for, and a
+    /// nudged age screen is not a neutral one.
+    func testDateOfBirthStartsEmpty() {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+
+        XCTAssertNil(viewModel.birthYear)
+        XCTAssertNil(viewModel.birthMonth)
+        XCTAssertNil(viewModel.birthDay)
+        XCTAssertNil(viewModel.dateOfBirthISO)
+        XCTAssertNil(viewModel.dateOfBirthError)
+    }
+
+    /// An unanswered date is the FORM's refusal, not the server's: the inline
+    /// error appears and no request is made at all.
+    func testSubmitWithNoDateOfBirthShowsTheInlineErrorAndMakesNoRequest() async {
+        var completed = false
+        let viewModel = makeViewModel(dateOfBirthAnswered: false, onComplete: { completed = true })
+
+        await viewModel.submit()
+
+        XCTAssertEqual(viewModel.dateOfBirthError, OnboardingViewModel.dateOfBirthRequiredMessage)
+        XCTAssertEqual(mockStudentClient.createStudentCallCount, 0)
+        XCTAssertEqual(mockMoneyProfileClient.updateCallCount, 0)
+        XCTAssertFalse(completed)
+        // The banner is the SERVER's voice on this screen; nothing was asked of
+        // it, so it stays silent.
+        XCTAssertNil(viewModel.errorResponse)
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
+    /// Two thirds of a date is no date. A half-answered field is the state a
+    /// partial-precision date would have made sendable — this one is not.
+    func testSubmitWithAPartialDateOfBirthMakesNoRequest() async {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+        viewModel.birthYear = Self.birthYear
+        viewModel.birthMonth = Self.birthMonth
+
+        await viewModel.submit()
+
+        XCTAssertNil(viewModel.dateOfBirthISO)
+        XCTAssertEqual(viewModel.dateOfBirthError, OnboardingViewModel.dateOfBirthRequiredMessage)
+        XCTAssertEqual(mockStudentClient.createStudentCallCount, 0)
+    }
+
+    /// The wire shape: a FULL ISO date, zero-padded, whatever the menus hold.
+    func testSubmitSendsTheDateOfBirthAsAFullIsoDate() async {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+        mockStudentClient.createStudentResult = .success(makeStudent())
+        viewModel.birthYear = 2011
+        viewModel.birthMonth = 3
+        viewModel.birthDay = 4
+
+        XCTAssertEqual(viewModel.dateOfBirthISO, "2011-03-04")
+
+        await viewModel.submit()
+
+        XCTAssertEqual(mockStudentClient.lastCreateStudentRequest?.dateOfBirth, "2011-03-04")
+        XCTAssertEqual(mockStudentClient.createStudentCallCount, 1)
+    }
+
+    /// The error is a statement about the LAST submit, so answering the date
+    /// and submitting again must clear it.
+    func testAnsweringTheDateClearsTheInlineErrorOnTheNextSubmit() async {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+        mockStudentClient.createStudentResult = .success(makeStudent())
+
+        await viewModel.submit()
+        XCTAssertNotNil(viewModel.dateOfBirthError)
+
+        Self.answerDateOfBirth(viewModel)
+        await viewModel.submit()
+
+        XCTAssertNil(viewModel.dateOfBirthError)
+        XCTAssertEqual(mockStudentClient.lastCreateStudentRequest?.dateOfBirth, Self.birthDateISO)
+    }
+
+    /// A century back from the initialization year, inclusive of it, most
+    /// recent first. The list must not stop thirteen years back: an offered
+    /// range that encoded the floor would state the answer the screen is asking
+    /// for.
+    func testBirthYearOptionsSpanACenturyBackMostRecentFirst() {
+        let viewModel = makeViewModel(year: 2026)
+
+        XCTAssertEqual(viewModel.birthYearOptions.first, 2026)
+        XCTAssertEqual(viewModel.birthYearOptions.last, 1926)
+        XCTAssertEqual(viewModel.birthYearOptions.count, 101)
+        XCTAssertEqual(OnboardingViewModel.birthYearWindowBack, 100)
+    }
+
+    /// The menu is anchored on the CONSTRUCTION year, not on the graduation
+    /// year the student edits. Moving `year` to 2034 must not offer birth years
+    /// the server refuses as future dates, and moving it back must not hide the
+    /// most recent ones.
+    func testBirthYearOptionsDoNotFollowTheGraduationYear() {
+        let viewModel = makeViewModel(year: 2026)
+
+        viewModel.year = 2034
+
+        XCTAssertEqual(viewModel.birthYearOptions.first, 2026)
+        XCTAssertEqual(viewModel.birthYearOptions.last, 1926)
+
+        viewModel.year = 2022
+
+        XCTAssertEqual(viewModel.birthYearOptions.first, 2026)
+        XCTAssertEqual(viewModel.birthYearOptions.last, 1926)
+    }
+
+    /// Picked in any order: with no year chosen, February must still offer the
+    /// 29th, or a leap-day student cannot enter their own birthday.
+    func testBirthDayRangeOffersTheTwentyNinthBeforeAYearIsChosen() {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+        viewModel.birthMonth = 2
+
+        XCTAssertEqual(viewModel.birthDayRange, 1...29)
+    }
+
+    /// ...and the year, chosen afterwards, takes it back. This is the clamp
+    /// that keeps `2011-02-29` off the wire.
+    func testChoosingACommonYearClampsFebruaryTwentyNine() {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+        viewModel.birthMonth = 2
+        viewModel.birthDay = 29
+        XCTAssertEqual(viewModel.birthDay, 29)
+
+        viewModel.birthYear = 2011
+
+        XCTAssertEqual(viewModel.birthDay, 28)
+        XCTAssertEqual(viewModel.dateOfBirthISO, "2011-02-28")
+    }
+
+    func testBirthDayClampsWhenTheBirthMonthShortens() {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+        viewModel.birthYear = 2011
+        viewModel.birthMonth = 1
+        viewModel.birthDay = 31
+
+        viewModel.birthMonth = 4
+
+        XCTAssertEqual(viewModel.birthDay, 30)
+        XCTAssertEqual(viewModel.dateOfBirthISO, "2011-04-30")
+    }
+
+    /// Both ends of the month clamp, and the day below the range — the three
+    /// out-of-range writes the graduation date already guards, over optional
+    /// state.
+    func testBirthMonthAndDayAreHeldInRange() {
+        let viewModel = makeViewModel(dateOfBirthAnswered: false)
+        viewModel.birthYear = 2011
+
+        viewModel.birthMonth = 13
+        XCTAssertEqual(viewModel.birthMonth, 12)
+
+        viewModel.birthMonth = 0
+        XCTAssertEqual(viewModel.birthMonth, 1)
+
+        viewModel.birthDay = 0
+        XCTAssertEqual(viewModel.birthDay, 1)
+        XCTAssertEqual(viewModel.dateOfBirthISO, "2011-01-01")
+    }
+
+    /// The refusal: a 403 whose sentence is the server's. It reaches the banner
+    /// WORD FOR WORD — this app has no age copy of its own — the screen does not
+    /// complete, and the optional write is never attempted.
+    func testAgeRefusalShowsTheServersOwnMessageAndDoesNotComplete() async {
+        let serverMessage = "unicoach is for students who are 13 or older. "
+            + "Ask a parent to get in touch if you think this is wrong."
+        var completed = false
+        let viewModel = makeViewModel(onComplete: { completed = true })
+        viewModel.incomeBand = .k48To75k
+        mockStudentClient.createStudentResult = .failure(ErrorResponse(
+            code: "age_requirement_not_met",
+            message: serverMessage,
+            fieldErrors: nil,
+            status: 403
+        ))
+
+        await viewModel.submit()
+
+        XCTAssertEqual(viewModel.errorResponse?.knownCode, .ageRequirementNotMet)
+        XCTAssertEqual(viewModel.errorResponse?.message, serverMessage)
+        // The inline error is for the form's own refusal only; the server's
+        // belongs in the banner.
+        XCTAssertNil(viewModel.dateOfBirthError)
+        XCTAssertFalse(completed)
+        XCTAssertEqual(mockMoneyProfileClient.updateCallCount, 0)
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
+    /// The other refusal of the same field: a 400 whose useful sentence is in
+    /// `fieldErrors`, not in `message`. A banner reading "Invalid student
+    /// parameters" names nothing, so the server's sentence is shown inline,
+    /// under the date it refuses, and the banner stays empty.
+    func testDateOfBirthFieldErrorShowsInlineAndNotInTheBanner() async {
+        let serverMessage = "Date of birth cannot be in the future"
+        var completed = false
+        let viewModel = makeViewModel(onComplete: { completed = true })
+        mockStudentClient.createStudentResult = .failure(ErrorResponse(
+            code: "validation_error",
+            message: "Invalid student parameters",
+            fieldErrors: [FieldError(field: "dateOfBirth", message: serverMessage)],
+            status: 400
+        ))
+
+        await viewModel.submit()
+
+        XCTAssertEqual(viewModel.dateOfBirthError, serverMessage)
+        XCTAssertNil(viewModel.errorResponse)
+        XCTAssertFalse(completed)
+        XCTAssertEqual(mockMoneyProfileClient.updateCallCount, 0)
+        XCTAssertFalse(viewModel.isLoading)
     }
 }
 

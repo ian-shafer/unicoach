@@ -616,7 +616,7 @@ final class SubscriptionViewModel: ObservableObject {
             }
             return PaywallCopy(basis: coachingBasis).detail
         case .studentAlreadyExists, .studentProfileRequired, .payloadTooLarge,
-             .versionConflict, .conflict, .notFound, nil:
+             .versionConflict, .conflict, .notFound, .ageRequirementNotMet, nil:
             return String(localized: "We couldn't complete your purchase. Please try again.")
         }
     }

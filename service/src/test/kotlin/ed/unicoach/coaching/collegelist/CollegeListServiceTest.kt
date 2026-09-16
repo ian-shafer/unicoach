@@ -8,6 +8,7 @@ import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.CollegeId
@@ -107,7 +108,7 @@ class CollegeListServiceTest {
   private fun createStudent(): StudentId {
     val user = createUser()
     val date = (PartialDate.parse("2028") as ValidationResult.Valid).value
-    return StudentsDao.create(sqlSession, NewStudent(user.id, date)).getOrThrow().id
+    return StudentsDao.create(sqlSession, NewStudent(user.id, date, StudentRowFixture.DEFAULT_DATE_OF_BIRTH)).getOrThrow().id
   }
 
   private fun createCollege(): CollegeId =

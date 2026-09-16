@@ -83,6 +83,16 @@ class StudentsDaoTest {
       expectedHighSchoolGraduationDate = date,
     )
 
+  /**
+   * A [NewStudent] with the fixture's fixed 13+ date of birth (RFC 222). Every
+   * test below that is not about the birthdate says so by not naming one.
+   */
+  private fun newStudent(
+    userId: UserId,
+    graduation: PartialDate,
+    dateOfBirth: java.time.LocalDate = StudentRowFixture.DEFAULT_DATE_OF_BIRTH,
+  ): NewStudent = NewStudent(userId, graduation, dateOfBirth)
+
   private fun countVersions(id: StudentId): Int {
     connection.prepareStatement("SELECT COUNT(*) FROM students_versions WHERE id = ?").use { stmt ->
       stmt.setObject(1, id.value)
@@ -96,26 +106,59 @@ class StudentsDaoTest {
   @Test
   fun `create persists with version 1 and round-trips all three precisions`() {
     val u1 = createUser()
-    val yearOnly = StudentsDao.create(session, NewStudent(u1, partialDate("2028"))).getOrThrow()
+    val yearOnly = StudentsDao.create(session, newStudent(u1, partialDate("2028"))).getOrThrow()
     assertEquals(1, yearOnly.version)
     assertTrue(yearOnly.expectedHighSchoolGraduationDate is PartialDate.YearOnly)
 
     val u2 = createUser()
-    val yearMonth = StudentsDao.create(session, NewStudent(u2, partialDate("2028-06"))).getOrThrow()
+    val yearMonth = StudentsDao.create(session, newStudent(u2, partialDate("2028-06"))).getOrThrow()
     assertTrue(yearMonth.expectedHighSchoolGraduationDate is PartialDate.YearAndMonth)
 
     val u3 = createUser()
-    val full = StudentsDao.create(session, NewStudent(u3, partialDate("2028-06-15"))).getOrThrow()
+    val full = StudentsDao.create(session, newStudent(u3, partialDate("2028-06-15"))).getOrThrow()
     assertTrue(full.expectedHighSchoolGraduationDate is PartialDate.FullDate)
     assertEquals("2028-06-15", full.expectedHighSchoolGraduationDate.toIso())
+  }
+
+  // --- date of birth (RFC 222) ---
+
+  @Test
+  fun `create round-trips the date of birth`() {
+    val u = createUser()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"), LocalDate.of(2011, 2, 28))).getOrThrow()
+    assertEquals(LocalDate.of(2011, 2, 28), created.dateOfBirth)
+
+    val reread = StudentsDao.findById(session, created.id).getOrThrow()
+    assertEquals(LocalDate.of(2011, 2, 28), reread.dateOfBirth, "The column must survive a read through mapStudent")
+  }
+
+  @Test
+  fun `an update bumps the version and carries the date of birth into students_versions`() {
+    // The real subject here is the migration's full restatement of
+    // log_student_version(): an un-restated plpgsql body fails this write with
+    // 42703, and a restated one that forgot the column writes a NULL the
+    // NOT NULL refuses. Either way this test, not production, finds it.
+    val u = createUser()
+    val v1 = StudentsDao.create(session, newStudent(u, partialDate("2028"), LocalDate.of(2011, 2, 28))).getOrThrow()
+    val v2 = StudentsDao.update(session, editOf(v1, partialDate("2029"))).getOrThrow()
+
+    assertEquals(2, v2.version)
+    assertEquals(LocalDate.of(2011, 2, 28), v2.dateOfBirth, "An update must not disturb the write-once birthdate")
+
+    val versions = StudentsDao.listVersions(session, v1.id).getOrThrow()
+    assertEquals(listOf(1, 2), versions.map { it.version })
+    assertTrue(
+      versions.all { it.entity.dateOfBirth == LocalDate.of(2011, 2, 28) },
+      "Every history row must carry the birthdate, got ${versions.map { it.entity.dateOfBirth }}",
+    )
   }
 
   @Test
   fun `create rejects a second active student for the same user`() {
     val u = createUser()
-    assertTrue(StudentsDao.create(session, NewStudent(u, partialDate("2028"))).isSuccess)
+    assertTrue(StudentsDao.create(session, newStudent(u, partialDate("2028"))).isSuccess)
 
-    val second = StudentsDao.create(session, NewStudent(u, partialDate("2029")))
+    val second = StudentsDao.create(session, newStudent(u, partialDate("2029")))
     assertTrue(
       second.isFailure && second.exceptionOrNull() is StudentAlreadyExistsException,
       "Expected StudentAlreadyExistsException, got $second",
@@ -125,10 +168,10 @@ class StudentsDaoTest {
   @Test
   fun `create rejects a second student even after the first is soft-deleted`() {
     val u = createUser()
-    val first = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val first = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
     StudentsDao.delete(session, first.id, first.version).getOrThrow()
 
-    val second = StudentsDao.create(session, NewStudent(u, partialDate("2029")))
+    val second = StudentsDao.create(session, newStudent(u, partialDate("2029")))
     assertTrue(
       second.isFailure && second.exceptionOrNull() is StudentAlreadyExistsException,
       "Expected StudentAlreadyExistsException even across soft-delete, got $second",
@@ -138,7 +181,7 @@ class StudentsDaoTest {
   @Test
   fun `create rejects a user_id not present in users`() {
     val orphan = UserId(UUID.randomUUID())
-    val result = StudentsDao.create(session, NewStudent(orphan, partialDate("2028")))
+    val result = StudentsDao.create(session, newStudent(orphan, partialDate("2028")))
     assertTrue(
       result.isFailure && result.exceptionOrNull() is NotFoundException,
       "Expected NotFoundException for orphan FK, got $result",
@@ -162,8 +205,8 @@ class StudentsDaoTest {
           .prepareStatement(
             """
             INSERT INTO students (user_id, expected_high_school_graduation_on,
-              expected_high_school_graduation_precision)
-            VALUES (?, ?, ?)
+              expected_high_school_graduation_precision, date_of_birth)
+            VALUES (?, ?, ?, DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, u.value)
@@ -220,8 +263,8 @@ class StudentsDaoTest {
           .prepareStatement(
             """
             INSERT INTO students (user_id, expected_high_school_graduation_on,
-              expected_high_school_graduation_precision)
-            VALUES (?, ?, 'year')
+              expected_high_school_graduation_precision, date_of_birth)
+            VALUES (?, ?, 'year', DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}')
             RETURNING id
             """.trimIndent(),
           ).use { stmt ->
@@ -257,7 +300,7 @@ class StudentsDaoTest {
   @Test
   fun `findById and findByUserId exclude soft-deleted rows unless scope admits them`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
 
     assertTrue(StudentsDao.findById(session, created.id).isSuccess)
     assertTrue(StudentsDao.findByUserId(session, u).isSuccess)
@@ -274,7 +317,7 @@ class StudentsDaoTest {
   @Test
   fun `update with correct version succeeds bumps timestamps and logs a version`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
     assertEquals(1, countVersions(created.id))
 
     val updated =
@@ -293,7 +336,7 @@ class StudentsDaoTest {
   @Test
   fun `update with stale version raises ConcurrentModification`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
 
     StudentsDao.update(session, editOf(created, partialDate("2029"))).getOrThrow()
 
@@ -308,7 +351,7 @@ class StudentsDaoTest {
   @Test
   fun `immutable-field updates are rejected`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
 
     fun expectImmutableFailure(
       column: String,
@@ -343,7 +386,7 @@ class StudentsDaoTest {
   @Test
   fun `physical delete is rejected by the trigger`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
 
     connection.autoCommit = false
     try {
@@ -366,7 +409,7 @@ class StudentsDaoTest {
   @Test
   fun `delete soft-deletes bumps version and logs a version`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
 
     val deleted = StudentsDao.delete(session, created.id, created.version).getOrThrow()
     assertNotNull(deleted.deletedAt)
@@ -380,7 +423,7 @@ class StudentsDaoTest {
   @Test
   fun `undelete restores a soft-deleted student`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
 
     val deleted = StudentsDao.delete(session, created.id, created.version).getOrThrow()
     assertNotNull(deleted.deletedAt)
@@ -395,7 +438,7 @@ class StudentsDaoTest {
   @Test
   fun `undelete with stale version yields ConcurrentModification`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
     val deleted = StudentsDao.delete(session, created.id, created.version).getOrThrow()
 
     // The row exists (soft-deleted) but at a newer version than `created.version`.
@@ -411,7 +454,7 @@ class StudentsDaoTest {
   @Test
   fun `findByIdForUpdate returns row and locks it`() {
     val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val created = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
     val result = StudentsDao.findByIdForUpdate(session, created.id)
     assertTrue(result.isSuccess)
     assertEquals(created.id, result.getOrThrow().id)
@@ -423,7 +466,7 @@ class StudentsDaoTest {
   @Test
   fun `listVersions returns the students historical rows ascending`() {
     val u = createUser()
-    val v1 = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val v1 = StudentsDao.create(session, newStudent(u, partialDate("2028"))).getOrThrow()
     val v2 = StudentsDao.update(session, editOf(v1, partialDate("2029-06"))).getOrThrow()
     StudentsDao.update(session, editOf(v2, partialDate("2030-06-15"))).getOrThrow()
 
@@ -436,9 +479,9 @@ class StudentsDaoTest {
 
   @Test
   fun `listActiveIds returns active students and excludes soft-deleted ones`() {
-    val activeA = StudentsDao.create(session, NewStudent(createUser(), partialDate("2028"))).getOrThrow()
-    val activeB = StudentsDao.create(session, NewStudent(createUser(), partialDate("2029"))).getOrThrow()
-    val deleted = StudentsDao.create(session, NewStudent(createUser(), partialDate("2030"))).getOrThrow()
+    val activeA = StudentsDao.create(session, newStudent(createUser(), partialDate("2028"))).getOrThrow()
+    val activeB = StudentsDao.create(session, newStudent(createUser(), partialDate("2029"))).getOrThrow()
+    val deleted = StudentsDao.create(session, newStudent(createUser(), partialDate("2030"))).getOrThrow()
     StudentsDao.delete(session, deleted.id, deleted.version).getOrThrow()
 
     val ids = StudentsDao.listActiveIds(session).getOrThrow()
@@ -449,9 +492,9 @@ class StudentsDaoTest {
 
   @Test
   fun `list filters by SoftDeleteScope`() {
-    val activeA = StudentsDao.create(session, NewStudent(createUser(), partialDate("2028"))).getOrThrow()
-    val activeB = StudentsDao.create(session, NewStudent(createUser(), partialDate("2029"))).getOrThrow()
-    val deleted = StudentsDao.create(session, NewStudent(createUser(), partialDate("2030"))).getOrThrow()
+    val activeA = StudentsDao.create(session, newStudent(createUser(), partialDate("2028"))).getOrThrow()
+    val activeB = StudentsDao.create(session, newStudent(createUser(), partialDate("2029"))).getOrThrow()
+    val deleted = StudentsDao.create(session, newStudent(createUser(), partialDate("2030"))).getOrThrow()
     StudentsDao.delete(session, deleted.id, deleted.version).getOrThrow()
 
     val active = StudentsDao.list(session, SoftDeleteScope.ACTIVE, limit = 100, offset = 0).getOrThrow()
@@ -466,7 +509,7 @@ class StudentsDaoTest {
 
   @Test
   fun `list paginates by limit and offset`() {
-    val all = (1..5).map { StudentsDao.create(session, NewStudent(createUser(), partialDate("2028"))).getOrThrow().id }.toSet()
+    val all = (1..5).map { StudentsDao.create(session, newStudent(createUser(), partialDate("2028"))).getOrThrow().id }.toSet()
 
     val page1 = StudentsDao.list(session, SoftDeleteScope.ALL, limit = 2, offset = 0).getOrThrow().map { it.id }
     val page2 = StudentsDao.list(session, SoftDeleteScope.ALL, limit = 2, offset = 2).getOrThrow().map { it.id }

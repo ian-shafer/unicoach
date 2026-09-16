@@ -48,6 +48,18 @@ enum RandomFixtures {
         }
     }
 
+    /// Random valid `dateOfBirth`: always a FULL ISO date, never a partial one
+    /// (RFC 222). The years are drawn from a band that is comfortably over the
+    /// age floor, because these fixtures exercise the WIRE shape; the boundary
+    /// itself is pinned deterministically in the view-model and service tests,
+    /// where a random draw would make the answer differ between runs.
+    static func dateOfBirth(using gen: inout SeededGenerator) -> String {
+        let year = Int.random(in: 1990...2009, using: &gen)
+        let month = Int.random(in: 1...12, using: &gen)
+        let day = Int.random(in: 1...daysInMonth(year: year, month: month), using: &gen)
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+
     /// A server-realistic UTC timestamp string as Jackson emits for `Instant`:
     /// microsecond fractional seconds, trailing `Z`. This is the exact shape that
     /// a strategy-less `JSONDecoder` (Swift's `.deferredToDate` default) cannot
@@ -72,18 +84,20 @@ enum RandomFixtures {
     /// failing draw is replayable.
     static func studentResponseJSON(
         seed: UInt64
-    ) -> (data: Data, id: UUID, gradDate: String, createdAt: String, updatedAt: String) {
+    ) -> (data: Data, id: UUID, gradDate: String, dateOfBirth: String, createdAt: String, updatedAt: String) {
         var gen = SeededGenerator(seed: seed)
         let id = UUID()
         let grad = graduationDate(using: &gen)
+        let birth = dateOfBirth(using: &gen)
         let created = serverTimestamp(using: &gen)
         let updated = serverTimestamp(using: &gen)
         let json = """
         {"student":{"id":"\(id.uuidString)","expectedHighSchoolGraduationDate":"\(grad)",\
-        "version":1,"createdAt":"\(created)","updatedAt":"\(updated)"}}
+        "dateOfBirth":"\(birth)","version":1,"createdAt":"\(created)","updatedAt":"\(updated)"}}
         """
-        print("[RandomFixtures] studentResponseJSON seed=\(seed) grad=\(grad) createdAt=\(created) updatedAt=\(updated)")
-        return (Data(json.utf8), id, grad, created, updated)
+        print("[RandomFixtures] studentResponseJSON seed=[\(seed)] grad=[\(grad)] dateOfBirth=[\(birth)] "
+            + "createdAt=[\(created)] updatedAt=[\(updated)]")
+        return (Data(json.utf8), id, grad, birth, created, updated)
     }
 
     /// Raw JSON body for a `MoneyProfileResponse`, built from the REAL wire

@@ -80,6 +80,10 @@ class StudentsResource(
         editable = true,
         sensitive = false,
       ),
+      // Write-once (RFC 222): shown on every read surface and absent from the
+      // edit form -- StudentEdit cannot carry it. The create form asks for it
+      // separately, in createFields below.
+      AdminField("dateOfBirth", "Date of Birth", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("version", "Version", FieldType.INT, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("updatedAt", "Updated", FieldType.TIMESTAMP, editable = false, sensitive = false),
@@ -88,8 +92,19 @@ class StudentsResource(
 
   override val edges = listOf<AdminEdge>(AdminEdge.History("Version history"))
 
-  /** The single editable field on the embedded create/edit forms. */
+  /** The single editable field on the embedded edit form. */
   val editableFields: List<AdminField> = fields.filter { it.editable }
+
+  /**
+   * The create form asks for everything the edit form does, plus the date of
+   * birth: RFC 222 records it once at creation and `StudentEdit` cannot carry
+   * it, so the update route never sees it. The input is declared editable here
+   * because it genuinely is editable ON THIS FORM -- the renderer honours
+   * `editable`, and there is no engine-wide create-only flag for it to read.
+   */
+  val createFields: List<AdminField> =
+    editableFields +
+      AdminField("dateOfBirth", "Date of Birth", FieldType.TEXT, editable = true, sensitive = false)
 
   override fun rowId(row: Student): StudentId = row.id
 
@@ -104,6 +119,7 @@ class StudentsResource(
       "id" to row.id.value.toString(),
       "userId" to row.userId.value.toString(),
       "expectedHighSchoolGraduationDate" to row.expectedHighSchoolGraduationDate.toIso(),
+      "dateOfBirth" to row.dateOfBirth.toString(),
       "version" to row.version.toString(),
       "createdAt" to row.createdAt.toString(),
       "updatedAt" to row.updatedAt.toString(),
@@ -216,7 +232,7 @@ class StudentsResource(
           editValues = emptyMap(),
           version = null,
           deleted = false,
-          createFields = editableFields,
+          createFields = createFields,
           editFields = editableFields,
           nested = emptyList(),
         ),
@@ -280,7 +296,7 @@ class StudentsResource(
         editValues = cells,
         version = student.version,
         deleted = student.deletedAt != null,
-        createFields = editableFields,
+        createFields = createFields,
         editFields = editableFields,
         nested = listOf(historyPanel, conversationsPanel, claimsPanel, observationsPanel, extractionRunsPanel),
       ),

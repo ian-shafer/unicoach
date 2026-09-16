@@ -103,6 +103,17 @@ class StudentRoutingTest {
       .trim()
   }
 
+  /** Counts `students` rows carrying a given date of birth. Zero is the assertion a refusal earns. */
+  private fun studentRowCount(dateOfBirthIso: String): Int {
+    dbConnection.prepareStatement("SELECT COUNT(*) FROM students WHERE date_of_birth = ?").use { stmt ->
+      stmt.setObject(1, java.time.LocalDate.parse(dateOfBirthIso))
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        return rs.getInt(1)
+      }
+    }
+  }
+
   // --- POST /students ---
 
   @Test
@@ -111,7 +122,7 @@ class StudentRoutingTest {
       val response =
         client.post(buildUrl("/api/v1/students")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-          setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+          setBody(mapper.writeValueAsString(createStudentBody()))
         }
       assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
@@ -125,7 +136,7 @@ class StudentRoutingTest {
           client.post(buildUrl("/api/v1/students")) {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             header(HttpHeaders.Cookie, cookie)
-            setBody(mapper.writeValueAsString(CreateStudentRequest(iso)))
+            setBody(mapper.writeValueAsString(createStudentBody(iso)))
           }
         assertEquals(HttpStatusCode.Created, response.status, "Expected 201 for $iso")
         assertTrue(response.bodyAsText().contains(iso), "Response should echo $iso")
@@ -140,7 +151,7 @@ class StudentRoutingTest {
         client.post(buildUrl("/api/v1/students")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
           header(HttpHeaders.Cookie, cookie)
-          setBody(mapper.writeValueAsString(CreateStudentRequest("2028-13-40")))
+          setBody(mapper.writeValueAsString(createStudentBody("2028-13-40")))
         }
       assertEquals(HttpStatusCode.BadRequest, response.status)
       val body = response.bodyAsText()
@@ -156,7 +167,7 @@ class StudentRoutingTest {
         client.post(buildUrl("/api/v1/students")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
           header(HttpHeaders.Cookie, cookie)
-          setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+          setBody(mapper.writeValueAsString(createStudentBody()))
         }
       assertEquals(HttpStatusCode.Created, first.status)
 
@@ -164,10 +175,95 @@ class StudentRoutingTest {
         client.post(buildUrl("/api/v1/students")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
           header(HttpHeaders.Cookie, cookie)
-          setBody(mapper.writeValueAsString(CreateStudentRequest("2029")))
+          setBody(mapper.writeValueAsString(createStudentBody("2029")))
         }
       assertEquals(HttpStatusCode.Conflict, second.status)
       assertTrue(second.bodyAsText().contains("student_already_exists"))
+    }
+
+  // --- POST /students: the 13+ age floor (RFC 222) ---
+
+  @Test
+  fun `POST students under 13 returns 403 age_requirement_not_met and writes no row`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      // A birthdate one day short of thirteen years ago, computed from the same
+      // UTC "today" the server's default Clock reads.
+      val underThirteen =
+        java.time.LocalDate
+          .now(java.time.ZoneOffset.UTC)
+          .minusYears(13)
+          .plusDays(1)
+      val response =
+        client.post(buildUrl("/api/v1/students")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(CreateStudentRequest("2028", underThirteen.toString())))
+        }
+      assertEquals(HttpStatusCode.Forbidden, response.status)
+      val body = response.bodyAsText()
+      assertTrue(body.contains("age_requirement_not_met"), "Expected the age code, got: $body")
+      // The refusal stores nothing -- that is the whole point of the gate.
+      assertEquals(0, studentRowCount(underThirteen.toString()), "A refused creation must write no students row")
+    }
+
+  @Test
+  fun `POST students 13 or older returns 201 and GET me echoes the date of birth`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      val created =
+        client.post(buildUrl("/api/v1/students")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(CreateStudentRequest("2028", "2009-07-10")))
+        }
+      assertEquals(HttpStatusCode.Created, created.status)
+      assertTrue(created.bodyAsText().contains("2009-07-10"))
+
+      val me =
+        client.get(buildUrl("/api/v1/students/me")) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.OK, me.status)
+      // The body is pretty-printed, so the field name and its value are checked
+      // through the parsed tree rather than by matching a rendered substring.
+      val student = mapper.readTree(me.bodyAsText()).get("student")
+      assertEquals("2009-07-10", student.get("dateOfBirth").asText(), "GET /students/me must echo the stored date of birth")
+    }
+
+  @Test
+  fun `POST students with the date of birth omitted returns 400 with a dateOfBirth field error`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      // The old-installed-client case: the field is absent from the JSON
+      // entirely. It must read as a clean validation refusal, not a 415
+      // deserialization failure and not a 500.
+      val response =
+        client.post(buildUrl("/api/v1/students")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody("""{"expectedHighSchoolGraduationDate":"2028"}""")
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      val body = response.bodyAsText()
+      assertTrue(body.contains("validation_error"), "Expected validation_error, got: $body")
+      assertTrue(body.contains("dateOfBirth"), "Expected a dateOfBirth field error, got: $body")
+    }
+
+  @Test
+  fun `POST students with a malformed date of birth returns 400 with a dateOfBirth field error`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      val response =
+        client.post(buildUrl("/api/v1/students")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(CreateStudentRequest("2028", "10-07-2009")))
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      val body = response.bodyAsText()
+      assertTrue(body.contains("validation_error"))
+      assertTrue(body.contains("dateOfBirth"))
     }
 
   // --- GET /students/me ---
@@ -179,7 +275,7 @@ class StudentRoutingTest {
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028-06")))
+        setBody(mapper.writeValueAsString(createStudentBody("2028-06")))
       }
 
       val response =
@@ -218,7 +314,7 @@ class StudentRoutingTest {
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+        setBody(mapper.writeValueAsString(createStudentBody()))
       }
 
       val response =
@@ -238,7 +334,7 @@ class StudentRoutingTest {
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+        setBody(mapper.writeValueAsString(createStudentBody()))
       }
       // Bump to version 2.
       client.patch(buildUrl("/api/v1/students/me")) {
@@ -264,7 +360,7 @@ class StudentRoutingTest {
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+        setBody(mapper.writeValueAsString(createStudentBody()))
       }
 
       val response =
@@ -284,7 +380,7 @@ class StudentRoutingTest {
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+        setBody(mapper.writeValueAsString(createStudentBody()))
       }
 
       // A JSON string supplied for the numeric `version` field must be rejected
@@ -323,7 +419,7 @@ class StudentRoutingTest {
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+        setBody(mapper.writeValueAsString(createStudentBody()))
       }
 
       val deleteResponse =

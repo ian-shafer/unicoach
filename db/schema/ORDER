@@ -121,3 +121,4 @@ intended-subjects.sql
 seed-coach-system-prompt-v37.sql
 seed-coach-system-prompt-v38.sql
 create-fafsa-filing-deadlines.sql
+add-students-date-of-birth.sql

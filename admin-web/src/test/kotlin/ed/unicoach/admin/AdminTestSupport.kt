@@ -21,6 +21,7 @@ import ed.unicoach.db.dao.FitLensRunsDao
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.LlmCallsDao
 import ed.unicoach.db.dao.ObservationsDao
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SynthesisRunsDao
 import ed.unicoach.db.dao.SystemPromptsDao
@@ -173,10 +174,11 @@ object AdminTestSupport {
   fun seedStudent(
     userId: UserId,
     gradIso: String = "2028",
+    dateOfBirth: java.time.LocalDate = StudentRowFixture.DEFAULT_DATE_OF_BIRTH,
   ): Student =
     runBlocking {
       val date = (PartialDate.parse(gradIso) as ValidationResult.Valid).value
-      database.withConnection { session -> StudentsDao.create(session, NewStudent(userId, date)) }.getOrThrow()
+      database.withConnection { session -> StudentsDao.create(session, NewStudent(userId, date, dateOfBirth)) }.getOrThrow()
     }
 
   /** Upserts a colleges row via the DAO (RFC 82); re-upsert with a changed field bumps the version. */

@@ -4,6 +4,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.IntendedSubjectsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
@@ -133,8 +134,8 @@ class IntendedSubjectsChatToolTest {
       )
       stmt.execute(
         "INSERT INTO students (id, user_id, expected_high_school_graduation_on, " +
-          "expected_high_school_graduation_precision) " +
-          "VALUES ('$studentId', '$userId', DATE '2028-01-01', 'year')",
+          "expected_high_school_graduation_precision, date_of_birth) " +
+          "VALUES ('$studentId', '$userId', DATE '2028-01-01', 'year', DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}')",
       )
     }
     return StudentId(studentId)

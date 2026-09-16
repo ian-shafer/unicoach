@@ -17,7 +17,6 @@ import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateConversationRequest
-import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import io.ktor.client.HttpClient
@@ -342,7 +341,7 @@ class ConvoToolLoopRoutingTest {
       client.post(url("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+        setBody(mapper.writeValueAsString(createStudentBody()))
       }
     assertEquals(HttpStatusCode.Created, sr.status)
     return cookie

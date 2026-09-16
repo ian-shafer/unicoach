@@ -5,7 +5,6 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.models.CreateConversationRequest
-import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.PostMessageRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.UpdateConversationRequest
@@ -105,7 +104,7 @@ class ConvoRoutingTest {
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+        setBody(mapper.writeValueAsString(createStudentBody()))
       }
     assertEquals(HttpStatusCode.Created, response.status)
     return cookie

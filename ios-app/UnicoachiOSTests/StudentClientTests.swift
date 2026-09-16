@@ -18,6 +18,7 @@ class StudentClientTests: XCTestCase {
         PublicStudent(
             id: UUID(),
             expectedHighSchoolGraduationDate: "2028-06-15",
+            dateOfBirth: "2009-07-10",
             version: 1,
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
@@ -43,12 +44,16 @@ class StudentClientTests: XCTestCase {
 
             let body = try JSONDecoder().decode(CreateStudentRequest.self, from: request.resolvedBody ?? Data())
             XCTAssertEqual(body.expectedHighSchoolGraduationDate, "2028-06-15")
+            // The age floor's field is on the wire of EVERY create (RFC 222),
+            // as a full ISO date rather than the graduation date's variable
+            // precision.
+            XCTAssertEqual(body.dateOfBirth, "2009-07-10")
 
             let response = HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!
             return (response, responseData)
         }
 
-        let result = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028-06-15"))
+        let result = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028-06-15", dateOfBirth: "2009-07-10"))
         XCTAssertEqual(result, expected)
     }
 
@@ -66,7 +71,7 @@ class StudentClientTests: XCTestCase {
         }
 
         do {
-            _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "bad"))
+            _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "bad", dateOfBirth: "2009-07-10"))
             XCTFail("Should have thrown")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "validation_error")
@@ -84,7 +89,7 @@ class StudentClientTests: XCTestCase {
         }
 
         do {
-            _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028"))
+            _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028", dateOfBirth: "2009-07-10"))
             XCTFail("Should have thrown")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "student_already_exists")
@@ -101,7 +106,7 @@ class StudentClientTests: XCTestCase {
         }
 
         do {
-            _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028"))
+            _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028", dateOfBirth: "2009-07-10"))
             XCTFail("Should have thrown")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "unauthorized")
@@ -170,10 +175,14 @@ class StudentClientTests: XCTestCase {
         }
 
         let result = try await studentClient.createStudent(
-            request: CreateStudentRequest(expectedHighSchoolGraduationDate: fixture.gradDate)
+            request: CreateStudentRequest(
+                expectedHighSchoolGraduationDate: fixture.gradDate,
+                dateOfBirth: fixture.dateOfBirth
+            )
         )
         XCTAssertEqual(result.id, fixture.id)
         XCTAssertEqual(result.expectedHighSchoolGraduationDate, fixture.gradDate)
+        XCTAssertEqual(result.dateOfBirth, fixture.dateOfBirth)
     }
 
     func testFetchProfileDecodesRealServerTimestamps() async throws {
@@ -187,5 +196,6 @@ class StudentClientTests: XCTestCase {
         let result = try await studentClient.fetchProfile()
         XCTAssertEqual(result?.id, fixture.id)
         XCTAssertEqual(result?.expectedHighSchoolGraduationDate, fixture.gradDate)
+        XCTAssertEqual(result?.dateOfBirth, fixture.dateOfBirth)
     }
 }

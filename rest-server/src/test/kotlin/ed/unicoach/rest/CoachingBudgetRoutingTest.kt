@@ -19,7 +19,6 @@ import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateConversationRequest
-import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.PostMessageRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.web.common.logging.RequestLoggingConfig
@@ -202,7 +201,7 @@ class CoachingBudgetRoutingTest {
     client.post(url("/api/v1/students")) {
       contentType(ContentType.Application.Json)
       header(HttpHeaders.Cookie, cookie)
-      setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+      setBody(mapper.writeValueAsString(createStudentBody()))
     }
     return Caller(cookie, studentIdOf(email))
   }

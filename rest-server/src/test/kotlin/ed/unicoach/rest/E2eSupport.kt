@@ -4,15 +4,28 @@ import ed.unicoach.chat.AnthropicStreamTransport
 import ed.unicoach.chat.AnthropicTransportEvent
 import ed.unicoach.chat.ScriptedAnthropicTransport
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.queue.JobType
 import ed.unicoach.queue.NewJob
 import ed.unicoach.queue.dao.JobInsertResult
 import ed.unicoach.queue.dao.JobsDao
+import ed.unicoach.rest.models.CreateStudentRequest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.JsonObject
 import java.sql.Connection
 import kotlin.test.fail
+
+/**
+ * The create-student body for a suite that needs A student and does not care
+ * which one. The date of birth is [StudentRowFixture.DEFAULT_DATE_OF_BIRTH], the
+ * comfortably-13+ literal every fixture row already uses (RFC 222): a dozen
+ * suites send it incidentally, and a copy in each is a dozen edits the next
+ * required field would cost. `StudentRoutingTest`, whose subject IS the
+ * birthdate, states its dates explicitly instead.
+ */
+fun createStudentBody(graduationDate: String = "2028"): CreateStudentRequest =
+  CreateStudentRequest(graduationDate, StudentRowFixture.DEFAULT_DATE_OF_BIRTH.toString())
 
 /**
  * A [JobsDao] that fails the insert for one [JobType], simulating an enqueue

@@ -67,7 +67,11 @@ class StudentsResourceTest {
       val created =
         client().submitForm(
           url = "/user/${user.id.value}/student",
-          formParameters = parameters { append("expectedHighSchoolGraduationDate", "2028-06") },
+          formParameters =
+            parameters {
+              append("expectedHighSchoolGraduationDate", "2028-06")
+              append("dateOfBirth", "2009-07-10")
+            },
         ) { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.Found, created.status)
 

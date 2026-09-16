@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.db.dao.CodebooksDao
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.NewCipCode
 import ed.unicoach.db.models.NewSubject
 import kotlinx.coroutines.runBlocking
@@ -255,8 +256,8 @@ class SubjectLoaderTest : CollegeScorecardTestBase() {
             VALUES ('$userId', 'sl-$userId@test.com', 'SL User', 'ahash') RETURNING id
           ), s AS (
             INSERT INTO students (id, user_id, expected_high_school_graduation_on,
-              expected_high_school_graduation_precision)
-            SELECT '$studentId', id, DATE '2028-01-01', 'year' FROM u RETURNING id
+              expected_high_school_graduation_precision, date_of_birth)
+            SELECT '$studentId', id, DATE '2028-01-01', 'year', DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}' FROM u RETURNING id
           ), a AS (
             INSERT INTO intended_subject_status (student_id, status) SELECT id, 'answered' FROM s RETURNING student_id
           )

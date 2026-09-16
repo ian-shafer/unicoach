@@ -27,12 +27,17 @@ import ed.unicoach.db.models.StudentEdit
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserEdit
 import ed.unicoach.db.models.UserId
+import ed.unicoach.student.StudentService
 import ed.unicoach.util.Argon2Hasher
 import io.ktor.server.application.call
 import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.respondRedirect
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
+import org.slf4j.LoggerFactory
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.time.format.DateTimeParseException
 import java.util.UUID
 
 /**
@@ -47,6 +52,8 @@ class UsersResource(
   private val emailVerificationService: EmailVerificationService,
   private val studentsResource: StudentsResource,
 ) : AdminResource<User, UserId> {
+  private val logger = LoggerFactory.getLogger(UsersResource::class.java)
+
   override val slug = "user"
   override val title = "User"
   override val kind = AdminKind.ENTITY
@@ -227,6 +234,38 @@ class UsersResource(
   }
 
   /**
+   * The operator's typed date of birth, or null when it is blank, mistyped, or
+   * outside the window a birthdate can plausibly fall in. Shape and sanity only:
+   * RFC 222 section 4a exempts this operator path from the 13+ FLOOR, not from
+   * having a defined input shape, and the `DATE` column must not take an operator
+   * typo. The window bound is [StudentService.MAXIMUM_AGE_YEARS] -- the same
+   * number the public signup path uses, stated once.
+   *
+   * A refusal only redirects, which says nothing, so the rejected value is named
+   * in the log here or it is lost.
+   */
+  private fun parseDateOfBirth(
+    raw: String,
+    userId: UserId,
+  ): LocalDate? {
+    val date =
+      try {
+        LocalDate.parse(raw)
+      } catch (e: DateTimeParseException) {
+        // A blank or mistyped date is an expected form answer, not a fault: the
+        // catch is narrowed so a real failure still propagates.
+        logger.warn("Admin create student for user=[{}] refused: dateOfBirth=[{}] is not an ISO date", userId.value, raw, e)
+        return null
+      }
+    val today = LocalDate.now(ZoneOffset.UTC)
+    if (date.isAfter(today) || date.isBefore(today.minusYears(StudentService.MAXIMUM_AGE_YEARS))) {
+      logger.warn("Admin create student for user=[{}] refused: dateOfBirth=[{}] is outside the plausible window", userId.value, raw)
+      return null
+    }
+    return date
+  }
+
+  /**
    * Owner-nested action endpoints for the embedded student profile. These are
    * action endpoints, not detail pages, so the canonical-routing invariant holds.
    */
@@ -242,7 +281,13 @@ class UsersResource(
       if (parsed !is ValidationResult.Valid) {
         return@post call.respondRedirect("/$slug/${userId.value}")
       }
-      db.withConnection { session -> StudentsDao.create(session, NewStudent(userId, parsed.value)) }.fold(
+      // The column is NOT NULL (RFC 222), so the operator supplies it here too.
+      // No age floor on this path: it is an operator tool behind admin auth, not
+      // the public signup the COPPA gate guards.
+      val dateOfBirth =
+        parseDateOfBirth(form["dateOfBirth"].orEmpty(), userId)
+          ?: return@post call.respondRedirect("/$slug/${userId.value}")
+      db.withConnection { session -> StudentsDao.create(session, NewStudent(userId, parsed.value, dateOfBirth)) }.fold(
         onSuccess = { call.respondRedirect("/$slug/${userId.value}") },
         onFailure = { call.respondDaoError(it) },
       )

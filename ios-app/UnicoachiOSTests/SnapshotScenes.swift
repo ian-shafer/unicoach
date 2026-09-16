@@ -144,10 +144,17 @@ enum SnapshotSeed {
 
     /// An `OnboardingView` over a seeded view model (RFC 163). The clients
     /// answer, but nothing here submits: the scene is the form at rest.
+    ///
+    /// The date of birth is left EMPTY by default, which is the state the form
+    /// really opens in (RFC 222); `dateOfBirthAnswered` fills it, and
+    /// `dateOfBirthError` shows the inline refusal a submit with nothing chosen
+    /// produces.
     static func onboarding(
         precision: OnboardingViewModel.Precision = .year,
         residencyState: ResidencyState? = nil,
-        incomeBand: IncomeBand? = nil
+        incomeBand: IncomeBand? = nil,
+        dateOfBirthAnswered: Bool = false,
+        dateOfBirthError: Bool = false
     ) -> some View {
         let viewModel = OnboardingViewModel(
             studentClient: MockStudentClient(),
@@ -162,6 +169,17 @@ enum SnapshotSeed {
         viewModel.day = 15
         viewModel.residencyState = residencyState
         viewModel.incomeBand = incomeBand
+        if dateOfBirthAnswered {
+            // Pinned like the year above, and for the same reason.
+            viewModel.birthYear = 2009
+            viewModel.birthMonth = 7
+            viewModel.birthDay = 10
+        }
+        if dateOfBirthError {
+            // The message the view model itself would set — quoted from its one
+            // home rather than retyped here.
+            viewModel.dateOfBirthError = OnboardingViewModel.dateOfBirthRequiredMessage
+        }
         return OnboardingView(viewModel: viewModel, userName: "Kendall")
     }
 
@@ -782,11 +800,26 @@ enum SnapshotCatalogue {
             SnapshotScene(name: "onboarding-year") {
                 AnyView(SnapshotSeed.onboarding())
             },
-            SnapshotScene(name: "onboarding-full-date", size: SnapshotScene.tallCanvas(height: 1200)) {
+            SnapshotScene(name: "onboarding-full-date", size: SnapshotScene.tallCanvas(height: 1400)) {
                 AnyView(SnapshotSeed.onboarding(precision: .full))
             },
-            SnapshotScene(name: "onboarding-answered", size: SnapshotScene.tallCanvas(height: 1200)) {
-                AnyView(SnapshotSeed.onboarding(residencyState: SnapshotSeed.california, incomeBand: .k48To75k))
+            SnapshotScene(name: "onboarding-answered", size: SnapshotScene.tallCanvas(height: 1400)) {
+                AnyView(SnapshotSeed.onboarding(
+                    residencyState: SnapshotSeed.california,
+                    incomeBand: .k48To75k,
+                    dateOfBirthAnswered: true
+                ))
+            },
+            // The age field's two states, which are the whole of RFC 222 on
+            // this screen: three EMPTY menus at first paint — no pre-selected
+            // birth year, because a form must not nudge the answer it is asking
+            // for — and the inline error a submit with nothing chosen produces,
+            // which is the form's own refusal and never reaches the server.
+            SnapshotScene(name: "onboarding-date-of-birth-empty", size: SnapshotScene.tallCanvas(height: 1400)) {
+                AnyView(SnapshotSeed.onboarding())
+            },
+            SnapshotScene(name: "onboarding-date-of-birth-required", size: SnapshotScene.tallCanvas(height: 1400)) {
+                AnyView(SnapshotSeed.onboarding(dateOfBirthError: true))
             },
             // The same screen at an accessibility text size. Every other scene
             // renders at default type, so nothing in the corpus observed the
@@ -797,8 +830,12 @@ enum SnapshotCatalogue {
             //
             // At `SnapshotScene.maxHeight`, which is a ceiling rather than a
             // fit to the content — see that constant for the crash it encodes.
-            // The form measures ~1420pt at `.accessibility1`, so it fits with
-            // nothing clipped.
+            // The form measured ~1420pt at `.accessibility1` and fit with
+            // nothing clipped; RFC 222's three date-of-birth rows push it past
+            // the ceiling, so the capture is now clipped at the foot. The
+            // scene's question is unharmed: it asks whether a `DSPickerRow`
+            // GROWS rather than clips its own label, and the rows in frame
+            // answer it.
             SnapshotScene(name: "onboarding-accessibility-type", size: SnapshotScene.tallCanvas(height: SnapshotScene.maxHeight)) {
                 AnyView(SnapshotSeed.onboarding().dynamicTypeSize(.accessibility1))
             },

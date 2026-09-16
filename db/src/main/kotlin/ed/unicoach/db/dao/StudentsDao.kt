@@ -59,6 +59,7 @@ object StudentsDao :
       id = StudentId(UUID.fromString(rs.getString("id"))),
       userId = UserId(UUID.fromString(rs.getString("user_id"))),
       expectedHighSchoolGraduationDate = mapGraduationDate(rs),
+      dateOfBirth = rs.getDate("date_of_birth").toLocalDate(),
       version = rs.getInt("version"),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
@@ -159,7 +160,12 @@ object StudentsDao :
         gradDateColumns(
           prefix = "user_id" to { stmt, i -> stmt.setObject(i, input.userId.value) },
           date = input.expectedHighSchoolGraduationDate,
-        ),
+        ) +
+          // Write-once (RFC 222): [update] never carries it, so a student's
+          // recorded date of birth cannot be edited through this DAO.
+          mapOf<String, Bind>(
+            "date_of_birth" to { stmt, i -> stmt.setObject(i, input.dateOfBirth) },
+          ),
       map = ::mapStudent,
       mapError = ::mapCreateUpdateError,
     )

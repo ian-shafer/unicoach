@@ -110,8 +110,8 @@ class SubjectDeprecationTest {
       )
       stmt.execute(
         "INSERT INTO students (id, user_id, expected_high_school_graduation_on, " +
-          "expected_high_school_graduation_precision) " +
-          "VALUES ('$studentId', '$userId', DATE '2028-01-01', 'year')",
+          "expected_high_school_graduation_precision, date_of_birth) " +
+          "VALUES ('$studentId', '$userId', DATE '2028-01-01', 'year', DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}')",
       )
     }
     return studentId

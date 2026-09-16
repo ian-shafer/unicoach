@@ -222,6 +222,7 @@ class LoginViewModel: ObservableObject {
              .notFound,
              .validationFailed,
              .payloadTooLarge,
+             .ageRequirementNotMet,
              .coachingBudgetExhausted,
              .decodeError,
              .none:

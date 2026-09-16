@@ -10,6 +10,8 @@ data class StudentResponse(
 data class PublicStudent(
   val id: UUID,
   val expectedHighSchoolGraduationDate: String,
+  /** An ISO full date, `YYYY-MM-DD`. Non-null: every row carries one (RFC 222). */
+  val dateOfBirth: String,
   val version: Int,
   val createdAt: Instant,
   val updatedAt: Instant,

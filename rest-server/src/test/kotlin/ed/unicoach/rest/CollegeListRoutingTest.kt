@@ -6,7 +6,6 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.rest.models.CreateCollegeListEntryRequest
-import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.UpdateCollegeListEntryRequest
 import io.ktor.client.HttpClient
@@ -104,7 +103,7 @@ class CollegeListRoutingTest {
     client.post(buildUrl("/api/v1/students")) {
       header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
       header(HttpHeaders.Cookie, cookie)
-      setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+      setBody(mapper.writeValueAsString(createStudentBody()))
     }
   }
 

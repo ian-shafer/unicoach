@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PartialDateColumns
 import java.sql.Connection
+import java.time.LocalDate
 import java.time.Year
 import java.util.UUID
 
@@ -27,9 +28,16 @@ object StudentRowFixture {
    */
   val DEFAULT_GRADUATION: PartialDate = PartialDate.YearOnly(Year.of(2028))
 
+  /**
+   * A comfortably 13+ date of birth (RFC 222). A LITERAL, never
+   * `LocalDate.now() - 13 years`: a fixture that drifts with the wall clock
+   * makes the boundary tests lie about which side of the floor they are on.
+   */
+  val DEFAULT_DATE_OF_BIRTH: LocalDate = LocalDate.of(2009, 7, 10)
+
   private const val INSERT_SQL =
     "INSERT INTO students (id, user_id, expected_high_school_graduation_on, " +
-      "expected_high_school_graduation_precision) VALUES (?, ?, ?, ?)"
+      "expected_high_school_graduation_precision, date_of_birth) VALUES (?, ?, ?, ?, ?)"
 
   /** Inserts one student row. The owning `users` row must already exist. */
   fun insert(
@@ -37,11 +45,13 @@ object StudentRowFixture {
     studentId: UUID,
     userId: UUID,
     graduation: PartialDate = DEFAULT_GRADUATION,
+    dateOfBirth: LocalDate = DEFAULT_DATE_OF_BIRTH,
   ) {
     connection.prepareStatement(INSERT_SQL).use { stmt ->
       stmt.setObject(1, studentId)
       stmt.setObject(2, userId)
       bindGraduation(stmt, 3, graduation)
+      stmt.setObject(5, dateOfBirth)
       stmt.executeUpdate()
     }
   }

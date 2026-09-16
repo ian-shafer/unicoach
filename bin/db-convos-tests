@@ -56,8 +56,8 @@ USER_ID=$(echo "SELECT id FROM users WHERE email = 'convos-fixture@example.com';
 
 STUDENT_ID=$(
   echo "INSERT INTO students (user_id, expected_high_school_graduation_on,
-                              expected_high_school_graduation_precision)
-        VALUES ('$USER_ID', DATE '2030-01-01', 'year')
+                              expected_high_school_graduation_precision, date_of_birth)
+        VALUES ('$USER_ID', DATE '2030-01-01', 'year', DATE '2009-07-10')
         RETURNING id;" | bin/db-run -r rw | grep -E '^[0-9a-f-]{36}$'
 )
 
