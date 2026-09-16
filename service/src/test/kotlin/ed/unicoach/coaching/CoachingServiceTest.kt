@@ -2272,7 +2272,7 @@ class CoachingServiceTest {
   fun `a brand-new student with nothing on file is still told today and their year of school`() {
     val below = dateBlockFor(createStudent(graduationYear = 2028), opener = "how long have I got?")
 
-    assertTrue(below.contains("Today's date is 2026-09-11"), "today must be stated: [$below]")
+    assertTrue(below.contains("Today's date is Sep 11, 2026"), "today must be stated: [$below]")
     assertTrue(below.contains("The student expects to finish high school in 2028"), "the graduation date must be stated")
     assertTrue(below.contains("their year of school today is grade 11 (junior year)"), "the year of school must be derived")
   }
@@ -2298,7 +2298,7 @@ class CoachingServiceTest {
 
       // The second day, not the day the conversation opened on.
       val below = systemTextBelowBody(captured?.system)
-      assertTrue(below.contains("Today's date is 2026-09-12"), "postTurn must state the CURRENT date: [$below]")
+      assertTrue(below.contains("Today's date is Sep 12, 2026"), "postTurn must state the CURRENT date: [$below]")
       assertTrue(below.contains("grade 11 (junior year)"), "and the year of school with it")
     }
 
@@ -2310,8 +2310,8 @@ class CoachingServiceTest {
     // all, so the date can only come from the service's own.
     val below = dateBlockFor(createStudent(graduationYear = 2028), Instant.parse("2026-09-11T02:30:00Z"))
 
-    assertTrue(below.contains("Today's date is 2026-09-10"), "the date must be Eastern: [$below]")
-    assertFalse(below.contains("Today's date is 2026-09-11"), "and must not be the UTC date")
+    assertTrue(below.contains("Today's date is Sep 10, 2026"), "the date must be Eastern: [$below]")
+    assertFalse(below.contains("Today's date is Sep 11, 2026"), "and must not be the UTC date")
     assertTrue(below.contains("Eastern Time"), "the coach is told which timezone the date is in")
   }
 
@@ -2324,20 +2324,27 @@ class CoachingServiceTest {
       "the block must say the precision it has: [$below]",
     )
     assertTrue(below.contains("grade 10 (sophomore year)"), "a month-less date still yields a year of school")
+    // The GRADUATION line only, and both spellings. Today's line legitimately
+    // carries a month now (RFC 227 renders it "Sep 11, 2026"), so sweeping the
+    // whole block for full month names would be a check that cannot fail --
+    // and sweeping it for the SHORT ones would fail on today. The claim is
+    // about the student's date, so it is asserted about the student's line.
+    val graduationLine = below.trim().lines().last()
     for (month in Month.entries) {
-      val name = month.getDisplayName(TextStyle.FULL, Locale.US)
-      assertFalse(below.contains(name), "no month may be invented, and [$name] appeared in: [$below]")
+      for (name in setOf(month.getDisplayName(TextStyle.FULL, Locale.US), month.getDisplayName(TextStyle.SHORT, Locale.US))) {
+        assertFalse(graduationLine.contains(name), "no month may be invented, and [$name] appeared in: [$graduationLine]")
+      }
     }
   }
 
   @Test
   fun `a full graduation date is spoken in words, and a month-only date says the day is missing`() {
     val full = dateBlockFor(createStudent(graduationYear = 2028, graduationMonth = 6, graduationDay = 15))
-    assertTrue(full.contains("finish high school on 15 June 2028"), "a full date is spoken in words: [$full]")
+    assertTrue(full.contains("finish high school on Jun 15, 2028"), "a full date is spoken in words: [$full]")
 
     val monthOnly = dateBlockFor(createStudent(graduationYear = 2028, graduationMonth = 6))
     assertTrue(
-      monthOnly.contains("finish high school in June 2028 (the day is not recorded)"),
+      monthOnly.contains("finish high school in Jun 2028 (the day is not recorded)"),
       "a month-only date says so rather than inventing a day: [$monthOnly]",
     )
   }

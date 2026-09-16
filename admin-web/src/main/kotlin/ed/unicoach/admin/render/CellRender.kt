@@ -3,6 +3,7 @@ package ed.unicoach.admin.render
 import ed.unicoach.admin.DisplayConfig
 import ed.unicoach.admin.engine.FieldType
 import ed.unicoach.common.money.Nanodollars
+import ed.unicoach.common.util.UsDate
 import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
 import kotlinx.html.a
@@ -20,7 +21,6 @@ import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 /**
  * The render-time context for the four display conventions of RFC 79: the
@@ -57,14 +57,14 @@ fun DisplayConfig.toAdminDisplay(isSupported: (slug: String) -> Boolean): AdminD
     isSupported = isSupported,
   )
 
-/** `MMM d, yyyy` in [Locale.ENGLISH] — e.g. `Jan 3, 2026`. */
-private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.ENGLISH)
-
 /**
  * Full ISO-8601 offset datetime — e.g. `2026-01-03T06:15:30.123-08:00`. The
- * hover `title` for a timestamp cell: the same instant as [DATE_FORMAT] but at
- * full precision and carrying the configured zone's offset, so the exact moment
- * stays unambiguous behind the day-granular visible text.
+ * hover `title` for a timestamp cell: the same instant as the visible text but
+ * at full precision and carrying the configured zone's offset, so the exact
+ * moment stays unambiguous behind the day-granular visible text.
+ *
+ * This one stays a pattern here, and the date seam does not own it: it is a
+ * MACHINE-readable attribute, not prose (RFC 227).
  */
 private val TITLE_FORMAT: DateTimeFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
 
@@ -327,7 +327,9 @@ private fun FlowContent.renderTimestampValue(
     val zoned = instant.atZone(display.zone)
     span {
       title = TITLE_FORMAT.format(zoned)
-      +DATE_FORMAT.format(zoned)
+      // RFC 227: the one date seam. This module's own `MMM d, yyyy` was the
+      // precedent the seam adopted, so the rendered bytes are unchanged.
+      +UsDate.of(zoned.toLocalDate())
     }
   }
 }

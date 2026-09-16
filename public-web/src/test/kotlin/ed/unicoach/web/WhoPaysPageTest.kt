@@ -1,5 +1,6 @@
 package ed.unicoach.web
 
+import ed.unicoach.common.util.UsDate
 import ed.unicoach.web.render.ExplainerBlock
 import ed.unicoach.web.render.NAMED_THIRD_PARTIES
 import ed.unicoach.web.render.WHO_PAYS_PATH
@@ -190,7 +191,9 @@ class WhoPaysPageTest {
     whoPaysPage.sourcesInReferenceOrder().forEach { source ->
       assertTrue(body.contains(source.url), "source URL missing from the page: [${source.url}]")
       assertTrue(
-        body.contains("Fetched ${source.fetchedOn}."),
+        // RFC 227: the one date seam, so this asserts the SHAPE a visitor
+        // reads ("Fetched Sep 14, 2026.") and not a re-rendering of the field.
+        body.contains("Fetched ${UsDate.of(source.fetchedOn)}."),
         "source fetch date missing from the page: [${source.url}]",
       )
     }
@@ -250,7 +253,10 @@ class WhoPaysPageTest {
 
   @Test
   fun `the as-of date is visible`() {
-    assertTrue(renderedBody().contains("As of ${whoPaysPage.asOf}"), "the page does not print its as-of date")
+    assertTrue(
+      renderedBody().contains("As of ${UsDate.of(whoPaysPage.asOf)}"),
+      "the page does not print its as-of date",
+    )
   }
 
   @Test

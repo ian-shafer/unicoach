@@ -11,6 +11,7 @@ import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
+import ed.unicoach.common.util.UsDate
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
@@ -40,6 +41,7 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.SystemPromptId
+import ed.unicoach.db.models.usDate
 import ed.unicoach.error.FieldError
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
@@ -52,9 +54,6 @@ import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.time.InstantSource
 import java.time.LocalDate
-import java.time.Month
-import java.time.format.TextStyle
-import java.util.Locale
 
 /**
  * Coaching domain layer, sibling to AuthService/StudentService: constructor DI,
@@ -970,15 +969,22 @@ class CoachingService(
    * the year of school those two work out to.
    *
    * Two lines with no trailing terminator, like every other block here -- the
-   * assembler owns the blank line that separates them. Today is written ISO, so
-   * there is one unambiguous form for the model to repeat; the graduation date
-   * is written in words, because the coach says that one aloud.
+   * assembler owns the blank line that separates them.
+   *
+   * Both dates are written in the ONE shape a human reads (RFC 227, brief 0010
+   * D21). Today used to be ISO here, deliberately, so the model had one
+   * unambiguous form to repeat. RFC 227 changes it: the prompt now TELLS the
+   * coach to say "Sep 12, 2026", and a block that states a rule and then
+   * demonstrates the opposite two lines above is the self-contradicting copy
+   * RFC 187's review caught. One shape in the prompt prose; the tool payloads
+   * keep ISO on the wire, and the prompt says so.
    */
   private fun renderDateBlock(
     today: LocalDate,
     graduation: PartialDate,
   ): String =
-    "Today's date is $today ($COACH_ZONE_LABEL — the timezone College Board and ACT publish and enforce their deadlines in).\n" +
+    "Today's date is ${UsDate.of(today)} ($COACH_ZONE_LABEL — the timezone College Board and ACT publish and " +
+      "enforce their deadlines in).\n" +
       "The student expects to finish high school ${renderGraduationPhrase(graduation)}; ${HighSchoolYear.of(today, graduation).clause}"
 
   /**
@@ -987,10 +993,13 @@ class CoachingService(
    * must never state, and the surest way to stop it inventing one is to tell it
    * the month is not there.
    *
-   * Day before month ("on 15 June 2028") is the wording RFC 186 took to its
-   * approval gate, and it is unambiguous in a way the US order is not: the
-   * model re-says this date in its own words to the student anyway, and a
-   * "06/15" it could read either way is the one form worth avoiding.
+   * RFC 186 wrote this day before month ("on 15 June 2028") to avoid a "06/15"
+   * the model could read either way. RFC 227 (brief 0010 D21) replaces it with
+   * "on Jun 15, 2028": a named month is just as unambiguous as a leading day,
+   * and it is the shape a US family writes. The SHAPE now comes from the one
+   * seam, [PartialDate.usDate]; the WORDS below stay here, because "the day is
+   * not recorded" is a claim about OUR gap and the seam renders dates, not
+   * claims.
    */
   private fun renderGraduationPhrase(graduation: PartialDate): String =
     // On the SEALED type, not on its nullable month/day projections: the
@@ -999,15 +1008,15 @@ class CoachingService(
     // "only the year is recorded".
     when (graduation) {
       is PartialDate.FullDate -> {
-        "on ${graduation.day} ${monthName(graduation.month)} ${graduation.year.value}"
+        "on ${graduation.usDate()}"
       }
 
       is PartialDate.YearAndMonth -> {
-        "in ${monthName(graduation.monthOf)} ${graduation.year.value} (the day is not recorded)"
+        "in ${graduation.usDate()} (the day is not recorded)"
       }
 
       is PartialDate.YearOnly -> {
-        "in ${graduation.year.value} (only the year is recorded — no month, no day)"
+        "in ${graduation.usDate()} (only the year is recorded — no month, no day)"
       }
     }
 
@@ -1018,9 +1027,6 @@ class CoachingService(
    * reader arrived (RFC 197 D15): one decision, one home.
    */
   private fun today(): LocalDate = clock.coachToday()
-
-  /** "June", not "JUNE" and not "6": the coach reads this line aloud. */
-  private fun monthName(month: Month): String = month.getDisplayName(TextStyle.FULL, Locale.US)
 
   /**
    * One money-profile field line, through the shared renderer (RFC 209): the

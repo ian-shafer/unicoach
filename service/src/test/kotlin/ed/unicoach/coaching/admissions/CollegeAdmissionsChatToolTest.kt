@@ -499,8 +499,8 @@ class CollegeAdmissionsChatToolTest {
     AdmissionsTestDb.seedDeadline(college, closing = CdsMonthDay(1, 15), notification = CdsMonthDay(12, 15))
 
     val round = roundsOf(collegesOf(execute(student)).single()).single()
-    assertEquals("January 15", round.getValue("application_deadline").jsonPrimitive.content)
-    assertEquals("December 15", round.getValue("decision_notification").jsonPrimitive.content)
+    assertEquals("Jan 15", round.getValue("application_deadline").jsonPrimitive.content)
+    assertEquals("Dec 15", round.getValue("decision_notification").jsonPrimitive.content)
     val payload = execute(student).toString()
     assertFalse(payload.contains("\"month\""), "a raw month/day pair is never emitted: [$payload]")
     assertFalse(payload.contains("\"day\""), "a raw month/day pair is never emitted: [$payload]")
@@ -513,7 +513,7 @@ class CollegeAdmissionsChatToolTest {
     AdmissionsTestDb.seedDeadline(college, closing = CdsMonthDay(1, null), notification = null)
 
     val round = roundsOf(collegesOf(execute(student)).single()).single()
-    assertEquals("January, day not reported", round.getValue("application_deadline").jsonPrimitive.content)
+    assertEquals("Jan, day not reported", round.getValue("application_deadline").jsonPrimitive.content)
     assertNull(round["decision_notification"], "an unreported date is absent, never guessed")
   }
 

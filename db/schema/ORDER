@@ -124,3 +124,4 @@ create-fafsa-filing-deadlines.sql
 add-students-date-of-birth.sql
 require-a-check-on-every-external-document.sql
 supporters-and-student-links.sql
+seed-coach-system-prompt-v39.sql

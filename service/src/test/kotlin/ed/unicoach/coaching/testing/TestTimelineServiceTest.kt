@@ -64,7 +64,7 @@ class TestTimelineServiceTest {
 
       val anchor = assertNotNull(resolved.anchor, "one dated Early Action round on the list must resolve to an anchor")
       assertEquals(LocalDate.parse("2026-11-01"), anchor.closingResolved)
-      assertEquals("November 1", anchor.closingAsPublished, "the school's own words carry no year")
+      assertEquals("Nov 1", anchor.closingAsPublished, "the school's own words carry no year")
       assertEquals(Year.of(2027), anchor.graduationYear, "the input the resolved year came from rides with it")
       val basis = AdmissionTestTimelineChatTool.resolutionBasisOf(anchor)
       assertTrue(basis.contains("graduating in 2027"), "the basis must say whose year it is: [$basis]")
@@ -356,7 +356,16 @@ class TestTimelineServiceTest {
       // about scores -- but the verdict above is what makes that checkable: a
       // RegistrationClosed carries no score-release date to leak.
       val why = AdmissionTestTimelineChatTool.whyOf(closed.verdict)
-      assertTrue(why.contains("2027-04-16"), "the reason must name the registration deadline it turns on: [$why]")
+      // RE-PINNED by RFC 227 (brief 0010 D21): the sentence says the same two
+      // dates it always did, in the one shape a family reads. Pinned WHOLE
+      // rather than by substring -- the old `contains("2027-04-16")` would pass
+      // on a sentence that had grown a score-release clause around it, and the
+      // point of this test is what the sentence does NOT say.
+      assertEquals(
+        "registration closed on Apr 16, 2027, which is before Apr 20, 2027",
+        why,
+        "the reason must name the registration deadline it turns on, and nothing else: [$why]",
+      )
       assertEquals(
         emptyList(),
         SCORE_RELEASE_WORDS.filter { why.contains(it, ignoreCase = true) },
@@ -395,7 +404,7 @@ class TestTimelineServiceTest {
       assertEquals(AnchorRejectionReason.DAY_NOT_IN_RESOLVED_YEAR, rejection.reason)
       assertEquals(college, rejection.collegeId)
       assertEquals(ApplicationRound.REGULAR, rejection.round)
-      assertEquals("February 29", rejection.closingAsPublished, "the school's own words, unchanged")
+      assertEquals("Feb 29", rejection.closingAsPublished, "the school's own words, unchanged")
       assertEquals(Year.of(2027), rejection.resolvedYear, "and the year OURS resolved to, which is not a leap year")
       assertTrue(resolved.sittings.isNotEmpty(), "the rest of the read survives: one bad round is not the read")
     }
@@ -422,7 +431,7 @@ class TestTimelineServiceTest {
       assertNull(resolved.anchor)
       val rejection = resolved.anchorRejections.single()
       assertEquals(AnchorRejectionReason.MONTH_WITHOUT_DAY, rejection.reason)
-      assertEquals("January, day not reported", rejection.closingAsPublished)
+      assertEquals("Jan, day not reported", rejection.closingAsPublished)
       assertNull(rejection.resolvedYear, "no year is attached to a date we declined to complete")
     }
 

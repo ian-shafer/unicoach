@@ -32,7 +32,13 @@ import kotlin.test.assertTrue
  * That RFC replaces the three decomposed graduation columns with a date and a
  * precision, and rewrites the DAO that reads them. Its whole claim is that a
  * student hears exactly what she heard before, so this file asserts the
- * sentence RFC 186 landed BYTE FOR BYTE, at each of the three precisions.
+ * sentence BYTE FOR BYTE, at each of the three precisions.
+ *
+ * **RFC 227 moved it, once, on purpose** (brief 0010 D21: one date seam, US
+ * shape). `on 15 June 2028` is now `on Jun 15, 2028`. The pin is RE-PINNED to
+ * the new bytes rather than loosened -- a pin that stops pinning is worse than
+ * no pin at all -- and the words around the date are untouched, which is the
+ * property that says the change was a SHAPE change and not a meaning change.
  *
  * It is a NEW file on purpose. The standing rule this brief learned the hard
  * way is that a guard inside the artifact under rewrite is not a guard: the
@@ -67,15 +73,15 @@ class GraduationSentenceIsUnchangedTest {
   @Test
   fun `a month-precision graduation names the month and says the day is not there`() {
     assertEquals(
-      "in June 2028 (the day is not recorded)",
+      "in Jun 2028 (the day is not recorded)",
       graduationPhraseFor(PartialDate.YearAndMonth(Year.of(2028), Month.JUNE)),
     )
   }
 
   @Test
-  fun `a full-date graduation is spoken day before month`() {
+  fun `a full-date graduation is spoken month, day, year`() {
     assertEquals(
-      "on 15 June 2028",
+      "on Jun 15, 2028",
       graduationPhraseFor(PartialDate.FullDate(java.time.LocalDate.of(2028, 6, 15))),
     )
   }
@@ -86,7 +92,7 @@ class GraduationSentenceIsUnchangedTest {
     // a student whose date has passed. Both must still be stated at their
     // stored precision, with no invented month.
     assertEquals("in 2027 (only the year is recorded — no month, no day)", graduationPhraseFor(PartialDate.YearOnly(Year.of(2027))))
-    assertEquals("on 5 June 2020", graduationPhraseFor(PartialDate.FullDate(java.time.LocalDate.of(2020, 6, 5))))
+    assertEquals("on Jun 5, 2020", graduationPhraseFor(PartialDate.FullDate(java.time.LocalDate.of(2020, 6, 5))))
   }
 
   /** The whole graduation LINE, body and clause, for a student with this date on file. */

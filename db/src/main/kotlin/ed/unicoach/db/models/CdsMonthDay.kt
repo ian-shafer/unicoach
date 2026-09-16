@@ -1,8 +1,7 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.util.UsDate
 import java.time.Month
-import java.time.format.TextStyle
-import java.util.Locale
 
 /**
  * A cycle-relative CDS month/day (RFC 140). CDS reports application dates
@@ -29,20 +28,25 @@ data class CdsMonthDay(
   }
 
   /**
-   * This pair as a phrase, never a pair of bare numbers: "November 1", or
-   * "January, day not reported" for the month-only case that is legal CDS
-   * reporting and is NOT completed with a guessed day.
+   * This pair as a phrase, never a pair of bare numbers: "Nov 1", or
+   * "Jan, day not reported" for the month-only case that is legal CDS reporting
+   * and is NOT completed with a guessed day.
    *
    * It lives ON the pair rather than in one renderer because two surfaces now
    * say it -- `CollegeAdmissionsChatTool` and the admission-test timeline -- and
    * a service reaching into another feature's JSON adapter for a formatter is a
-   * dependency pointing the wrong way. No year is ever rendered: the pair
-   * carries none.
+   * dependency pointing the wrong way.
+   *
+   * The SHAPE comes from [UsDate.monthDay] (RFC 227, brief 0010 D21); the WORDS
+   * stay here. "day not reported" is a claim about the SOURCE's silence and is
+   * this type's to make -- the seam renders a date and never a caveat. No year
+   * is ever rendered, and [UsDate.monthDay] has no parameter that could carry
+   * one: the pair carries none and none is invented (RFC 148).
    */
   val phrase: String
     get() {
-      val monthName = Month.of(month).getDisplayName(TextStyle.FULL, Locale.US)
-      return day?.let { "$monthName $it" } ?: "$monthName, day not reported"
+      val monthName = UsDate.monthDay(Month.of(month), null)
+      return day?.let { UsDate.monthDay(Month.of(month), it) } ?: "$monthName, day not reported"
     }
 
   companion object {

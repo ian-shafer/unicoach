@@ -1,5 +1,6 @@
 package ed.unicoach.web.render
 
+import ed.unicoach.common.util.UsDate
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
 import kotlinx.html.FlowContent
@@ -273,7 +274,9 @@ suspend fun ApplicationCall.respondExplainerPage(page: ExplainerPage) {
 private fun FlowContent.renderMasthead(page: ExplainerPage) {
   h1 { +page.title }
   // RFC 204 D14(c): a visible "as of", because a competitor's pricing page drifts.
-  p("guide-as-of") { +"As of ${page.asOf}" }
+  // The shape comes from the one date seam (RFC 227, brief 0010 D21): this page
+  // is read by families, not by machines.
+  p("guide-as-of") { +"As of ${UsDate.of(page.asOf)}" }
   p("guide-standfirst") { +page.standfirst }
 }
 
@@ -350,7 +353,7 @@ private fun FlowContent.renderSources(
           rel = "nofollow noopener"
           +source.url
         }
-        +". Fetched ${source.fetchedOn}."
+        +". Fetched ${UsDate.of(source.fetchedOn)}."
       }
     }
   }

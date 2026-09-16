@@ -4,6 +4,7 @@ import ed.unicoach.coaching.COACH_ZONE_LABEL
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.putCitation
 import ed.unicoach.coaching.putCollegeIdsSchema
+import ed.unicoach.common.util.UsDate
 import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.SchoolDayTestChoice
 import ed.unicoach.db.models.StudentId
@@ -372,19 +373,20 @@ class AdmissionTestTimelineChatTool(
         }
 
         is SittingVerdict.RegistrationClosed -> {
-          "registration closed on ${verdict.deadline}, which is before ${verdict.today}"
+          "registration closed on ${UsDate.of(verdict.deadline)}, which is before ${UsDate.of(verdict.today)}"
         }
 
         is SittingVerdict.ScoreReleaseUnannounced -> {
           "${AdmissionTestCopy.publisherNameOf(verdict.test)} has not announced a score-release date for the " +
-            "${verdict.testDate} sitting, so whether those scores would reach a deadline in time is not ours to say"
+            "${UsDate.of(verdict.testDate)} sitting, so whether those scores would reach a deadline in time is not " +
+            "ours to say"
         }
 
         is SittingVerdict.ScoresCompared -> {
           if (verdict.release.isAfter(verdict.anchor)) {
-            "scores are released ${verdict.release}, after the ${verdict.anchor} deadline"
+            "scores are released ${UsDate.of(verdict.release)}, after the ${UsDate.of(verdict.anchor)} deadline"
           } else {
-            "scores are released ${verdict.release}, on or before the ${verdict.anchor} deadline"
+            "scores are released ${UsDate.of(verdict.release)}, on or before the ${UsDate.of(verdict.anchor)} deadline"
           }
         }
       }
@@ -455,12 +457,13 @@ class AdmissionTestTimelineChatTool(
               SchoolDayCopy.schoolMustOfferClauseOf(row.schoolMustOffer),
               SchoolDayCopy.schoolYearBasisLabelOf(row.schoolYearBasis),
             )
-          "we hold a current reading of this state's own page, read on ${row.checkedOn}: " +
+          "we hold a current reading of this state's own page, read on ${UsDate.of(row.checkedOn)}: " +
             clauses.joinToString("; ")
         }
 
         is SchoolDayProgramme.Expired -> {
-          "our reading of this state's page lapsed on ${programme.expiresOn}, so we hold no current record for " +
+          "our reading of this state's page lapsed on ${UsDate.of(programme.expiresOn)}, so we hold no current " +
+            "record for " +
             "this state -- what it says now has to come from the state's own page, and this is a gap in our " +
             "data rather than a change we know about"
         }

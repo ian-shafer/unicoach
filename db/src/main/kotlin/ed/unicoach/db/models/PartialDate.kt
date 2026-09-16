@@ -2,6 +2,7 @@ package ed.unicoach.db.models
 
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
+import ed.unicoach.common.util.UsDate
 import java.time.DateTimeException
 import java.time.LocalDate
 import java.time.Month
@@ -114,3 +115,25 @@ sealed interface PartialDate {
     }
   }
 }
+
+/**
+ * This date in the one shape a human reads (RFC 227, brief 0010 D21):
+ * "Jun 15, 2028", "Jun 2028", "2028".
+ *
+ * A `when` over the SEALED type and not over the nullable [PartialDate.month] /
+ * [PartialDate.day] projections, for the reason RFC 186 already gives about the
+ * coach's own sentence: the precision cases and the type's variants are the same
+ * three cases, so the compiler is what refuses a fourth precision that silently
+ * rendered as a year.
+ *
+ * It renders the date and NOTHING else -- no preposition, and never the words
+ * that say what is missing. "the day is not recorded" is a claim about OUR gap
+ * and belongs to the caller that knows it is ours; the seam has no business
+ * saying it (RFC 227).
+ */
+fun PartialDate.usDate(): String =
+  when (this) {
+    is PartialDate.YearOnly -> UsDate.of(year)
+    is PartialDate.YearAndMonth -> UsDate.of(YearMonth.of(year.value, monthOf))
+    is PartialDate.FullDate -> UsDate.of(date)
+  }
