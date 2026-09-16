@@ -775,3 +775,15 @@ Two consequences, both binding:
   a concrete case, it says so as an example and carries at least one case that
   is deliberately unlike it — a senior, an empty list, a state with no
   school-day programme, a student past graduation.
+  test/05.4/no-citation-without-a-check LANDED as RFC 220 (main@c1f50155 +
+  fe61b1a9, 2026-09-15) — a web link can no longer be stored unless somebody
+  says what happened when they opened it and on what day. url_status loses its
+  DEFAULT (it was already NOT NULL — the default was the hole, which the run
+  corrected against my own dispatch), url_checked_on becomes NOT NULL, and the
+  migration REFUSES a dateless database rather than backfilling one: a made-up
+  date is the check that never ran looking like one that passed. "unknown WITH a
+  date" stays perfectly storable — nine of our rows say it. Re-verified against
+  the live migrated database: 63 documents, 0 without a date, and zero would
+  have been refused. The table holds 63 rather than 43 because the FAFSA corpus
+  (RFC 215) landed into it the same day. Executed: 3,489 tests, 0 failures.
+  Door: none. No prompt version cut.

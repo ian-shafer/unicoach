@@ -7,8 +7,30 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-15 — **THE WEBSITE NOW FITS THE SCREEN IT IS ON, AND REFUSES
-INLINE SCRIPTS BEFORE ANYONE WRITES ONE** (RFC 210, `web/01/the-shell`,
+Updated: 2026-09-15 — **A WEB LINK CANNOT BE STORED UNLESS SOMEBODY SAYS WHAT
+HAPPENED WHEN THEY OPENED IT** (RFC 220, `main@c1f50155` + `fe61b1a9`).
+`external_documents.url_status` loses its DEFAULT and `url_checked_on` becomes
+NOT NULL, so `INSERT INTO external_documents (url) VALUES (...)` — legal
+yesterday — now fails. The migration **REFUSES** a dateless database rather than
+backfilling one, and its error names the count and the command that produces the
+missing answer: a made-up date is the check that never ran looking like one that
+passed. **"Asked and got no usable answer" is untouched** — `unknown` WITH a
+date is exactly as storable as before, and nine rows say it. Re-verified against
+the live migrated database: **63 documents, 0 without a date**, zero refused.
+**The cost, accepted deliberately: every future caller must sweep a url through
+`bin/check-link` before it can store it** — the FAFSA brief inherits it first,
+and its corpus is already in the same table. Ian's standing rule came out of the
+same afternoon (**D28**): _spend your time solving real, solvable problems_ —
+four mechanisms were proposed and cut before this one-migration answer was
+found, the worst of them a lint that grepped SQL files for a header, which is
+unsolvable by that means. **`test/05.2` is now SCHEDULED** (it was deferred when
+it looked like eight tables; RFC 213 measured it at four, two of which are not
+link-checked at all): once every external url lives in `external_documents`,
+"every link we store has been through `check-link`" stops being a rule anybody
+has to remember and becomes a property of where the data is kept.
+
+Previously — **THE WEBSITE NOW FITS THE SCREEN IT IS ON, AND REFUSES INLINE
+SCRIPTS BEFORE ANYONE WRITES ONE** (RFC 210, `web/01/the-shell`,
 `main@cf4f22ba` + `e8249d90`). The first slice of brief 0013. `public-web` was a
 marketing page wearing an app's name: one fixed 760px column and a single 640px
 breakpoint. It is now fluid from 320px to 1440px continuously, with the readable
