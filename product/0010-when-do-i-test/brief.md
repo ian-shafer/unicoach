@@ -556,6 +556,40 @@ Applied immediately: the guarantee that a citation cannot exist without evidence
 needs ONE migration, not a lint and not a deletion — see
 `test/05.4/no-citation-without-a-check`.
 
+**D29 — unicoach accommodates external data: it ADDS the new rows, and a human
+reviews them.** (Ian, 2026-09-15, said twice: _"The idea here is that the
+Unicoach system should accommodate the external data. If it does not, it should
+probably be updated."_ and _"Typically, Unicoach should just add the new rows.
+But those new rows should be reviewed by a human."_)
+
+This reverses the framing `test/05.3` proposed, while keeping its answer. That
+run argued the import must keep running because it is _"the only thing that can
+REFUSE a bad codebook change"_. The import's job is the opposite: **it is how
+new external data arrives**, not a gate standing between us and the publisher.
+When IPEDS publishes something new, unicoach takes it; if our code cannot hold
+the new value, **that is our bug to fix**, not grounds to refuse the data.
+
+Three consequences, and the second is the one that keeps it honest:
+
+- **A migration seeds a baseline**, so a freshly built database is complete and
+  can be keyed against (D27). The import then ADDS what the publisher has since
+  published.
+- **The human review is the committed diff.** `db/data/codebooks.json` is
+  committed, so an import that adds rows produces a reviewable diff before
+  anything ships. That review already exists; a second review mechanism must not
+  be built for it (D28).
+- **Refusals shrink to what the database cannot express.** Deleting a label that
+  thousands of college rows still point at is a FOREIGN KEY violation once the
+  keys land — the database refuses it and no script needs to. What remains is
+  genuinely ours: an archive whose bytes no longer match their recorded
+  fingerprint, and a sentinel arriving dressed as a real value.
+
+**Where this brief knows it is not yet true, recorded rather than discovered
+later:** today an IPEDS code we do not recognise is DROPPED, and a search test
+relies on it — a missing region proving an unknown code is discarded safely.
+Under D29 that is us deciding the publisher is wrong. `test/05.3` measures it
+and names the cost; changing it is a follow-on slice, not that run's work.
+
 ## Corrections to the record (2026-09-10)
 
 Written down because the brief asserted them to Ian before they were verified.
