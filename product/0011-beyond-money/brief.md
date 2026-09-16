@@ -617,3 +617,44 @@ Two consequences for this brief:
   used.** `external_documents` makes a linked citation trivial to store; **D34
   still stands** — the Family Cost Report cites the College Scorecard in words,
   with no link.
+
+### D47 — every figure a family can see carries its publisher and its period (STANDING; Ian, 2026-09-14)
+
+Ian, on being told the search wire's completion rate, admission rate and
+enrolment carry no year: _"Why can't we have a publisher and year for all
+data?"_ There is no reason in principle. It is an artefact of build order: the
+stamping machinery was built by the MONEY briefs (RFC 177 publisher, RFC 179
+assurance tier, RFC 183 cited year) and only ever covered money.
+
+**The rule, binding on all future work in this brief and inherited by later
+briefs:**
+
+> A figure a family can see carries the publisher that filed it and the period
+> it describes, all the way to the sentence that speaks it. A DERIVED figure
+> carries the **oldest** vintage among its inputs. A figure we author ourselves
+> still names a publisher — us.
+
+**Where the stamp is lost today, measured:** not at the source. Most source
+tables already carry a year (`college_ipeds.survey_year`, the CDS filing year
+and `source_documents`, `college_programs_census.survey_year`, the aid-form
+academic years). It is lost **in the copy** — a value read from a stamped row
+and written into a derived table or a tool payload without its stamp.
+`college_search_index` is the clearest case. The money layer avoided this by
+making the figure carry its own provenance TO THE SEAM rather than leaving it in
+the source row.
+
+**Three hard cases named rather than discovered later:** a derived figure is
+only as fresh as its oldest input; data we author has an unusual publisher but
+still has one; and published year, cohort year and the year a value DESCRIBES
+are three different things — mixing them is exactly how RFC 183 found two
+Scorecard stamps wrong by two years.
+
+**Sizing, decided with the rule (Ian: option A).** Three parts, not one:
+
+1. this standing rule, which costs nothing and binds every future slice;
+2. `beyond/11/stamp-the-search-figures` — the four figures on the search wire,
+   below;
+3. **a separate brief** for the sweep across everything else — the ingest, the
+   index, every tool payload, the report and the app. That is weeks, not days,
+   and it gets scoped and measured like the money work was rather than smuggled
+   into a slice.

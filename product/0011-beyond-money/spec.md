@@ -534,3 +534,42 @@ note.
 from the student's own surface; no existing shape is changed; nothing renders
 differently, because the consumer does not exist yet — this slice is
 deliberately invisible, and its RFC says so. Reachability is `beyond/07`'s job.
+
+---
+
+## `beyond/11/stamp-the-search-figures`
+
+**Needs:**
+
+- CONFLICTS beyond/01/what-the-coach-may-not-say — both change what the coach
+  may say about the same figures; `01` forbids quoting them, this slice makes
+  three of them quotable. Rebase risk and a copy question, not an order:
+  whichever lands second narrows or removes the other's rule.
+
+**What:** Give the search wire's outcome figures the publisher and period every
+money figure already carries. One sentence of intent: the coach is currently
+forbidden to say three numbers families ask about, and the only reason is that
+we never wrote down where they came from.
+
+**Foundations:** `db/seed/scorecard/dictionary-variable-sources.csv` — a
+committed transcription of the publisher's own cohort map, pinned per column
+with a test that fails when a snapshot re-dates a variable (RFC 183). It holds
+**24 variables, all money**. `ADM_RATE`, `C150_4` and `UGDS` are loaded by the
+same loader from the same file and appear in **none** of them. `PCTPELL` **is**
+pinned (`IPEDS, AcadYr 2023-24`) and its vintage simply never reaches the
+payload — so that one is plumbing, not research.
+
+**Decided here:** the three missing variables are added to the transcription
+from the publisher's own dictionary, never from a literal typed into Kotlin
+(D47, and RFC 183's rule); source and vintage travel to the search payload for
+all four figures; and `beyond/01`'s rule is then **narrowed to what remains
+unstamped** rather than left standing over figures that are now honest. **Left
+to /ship:** whether the payload carries a per-figure stamp or a per-row block,
+and whether the index stores the vintage or resolves it at read time.
+
+**Acceptance:** each of the four figures reaches the coach with its publisher
+and the period it describes; a snapshot that re-dates any of them fails a test
+rather than quietly re-dating what we serve; no figure key is removed from any
+payload; and the guardrail paragraph is edited in the same run, so the prompt
+never forbids quoting a figure that now carries its stamp. No new table, no new
+data source.
