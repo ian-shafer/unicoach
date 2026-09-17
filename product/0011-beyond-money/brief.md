@@ -581,6 +581,17 @@ nudge, never a bare repeat.
       cut at the approval gate and stays cut — beyond/11 owns those figures and their
       stamps. Full suite 3,670 executed, 0 failures; the gate re-ran it and passed.
 
+    beyond/03/what-this-major-returns LANDED as RFC 218 (main@0bdf86ea + 63f0aace,
+      2026-09-17) — the Scorecard's earnings and debt figures per program now load into a
+      new `program_money_stats` store: Treasury median earnings four years after entry,
+      NSLDS median federal loan debt at completion, and the publisher's own ten-year
+      monthly payment, one row per (college, CIP field, credential level, measure,
+      cohort). Every row carries its publisher, source variable and typed cohort years;
+      the three silence arms stay apart; a third per-column absence counter reaches the
+      operator summary; and no debt-to-earnings ratio is computed anywhere. No
+      family-visible change — it fills the store, and beyond/05 is what makes it
+      reachable. Full suite 3,707 executed, 0 failures; the gate re-ran it and passed.
+
 ### D45 — the third arm is a counter, not a log (Ian, 2026-09-14, verbatim: "yes")
 
 `beyond/02` landed TWO counters (values coerced out of range, values the
