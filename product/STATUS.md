@@ -7,28 +7,46 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-17 — **A FAMILY CAN NOW SIGN IN ON THE WEB, AND THEY STAY
-SIGNED IN FOR 30 DAYS** (RFC 224, `web/02/sign-in`, `main@a546a9f0` — the RFC
-224 doc is in that commit). Register, sign in, sign out, verify email, resend
-verification and change email all work in the browser — the same
-`UNICOACH_SESSION` cookie as the iOS app, so one login works on both and in
-either direction. The door is a "Sign in" link in the site header, and the
-signed-in header follows a family onto every page, error pages included. An
-unverified user is held at the verification screen, which names the address the
-mail went to and offers resend. **The CSRF decision D22 had deferred to `web/05`
-was brought forward**: sign-in and registration POSTs are provably NOT covered
-by `SameSite=Strict` (a sign-in POST carries no cookie to withhold, so
-login-CSRF works fully), so a same-origin check now guards every state-changing
-request — Origin, falling back to the Referer's origin, both absent refused.
-**The web session lives 30 days, overriding D21's 7 on Ian's call** ("Let's make
-this 30 days instead of 7"), and it is scoped to the web: iOS sessions stay 7
-days. No login throttle exists anywhere — Ian declined to add one here. Review
-found and fixed a real auth bypass (`//account` and `/%61ccount` reached the
-account page with the gate skipped; the POST twin actually changed an unverified
-caller's email) by making route-declared access the authority and demoting the
-gate to an early redirect. **The D19 device matrix for this slice's four new
-screens is a human check and has NOT been run. Next free RFC 230** (recompute,
-never copy).
+Updated: 2026-09-16 — **EVERY URL UNICOACH CITES NOW LIVES IN ONE TABLE WITH A
+STATUS AND A DATE, AND EVERY TABLE THAT CHECKS ITS OWN LINKS IS GONE** (RFC 228,
+`main@adc49582` + `646525d2`). `source_documents`, `policy_parameters` and
+`admission_test_administrations` all dropped their own url columns for foreign
+keys into `external_documents`, so _"every stored link has been checked"_ is now
+a property of where the data lives rather than a rule somebody remembers — the
+requirement Ian set when he asked that external ingestion use `bin/check-link`.
+**The real work was hidden in the mirrors**: the 441 college pages were checked,
+but their **446 mirror links had never been checked once**, because the old
+sweep only harvested a column literally named `source_url`. `bin/cds-link-check`
+became **`bin/cds-link-sweep`** — it keeps the two-pass judgement, fetches
+through `bin/check-link`, and sweeps BOTH the page and its mirror — and
+`bin/check-link` gained `-g` to force a GET. **One operator step** swept all 887
+urls and the result is committed: **861 found, 13 not_found, 13 unknown**, every
+row dated. A **schema guard** now fails the build when any table outside
+`external_documents` declares a url-shaped column, and it cannot be dodged by
+naming the column `web_address`. No coach copy changed, no prompt version cut.
+**Eleven of brief 0010's slices are landed.**
+
+Previously — **A FAMILY CAN NOW SIGN IN ON THE WEB, AND THEY STAY SIGNED IN FOR
+30 DAYS** (RFC 224, `web/02/sign-in`, `main@a546a9f0` — the RFC 224 doc is in
+that commit). Register, sign in, sign out, verify email, resend verification and
+change email all work in the browser — the same `UNICOACH_SESSION` cookie as the
+iOS app, so one login works on both and in either direction. The door is a "Sign
+in" link in the site header, and the signed-in header follows a family onto
+every page, error pages included. An unverified user is held at the verification
+screen, which names the address the mail went to and offers resend. **The CSRF
+decision D22 had deferred to `web/05` was brought forward**: sign-in and
+registration POSTs are provably NOT covered by `SameSite=Strict` (a sign-in POST
+carries no cookie to withhold, so login-CSRF works fully), so a same-origin
+check now guards every state-changing request — Origin, falling back to the
+Referer's origin, both absent refused. **The web session lives 30 days,
+overriding D21's 7 on Ian's call** ("Let's make this 30 days instead of 7"), and
+it is scoped to the web: iOS sessions stay 7 days. No login throttle exists
+anywhere — Ian declined to add one here. Review found and fixed a real auth
+bypass (`//account` and `/%61ccount` reached the account page with the gate
+skipped; the POST twin actually changed an unverified caller's email) by making
+route-declared access the authority and demoting the gate to an early redirect.
+**The D19 device matrix for this slice's four new screens is a human check and
+has NOT been run. Next free RFC 230** (recompute, never copy).
 
 Previously (2026-09-16) — **UNICOACH'S OWN CODEBOOKS NOW INSTALL WITH THE
 DATABASE ITSELF** (RFC 229, `main@0f38fce8` + `aa0e668e`). `bin/codebook-seed`

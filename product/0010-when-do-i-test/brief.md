@@ -846,4 +846,17 @@ Two consequences, both binding:
   rebuilt (CollegesDao.kt:3018-3020), pinned by two tests — under D29 that is us
   deciding the publisher is wrong, and it needs a data-derived provenance marker
   as its own slice. Executed: db 839 tests 0 failures; codebook-seed harness
-  16/16; db-scripts-tests 113/113.
+  16/16; db-scripts-tests 113/113. test/05.2/one-home-for-every-citation LANDED
+  as RFC 228 (main@adc49582 + 646525d2, 2026-09-16) — every cited url now lives
+  in external_documents with a status and a date, which makes "every stored link
+  has been checked" a property of where the data lives rather than a rule
+  somebody remembers. source_documents, policy_parameters and
+  admission_test_administrations dropped their own url columns for foreign keys;
+  bin/cds-link-check became bin/cds-link-sweep (keeps the two-pass judgement,
+  fetches through bin/check-link, sweeps BOTH the page and its mirror — the 446
+  mirrors had never been checked once); bin/check-link gained -g; and a schema
+  guard fails the build when any table outside external_documents declares a
+  url-shaped column. The one operator step: a sweep of 887 urls, committed — 861
+  found, 13 not_found, 13 unknown, every row dated. No coach copy changed, no
+  prompt version cut. Executed: 3,591 tests 0 failures; 1,142 shell assertions;
+  45 calendar-seed assertions.
