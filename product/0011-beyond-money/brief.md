@@ -572,6 +572,15 @@ nudge, never a bare repeat.
       Full suite 3,213 executed in the gate run, 0 failures; iOS 677 executed, 0
       failures, 2 pre-existing skips.
 
+    beyond/01/what-the-coach-may-not-say LANDED as RFC 219 (main@6290cdc1 + 4e846daf,
+      2026-09-17) — the coach prompt (v40, rollback v39) now refuses to call a school a
+      reach, a match or a safety for this student, and refuses to give a school a fit
+      score, a grade or a star rating of its own; it names what we DO hold instead (cost,
+      what the school looks for, what it reported) and routes the judgement to the
+      school's own admissions office. The completion/admission/enrolment quoting rule was
+      cut at the approval gate and stays cut — beyond/11 owns those figures and their
+      stamps. Full suite 3,670 executed, 0 failures; the gate re-ran it and passed.
+
 ### D45 — the third arm is a counter, not a log (Ian, 2026-09-14, verbatim: "yes")
 
 `beyond/02` landed TWO counters (values coerced out of range, values the
