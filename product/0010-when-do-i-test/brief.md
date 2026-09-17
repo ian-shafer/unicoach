@@ -820,4 +820,13 @@ Two consequences, both binding:
   the live migrated database: 63 documents, 0 without a date, and zero would
   have been refused. The table holds 63 rather than 43 because the FAFSA corpus
   (RFC 215) landed into it the same day. Executed: 3,489 tests, 0 failures.
-  Door: none. No prompt version cut.
+  Door: none. No prompt version cut. test/04.5/one-date-seam LANDED as RFC 227
+  (main@758b28e3 + 2ae5fdbd, 2026-09-16) — every date a PERSON reads now comes
+  from one seam, in the US shape: Sep 12, 2026, Sep 2028, 2026, and a year-less
+  Nov 1 stays year-less. The coach, the testing timeline's English sentences,
+  the public explainer pages and the admin tables all read it; wire values stay
+  ISO. One new sweep in :db refuses a date pattern, a month-name lookup or a
+  month-name LITERAL outside four permitted files, each exception with a written
+  reason, and the guard lives in a different module from the seam. Coach prompt
+  v39 (rollback v38) carries the two-line date instruction. Executed counts in
+  the archived report. Door: every surface that already said a date.

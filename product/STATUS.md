@@ -7,10 +7,26 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-15 — **A PARENT CAN NOW BE ATTACHED TO A STUDENT, AND THE
-DATABASE WILL NOT LET THAT GO WRONG QUIETLY** (`family/01/the-link` LANDED as
-**RFC 221**, `main@27b447f4` + `f650f058`). The spine of brief 0014, and
-**nobody can reach it yet** — on purpose: nothing creates a link until
+Updated: 2026-09-16 — **EVERY DATE A PERSON READS NOW COMES FROM ONE PLACE, IN
+THE US SHAPE** (RFC 227, `main@758b28e3` + `2ae5fdbd`). One seam in `:common`
+renders `Sep 12, 2026`, `Sep 2028`, a year alone, or a year-less month-and-day —
+never `15 June 2028` again. The coach, the testing timeline's spoken sentences,
+the public explainer pages and the admin tables all read it; **wire values stay
+ISO**, because that is for machines. Three distinctions survive the
+consolidation, each pinned: a year-less Common Data Set cycle stays year-less
+(the source published no year), "not recorded" (our gap) stays distinct from
+"not reported" (the source's), and a date we DERIVED stays labelled as ours. **A
+new sweep fails the suite on a date pattern, a month-name lookup, or a
+month-name written as text** outside four permitted files — the last check stops
+someone bypassing the seam by typing month names — and the guard lives in a
+different module from the seam, because the artifact under change cannot be its
+own witness. Coach prompt **v39** (rollback v38) adds the two-line instruction
+to the coach.
+
+Previously — **A PARENT CAN NOW BE ATTACHED TO A STUDENT, AND THE DATABASE WILL
+NOT LET THAT GO WRONG QUIETLY** (`family/01/the-link` LANDED as **RFC 221**,
+`main@27b447f4` + `f650f058`). The spine of brief 0014, and **nobody can reach
+it yet** — on purpose: nothing creates a link until
 `family/02/invite-and-accept` builds the invite, so this slice ships with no
 screen, no chat tool and no API. Two tables. `supporters` is the adult side as
 its own thing, one row per adult account, mirroring `students` — which settles a
