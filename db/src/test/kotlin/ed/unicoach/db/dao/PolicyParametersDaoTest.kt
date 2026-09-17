@@ -141,9 +141,16 @@ class PolicyParametersDaoTest {
       try {
         connection.createStatement().use { stmt ->
           stmt.execute("ALTER TABLE policy_parameters DROP CONSTRAINT policy_parameters_parameter_check")
+          // The citation moved into external_documents (RFC 228); the bogus row
+          // still needs one, so the probe document is created in the same
+          // rolled-back transaction.
           stmt.execute(
-            "INSERT INTO policy_parameters (award_year, parameter, value, source_name, source_url) " +
-              "VALUES (2024, 'pell_max_vibes', 1, 'A Source', 'https://fsapartners.ed.gov/x')",
+            "INSERT INTO external_documents (url, url_status, url_checked_on) " +
+              "VALUES ('https://fsapartners.ed.gov/x', 'found', DATE '2026-09-17') ON CONFLICT (url) DO NOTHING",
+          )
+          stmt.execute(
+            "INSERT INTO policy_parameters (award_year, parameter, value, source_name, source_document_id) " +
+              "VALUES (2024, 'pell_max_vibes', 1, 'A Source', (SELECT id FROM external_documents WHERE url = 'https://fsapartners.ed.gov/x'))",
           )
         }
         PolicyParametersDao.listAll(session).exceptionOrNull()
@@ -170,8 +177,12 @@ class PolicyParametersDaoTest {
         try {
           connection.createStatement().use { stmt ->
             stmt.execute(
-              "INSERT INTO policy_parameters (award_year, parameter, value, source_name, source_url) " +
-                "VALUES (2024, 'pell_max_award_usd', -7395, 'A Source', 'https://fsapartners.ed.gov/x')",
+              "INSERT INTO external_documents (url, url_status, url_checked_on) " +
+                "VALUES ('https://fsapartners.ed.gov/x', 'found', DATE '2026-09-17') ON CONFLICT (url) DO NOTHING",
+            )
+            stmt.execute(
+              "INSERT INTO policy_parameters (award_year, parameter, value, source_name, source_document_id) " +
+                "VALUES (2024, 'pell_max_award_usd', -7395, 'A Source', (SELECT id FROM external_documents WHERE url = 'https://fsapartners.ed.gov/x'))",
             )
           }
           null

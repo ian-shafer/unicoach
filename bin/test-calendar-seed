@@ -131,6 +131,15 @@ assert_order_is_appendable() {
 # column would silently move a registration deadline into a score-release date.
 readonly EXPECTED_HEADER='test,cycle,test_date,registration_deadline,late_registration_deadline,score_release_date,dates_source_url,score_release_source_url,checked_on,expires_on'
 
+# THE BOUNDARY BETWEEN THE TWO SHAPES, WRITTEN ONCE (RFC 228). The committed
+# seed for cycle 2026-27 applies BEFORE adopt-external-documents-for-test-
+# calendar.sql drops the two url columns, so it must go on being generated
+# exactly as it landed. Every LATER cycle is generated against the table as it
+# is now, with two foreign keys into external_documents and a document upsert in
+# front. Moving this constant rewrites a landed migration, which is not a thing
+# to do: a new shape belongs to the next cycle, not to last year's file.
+readonly LEGACY_URL_COLUMN_SEED_THROUGH_CYCLE='2026-27'
+
 # One awk pass: validate every row, then emit the generated SQL per cycle.
 #
 # A naive comma split is only correct while no cell can contain a comma or a
@@ -160,7 +169,8 @@ generate() {
   # LC_ALL=C because the printable-ASCII refusal below is a statement about
   # BYTES, and a multibyte locale would let awk read one offending byte as a
   # character it considers ordinary.
-  complaint="$(LC_ALL=C awk -v expected="$EXPECTED_HEADER" -v outdir="$OUT_DIR" -v src="$CSV_REL" '
+  complaint="$(LC_ALL=C awk -v expected="$EXPECTED_HEADER" -v outdir="$OUT_DIR" -v src="$CSV_REL" \
+    -v legacy="$LEGACY_URL_COLUMN_SEED_THROUGH_CYCLE" '
     function fail(line, msg) { printf "  line %d: %s\n", line, msg > "/dev/stderr"; bad++ }
 
     function is_iso_date(s,   y, m, d, dim) {
@@ -294,6 +304,23 @@ generate() {
         (cycle_rows[cycle] == 1 ? "" : ",\n"),
         get_quoted(test), get_quoted(cycle), get_quoted(td), get_quoted(reg), get_date_or_null(late), get_date_or_null(rel),
         get_quoted(durl), get_text_or_null(surl), get_quoted(checked), get_quoted(expires))
+      # The SAME row in the post-RFC 228 shape, plus the two urls as
+      # external_documents rows. Built for every cycle and emitted only for a
+      # cycle past the legacy boundary, so the generator stays one pass and the
+      # boundary is a decision in the END block, not a fork in the reading.
+      docvalues[cycle] = docvalues[cycle] sprintf("%s  (%s, %s, DATE %s, DATE %s, %s, %s, %s, %s, DATE %s, DATE %s)",
+        (cycle_rows[cycle] == 1 ? "" : ",\n"),
+        get_quoted(test), get_quoted(cycle), get_quoted(td), get_quoted(reg), get_date_or_null(late), get_date_or_null(rel),
+        "(SELECT id FROM external_documents WHERE url = " get_quoted(durl) ")",
+        (surl == "" ? "NULL" : "(SELECT id FROM external_documents WHERE url = " get_quoted(surl) ")"),
+        get_quoted(checked), get_quoted(expires))
+      docs[cycle] = docs[cycle] sprintf("%s  (%s, %s)",
+        (doc_rows[cycle] == 0 ? "" : ",\n"), get_quoted(durl), get_quoted(checked))
+      doc_rows[cycle]++
+      if (surl != "") {
+        docs[cycle] = docs[cycle] sprintf(",\n  (%s, %s)", get_quoted(surl), get_quoted(checked))
+        doc_rows[cycle]++
+      }
     }
 
     # Gated on header_ok, because awk runs END even after a rule called `exit`:
@@ -319,21 +346,51 @@ generate() {
         printf "-- read from and the date a human read it. Upserts on the natural key, so a\n" > out
         printf "-- corrected row lands as a new generated seed and never as an edit to this one.\n" > out
         printf "\n" > out
-        printf "INSERT INTO admission_test_administrations\n" > out
-        printf "    (test, cycle, test_date, registration_deadline, late_registration_deadline,\n" > out
-        printf "     score_release_date, dates_source_url, score_release_source_url,\n" > out
-        printf "     checked_on, expires_on)\n" > out
-        printf "VALUES\n" > out
-        printf "%s\n", values[c] > out
-        printf "ON CONFLICT (test, test_date) DO UPDATE SET\n" > out
-        printf "    cycle                      = EXCLUDED.cycle,\n" > out
-        printf "    registration_deadline      = EXCLUDED.registration_deadline,\n" > out
-        printf "    late_registration_deadline = EXCLUDED.late_registration_deadline,\n" > out
-        printf "    score_release_date         = EXCLUDED.score_release_date,\n" > out
-        printf "    dates_source_url           = EXCLUDED.dates_source_url,\n" > out
-        printf "    score_release_source_url   = EXCLUDED.score_release_source_url,\n" > out
-        printf "    checked_on                 = EXCLUDED.checked_on,\n" > out
-        printf "    expires_on                 = EXCLUDED.expires_on;\n" > out
+        if (c <= legacy) {
+          printf "INSERT INTO admission_test_administrations\n" > out
+          printf "    (test, cycle, test_date, registration_deadline, late_registration_deadline,\n" > out
+          printf "     score_release_date, dates_source_url, score_release_source_url,\n" > out
+          printf "     checked_on, expires_on)\n" > out
+          printf "VALUES\n" > out
+          printf "%s\n", values[c] > out
+          printf "ON CONFLICT (test, test_date) DO UPDATE SET\n" > out
+          printf "    cycle                      = EXCLUDED.cycle,\n" > out
+          printf "    registration_deadline      = EXCLUDED.registration_deadline,\n" > out
+          printf "    late_registration_deadline = EXCLUDED.late_registration_deadline,\n" > out
+          printf "    score_release_date         = EXCLUDED.score_release_date,\n" > out
+          printf "    dates_source_url           = EXCLUDED.dates_source_url,\n" > out
+          printf "    score_release_source_url   = EXCLUDED.score_release_source_url,\n" > out
+          printf "    checked_on                 = EXCLUDED.checked_on,\n" > out
+          printf "    expires_on                 = EXCLUDED.expires_on;\n" > out
+        } else {
+          # The post-RFC 228 shape: the two urls are documents first, then the
+          # fact rows cite them by id. checked_on is the evidence (RFC 220):
+          # a person opened these pages that day and wrote the row from what
+          # they served, so the document is FOUND on that day.
+          printf "INSERT INTO external_documents (url, url_status, url_checked_on)\n" > out
+          printf "SELECT DISTINCT ON (url) url, \x27found\x27, checked_on\n" > out
+          printf "FROM (VALUES\n" > out
+          printf "%s\n", docs[c] > out
+          printf ") cited(url, checked_on)\n" > out
+          printf "ORDER BY url\n" > out
+          printf "ON CONFLICT (url) DO NOTHING;\n" > out
+          printf "\n" > out
+          printf "INSERT INTO admission_test_administrations\n" > out
+          printf "    (test, cycle, test_date, registration_deadline, late_registration_deadline,\n" > out
+          printf "     score_release_date, dates_document_id, score_release_document_id,\n" > out
+          printf "     checked_on, expires_on)\n" > out
+          printf "VALUES\n" > out
+          printf "%s\n", docvalues[c] > out
+          printf "ON CONFLICT (test, test_date) DO UPDATE SET\n" > out
+          printf "    cycle                      = EXCLUDED.cycle,\n" > out
+          printf "    registration_deadline      = EXCLUDED.registration_deadline,\n" > out
+          printf "    late_registration_deadline = EXCLUDED.late_registration_deadline,\n" > out
+          printf "    score_release_date         = EXCLUDED.score_release_date,\n" > out
+          printf "    dates_document_id          = EXCLUDED.dates_document_id,\n" > out
+          printf "    score_release_document_id  = EXCLUDED.score_release_document_id,\n" > out
+          printf "    checked_on                 = EXCLUDED.checked_on,\n" > out
+          printf "    expires_on                 = EXCLUDED.expires_on;\n" > out
+        }
         # close() is awk\x27s ONLY error channel for a redirected write: a full
         # disk or a read-only TMPDIR yields a TRUNCATED seed, which was then
         # copied into the schema directory and logged as written.

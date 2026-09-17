@@ -92,6 +92,8 @@ object BorrowingDao {
         SELECT DISTINCT ON (d.college_id)
                d.id, d.college_id, d.academic_year AS year, ${SourceDocumentJoin.CITATION_COLUMNS}
         FROM source_documents d
+        JOIN external_documents src ON src.id = d.external_document_id
+        LEFT JOIN external_documents arc ON arc.id = d.archive_external_document_id
         JOIN ids i ON i.college_id = d.college_id
         CROSS JOIN cds
         WHERE d.source = cds.source

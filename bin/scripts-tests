@@ -3544,12 +3544,12 @@ assert_success "fetch-cds-seed -h prints the help to stdout (documenting -K, not
   test_cds_help_exits_zero_on_stdout
 rm -rf "$CDS_FIXTURES" "$CDS_OUT"
 
-# ── RFC 200: bin/cds-link-check, the ingest-time CDS link sweep ───────────────
+# ── RFC 200: bin/cds-link-sweep, the ingest-time CDS link sweep ───────────────
 echo ""
-echo "==== Testing RFC 200 CDS source_url_status (bin/cds-link-check) ===="
+echo "==== Testing RFC 200/228 CDS link sweep (bin/cds-link-sweep) ===="
 
-assert_success "bin/cds-link-check parses as python3" \
-  python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/cds-link-check').read())"
+assert_success "bin/cds-link-sweep parses as python3" \
+  python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/cds-link-sweep').read())"
 
 # The sweep is a NETWORK script, so every arm below runs against a fixture http
 # server this harness starts on 127.0.0.1 -- NO test here touches the public
@@ -3669,7 +3669,9 @@ stop_cdslc_server() {
   CDSLC_SERVER_PID=""
 }
 
-# A seed directory shaped like db/seed/cds: CSVs carrying a `source_url` column.
+# A seed directory shaped like db/seed/cds: CSVs carrying a `source_url` and
+# an `archive_url` column. The urls below are the page urls; archive is empty
+# except where a test seeds one.
 # The urls are the ones this section's fixture server answers for, one per line
 # after the header.
 write_cdslc_seed() {
@@ -3677,11 +3679,11 @@ write_cdslc_seed() {
   shift
   mkdir -p "$dir"
   {
-    echo "document_id,source_url"
+    echo "document_id,source_url,archive_url"
     local index=0 url
     for url in "$@"; do
       index=$(( index + 1 ))
-      echo "doc-$index,$url"
+      echo "doc-$index,$url,"
     done
   } > "$dir/cds-fixture.csv"
 }
@@ -3700,11 +3702,11 @@ import csv, sys
 path, wanted = sys.argv[1], sys.argv[2]
 with open(path, newline="") as handle:
     reader = csv.DictReader(handle)
-    if "source_url_status" not in (reader.fieldnames or ()):
-        sys.exit(f"[{path}] has no source_url_status column: {reader.fieldnames}")
+    if "url_status" not in (reader.fieldnames or ()):
+        sys.exit(f"[{path}] has no url_status column: {reader.fieldnames}")
     for row in reader:
-        if row["source_url"] == wanted:
-            print(row["source_url_status"])
+        if row["url"] == wanted:
+            print(row["url_status"])
             break
     else:
         sys.exit(f"[{path}] holds no row for [{wanted}]")
@@ -3732,11 +3734,11 @@ write_cdslc_server "$CDSLC_DIR/fixture-server"
 # under DEAD_SHARE_CEILING, so this run reaches the write and the refusal arms
 # below are the only ones that exercise the ceiling.
 if ! start_cdslc_server mixed; then
-  fatal "cds-link-check fixture server did not start"
+  fatal "cds-link-sweep fixture server did not start"
 fi
 CDSLC_BASE="http://127.0.0.1:$CDSLC_PORT"
 CDSLC_SEED="$CDSLC_DIR/seed"
-CDSLC_OUT="$CDSLC_DIR/source-url-status.csv"
+CDSLC_OUT="$CDSLC_DIR/link-status.csv"
 write_cdslc_seed "$CDSLC_SEED" \
   "$CDSLC_BASE/live-a.pdf" \
   "$CDSLC_BASE/live-b.pdf" \
@@ -3751,7 +3753,7 @@ write_cdslc_seed "$CDSLC_SEED" \
 test_cdslc_stdout_is_empty_and_summary_on_stderr() {
   local stdout stderr status
   stdout="$(mktemp)"; stderr="$(mktemp)"
-  bin/cds-link-check -s "$CDSLC_SEED" -o "$CDSLC_OUT" -c 4 -t 10 > "$stdout" 2> "$stderr"
+  bin/cds-link-sweep -s "$CDSLC_SEED" -o "$CDSLC_OUT" -c 4 -t 10 > "$stdout" 2> "$stderr"
   status=$?
   cdslc_stdout_cleanup() { rm -f "$stdout" "$stderr"; }
   if [ "$status" -ne 0 ]; then
@@ -3767,7 +3769,7 @@ test_cdslc_stdout_is_empty_and_summary_on_stderr() {
   cdslc_stdout_cleanup
   return 0
 }
-assert_success "cds-link-check writes NOTHING to stdout on a normal run, summary on stderr" \
+assert_success "cds-link-sweep writes NOTHING to stdout on a normal run, summary on stderr" \
   test_cdslc_stdout_is_empty_and_summary_on_stderr
 
 assert_success "the fixture sweep wrote its sidecar" \
@@ -3778,11 +3780,11 @@ assert_success "the fixture sweep wrote its sidecar" \
 test_cdslc_header_is_exact() {
   local actual
   actual="$(head -1 "$CDSLC_OUT")"
-  [ "$actual" = "source_url,source_url_status,checked_on,pass_one,pass_two" ] && return 0
+  [ "$actual" = "url,url_status,checked_on,pass_one,pass_two" ] && return 0
   log-error "header is [$actual]"
   return 1
 }
-assert_success "the sidecar header is exactly source_url,source_url_status,checked_on,pass_one,pass_two" \
+assert_success "the sidecar header is exactly url,url_status,checked_on,pass_one,pass_two" \
   test_cdslc_header_is_exact
 
 # Rows in URL order, so the committed file diffs line by line rather than
@@ -3791,7 +3793,7 @@ assert_success "the sidecar header is exactly source_url,source_url_status,check
 test_cdslc_rows_in_url_order() {
   python3 - "$CDSLC_OUT" << 'PY'
 import csv, sys
-urls = [row["source_url"] for row in csv.DictReader(open(sys.argv[1], newline=""))]
+urls = [row["url"] for row in csv.DictReader(open(sys.argv[1], newline=""))]
 if urls != sorted(urls):
     sys.exit(f"rows are not in url order: {urls}")
 PY
@@ -3840,6 +3842,30 @@ assert_success "a 403 is recorded unknown and never not_found, so the link is KE
 assert_success "a url refusing HEAD with 405 but serving GET is found" \
   cdslc_verdict_is "$CDSLC_OUT" "$CDSLC_BASE/no-head.pdf" found
 
+# RFC 228's defect: the old sweep harvested ONE column and never asked about the
+# 446 archive mirrors. The archive column must be swept like the page.
+test_cdslc_sweeps_the_archive_column_too() {
+  local dir out
+  dir="$CDSLC_DIR/archive-seed"; out="$CDSLC_DIR/archive-out.csv"
+  rm -f "$out"
+  mkdir -p "$dir"
+  {
+    echo "document_id,source_url,archive_url"
+    echo "doc-1,$CDSLC_BASE/live-a.pdf,$CDSLC_BASE/live-b.pdf"
+  } > "$dir/cds-fixture.csv"
+  bin/cds-link-sweep -s "$dir" -o "$out" -c 4 -t 10 >/dev/null 2> "$CDSLC_DIR/archive.stderr"
+  local status=$?
+  if [ "$status" -ne 0 ]; then
+    log-error "exit [$status], stderr [$(cat "$CDSLC_DIR/archive.stderr")]"; return 1
+  fi
+  cdslc_verdict_is "$out" "$CDSLC_BASE/live-a.pdf" found || return 1
+  cdslc_verdict_is "$out" "$CDSLC_BASE/live-b.pdf" found || return 1
+  rm -f "$CDSLC_DIR/archive.stderr"
+  return 0
+}
+assert_success "the sweep harvests the archive_url column too, not only source_url" \
+  test_cdslc_sweeps_the_archive_column_too
+
 # ── RFC 200 D3: the two refusals, by the ABSENT file AND the spoken reason ───
 # Writing nothing is the whole mechanism -- an absent row loads as `unknown`
 # with no date and KEEPS its link -- so the exit code alone is not the
@@ -3863,7 +3889,7 @@ test_cdslc_refuses_over_the_dead_share_ceiling() {
   # nothing-found arm: two of three documents not_found is 66.7%, over 20%.
   write_cdslc_seed "$seed" \
     "$CDSLC_BASE/live-a.pdf" "$CDSLC_BASE/gone.pdf" "$CDSLC_BASE/gone-too.pdf"
-  bin/cds-link-check -s "$seed" -o "$out" -c 4 -t 10 >/dev/null 2> "$CDSLC_CEILING_ERR"
+  bin/cds-link-sweep -s "$seed" -o "$out" -c 4 -t 10 >/dev/null 2> "$CDSLC_CEILING_ERR"
   status=$?
   if [ "$status" -eq 0 ]; then
     log-error "exited 0 over the dead-share ceiling"; return 1
@@ -3887,7 +3913,7 @@ test_cdslc_refuses_over_the_dead_share_ceiling() {
   fi
   return 0
 }
-assert_success "over the 20% dead share, cds-link-check refuses BY NAME and writes NO file" \
+assert_success "over the 20% dead share, cds-link-sweep refuses BY NAME and writes NO file" \
   test_cdslc_refuses_over_the_dead_share_ceiling
 
 # Every url 404: nothing came back found, which indicts the CHECK (a captive
@@ -3904,7 +3930,7 @@ test_cdslc_refuses_an_all_404_corpus() {
     "http://127.0.0.1:$CDSLC_PORT/a.pdf" \
     "http://127.0.0.1:$CDSLC_PORT/b.pdf" \
     "http://127.0.0.1:$CDSLC_PORT/c.pdf"
-  bin/cds-link-check -s "$seed" -o "$out" -c 4 -t 10 >/dev/null 2> "$CDSLC_NOTHING_FOUND_ERR"
+  bin/cds-link-sweep -s "$seed" -o "$out" -c 4 -t 10 >/dev/null 2> "$CDSLC_NOTHING_FOUND_ERR"
   status=$?
   stop_cdslc_server
   if [ "$status" -eq 0 ]; then
@@ -3925,7 +3951,7 @@ test_cdslc_refuses_an_all_404_corpus() {
   fi
   return 0
 }
-assert_success "with every url 404, cds-link-check refuses BY NAME and writes NO file" \
+assert_success "with every url 404, cds-link-sweep refuses BY NAME and writes NO file" \
   test_cdslc_refuses_an_all_404_corpus
 
 # The two refusals are DIFFERENT diagnoses -- "the corpus lost too much" versus
@@ -3976,7 +4002,7 @@ s.close()')"
   local err phrase
   err="$CDSLC_DIR/offline.stderr"
   rm -f "$err"
-  bin/cds-link-check -s "$seed" -o "$out" -c 4 -t 5 >/dev/null 2> "$err"
+  bin/cds-link-sweep -s "$seed" -o "$out" -c 4 -t 5 >/dev/null 2> "$err"
   status=$?
   if [ "$status" -eq 0 ]; then
     log-error "exited 0 with no server listening"; return 1
@@ -4001,42 +4027,42 @@ s.close()')"
   rm -f "$err"
   return 0
 }
-assert_success "with nothing listening, cds-link-check refuses BY NAME and writes NO file" \
+assert_success "with nothing listening, cds-link-sweep refuses BY NAME and writes NO file" \
   test_cdslc_refuses_when_nothing_is_listening
 
 # ── The option grammar: the reserved usage band, not exit 1 ──────────────────
-assert_exit_code "$EXIT_UNKNOWN_OPTION" "cds-link-check rejects an unknown option (10)" \
-  bin/cds-link-check -z
-assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "cds-link-check -s without a value exits 11" \
-  bin/cds-link-check -s
-assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "cds-link-check -o without a value exits 11" \
-  bin/cds-link-check -o
-assert_exit_code "$EXIT_UNEXPECTED_ARG" "cds-link-check rejects a stray positional (20, not 10)" \
-  bin/cds-link-check stray
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "cds-link-sweep rejects an unknown option (10)" \
+  bin/cds-link-sweep -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "cds-link-sweep -s without a value exits 11" \
+  bin/cds-link-sweep -s
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "cds-link-sweep -o without a value exits 11" \
+  bin/cds-link-sweep -o
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "cds-link-sweep rejects a stray positional (20, not 10)" \
+  bin/cds-link-sweep stray
 # The value-shape checks getopt cannot make. -c and -t are bounded because the
 # sweep they size hits hundreds of colleges' web servers.
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-check refuses [-c banana], not an integer (22)" \
-  bin/cds-link-check -c banana
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-check refuses [-c 0], under the floor (22)" \
-  bin/cds-link-check -c 0
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-check refuses [-c 99], over the ceiling (22)" \
-  bin/cds-link-check -c 99
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-check refuses [-t 0], under the floor (22)" \
-  bin/cds-link-check -t 0
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-check refuses a -s that is not a directory (22)" \
-  bin/cds-link-check -s "$PROJECT_ROOT/bin/functions"
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-check refuses a -s directory holding no csv files (22)" \
-  bin/cds-link-check -s "$(mktemp -d)"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-sweep refuses [-c banana], not an integer (22)" \
+  bin/cds-link-sweep -c banana
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-sweep refuses [-c 0], under the floor (22)" \
+  bin/cds-link-sweep -c 0
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-sweep refuses [-c 99], over the ceiling (22)" \
+  bin/cds-link-sweep -c 99
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-sweep refuses [-t 0], under the floor (22)" \
+  bin/cds-link-sweep -t 0
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-sweep refuses a -s that is not a directory (22)" \
+  bin/cds-link-sweep -s "$PROJECT_ROOT/bin/functions"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "cds-link-sweep refuses a -s directory holding no csv files (22)" \
+  bin/cds-link-sweep -s "$(mktemp -d)"
 
 # -h is the ONE thing this script puts on stdout: it is what that invocation
 # asked for, not a diagnostic printed alongside one.
 test_cdslc_help_exits_zero_on_stdout() {
   local out err status
   out="$(mktemp)"; err="$(mktemp)"
-  bin/cds-link-check -h > "$out" 2> "$err"
+  bin/cds-link-sweep -h > "$out" 2> "$err"
   status=$?
   [ "$status" -eq 0 ] || { log-error "-h exited [$status]"; rm -f "$out" "$err"; return 1; }
-  grep -q "cds-link-check: record whether each college's own CDS filing is still there" "$out" \
+  grep -q "cds-link-sweep: record whether each Common Data Set citation is still there" "$out" \
     || { log-error "-h printed no help: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
   grep -q -- "-s DIR" "$out" \
     || { log-error "-h does not document -s"; rm -f "$out" "$err"; return 1; }
@@ -4044,7 +4070,7 @@ test_cdslc_help_exits_zero_on_stdout() {
   rm -f "$out" "$err"
   return 0
 }
-assert_success "cds-link-check -h prints the help to stdout and exits 0" \
+assert_success "cds-link-sweep -h prints the help to stdout and exits 0" \
   test_cdslc_help_exits_zero_on_stdout
 
 stop_cdslc_server
@@ -4098,6 +4124,8 @@ import time
 from pathlib import Path
 
 HITS = {}
+HEAD_HITS = 0
+GET_HITS = 0
 LOCK = threading.Lock()
 
 
@@ -4108,6 +4136,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/count":
             with LOCK:
                 body = str(HITS.get("/ok", 0)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if method == "GET":
+                self.wfile.write(body)
+            return
+
+        if self.path == "/methods":
+            with LOCK:
+                body = f"{HEAD_HITS} {GET_HITS}".encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))
@@ -4142,9 +4181,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def do_HEAD(self):
+        global HEAD_HITS
+        if self.path == "/ok":
+            with LOCK:
+                HEAD_HITS += 1
         self.respond("HEAD")
 
     def do_GET(self):
+        global GET_HITS
+        if self.path == "/ok":
+            with LOCK:
+                GET_HITS += 1
         self.respond("GET")
 
     def log_message(self, fmt, *args):
@@ -4234,6 +4281,50 @@ assert_success "check-link prints <status><TAB><url> per line, in input order, a
 # by accident: a host that refuses the METHOD has not refused the FILE.
 assert_success "a url that refuses HEAD but serves GET reports 200" \
   bash -c "bin/check-link -t 10 '$CHKL_BASE/no-head' 2>/dev/null | grep -qx \"200\$(printf '\t')$CHKL_BASE/no-head\""
+
+# -g (RFC 228): GET and never HEAD. The method COUNTERS prove it -- a -g run
+# must not send a single HEAD, and a default run must send HEAD and no GET when
+# the host answers HEAD. That is what the two-pass reading needs: the second
+# pass changes the METHOD, not just the agent.
+test_chkl_g_forces_get_and_never_head() {
+  local before_g after_g before_h after_h
+  before_g="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f2)"
+  before_h="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f1)"
+  bin/check-link -g -t 10 "$CHKL_BASE/ok" >/dev/null 2>&1 || return 1
+  after_g="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f2)"
+  after_h="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f1)"
+  [ "$(( after_g - before_g ))" -eq 1 ] || {
+    log-error "-g should send one GET, sent [$(( after_g - before_g ))]"
+    return 1
+  }
+  [ "$after_h" = "$before_h" ] || {
+    log-error "-g sent HEAD too: [$(( after_h - before_h ))] HEAD request(s)"
+    return 1
+  }
+  return 0
+}
+assert_success "check-link -g sends GET and never HEAD" \
+  test_chkl_g_forces_get_and_never_head
+
+test_chkl_default_still_heads_first() {
+  local before_g after_g before_h after_h
+  before_g="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f2)"
+  before_h="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f1)"
+  bin/check-link -t 10 "$CHKL_BASE/ok" >/dev/null 2>&1 || return 1
+  after_g="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f2)"
+  after_h="$(curl -s "$CHKL_BASE/methods" | cut -d' ' -f1)"
+  [ "$after_h" -gt "$before_h" ] || {
+    log-error "the default pass sent no HEAD"
+    return 1
+  }
+  [ "$after_g" = "$before_g" ] || {
+    log-error "the default pass sent a GET where HEAD answered: [$(( after_g - before_g ))]"
+    return 1
+  }
+  return 0
+}
+assert_success "without -g, check-link still tries HEAD first" \
+  test_chkl_default_still_heads_first
 
 # Redirects are FOLLOWED and the final status is what is reported. A 301 is how
 # a healthy site says "we moved", and a caller that got `301` for half a corpus
@@ -4355,6 +4446,7 @@ test_chkl_help_exits_zero_on_stdout() {
   status=$?
   [ "$status" -eq 0 ] || { log-error "-h exited [$status]"; rm -f "$out" "$err"; return 1; }
   grep -q -- "-u AGENT" "$out" || { log-error "-h does not document -u: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
+  grep -q -- "-g" "$out" || { log-error "-h does not document -g: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
   grep -q "Mozilla/5.0" "$out" || { log-error "-h does not print the default agent"; rm -f "$out" "$err"; return 1; }
   [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -3 "$err")]"; rm -f "$out" "$err"; return 1; }
   rm -f "$out" "$err"

@@ -44,7 +44,7 @@ data class NewSourceDocument(
    * [sourceUrlCheckedOn] is what a writer that ran no check says -- and in this
    * type it SAYS it rather than inheriting it, because the one thing this
    * column exists to stop is a claim about a school's file that nobody made.
-   * The CDS loader states both from `db/seed/cds/source-url-status.csv`; every
+   * The CDS loader states both from `db/seed/cds/link-status.csv`; every
    * other writer states UNKNOWN and null, in as many words.
    *
    * The COLUMN does carry `DEFAULT 'unknown'`
@@ -63,15 +63,34 @@ data class NewSourceDocument(
    * here, which is why the enum needs no fourth member.
    */
   val sourceUrlCheckedOn: LocalDate?,
+  /**
+   * Whether [archiveUrl] was still served when we last looked (RFC 228). Read
+   * from the same swept sidecar as the page -- `db/seed/cds/link-status.csv`
+   * now covers both columns -- and stated rather than defaulted, for exactly
+   * the reason [sourceUrlStatus] is: a verdict nobody reached must never look
+   * like one that passed (RFC 182).
+   */
+  val archiveUrlStatus: SourceUrlStatus = SourceUrlStatus.UNKNOWN,
+  /**
+   * The day [archiveUrlStatus] was established, or null where we never asked.
+   * An archive with a date is evidence; an archive with none is not stored
+   * under RFC 220's strict table.
+   */
+  val archiveUrlCheckedOn: LocalDate? = null,
 ) {
   init {
-    // The Kotlin half of `source_documents_checked_when_known`: you cannot
-    // claim to know without saying when you looked. Held here as well as in
-    // the schema so an unsatisfiable row cannot be built at all -- the DB
-    // would refuse it, but hundreds of rows later and with no writer named.
+    // The Kotlin half of the old `source_documents_checked_when_known`: you
+    // cannot claim to know without saying when you looked, for either url.
+    // Held here as well as in the schema so an unsatisfiable row cannot be
+    // built at all -- the DB would refuse it, but hundreds of rows later and
+    // with no writer named.
     require(!sourceUrlStatus.requiresCheckedOn || sourceUrlCheckedOn != null) {
       "a [${sourceUrlStatus.value}] verdict must say when it was reached: " +
         "college=[${collegeId.value}] year=[${academicYear.label}] source_url=[$sourceUrl]"
+    }
+    require(!archiveUrlStatus.requiresCheckedOn || archiveUrlCheckedOn != null) {
+      "a [${archiveUrlStatus.value}] archive verdict must say when it was reached: " +
+        "college=[${collegeId.value}] year=[${academicYear.label}] archive_url=[$archiveUrl]"
     }
   }
 }

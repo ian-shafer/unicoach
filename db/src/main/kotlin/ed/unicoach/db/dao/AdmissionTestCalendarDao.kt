@@ -110,7 +110,19 @@ object AdmissionTestCalendarDao {
    */
   fun list(session: SqlSession): Result<List<AdmissionTestAdministration>> =
     session.queryList(
-      "SELECT * FROM $TABLE ORDER BY test_date, test",
+      // The two urls moved into external_documents (RFC 228); the mapper reads
+      // `dates_source_url` and `score_release_source_url` exactly as it did
+      // when they were columns of this table, so nothing above this DAO learns
+      // that the storage moved. The dates page is an INNER join -- the column
+      // is NOT NULL -- and the score-release page a LEFT join, because a
+      // sitting with no announced release has neither.
+      """
+      SELECT a.*, d.url AS dates_source_url, r.url AS score_release_source_url
+      FROM $TABLE a
+      JOIN external_documents d ON d.id = a.dates_document_id
+      LEFT JOIN external_documents r ON r.id = a.score_release_document_id
+      ORDER BY a.test_date, a.test
+      """.trimIndent(),
       bind = {},
       map = ::mapRow,
     )
@@ -127,39 +139,52 @@ object AdmissionTestCalendarDao {
     session: SqlSession,
     row: NewAdmissionTestAdministration,
   ): Result<AdmissionTestAdministration> =
-    session.mutateReturning(
-      """
-      INSERT INTO $TABLE (
-        test, cycle, test_date, registration_deadline, late_registration_deadline,
-        score_release_date, dates_source_url, score_release_source_url, checked_on, expires_on
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (test, test_date) DO UPDATE SET
-        cycle = EXCLUDED.cycle,
-        registration_deadline = EXCLUDED.registration_deadline,
-        late_registration_deadline = EXCLUDED.late_registration_deadline,
-        score_release_date = EXCLUDED.score_release_date,
-        dates_source_url = EXCLUDED.dates_source_url,
-        score_release_source_url = EXCLUDED.score_release_source_url,
-        checked_on = EXCLUDED.checked_on,
-        expires_on = EXCLUDED.expires_on
-      RETURNING *
-      """.trimIndent(),
-      bind = { stmt ->
-        // A cursor, never ten hand-typed ordinals (`CanonicalCohortFixture`'s
-        // idiom): every slot but two is a DATE, so a one-slot renumber slip
-        // writes a row that passes every CHECK and says something else.
-        var idx = 1
-        stmt.setString(idx++, row.test.value)
-        stmt.setString(idx++, row.cycle)
-        stmt.setObject(idx++, row.testDate)
-        stmt.setObject(idx++, row.registrationDeadline)
-        stmt.setDateOrNull(idx++, row.lateRegistrationDeadline)
-        stmt.setDateOrNull(idx++, row.scoreRelease?.date)
-        stmt.setString(idx++, row.datesSourceUrl)
-        stmt.setStringOrNull(idx++, row.scoreRelease?.sourceUrl)
-        stmt.setObject(idx++, row.checkedOn)
-        stmt.setObject(idx, row.expiresOn)
-      },
-      map = ::mapRow,
-    )
+    // The citation is resolved first, through the ONE home for that policy
+    // (RFC 228): [ExternalDocumentsDao.citationIds] cites and never sweeps, so
+    // this path cannot overwrite a known link status with "we never asked"
+    // (RFC 182). `checked_on` is the evidence it states (RFC 220): the day a
+    // person opened these pages and wrote this row from what they served.
+    ExternalDocumentsDao
+      .citationIds(session, row.datesSourceUrl, row.scoreRelease?.sourceUrl, row.checkedOn)
+      .mapCatching { (datesId, releaseId) ->
+        session
+          .mutateReturning(
+            """
+            INSERT INTO $TABLE (
+              test, cycle, test_date, registration_deadline, late_registration_deadline,
+              score_release_date, dates_document_id, score_release_document_id, checked_on, expires_on
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (test, test_date) DO UPDATE SET
+              cycle = EXCLUDED.cycle,
+              registration_deadline = EXCLUDED.registration_deadline,
+              late_registration_deadline = EXCLUDED.late_registration_deadline,
+              score_release_date = EXCLUDED.score_release_date,
+              dates_document_id = EXCLUDED.dates_document_id,
+              score_release_document_id = EXCLUDED.score_release_document_id,
+              checked_on = EXCLUDED.checked_on,
+              expires_on = EXCLUDED.expires_on
+            RETURNING *,
+              (SELECT e.url FROM external_documents e WHERE e.id = $TABLE.dates_document_id) AS dates_source_url,
+              (SELECT e.url FROM external_documents e WHERE e.id = $TABLE.score_release_document_id) AS score_release_source_url
+            """.trimIndent(),
+            bind = { stmt ->
+              // A cursor, never ten hand-typed ordinals
+              // ([AdmissionTestCalendarDao]'s own idiom): every slot but two
+              // is a DATE, so a one-slot renumber slip writes a row that
+              // passes every CHECK and says something else.
+              var idx = 1
+              stmt.setString(idx++, row.test.value)
+              stmt.setString(idx++, row.cycle)
+              stmt.setObject(idx++, row.testDate)
+              stmt.setObject(idx++, row.registrationDeadline)
+              stmt.setDateOrNull(idx++, row.lateRegistrationDeadline)
+              stmt.setDateOrNull(idx++, row.scoreRelease?.date)
+              stmt.setObject(idx++, datesId.value)
+              stmt.setObject(idx++, releaseId?.value)
+              stmt.setObject(idx++, row.checkedOn)
+              stmt.setObject(idx, row.expiresOn)
+            },
+            map = ::mapRow,
+          ).getOrThrow()
+      }
 }

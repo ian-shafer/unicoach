@@ -51,7 +51,7 @@ internal fun decodeSourceUrlStatus(
   row: String,
 ): SourceUrlStatus =
   SourceUrlStatus.fromValue(raw)
-    ?: throw corruptValue(raw, "SourceUrlStatus", "source_documents.source_url_status ($row)")
+    ?: throw corruptValue(raw, "SourceUrlStatus", "external_documents.url_status ($row)")
 
 /**
  * One fact per key, REFUSING a duplicate.

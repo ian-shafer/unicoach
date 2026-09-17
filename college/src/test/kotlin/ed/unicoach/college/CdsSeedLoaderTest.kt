@@ -79,14 +79,12 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // `source_url` is second-to-last in all four files -- so the guard would
     // validate the wrong value and stay green over the corpus it exists to check.
     val urls =
-      committedSeedDir
-        .listFiles { file -> file.extension == "csv" }
-        .orEmpty()
+      seedTableFiles
         .sorted()
-        .flatMap { file -> sourceUrlsOf(file).map { file.name to it } }
+        .flatMap { name -> sourceUrlsOf(File(committedSeedDir, name)).map { name to it } }
 
     assertEquals(
-      seedTableFiles + CdsSeedLoader.SOURCE_URL_STATUS_FILE,
+      seedTableFiles + CdsSeedLoader.LINK_STATUS_FILE,
       committedSeedDir
         .listFiles { file -> file.extension == "csv" }
         .orEmpty()
@@ -922,7 +920,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // have acquired a `rows_ingested` key for rows it never writes. Asserted
     // all the same: a renamed `checked_on` would otherwise load every verdict
     // dateless, which is the ONE pair the schema refuses.
-    assertHeaderOf(CdsSeedLoader.SOURCE_URL_STATUS_FILE, CdsSeedLoader.SOURCE_URL_STATUS_COLUMNS)
+    assertHeaderOf(CdsSeedLoader.LINK_STATUS_FILE, CdsSeedLoader.LINK_STATUS_COLUMNS)
   }
 
   /**
@@ -1045,17 +1043,17 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
   // RFC 200: the source-url-status sidecar, joined onto the document by url.
   // ---------------------------------------------------------------------------
 
-  /** Every `(source_url, source_url_status, source_url_checked_on)` the load wrote. */
+  /** Every `(url, url_status, url_checked_on)` the load wrote, joined through the document. */
   private fun writtenStatuses(): Map<String, Pair<String, String?>> =
     query(
-      "SELECT source_url, source_url_status, source_url_checked_on::text FROM source_documents",
+      "SELECT d.url, d.url_status, d.url_checked_on::text FROM source_documents sd JOIN external_documents d ON d.id = sd.external_document_id",
     ) { rs -> rs.getString(1) to (rs.getString(2) to rs.getString(3)) }.toMap()
 
   /** The committed sidecar, read through the loader's own CSV reader, keyed by url. */
   private fun committedStatuses(): Map<String, Pair<String, String>> =
-    parseSeed(CdsSeedLoader.SOURCE_URL_STATUS_FILE) { records ->
+    parseSeed(CdsSeedLoader.LINK_STATUS_FILE) { records ->
       records.associate {
-        it.get("source_url").trim() to (it.get("source_url_status").trim() to it.get("checked_on").trim())
+        it.get("url").trim() to (it.get("url_status").trim() to it.get("checked_on").trim())
       }
     }
 
@@ -1083,21 +1081,28 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // asked" -- correct behaviour, and invisible. This is what stops a
     // half-swept corpus from shipping as one: the two sets must be EQUAL.
     //
-    // The COUNT is not frozen: an operator re-runs bin/cds-link-check and the
+    // The COUNT is not frozen: an operator re-runs bin/cds-link-sweep and the
     // verdicts change. What cannot change without a seed regeneration is that
     // the sidecar answers for exactly the corpus, which is asserted as a set
     // difference against the file rather than against a number.
-    val seedUrls = seedTableFiles.sorted().flatMap { name -> parseSeed(name) { it.map { r -> r.get("source_url").trim() } } }
-    val distinct = seedUrls.toSet()
+    //
+    // RFC 228 widened the sweep to BOTH url columns: the page AND its archive
+    // mirror are documents, so the committed set is the union of the two
+    // columns, not the source column alone. The one number that is a fact about
+    // the CORPUS rather than about a checker run is 887 -- 441 pages plus 446
+    // mirrors, and every mirror is on www.collegedata.fyi.
+    val pageUrls = seedTableFiles.sorted().flatMap { name -> parseSeed(name) { it.map { r -> r.get("source_url").trim() } } }
+    val archiveUrls =
+      seedTableFiles.sorted().flatMap { name ->
+        parseSeed(name) { it.map { r -> r.get("archive_url").trim().ifEmpty { null } }.filterNotNull() }
+      }
+    val distinct = (pageUrls + archiveUrls).toSet()
     val sidecar = committedStatuses()
 
-    // The ONE number that is a fact about the CORPUS rather than about a
-    // checker run: 441 distinct filings are committed under db/seed/cds. A
-    // re-sweep does not move it; a regenerated seed does, and should be seen.
-    assertEquals(441, distinct.size, "the committed seed cites 441 distinct documents")
-    assertEquals(emptySet(), distinct - sidecar.keys, "committed source_urls the sidecar never swept")
+    assertEquals(887, distinct.size, "the committed seed cites 887 distinct urls across both columns")
+    assertEquals(emptySet(), distinct - sidecar.keys, "committed urls the sidecar never swept")
     assertEquals(emptySet(), sidecar.keys - distinct, "sidecar rows for urls the committed seed does not cite")
-    assertEquals(distinct.size, sidecar.size, "one sidecar row per distinct document")
+    assertEquals(distinct.size, sidecar.size, "one sidecar row per distinct url")
   }
 
   @Test
@@ -1126,12 +1131,12 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `a not_found url lands on its document with the day we looked, and an absent url is never-asked`() =
+  fun `a not_found url lands on its document with the day we looked`() =
     runBlocking {
       seedColleges()
-      // The fixture sidecar names ONE of the two matched filings and leaves the
-      // other out, so both halves of the join are exercised by one load: the
-      // verdict that drops an anchor, and the silence that keeps one.
+      // The fixture sidecar covers every url the corpus cites -- page and
+      // mirror alike (RFC 228) -- so the load succeeds and the verdict that
+      // drops an anchor lands beside the one that keeps a link.
       val result =
         loader.load(
           meritCsv,
@@ -1146,10 +1151,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
           // Named in the sidecar: the verdict AND the day, because a verdict
           // without a day is refused by the schema and by the row type.
           "https://coastal.example.edu/cds-2024-25.pdf" to ("not_found" to "2026-09-13"),
-          // ABSENT from the sidecar: "we never asked" -- unknown, NO day, link
-          // kept. A default of `found` here would be us vouching for a file we
-          // never looked at.
-          "https://lakeside.example.edu/cds-2025-26.pdf" to ("unknown" to null),
+          "https://lakeside.example.edu/cds-2025-26.pdf" to ("found" to "2026-09-13"),
         ),
         writtenStatuses(),
       )
@@ -1157,11 +1159,11 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
       assertEquals(
         CdsSeedLoader.LinkCheckSummary(
           documents = 2,
-          found = 0,
+          found = 1,
           notFound = 1,
-          unknownNeverAsked = 1,
+          unknownNeverAsked = 0,
           unknownNoAnswer = 0,
-          statusRows = 1,
+          statusRows = 3,
           // The sidecar this run resolved, and that it WAS there: the ingest
           // warning says which of "absent" and "present but empty" it met, so
           // the summary has to carry the difference.
@@ -1205,28 +1207,24 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     }
 
   @Test
-  fun `a run with no sidecar at all asks nobody, and says so`() =
+  fun `a run with no sidecar at all refuses to store a citation, and says so`() =
     runBlocking {
       seedColleges()
-      // The sidecar is the ONE seed file that may be missing, because an
-      // absent check is a real state and the honest reading of it keeps every
-      // link. It is not silently tolerated: every document is counted as
-      // never-asked, which is the number an operator reads to discover that
-      // bin/cds-link-check was never run.
+      // Since RFC 220 a url nobody asked about cannot be STORED: there is no
+      // row for it, and the loader refuses the fact rather than inventing a
+      // "found on" date. The old "absent = never-asked, keeps the link"
+      // reading is exactly the hole RFC 220 closed.
       val absent = File(File.createTempFile("cds-no-sidecar", ".dir").also { it.delete() }.path, "absent.csv")
-      val result = loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv, absent)
+      val error =
+        assertFailsWith<CdsSeedLoader.LoadException> {
+          loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv, absent)
+        }
       assertFalse(absent.exists(), "this run has no sidecar at all")
-
-      assertEquals(0, result.linkCheck.statusRows)
-      assertEquals(2, result.linkCheck.unknownNeverAsked)
-      assertEquals(0, result.linkCheck.unknownNoAnswer)
-      assertEquals(0, result.linkCheck.found)
-      assertEquals(0, result.linkCheck.notFound)
-      assertEquals(
-        listOf("unknown" to null, "unknown" to null),
-        writtenStatuses().values.toList(),
-        "no verdict means no day, and no day means we never asked",
+      assertTrue(
+        error.message!!.contains("no date cannot be stored"),
+        "the refusal must name the evidence the url lacks; got: ${error.message}",
       )
+      assertEquals(0, withSession { count(it, "source_documents") }, "nothing is written on a refused load")
     }
 
   @Test
@@ -1234,7 +1232,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     seedColleges()
     val dateless = File.createTempFile("cds-dateless-status", ".csv")
     dateless.writeText(
-      "source_url,source_url_status,checked_on,pass_one,pass_two\n" +
+      "url,url_status,checked_on,pass_one,pass_two\n" +
         "https://coastal.example.edu/cds-2024-25.pdf,not_found,,404,404\n",
     )
     val error =

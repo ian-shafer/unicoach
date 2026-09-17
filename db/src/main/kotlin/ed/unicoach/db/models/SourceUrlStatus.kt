@@ -2,16 +2,16 @@ package ed.unicoach.db.models
 
 /**
  * Whether a college's own published file was still served when we last looked
- * (RFC 200), backing `source_documents.source_url_status`.
+ * (RFC 200), backing `external_documents.url_status` (RFC 228).
  *
  * The Family Cost Report links each Common Data Set citation to the college's
  * own filing (RFC 196), and `AidPolicyWire` hands the coach that url beside the
  * byte-frozen sentence "We link to the college's own file so you can see it."
- * Measured 2026-09-13 (db/seed/cds/source-url-status.csv): of 441 distinct
+ * Measured 2026-09-13 (db/seed/cds/link-status.csv): of 441 distinct
  * documents in the committed seed, 417 are FOUND, 15 answer 404 in two
  * independent passes, and 9 are UNKNOWN -- we asked and got no usable answer.
  * This is the recorded answer, written at
- * INGEST by `bin/cds-link-check` and never asked at render -- a family must
+ * INGEST by `bin/cds-link-sweep` and never asked at render -- a family must
  * never wait on a college's web server.
  *
  * THREE states, not four. An earlier draft carried a fourth for "we asked and

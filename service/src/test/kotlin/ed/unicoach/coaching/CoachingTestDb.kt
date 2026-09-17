@@ -23,6 +23,7 @@ import ed.unicoach.db.models.StudentId
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.time.LocalDate
 import java.util.UUID
 
 /**
@@ -214,10 +215,12 @@ object CoachingTestDb {
           academicYear = AcademicYear(sourceYear),
           sourceUrl = sourceUrl,
           archiveUrl = archiveUrl,
-          // STATED, not defaulted (RFC 200): this fixture ran no link check, so
-          // it says "no verdict, never asked" -- the pair that keeps the link.
-          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
-          sourceUrlCheckedOn = null,
+          // STATED, not defaulted: a fixture is not exempt from RFC 220, so it
+          // carries the evidence a citation now requires.
+          sourceUrlStatus = SourceUrlStatus.FOUND,
+          sourceUrlCheckedOn = LocalDate.parse("2026-09-14"),
+          archiveUrlStatus = SourceUrlStatus.FOUND,
+          archiveUrlCheckedOn = LocalDate.parse("2026-09-14"),
         ),
       ).getOrThrow()
 }

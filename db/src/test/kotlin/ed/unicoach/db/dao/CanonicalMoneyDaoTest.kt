@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.time.LocalDate
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -393,7 +394,9 @@ class CanonicalMoneyDaoTest {
     assertEquals(first, document(id, sourceUrl = "https://example.edu/corrected.pdf"))
     assertEquals(
       "https://example.edu/corrected.pdf",
-      scalarString("SELECT source_url FROM source_documents WHERE id = '${first.value}'"),
+      scalarString(
+        "SELECT d.url FROM source_documents sd JOIN external_documents d ON d.id = sd.external_document_id WHERE sd.id = '${first.value}'",
+      ),
     )
     // A different year is a different document.
     assertTrue(document(id, academicYear = AcademicYear(2025)) != first)
@@ -413,12 +416,14 @@ class CanonicalMoneyDaoTest {
               academicYear = AcademicYear(2024),
               sourceUrl = "",
               archiveUrl = null,
-              sourceUrlStatus = SourceUrlStatus.UNKNOWN,
-              sourceUrlCheckedOn = null,
+              sourceUrlStatus = SourceUrlStatus.FOUND,
+              sourceUrlCheckedOn = LocalDate.parse("2026-09-14"),
             ),
           ).getOrThrow()
       }
-    assertTrue(causeChain(thrown).contains("source_documents_source_url_nonempty_check"), causeChain(thrown))
+    // The empty-string rule moved with the url into external_documents (RFC 228):
+    // the row type refuses it before a statement is ever sent.
+    assertTrue(causeChain(thrown).contains("external document url is empty"), causeChain(thrown))
   }
 
   @Test
@@ -678,8 +683,8 @@ class CanonicalMoneyDaoTest {
           academicYear = academicYear,
           sourceUrl = sourceUrl,
           archiveUrl = null,
-          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
-          sourceUrlCheckedOn = null,
+          sourceUrlStatus = SourceUrlStatus.FOUND,
+          sourceUrlCheckedOn = LocalDate.parse("2026-09-14"),
         ),
       ).getOrThrow()
 

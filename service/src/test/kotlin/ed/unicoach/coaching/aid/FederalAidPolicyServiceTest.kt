@@ -153,8 +153,12 @@ class FederalAidPolicyServiceTest {
     try {
       CoachingTestDb.connection.createStatement().use { stmt ->
         stmt.execute(
-          "INSERT INTO policy_parameters (award_year, parameter, value, source_name, source_url) " +
-            "VALUES (2027, 'pell_max_award_usd', 7500, 'DCL GEN-27-01', 'https://fsapartners.ed.gov/x')",
+          "INSERT INTO external_documents (url, url_status, url_checked_on) " +
+            "VALUES ('https://fsapartners.ed.gov/x', 'found', DATE '2026-09-17') ON CONFLICT (url) DO NOTHING",
+        )
+        stmt.execute(
+          "INSERT INTO policy_parameters (award_year, parameter, value, source_name, source_document_id) " +
+            "VALUES (2027, 'pell_max_award_usd', 7500, 'DCL GEN-27-01', (SELECT id FROM external_documents WHERE url = 'https://fsapartners.ed.gov/x'))",
         )
       }
       val policy = inAy2027.readInSession(CoachingTestDb.sqlSession, student)

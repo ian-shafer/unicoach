@@ -8,9 +8,10 @@ import ed.unicoach.db.models.FactTable
  *
  * One home, because it is one concern in two DAOs -- [CdsAdmissionsDao] cites
  * the three reference tables' documents and [AidPolicyDao] cites the canonical
- * ones', and a schema change to `source_documents` must not have to be found
- * twice. The fact side is aliased `f` and the document side `d`, so a caller's
- * own clauses qualify every column and nothing is ambiguous across the join.
+ * ones', and a schema change to the citation must not have to be found twice.
+ * The fact side is aliased `f`, the document side `d`, and the two urls `src`
+ * and `arc`, so a caller's own clauses qualify every column and nothing is
+ * ambiguous across the join.
  */
 internal object SourceDocumentJoin {
   /**
@@ -22,7 +23,7 @@ internal object SourceDocumentJoin {
    * anchor must know whether that anchor points at a grave. Nothing on this
    * path asks the network: the answer was recorded at ingest.
    */
-  const val CITATION_COLUMNS = "d.source_url, d.archive_url, d.source_url_status"
+  const val CITATION_COLUMNS = "src.url AS source_url, arc.url AS archive_url, src.url_status AS source_url_status"
 
   /**
    * The FROM/JOIN clause for a fact source carrying `source_document_id`.
@@ -34,7 +35,11 @@ internal object SourceDocumentJoin {
    * three CDS reference tables are not canonical fact tables. Each call site
    * holds its own identifier in its own enum.
    */
-  fun withDocumentById(factSource: String): String = "FROM $factSource f JOIN source_documents d ON d.id = f.source_document_id"
+  fun withDocumentById(factSource: String): String =
+    "FROM $factSource f " +
+      "JOIN source_documents d ON d.id = f.source_document_id " +
+      "JOIN external_documents src ON src.id = d.external_document_id " +
+      "LEFT JOIN external_documents arc ON arc.id = d.archive_external_document_id"
 
   /** [withDocumentById] for a canonical fact table, named by the enum that owns it. */
   fun withDocumentById(table: FactTable): String = withDocumentById(table.tableName)

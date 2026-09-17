@@ -129,3 +129,6 @@ seed-fafsa-filing-deadlines-2026-09-14.sql
 seed-fafsa-filing-deadlines-2026-09-15.sql
 seed-published-codebooks-r1.sql
 key-state-columns-to-us-states.sql
+adopt-external-documents-for-source-documents.sql
+adopt-external-documents-for-policy-parameters.sql
+adopt-external-documents-for-test-calendar.sql

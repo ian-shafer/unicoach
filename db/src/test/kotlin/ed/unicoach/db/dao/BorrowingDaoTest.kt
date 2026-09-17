@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.time.LocalDate
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -480,9 +481,9 @@ class BorrowingDaoTest {
           academicYear = academicYear,
           sourceUrl = "https://example.edu/cds-2024-25.pdf",
           archiveUrl = null,
-          // This fixture asked nobody, and says so (RFC 200): no verdict, no date.
-          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
-          sourceUrlCheckedOn = null,
+          // A fixture is not exempt (RFC 220): a citation carries its evidence.
+          sourceUrlStatus = SourceUrlStatus.FOUND,
+          sourceUrlCheckedOn = LocalDate.parse("2026-09-14"),
         ),
       ).getOrThrow()
 

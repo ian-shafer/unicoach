@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""cds-link-sweep: record whether each Common Data Set citation is still there.
+
+RFC 228 (brief 0010 slice `test/05.2/one-home-for-every-citation`). The rename
+and the fold from RFC 200's `bin/cds-link-check`: that script carried its OWN
+copy of the fetching code beside `bin/check-link`, and it harvested a column
+literally named `source_url` -- which is why the 446 archive mirrors of the CDS
+corpus were never asked about once. This script sweeps EVERY url the corpus
+cites -- the school's own filing and the third-party mirror alike -- and it
+fetches through `bin/check-link` rather than around it.
+
+IT JUDGES. IT DOES NOT FETCH. `bin/check-link` prints one HTTP status per url
+and refuses to read the codes; this script is the reader. It runs check-link
+TWICE -- the two passes that moved real verdicts when RFC 200 measured them
+(Michigan State 404 -> 206, Saint Joseph 403 -> 404), because a host can refuse
+the METHOD and not the file -- and maps the pair to the three states:
+
+    found       2xx in either pass
+    not_found   404 or 410 in BOTH passes
+    unknown     anything else, WITH the date we asked
+
+An `unknown` with a date is "we asked and got no usable answer". A url this file
+does not mention is "we never asked" and keeps its link.
+
+IT REFUSES A SWEEP THAT INDICTS THE NETWORK. check-link exits 0 on a machine
+with no egress, having printed 000 for everything -- so the plausibility bar is
+THIS script's: nothing found at all, or more than a fifth of the corpus gone,
+and nothing is written, because an unreachable check is our gap and never the
+schools' silence. Writing nothing keeps every link.
+
+Its product is one reviewable, diffable, committed file:
+
+    db/seed/cds/link-status.csv    (url, url_status, checked_on, pass_one,
+                                    pass_two)
+
+No verdict is derived from `pass_one` and `pass_two` -- the loader never reads
+them, and this script reads them only to say them back. They are the EVIDENCE
+for the verdict beside them, for a human re-reading the committed file without
+re-fetching 887 addresses.
+
+The loader joins it by url onto the documents it writes, so a dead link is a
+RECORDED fact rather than a surprise at render time. With RFC 220's strict
+`external_documents`, a url the file does not mention is simply NOT stored: the
+fact row is refused rather than a citation being invented.
+
+Stdlib-only (dev-shell python3), no dependencies. Usage:
+
+    cds-link-sweep [-s <seed-dir>] [-o <out-csv>] [-c <workers>] [-t <seconds>]
+
+    -s DIR    directory holding the CDS seed CSVs whose `source_url` and
+              `archive_url` columns are swept (default: db/seed/cds under the
+              repo root)
+    -o FILE   where to write the status CSV (default: link-status.csv inside
+              the seed directory)
+    -c N      concurrent requests, 1-64 (default: 16)
+    -t N      per-request timeout in seconds, 1-300 (default: 30)
+    -h        help
+
+Options are parsed by the stdlib getopt module, the same short-option grammar
+every bash script in bin/ uses; there are no long options and no positionals. A
+usage mistake exits in the band bin/functions reserves: 10 unknown option, 11
+option without its value, 20 an unexpected positional, 22 a malformed value.
+
+LOGGING GOES TO STDERR, all of it, including the closing summary: this script's
+product is a file on disk, so a normal run writes NOTHING to stdout. The help
+answering -h is the one thing that does.
+"""
+
+import collections
+import csv
+import io
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+# The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
+# the log-* family, fatal, and the post-getopt guard suite. Resolved against
+# THIS script's own directory rather than the caller's cwd, because these
+# scripts are run from anywhere.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402
+    EXIT_INVALID_ARG_VALUE,
+    bracketed,
+    fatal,
+    log_info,
+    log_warning,
+    parse_short_options,
+    write_atomically,
+)
+
+SCRIPT_NAME = "cds-link-sweep"
+GETOPT_SPEC = "hs:o:c:t:"
+
+# The columns the seed files carry the two addresses in, and the file this
+# script writes. The loader asserts these names, so script and loader are one
+# fact in two languages -- pinned by `CdsLinkCheckSidecarPinTest`, which reads
+# THIS file and compares the constants against `CdsSeedLoader`'s. Rename a
+# column on either side and that test fails, before any sweep is run.
+SOURCE_URL_COLUMN = "source_url"
+ARCHIVE_URL_COLUMN = "archive_url"
+OUTPUT_NAME = "link-status.csv"
+
+OUTPUT_HEADER = ("url", "url_status", "checked_on", "pass_one", "pass_two")
+
+STATUS_FOUND = "found"
+STATUS_NOT_FOUND = "not_found"
+STATUS_UNKNOWN = "unknown"
+
+GONE_STATUSES = frozenset({"404", "410"})
+SERVED_STATUSES = frozenset(f"{code}" for code in range(200, 300))
+
+# The two passes, as the two check-link invocations below express them. One
+# probe is not evidence, and the two differ in the two dimensions that actually
+# moved a verdict: the method and the agent string.
+GENERIC_AGENT = "unicoach-link-check/1.0 (+https://unicoach.ed; checking our own citations)"
+BROWSER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+# Sanity bounds on the VERDICT, not on any one request (RFC 200, kept).
+DEAD_SHARE_CEILING = 0.20
+
+# The coach zone this product reads dates in: the day we asked is a day in the
+# WORLD, and a sweep run at 21:00 Pacific must not be dated tomorrow.
+COACH_ZONE = ZoneInfo("America/New_York")
+
+DEFAULT_WORKERS = 16
+MIN_WORKERS = 1
+MAX_WORKERS = 64
+DEFAULT_TIMEOUT_SECONDS = 30
+MIN_TIMEOUT_SECONDS = 1
+MAX_TIMEOUT_SECONDS = 300
+
+# How many offending urls a refusal names.
+REFUSAL_SAMPLE_SIZE = 5
+
+
+def repo_root():
+    """The checkout this script lives in -- bin/ is directly under it."""
+    return Path(__file__).resolve().parent.parent
+
+
+def bounded_int(raw, option, low, high):
+    try:
+        value = int(raw)
+    except ValueError:
+        fatal(
+            f"{SCRIPT_NAME}: option [{option}] wants an integer, not [{raw}]",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    if value < low or value > high:
+        fatal(
+            f"{SCRIPT_NAME}: option [{option}] must be between [{low}] and [{high}], not [{value}]",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    return value
+
+
+def seed_urls(seed_dir):
+    """Every DISTINCT url the corpus cites, from BOTH columns, sorted.
+
+    The four committed seed files hold 5,048 ROWS but 887 documents: one
+    filing's page answers many facts, and its mirror is cited on every row it
+    backs. Probing per row would ask the same host the same question eleven
+    times.
+    """
+    if not seed_dir.is_dir():
+        fatal(f"{SCRIPT_NAME}: seed directory [{seed_dir}] is not a directory", status=EXIT_INVALID_ARG_VALUE)
+    urls = set()
+    files = sorted(p for p in seed_dir.glob("*.csv") if p.name != OUTPUT_NAME)
+    if not files:
+        fatal(f"{SCRIPT_NAME}: seed directory [{seed_dir}] holds no csv files", status=EXIT_INVALID_ARG_VALUE)
+    for path in files:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            fields = reader.fieldnames or ()
+            if SOURCE_URL_COLUMN not in fields:
+                log_warning(
+                    f"{SCRIPT_NAME}: [{path.name}] has NO [{SOURCE_URL_COLUMN}] column "
+                    f"(its header is {bracketed(list(fields))}), so none of its page urls are being checked",
+                )
+                continue
+            for record in reader:
+                for column in (SOURCE_URL_COLUMN, ARCHIVE_URL_COLUMN):
+                    if column not in fields:
+                        continue
+                    url = (record.get(column) or "").strip()
+                    if url:
+                        urls.add(url)
+    if not urls:
+        fatal(
+            f"{SCRIPT_NAME}: no [{SOURCE_URL_COLUMN}] or [{ARCHIVE_URL_COLUMN}] values in "
+            f"{bracketed([p.name for p in files])}",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    return sorted(urls)
+
+
+def check_pass(urls, agent, force_get, workers, timeout, label):
+    """One check-link run's answers as {url: status}, its exit code checked.
+
+    check-link prints one `<status>\t<url>` line per INPUT line, so the zip
+    against this list is positional-safe because the list is already distinct.
+    Its stderr is passed through, so an operator watching the sweep sees the
+    fetcher's own warnings as they happen.
+    """
+    check_link = repo_root() / "bin" / "check-link"
+    cmd = [
+        sys.executable,
+        str(check_link),
+        "-f",
+        "-",
+        "-u",
+        agent,
+        "-c",
+        str(workers),
+        "-t",
+        str(timeout),
+    ]
+    if force_get:
+        cmd.append("-g")
+    log_info(f"{SCRIPT_NAME}: {label}: asking bin/check-link about {len(urls)} url(s)...")
+    completed = subprocess.run(
+        cmd,
+        input="\n".join(urls) + "\n",
+        capture_output=True,
+        text=True,
+    )
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+    if completed.returncode != 0:
+        fatal(
+            f"bin/check-link exited [{completed.returncode}], so this sweep has no answers to record; "
+            "nothing was written",
+        )
+    answers = {}
+    for line in completed.stdout.splitlines():
+        status, _, url = line.partition("\t")
+        if url:
+            answers[url] = status
+    if len(answers) != len(urls):
+        fatal(
+            f"bin/check-link answered for [{len(answers)}] of the [{len(urls)}] url(s) asked about; "
+            "nothing was written",
+        )
+    return answers
+
+
+def verdict(pass_one, pass_two):
+    """The status of one document from its two answers.
+
+    Found wins over not_found: either pass serving the file is proof the file is
+    served. Not_found requires AGREEMENT. Everything else is unknown -- we asked
+    and have no verdict, which keeps the link.
+    """
+    if pass_one in SERVED_STATUSES or pass_two in SERVED_STATUSES:
+        return STATUS_FOUND
+    if pass_one in GONE_STATUSES and pass_two in GONE_STATUSES:
+        return STATUS_NOT_FOUND
+    return STATUS_UNKNOWN
+
+
+def log_sample(rows, status, verb):
+    sample = [row for row in rows if row[1] == status][:REFUSAL_SAMPLE_SIZE]
+    for row in sample:
+        log_warning(f"{SCRIPT_NAME}:   {verb} [{row[3]}/{row[4]}] [{row[0]}]")
+
+
+def refuse_implausible(rows):
+    """Refuse a verdict that indicts the network rather than the corpus.
+
+    NOTHING found means the sweep never reached the web at all; too MANY
+    not_found is the subtler hijacked-resolver case. Writing nothing keeps every
+    link, because an absent row loads as "we never asked".
+    """
+    found = sum(1 for row in rows if row[1] == STATUS_FOUND)
+    not_found = sum(1 for row in rows if row[1] == STATUS_NOT_FOUND)
+    if found == 0:
+        fatal(
+            f"{SCRIPT_NAME}: refusing to write: NO url was FOUND out of {len(rows)}. "
+            f"An unreachable check is our gap, not {len(rows)} colleges' silence; nothing was "
+            "written, so every link is kept.",
+        )
+    share = not_found / len(rows)
+    if share > DEAD_SHARE_CEILING:
+        log_sample(rows, STATUS_NOT_FOUND, "would call dead")
+        fatal(
+            f"{SCRIPT_NAME}: refusing to write: {not_found} of {len(rows)} documents "
+            f"({share:.1%}) came back NOT FOUND, over the {DEAD_SHARE_CEILING:.0%} ceiling. "
+            "That indicts the network or a resolver, not the corpus; nothing was written "
+            f"(up to {REFUSAL_SAMPLE_SIZE} of the offending documents are listed above).",
+        )
+
+
+def csv_text(rows):
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(OUTPUT_HEADER)
+    writer.writerows(rows)
+    return buffer.getvalue().encode("utf-8")
+
+
+def report(rows, output):
+    counts = collections.Counter(row[1] for row in rows)
+    for row in rows:
+        if row[1] == STATUS_NOT_FOUND:
+            log_warning(
+                f"{SCRIPT_NAME}:   not found [{row[3]}/{row[4]}], dropping the link: [{row[0]}]",
+            )
+        elif row[1] == STATUS_UNKNOWN:
+            log_info(
+                f"{SCRIPT_NAME}:   no verdict [{row[3]}/{row[4]}], keeping the link: [{row[0]}]",
+            )
+    log_info(
+        f"{SCRIPT_NAME}: wrote [{output}]: {len(rows)} documents -- "
+        f"{counts[STATUS_FOUND]} found, {counts[STATUS_NOT_FOUND]} NOT FOUND, "
+        f"{counts[STATUS_UNKNOWN]} unknown (asked, no usable answer).",
+    )
+
+
+def main(argv):
+    options = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
+    seed_dir = Path(options["-s"]) if "-s" in options else repo_root() / "db" / "seed" / "cds"
+    workers = bounded_int(options["-c"], "-c", MIN_WORKERS, MAX_WORKERS) if "-c" in options else DEFAULT_WORKERS
+    timeout = (
+        bounded_int(options["-t"], "-t", MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS)
+        if "-t" in options
+        else DEFAULT_TIMEOUT_SECONDS
+    )
+    urls = seed_urls(seed_dir)
+    output = Path(options["-o"]) if "-o" in options else seed_dir / OUTPUT_NAME
+
+    one = check_pass(urls, GENERIC_AGENT, False, workers, timeout, "pass one (HEAD, generic agent)")
+    two = check_pass(urls, BROWSER_AGENT, True, workers, timeout, "pass two (GET, browser agent)")
+    checked_on = datetime.now(COACH_ZONE).date().isoformat()
+    rows = [(url, verdict(one[url], two[url]), checked_on, one[url], two[url]) for url in urls]
+    refuse_implausible(rows)
+
+    write_atomically([(output, csv_text(rows))], SCRIPT_NAME)
+    report(rows, output)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

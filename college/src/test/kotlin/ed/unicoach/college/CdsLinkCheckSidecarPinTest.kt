@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
  * The sidecar's NAME and HEADER are one fact written in two languages, pinned
  * here (RFC 200).
  *
- * `bin/cds-link-check` writes `source-url-status.csv`; [CdsSeedLoader] asserts
+ * `bin/cds-link-sweep` writes `link-status.csv`; [CdsSeedLoader] asserts
  * its header exactly as it asserts the four seed headers. Neither half can see
  * the other, and until this test existed the only coupling was the COMMITTED
  * artifact -- which is produced by the script and checked by the loader. That
@@ -28,7 +28,7 @@ class CdsLinkCheckSidecarPinTest {
    * Cross-module `File("../bin/...")`: Gradle runs tests with the module
    * directory as the working directory, so the repo root is one level up.
    */
-  private val script = File("../bin/cds-link-check")
+  private val script = File("../bin/cds-link-sweep")
 
   @Test
   fun `the checker's source is where this test says it is`() {
@@ -37,15 +37,15 @@ class CdsLinkCheckSidecarPinTest {
     // fail with "no such file", which reads like an environment problem rather
     // than the drift this test is about. Said first, by name.
     assertTrue(script.isFile, "the pinned checker is not at [${script.absolutePath}]")
-    assertTrue(script.readText().contains("OUTPUT_HEADER = ("), "read a file that is not [bin/cds-link-check]")
+    assertTrue(script.readText().contains("OUTPUT_HEADER = ("), "read a file that is not [bin/cds-link-sweep]")
   }
 
   @Test
   fun `the checker and the loader agree on the sidecar's filename`() {
     assertTrue(
-      script.readText().contains("""OUTPUT_NAME = "${CdsSeedLoader.SOURCE_URL_STATUS_FILE}""""),
-      "bin/cds-link-check's OUTPUT_NAME has drifted from CdsSeedLoader.SOURCE_URL_STATUS_FILE " +
-        "([${CdsSeedLoader.SOURCE_URL_STATUS_FILE}]): the checker would write a file the loader never reads",
+      script.readText().contains("""OUTPUT_NAME = "${CdsSeedLoader.LINK_STATUS_FILE}""""),
+      "bin/cds-link-sweep's OUTPUT_NAME has drifted from CdsSeedLoader.LINK_STATUS_FILE " +
+        "([${CdsSeedLoader.LINK_STATUS_FILE}]): the checker would write a file the loader never reads",
     )
   }
 
@@ -55,10 +55,10 @@ class CdsLinkCheckSidecarPinTest {
     // satisfied by a third copy of the five names. ORDER is part of the claim:
     // `assertHeader` compares the header as a sequence, so two columns swapped
     // in the script would load `checked_on` values into `source_url_status`.
-    val header = CdsSeedLoader.SOURCE_URL_STATUS_COLUMNS.joinToString(", ") { """"$it"""" }
+    val header = CdsSeedLoader.LINK_STATUS_COLUMNS.joinToString(", ") { """"$it"""" }
     assertTrue(
       script.readText().contains("OUTPUT_HEADER = ($header)"),
-      "bin/cds-link-check's OUTPUT_HEADER has drifted from CdsSeedLoader.SOURCE_URL_STATUS_COLUMNS " +
+      "bin/cds-link-sweep's OUTPUT_HEADER has drifted from CdsSeedLoader.LINK_STATUS_COLUMNS " +
         "(expected [OUTPUT_HEADER = ($header)])",
     )
   }
@@ -72,11 +72,11 @@ class CdsLinkCheckSidecarPinTest {
     // a link, chosen by cwd. Resolved from the ABSOLUTE parent, there is no
     // fallback left to take.
     val bare = CdsSeedLoader.sidecarBeside(File("aid-policy.csv"))
-    assertEquals(File(File("").absoluteFile, CdsSeedLoader.SOURCE_URL_STATUS_FILE).path, bare.path)
+    assertEquals(File(File("").absoluteFile, CdsSeedLoader.LINK_STATUS_FILE).path, bare.path)
     assertTrue(bare.isAbsolute, "the sidecar path must never be relative to the launcher: [$bare]")
 
     // And the ordinary case is unchanged: beside the seed it describes.
     val beside = CdsSeedLoader.sidecarBeside(File("/tmp/seed/cds/aid-policy.csv"))
-    assertEquals(File("/tmp/seed/cds/${CdsSeedLoader.SOURCE_URL_STATUS_FILE}"), beside)
+    assertEquals(File("/tmp/seed/cds/${CdsSeedLoader.LINK_STATUS_FILE}"), beside)
   }
 }

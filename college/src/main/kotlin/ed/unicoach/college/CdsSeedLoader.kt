@@ -223,7 +223,7 @@ class CdsSeedLoader(
     ) : Defect
 
     /**
-     * A `source-url-status.csv` row whose `source_url_status` is none of the
+     * A `link-status.csv` row whose `url_status` is none of the
      * three states (RFC 200).
      *
      * The sidecar's defects name the FILE rather than a [Table]: it is not one
@@ -477,8 +477,8 @@ class CdsSeedLoader(
   /** Loads the four seed files and the RFC 200 sidecar (headers asserted
    * first), and computes the launch-set coverage report from the DB.
    *
-   * [sourceUrlStatusCsv] is the RFC 200 source-url-status sidecar, which by convention
-   * sits BESIDE the seed it describes (`bin/cds-link-check` writes it into the
+   * [linkStatusCsv] is the RFC 200 link-status sidecar, which by convention
+   * sits BESIDE the seed it describes (`bin/cds-link-sweep` writes it into the
    * seed directory) -- so it is defaulted from the aid-policy file's own
    * directory rather than made a fifth required argument of every caller. It
    * is the one seed file that may be ABSENT: a run without it has asked
@@ -491,7 +491,7 @@ class CdsSeedLoader(
     admissionFactorsCsv: File,
     deadlinesCsv: File,
     aidPolicyCsv: File,
-    sourceUrlStatusCsv: File = sidecarBeside(aidPolicyCsv),
+    linkStatusCsv: File = sidecarBeside(aidPolicyCsv),
   ): LoadResult =
     database.withConnection { session ->
       // Assert every header before any row of any file is written, so a renamed
@@ -524,8 +524,8 @@ class CdsSeedLoader(
       // Whether a file was there is recorded AT THE READ, not re-stat'ed when
       // the summary is built: the operator is told what this run actually
       // looked at, not what the filesystem holds some minutes later.
-      val sidecarPresent = sourceUrlStatusCsv.isFile
-      val linkCheck = readLinkCheck(sourceUrlStatusCsv)
+      val sidecarPresent = linkStatusCsv.isFile
+      val linkCheck = readLinkCheck(linkStatusCsv)
 
       val meritAid =
         loadTable(session, meritAidCsv, Table.MERIT_AID, MERIT_AID_COLUMNS) { collegeId, record ->
@@ -550,7 +550,7 @@ class CdsSeedLoader(
       val (aidPolicy, allFilings) = loadAidPolicy(session, aidPolicyCsv, filings, linkCheck)
       val coverage = CdsAdmissionsDao.getCoverage(session).getOrThrow()
       val linkCheckSummary =
-        summariseLinkCheck(allFilings, linkCheck, sourceUrlStatusCsv.path, sidecarPresent)
+        summariseLinkCheck(allFilings, linkCheck, linkStatusCsv.path, sidecarPresent)
       LoadResult(meritAid, factors, deadlines, aidPolicy, linkCheckSummary, coverage)
     }
 
@@ -615,7 +615,7 @@ class CdsSeedLoader(
     }
 
   /**
-   * `source-url-status.csv` as a lookup by url, header-asserted first, or the
+   * `link-status.csv` as a lookup by url, header-asserted first, or the
    * empty lookup when the file is not there ("we never asked", for every url).
    *
    * Every cell is refused rather than repaired: a status outside the three, a
@@ -626,7 +626,7 @@ class CdsSeedLoader(
    */
   private fun readLinkCheck(file: File): LinkCheck {
     if (!file.isFile) return LinkCheck()
-    assertHeader(SourceFile(file, file.path), SOURCE_URL_STATUS_COLUMNS)
+    assertHeader(SourceFile(file, file.path), LINK_STATUS_COLUMNS)
     // Located while reading, unwrapped at the end: the LINE a verdict came from
     // is needed only to name both sides of a conflict, and [LinkCheck] has no
     // business carrying it.
@@ -636,12 +636,12 @@ class CdsSeedLoader(
         // The header assertion covers column NAMES only; a truncated row would
         // otherwise throw an unlocated IllegalArgumentException out of Commons
         // CSV, which is outside this loader's error contract.
-        if (!record.isConsistent || record.size() != SOURCE_URL_STATUS_COLUMNS.size) {
+        if (!record.isConsistent || record.size() != LINK_STATUS_COLUMNS.size) {
           throw FormatException(
-            Defect.SidecarRowArity(file.path, record.recordNumber, record.size(), SOURCE_URL_STATUS_COLUMNS.size),
+            Defect.SidecarRowArity(file.path, record.recordNumber, record.size(), LINK_STATUS_COLUMNS.size),
           )
         }
-        val url = record.get("source_url").trim()
+        val url = record.get("url").trim()
         if (url.isEmpty()) throw FormatException(Defect.SidecarEmptyUrl(file.path, record.recordNumber))
         val recorded = recordedStatusOf(file, record, url)
         val first = byUrl[url]
@@ -669,7 +669,7 @@ class CdsSeedLoader(
     record: CSVRecord,
     url: String,
   ): RecordedStatus {
-    val rawStatus = record.get("source_url_status").trim()
+    val rawStatus = record.get("url_status").trim()
     val status =
       SourceUrlStatus.fromValue(rawStatus) ?: throw FormatException(
         Defect.SidecarUnknownStatus(
@@ -1147,7 +1147,7 @@ class CdsSeedLoader(
   private inline fun <T, R> Result<T>.thenWrite(block: (T) -> Result<R>): Result<R> = fold(block) { Result.failure(it) }
 
   /**
-   * One url's recorded `source_url_status` (RFC 200): the verdict, and the
+   * One url's recorded `url_status` (RFC 200): the verdict, and the
    * day it was reached.
    *
    * ONE value rather than two columns read apart, because the pair IS the
@@ -1173,8 +1173,8 @@ class CdsSeedLoader(
   )
 
   /**
-   * `db/seed/cds/source-url-status.csv` as a lookup BY URL -- the product of
-   * `bin/cds-link-check`, joined onto the document the four seed files already
+   * `db/seed/cds/link-status.csv` as a lookup BY URL -- the product of
+   * `bin/cds-link-sweep`, joined onto the document the four seed files already
    * write.
    *
    * By url and not by (college, year), because that is what the checker swept:
@@ -1254,21 +1254,27 @@ class CdsSeedLoader(
     linkCheck: LinkCheck,
   ): ReadFiling {
     val sourceUrl = getString(record, "source_url", table)
-    // The sidecar joined BY URL (RFC 200): the status is a fact about the
-    // school's own file, so it is looked up with the url and written onto the
-    // same document row, in the same transaction as every fact that cites it.
-    // A url the sidecar does not mention is `unknown` with no date -- we never
-    // asked -- and keeps its link.
+    val archiveUrl = getStringOrNull(record, "archive_url")
+    // The sidecar joined BY URL (RFC 228): the status is a fact about the
+    // document -- the school's own file and its mirror alike -- so it is looked
+    // up with each url and written onto the same document row, in the same
+    // transaction as every fact that cites it. A url the sidecar does not
+    // mention is `unknown` with no date -- we never asked -- and, under RFC
+    // 220's strict table, is simply NOT stored: the fact row is refused rather
+    // than a citation being invented.
     val recorded = linkCheck.of(sourceUrl)
+    val archiveRecorded = archiveUrl?.let(linkCheck::of) ?: NEVER_ASKED
     val document =
       NewSourceDocument(
         collegeId = collegeId,
         source = MoneySource.COMMON_DATA_SET,
         academicYear = year,
         sourceUrl = sourceUrl,
-        archiveUrl = getStringOrNull(record, "archive_url"),
+        archiveUrl = archiveUrl,
         sourceUrlStatus = recorded.status,
         sourceUrlCheckedOn = recorded.checkedOn,
+        archiveUrlStatus = archiveRecorded.status,
+        archiveUrlCheckedOn = archiveRecorded.checkedOn,
       )
     val first = filings.first(collegeId, year)
     if (first != null && first != document) {
@@ -1654,12 +1660,12 @@ class CdsSeedLoader(
       )
 
     /**
-     * The RFC 200 source-url-status sidecar's filename, written by
-     * `bin/cds-link-check` into the seed directory and read back from beside
+     * The RFC 200 link-status sidecar's filename, written by
+     * `bin/cds-link-sweep` into the seed directory and read back from beside
      * the seed. Named once, here, so the checker and the loader cannot come to
      * disagree about it.
      */
-    const val SOURCE_URL_STATUS_FILE = "source-url-status.csv"
+    const val LINK_STATUS_FILE = "link-status.csv"
 
     /**
      * The sidecar that sits BESIDE the seed it describes, resolved from the
@@ -1672,7 +1678,7 @@ class CdsSeedLoader(
      * where somebody ran the command. `absoluteFile` always has a parent, so
      * there is no fallback left to take.
      */
-    internal fun sidecarBeside(aidPolicyCsv: File): File = File(aidPolicyCsv.absoluteFile.parentFile, SOURCE_URL_STATUS_FILE)
+    internal fun sidecarBeside(aidPolicyCsv: File): File = File(aidPolicyCsv.absoluteFile.parentFile, LINK_STATUS_FILE)
 
     /**
      * The sidecar's header, asserted exactly as every other seed header is.
@@ -1683,10 +1689,10 @@ class CdsSeedLoader(
      * to see why a url was called dead. A header that has quietly lost them is
      * a checker that stopped showing its work.
      */
-    val SOURCE_URL_STATUS_COLUMNS =
+    val LINK_STATUS_COLUMNS =
       listOf(
-        "source_url",
-        "source_url_status",
+        "url",
+        "url_status",
         "checked_on",
         "pass_one",
         "pass_two",
@@ -1957,7 +1963,7 @@ private fun renderDefect(defect: CdsSeedLoader.Defect): String =
     }
 
     is CdsSeedLoader.Defect.SidecarUnknownStatus -> {
-      "[${defect.file}] line [${defect.line}]: [source_url_status] value [${defect.value}] is not one of " +
+      "[${defect.file}] line [${defect.line}]: [url_status] value [${defect.value}] is not one of " +
         "${defect.allowed} (url [${defect.url}])"
     }
 

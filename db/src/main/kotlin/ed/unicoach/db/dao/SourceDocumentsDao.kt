@@ -1,8 +1,11 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.NewExternalDocument
 import ed.unicoach.db.models.NewSourceDocument
 import ed.unicoach.db.models.SourceDocumentId
+import ed.unicoach.db.models.SourceUrlStatus
 import java.sql.PreparedStatement
+import java.time.LocalDate
 import java.util.UUID
 
 /**
@@ -35,7 +38,7 @@ object SourceDocumentsDao {
    * is the whole point of the document being one row -- the correction lands
    * once and every fact citing it follows.
    *
-   * The RFC 200 source-url-status pair is overwritten with them, and for the same
+   * The RFC 200 link-rot pair is overwritten with them, and for the same
    * reason: a re-run that found the school's file back is the newest answer,
    * and the pair is a fact ABOUT the url this statement is writing. Leaving a
    * previous run's verdict in place would attach yesterday's answer to today's
@@ -45,35 +48,81 @@ object SourceDocumentsDao {
     session: SqlSession,
     input: NewSourceDocument,
   ): Result<SourceDocumentId> =
-    session
-      .mutateReturning(
-        """
-        INSERT INTO source_documents (
-          college_id, source, academic_year, source_url, archive_url, source_url_status, source_url_checked_on
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (college_id, source, academic_year) DO UPDATE
-          SET source_url = EXCLUDED.source_url,
-              archive_url = EXCLUDED.archive_url,
-              source_url_status = EXCLUDED.source_url_status,
-              source_url_checked_on = EXCLUDED.source_url_checked_on
-        RETURNING id
-        """.trimIndent(),
-        bind = { stmt: PreparedStatement ->
-          stmt.setObject(1, input.collegeId.value)
-          stmt.setString(2, input.source.value)
-          stmt.setInt(3, input.academicYear.firstCalendarYear)
-          stmt.setString(4, input.sourceUrl)
-          stmt.setStringOrNull(5, input.archiveUrl)
-          stmt.setString(6, input.sourceUrlStatus.value)
-          stmt.setDateOrNull(7, input.sourceUrlCheckedOn)
-        },
-        map = { rs -> SourceDocumentId(UUID.fromString(rs.getString("id"))) },
-        // The write-path mapping, so a refused document is a NAMED constraint
-        // violation (an academic year outside the domain, an empty url, a
-        // college that is not there) rather than "general database error" --
-        // the loader wraps this in its own row-located exception, and a bare
-        // sentence would leave the operator with no constraint to look up.
-        mapError = ::mapCollegeWriteError,
+    // runCatching so an unevidenced citation is a RESULT failure rather than a
+    // thrown exception: the loader's row-location wrapper turns Result failures
+    // into its own located LoadException, and a thrown IllegalStateException
+    // would bypass that contract.
+    runCatching {
+      // The two urls now live in external_documents (RFC 228). The page is
+      // upserted -- the loader has just ASKED, via the swept sidecar, so a
+      // re-run that found the school's file back is the newest answer. The
+      // mirror is upserted too, with its OWN swept evidence from the same file.
+      // Both resolutions happen inside the caller's transaction, so a refused
+      // fact row takes its documents with it.
+      ExternalDocumentsDao
+        .upsert(
+          session,
+          NewExternalDocument(
+            input.sourceUrl,
+            input.sourceUrlStatus,
+            checkedDate(input.sourceUrlStatus, input.sourceUrlCheckedOn, input.sourceUrl),
+          ),
+        ).mapCatching { pageId ->
+          val archiveId =
+            input.archiveUrl?.let {
+              ExternalDocumentsDao
+                .upsert(
+                  session,
+                  NewExternalDocument(it, input.archiveUrlStatus, checkedDate(input.archiveUrlStatus, input.archiveUrlCheckedOn, it)),
+                ).getOrThrow()
+            }
+          session
+            .mutateReturning(
+              """
+              INSERT INTO source_documents (
+                college_id, source, academic_year, external_document_id, archive_external_document_id
+              )
+              VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT (college_id, source, academic_year) DO UPDATE
+                SET external_document_id = EXCLUDED.external_document_id,
+                    archive_external_document_id = EXCLUDED.archive_external_document_id
+              RETURNING id
+              """.trimIndent(),
+              bind = { stmt: PreparedStatement ->
+                stmt.setObject(1, input.collegeId.value)
+                stmt.setString(2, input.source.value)
+                stmt.setInt(3, input.academicYear.firstCalendarYear)
+                stmt.setObject(4, pageId.value)
+                stmt.setObject(5, archiveId?.value)
+              },
+              map = { rs -> SourceDocumentId(UUID.fromString(rs.getString("id"))) },
+              // The write-path mapping, so a refused document is a NAMED
+              // constraint violation (an academic year outside the domain, a
+              // college that is not there) rather than "general database error" --
+              // the loader wraps this in its own row-located exception, and a
+              // bare sentence would leave the operator with no constraint to look
+              // up.
+              mapError = ::mapCollegeWriteError,
+            ).getOrThrow()
+        }.getOrThrow()
+    }
+
+  /**
+   * The date a verdict carries, refusing the one case RFC 220 made
+   * unrepresentable: UNKNOWN with no date is "we never asked", and there is no
+   * such row in external_documents any more. [NewSourceDocument]'s own init
+   * already refuses a FOUND or NOT_FOUND verdict with no date, so the only way
+   * a null date reaches here is a "we never asked" the caller tried to store;
+   * that is a defect surfaced, never a date backfilled.
+   */
+  private fun checkedDate(
+    status: SourceUrlStatus,
+    checkedOn: LocalDate?,
+    url: String,
+  ): LocalDate =
+    checkedOn
+      ?: throw IllegalStateException(
+        "an external document verdict [${status.value}] with no date cannot be stored: " +
+          "external_documents.url_checked_on is NOT NULL (RFC 220), url=[$url]",
       )
 }

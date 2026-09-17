@@ -298,9 +298,14 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
         ).use { it.execute() }
       session
         .prepareStatement(
-          "INSERT INTO source_documents (college_id, source, academic_year, source_url) " +
-            "SELECT id, 'common_data_set', 2024, 'https://example.edu/cds.pdf' FROM colleges " +
-            "WHERE ipeds_unit_id = 110100",
+          "INSERT INTO external_documents (url, url_status, url_checked_on) " +
+            "VALUES ('https://example.edu/cds.pdf', 'found', DATE '2026-09-17') ON CONFLICT (url) DO NOTHING",
+        ).use { it.execute() }
+      session
+        .prepareStatement(
+          "INSERT INTO source_documents (college_id, source, academic_year, external_document_id) " +
+            "SELECT id, 'common_data_set', 2024, (SELECT id FROM external_documents WHERE url = 'https://example.edu/cds.pdf') " +
+            "FROM colleges WHERE ipeds_unit_id = 110100",
         ).use { it.execute() }
       session
         .prepareStatement(

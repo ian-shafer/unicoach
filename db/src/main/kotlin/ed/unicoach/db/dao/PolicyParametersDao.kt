@@ -51,7 +51,11 @@ object PolicyParametersDao {
    */
   fun listAll(session: SqlSession): Result<List<PolicyParameterRow>> =
     session.queryList(
-      "SELECT * FROM policy_parameters ORDER BY award_year DESC, parameter",
+      """
+      SELECT p.*, (SELECT e.url FROM external_documents e WHERE e.id = p.source_document_id) AS source_url
+      FROM policy_parameters p
+      ORDER BY award_year DESC, parameter
+      """.trimIndent(),
       bind = {},
       map = ::mapRow,
     )
@@ -62,7 +66,12 @@ object PolicyParametersDao {
     awardYear: Int,
   ): Result<List<PolicyParameterRow>> =
     session.queryList(
-      "SELECT * FROM policy_parameters WHERE award_year = ? ORDER BY parameter",
+      """
+      SELECT p.*, (SELECT e.url FROM external_documents e WHERE e.id = p.source_document_id) AS source_url
+      FROM policy_parameters p
+      WHERE award_year = ?
+      ORDER BY parameter
+      """.trimIndent(),
       bind = { it.setInt(1, awardYear) },
       map = ::mapRow,
     )

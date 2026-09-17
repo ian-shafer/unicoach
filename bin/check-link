@@ -7,19 +7,20 @@ is that something, and its whole interface is the one bin/cds-link-check does
 not have: it takes URLS, not a seed directory to harvest a column out of.
 
 IT FETCHES. IT DOES NOT JUDGE. The `found` / `not_found` / `unknown` vocabulary
-belongs to RFC 200 and to `cds-link-check`, which reads codes and decides what
+belongs to RFC 200 and to `cds-link-sweep`, which reads codes and decides what
 they mean for a family's link. Those three words appear nowhere in this file and
 must not: a status is what a server said, and what to do about a 403 is the
 caller's question. So a 404 is a SUCCESSFUL run -- the status is the product.
 
 Usage:
 
-    check-link [-f FILE] [-u AGENT] [-c N] [-t N] [-h] [URL...]
+    check-link [-f FILE] [-u AGENT] [-c N] [-t N] [-g] [-h] [URL...]
 
       URL...    one or more urls to check
       -f FILE   read urls from FILE, one per line; "-f -" reads standard input
       -u AGENT  user agent to send (default: the current Chrome string this
                 help prints at the end)
+      -g        send GET and never HEAD
       -c N      concurrent requests, 1-64 (default: 16)
       -t N      per-request timeout in seconds, 1-300 (default: 30)
       -h        this help, on stdout
@@ -97,7 +98,7 @@ from pyfunctions import (  # noqa: E402
 )
 
 SCRIPT_NAME = "check-link"
-GETOPT_SPEC = "hf:u:c:t:"
+GETOPT_SPEC = "hgf:u:c:t:"
 
 # A CURRENT CHROME STRING, and that is a PRODUCT decision, not a disguise.
 #
@@ -392,9 +393,11 @@ def request_status(url, method, agent, timeout):
         return None
 
 
-def check(url, agent, timeout, limiter):
+def check(url, agent, timeout, limiter, force_get):
     """ONE PASS: HEAD, falling through to a ranged GET where the host refuses the
-    METHOD (400, 403, 405, 501).
+    METHOD (400, 403, 405, 501) -- or GET outright where the caller asked for it
+    with -g, because a second pass that changes the METHOD is the difference
+    between a host refusing us and a document that is gone.
 
     One pass, one answer, no verdict. A caller that wants two readings runs this
     twice and decides, which is exactly the judgement this script refuses to
@@ -402,13 +405,16 @@ def check(url, agent, timeout, limiter):
     """
     host = urllib.parse.urlparse(url).netloc.lower()
     with limiter.for_host(host):
-        status = request_status(url, "HEAD", agent, timeout)
-        if status in HEAD_FALLBACK_STATUSES:
+        if force_get:
             status = request_status(url, "GET", agent, timeout)
+        else:
+            status = request_status(url, "HEAD", agent, timeout)
+            if status in HEAD_FALLBACK_STATUSES:
+                status = request_status(url, "GET", agent, timeout)
     return NO_ANSWER_STATUS if status is None else str(status)
 
 
-def statuses_for(urls, agent, timeout, workers):
+def statuses_for(urls, agent, timeout, workers, force_get):
     """{url: status} over the DISTINCT urls, `workers` at a time.
 
     Distinct is the point: a caller listing one address three times is asking one
@@ -419,7 +425,7 @@ def statuses_for(urls, agent, timeout, workers):
     log_info(f"{SCRIPT_NAME}: checking {len(urls)} distinct urls, {workers} at a time...")
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(check, url, agent, timeout, limiter): url for url in urls}
+        futures = {pool.submit(check, url, agent, timeout, limiter, force_get): url for url in urls}
         for done in concurrent.futures.as_completed(futures):
             results[futures[done]] = done.result()
     return results
@@ -468,6 +474,7 @@ def main(argv):
     # for every option that takes one, so the default is never a silent
     # substitute for what the caller meant to send.
     agent = options.get("-u", DEFAULT_USER_AGENT)
+    force_get = "-g" in options
 
     lines = input_lines(options, positional)
     refuse_bad_schemes(lines)
@@ -475,7 +482,7 @@ def main(argv):
     # Sorted only to make the request ORDER deterministic; the OUTPUT order below
     # is the caller's, rebuilt from the line list.
     distinct = sorted({line.url for line in lines})
-    results = statuses_for(distinct, agent, timeout, min(workers, len(distinct)))
+    results = statuses_for(distinct, agent, timeout, min(workers, len(distinct)), force_get)
 
     rows = [(line.url, results[line.url]) for line in lines]
     for url, status in rows:

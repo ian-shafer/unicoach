@@ -22,6 +22,7 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.SQLException
+import java.time.LocalDate
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -163,8 +164,10 @@ class CdsAdmissionsDaoTest {
           academicYear = AcademicYear(sourceYear),
           sourceUrl = sourceUrl,
           archiveUrl = archiveUrl,
-          sourceUrlStatus = SourceUrlStatus.UNKNOWN,
-          sourceUrlCheckedOn = null,
+          sourceUrlStatus = SourceUrlStatus.FOUND,
+          sourceUrlCheckedOn = LocalDate.parse("2026-09-14"),
+          archiveUrlStatus = SourceUrlStatus.FOUND,
+          archiveUrlCheckedOn = LocalDate.parse("2026-09-14"),
         ),
       ).getOrThrow()
 
