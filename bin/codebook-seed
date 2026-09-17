@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""codebook-seed: generate the published-codebook seed migration from
+db/data/codebooks.json (RFC 229, brief 0010 D27).
+
+The eleven published-codebook tables of db/schema/0060 are unicoach's own
+reference data. Today 0060 CREATES them and the data-import run FILLS them
+(CodebookLoader, the `codebooks` phase of bin/ingest-colleges), so a freshly
+migrated database has the tables and none of the rows -- and a migration-time
+seed that keys into them is refused with `Key (state)=(AL) is not present in
+table "us_states"`. That is a fresh PRODUCTION database too, not only a test
+one.
+
+This script generates ONE seed migration that places every published codebook
+row at migration time, from the very file the import run reads, so the database
+the migrations build is complete before any later migration can key into it.
+
+WHAT IS THE SOURCE. db/data/codebooks.json (committed, ~394 KB, 10 domains,
+2,015 rows) is produced by bin/fetch-codebooks from the IPEDS 2023 Stata
+archives committed under db/seed/codebooks/. Exactly ONE column in the whole
+corpus is authored by hand -- us_states.jurisdiction_kind -- and the generator
+owns it. So the seed is generated from a generated file, and the chain from
+publisher to row stays reviewable end to end. Nothing is re-typed here.
+
+THE JSON IS THE SOURCE; THE SQL IS AN ARTIFACT. Never hand-edit a generated
+seed: change the JSON (via bin/fetch-codebooks), review that committed diff,
+then re-run this script. `-n` refuses a tree that differs from what a real run
+generates, so a hand-edited or stale seed is caught rather than served.
+
+ONE SEED PER REVISION, like bin/prompt-seed. The file is named
+seed-published-codebooks-r<N>.sql: the next N after the highest committed
+revision, and a new file is cut only when the body differs from the newest one.
+bin/db-migrate records applied migrations BY FILENAME, so a refreshed codebook
+is a NEW file and a new db/schema/ORDER line -- editing a landed seed would
+change a fresh database and leave every existing one behind.
+
+EVERY REFUSAL IS A REVIEW ERROR NAMING ITS DOMAIN. Each CHECK constraint in
+0060 is mirrored here, plus the two cross-domain facts the migration relies on
+(every us_states.ipeds_region resolves; no declared null_sentinel is also a
+published code, D41). All faults are reported in ONE pass, so a bad file costs
+one run and not one run per fault.
+
+The upsert shape mirrors CodebookLoader/CodebooksDao exactly: the ten
+vocabulary tables use the same `WHERE (...) IS DISTINCT FROM (EXCLUDED...)`
+change guard, so re-applying against rows the import already placed is a true
+no-op; codebook_sources is the one exception, which always moves loaded_at, as
+the loader does.
+
+Stdlib-only (dev-shell python3), no dependencies. Usage:
+
+    codebook-seed [-j <json-path>] [-d <schema-dir>] [-o <out-path>] [-n]
+
+    -j PATH   codebook json (default: db/data/codebooks.json under the repo root)
+    -d DIR    schema directory the seed lives in (default: db/schema)
+    -o PATH   write the seed to exactly this path instead of deriving the
+              revision filename from -d (for tests writing into a scratch tree)
+    -n        dry run: writes NOTHING; exits 3 when the committed seed does not
+              match what the json generates, 0 when it matches
+    -h        help
+
+Options are parsed by the stdlib getopt module, the same short-option grammar
+every bash script in bin/ uses; there are no long options and no positionals. A
+usage mistake exits in the band bin/functions reserves: 10 unknown option, 11
+option without its value, 20 an unexpected positional, 22 a malformed value.
+
+LOGGING GOES TO STDERR, all of it. This script's product is a file on disk, so
+a normal run writes NOTHING to stdout. The help answering -h is the one thing
+that does.
+"""
+
+import getopt
+import json
+import re
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import fatal, log_info  # noqa: E402
+
+SCRIPT_NAME = "codebook-seed"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_JSON_PATH = REPO_ROOT / "db" / "data" / "codebooks.json"
+DEFAULT_SCHEMA_DIR = REPO_ROOT / "db" / "schema"
+
+EXIT_UNKNOWN_OPTION = 10
+EXIT_OPTION_REQUIRES_VALUE = 11
+EXIT_UNEXPECTED_ARG = 20
+EXIT_INVALID_ARG_VALUE = 22
+EXIT_SEED_WOULD_CHANGE = 3
+
+SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+USPS_RE = re.compile(r"^[A-Z]{2}$")
+CIP_CODE_RE = re.compile(r"^[0-9]{6}$")
+ASSOC_RE = re.compile(r"^assoc[1-6]$")
+
+JURISDICTION_KINDS = {"state", "federal-district", "territory", "freely-associated-state"}
+LOCALE_TYPES = {"city", "suburb", "town", "rural"}
+LOCALE_DETAILS = {"large", "midsize", "small", "fringe", "distant", "remote"}
+
+# The ten vocabulary domains, in dependency order (us_states references
+# ipeds_regions). Each is (json key, table, columns, conflict key, update
+# columns). The extractor maps the json entry to column values one row below.
+DOMAINS = (
+    ("ipeds_region", "ipeds_regions", ("slug", "code", "name", "label_raw"), "slug"),
+    ("us_states", "us_states", ("usps_code", "name", "jurisdiction_kind", "ipeds_region"), "usps_code"),
+    ("nces_locale", "nces_locales", ("slug", "code", "type", "detail", "name", "label_raw"), "slug"),
+    ("carnegie_2021_basic", "carnegie_2021_basic_classes",
+     ("slug", "code", "degree_level", "qualifier", "name", "label_raw"), "slug"),
+    ("carnegie_2021_size_setting", "carnegie_2021_size_settings",
+     ("slug", "code", "years", "size", "residential_character", "name", "label_raw"), "slug"),
+    ("religious_affiliation", "religious_affiliations", ("slug", "code", "name", "label_raw"), "slug"),
+    ("athletic_association", "athletic_associations",
+     ("slug", "code", "source_variable", "name", "label_raw"), "slug"),
+    ("football_conference", "football_conferences", ("slug", "code", "name", "label_raw"), "slug"),
+    ("admission_test_policy", "admission_test_policies", ("slug", "code", "name", "label_raw"), "slug"),
+    ("cip_code", "cip_codes", ("code", "title", "label_raw"), "code"),
+)
+
+EXPECTED_DOMAINS = tuple(d[0] for d in DOMAINS)
+
+
+def sql_literal(value):
+    """A postgres literal for one json scalar: NULL, an int, or a quoted string."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    fatal(f"{SCRIPT_NAME}: cannot render a postgres literal for {value!r} of type {type(value).__name__}")
+
+
+def extract(domain, entry):
+    """Map one codebook json entry to the column values its table inserts."""
+    if domain == "ipeds_region":
+        return [entry["slug"], entry["code"], entry["name"], entry["label_raw"]]
+    if domain == "us_states":
+        return [entry["code"], entry["name"], entry["jurisdiction_kind"], entry["ipeds_region"]]
+    if domain == "nces_locale":
+        return [entry["slug"], entry["code"], entry["type"], entry["detail"], entry["name"], entry["label_raw"]]
+    if domain == "carnegie_2021_basic":
+        return [entry["slug"], entry["code"], entry["degree_level"], entry["qualifier"],
+                entry["name"], entry["label_raw"]]
+    if domain == "carnegie_2021_size_setting":
+        return [entry["slug"], entry["code"], entry["years"], entry["size"],
+                entry["residential_character"], entry["name"], entry["label_raw"]]
+    if domain == "religious_affiliation":
+        return [entry["slug"], entry["code"], entry["name"], entry["label_raw"]]
+    if domain == "athletic_association":
+        return [entry["slug"], entry["code"], entry["source_variable"], entry["name"], entry["label_raw"]]
+    if domain == "football_conference":
+        return [entry["slug"], entry["code"], entry["name"], entry["label_raw"]]
+    if domain == "admission_test_policy":
+        return [entry["slug"], entry["code"], entry["name"], entry["label_raw"]]
+    if domain == "cip_code":
+        return [entry["code"], entry["name"], entry["label_raw"]]
+    fatal(f"{SCRIPT_NAME}: unknown domain [{domain}]")
+
+
+def validate(codebook):
+    """Return every fault found, one string each. Empty means the file is loadable."""
+    faults = []
+
+    missing = [d for d in EXPECTED_DOMAINS if d not in codebook]
+    if missing:
+        faults.append(f"codebook is missing domain(s) {missing}")
+    unknown = [k for k in codebook if k not in EXPECTED_DOMAINS]
+    if unknown:
+        faults.append(f"codebook declares unknown domain(s) {unknown}")
+
+    regions = {}
+    for domain, table, columns, conflict in DOMAINS:
+        if domain not in codebook:
+            continue
+        body = codebook[domain]
+        codes = body.get("codes")
+        if not isinstance(codes, list) or not codes:
+            faults.append(f"domain [{domain}] has no codes list")
+            continue
+
+        seen_keys = {}
+        for index, entry in enumerate(codes):
+            if not isinstance(entry, dict):
+                faults.append(f"domain [{domain}] entry [{index}] is not an object")
+                continue
+            where = f"domain [{domain}] entry [{index}]"
+            try:
+                values = extract(domain, entry)
+            except KeyError as error:
+                faults.append(f"{where} is missing key {error.args[0]}")
+                continue
+            if len(values) != len(columns):
+                faults.append(f"{where} produced {len(values)} values for {len(columns)} columns")
+                continue
+
+            col = dict(zip(columns, values))
+
+            key = col.get(conflict)
+            if key in seen_keys:
+                faults.append(f"{where} repeats {conflict} [{key}], already seen at [{seen_keys[key]}]")
+            seen_keys[key] = index
+
+            if "slug" in col and not (isinstance(col["slug"], str) and SLUG_RE.match(col["slug"])):
+                faults.append(f"{where} slug [{col['slug']!r}] is not a slug")
+            if domain == "us_states":
+                if not (isinstance(col["usps_code"], str) and USPS_RE.match(col["usps_code"])):
+                    faults.append(f"{where} usps_code [{col['usps_code']!r}] is not two uppercase letters")
+                if col["jurisdiction_kind"] not in JURISDICTION_KINDS:
+                    faults.append(f"{where} jurisdiction_kind [{col['jurisdiction_kind']!r}] is not one of {sorted(JURISDICTION_KINDS)}")
+            if domain == "nces_locale":
+                if col["type"] not in LOCALE_TYPES:
+                    faults.append(f"{where} type [{col['type']!r}] is not one of {sorted(LOCALE_TYPES)}")
+                if col["detail"] not in LOCALE_DETAILS:
+                    faults.append(f"{where} detail [{col['detail']!r}] is not one of {sorted(LOCALE_DETAILS)}")
+            if domain == "carnegie_2021_size_setting" and col["years"] is not None and col["years"] not in (2, 4):
+                faults.append(f"{where} years [{col['years']!r}] is neither 2 nor 4")
+            if domain == "athletic_association":
+                if not isinstance(col["code"], int) or not (1 <= col["code"] <= 6):
+                    faults.append(f"{where} code [{col['code']!r}] is outside 1..6")
+                if not (isinstance(col["source_variable"], str) and ASSOC_RE.match(col["source_variable"])):
+                    faults.append(f"{where} source_variable [{col['source_variable']!r}] is not assoc1..assoc6")
+            if domain == "cip_code" and not (isinstance(col["code"], str) and CIP_CODE_RE.match(col["code"])):
+                faults.append(f"{where} code [{col['code']!r}] is not six digits")
+
+        # A declared sentinel that is also a code is D41's fatal shape.
+        sentinels = body.get("null_sentinels") or []
+        published = {entry.get("code") for entry in codes if isinstance(entry, dict)}
+        for sentinel in sentinels:
+            if sentinel in published:
+                faults.append(f"domain [{domain}] declares null_sentinel [{sentinel}] that is also a published code")
+
+        if domain == "ipeds_region":
+            regions = {entry.get("slug") for entry in codes if isinstance(entry, dict)}
+
+    # Cross-domain: every us_states.ipeds_region resolves to an ipeds_regions slug.
+    if "us_states" in codebook and "ipeds_region" in codebook:
+        region_slugs = {entry.get("slug") for entry in codebook["ipeds_region"].get("codes", []) if isinstance(entry, dict)}
+        for index, entry in enumerate(codebook["us_states"].get("codes", [])):
+            if isinstance(entry, dict) and entry.get("ipeds_region") not in region_slugs:
+                faults.append(
+                    f"domain [us_states] entry [{index}] ipeds_region [{entry.get('ipeds_region')!r}] "
+                    f"resolves to no ipeds_regions row"
+                )
+
+    # The provenance headers codebook_sources mirrors.
+    for domain in EXPECTED_DOMAINS:
+        if domain not in codebook:
+            continue
+        body = codebook[domain]
+        sha = body.get("source_sha256")
+        vintage = body.get("source_vintage_year")
+        source = body.get("source")
+        source_file = body.get("source_file")
+        if not (isinstance(sha, str) and SHA256_RE.match(sha)):
+            faults.append(f"domain [{domain}] source_sha256 [{sha!r}] is not a 64-char hex digest")
+        if not isinstance(vintage, int) or not (1980 <= vintage <= 2100):
+            faults.append(f"domain [{domain}] source_vintage_year [{vintage!r}] is outside 1980..2100")
+        if not isinstance(source, str) or not source:
+            faults.append(f"domain [{domain}] source is empty")
+        if not isinstance(source_file, str) or not source_file:
+            faults.append(f"domain [{domain}] source_file is empty")
+
+    return faults
+
+
+def render(codebook):
+    """The seed SQL, byte-for-byte what a real run writes."""
+    lines = [
+        "-- GENERATED FILE -- do not edit.",
+        "--",
+        "-- Written by bin/codebook-seed from db/data/codebooks.json (IPEDS 2023).",
+        "-- The JSON is the source a human reviews in a diff; this file is an",
+        "-- artifact of it. To change a label, regenerate the JSON with",
+        "-- bin/fetch-codebooks, review that diff, then re-run this script.",
+        "--",
+        "-- RFC 229 (brief 0010 D27): unicoach owns its published codebooks, so the",
+        "-- migrations place them. Ten vocabularies (2,015 rows) plus one",
+        "-- codebook_sources row per vocabulary. Upserts on the natural key with the",
+        "-- same WHERE ... IS DISTINCT FROM change guard as CodebooksDao, so applying",
+        "-- against rows the data-import run already placed changes nothing.",
+        "",
+    ]
+
+    for domain, table, columns, conflict in DOMAINS:
+        codes = codebook[domain]["codes"]
+        update_cols = [c for c in columns if c != conflict]
+        lines.append(f"INSERT INTO {table} ({', '.join(columns)}) VALUES")
+        rows = ["  (" + ", ".join(sql_literal(v) for v in extract(domain, entry)) + ")" for entry in codes]
+        lines.append(",\n".join(rows))
+        set_clause = ",\n    ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+        where_left = ", ".join(f"{table}.{c}" for c in update_cols)
+        where_right = ", ".join(f"EXCLUDED.{c}" for c in update_cols)
+        lines.append(f"ON CONFLICT ({conflict}) DO UPDATE SET")
+        lines.append(f"    {set_clause}")
+        lines.append(f"WHERE ({where_left})")
+        lines.append(f"    IS DISTINCT FROM ({where_right});")
+        lines.append("")
+
+    # codebook_sources is the loader's one exception: it always moves loaded_at.
+    lines.append(
+        "INSERT INTO codebook_sources "
+        "(domain, source, source_file, source_sha256, source_vintage_year, null_sentinels) VALUES"
+    )
+    source_rows = []
+    for domain, _, _, _ in DOMAINS:
+        body = codebook[domain]
+        sentinels = body.get("null_sentinels") or []
+        array = "{" + ",".join(str(s) for s in sentinels) + "}"
+        source_rows.append(
+            f"  ({sql_literal(domain)}, {sql_literal(body['source'])}, "
+            f"{sql_literal(body['source_file'])}, {sql_literal(body['source_sha256'])}, "
+            f"{sql_literal(body['source_vintage_year'])}, {sql_literal(array)})"
+        )
+    lines.append(",\n".join(source_rows))
+    lines.append("ON CONFLICT (domain) DO UPDATE SET")
+    lines.append("    source = EXCLUDED.source,")
+    lines.append("    source_file = EXCLUDED.source_file,")
+    lines.append("    source_sha256 = EXCLUDED.source_sha256,")
+    lines.append("    source_vintage_year = EXCLUDED.source_vintage_year,")
+    lines.append("    null_sentinels = EXCLUDED.null_sentinels,")
+    lines.append("    loaded_at = EXCLUDED.loaded_at;")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def read_codebook(path):
+    try:
+        raw = Path(path).read_text()
+    except OSError as error:
+        fatal(f"{SCRIPT_NAME}: cannot read codebook [{path}]: {error}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        fatal(f"{SCRIPT_NAME}: codebook [{path}] is not valid json: {error}")
+
+
+def committed_seed_path(schema_dir):
+    existing = sorted(schema_dir.glob("seed-published-codebooks-r*.sql"))
+    return existing[-1] if existing else None
+
+
+def derive_output_path(schema_dir, body):
+    """The next revision filename, cut only when the body differs from the newest."""
+    newest = committed_seed_path(schema_dir)
+    if newest is not None:
+        try:
+            if newest.read_text() == body:
+                return None
+        except OSError as error:
+            fatal(f"{SCRIPT_NAME}: cannot read existing seed [{newest}]: {error}")
+        revision = int(re.search(r"-r([0-9]+)\.sql$", newest.name).group(1)) + 1
+    else:
+        revision = 1
+    return schema_dir / f"seed-published-codebooks-r{revision}.sql"
+
+
+def usage_error(message, status):
+    fatal(f"{SCRIPT_NAME}: {message}", status=status)
+
+
+def main(argv):
+    json_path = DEFAULT_JSON_PATH
+    schema_dir = DEFAULT_SCHEMA_DIR
+    output_path = None
+    dry_run = False
+
+    try:
+        options, positional = getopt.getopt(argv, "j:d:o:nh")
+    except getopt.GetoptError as error:
+        status = EXIT_OPTION_REQUIRES_VALUE if "requires argument" in error.msg else EXIT_UNKNOWN_OPTION
+        usage_error(error.msg, status)
+
+    if positional:
+        usage_error(f"unexpected positional argument(s): {positional}", EXIT_UNEXPECTED_ARG)
+
+    for flag, value in options:
+        if flag == "-h":
+            print(__doc__.strip())
+            return 0
+        if flag == "-j":
+            if not value or value.startswith("-"):
+                usage_error("option -j requires a non-empty path", EXIT_OPTION_REQUIRES_VALUE)
+            json_path = Path(value)
+        elif flag == "-d":
+            if not value or value.startswith("-"):
+                usage_error("option -d requires a non-empty path", EXIT_OPTION_REQUIRES_VALUE)
+            schema_dir = Path(value)
+        elif flag == "-o":
+            if not value or value.startswith("-"):
+                usage_error("option -o requires a non-empty path", EXIT_OPTION_REQUIRES_VALUE)
+            output_path = Path(value)
+        elif flag == "-n":
+            dry_run = True
+
+    codebook = read_codebook(json_path)
+    faults = validate(codebook)
+    if faults:
+        for fault in faults:
+            print(f"{SCRIPT_NAME}: {fault}", file=sys.stderr)
+        fatal(f"{SCRIPT_NAME}: refused [{json_path}] with {len(faults)} fault(s); nothing was written", status=1)
+
+    body = render(codebook)
+
+    if dry_run:
+        newest = committed_seed_path(schema_dir)
+        if newest is None:
+            log_info("no committed seed-published-codebooks-r*.sql exists in the schema directory")
+            return EXIT_SEED_WOULD_CHANGE
+        try:
+            current = newest.read_text()
+        except OSError as error:
+            fatal(f"{SCRIPT_NAME}: cannot read existing seed [{newest}]: {error}")
+        if current == body:
+            log_info(f"committed seed [{newest.name}] matches what [{json_path}] generates")
+            return 0
+        log_info(f"committed seed [{newest.name}] differs from what [{json_path}] generates")
+        return EXIT_SEED_WOULD_CHANGE
+
+    if output_path is None:
+        output_path = derive_output_path(schema_dir, body)
+        if output_path is None:
+            log_info("the newest committed seed already matches the generated body; nothing to write")
+            return 0
+        schema_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    staged = output_path.with_suffix(output_path.suffix + ".partial")
+    try:
+        staged.write_text(body)
+        staged.replace(output_path)
+    except OSError as error:
+        fatal(f"{SCRIPT_NAME}: cannot write seed [{output_path}]: {error}")
+
+    rows = sum(len(codebook[d]["codes"]) for d, _, _, _ in DOMAINS)
+    log_info(
+        f"wrote [{output_path.name}]: {rows} codebook rows plus {len(DOMAINS)} source rows "
+        f"({len(body)} bytes) from [{json_path}]"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

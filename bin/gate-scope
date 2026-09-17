@@ -99,6 +99,7 @@ KNOWN_HARNESSES=(
   ship-scripts-tests
   prompt-seed-scripts-tests
   docs-scripts-tests
+  codebook-seed-scripts-tests
   test-calendar-seed-scripts-tests
   test-state-programme-seed-scripts-tests
   fafsa-deadline-seed-scripts-tests

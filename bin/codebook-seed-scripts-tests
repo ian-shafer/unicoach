@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# codebook-seed-scripts-tests — shell assertions over bin/codebook-seed
+# (RFC 229).
+#
+# The `-scripts-tests` suffix is load-bearing, not decoration: bin/scripts-tests
+# sweeps `bin/*scripts-tests` and asserts each one is named in bin/shell-tests,
+# because an orphaned harness looks exactly like a passing one.
+#
+# THE SUBJECT IS A VALIDATOR NOTHING ELSE EVER FEEDS A BAD FILE. The generator
+# turns db/data/codebooks.json into seed-published-codebooks-rN.sql, and its
+# safety argument is that a value the 0060 CHECKs cannot hold is a REVIEW error
+# naming its domain rather than a migration that fails at apply time in
+# somebody else's db-reset. Every one of those refusals is reachable only from a
+# bad file, so this file is the only place they are ever executed.
+#
+# Four properties cannot be eyeballed and each gets its own case:
+#   1. A NORMAL RUN WRITES NOTHING TO STDOUT (the repo's bin/ rule).
+#   2. IT REPORTS EVERY FAULT IN ONE PASS, not the first and stop.
+#   3. A REFUSAL WRITES NOTHING — the schema directory stays byte for byte.
+#   4. `-n` against the COMMITTED tree is the drift guard: a stale or
+#      hand-edited seed-published-codebooks-r*.sql fails the whole harness.
+#
+# NO POSTGRES AND NO WORKTREE. Every run that can WRITE is routed by explicit
+# -j/-d/-o options into a throwaway temp tree, so this harness cannot half-move
+# itself onto the real corpus. The one case aimed at the real tree is -n, which
+# writes nothing.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+codebook-seed-scripts-tests [options]
+
+Runs the shell assertions over bin/codebook-seed: the usage band, the
+stdout-silence rule, the write-nothing-on-refusal rule, the four validator
+refusals (bad slug, bad jurisdiction_kind, unresolved us_states.ipeds_region,
+sentinel-as-code) and the multi-fault one-pass report, and -n against both the
+committed tree and a mutated copy. Needs no database, no daemon and no
+worktree.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "codebook-seed-scripts-tests accepts no positional arguments."
+fi
+
+SEED="$PROJECT_ROOT/bin/codebook-seed"
+[ -x "$SEED" ] || fail_test "codebook-seed is missing or not executable [$SEED]"
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+SCHEMA="$FIXTURE_DIR/schema"
+mkdir -p "$SCHEMA"
+JSON="$FIXTURE_DIR/codebooks.json"
+COMMITTED_JSON="$PROJECT_ROOT/db/data/codebooks.json"
+
+# ---------------------------------------------------------------------------
+# The usage band: getopt grammar, short options only, reserved exit codes.
+# ---------------------------------------------------------------------------
+assert_exit_code 0 "usage: -h exits 0 and prints help on stdout" \
+  sh -c "nix develop -c '$SEED' -h > '$FIXTURE_DIR/help.txt'"
+grep -q "codebook-seed" "$FIXTURE_DIR/help.txt" ||
+  fail_test "usage: -h output does not mention codebook-seed"
+
+assert_exit_code 10 "usage: an unknown option exits 10" \
+  sh -c "nix develop -c '$SEED' -Z >/dev/null 2>&1"
+assert_exit_code 11 "usage: -j without a value exits 11" \
+  sh -c "nix develop -c '$SEED' -j >/dev/null 2>&1"
+assert_exit_code 20 "usage: a positional argument exits 20" \
+  sh -c "nix develop -c '$SEED' stray >/dev/null 2>&1"
+
+# ---------------------------------------------------------------------------
+# A normal run into a scratch tree writes the seed and nothing to stdout.
+# ---------------------------------------------------------------------------
+"$SEED" -j "$COMMITTED_JSON" -d "$SCHEMA" > "$FIXTURE_DIR/run.out" 2> "$FIXTURE_DIR/run.err"
+[ -s "$FIXTURE_DIR/run.out" ] &&
+  fail_test "stdout silence: a normal run wrote to stdout: $(head -1 "$FIXTURE_DIR/run.out")"
+pass_test "stdout silence: a normal run writes nothing to stdout"
+
+SEED_FILE="$SCHEMA/seed-published-codebooks-r1.sql"
+[ -f "$SEED_FILE" ] || fail_test "a normal run writes seed-published-codebooks-r1.sql into -d"
+pass_test "a normal run writes seed-published-codebooks-r1.sql"
+
+grep -q "INSERT INTO us_states" "$SEED_FILE" ||
+  fail_test "the generated seed contains a us_states INSERT"
+grep -q "INSERT INTO cip_codes" "$SEED_FILE" ||
+  fail_test "the generated seed contains a cip_codes INSERT"
+pass_test "the generated seed covers the vocabularies"
+
+# Idempotence: a second run over the same tree writes no NEW revision.
+before="$(ls "$SCHEMA")"
+"$SEED" -j "$COMMITTED_JSON" -d "$SCHEMA" >/dev/null 2>&1
+after="$(ls "$SCHEMA")"
+[ "$before" = "$after" ] ||
+  fail_test "a re-run with an identical body cuts no new revision (before=[$before] after=[$after])"
+pass_test "a re-run with an identical body cuts no new revision"
+
+# ---------------------------------------------------------------------------
+# A refusal writes nothing, and one pass reports every fault.
+# ---------------------------------------------------------------------------
+mutate() { # mutate <name> <python-statement...>
+  local name="$1"
+  shift
+  PYTHONPATH= nix develop -c python3 -c "
+import json, sys
+src = json.load(open('$COMMITTED_JSON'))
+$*
+json.dump(src, open('$FIXTURE_DIR/$name', 'w'))
+"
+}
+
+mutate bad-slug.json "src['ipeds_region']['codes'][1]['slug'] = 'New England'"
+mutate bad-jurisdiction.json "src['us_states']['codes'][0]['jurisdiction_kind'] = 'province'"
+mutate bad-region.json "src['us_states']['codes'][0]['ipeds_region'] = 'no-such-region'"
+mutate sentinel-as-code.json "src['ipeds_region']['null_sentinels'] = [0]"
+mutate valid-but-different.json "src['us_states']['codes'][0]['name'] = 'Alabamastan'"
+
+for fixture in bad-slug bad-jurisdiction bad-region sentinel-as-code; do
+  "$SEED" -j "$FIXTURE_DIR/$fixture.json" -d "$SCHEMA" > "$FIXTURE_DIR/$fixture.out" 2> "$FIXTURE_DIR/$fixture.err" || true
+  [ -s "$FIXTURE_DIR/$fixture.err" ] ||
+    fail_test "validator: [$fixture] was refused with no diagnostic on stderr"
+  case "$fixture" in
+  bad-slug) grep -q "slug" "$FIXTURE_DIR/$fixture.err" || fail_test "validator: bad slug names the slug" ;;
+  bad-jurisdiction) grep -q "jurisdiction_kind" "$FIXTURE_DIR/$fixture.err" || fail_test "validator: bad jurisdiction names jurisdiction_kind" ;;
+  bad-region) grep -q "ipeds_region" "$FIXTURE_DIR/$fixture.err" || fail_test "validator: unresolved region names ipeds_region" ;;
+  sentinel-as-code) grep -q "null_sentinel" "$FIXTURE_DIR/$fixture.err" || fail_test "validator: sentinel-as-code names null_sentinel" ;;
+  esac
+  pass_test "validator refuses [$fixture] and names it"
+done
+
+# One file with THREE faults must report all three in one pass.
+mutate three-faults.json "
+src['ipeds_region']['codes'][1]['slug'] = 'New England'
+src['us_states']['codes'][0]['jurisdiction_kind'] = 'province'
+src['us_states']['codes'][0]['ipeds_region'] = 'no-such-region'
+"
+"$SEED" -j "$FIXTURE_DIR/three-faults.json" -d "$SCHEMA" > "$FIXTURE_DIR/three.out" 2> "$FIXTURE_DIR/three.err" || true
+n_faults="$(grep -c "domain \[" "$FIXTURE_DIR/three.err" || true)"
+[ "$n_faults" -ge 3 ] ||
+  fail_test "one pass reports every fault: found [$n_faults] diagnostics for a 3-fault file"
+pass_test "one pass reports every fault (found $n_faults)"
+
+# A refusal must leave the schema directory byte for byte as it was.
+before="$(ls "$SCHEMA")"
+"$SEED" -j "$FIXTURE_DIR/bad-slug.json" -d "$SCHEMA" >/dev/null 2>&1 || true
+after="$(ls "$SCHEMA")"
+[ "$before" = "$after" ] ||
+  fail_test "a refusal writes nothing: schema dir changed from [$before] to [$after]"
+pass_test "a refusal writes nothing"
+
+# ---------------------------------------------------------------------------
+# -n is the drift guard.
+# ---------------------------------------------------------------------------
+assert_exit_code 0 "dry run: -n against the committed tree exits 0" \
+  sh -c "nix develop -c '$SEED' -n >/dev/null 2>&1"
+assert_exit_code 3 "dry run: -n against a valid but different codebook exits 3" \
+  sh -c "nix develop -c '$SEED' -j '$FIXTURE_DIR/valid-but-different.json' -n >/dev/null 2>&1"
+
+end_tests

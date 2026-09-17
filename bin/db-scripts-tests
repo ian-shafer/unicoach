@@ -2482,4 +2482,79 @@ assert_success "db-create succeeds when POSTGRES_USER is the cluster admin (the 
 assert_success "db-create-role creates no owner role in the cloud shape" test_db_create_role_skips_the_owner_role_in_the_cloud_shape
 assert_success "db-adopt re-owns nothing in the cloud shape" test_db_adopt_re_owns_nothing_in_the_cloud_shape
 
+# ---------------------------------------------------------------------------
+# RFC 229 acceptance: a database built by MIGRATION alone holds the codebooks,
+# and the keys test/05 could not have now hold. This is the case that failed:
+# 112 of 113 migrations applied and the seed was refused with
+# `Key (state)=(AL) is not present in table "us_states"`.
+# ---------------------------------------------------------------------------
+
+# md5 over every data column of every codebook table, timestamps excluded, so
+# two snapshots differ iff a codebook VALUE moved.
+codebook_data_checksum() {
+  bin/db-run -r ro "SELECT string_agg(md5, '' ORDER BY which) FROM (
+    SELECT 'admission_test_policies' AS which, md5(string_agg(row::text, E'\n' ORDER BY row::text)) AS md5 FROM (SELECT slug, code, name, label_raw FROM admission_test_policies) row
+    UNION ALL SELECT 'athletic_associations', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT slug, code, source_variable, name, label_raw FROM athletic_associations) row
+    UNION ALL SELECT 'carnegie_2021_basic_classes', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT slug, code, degree_level, qualifier, name, label_raw FROM carnegie_2021_basic_classes) row
+    UNION ALL SELECT 'carnegie_2021_size_settings', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT slug, code, years, size, residential_character, name, label_raw FROM carnegie_2021_size_settings) row
+    UNION ALL SELECT 'cip_codes', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT code, title, label_raw FROM cip_codes) row
+    UNION ALL SELECT 'codebook_sources', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT domain, source, source_file, source_sha256, source_vintage_year, null_sentinels FROM codebook_sources) row
+    UNION ALL SELECT 'football_conferences', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT slug, code, name, label_raw FROM football_conferences) row
+    UNION ALL SELECT 'ipeds_regions', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT slug, code, name, label_raw FROM ipeds_regions) row
+    UNION ALL SELECT 'nces_locales', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT slug, code, type, detail, name, label_raw FROM nces_locales) row
+    UNION ALL SELECT 'religious_affiliations', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT slug, code, name, label_raw FROM religious_affiliations) row
+    UNION ALL SELECT 'us_states', md5(string_agg(row::text, E'\n' ORDER BY row::text)) FROM (SELECT usps_code, name, jurisdiction_kind, ipeds_region FROM us_states) row
+  ) c;"
+}
+
+test_migration_alone_holds_codebooks_and_keys() {
+  local counts orphans before after
+
+  # A clean database, built by migration alone: no ingest, no fixture.
+  bin/db-drop >/dev/null 2>&1 || true
+  bin/db-create >/dev/null
+  bin/db-migrate >/dev/null
+
+  counts="$(bin/db-run -r ro "SELECT (SELECT count(*) FROM us_states) || ',' || (SELECT count(*) FROM ipeds_regions) || ',' || (SELECT count(*) FROM nces_locales) || ',' || (SELECT count(*) FROM cip_codes) || ',' || (SELECT count(*) FROM codebook_sources);")"
+  [ "$counts" = "59,10,12,1710,10" ] ||
+    fail_test "migration alone seeds every codebook: got [$counts], want [59,10,12,1710,10]"
+
+  orphans="$(bin/db-run -r ro "SELECT count(*) FROM admission_test_state_programmes p WHERE NOT EXISTS (SELECT 1 FROM us_states s WHERE s.usps_code = p.state);")"
+  [ "$orphans" = "0" ] ||
+    fail_test "every admission_test_state_programmes.state resolves to us_states: [$orphans] orphans"
+
+  # The two FAFSA inserts below cite a real seeded document, so the guard makes
+  # a 0-row "pass" impossible: with no document to cite, the INSERT would insert
+  # nothing and both the refusal and the acceptance would read as green.
+  docs="$(bin/db-run -r ro "SELECT count(*) FROM external_documents;")"
+  [ "$docs" -ge 1 ] ||
+    fail_test "the acceptance test needs a seeded external_documents row to cite, found [$docs]"
+
+  # 'ZZ' passed the interim regex; the key must refuse it. UPDATE an existing row
+  # so the refusal can only be the key, not a missing NOT NULL column.
+  if bin/db-run rw "UPDATE admission_test_state_programmes SET state = 'ZZ' WHERE state = 'AL';" >/dev/null 2>&1; then
+    fail_test "admission_test_state_programmes accepted state 'ZZ' (the key is missing)"
+  fi
+
+  # The FAFSA deadline key: 'ZZ' refused, and the NULL federal row stays legal.
+  if bin/db-run rw "INSERT INTO fafsa_filing_deadlines (award_year, state, program, event, deadline_kind, deadline_as_published, publisher, source_document_id, checked_on, expires_on) SELECT 2026, 'ZZ', 'state', 'final_deadline', 'wording', 'as soon as possible', 'test', id, DATE '2026-01-01', DATE '2027-01-01' FROM external_documents LIMIT 1;" >/dev/null 2>&1; then
+    fail_test "fafsa_filing_deadlines accepted state 'ZZ' (the key is missing)"
+  fi
+  bin/db-run rw "INSERT INTO fafsa_filing_deadlines (award_year, state, program, event, deadline_kind, deadline_as_published, publisher, source_document_id, checked_on, expires_on) SELECT 2026, NULL, 'federal', 'final_deadline', 'wording', 'as soon as possible', 'test', id, DATE '2026-01-01', DATE '2027-01-01' FROM external_documents LIMIT 1;" >/dev/null
+
+  # One source file, one set of values: re-applying the generated seed over the
+  # migrated rows must change no codebook VALUE. That is the pin for "the import
+  # re-ingests what the migration already placed", because the seed's upsert is
+  # the identical WHERE ... IS DISTINCT FROM shape CodebooksDao runs.
+  before="$(codebook_data_checksum)"
+  bin/db-run rw < "$PROJECT_ROOT/db/schema/seed-published-codebooks-r1.sql" >/dev/null
+  after="$(codebook_data_checksum)"
+  [ "$before" = "$after" ] ||
+    fail_test "re-applying the seed changed a codebook value: before [$before] after [$after]"
+  return 0
+}
+
+assert_success "a database built by migration alone holds the codebooks and the state keys" test_migration_alone_holds_codebooks_and_keys
+
 end_tests
+

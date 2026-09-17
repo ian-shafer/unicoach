@@ -272,11 +272,10 @@ class FafsaFilingDeadlineSchemaTest {
         // said it: the 2027-28 window opens on 2026-07-01, and this is the day
         // before it -- the nearest wrong value, not a distant one.
         "fafsa_filing_deadlines_checked_in_or_after_cycle_check" to mapOf("checked_on" to "DATE '2026-06-30'"),
-        // The coarse DB-level backstop UsStateCodes.kt asks for: lower case and
-        // three letters stop here, membership stops at the generator and the
-        // seed test.
-        "fafsa_filing_deadlines_state_format_check" to mapOf("state" to "'ca'"),
-        "fafsa_filing_deadlines_state_format_check" to mapOf("state" to "'CAL'"),
+        // RFC 229 dropped the format CHECK in favour of the key: 'ca' and 'CAL'
+        // are refused by us_states membership now, not by a regex.
+        "fafsa_filing_deadlines_state_fkey" to mapOf("state" to "'ca'"),
+        "fafsa_filing_deadlines_state_fkey" to mapOf("state" to "'CAL'"),
       )
 
     // Every case is run and every mismatch reported, so one failing CHECK does

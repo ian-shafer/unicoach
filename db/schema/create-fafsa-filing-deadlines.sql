@@ -64,20 +64,17 @@
 -- read from, or it is not, in which case the row says so in the publisher's own
 -- words.
 --
--- NO FOREIGN KEY TO us_states, DELIBERATELY, AND NOT FOR EVER. us_states is
--- filled by the codebook phase of bin/ingest-colleges (RFC 147), not by any
--- migration, so a freshly migrated database -- the test database that bin/test
--- recreates on every run included -- has none of its rows, and a seed migration
--- referencing it could not apply. This is the identical argument
--- create-admission-test-state-programmes.sql makes at its own `state` column,
--- and it has the identical fix: brief 0010's test/05.3/own-our-codebooks seeds
--- the codebooks at migration time and adds the key. That slice has not landed,
--- so this table takes the same shape its sibling took. Membership in the 59
--- published USPS codes is enforced where UsStateCodes.kt says it belongs: by
--- the fafsa/02 generator over the authored CSV and by the seed test. The regex
--- below is the coarser DB-level backstop. The region grouping the public page
--- needs is still us_states.ipeds_region -> ipeds_regions.name, joined at READ
--- time in a database that has been ingested.
+-- KEYED INTO us_states (RFC 229). us_states was once filled only by the
+-- codebook phase of bin/ingest-colleges (RFC 147), so a freshly migrated
+-- database had none of its rows and a seed migration referencing it could not
+-- apply -- the identical argument
+-- create-admission-test-state-programmes.sql made at its own `state` column.
+-- brief 0010's test/05.3/own-our-codebooks seeds the codebooks at migration
+-- time and adds the key here and there together. Membership in the 59 published
+-- USPS codes is enforced where UsStateCodes.kt says it belongs: by the fafsa/02
+-- generator over the authored CSV and by the seed test. The region grouping the
+-- public page needs is still us_states.ipeds_region -> ipeds_regions.name,
+-- joined at READ time.
 
 -- THE CYCLE'S OPENING BOUND, NAMED ONCE. Two CHECKs below ask the same
 -- question -- "could this cycle have been published yet?" -- and the arithmetic
@@ -205,10 +202,10 @@ CREATE TABLE fafsa_filing_deadlines (
     created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
-    -- The coarse DB-level backstop UsStateCodes.kt asks for. ^[A-Z]{2}$ admits
-    -- 676 strings and 59 of them are legal, so MEMBERSHIP is checked by the
-    -- generator and the seed test with UsStateCodes.parse; this stops the
-    -- lower-case and three-letter cases at the write boundary.
+    -- The coarse DB-level backstop UsStateCodes.kt asked for, until RFC 229
+    -- replaced it with a foreign key into us_states: ^[A-Z]{2}$ admits 676
+    -- strings and 59 of them are legal, so the key is strictly stronger. The
+    -- CHECK is dropped by db/schema/key-state-columns-to-us-states.sql.
     CONSTRAINT fafsa_filing_deadlines_state_format_check
         CHECK (state IS NULL OR state ~ '^[A-Z]{2}$'),
 
@@ -311,9 +308,8 @@ COMMENT ON TABLE fafsa_filing_deadlines IS
 
 COMMENT ON COLUMN fafsa_filing_deadlines.state IS
     'The USPS code of the state whose agency published this, or NULL for the '
-    'FEDERAL row. Not a foreign key YET: us_states is loaded by the codebook '
-    'ingest and is empty in a freshly migrated database, so test/05.3 adds the '
-    'key here and on admission_test_state_programmes together. Membership in '
+    'FEDERAL row. Keyed into us_states (RFC 229): the codebook now arrives '
+    'with the schema, so a migration-time row may point at it. Membership in '
     'the 59 published codes is UsStateCodes.parse''s job, in the generator and '
     'the seed test.';
 

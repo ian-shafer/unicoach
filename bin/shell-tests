@@ -35,6 +35,8 @@ the first failure. With -n, runs only the named ones, still in this order:
   ship-scripts-tests        the /ship land lock, no cluster at all
   prompt-seed-scripts-tests the coach prompt seed generator, no cluster at all
   docs-scripts-tests        the /chart documentation land path, no cluster
+  codebook-seed-scripts-tests
+                            the published-codebook seed generator, no cluster
   test-calendar-seed-scripts-tests
                             the SAT/ACT calendar seed generator, no cluster
   test-state-programme-seed-scripts-tests
@@ -122,6 +124,7 @@ HARNESSES=(
   bin/ship-scripts-tests
   bin/prompt-seed-scripts-tests
   bin/docs-scripts-tests
+  bin/codebook-seed-scripts-tests
   bin/test-calendar-seed-scripts-tests
   bin/test-state-programme-seed-scripts-tests
   bin/fafsa-deadline-seed-scripts-tests

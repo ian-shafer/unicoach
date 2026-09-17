@@ -111,6 +111,10 @@ class AdmissionTestStateProgrammeDaoTest {
   @BeforeEach
   fun setup() {
     AdmissionTestStateProgrammeFixture.deleteAll(session)
+    // RFC 229: `state` now keys into us_states, and the migration-seeded rows
+    // may have been truncated by an earlier suite in this module, so this suite
+    // makes its own precondition true instead of depending on test order.
+    CodebookReferenceFixture.seed(connection)
     // The document the literal-SQL rows below cite. It is created and never
     // deleted: external_documents is shared by the committed corpus this suite
     // restores, so a test that emptied it would take the corpus's citations with
@@ -269,20 +273,20 @@ class AdmissionTestStateProgrammeDaoTest {
    * refusal we do not have would be a test asserting a guarantee nobody holds.
    */
   @Test
-  fun `a badly shaped state code is refused, and a well-shaped unknown one is not`() {
-    val failure =
-      assertFailsWith<ConstraintViolationException> {
-        AdmissionTestStateProgrammeFixture.seed(session, listOf(AdmissionTestStateProgrammeFixture.programme(state = "usa")))
-      }
-    assertEquals("admission_test_state_programmes_state_format_check", failure.constraint)
+  fun `a state that is not in us_states is refused by the key, shaped or not`() {
+    // RFC 229 dropped the interim format CHECK: a key is strictly stronger than
+    // a regex. Both 'usa' (malformed) and 'ZZ' (well-shaped but unpublished) are
+    // refused by the key now, and the DAO maps the foreign-key refusal to
+    // NotFoundException on its write path.
+    assertFailsWith<NotFoundException> {
+      AdmissionTestStateProgrammeFixture.seed(session, listOf(AdmissionTestStateProgrammeFixture.programme(state = "usa")))
+    }
     assertEquals(0, countRows("admission_test_state_programmes"))
 
-    AdmissionTestStateProgrammeFixture.seed(session, listOf(AdmissionTestStateProgrammeFixture.programme(state = "ZZ")))
-    assertEquals(
-      1,
-      countRows("admission_test_state_programmes"),
-      "'ZZ' is well shaped and unpublished, and the database cannot tell yet -- the committed-file test is what does",
-    )
+    assertFailsWith<NotFoundException> {
+      AdmissionTestStateProgrammeFixture.seed(session, listOf(AdmissionTestStateProgrammeFixture.programme(state = "ZZ")))
+    }
+    assertEquals(0, countRows("admission_test_state_programmes"))
   }
 
   @Test

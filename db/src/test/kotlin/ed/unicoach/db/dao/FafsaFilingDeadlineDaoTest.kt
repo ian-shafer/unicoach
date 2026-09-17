@@ -81,6 +81,10 @@ class FafsaFilingDeadlineDaoTest {
     // other corpus, and a suite that emptied it would take their citations with
     // it.
     connection.createStatement().use { stmt -> stmt.execute("DELETE FROM fafsa_filing_deadlines") }
+    // RFC 229: `state` now keys into us_states, and the migration-seeded rows
+    // may have been truncated by an earlier suite in this module, so this suite
+    // makes its own precondition true instead of depending on test order.
+    CodebookReferenceFixture.seed(connection)
   }
 
   @Test

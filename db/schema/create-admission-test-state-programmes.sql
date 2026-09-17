@@ -70,38 +70,17 @@
 CREATE TABLE admission_test_state_programmes (
     id                UUID          NOT NULL PRIMARY KEY DEFAULT uuidv7(),
 
-    -- A FORMAT RULE TODAY, AND A FOREIGN KEY AS SOON AS IT CAN BE ONE.
+    -- KEYED INTO us_states (RFC 229), the vocabulary this column always
+    -- belonged in: usps_code TEXT PRIMARY KEY, 59 rows, with a
+    -- jurisdiction_kind that already tells a state from DC, a territory and a
+    -- freely-associated state. Ian asked for the key explicitly, and he was
+    -- right: 'ZZ' passes a regex and is nobody's jurisdiction.
     --
-    -- The repo publishes the vocabulary this column should key into: `us_states`
-    -- (0060) -- usps_code TEXT PRIMARY KEY, 59 rows, with a jurisdiction_kind
-    -- that already tells a state from DC, a territory and a freely-associated
-    -- state. Ian asked for the key explicitly, and he was right: 'ZZ' passes a
-    -- regex and is nobody's jurisdiction.
-    --
-    -- It is not here because of WHEN that table is filled. `us_states` is
-    -- CREATED by a migration and POPULATED by the data-import run, so on a
-    -- freshly migrated database it is EMPTY -- and this corpus is seeded by
-    -- migration, precisely so that `bin/test`, which never imports, sees the
-    -- rows. The key was therefore refused at apply time with
-    -- `Key (state)=(AL) is not present in table "us_states"`, and not only in a
-    -- test database: a fresh production database migrates before it imports and
-    -- would refuse it the same way. The two landed tables that DO key into
-    -- `us_states` (0067: colleges, college_search_index) never meet this,
-    -- because their rows also arrive at import time, after the codebook.
-    --
-    -- Ian named the real defect rather than the workaround: "Unicoach owns the
-    -- us_states table, so it should populate it." `test/05.3/own-our-codebooks`
-    -- carries that fix -- it seeds the published codebooks at MIGRATION time
-    -- from their authored files, the same shape this corpus already uses, and
-    -- then adds the keys that could not exist before, this one included. The
-    -- codebook has one writer either way; what changes is WHEN it is written.
-    --
-    -- Until then the shape is checked here and the MEMBERSHIP is checked in the
-    -- committed file: AdmissionTestStateProgrammeSeedTest reads every state code
-    -- against db/data/codebooks.json, so a typo still fails the build -- in the
-    -- file, where the fix is, rather than at apply time in somebody's db-reset.
-    -- The regex is the same one money_profiles.residency_state carries, which is
-    -- the only column that ever supplies this lookup.
+    -- The key arrives with test/05.3/own-our-codebooks: RFC 229 seeds the
+    -- published codebooks at MIGRATION time from db/data/codebooks.json, so a
+    -- migration-time row may key into them. The interim format CHECK this column
+    -- carried until then is DROPPED in the same migration rather than left
+    -- beside the key -- a key is strictly stronger than a regex.
     state             TEXT          NOT NULL,
 
     -- The school year this row describes, under the `academic_year` domain
