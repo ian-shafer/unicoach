@@ -223,6 +223,19 @@ THIS file, so the line lives here and the spec points at it):
   passes independently) caught the cycle window a year too wide and a state code
   that was checkable but unchecked; both fixed before the gate. Suite green:
   3,436 tests executed, 0 failures.
+- `fafsa/02/fifty-one-deadlines-typed` LANDED as RFC 223 (main@e9eb1523,
+  2026-09-16) — the store filled: **128 rows — 124 state across 47
+  jurisdictions, 4 federal**; 107 rows the 2026-27 cycle, 21 the 2027-28 cycle
+  across 11 jurisdictions; 74 a published day, 48 a rule in the publisher's own
+  words, 6 a verified absence. The four jurisdictions no source could be read
+  for (AR, DE, NC, NH) ship NOTHING and are named in PROVENANCE.json as needing
+  human eyes. `bin/fafsa-deadline-seed` (python3) validates the corpus against
+  every landed CHECK, refuses a duplicated natural key by line number, and emits
+  one seed migration per reading day; its link-status sweep answered 78 of 84
+  cited urls, found Wyoming's Hathaway page 404 (stored `not_found`, never shown
+  as a link), and recorded 5 asked-and-unanswered. The build fails when the
+  filing cycle has no rows and 90 days before any reading expires. Full
+  pre-commit gate green on the landed tree (verified tree recorded).
 
 ## LEARN — running notes (appended as slices land)
 
