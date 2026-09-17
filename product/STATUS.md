@@ -7,8 +7,29 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-16 — **THE FAFSA DEADLINE STORE IS FULL: 128 CITED ROWS, AND
-THE PAGE AND COACH WILL SPEAK THE SAME DATES FROM IT** (RFC 223,
+Updated: 2026-09-16 — **UNICOACH'S OWN CODEBOOKS NOW INSTALL WITH THE DATABASE
+ITSELF** (RFC 229, `main@0f38fce8` + `aa0e668e`). `bin/codebook-seed` generates
+`seed-published-codebooks-r1.sql` from the one committed file
+(`db/data/codebooks.json`, 2,015 rows), so a freshly built database is complete
+before anything imports — the gap that once refused
+`Key (state)=(AL) is not
+present in table "us_states"` is closed. **Both state
+columns now really key into `us_states`** —
+`admission_test_state_programmes.state` and `fafsa_filing_deadlines.state` — and
+both interim regex rules are dropped, not left beside the key. **D29 governs the
+import** (Ian, standing): unicoach accommodates external data — _"Typically,
+Unicoach should just add the new rows. But those new rows should be reviewed by
+a human"_ — so the import keeps running and ADDS the publisher's new rows, the
+committed diff is the review, and the only refusals left are a fingerprint
+mismatch and a sentinel arriving as a real value. **One follow-on, measured and
+recorded:** a stored code with no codebook row is silently turned into NULL at
+the search-index rebuild (`CollegesDao.kt:3018-3020`, pinned by two tests) —
+under D29 that is us deciding the publisher is wrong, and accommodating it wants
+a data-derived provenance marker as its own slice. **Ten of brief 0010's slices
+are now landed.**
+
+Previously — **THE FAFSA DEADLINE STORE IS FULL: 128 CITED ROWS, AND THE PAGE
+AND COACH WILL SPEAK THE SAME DATES FROM IT** (RFC 223,
 `fafsa/02/fifty-one-deadlines-typed`, `main@e9eb1523`). Every FAFSA date we
 could verify — federal and state — is now typed once: **124 state rows across 47
 jurisdictions plus the 4 federal dates** (form opens, final deadline,

@@ -830,3 +830,20 @@ Two consequences, both binding:
   reason, and the guard lives in a different module from the seam. Coach prompt
   v39 (rollback v38) carries the two-line date instruction. Executed counts in
   the archived report. Door: every surface that already said a date.
+  test/05.3/own-our-codebooks LANDED as RFC 229 (main@0f38fce8 + aa0e668e,
+  2026-09-16) — the published codebook tables now install WITH the database at
+  migration time, generated from db/data/codebooks.json by bin/codebook-seed, so
+  a freshly built database is complete before anything imports. Both state
+  columns that always belonged in the state list —
+  admission_test_state_programmes.state and fafsa_filing_deadlines.state — now
+  really key into us_states, and both interim `^[A-Z]{2}$` format rules are
+  DROPPED rather than left beside the key. The acceptance test proves a database
+  built by migration ALONE holds all 2,015 codebook rows and refuses 'ZZ'. D29
+  governs the import: it keeps running and ADDS the publisher's new rows; the
+  committed diff is the human review; refusals are only the fingerprint and
+  sentinel cases. **Follow-on, measured and NOT changed here:** a stored code
+  with no codebook row is silently turned into NULL where the search index is
+  rebuilt (CollegesDao.kt:3018-3020), pinned by two tests — under D29 that is us
+  deciding the publisher is wrong, and it needs a data-derived provenance marker
+  as its own slice. Executed: db 839 tests 0 failures; codebook-seed harness
+  16/16; db-scripts-tests 113/113.
