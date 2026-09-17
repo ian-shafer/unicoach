@@ -1,0 +1,27 @@
+{
+  // The TypeScript rail's config (RFC 225), deliberately HERE and not in the
+  // root deno.json. `compilerOptions.lib` below is a claim about ONE directory
+  // -- the code that runs in a browser -- and a root config would make it a
+  // repo-wide claim that every future `deno check` of anything else inherits.
+  // bin/build-web-assets passes this file with --config on check, lint, test
+  // and bundle, so the rail never depends on deno's cwd/ancestor discovery
+  // finding the right file.
+  //
+  // The bundle runs in a BROWSER, so `dom` is in the lib set -- Deno's default
+  // libs have no `Document` and the type check would fail on the first line
+  // that touches one. `deno.ns` stays in the set because the rail's own tests
+  // are `Deno.test`.
+  "compilerOptions": {
+    "lib": ["esnext", "dom", "dom.iterable", "deno.ns"]
+  },
+  // No `include`: this config lives IN the one directory that holds
+  // hand-written TypeScript, and bin/build-web-assets always names that
+  // directory on the command line. Measured on deno 2.7.12, an explicit path
+  // argument OVERRIDES lint `include` anyway, so an `include` here would be a
+  // second statement of the same scope that nothing reads.
+  "lint": {
+    "rules": {
+      "tags": ["recommended"]
+    }
+  }
+}

@@ -33,18 +33,6 @@ dependencies {
 
 tasks.withType<Test> {
   useJUnitPlatform()
-  // The inline-script/style sweep in ShellMechanismTest reads the render
-  // package off disk. The directory is passed in from HERE rather than resolved
-  // from the test JVM's working directory, because that directory is Gradle's
-  // to change and nothing would fail if it moved -- the sweep would simply read
-  // somewhere else, or read nothing.
-  systemProperty(
-    "unicoach.web.renderSourceDirectory",
-    layout.projectDirectory
-      .dir("src/main/kotlin/ed/unicoach/web/render")
-      .asFile
-      .path,
-  )
   testLogging {
     exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     events("failed")

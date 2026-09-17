@@ -99,14 +99,21 @@ resolve_env_deltas
 load_env_layers
 export_derived_env
 
-# Markdown targets for deno fmt, shared by bin/format (rewrites in place) and
-# bin/pre-commit (--check, read-only). deno's `**` glob skips hidden dirs, so
-# every hidden directory carrying markdown is listed explicitly: `.claude/` (the
-# Claude Code skill/agent markdown) and `.prime/` (the Prime Agent skills --
-# ship, slice, chart, principle, and ship's references). Defined once here so
-# the writer and the checker can never target different sets of files, and so a
-# hidden dir cannot be inside one and outside the other.
-MARKDOWN_FMT_PATHS=("**/*.md" ".claude" ".prime")
+# deno fmt targets, shared by bin/format (rewrites in place) and bin/pre-commit
+# (--check, read-only). deno's `**` glob skips hidden dirs, so every hidden
+# directory carrying markdown is listed explicitly: `.claude/` (the Claude Code
+# skill/agent markdown) and `.prime/` (the Prime Agent skills -- ship, slice,
+# chart, principle, and ship's references). Defined once here so the writer and
+# the checker can never target different sets of files, and so a hidden dir
+# cannot be inside one and outside the other.
+#
+# It is DENO_FMT_PATHS and no longer MARKDOWN_FMT_PATHS because the set stopped
+# being markdown at RFC 225: `deno fmt` formats `.ts` exactly as it formats
+# `.md`, so the client-side TypeScript rail joins the one format gate here
+# rather than growing a second one. The generated bundle it produces is excluded
+# in deno.json, not omitted from this list -- the sources and the output live
+# under different roots and only the sources are formatted.
+DENO_FMT_PATHS=("**/*.md" ".claude" ".prime" "public-web/src/main/ts")
 
 # ── The declared migration apply order (RFC 180) ───────────────────────────────
 # `<schema dir>/ORDER` is a plain list of migration filenames, one per line, in

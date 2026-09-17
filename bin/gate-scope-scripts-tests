@@ -170,6 +170,13 @@ gs_module_case() { # <scope> <gradle> <harnesses> <relpath...>
 
 PRIME_SCOPE_HARNESSES="ship-scripts-tests docs-scripts-tests db-scripts-tests"
 
+# The module-source row's harnesses. web-assets-scripts-tests joined it at
+# RFC 225: public-web's client-side TypeScript and its COMMITTED bundle both sit
+# inside a module src/ tree, so a TypeScript edit IS a module-source diff, and
+# that harness is the only thing that catches such an edit committed without a
+# rebuild. Written once here because four assertions below quote it.
+MODULE_SOURCE_SCOPE_HARNESSES="scripts-tests web-assets-scripts-tests"
+
 # A product/ path that is not Markdown, so it reaches the product-docs row.
 PRODUCT_PATH="product/0001-brief/research/table.csv"
 
@@ -236,7 +243,7 @@ test_invariants_md_in_a_src_tree() {
   repo="$(gs_repo)"
   gs_modules "$repo"
   gs_stage "$repo" "service/src/main/kotlin/ed/unicoach/INVARIANTS.md"
-  gs_expect "$repo" module-source yes "scripts-tests" || return 1
+  gs_expect "$repo" module-source yes "$MODULE_SOURCE_SCOPE_HARNESSES" || return 1
   [ "$GS_SCOPE" != "markdown-docs" ] || return 1
   [ "$GS_GRADLE" = "yes" ]
 }
@@ -268,14 +275,14 @@ assert_success "a .prime Markdown file plus a product/ doc is markdown-docs (the
 echo "==== classification: module-source, ios-app, and the full fallbacks ===="
 
 assert_success "one module src .kt is module-source, gradle=yes, scripts-tests" \
-  gs_module_case module-source yes "scripts-tests" "service/src/main/kotlin/X.kt"
+  gs_module_case module-source yes "$MODULE_SOURCE_SCOPE_HARNESSES" "service/src/main/kotlin/X.kt"
 
 assert_success "two files in one module's src tree are module-source" \
-  gs_module_case module-source yes "scripts-tests" \
+  gs_module_case module-source yes "$MODULE_SOURCE_SCOPE_HARNESSES" \
   "service/src/main/kotlin/X.kt" "service/src/test/kotlin/XTest.kt"
 
 assert_success "files in two different modules' src trees are module-source" \
-  gs_module_case module-source yes "scripts-tests" \
+  gs_module_case module-source yes "$MODULE_SOURCE_SCOPE_HARNESSES" \
   "service/src/main/kotlin/X.kt" "db/src/main/kotlin/Y.kt"
 
 # settings.gradle.kts is the source of truth for what a module is. A src/ path

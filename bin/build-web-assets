@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# build-web-assets — the client-side TypeScript rail (RFC 225).
+#
+# Type-checks, lints, tests and bundles public-web's TypeScript into ONE
+# content-addressed browser module, and writes the manifest the Kotlin side
+# reads the name out of. The bundle is a COMMITTED artifact: `installDist` and
+# bin/deploy then need no Deno at all, and stock `processResources` packages it
+# like any other resource.
+#
+# The cost of committing a build output is staleness, and `-c` is how that cost
+# is paid. It rebuilds into a temporary tree and compares, exiting
+# EXIT_BUNDLE_WOULD_CHANGE when the committed bytes differ from what the sources
+# produce — so a commit that edits TypeScript and forgets to rebuild fails the
+# gate by name instead of shipping last week's behaviour.
+# bin/web-assets-scripts-tests runs exactly that.
+#
+# The name reaches the page through the manifest and NEVER through a literal:
+# no string in Kotlin names the bundle, so no string in Kotlin can drift from
+# it.
+#
+# Logging — all of it, including deno's own output — goes to stderr. The product
+# of a normal run is files on disk, so stdout stays EMPTY; `-h` is the one thing
+# that writes to stdout, because help is what the caller asked for.
+source "$(dirname "$0")/common"
+
+TS_DIR="$PROJECT_ROOT/public-web/src/main/ts"
+STATIC_DIR="$PROJECT_ROOT/public-web/src/main/resources/static"
+MANIFEST="$PROJECT_ROOT/public-web/src/main/resources/web-assets.properties"
+CHECK_ONLY=false
+
+# The ONE directory the bundle is written into and served from. Spelled here and
+# nowhere else in this script: JS_DIR, the served URL and the surplus-file sweep
+# are all built from it, so a rename cannot move three of the four.
+# WebAssets.BUNDLE_DIRECTORY is the Kotlin half of the same decision.
+BUNDLE_DIRECTORY="js"
+
+# Hex characters of the bundle's own sha256 carried in its name: enough that two
+# bundles colliding is not a thing that happens, short enough to read in a log
+# line. Named because it is one decision spelled in three languages —
+# WebAssets.BUNDLE_HASH_HEX_LENGTH and bin/web-assets-scripts-tests' name pattern are
+# the other two halves — and a bare literal in each is three chances to move one.
+BUNDLE_HASH_HEX_LENGTH=12
+
+help() {
+  cat << EOF
+build-web-assets [options]
+
+Build public-web's client-side TypeScript into one content-addressed ES module
+under <static dir>/$BUNDLE_DIRECTORY/, and write the manifest that names it (RFC 225).
+
+Steps, aborting on the first failure: deno check, deno lint, deno test, then
+\`deno bundle --platform browser --format esm --minify --no-remote --no-npm\`.
+Every step is passed --config <ts dir>/deno.json, so the rail's lib set and
+lint rules never depend on which directory deno was started from.
+
+The bundle is named <entry>-<first $BUNDLE_HASH_HEX_LENGTH hex of its sha256>.js, after the entry
+point <ts dir>/main.ts. The $BUNDLE_DIRECTORY directory is owned by this script and served
+publicly, so anything else found in it is removed: the tree carries the one
+file these sources produce, and nothing else.
+
+The manifest is written OUTSIDE <static dir>, so it is on the classpath but is
+never served.
+
+Nothing is written to stdout on a normal run — the product is the files.
+
+Options:
+  -s <dir>:  TypeScript source directory (default: public-web/src/main/ts).
+             Must contain the bundle entry point main.ts and the rail's
+             deno.json, and may contain nothing but *.ts and that config.
+  -o <dir>:  Static resource directory the bundle is written under, in
+             $BUNDLE_DIRECTORY/ (default: public-web/src/main/resources/static). Its last
+             path segment must be \`static\`: the served URL and the Kotlin
+             classpath prefix both assume that name.
+  -m <file>: Manifest file to write (default:
+             public-web/src/main/resources/web-assets.properties).
+  -c:        Check only — build into a temporary tree and compare with the
+             committed files. Writes nothing. Exits 3 on any difference.
+  -h:        Help
+EOF
+  exit 0
+}
+
+parse_args() {
+  while getopts ":s:o:m:ch" opt; do
+    case "$opt" in
+    s) TS_DIR="$OPTARG" ;;
+    o) STATIC_DIR="$OPTARG" ;;
+    m) MANIFEST="$OPTARG" ;;
+    c) CHECK_ONLY=true ;;
+    h) help ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+    :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  [ "$#" -eq 0 ] || fatal -s "$EXIT_UNEXPECTED_ARG" "Error: build-web-assets accepts no positional arguments."
+}
+
+# getopts gave the grammar; these are the value-shape checks it cannot make.
+validate_options() {
+  [ -n "$TS_DIR" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-s] requires a non-empty directory"
+  [ -d "$TS_DIR" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "not a directory [-s $TS_DIR]"
+  [ -n "$STATIC_DIR" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-o] requires a non-empty directory"
+  [ -n "$MANIFEST" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-m] requires a non-empty file path"
+
+  # -o names WHERE the static tree lives, not what it is CALLED. The bundle is
+  # served at /<bundle dir>/<name> because Ktor mounts the classpath directory
+  # `static` at `/`, and WebAssets looks the packaged resource up as
+  # "/static$value" — both spell `static`, neither reads this option. A -o with
+  # any other last segment would build a manifest nothing serves and a resource
+  # nothing finds, and would do it silently, so it is refused here.
+  [ "$(basename "$STATIC_DIR")" = "static" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" \
+      "option [-o $STATIC_DIR] must end in a directory named [static]: the served URL and the Kotlin classpath prefix both assume that name"
+
+  local manifest_dir
+  manifest_dir="$(dirname "$MANIFEST")"
+  [ -d "$manifest_dir" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "the manifest's directory does not exist [$manifest_dir]"
+
+  reject_unbuildable_sources
+}
+
+# -s holds hand-written TypeScript and the rail's own config, and nothing else.
+# Anything else there is invisible to the rail and visible to the bundler: a
+# .js, .mjs or .tsx is never handed to `deno check`, yet an import of it is
+# bundled and shipped unchecked, and a stray backToTop.ts.bak is a source
+# nobody is type-checking. Recursive, because a sub-directory is part of -s too.
+reject_unbuildable_sources() {
+  local unbuildable
+  unbuildable="$(find "$TS_DIR" -type f ! -name '*.ts' ! -name 'deno.json')"
+  [ -z "$unbuildable" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" \
+      "[$TS_DIR] carries files the rail cannot build: [$(printf '%s' "$unbuildable" | tr '\n' ' ')]. -s takes *.ts and deno.json only"
+}
+
+# The entry point, the name every other string is built from, the rail's deno
+# config, the bundle directory, and the scratch tree the build runs in.
+resolve_paths() {
+  # ONE entry point, and that is the decision — not a limitation waiting to be
+  # lifted. A second bundle is a second thing the page must reference and the
+  # manifest must name, and nothing here needs one. The NAME, though, is derived
+  # from the entry file rather than spelled `main` at the places that used to
+  # say it (manifest key, bundle prefix, staleness glob), because copies of one
+  # string are chances to change all but one of them.
+  ENTRY="$TS_DIR/main.ts"
+  [ -f "$ENTRY" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "no bundle entry point at [$ENTRY]: -s must name the TypeScript source directory"
+  ENTRY_NAME="$(basename "$ENTRY" .ts)"
+
+  # The rail's own deno config, passed EXPLICITLY to every deno step below. Deno
+  # would otherwise discover a config by walking up from the working directory,
+  # which makes the lib set and the lint rules a property of where the caller
+  # happened to stand. It travels with -s because it describes those sources.
+  DENO_CONFIG="$TS_DIR/deno.json"
+  [ -f "$DENO_CONFIG" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" \
+      "no deno config at [$DENO_CONFIG]: -s must name the TypeScript source directory, which owns the rail's compilerOptions and lint rules"
+
+  JS_DIR="$STATIC_DIR/$BUNDLE_DIRECTORY"
+
+  command -v deno > /dev/null 2>&1 ||
+    fatal "deno is not on PATH. Every toolchain command runs inside the nix dev shell: nix develop -c bin/build-web-assets"
+
+  BUILD_DIR="$(mktemp -d)"
+  trap 'rm -rf "$BUILD_DIR"' EXIT
+}
+
+# Every file in the bundle directory that is NOT the one these sources produce,
+# one per line. The directory is OWNED by this script and served publicly, so
+# the question is not "is there a second bundle?" but "is this exactly the one
+# file the sources produce?" — a vendor.js or a main-old.js.bak dropped in by
+# hand is packaged and served just as readily as a superseded bundle. The -c
+# path reports each line as drift and the write path deletes it; the predicate
+# is the same question either way, so it is asked in one place.
+#
+# Its three inputs are PARAMETERS and not globals: the function is then readable
+# on its own, and each caller states which tree and which name it is asking
+# about.
+surplus_js_files() { # <js dir> <current bundle name>
+  local js_dir="$1" current="$2"
+  [ -d "$js_dir" ] || return 0
+  find "$js_dir" -type f ! -name "$current"
+}
+
+# 1. TYPE CHECK. `deno bundle` does NOT type-check, so this is its own step: a
+#    bundle built from code that does not compile is worse than no bundle.
+#
+#    Every .ts under -s, so the check sees a file that main.ts does not (yet)
+#    import. `find` and not a glob: a source in a sub-directory is still a
+#    source, and a rail that silently stops checking one is the failure this
+#    script exists to prevent.
+#
+#    --no-remote --no-npm here too, and not only on the bundle. `deno bundle`
+#    walks main.ts's import graph, so it is never asked about a source nothing
+#    imports yet -- and without these flags `deno check` would happily FETCH
+#    that source's remote import over the public internet, which is exactly
+#    the thing a commit gate must not do.
+type_check_sources() {
+  local sources=()
+  while IFS= read -r source; do
+    sources+=("$source")
+  done < <(find "$TS_DIR" -type f -name '*.ts' | sort)
+
+  log-info "Type-checking ${#sources[@]} TypeScript sources under [$TS_DIR]..."
+  deno check --config "$DENO_CONFIG" --no-remote --no-npm "${sources[@]}" >&2 ||
+    fatal "deno check failed for the sources under [$TS_DIR] with config [$DENO_CONFIG]: the TypeScript does not type-check, or it imports something remote."
+}
+
+# 2. LINT.
+lint_sources() {
+  log-info "Linting [$TS_DIR]..."
+  deno lint --config "$DENO_CONFIG" "$TS_DIR" >&2 ||
+    fatal "deno lint failed for [$TS_DIR] with config [$DENO_CONFIG]."
+}
+
+# 3. TEST. --no-remote --no-npm for the same reason the bundle passes them:
+#    this gate reaches no network and mints no lockfile nobody reviewed.
+run_deno_tests() {
+  log-info "Running the deno tests under [$TS_DIR]..."
+  deno test --config "$DENO_CONFIG" --no-remote --no-npm "$TS_DIR" >&2 ||
+    fatal "deno test failed for [$TS_DIR] with config [$DENO_CONFIG]."
+}
+
+# 4. BUNDLE. --platform browser because the default is `deno`; --format esm
+#    and therefore <script type="module">; --minify because these bytes are
+#    shipped.
+#
+#    --no-remote --no-npm scope the SOURCE GRAPH this rail accepts: no import
+#    in our TypeScript may come from the network, so no deno.lock is minted
+#    and no unreviewed third-party code is bundled. They say NOTHING about
+#    deno's own bundler backend: `deno bundle` downloads esbuild from
+#    registry.npmjs.org once per machine into the Deno cache, and --no-npm
+#    does not stop it. So a COLD machine needs network for the first build and
+#    every later build is offline. Warm a fresh CI image with
+#    `bin/build-web-assets -c`.
+bundle_entry() {
+  BUNDLE="$BUILD_DIR/bundle.js"
+  log-info "Bundling [$ENTRY]..."
+  deno bundle \
+    --config "$DENO_CONFIG" \
+    --platform browser \
+    --format esm \
+    --minify \
+    --no-remote \
+    --no-npm \
+    -o "$BUNDLE" \
+    "$ENTRY" >&2 ||
+    fatal "deno bundle failed for entry [$ENTRY] with config [$DENO_CONFIG]."
+
+  [ -s "$BUNDLE" ] || fatal "deno bundle produced no output at [$BUNDLE]."
+}
+
+# 5. The name IS the content: same sources, same bytes, same name.
+name_bundle_by_content() {
+  local hash
+  hash="$(shasum -a 256 "$BUNDLE" | cut -c"1-$BUNDLE_HASH_HEX_LENGTH")"
+  BUNDLE_NAME="$ENTRY_NAME-$hash.js"
+  BUNDLE_URL="/$BUNDLE_DIRECTORY/$BUNDLE_NAME"
+  MANIFEST_BODY="$ENTRY_NAME=$BUNDLE_URL"
+}
+
+# Steps 1-5: everything both paths do. Produces $BUNDLE, $BUNDLE_NAME,
+# $BUNDLE_URL and $MANIFEST_BODY, and never touches the output tree — so -c and
+# a real build ask the sources exactly the same question. Called in THIS shell,
+# never in a subshell or a pipeline, because every step below sets globals the
+# next one reads.
+build_bundle() {
+  type_check_sources
+  lint_sources
+  run_deno_tests
+  bundle_entry
+  name_bundle_by_content
+}
+
+# The -c path. Compares the committed tree with the fresh build and writes
+# NOTHING, so it is safe to run against the real resources directory.
+verify_committed() {
+  local drift=0 surplus
+
+  if [ ! -f "$JS_DIR/$BUNDLE_NAME" ]; then
+    log-error "the committed tree has no [$JS_DIR/$BUNDLE_NAME], which is what these sources bundle to"
+    drift=1
+  elif ! cmp -s "$BUNDLE" "$JS_DIR/$BUNDLE_NAME"; then
+    # Same name, different bytes: only reachable by hand-editing the committed
+    # bundle, and worth saying out loud rather than reporting as "up to date".
+    log-error "[$JS_DIR/$BUNDLE_NAME] differs byte for byte from a fresh build of the same sources"
+    drift=1
+  fi
+
+  # A surplus file is drift even when the current bundle is present: this
+  # directory is built, not curated, and everything in it is served.
+  while IFS= read -r surplus; do
+    [ -n "$surplus" ] || continue
+    log-error "a file this build does not produce is still committed under [$JS_DIR]: [$surplus]"
+    drift=1
+  done < <(surplus_js_files "$JS_DIR" "$BUNDLE_NAME")
+
+  if [ ! -f "$MANIFEST" ]; then
+    log-error "the manifest [$MANIFEST] does not exist"
+    drift=1
+  elif [ "$(cat "$MANIFEST")" != "$MANIFEST_BODY" ]; then
+    log-error "the manifest [$MANIFEST] reads [$(cat "$MANIFEST")], not [$MANIFEST_BODY]"
+    drift=1
+  fi
+
+  if [ "$drift" -ne 0 ]; then
+    fatal -s "$EXIT_BUNDLE_WOULD_CHANGE" \
+      "the committed web assets are not what the sources produce. Run: nix develop -c bin/build-web-assets"
+  fi
+
+  log-info "The committed web assets match the sources: [$BUNDLE_URL]."
+}
+
+# The write path: the bundle, the manifest that names it, then the removal of
+# everything else.
+#
+# THE ORDER IS THE POINT. `set -euo pipefail` makes any failure here an abort,
+# so every intermediate state must be one the application can boot from. Each
+# step only ever ADDS what is needed or removes what nothing names: a run that
+# dies part way leaves a tree with a serveable bundle and a manifest naming a
+# file that is present. Writing the manifest last would leave it naming the
+# predecessor that step 8 has just deleted; deleting first would leave no bundle
+# at all.
+write_assets() {
+  local surplus
+
+  # 6. The bundle.
+  mkdir -p "$JS_DIR"
+  cp "$BUNDLE" "$JS_DIR/$BUNDLE_NAME"
+  log-info "Wrote [$JS_DIR/$BUNDLE_NAME] ($(wc -c < "$JS_DIR/$BUNDLE_NAME" | tr -d ' ') bytes)."
+
+  # 7. The manifest, outside <static dir> so it rides the classpath and is never
+  #    served. WebAssets reads it once at class-init and fails startup — naming
+  #    this script — if it is missing, keyless, or names a resource that is not
+  #    there. Written BEFORE the deletion, so it never names a file that is gone.
+  printf '%s\n' "$MANIFEST_BODY" > "$MANIFEST"
+  log-info "Wrote [$MANIFEST]: [$MANIFEST_BODY]."
+
+  # 8. Everything else in the bundle directory, superseded bundle or not. Last,
+  #    because it is the only step that takes something away, and nothing the
+  #    manifest names is among it.
+  while IFS= read -r surplus; do
+    [ -n "$surplus" ] || continue
+    rm -f "$surplus"
+    log-info "Removed [$surplus]: the [$JS_DIR] directory carries this build's bundle and nothing else."
+  done < <(surplus_js_files "$JS_DIR" "$BUNDLE_NAME")
+}
+
+parse_args "$@"
+validate_options
+resolve_paths
+build_bundle
+if [ "$CHECK_ONLY" = true ]; then
+  verify_committed
+else
+  write_assets
+fi

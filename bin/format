@@ -7,10 +7,10 @@ help() {
   cat << 'EOF'
 format [options]
 
-The single Kotlin + Markdown formatting avenue for the repo, using the
-nix-provided tools: ktlint (Kotlin) and deno fmt (Markdown), run concurrently.
-There is no Gradle ktlint plugin — this script is the only ktlint, so format and
-check can never disagree.
+The single formatting avenue for the repo, using the nix-provided tools: ktlint
+(Kotlin) and deno fmt (Markdown and the client-side TypeScript of RFC 225), run
+concurrently. There is no Gradle ktlint plugin — this script is the only ktlint,
+so format and check can never disagree.
 
 Options:
   -c: Check only — report violations and exit non-zero WITHOUT rewriting files.
@@ -35,29 +35,29 @@ if [ "$#" -ne 0 ]; then
 fi
 
 # Kotlin targets. ktlint's own `**` glob does not descend hidden dirs; none of our
-# Kotlin lives under one, so plain globs suffice (unlike the Markdown paths).
+# Kotlin lives under one, so plain globs suffice (unlike the deno paths).
 KT_GLOBS=("**/*.kt" "**/*.kts" "!var/**" "!build/**" "!.gradle/**")
 
 if [ "$CHECK" = true ]; then
-  log-info "Checking Kotlin and Markdown formatting concurrently..."
+  log-info "Checking Kotlin, Markdown and TypeScript formatting concurrently..."
   # ktlint with no --format is check-mode: it exits non-zero on any violation.
   ktlint "${KT_GLOBS[@]}" &
   KOTLIN_PID=$!
-  deno fmt --check "${MARKDOWN_FMT_PATHS[@]}" &
-  MARKDOWN_PID=$!
+  deno fmt --check "${DENO_FMT_PATHS[@]}" &
+  DENO_PID=$!
 else
-  log-info "Formatting Kotlin and Markdown code concurrently..."
+  log-info "Formatting Kotlin, Markdown and TypeScript code concurrently..."
   ktlint --format "${KT_GLOBS[@]}" &
   KOTLIN_PID=$!
-  deno fmt "${MARKDOWN_FMT_PATHS[@]}" &
-  MARKDOWN_PID=$!
+  deno fmt "${DENO_FMT_PATHS[@]}" &
+  DENO_PID=$!
 fi
 
 # Safely capture exit codes without un-setting set -e
 KOTLIN_STATUS=0
-MARKDOWN_STATUS=0
+DENO_STATUS=0
 wait $KOTLIN_PID || KOTLIN_STATUS=$?
-wait $MARKDOWN_PID || MARKDOWN_STATUS=$?
+wait $DENO_PID || DENO_STATUS=$?
 
 VERB=$([ "$CHECK" = true ] && echo check || echo formatter)
 FAILED=0
@@ -67,8 +67,8 @@ if [ "$KOTLIN_STATUS" -ne 0 ]; then
   FAILED=1
 fi
 
-if [ "$MARKDOWN_STATUS" -ne 0 ]; then
-  log-error "Markdown deno fmt $VERB failed (Status: $MARKDOWN_STATUS)"
+if [ "$DENO_STATUS" -ne 0 ]; then
+  log-error "deno fmt $VERB failed (Status: $DENO_STATUS)"
   FAILED=1
 fi
 

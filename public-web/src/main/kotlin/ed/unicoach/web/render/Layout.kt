@@ -1,5 +1,6 @@
 package ed.unicoach.web.render
 
+import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.common.http.ROBOTS_NOINDEX
 import kotlinx.html.FlowContent
 import kotlinx.html.HTML
@@ -14,6 +15,7 @@ import kotlinx.html.main
 import kotlinx.html.meta
 import kotlinx.html.nav
 import kotlinx.html.p
+import kotlinx.html.script
 import kotlinx.html.span
 import kotlinx.html.title
 
@@ -91,6 +93,20 @@ fun HTML.siteLayout(
     }
     title { +"unicoach — $pageTitle" }
     link(rel = "stylesheet", href = "/site.css")
+    // The one client-side bundle (RFC 225). An EXTERNAL same-origin file, so
+    // `script-src 'self'` already allows it and the content-security policy
+    // does not change; an inline script would need `'unsafe-inline'`, which is
+    // the thing the policy exists to refuse.
+    //
+    // `src` is read from the manifest and is never a literal, so the tag cannot
+    // name a bundle that is not the built one. `type = "module"` implies defer,
+    // so no `defer` attribute is written and nothing blocks parsing. EVERY page
+    // gets it: every page is a candidate host for a future enhancement, and a
+    // per-page opt-in is a second thing to keep in sync.
+    script {
+      type = "module"
+      src = WebAssets.MAIN
+    }
   }
   // `bodyClass` is `null` for the default width rather than "": kotlinx.html
   // renders an empty `class=""` attribute for a blank string, and every page

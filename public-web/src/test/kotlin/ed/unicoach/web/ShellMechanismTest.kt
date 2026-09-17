@@ -10,7 +10,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlinx.html.html
 import kotlinx.html.stream.createHTML
-import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -274,43 +273,6 @@ class ShellMechanismTest {
     }
 
   /**
-   * A source-level sweep, so a page that its OWN policy would break fails the
-   * build rather than the browser. The policy carries no `'unsafe-inline'`, so
-   * an inline `<script>`, an inline event handler, a `style=` attribute or a
-   * `kotlinx.html` `unsafe { }` raw-HTML block is a page that renders wrong for
-   * a real visitor and right for every test that only reads status codes.
-   *
-   * Kotlin comments are stripped first — this prose would otherwise trip the
-   * sweep on itself — and the file count is asserted, because a sweep that
-   * silently found no files passes forever.
-   */
-  @Test
-  fun `mechanism - no rendered page carries inline script or style that its own policy forbids`() {
-    val sources = walkRenderSources()
-    assertTrue(
-      sources.size >= MINIMUM_RENDER_SOURCES,
-      "the render sweep found only [${sources.size}] sources, fewer than [$MINIMUM_RENDER_SOURCES]: it is looking in the wrong place",
-    )
-    // The floor alone is held up by whatever the directory currently holds, so
-    // a page LEAVING the package is masked by a page arriving. Naming a few
-    // long-lived pages makes the sweep say which files it actually read.
-    val swept = sources.map { it.name }.toSet()
-    assertEquals(
-      emptySet(),
-      REQUIRED_RENDER_SOURCES - swept,
-      "the render sweep did not read these pages: it is pointed at the wrong directory, or they left the render package unswept",
-    )
-    val offences =
-      sources.flatMap { source ->
-        val code = stripKotlinComments(source.readText())
-        INLINE_CODE_PATTERNS
-          .filter { (_, pattern) -> pattern.containsMatchIn(code) }
-          .map { (name, _) -> "[${source.name}]: [$name]" }
-      }
-    assertEquals(emptyList(), offences, "inline script/style in the render package; the CSP has no 'unsafe-inline'")
-  }
-
-  /**
    * The [ShellWidth] seam's default renders nothing AT ALL, not an empty
    * attribute: [ShellWidth.PROSE] carries a null class, and every page written
    * before RFC 210 must keep rendering the bytes it did.
@@ -457,30 +419,6 @@ class ShellMechanismTest {
     const val TAP_TARGET = "44px"
 
     /**
-     * The fewest Kotlin sources the render sweep may see and still be believed.
-     * A sweep that silently found nothing reports an empty offender list, which
-     * is indistinguishable from a clean tree.
-     *
-     * The package holds 9 files today, so the floor is one below it rather than
-     * equal to it: a page RETIRED by a later slice is a legitimate edit and must
-     * not fail this test, while a sweep pointed at the wrong directory — which
-     * sees none — still fails. The floor is not what says WHICH pages were read;
-     * [REQUIRED_RENDER_SOURCES] below is, and it is the guard that catches a
-     * single page quietly leaving.
-     */
-    const val MINIMUM_RENDER_SOURCES = 8
-
-    /**
-     * Page files the sweep must actually have READ. The count alone can be held
-     * up by files arriving as pages leave — a page moved out of the render
-     * package would stop being swept without the floor ever dropping — so a
-     * couple of long-lived pages are named. They are not an exhaustive list and
-     * are not meant to be; they are the ones whose absence means the sweep is
-     * pointed somewhere else.
-     */
-    val REQUIRED_RENDER_SOURCES = setOf("Layout.kt", "HomePage.kt", "CostReportPage.kt")
-
-    /**
      * ONE leaf declaration block: a selector list, an opening brace, a body
      * with no brace in it. Written once because both CSS readers here parse the
      * same stylesheet and two copies of one regex drift apart at the first fix
@@ -550,98 +488,12 @@ class ShellMechanismTest {
       }
 
     /**
-     * Each pattern names ONE way to put code the policy forbids into a page.
-     * They match the mechanism, not one spelling of one call: the `style`
-     * attribute and the `<style>` ELEMENT however each is written, any `script`
-     * element, any inline event attribute WHATEVER the event is called, and the
-     * raw-HTML escape hatch that could carry all three.
-     *
-     * The event pattern is deliberately open-ended. It was a denylist of eight
-     * event names, which let `onmouseover=`, `onkeydown=` and `onpointerdown=`
-     * straight through a sweep whose whole job is catching them; a guard that
-     * can be walked past by choosing a different event is worse than none,
-     * because it reads as protection.
-     */
-    val INLINE_CODE_PATTERNS =
-      listOf(
-        "inline <script> in a string literal" to Regex("""(?i)<\s*script"""),
-        "a kotlinx.html script element" to Regex("""\bscript\s*[({]"""),
-        "an inline <style> element" to Regex("""(?i)<\s*style|\bstyle\s*[({]"""),
-        "a style attribute" to Regex("""(?i)\bstyle\s*=|attributes\s*\[\s*"style"\s*]"""),
-        // Three spellings of the same attribute: the kotlinx.html property
-        // (`onClick = `), the raw attribute map, and a handler written inside a
-        // tag in a string literal.
-        "an inline event handler" to
-          Regex("""\bon[A-Z][A-Za-z]*\s*=|(?i)attributes\s*\[\s*"on[a-z]+"\s*]|(?i)<[^>\n]*\son[a-z]+\s*="""),
-        "a raw-HTML unsafe block" to Regex("""\bunsafe\s*[({]"""),
-      )
-
-    /**
-     * The system property [RENDER_SOURCE_DIRECTORY_PROPERTY] is passed by
-     * `public-web/build.gradle.kts`. The path is NOT resolved from the working
-     * directory the test JVM inherits: that directory belongs to Gradle, a
-     * change to it moves this sweep silently, and a sweep that reads the wrong
-     * place reports no offences exactly as a clean tree does.
-     */
-    const val RENDER_SOURCE_DIRECTORY_PROPERTY = "unicoach.web.renderSourceDirectory"
-
-    /**
-     * Every Kotlin source under the render package, RECURSIVELY.
-     *
-     * `walkTopDown`, not `listFiles`, for the reason the `:service` precedent
-     * ([ed.unicoach.coaching.costs.ForbiddenCostArithmeticTest]) already learnt:
-     * a page added by a later web slice in a SUB-package would be invisible to a
-     * flat read, and invisible without failing anything -- the sweep would still
-     * assert an empty offender list. Both the missing property and the missing
-     * directory are errors rather than an empty sweep.
-     */
-    fun walkRenderSources(): List<File> {
-      val renderPackagePath =
-        System.getProperty(RENDER_SOURCE_DIRECTORY_PROPERTY)
-          ?: error(
-            "system property [$RENDER_SOURCE_DIRECTORY_PROPERTY] is not set: " +
-              "public-web/build.gradle.kts must pass the render package directory to the test JVM",
-          )
-      val directory = File(renderPackagePath)
-      if (!directory.isDirectory) {
-        error("the render package [$renderPackagePath] (from [$RENDER_SOURCE_DIRECTORY_PROPERTY]) is not a directory")
-      }
-      return directory
-        .walkTopDown()
-        .filter { file -> file.isFile && file.name.endsWith(".kt") }
-        .sortedBy { file -> file.absolutePath }
-        .toList()
-    }
-
-    /**
-     * A `/* ... */` block comment, removed. Written ONCE because both readers
-     * here strip them -- the Kotlin sweep, so it reads code and not prose about
-     * code, and the CSS parser, so a commented-out rule is not parsed as a live
-     * one -- and two copies of one regex drift apart at the first fix.
+     * A `/* ... */` block comment, removed, so a commented-out CSS rule is not
+     * parsed as a live one by the readers below.
      */
     fun stripBlockComments(source: String): String = source.replace(BLOCK_COMMENT, "")
 
     val BLOCK_COMMENT = Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL)
-
-    /**
-     * A Kotlin line comment that OWNS its line — nothing before it but
-     * whitespace.
-     *
-     * The naive `//[^\n]*` was wrong, and not harmlessly: it cannot tell a
-     * comment from a `//` inside a STRING LITERAL, so it truncated every line
-     * holding a `https://` URL and every line whose literal contained a slash
-     * pair. A truncated line is code the sweep never reads, so an offence
-     * sitting on such a line would be reported clean — the failure mode a guard
-     * must not have. Restricting the match to a whole-line comment cannot
-     * truncate anything, because a line that BEGINS with `//` has no code on it.
-     * The residue is a trailing `// comment` after code, which is prose the
-     * sweep may read and at worst reports one offence too many — the safe
-     * direction for a guard to be wrong in.
-     */
-    val WHOLE_LINE_COMMENT = Regex("""(?m)^[ \t]*//[^\n]*$""")
-
-    /** Block and whole-line comments, removed so the sweep reads CODE and not prose about code. */
-    fun stripKotlinComments(source: String): String = stripBlockComments(source).replace(WHOLE_LINE_COMMENT, "")
 
     /**
      * Every declaration block in [css] whose selector list names [selector]

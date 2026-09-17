@@ -40,6 +40,8 @@ the first failure. With -n, runs only the named ones, still in this order:
   test-state-programme-seed-scripts-tests
                             the state school-day programme seed generator
   gate-scope-scripts-tests  the commit gate's path-to-harness map, no cluster
+  web-assets-scripts-tests  the client-side TypeScript rail, deno only, no
+                            cluster
   q-scripts-tests           queue ops tools, shared cluster
   db-scripts-tests          db/cluster lifecycle, its OWN private cluster
   scripts-tests             daemon/ops/deploy scripts, shared cluster + built
@@ -97,6 +99,10 @@ fi
 #  * gate-scope-scripts-tests is the map that decides which of these run for a
 #    given diff (RFC 214). It needs no cluster, no daemon and no worktree, only
 #    throwaway `git init` repos, so it sits with the cheap ones.
+#  * web-assets-scripts-tests drives bin/build-web-assets (RFC 225): deno, into
+#    temp trees, plus one check-only run over the committed tree. No cluster, no
+#    daemon, no Gradle, so it sits with the cheap ones too. It is the thing that
+#    catches a TypeScript edit committed without a rebuild.
 #  * db-scripts-tests builds its own private env file and sets ENV_FILE, which
 #    bin/common rejects as mutually exclusive with an inherited ENV_FILES. The
 #    variable is cleared for that child only -- its private cluster is
@@ -117,6 +123,7 @@ HARNESSES=(
   bin/test-calendar-seed-scripts-tests
   bin/test-state-programme-seed-scripts-tests
   bin/gate-scope-scripts-tests
+  bin/web-assets-scripts-tests
   bin/q-scripts-tests
   bin/db-scripts-tests
   bin/scripts-tests

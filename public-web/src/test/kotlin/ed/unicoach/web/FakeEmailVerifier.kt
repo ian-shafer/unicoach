@@ -2,12 +2,16 @@ package ed.unicoach.web
 
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.VerifyEmailResult
+import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.common.logging.Detail
 import ed.unicoach.web.common.logging.HeaderSelection
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import ed.unicoach.web.report.CostReportSource
 import io.ktor.server.application.Application
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /** A test open-in-app URL used by the route tests' `publicWebModule` wiring. */
 const val TEST_OPEN_IN_APP_URL = "https://unicoach.test/app"
@@ -40,8 +44,58 @@ fun Application.testPublicWebModule(
   costReportSource: CostReportSource = FakeCostReportSource(),
   openInAppUrl: String? = TEST_OPEN_IN_APP_URL,
   requestLoggingConfig: RequestLoggingConfig = TEST_REQUEST_LOG_CONFIG,
+  bundleUrl: () -> String = { WebAssets.MAIN },
 ) {
-  publicWebModule(emailVerifier, costReportSource, openInAppUrl, requestLoggingConfig)
+  publicWebModule(emailVerifier, costReportSource, openInAppUrl, requestLoggingConfig, bundleUrl)
+}
+
+/**
+ * Every `<script>` element in [html], as (attributes, inline body).
+ *
+ * The page suites' one claim about client-side code is about the RESPONSE, so
+ * it is read off the response rather than off any Kotlin source: a page that
+ * stopped rendering the tag, grew a second one, or inlined code fails here.
+ */
+private val SCRIPT_ELEMENTS = Regex("""<script\b([^>]*)>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+
+/** The `src` of a script element's attribute text, in any of HTML's three quoting forms. */
+private val SCRIPT_SRC = Regex("""\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))""")
+
+/**
+ * The one claim EVERY public page makes about client-side code (RFC 225 D-H),
+ * asserted in one place instead of re-spelled per page suite.
+ *
+ * Asserted against the SERVED bytes and nothing else: the page carries exactly
+ * ONE script element, that element is EXTERNAL (no inline body — an inline
+ * script is what `script-src 'self'` refuses), and its `src` is the url the
+ * manifest names. That is the whole server-side contract; everything the
+ * enhancement itself inserts is markup no server response contains, and it is
+ * owned by the Deno tests that drive the real functions against a document.
+ */
+fun assertLoadsBundleAsItsOnlyScript(
+  label: String,
+  body: String,
+) {
+  val scripts = SCRIPT_ELEMENTS.findAll(body).toList()
+  assertEquals(
+    1,
+    scripts.size,
+    "[$label] carries [${scripts.size}] script elements, not the one external module the shell renders",
+  )
+  val attributes = scripts.single().groupValues[1]
+  val inlineBody = scripts.single().groupValues[2]
+  assertTrue(
+    inlineBody.isBlank(),
+    "[$label] carries an INLINE script, which its own policy refuses: [$inlineBody]",
+  )
+  val src =
+    SCRIPT_SRC.find(attributes)?.let { match -> match.groupValues.drop(2).first { it.isNotEmpty() } }
+      ?: fail("[$label] renders a script element with no readable src: [<script$attributes>]")
+  assertEquals(
+    WebAssets.MAIN,
+    src,
+    "[$label] loads [$src], which is not the bundle the manifest names",
+  )
 }
 
 /**

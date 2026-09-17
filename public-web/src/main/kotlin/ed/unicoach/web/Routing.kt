@@ -3,6 +3,7 @@ package ed.unicoach.web
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
+import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
@@ -23,18 +24,23 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
+import io.ktor.server.application.createRouteScopedPlugin
+import io.ktor.server.application.hooks.CallSetup
 import io.ktor.server.application.install
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
 import io.ktor.server.request.receiveParameters
+import io.ktor.server.response.header
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import org.slf4j.LoggerFactory
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.days
 
 /**
  * The path a share link points at, and the query key it carries its token in.
@@ -66,6 +72,56 @@ private val publicWebErrorLog = LoggerFactory.getLogger("ed.unicoach.web.PublicW
 
 /** The report route's own log: WHY a link resolved to nothing, which the rendered page must never say. */
 private val reportLog = LoggerFactory.getLogger("ed.unicoach.web.CostReport")
+
+/**
+ * A year, as a DURATION. `max-age` is counted in seconds, so the header spells
+ * this as `31536000` — a number nobody reads as "a year" without doing the
+ * arithmetic, and one that can be edited into ten years or ten hours with
+ * nothing to notice. The unit lives at the boundary that requires it, below.
+ *
+ * A year is SAFE only because the bundle's name contains a hash of its own bytes
+ * (RFC 225 D-D): a new build is a NEW URL, so a browser holding this response
+ * forever is holding the only content that URL will ever have. The same header
+ * on a stable name would pin last week's code onto every returning visitor for a
+ * year, with no way to recall it.
+ */
+val IMMUTABLE_BUNDLE_MAX_AGE: Duration = 365.days
+
+/**
+ * The header value, with the seconds DERIVED from [IMMUTABLE_BUNDLE_MAX_AGE] at
+ * the one place a primitive is required — HTTP's own wire format.
+ *
+ * `StaticAssetsTest` deliberately types the expected header out in full rather
+ * than reading this: a test that compares a constant with itself proves nothing
+ * about the promise being made.
+ */
+val IMMUTABLE_BUNDLE_CACHE_CONTROL = "public, max-age=${IMMUTABLE_BUNDLE_MAX_AGE.inWholeSeconds}, immutable"
+
+/**
+ * Serves the hashed bundle — and ONLY it — as cacheable forever.
+ *
+ * Route-scoped on the static mount and keyed on the request path, because the
+ * mount answers for every asset under `static/` and the claim holds for exactly
+ * one of them. `/site.css` is a stable name whose bytes change in place, so it
+ * keeps today's behaviour: no `Cache-Control` at all, revalidated normally.
+ *
+ * Stamped in the `Setup` phase, beside `setLinkHolderPrivacyHeaders` and for the
+ * same reason — the static mount writes its response from its own path, and a
+ * header set after that is a header the client never sees.
+ */
+private fun Route.cacheImmutableBundle() {
+  install(ImmutableBundleCachePlugin)
+}
+
+/** The plugin behind [cacheImmutableBundle]; installed only on the static mount. */
+private val ImmutableBundleCachePlugin =
+  createRouteScopedPlugin("ImmutableBundleCache") {
+    on(CallSetup) { call ->
+      if (call.request.path() == WebAssets.MAIN) {
+        call.response.header(HttpHeaders.CacheControl, IMMUTABLE_BUNDLE_CACHE_CONTROL)
+      }
+    }
+  }
 
 /**
  * The single routing table for public-web. Every HTML page is an explicit
@@ -157,7 +213,11 @@ fun Application.installPublicWebRouting(
 
     reportRoute(costReportSource)
 
-    staticResources("/", "static")
+    // ONE name for the classpath package this mount serves, read from
+    // [WebAssets] — the same constant [WebAssets] resolves the packaged bundle
+    // against. Two literals here would be free to disagree, and the disagreement
+    // shows up as a 404 for the script, not as a failure.
+    staticResources("/", WebAssets.STATIC_RESOURCE_PACKAGE).cacheImmutableBundle()
   }
 }
 

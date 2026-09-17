@@ -52,4 +52,20 @@ class LegalPagesTest {
       assertTrue(body.contains("class=\"site-header\""), "missing shared header chrome")
       assertTrue(body.contains("class=\"site-footer\""), "missing shared footer chrome")
     }
+
+  /**
+   * Every page gets the bundle, not only the home page — that is the whole
+   * point of putting the tag in the one layout rather than opting each page in.
+   * And it is the page's only script: nothing inline, nothing else external
+   * (RFC 225 D-H).
+   */
+  @Test
+  fun `every legal page loads the built bundle as its only script`() =
+    testApplication {
+      application { testPublicWebModule() }
+
+      for (path in listOf("/terms", "/privacy")) {
+        assertLoadsBundleAsItsOnlyScript(path, client.get(path).bodyAsText())
+      }
+    }
 }

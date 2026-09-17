@@ -382,6 +382,32 @@ main {
   overflow-wrap: anywhere;
 }
 
+/* RFC 225 — the one progressive enhancement the TypeScript rail carries. The
+   SERVER renders no such element: `public-web/src/main/ts/backToTop.ts` inserts
+   it only once the document is taller than two viewports, so with JavaScript
+   off this rule matches nothing and every page is what it was. It is fixed to
+   the bottom corner rather than placed in the flow, because an element inserted
+   into the flow after load moves the text the reader is reading. */
+.back-to-top {
+  position: fixed;
+  right: var(--gutter-x);
+  bottom: var(--gutter-x);
+  display: flex;
+  align-items: center;
+  min-height: var(--tap-target);
+  padding: 0 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--chrome-bg);
+  color: var(--chrome-fg-bright);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.back-to-top:hover {
+  background: var(--fg);
+}
+
 /* ---------------------------------------------------------------------------
    6. breakpoints
 

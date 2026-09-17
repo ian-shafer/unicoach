@@ -102,6 +102,7 @@ KNOWN_HARNESSES=(
   test-calendar-seed-scripts-tests
   test-state-programme-seed-scripts-tests
   gate-scope-scripts-tests
+  web-assets-scripts-tests
   q-scripts-tests
   db-scripts-tests
   scripts-tests
@@ -142,6 +143,16 @@ PRIME_HARNESSES="ship-scripts-tests docs-scripts-tests db-scripts-tests"
 # Kotlin, so a module-source diff runs it. It is 269s of the 639s this table is
 # trying to avoid, and it is kept anyway, because the evidence says to keep it.
 #
+# EVIDENCE for web-assets-scripts-tests (RFC 225 D-J): public-web's client-side
+# TypeScript lives at public-web/src/main/ts and its COMMITTED bundle at
+# public-web/src/main/resources/static/js, both inside a module src/ tree, so a
+# TypeScript edit IS a module-source diff -- and the only thing that catches such
+# an edit committed without a rebuild is that harness running
+# `bin/build-web-assets -c`. It is listed UNCONDITIONALLY and not made
+# conditional on a ts/ path: a TypeScript edit and a Kotlin edit both land in
+# this scope, the harness costs seconds and needs no cluster, and a
+# path-conditional row would be one more correctness claim to get wrong.
+#
 # EVIDENCE for what is EXCLUDED: none of the other harnesses references a built
 # artifact, a daemon wrapper, or a module src path. The three apparent exceptions
 # were read rather than counted -- prompt-seed-scripts-tests CREATES
@@ -149,7 +160,7 @@ PRIME_HARNESSES="ship-scripts-tests docs-scripts-tests db-scripts-tests"
 # reads the real one; docs-scripts-tests' only .kt hit is a fixture file named
 # " product/x.kt" with a leading space; q-scripts-tests drives bin/q-* through
 # psql and never starts the JVM.
-MODULE_SOURCE_HARNESSES="scripts-tests"
+MODULE_SOURCE_HARNESSES="scripts-tests web-assets-scripts-tests"
 
 # ---------------------------------------------------------------------------
 # Rule 5: the anti-orphan sweep. Runs BEFORE any classification, so a repository
@@ -286,7 +297,7 @@ done
 # bin/ship-scripts-tests writes rfc/999-x.md inside a throwaway repo to assert
 # that the product/ predicate rejects rfc/. Markdown's only executable
 # consequence here is `deno fmt`, and bin/format -c runs on EVERY path through
-# bin/pre-commit, including this one; bin/common's MARKDOWN_FMT_PATHS already
+# bin/pre-commit, including this one; bin/common's DENO_FMT_PATHS already
 # covers **/*.md, .claude and .prime.
 #
 # The residue, stated rather than glossed: a harness that composed a Markdown
@@ -336,7 +347,7 @@ fi
 
 # Scope `module-source`.
 if [ "$ALL_MODULE_SOURCE" -eq 1 ]; then
-  emit module-source yes "$MODULE_SOURCE_HARNESSES" "every staged path is under a Gradle module's src/ tree; Gradle runs in full, and scripts-tests runs because it boots the built rest-server and queue-worker"
+  emit module-source yes "$MODULE_SOURCE_HARNESSES" "every staged path is under a Gradle module's src/ tree; Gradle runs in full, scripts-tests runs because it boots the built rest-server and queue-worker, and web-assets-scripts-tests runs because public-web's TypeScript and its committed bundle both live in a module src/ tree"
 fi
 
 # Rules 1, 2 and 4 all land here.

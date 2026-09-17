@@ -33,4 +33,22 @@ class HomePageTest {
       // The shared stylesheet link is present.
       assertTrue(body.contains("href=\"/site.css\""), "missing /site.css link")
     }
+
+  /**
+   * The RFC 225 bundle reaches the page as an EXTERNAL module, and it is the
+   * page's ONLY script — so with JavaScript off the home page is what it was
+   * before this slice apart from that one tag.
+   *
+   * Asserted by [assertLoadsBundleAsItsOnlyScript] over the served bytes, which
+   * the legal and who-pays suites call too. What the bundle then INSERTS is not
+   * asserted here: no server response contains it, and the Deno tests drive the
+   * real functions against a document instead.
+   */
+  @Test
+  fun `home loads the built bundle as its only script`() =
+    testApplication {
+      application { testPublicWebModule() }
+
+      assertLoadsBundleAsItsOnlyScript("/", client.get("/").bodyAsText())
+    }
 }

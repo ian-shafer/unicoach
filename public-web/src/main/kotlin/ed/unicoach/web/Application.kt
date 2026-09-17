@@ -6,6 +6,7 @@ import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import ed.unicoach.web.common.logging.configureRequestLogging
 import ed.unicoach.web.report.CostReportSource
@@ -15,6 +16,13 @@ import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
+import org.slf4j.LoggerFactory
+
+/**
+ * The module's own log. It exists for ONE line — the bundle the build produced
+ * — because that line is also the touch that makes [WebAssets] initialise.
+ */
+private val publicWebLog = LoggerFactory.getLogger("ed.unicoach.web.PublicWeb")
 
 /**
  * Boots the public-web server: loads config from the classpath plus the local
@@ -77,7 +85,21 @@ fun Application.publicWebModule(
   costReportSource: CostReportSource,
   openInAppUrl: String?,
   requestLoggingConfig: RequestLoggingConfig,
+  bundleUrl: () -> String = { WebAssets.MAIN },
 ) {
+  // READ the bundle name while the module installs (RFC 225). WebAssets is an
+  // `object`, so its manifest refusals run at class-init — and nothing touched
+  // it before a page rendered, which made a broken or stale manifest boot GREEN
+  // and fail the first visitor, the branded 503 page included. One read here
+  // moves that failure to the daemon's start and to every `testApplication`
+  // boot, which is where the RFC always said it was.
+  //
+  // [bundleUrl] is a seam, defaulted to the real resolver so no call site has
+  // to remember it. A test can hand in a resolver that throws and assert the
+  // BOOT fails — behaviour, not a test that reads this file and looks for the
+  // name `WebAssets.MAIN` in it.
+  publicWebLog.info("client bundle: [{}]", bundleUrl())
+
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
   installPublicWebRouting(emailVerifier, costReportSource, openInAppUrl)

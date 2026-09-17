@@ -262,9 +262,14 @@ class WhoPaysPageTest {
   @Test
   fun `the page asks for nothing`() {
     val body = renderedBody()
-    listOf("<form", "<input", "<script").forEach { token ->
-      assertFalse(body.contains(token), "the page collects or runs something: [$token]")
+    listOf("<form", "<input").forEach { token ->
+      assertFalse(body.contains(token), "the page collects something: [$token]")
     }
+    // RFC 225 gave EVERY page the one external module the shell loads, so a
+    // blanket "no <script>" ban had to go. What this page still promises is
+    // that it runs nothing OF ITS OWN: exactly one script, external, and it is
+    // the shell's bundle, named from the manifest and never typed here.
+    assertLoadsBundleAsItsOnlyScript(WHO_PAYS_PATH, body)
   }
 
   @Test

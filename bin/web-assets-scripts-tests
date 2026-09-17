@@ -1,0 +1,539 @@
+#!/usr/bin/env bash
+# web-assets-scripts-tests — shell assertions over bin/build-web-assets (RFC 225),
+# the client-side TypeScript rail.
+#
+# THE `-scripts-tests` SUFFIX IS LOAD-BEARING, twice over. bin/scripts-tests'
+# anti-orphan sweep globs bin/*scripts-tests and fails when a harness it finds is
+# not named `bin/<harness>` in bin/shell-tests; bin/gate-scope (RFC 214) globs the
+# same set and FATALS by name on any harness missing from its KNOWN_HARNESSES. A
+# file named anything else would be a test suite that nothing ever runs.
+#
+# WHAT IS BEING PROTECTED. The bundle under
+# public-web/src/main/resources/static/js is a COMMITTED build output, and the
+# only thing standing between that and shipping last week's behaviour is
+# `bin/build-web-assets -c`. So this harness asserts two different things:
+#
+#  * THE STALENESS GATE, against the REAL committed tree: `-c` exits 0 today, and
+#    exits 3 against a tree whose bundle or manifest has been tampered with.
+#  * THE RAIL ITSELF, in throwaway trees: the four steps (check, lint, test,
+#    bundle) each fail the build SEPARATELY, so none of them can be quietly
+#    dropped and still look green; the name is content-addressed and stable; the
+#    superseded bundle is deleted; and a remote import is refused.
+#
+# NO DATABASE, NO DAEMON, NO GRADLE. Every build runs into a temp tree via -s/-o/-m
+# — never against the real resources directory, which would rewrite the committed
+# bundle from a test run. The one exception is `-c`, which writes nothing.
+#
+# Each throwaway tree MIRRORS the real path public-web/src/main/ts under its own
+# root, carries a copy of the rail's public-web/src/main/ts/deno.json, and is
+# built with that root as the working directory — so a fixture differs from the
+# real tree in nothing but where its root is.
+#
+# The shape is NOT what makes the deno steps fire. bin/build-web-assets passes
+# --config <ts dir>/deno.json explicitly, so nothing depends on deno discovering
+# a config by walking up from the cwd; and measured on deno 2.7.12, `deno lint
+# <path>` OVERRIDES the config's lint `include` anyway (`deno lint b` under a
+# config whose include is ["a"] reports the offence in b/). The config copy is
+# what the fixtures genuinely need: without it the build refuses -s by value,
+# because the rail's lib set and lint rules travel with the sources.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+web-assets-scripts-tests [options]
+
+Runs the shell assertions over bin/build-web-assets: its option grammar, its
+stream discipline, the content-addressed name and the deletion of the
+superseded bundle, the four build steps failing separately, the refusal of a
+remote import, and the -c staleness gate against the committed tree.
+
+Needs deno (run it inside the nix dev shell), and nothing else: no database, no
+daemon, no Gradle. Writes into temporary trees only; the committed bundle is
+never rewritten.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: web-assets-scripts-tests accepts no positional arguments."
+fi
+
+BUILD="$PROJECT_ROOT/bin/build-web-assets"
+[ -x "$BUILD" ] || fail_test "build-web-assets is missing or not executable [$BUILD]"
+
+command -v deno > /dev/null 2>&1 ||
+  fail_test "deno is not on PATH. Run this inside the dev shell: nix develop -c bin/web-assets-scripts-tests"
+
+REAL_TS="$PROJECT_ROOT/public-web/src/main/ts"
+TS_RELATIVE="public-web/src/main/ts"
+STATIC_RELATIVE="public-web/src/main/resources/static"
+MANIFEST_RELATIVE="public-web/src/main/resources/web-assets.properties"
+# The bundle directory, relative to a tree's root: build-web-assets writes into
+# it and the site serves it, and this harness asks both questions about it.
+JS_RELATIVE="$STATIC_RELATIVE/js"
+# How many hex characters of the bundle's sha256 its name must carry. This is
+# the harness's own expectation of bin/build-web-assets' BUNDLE_HASH_HEX_LENGTH
+# — stated independently, as a test's expected value must be — but stated ONCE,
+# so the name pattern below cannot disagree with the sentence that explains it.
+BUNDLE_HASH_HEX_LENGTH=12
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+# A throwaway tree that mirrors the repo's layout, printed on stdout. Called in a
+# command substitution, so the unique directory comes from mktemp and not from a
+# counter (a counter incremented in a subshell dies with it and hands every
+# caller one directory).
+wa_tree() {
+  local root
+  root="$(mktemp -d "$FIXTURE_DIR/tree.XXXXXX")"
+  mkdir -p "$root/$TS_RELATIVE" "$root/$STATIC_RELATIVE" "$root/$(dirname "$MANIFEST_RELATIVE")"
+  cp "$REAL_TS"/*.ts "$root/$TS_RELATIVE/"
+  # The rail's config travels WITH the sources: bin/build-web-assets derives
+  # --config from -s and refuses a source directory that has none, so a fixture
+  # without this copy would fail on its option values rather than on the thing
+  # each test is asking about.
+  cp "$REAL_TS/deno.json" "$root/$TS_RELATIVE/deno.json"
+  printf '%s\n' "$root"
+}
+
+# Build into <root>, from <root>, leaving status/stdout/stderr in globals. Extra
+# arguments are passed through to bin/build-web-assets.
+wa_build() { # <root> [extra args...]
+  local root="$1"
+  shift
+  WA_OUT="$(mktemp "$FIXTURE_DIR/out.XXXXXX")"
+  WA_ERR="$(mktemp "$FIXTURE_DIR/err.XXXXXX")"
+  WA_STATUS=0
+  (
+    cd "$root" || exit 1
+    "$BUILD" \
+      -s "$root/$TS_RELATIVE" \
+      -o "$root/$STATIC_RELATIVE" \
+      -m "$root/$MANIFEST_RELATIVE" \
+      "$@"
+  ) > "$WA_OUT" 2> "$WA_ERR" || WA_STATUS=$?
+}
+
+# Every main-*.js in a tree's js dir, one per line. The directory being absent
+# is the one EXPECTED miss — no build has run yet — so it is answered
+# explicitly; a `2> /dev/null` here would answer "no bundles" for an unreadable
+# directory too, and the caller would report "expected exactly one bundle, got
+# []" for what is really an infrastructure failure.
+wa_bundles() { # <root>
+  local js="$1/$JS_RELATIVE"
+  [ -d "$js" ] || return 0
+  find "$js" -type f -name 'main-*.js' | sort
+}
+
+# EVERYTHING in a tree's js dir, bundle or not, one per line. The directory is
+# owned by the build and served publicly, so "what else is in there" is its own
+# question.
+wa_js_files() { # <root>
+  local js="$1/$JS_RELATIVE"
+  [ -d "$js" ] || return 0
+  find "$js" -type f | sort
+}
+
+wa_bundle_count() { # <root>
+  wa_bundles "$1" | grep -c . | tr -d ' '
+}
+
+# A build that MUST fail, and must leave no bundle behind. The second half is the
+# assertion that matters: a step that failed after writing the output would ship
+# broken bytes and still report an error nobody acts on.
+wa_expect_broken_source() { # <filename> <contents>
+  local root count
+  root="$(wa_tree)"
+  printf '%s\n' "$2" > "$root/$TS_RELATIVE/$1"
+  wa_build "$root"
+  [ "$WA_STATUS" -ne 0 ] ||
+    { log-error "the build exited 0 with [$1] in the source tree: [$(tail -3 "$WA_ERR")]"; return 1; }
+  count="$(wa_bundle_count "$root")"
+  [ "$count" -eq 0 ] ||
+    { log-error "a failed build wrote [$count] bundle(s): [$(wa_bundles "$root" | tr '\n' ' ')]"; return 1; }
+  [ ! -f "$root/$MANIFEST_RELATIVE" ] ||
+    { log-error "a failed build wrote the manifest [$(cat "$root/$MANIFEST_RELATIVE")]"; return 1; }
+  return 0
+}
+
+echo "==== the option grammar ===="
+
+test_help_on_stdout() {
+  local out err
+  out="$(mktemp "$FIXTURE_DIR/h-out.XXXXXX")"
+  err="$(mktemp "$FIXTURE_DIR/h-err.XXXXXX")"
+  "$BUILD" -h > "$out" 2> "$err" || { log-error "-h exited non-zero"; return 1; }
+  grep -q 'build-web-assets \[options\]' "$out" ||
+    { log-error "-h wrote no usage to stdout: [$(head -2 "$out")]"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -2 "$err")]"; return 1; }
+}
+assert_success "build-web-assets -h writes usage to stdout, exits 0, and leaves stderr empty" \
+  test_help_on_stdout
+
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "build-web-assets rejects an unknown option" \
+  "$BUILD" -Z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "build-web-assets rejects -s with no value" \
+  "$BUILD" -s
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "build-web-assets rejects a positional argument" \
+  "$BUILD" -c extra
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "build-web-assets rejects a -s that is not a directory" \
+  "$BUILD" -s "$FIXTURE_DIR/no-such-directory"
+
+echo "==== a normal run: the files, and the streams ===="
+
+NORMAL_ROOT="$(wa_tree)"
+
+test_a_normal_run_writes_the_bundle_and_the_manifest() {
+  local bundle name
+  wa_build "$NORMAL_ROOT"
+  [ "$WA_STATUS" -eq 0 ] ||
+    { log-error "the build exited [$WA_STATUS]: [$(tail -5 "$WA_ERR")]"; return 1; }
+  [ "$(wa_bundle_count "$NORMAL_ROOT")" -eq 1 ] ||
+    { log-error "expected exactly one bundle, got [$(wa_bundles "$NORMAL_ROOT" | tr '\n' ' ')]"; return 1; }
+  bundle="$(wa_bundles "$NORMAL_ROOT")"
+  [ -s "$bundle" ] || { log-error "the bundle [$bundle] is empty"; return 1; }
+  name="$(basename "$bundle")"
+  # The content-addressed shape WebAssets pins on the Kotlin side.
+  printf '%s' "$name" | grep -qE "^main-[0-9a-f]{$BUNDLE_HASH_HEX_LENGTH}\.js$" ||
+    { log-error "the bundle name [$name] is not main-<$BUNDLE_HASH_HEX_LENGTH hex>.js"; return 1; }
+  [ -f "$NORMAL_ROOT/$MANIFEST_RELATIVE" ] || { log-error "no manifest was written"; return 1; }
+  [ "$(cat "$NORMAL_ROOT/$MANIFEST_RELATIVE")" = "main=/js/$name" ] ||
+    { log-error "the manifest reads [$(cat "$NORMAL_ROOT/$MANIFEST_RELATIVE")], expected [main=/js/$name]"; return 1; }
+}
+assert_success "a normal run writes one hashed bundle and a manifest naming it" \
+  test_a_normal_run_writes_the_bundle_and_the_manifest
+
+# The emptiness is the assertion. The product of a run is files on disk, so
+# stdout carries nothing at all; this is exactly what regresses when someone
+# moves a progress or summary line off stderr.
+#
+# Its OWN tree and its OWN build, deliberately. Reading the WA_OUT/WA_ERR the
+# previous assertion happened to leave behind would make this test's subject
+# whatever ran last — and NORMAL_ROOT is rebuilt by a later case with an edited
+# source, so the streams it describes would not even be the ones it names.
+test_a_normal_run_writes_nothing_to_stdout() {
+  local root
+  root="$(wa_tree)"
+  wa_build "$root"
+  [ "$WA_STATUS" -eq 0 ] ||
+    { log-error "the build exited [$WA_STATUS]: [$(tail -5 "$WA_ERR")]"; return 1; }
+  [ ! -s "$WA_OUT" ] ||
+    { log-error "a normal run wrote to stdout: [$(head -3 "$WA_OUT")]"; return 1; }
+  [ -s "$WA_ERR" ] ||
+    { log-error "a normal run wrote no diagnostics to stderr at all"; return 1; }
+  grep -q 'Wrote ' "$WA_ERR" ||
+    { log-error "stderr does not carry the build's own diagnostics: [$(head -3 "$WA_ERR")]"; return 1; }
+}
+assert_success "a normal run prints NOTHING to stdout and its diagnostics to stderr" \
+  test_a_normal_run_writes_nothing_to_stdout
+
+echo "==== the name is the content ===="
+
+test_identical_sources_build_identical_bytes() {
+  local other first second
+  other="$(wa_tree)"
+  wa_build "$other"
+  [ "$WA_STATUS" -eq 0 ] ||
+    { log-error "the second build exited [$WA_STATUS]: [$(tail -5 "$WA_ERR")]"; return 1; }
+  first="$(wa_bundles "$NORMAL_ROOT")"
+  second="$(wa_bundles "$other")"
+  [ "$(basename "$first")" = "$(basename "$second")" ] ||
+    { log-error "two builds of identical sources produced [$(basename "$first")] and [$(basename "$second")]"; return 1; }
+  cmp -s "$first" "$second" ||
+    { log-error "two builds of identical sources produced different bytes"; return 1; }
+  [ "$(cat "$NORMAL_ROOT/$MANIFEST_RELATIVE")" = "$(cat "$other/$MANIFEST_RELATIVE")" ]
+}
+assert_success "two runs over identical sources produce byte-identical output and the same name" \
+  test_identical_sources_build_identical_bytes
+
+# The change is to a VALUE, not a comment: the bundle is minified, so a comment
+# would produce identical bytes and the assertion would be measuring nothing.
+test_a_changed_source_changes_the_hash_and_deletes_the_old_bundle() {
+  local before after
+  before="$(basename "$(wa_bundles "$NORMAL_ROOT")")"
+  sed -i.bak 's/"Back to top"/"Back to the top of the page"/' "$NORMAL_ROOT/$TS_RELATIVE/backToTop.ts"
+  rm -f "$NORMAL_ROOT/$TS_RELATIVE/backToTop.ts.bak"
+  grep -q 'Back to the top of the page' "$NORMAL_ROOT/$TS_RELATIVE/backToTop.ts" ||
+    { log-error "the fixture edit did not take -- the source is unchanged"; return 1; }
+  wa_build "$NORMAL_ROOT"
+  [ "$WA_STATUS" -eq 0 ] ||
+    { log-error "the rebuild exited [$WA_STATUS]: [$(tail -5 "$WA_ERR")]"; return 1; }
+  after="$(basename "$(wa_bundles "$NORMAL_ROOT")")"
+  [ "$after" != "$before" ] ||
+    { log-error "a changed source produced the same bundle name [$after]"; return 1; }
+  [ "$(wa_bundle_count "$NORMAL_ROOT")" -eq 1 ] ||
+    { log-error "the superseded bundle was not deleted: [$(wa_bundles "$NORMAL_ROOT" | tr '\n' ' ')]"; return 1; }
+  [ ! -f "$NORMAL_ROOT/$JS_RELATIVE/$before" ] ||
+    { log-error "[$before] is still on disk after the rebuild"; return 1; }
+  [ "$(cat "$NORMAL_ROOT/$MANIFEST_RELATIVE")" = "main=/js/$after" ]
+}
+assert_success "changing a source changes the hash and deletes the superseded bundle" \
+  test_a_changed_source_changes_the_hash_and_deletes_the_old_bundle
+
+echo "==== the staleness gate ===="
+
+# Against the REAL committed tree, with no -s/-o/-m: this is the assertion that a
+# commit editing TypeScript and forgetting to rebuild fails the gate. -c writes
+# nothing, so running it here cannot rewrite the committed bundle.
+test_check_only_against_the_committed_tree() {
+  local out err status=0
+  out="$(mktemp "$FIXTURE_DIR/c-out.XXXXXX")"
+  err="$(mktemp "$FIXTURE_DIR/c-err.XXXXXX")"
+  (cd "$PROJECT_ROOT" && "$BUILD" -c) > "$out" 2> "$err" || status=$?
+  [ "$status" -eq 0 ] ||
+    { log-error "bin/build-web-assets -c exited [$status] against the committed tree: [$(tail -5 "$err")]"; return 1; }
+  [ ! -s "$out" ] ||
+    { log-error "-c wrote to stdout: [$(head -3 "$out")]"; return 1; }
+}
+assert_success "bin/build-web-assets -c exits 0 against the COMMITTED tree" \
+  test_check_only_against_the_committed_tree
+
+test_check_only_detects_a_tampered_manifest() {
+  local root status=0
+  root="$(wa_tree)"
+  wa_build "$root"
+  [ "$WA_STATUS" -eq 0 ] || { log-error "the fixture build failed"; return 1; }
+  printf '%s\n' "main=/js/main-000000000000.js" > "$root/$MANIFEST_RELATIVE"
+  wa_build "$root" -c
+  [ "$WA_STATUS" -eq "$EXIT_BUNDLE_WOULD_CHANGE" ] ||
+    { log-error "-c over a hand-edited manifest exited [$WA_STATUS], expected [$EXIT_BUNDLE_WOULD_CHANGE]"; return 1; }
+  grep -q 'web-assets.properties' "$WA_ERR" ||
+    { log-error "-c did not name the manifest as the file that differs: [$(tail -3 "$WA_ERR")]"; return 1; }
+}
+assert_success "bin/build-web-assets -c exits 3 over a hand-edited manifest" \
+  test_check_only_detects_a_tampered_manifest
+
+# Same NAME, different BYTES: only reachable by editing the committed bundle, and
+# the one drift a name comparison alone would report as "up to date".
+test_check_only_detects_a_tampered_bundle() {
+  local root bundle
+  root="$(wa_tree)"
+  wa_build "$root"
+  [ "$WA_STATUS" -eq 0 ] || { log-error "the fixture build failed"; return 1; }
+  bundle="$(wa_bundles "$root")"
+  printf '/* tampered */\n' >> "$bundle"
+  wa_build "$root" -c
+  [ "$WA_STATUS" -eq "$EXIT_BUNDLE_WOULD_CHANGE" ] ||
+    { log-error "-c over a hand-edited bundle exited [$WA_STATUS], expected [$EXIT_BUNDLE_WOULD_CHANGE]"; return 1; }
+  grep -q 'differs byte for byte' "$WA_ERR" ||
+    { log-error "-c did not report a byte difference: [$(tail -3 "$WA_ERR")]"; return 1; }
+}
+assert_success "bin/build-web-assets -c exits 3 over a bundle edited under its own name" \
+  test_check_only_detects_a_tampered_bundle
+
+# A stale sibling is drift even when the current bundle is present and correct:
+# the tree must carry exactly one bundle.
+test_check_only_detects_a_stale_sibling() {
+  local root
+  root="$(wa_tree)"
+  wa_build "$root"
+  [ "$WA_STATUS" -eq 0 ] || { log-error "the fixture build failed"; return 1; }
+  printf 'stale\n' > "$root/$JS_RELATIVE/main-abcdef123456.js"
+  wa_build "$root" -c
+  [ "$WA_STATUS" -eq "$EXIT_BUNDLE_WOULD_CHANGE" ] ||
+    { log-error "-c over a tree with two bundles exited [$WA_STATUS], expected [$EXIT_BUNDLE_WOULD_CHANGE]"; return 1; }
+  grep -q 'main-abcdef123456.js' "$WA_ERR" ||
+    { log-error "-c did not name the stale bundle: [$(tail -3 "$WA_ERR")]"; return 1; }
+}
+assert_success "bin/build-web-assets -c exits 3 when a stale sibling bundle is still present" \
+  test_check_only_detects_a_stale_sibling
+
+# The js directory is BUILT, not curated: everything in it is packaged and
+# served. A name-shaped denylist ("is there a second main-*.js?") would pass a
+# tree carrying vendor.js or main-old.js.bak, so the gate asks the allowlist
+# question instead — is this exactly the one file the sources produce?
+test_check_only_detects_a_file_that_is_not_the_bundle() {
+  local root
+  root="$(wa_tree)"
+  wa_build "$root"
+  [ "$WA_STATUS" -eq 0 ] || { log-error "the fixture build failed"; return 1; }
+  printf 'not a bundle\n' > "$root/$JS_RELATIVE/stray.txt"
+  printf 'console.log(1);\n' > "$root/$JS_RELATIVE/vendor.js"
+  wa_build "$root" -c
+  [ "$WA_STATUS" -eq "$EXIT_BUNDLE_WOULD_CHANGE" ] ||
+    { log-error "-c over a js dir carrying surplus files exited [$WA_STATUS], expected [$EXIT_BUNDLE_WOULD_CHANGE]"; return 1; }
+  grep -q 'stray.txt' "$WA_ERR" ||
+    { log-error "-c did not name [stray.txt]: [$(tail -3 "$WA_ERR")]"; return 1; }
+  grep -q 'vendor.js' "$WA_ERR" ||
+    { log-error "-c did not name [vendor.js]: [$(tail -3 "$WA_ERR")]"; return 1; }
+}
+assert_success "bin/build-web-assets -c exits 3 over a js dir carrying a file that is not the bundle" \
+  test_check_only_detects_a_file_that_is_not_the_bundle
+
+# And the write path removes what the gate reports, for the same reason: a file
+# nothing produced is a file nothing can explain, and it ships.
+test_a_normal_run_removes_a_file_that_is_not_the_bundle() {
+  local root remaining
+  root="$(wa_tree)"
+  wa_build "$root"
+  [ "$WA_STATUS" -eq 0 ] || { log-error "the fixture build failed"; return 1; }
+  printf 'not a bundle\n' > "$root/$JS_RELATIVE/stray.txt"
+  printf 'console.log(1);\n' > "$root/$JS_RELATIVE/vendor.js"
+  wa_build "$root"
+  [ "$WA_STATUS" -eq 0 ] ||
+    { log-error "the rebuild exited [$WA_STATUS]: [$(tail -5 "$WA_ERR")]"; return 1; }
+  remaining="$(wa_js_files "$root" | tr '\n' ' ')"
+  [ "$(wa_js_files "$root" | grep -c . | tr -d ' ')" -eq 1 ] ||
+    { log-error "the js dir still carries more than the bundle: [$remaining]"; return 1; }
+  [ ! -f "$root/$JS_RELATIVE/stray.txt" ] || { log-error "[stray.txt] survived the build"; return 1; }
+  [ ! -f "$root/$JS_RELATIVE/vendor.js" ] || { log-error "[vendor.js] survived the build"; return 1; }
+}
+assert_success "a normal run removes every file in the js dir that is not this build's bundle" \
+  test_a_normal_run_removes_a_file_that_is_not_the_bundle
+
+echo "==== the four steps fail separately ===="
+
+# THREE SEPARATE ASSERTIONS, and that is the point. deno bundle does not
+# type-check, does not lint and does not run tests; if check, lint or test were
+# quietly dropped from the script, a single "a broken source fails" assertion
+# would still pass on the strength of the bundler alone.
+
+test_a_type_error_fails_the_build() {
+  wa_expect_broken_source "typeError.ts" \
+    'export const broken: number = "not a number";'
+}
+assert_success "a TYPE error fails the build and writes no output (deno check)" \
+  test_a_type_error_fails_the_build
+
+# `any` is no-explicit-any, in the `recommended` tag set deno.json declares. It
+# type-checks cleanly, so only the lint step can reject it.
+test_a_lint_violation_fails_the_build() {
+  wa_expect_broken_source "lintOffence.ts" \
+    '// deno-fmt-ignore-file
+export function passThrough(value: any): any {
+  return value;
+}'
+}
+assert_success "a LINT violation fails the build and writes no output (deno lint)" \
+  test_a_lint_violation_fails_the_build
+
+# Type-clean and lint-clean: only the test step can reject it.
+test_a_failing_deno_test_fails_the_build() {
+  wa_expect_broken_source "broken_test.ts" \
+    'Deno.test("a deliberately failing test", () => {
+  throw new Error("this test fails on purpose");
+});'
+}
+assert_success "a FAILING deno test fails the build and writes no output (deno test)" \
+  test_a_failing_deno_test_fails_the_build
+
+# --no-remote, because there is no deno.lock: a remote import would put
+# unreviewed third-party code in the bundle and mint a lockfile nobody read.
+#
+# THE IMPORT IS REACHED FROM main.ts, so all the import-resolving steps are asked
+# the question at once. Measured, not assumed: `deno check`, `deno test` and
+# `deno bundle` each carry --no-remote, and the check step ALONE already refuses
+# a DANGLING source with a remote import -- `deno check --no-remote --no-npm
+# remote.ts` exits 1 with "A remote specifier was requested ... but --no-remote is
+# specified". Reached from the entry point, the bundle step refuses it too, which
+# is the claim RFC 225 D-E makes. The entry-point fixture is kept because it is
+# the stronger test: it exercises the bundler as well as the checker.
+test_a_remote_import_from_the_entry_point_fails_the_build() {
+  local root count
+  root="$(wa_tree)"
+  printf '%s\n' 'import { VERSION } from "https://deno.land/std/version.ts";
+export const remoteVersion: string = VERSION;' > "$root/$TS_RELATIVE/remote.ts"
+  printf '%s\n' 'import "./remote.ts";' >> "$root/$TS_RELATIVE/main.ts"
+  wa_build "$root"
+  [ "$WA_STATUS" -ne 0 ] ||
+    { log-error "a remote import reached from main.ts built cleanly: [$(tail -3 "$WA_ERR")]"; return 1; }
+  count="$(wa_bundle_count "$root")"
+  [ "$count" -eq 0 ] ||
+    { log-error "a failed build wrote [$count] bundle(s)"; return 1; }
+  [ ! -f "$root/$MANIFEST_RELATIVE" ] ||
+    { log-error "a failed build wrote the manifest"; return 1; }
+}
+assert_success "a source importing a remote URL fails the build and writes no output" \
+  test_a_remote_import_from_the_entry_point_fails_the_build
+
+echo "==== the source directory itself ===="
+
+# -s naming a directory with no main.ts is a usage error, not a build failure:
+# the caller pointed the rail at the wrong tree.
+test_a_source_dir_without_main_ts_is_rejected() {
+  local root err status=0
+  root="$(mktemp -d "$FIXTURE_DIR/empty.XXXXXX")"
+  err="$(mktemp "$FIXTURE_DIR/main-err.XXXXXX")"
+  mkdir -p "$root/$TS_RELATIVE" "$root/$STATIC_RELATIVE"
+  printf 'export const x = 1;\n' > "$root/$TS_RELATIVE/notMain.ts"
+  (cd "$root" && "$BUILD" -s "$root/$TS_RELATIVE" -o "$root/$STATIC_RELATIVE" \
+    -m "$root/$STATIC_RELATIVE/web-assets.properties") > /dev/null 2> "$err" || status=$?
+  [ "$status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+    { log-error "a -s with no main.ts exited [$status], expected [$EXIT_INVALID_ARG_VALUE]: [$(tail -3 "$err")]"; return 1; }
+}
+assert_success "a -s directory with no main.ts entry point is rejected as a bad value" \
+  test_a_source_dir_without_main_ts_is_rejected
+
+# The rail's compilerOptions and lint rules live in <ts dir>/deno.json and are
+# passed to every deno step with --config. A -s without one would otherwise let
+# deno fall back to whatever config it discovers by walking up from the working
+# directory, and type-check the browser code against a lib set nobody chose.
+test_a_source_dir_without_a_deno_config_is_rejected() {
+  local root err status=0
+  root="$(wa_tree)"
+  err="$(mktemp "$FIXTURE_DIR/config-err.XXXXXX")"
+  rm -f "$root/$TS_RELATIVE/deno.json"
+  (cd "$root" && "$BUILD" -s "$root/$TS_RELATIVE" -o "$root/$STATIC_RELATIVE" \
+    -m "$root/$MANIFEST_RELATIVE") > /dev/null 2> "$err" || status=$?
+  [ "$status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+    { log-error "a -s with no deno.json exited [$status], expected [$EXIT_INVALID_ARG_VALUE]: [$(tail -3 "$err")]"; return 1; }
+}
+assert_success "a -s directory with no deno.json is rejected as a bad value" \
+  test_a_source_dir_without_a_deno_config_is_rejected
+
+# -s carries hand-written TypeScript and the rail's config, and nothing else. A
+# .js/.mjs/.tsx or a stray .bak there is never handed to `deno check` — yet an
+# import of it is bundled and shipped — so it is refused by value rather than
+# ignored. Recursive: a sub-directory is part of -s too.
+test_a_source_dir_with_a_non_typescript_file_is_rejected() {
+  local root err status=0
+  root="$(wa_tree)"
+  err="$(mktemp "$FIXTURE_DIR/src-err.XXXXXX")"
+  mkdir -p "$root/$TS_RELATIVE/legacy"
+  printf 'export const x = 1;\n' > "$root/$TS_RELATIVE/legacy/vendor.js"
+  (cd "$root" && "$BUILD" -s "$root/$TS_RELATIVE" -o "$root/$STATIC_RELATIVE" \
+    -m "$root/$MANIFEST_RELATIVE") > /dev/null 2> "$err" || status=$?
+  [ "$status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+    { log-error "a -s carrying a .js exited [$status], expected [$EXIT_INVALID_ARG_VALUE]: [$(tail -3 "$err")]"; return 1; }
+  grep -q 'vendor.js' "$err" ||
+    { log-error "the refusal did not name the offending file: [$(tail -3 "$err")]"; return 1; }
+}
+assert_success "a -s directory carrying a file that is not *.ts or deno.json is rejected as a bad value" \
+  test_a_source_dir_with_a_non_typescript_file_is_rejected
+
+# -o says WHERE the static tree is, never what it is CALLED: the URL /js/... and
+# WebAssets' "/static$value" lookup both spell `static` and neither reads this
+# option, so a differently-named -o would build a manifest nothing serves.
+test_a_static_dir_not_named_static_is_rejected() {
+  local root err status=0
+  root="$(wa_tree)"
+  err="$(mktemp "$FIXTURE_DIR/static-err.XXXXXX")"
+  mkdir -p "$root/elsewhere/assets"
+  (cd "$root" && "$BUILD" -s "$root/$TS_RELATIVE" -o "$root/elsewhere/assets" \
+    -m "$root/$MANIFEST_RELATIVE") > /dev/null 2> "$err" || status=$?
+  [ "$status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+    { log-error "a -o not named [static] exited [$status], expected [$EXIT_INVALID_ARG_VALUE]: [$(tail -3 "$err")]"; return 1; }
+}
+assert_success "a -o whose last path segment is not [static] is rejected as a bad value" \
+  test_a_static_dir_not_named_static_is_rejected
+
+end_tests

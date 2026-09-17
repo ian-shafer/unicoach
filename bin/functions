@@ -58,6 +58,16 @@ conventional_dump_path() {
 # here for the same reason every other code above does: a reserved value with
 # three homes is a value that moves in two of them.
 : "${EXIT_SEED_WOULD_CHANGE:=3}"        # prompt-seed -n: the seed is not what the source file plus the base generate
+# The COMMITTED web-asset bundle is not what the TypeScript sources produce --
+# bin/build-web-assets -c (RFC 225). The same question EXIT_SEED_WOULD_CHANGE
+# answers about the prompt seed, so deliberately the same number; a caller that
+# tells a stale artifact from a usage error reads both identically. It lives
+# here, not in bin/build-web-assets, for the reason every reserved code above
+# does: the harness needs the same value, and a constant with two homes moves in
+# one of them. DERIVED and not spelled again, because the sameness above is a
+# claim: writing 3 twice would let EXIT_SEED_WOULD_CHANGE be renumbered on its
+# own and leave that claim false with nothing to notice.
+: "${EXIT_BUNDLE_WOULD_CHANGE:=$EXIT_SEED_WOULD_CHANGE}" # build-web-assets -c: the committed bundle or manifest is not what the sources produce
 
 # Git hooks EXPORT GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE, and all three
 # OUTRANK `git -C <dir>`: with them set, `git -C /elsewhere rev-parse` answers

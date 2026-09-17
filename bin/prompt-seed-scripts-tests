@@ -1354,7 +1354,7 @@ if command -v deno > /dev/null 2>&1; then
 
   # The invocation bin/format itself makes: the exclude has to hold against the
   # explicit path arguments the repo's own gate passes, not only against deno's
-  # bare config-driven discovery. MARKDOWN_FMT_PATHS comes from bin/common, so
+  # bare config-driven discovery. DENO_FMT_PATHS comes from bin/common, so
   # the two cannot drift.
   #
   # deno's own output is KEPT and quoted into whichever assertion fails. `deno
@@ -1364,7 +1364,7 @@ if command -v deno > /dev/null 2>&1; then
   # indistinguishable from one that formatted and changed nothing, and the
   # control below would then blame the exclusion for deno's failure.
   fmt_err="$FIXTURE_DIR/deno-fmt.err"
-  (cd "$FMT_DIR" && deno fmt "${MARKDOWN_FMT_PATHS[@]}" > "$fmt_err" 2>&1) || true
+  (cd "$FMT_DIR" && deno fmt "${DENO_FMT_PATHS[@]}" > "$fmt_err" 2>&1) || true
 
   cmp -s "$FIXTURE_DIR/prompt.pristine" "$FMT_DIR/prompts/coach-system-prompt.md" ||
     fail_test "deno fmt rewrote the coach prompt under the real deno.json: [$(diff "$FIXTURE_DIR/prompt.pristine" "$FMT_DIR/prompts/coach-system-prompt.md" | head -4)]; deno said [$(cat "$fmt_err")]"

@@ -1,4 +1,11 @@
 {
+  // The ROOT config holds `fmt` and nothing else. `fmt` IS repo-wide -- one
+  // format gate over every Markdown and TypeScript file in the tree. The
+  // TypeScript rail's `compilerOptions` and `lint` are NOT repo-wide and live
+  // in public-web/src/main/ts/deno.json, which bin/build-web-assets passes
+  // explicitly with --config (RFC 225). A `lib` set naming `dom` here would
+  // hand every future `deno check` in this repo browser globals it has no
+  // business seeing.
   "fmt": {
     "lineWidth": 80,
     "proseWrap": "always",
@@ -8,6 +15,19 @@
     // and mint a new version on the next land. RFC 181 relied on the `.txt`
     // extension keeping it out of a `**/*.md` glob; that protection ended with
     // the rename, so it is declared here.
-    "exclude": ["build/", ".gradle/", "var/", ".idea/", ".gemini/", "prompts/"]
+    //
+    // `public-web/src/main/resources/static/js` is GENERATED: `bin/build-web-assets`
+    // writes a minified bundle there and the gate compares those bytes to a
+    // fresh build (RFC 225 D-B). Formatting them would make every check-only
+    // run report drift that no source edit caused.
+    "exclude": [
+      "build/",
+      ".gradle/",
+      "var/",
+      ".idea/",
+      ".gemini/",
+      "prompts/",
+      "public-web/src/main/resources/static/js"
+    ]
   }
 }
