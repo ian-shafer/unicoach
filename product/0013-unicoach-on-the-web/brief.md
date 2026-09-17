@@ -356,6 +356,22 @@ THIS file, so the line lives here and the spec points at it):
   `web-assets-scripts-tests` runs 23 assertions in the gate; 11 Deno tests run
   inside every build.
 
+- `web/02/sign-in` LANDED as RFC 224 (main@a546a9f0 + 87613202, 2026-09-17) —
+  email+password auth on the web over the ONE shared `UNICOACH_SESSION` cookie:
+  register, sign in, sign out, resend verification, change email, a signed-in
+  home, and the verification hold screen, the door being a "Sign in" link in the
+  site header. Session resolution is new code in `public-web` (D-A) with the
+  cookie's identity in one shared home (`session.conf` + one writer in
+  `web-common`); the web session lives 30 days (Ian's override of D21, scoped to
+  the web) while the REST session stays 7. D22's CSRF tokens were brought
+  forward as a same-origin check on every state-changing request, because
+  `SameSite=Strict` provably does not cover sign-in or registration POSTs.
+  Review found and fixed a real auth bypass (`//account`, `/%61ccount` reached
+  the account page; the POST twin changed an unverified caller's email) by
+  making route-declared access the authority. Full gate green; **the D19 device
+  matrix for the four new screens is a human check and was NOT run**; no login
+  throttle was added (Ian declined).
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
