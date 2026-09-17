@@ -5,6 +5,7 @@ import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.User
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.auth.clearSessionCookie
 import ed.unicoach.rest.auth.resolveCaller
 import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.ErrorCode
@@ -173,7 +174,7 @@ class StudentRouteHandler(
 
     when (studentService.deleteStudentAndAccount(caller.user.id, caller.tokenHash).getOrThrow()) {
       is DeleteStudentResult.Success -> {
-        clearSessionCookie()
+        call.clearSessionCookie(sessionConfig)
         call.respond(HttpStatusCode.NoContent)
       }
 
@@ -181,18 +182,5 @@ class StudentRouteHandler(
         respondStudentNotFound()
       }
     }
-  }
-
-  private fun RoutingContext.clearSessionCookie() {
-    call.response.cookies.append(
-      name = sessionConfig.cookieName,
-      value = "",
-      domain = sessionConfig.cookieDomain,
-      path = "/",
-      secure = sessionConfig.cookieSecure,
-      httpOnly = true,
-      maxAge = 0L,
-      extensions = mapOf("SameSite" to "Strict"),
-    )
   }
 }

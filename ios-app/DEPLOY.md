@@ -121,7 +121,8 @@ the repo `.env`. Both sides derive from that single value, so they cannot
 disagree:
 
 - **The server** derives `session.cookieDomain` from `APP_DOMAIN`
-  (`rest-server.conf`). The session cookie is issued with
+  (`common/src/main/resources/session.conf`, loaded by both `rest-server` and
+  `public-web`). The session cookie is issued with
   `Domain =
   session.cookieDomain`; for the device to store and replay it, that
   `Domain` must match the host the app targets.
@@ -359,13 +360,14 @@ HTTP) — no transport-security change.
 
 For a `prod`/`prod-simulator` build to keep a session across a relaunch, the
 server's `Set-Cookie` `Domain` must cover the host the app calls. The server
-derives `session.cookieDomain` from `APP_DOMAIN` (`rest-server.conf`), so the
-deployment seeds it: `infra/ssm.tf` sets `APP_DOMAIN = var.app_domain` (the
-apex) as a non-secret SSM `String` parameter, which `render-env` flattens into
-`/etc/unicoach/env` (the server unit's `EnvironmentFile`), resolving
-`cookieDomain` to the apex `uni.coach`. Because the cookie `Domain` is the apex,
-it spans the `api.uni.coach` host the app calls. The session cookie is already
-marked `Secure` (`SESSION_COOKIE_SECURE = "true"`), correct for HTTPS.
+derives `session.cookieDomain` from `APP_DOMAIN`
+(`common/src/main/resources/session.conf`), so the deployment seeds it:
+`infra/ssm.tf` sets `APP_DOMAIN = var.app_domain` (the apex) as a non-secret SSM
+`String` parameter, which `render-env` flattens into `/etc/unicoach/env` (the
+server unit's `EnvironmentFile`), resolving `cookieDomain` to the apex
+`uni.coach`. Because the cookie `Domain` is the apex, it spans the
+`api.uni.coach` host the app calls. The session cookie is already marked
+`Secure` (`SESSION_COOKIE_SECURE = "true"`), correct for HTTPS.
 
 There is a single domain knob — `APP_DOMAIN` in `.env.prod` (the Route53 apex).
 Infra reads it as `TF_VAR_app_domain` (so `var.app_domain` feeds both the SSM

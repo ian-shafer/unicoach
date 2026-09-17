@@ -418,6 +418,6 @@ val whoPaysPage: ExplainerPage =
   )
 
 /** `GET /guides/who-pays-for-college-advice`. Static, no account, no cookie, nothing collected. */
-suspend fun ApplicationCall.respondWhoPaysPage() {
-  respondExplainerPage(whoPaysPage)
+suspend fun ApplicationCall.respondWhoPaysPage(nav: ShellNav = ShellNav.SignedOut) {
+  respondExplainerPage(whoPaysPage, nav)
 }

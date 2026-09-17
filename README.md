@@ -427,8 +427,10 @@ Copy `.env.template` to `.env`. Key variables:
 `POSTGRES_PORT` is **required** and must be set in the env file — scripts and
 the JVM crash hard if it is missing rather than silently defaulting. The same is
 now true of `SERVER_PORT` and `APP_DOMAIN` for the JVM: `rest-server.conf` pulls
-both from the env with a **required** `${VAR}` (no HOCON default), so they live
-in the dotenv layer alone.
+`SERVER_PORT` and `common/src/main/resources/session.conf` pulls `APP_DOMAIN`
+and `SESSION_COOKIE_SECURE`, each with a **required** `${VAR}` (no HOCON
+default), so they live in the dotenv layer alone. `session.conf` is loaded by
+`rest-server` **and** `public-web`, so both servers fail at boot without them.
 
 `.env` is the committed **base**; `.env.dev`, `.env.test` and `.env.fuzz` are
 **slimmed deltas layered _after_ it** — each restates only the keys whose values

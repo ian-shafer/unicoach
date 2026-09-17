@@ -65,7 +65,7 @@ class EmailVerificationGateTest {
 
       appConfig =
         AppConfig
-          .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
+          .load("common.conf", "db.conf", "session.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
           .getOrThrow()
       val dbConfig = DatabaseConfig.from(appConfig).getOrThrow()
       dbConnection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
@@ -258,7 +258,7 @@ class EmailVerificationGateTest {
     // an absent client key is rejected by the client-key gate first.
     val config =
       AppConfig
-        .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
+        .load("common.conf", "db.conf", "session.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
         .getOrThrow()
     val database = Database(DatabaseConfig.from(config).getOrThrow())
     val keyedClientGate = ClientKeyGateConfig(validKeys = setOf("secret-key"), allowlistPaths = setOf("/healthz"))
@@ -316,7 +316,7 @@ class EmailVerificationGateTest {
     testApplication {
       val config =
         AppConfig
-          .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
+          .load("common.conf", "db.conf", "session.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
           .getOrThrow()
       val database = Database(DatabaseConfig.from(config).getOrThrow())
 

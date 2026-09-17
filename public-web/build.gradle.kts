@@ -17,6 +17,10 @@ dependencies {
   // reads in chat (CollegeCostService), in-process behind the CostReportSource
   // port — the admin-web precedent for a web module depending on :service.
   implementation(project(":service"))
+  // RFC 224: registration enqueues a SEND_EMAIL verification job through
+  // EmailVerificationService, so public-web is an enqueue-only queue producer.
+  // It constructs a QueueService and never an EmailService — the worker sends.
+  implementation(project(":queue"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)
   implementation(libs.ktor.server.status.pages)

@@ -12,6 +12,8 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import java.sql.DriverManager
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.system.measureTimeMillis
 import kotlin.test.assertEquals
@@ -25,6 +27,16 @@ class AuthRoutingTest {
 
     // Unique email counter to prevent cross-test collision on the users table
     private val emailCounter = AtomicInteger(0)
+
+    /** The iOS session lifetime `session.conf` declares. */
+    private val IOS_SESSION_LIFETIME: Duration = Duration.ofDays(7)
+
+    /**
+     * The row's remaining life is measured against `NOW()` AFTER the insert, so
+     * it is always a little under the nominal figure. "Within a minute of 7
+     * days" catches a 30 and catches a 0 without failing on a slow machine.
+     */
+    private val CLOCK_SLACK: Duration = Duration.ofMinutes(1)
 
     @JvmStatic
     @BeforeAll
@@ -467,6 +479,82 @@ class AuthRoutingTest {
       val body = loginResponse.bodyAsText()
       assertTrue(body.contains("unauthorized"))
     }
+
+  /**
+   * The other half of RFC 224's deliberate 30/7 split, asserted where the mint
+   * actually happens.
+   *
+   * `public-web` mints 30-day sessions; `rest-server` must still mint 7-day
+   * ones, because lengthening every iOS session to match the web would widen the
+   * window in which a stolen token is still good — a security change nobody
+   * asked for. The assertion reads the `sessions` ROW the login inserted rather
+   * than a configuration value, so a wiring change that pointed this server at
+   * `publicWeb.session.expiration` fails here.
+   */
+  @Test
+  fun `a REST login mints a session that expires seven days out, not thirty`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val password = "Password123!"
+      val req = RegisterRequest(email, password, "Seven Day Session User")
+
+      client.post(buildUrl("/api/v1/auth/register")) {
+        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        setBody(mapper.writeValueAsString(req))
+      }
+
+      val loginReq =
+        ed.unicoach.rest.models
+          .LoginRequest(email, password)
+      val loginResponse =
+        client.post(buildUrl("/api/v1/auth/login")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(loginReq))
+        }
+      assertEquals(HttpStatusCode.OK, loginResponse.status)
+
+      val lifetimeSeconds = newestSessionLifetimeSeconds(email)
+      assertTrue(
+        lifetimeSeconds in (IOS_SESSION_LIFETIME - CLOCK_SLACK).seconds..IOS_SESSION_LIFETIME.seconds,
+        "the login minted a [$lifetimeSeconds]s session, not the [${IOS_SESSION_LIFETIME.seconds}]s iOS lifetime: " +
+          "the web tier's 30-day lifetime has leaked into the API",
+      )
+    }
+
+  /**
+   * How many whole seconds from now the most recently minted session row for
+   * [email] expires. Measured against `NOW()` after the insert, so it is always
+   * a little under the nominal figure.
+   */
+  private fun newestSessionLifetimeSeconds(email: String): Long {
+    val config =
+      ed.unicoach.common.config.AppConfig
+        .load("common.conf", "db.conf")
+        .getOrThrow()
+    val dbConfig =
+      ed.unicoach.db.DatabaseConfig
+        .from(config)
+        .getOrThrow()
+    DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "").use { connection ->
+      connection
+        .prepareStatement(
+          """
+          SELECT extract(epoch FROM (s.expires_at - NOW()))::bigint
+          FROM sessions s
+          JOIN users u ON u.id = s.user_id
+          WHERE u.email = ? AND s.is_revoked = false
+          ORDER BY s.created_at DESC
+          LIMIT 1
+          """.trimIndent(),
+        ).use { statement ->
+          statement.setString(1, email)
+          statement.executeQuery().use { rows ->
+            check(rows.next()) { "the login left no live session row for [$email]" }
+            return rows.getLong(1)
+          }
+        }
+    }
+  }
 
   // --- /logout endpoint tests ---
 

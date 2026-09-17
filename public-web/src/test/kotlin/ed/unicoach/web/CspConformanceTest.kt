@@ -5,10 +5,12 @@ import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
 import ed.unicoach.web.render.WHO_PAYS_PATH
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -396,6 +398,10 @@ class CspConformanceTest {
       "POST /verify-email",
       HttpStatusCode.OK,
       client.post("/verify-email") {
+        // The same-origin guard (RFC 224 D-C) requires Origin on every
+        // state-changing request; a real browser's form POST carries it, so the
+        // test POST must too. Without it this 403s before any page renders.
+        header(HttpHeaders.Origin, WebAuthTestSupport.urlBase)
         setBody(FormDataContent(Parameters.build { append("token", NOT_A_REAL_TOKEN) }))
       },
     )
@@ -562,6 +568,11 @@ class CspConformanceTest {
         // a token renders the confirm FORM, and they are different pages.
         PublicPage("/verify-email"),
         PublicPage("/verify-email", query = "token=$NOT_A_REAL_TOKEN"),
+        // RFC 224's pre-session forms: public pages, rendered to a signed-out
+        // visitor, so they answer 200 here and are CSP-checked like every other
+        // page.
+        PublicPage("/sign-in"),
+        PublicPage("/register"),
         PublicPage("/no-such-page", expectedStatus = HttpStatusCode.NotFound),
       )
 
@@ -594,6 +605,10 @@ class CspConformanceTest {
       mapOf(
         RegisteredRoute(HttpMethod.Get, "/healthz") to "a JSON liveness probe: no HTML, so no resource for a policy to govern",
         RegisteredRoute(HttpMethod.Get, "/report") to "needs a live share token; ReportLinkContractTest owns that route",
+        RegisteredRoute(HttpMethod.Get, "/account") to
+          "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
+        RegisteredRoute(HttpMethod.Get, "/account/email") to
+          "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
         RegisteredRoute(HttpMethod.Get, "/{...}") to
           "the static mount's tailcard: chrome-less files under static/, not pages; StaticAssetsTest owns it",
       )

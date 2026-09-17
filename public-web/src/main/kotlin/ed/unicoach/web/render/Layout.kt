@@ -1,13 +1,20 @@
 package ed.unicoach.web.render
 
 import ed.unicoach.web.assets.WebAssets
+import ed.unicoach.web.auth.ACCOUNT_PATH
+import ed.unicoach.web.auth.SIGN_IN_PATH
+import ed.unicoach.web.auth.SIGN_OUT_PATH
 import ed.unicoach.web.common.http.ROBOTS_NOINDEX
+import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
+import kotlinx.html.FormMethod
 import kotlinx.html.HTML
 import kotlinx.html.MAIN
 import kotlinx.html.a
 import kotlinx.html.body
+import kotlinx.html.button
 import kotlinx.html.footer
+import kotlinx.html.form
 import kotlinx.html.head
 import kotlinx.html.header
 import kotlinx.html.link
@@ -55,6 +62,47 @@ enum class ShellWidth(
 }
 
 /**
+ * The class the sign-out FORM carries, so the CSS that strips the button's
+ * chrome finds it. Named because the markup half and the stylesheet half are
+ * one contract, and `ShellMechanismTest` reads the constant rather than retyping
+ * the value.
+ */
+const val SIGN_OUT_FORM_CLASS = "sign-out"
+
+/** A submit button styled as a nav link. Sign-out is a POST, so it cannot be an anchor. */
+const val LINKLIKE_CLASS = "linklike"
+
+/**
+ * Who the navigation is being rendered FOR (RFC 224).
+ *
+ * An enum for the same reason [ShellWidth] is one: the two headers differ in
+ * which controls they carry, and a caller that passed a free-form string or a
+ * boolean pair could ask for a header that is neither. It also keeps the door
+ * in ONE place — a "Sign in" link written per page would go missing from the
+ * page that forgot it, and the slice's whole door is that link.
+ *
+ * [SignedOut] is the DEFAULT of [siteLayout]'s `nav` parameter, so no page that
+ * existed before RFC 224 changes its call site, and every one of them renders
+ * the same body it did; what they gain is the shared header's one new anchor,
+ * which is the point of putting the door in the shell rather than on a page.
+ */
+
+enum class ShellNav {
+  /** No session: the nav carries the door, `<a href="/sign-in">Sign in</a>`. */
+  SignedOut,
+
+  /**
+   * A live session: the nav carries "Account" and the sign-out control.
+   *
+   * Sign-out is a `form` with a submit button and NOT an anchor, and that is
+   * not styling pedantry: it changes state, so it must be a `POST` the
+   * same-origin guard can see (D-C), and a `GET` link would be followed by
+   * every prefetcher and link scanner that touches the page.
+   */
+  SignedIn,
+}
+
+/**
  * The shared HTML skeleton for every public-web page. Links the chrome-less
  * `/site.css` stylesheet from the static mount and wraps a page body — injected
  * into the `content` slot — in the identical top-level site header and footer.
@@ -78,6 +126,7 @@ fun HTML.siteLayout(
   pageTitle: String,
   width: ShellWidth = ShellWidth.PROSE,
   noindex: Boolean = false,
+  nav: ShellNav = ShellNav.SignedOut,
   content: MAIN.() -> Unit,
 ) {
   head {
@@ -112,14 +161,21 @@ fun HTML.siteLayout(
   // renders an empty `class=""` attribute for a blank string, and every page
   // that existed before RFC 210 must keep rendering the bytes it did.
   body(classes = width.bodyClass) {
-    siteHeader()
+    siteHeader(nav)
     main { content() }
     siteFooter()
   }
 }
 
-/** The shared top-level header chrome rendered on every page. */
-fun FlowContent.siteHeader() {
+/**
+ * The shared top-level header chrome rendered on every page.
+ *
+ * The four standing links are the same for everyone; only the tail differs, and
+ * it differs by [shellNav] alone. There is no second header function, for the
+ * same reason there is no second layout function: two of them drift, and the
+ * one that drifts is always the one fewer people look at.
+ */
+fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
   header("site-header") {
     a(href = "/", classes = "site-brand") { +"unicoach" }
     nav("site-nav") {
@@ -129,6 +185,21 @@ fun FlowContent.siteHeader() {
       // Label and path both read from the page itself, so the header cannot
       // name it one thing while the page calls itself another.
       a(href = WHO_PAYS_PATH) { +whoPaysPage.title }
+      when (shellNav) {
+        // THE DOOR (RFC 224): the one way in, on every page of the site. The
+        // label reads the sign-in page's own name, so the door cannot call the
+        // page something other than what the page calls itself.
+        ShellNav.SignedOut -> {
+          a(href = SIGN_IN_PATH) { +SIGN_IN_HEADING }
+        }
+
+        ShellNav.SignedIn -> {
+          a(href = ACCOUNT_PATH) { +"Account" }
+          form(action = SIGN_OUT_PATH, method = FormMethod.post, classes = SIGN_OUT_FORM_CLASS) {
+            button(type = ButtonType.submit, classes = LINKLIKE_CLASS) { +"Sign out" }
+          }
+        }
+      }
     }
   }
 }

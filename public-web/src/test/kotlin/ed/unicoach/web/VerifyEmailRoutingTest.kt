@@ -17,6 +17,7 @@ import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
+import ed.unicoach.web.render.TOKEN_FIELD
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -26,6 +27,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.http.parameters
 import io.ktor.server.testing.testApplication
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -129,10 +131,7 @@ class VerifyEmailRoutingTest {
       application { testPublicWebModule(DbEmailVerifier(database)) }
 
       val response =
-        client.post("/verify-email") {
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=$raw")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, raw) })
 
       assertEquals(HttpStatusCode.OK, response.status)
       val body = response.bodyAsText()
@@ -161,18 +160,43 @@ class VerifyEmailRoutingTest {
       assertEquals(0, verifier.callCount)
     }
 
+  /**
+   * Exactly one token, never the first of several: a URL carrying two tokens is
+   * a request we have no reading of, so a signed-out visitor goes to sign-in
+   * exactly as they would with none — the surplus is not silently discarded.
+   */
   @Test
-  fun `GET verify-email with no token renders InvalidToken and makes no verify call`() =
+  fun `GET verify-email with two tokens is treated as having none rather than the first`() =
     testApplication {
       val verifier = fake(Result.success(VerifyEmailResult.InvalidToken))
       application { testPublicWebModule(verifier) }
 
-      val response = client.get("/verify-email")
+      val response = noFollowClient().get("/verify-email?token=first&token=second")
 
-      assertEquals(HttpStatusCode.OK, response.status)
-      val body = response.bodyAsText()
-      assertTrue(body.contains("Link not valid"), "missing InvalidToken marker")
-      assertSharedChrome(body)
+      assertEquals(HttpStatusCode.Found, response.status)
+      assertEquals("/sign-in", response.headers[HttpHeaders.Location])
+      assertEquals(0, verifier.callCount)
+    }
+
+  /**
+   * CHANGED BY RFC 224, deliberately. `GET /verify-email` with no token used to
+   * render "Link not valid" to everyone, because there was no session to ask
+   * about. There is now: for a signed-in caller the same URL is the verification
+   * HOLD screen the auth gate redirects an unverified family to (asserted in
+   * `WebAuthGateTest`), and for a signed-out visitor there is nothing to verify
+   * and nothing to hold, so the sign-in form is the honest answer. Either way
+   * the verifier is still never called.
+   */
+  @Test
+  fun `GET verify-email with no token sends a signed-out visitor to sign-in and makes no verify call`() =
+    testApplication {
+      val verifier = fake(Result.success(VerifyEmailResult.InvalidToken))
+      application { testPublicWebModule(verifier) }
+
+      val response = noFollowClient().get("/verify-email")
+
+      assertEquals(HttpStatusCode.Found, response.status)
+      assertEquals("/sign-in", response.headers[HttpHeaders.Location])
       assertEquals(0, verifier.callCount)
     }
 
@@ -186,11 +210,7 @@ class VerifyEmailRoutingTest {
       }
 
       val response =
-        client.post("/verify-email") {
-          header(HttpHeaders.UserAgent, iPhoneUa)
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=abc")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, "abc") }) { header(HttpHeaders.UserAgent, iPhoneUa) }
 
       assertEquals(HttpStatusCode.OK, response.status)
       val body = response.bodyAsText()
@@ -208,11 +228,7 @@ class VerifyEmailRoutingTest {
       }
 
       val response =
-        client.post("/verify-email") {
-          header(HttpHeaders.UserAgent, desktopUa)
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=abc")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, "abc") }) { header(HttpHeaders.UserAgent, desktopUa) }
 
       val body = response.bodyAsText()
       assertTrue(body.contains("Email verified"), "missing success marker")
@@ -227,11 +243,7 @@ class VerifyEmailRoutingTest {
       }
 
       val response =
-        client.post("/verify-email") {
-          header(HttpHeaders.UserAgent, iPhoneUa)
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=abc")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, "abc") }) { header(HttpHeaders.UserAgent, iPhoneUa) }
 
       val body = response.bodyAsText()
       assertTrue(body.contains("Already verified"), "missing already-verified marker")
@@ -246,11 +258,7 @@ class VerifyEmailRoutingTest {
       }
 
       val response =
-        client.post("/verify-email") {
-          header(HttpHeaders.UserAgent, iPhoneUa)
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=abc")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, "abc") }) { header(HttpHeaders.UserAgent, iPhoneUa) }
 
       val body = response.bodyAsText()
       assertTrue(body.contains("Link not valid"), "missing InvalidToken marker")
@@ -265,11 +273,7 @@ class VerifyEmailRoutingTest {
       }
 
       val response =
-        client.post("/verify-email") {
-          header(HttpHeaders.UserAgent, iPhoneUa)
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=abc")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, "abc") }) { header(HttpHeaders.UserAgent, iPhoneUa) }
 
       val body = response.bodyAsText()
       assertTrue(body.contains("Link expired"), "missing Expired marker")
@@ -284,15 +288,60 @@ class VerifyEmailRoutingTest {
       }
 
       val response =
-        client.post("/verify-email") {
-          header(HttpHeaders.UserAgent, iPhoneUa)
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=abc")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, "abc") }) { header(HttpHeaders.UserAgent, iPhoneUa) }
 
       val body = response.bodyAsText()
       assertTrue(body.contains("Verification unavailable"), "missing Unavailable marker")
       assertFalse(body.contains(TEST_OPEN_IN_APP_URL), "open-in-app link present on Unavailable")
+    }
+
+  /**
+   * The Operation Boundary rule, verify-email half: a body that is not a form at
+   * all is a bad token for the purpose of this single-use route, and is answered
+   * as such rather than landing in the `exception<Throwable>` arm as a branded
+   * 503.
+   */
+  @Test
+  fun `POST verify-email whose body is not a form renders invalid, never the branded 503`() =
+    testApplication {
+      val verifier = fake(Result.success(VerifyEmailResult.Success(stubUser())))
+      application { testPublicWebModule(verifier) }
+
+      val response =
+        client.post("/verify-email") {
+          header(HttpHeaders.Origin, WebAuthTestSupport.urlBase)
+          contentType(ContentType.Application.Json)
+          setBody("""{"token":"abc"}""")
+        }
+
+      assertEquals(HttpStatusCode.OK, response.status, "a malformed body must answer a client answer, not the branded 503")
+      assertTrue(response.bodyAsText().contains("Link not valid"), "a non-form body was not answered as a bad token")
+      assertEquals(0, verifier.callCount, "a non-form body reached the verifier")
+    }
+
+  /**
+   * The POST side of the same rule: a single-use-token route must consume
+   * EXACTLY one token. A body carrying two burns neither, and answers the same
+   * page as any bad token without calling the verifier.
+   */
+  @Test
+  fun `POST verify-email with two token fields renders invalid and makes no verify call`() =
+    testApplication {
+      val verifier = fake(Result.success(VerifyEmailResult.Success(stubUser())))
+      application { testPublicWebModule(verifier) }
+
+      val response =
+        formPost(
+          "/verify-email",
+          parameters {
+            append(TOKEN_FIELD, "first")
+            append(TOKEN_FIELD, "second")
+          },
+        )
+
+      assertEquals(HttpStatusCode.OK, response.status)
+      assertTrue(response.bodyAsText().contains("Link not valid"), "a repeated token was not treated as no token")
+      assertEquals(0, verifier.callCount, "the first of two tokens was consumed")
     }
 
   @Test
@@ -302,10 +351,7 @@ class VerifyEmailRoutingTest {
       application { testPublicWebModule(verifier) }
 
       val response =
-        client.post("/verify-email") {
-          contentType(ContentType.Application.FormUrlEncoded)
-          setBody("token=")
-        }
+        formPost("/verify-email", parameters { append(TOKEN_FIELD, "") })
 
       assertEquals(HttpStatusCode.OK, response.status)
       val body = response.bodyAsText()
@@ -321,12 +367,6 @@ class VerifyEmailRoutingTest {
       }
 
       assertSharedChrome(client.get("/verify-email?token=abc").bodyAsText())
-      assertSharedChrome(
-        client
-          .post("/verify-email") {
-            contentType(ContentType.Application.FormUrlEncoded)
-            setBody("token=abc")
-          }.bodyAsText(),
-      )
+      assertSharedChrome(formPost("/verify-email", parameters { append(TOKEN_FIELD, "abc") }).bodyAsText())
     }
 }

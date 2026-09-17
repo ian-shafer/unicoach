@@ -80,7 +80,7 @@ fun startServer(
 ): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "service.conf", "chat.conf", "appstore.conf", "rest-server.conf", "queue.conf")
+      .load("common.conf", "db.conf", "session.conf", "service.conf", "chat.conf", "appstore.conf", "rest-server.conf", "queue.conf")
       .getOrThrow()
 
   val dbConfig =

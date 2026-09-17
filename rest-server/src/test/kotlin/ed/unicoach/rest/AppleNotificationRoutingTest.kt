@@ -194,7 +194,7 @@ class AppleNotificationRoutingTest {
     fun setupAll() {
       val config =
         AppConfig
-          .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
+          .load("common.conf", "db.conf", "session.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
           .getOrThrow()
       val dbConfig = DatabaseConfig.from(config).getOrThrow()
       database = Database(dbConfig)

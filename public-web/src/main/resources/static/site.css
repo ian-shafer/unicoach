@@ -35,6 +35,13 @@
      `--measure` from a body class instead of editing the `main` rule. */
   --measure: 48rem;
 
+  /* The FORM column. Narrower than --measure on purpose: a stack of single
+     controls reads as a card, and a label/input pair stretched to the prose
+     measure puts the label and the caret at opposite ends of a laptop screen.
+     A token because every form card web/05 adds must be the same width as
+     these three, and three hand-typed widths agree only until one is tuned. */
+  --form-measure: 28rem;
+
   /* The fluid gutter. `clamp` covers 320–1440px continuously, so the column
      breathes at every width between the two breakpoints rather than at them. */
   --gutter-x: clamp(1rem, 4vw, 2rem);
@@ -51,6 +58,17 @@
 
   /* Anything a finger has to hit is at least this tall (Apple/Material floor). */
   --tap-target: 44px;
+
+  /* iOS Safari zooms the page when a focused input is set below this and never
+     zooms back. A physical floor like --tap-target, so it is absolute: written
+     in `rem` it would move with --font-size-root, which the 1024px block
+     re-declares. */
+  --input-font-size-min: 16px;
+
+  /* The one colour an error is stated in. A token because RFC 224 adds the
+     first two error shapes and web/05 adds the form rail's own: three hand-typed
+     reds agree only until one of them is tuned. */
+  --error: #b91c1c;
 
   /* The gap BETWEEN two wrapped chrome rows. A token, not a literal in each
      rule: `.site-header` and `.site-nav` both wrap, and their two gaps have to
@@ -145,6 +163,7 @@ main {
    chrome later inherits the floor by joining this selector list. */
 .site-header .site-brand,
 .site-header .site-nav a,
+.site-header .site-nav .linklike,
 .site-footer a {
   display: inline-flex;
   align-items: center;
@@ -172,13 +191,35 @@ main {
   row-gap: var(--chrome-row-gap);
 }
 
-.site-header .site-nav a {
+.site-header .site-nav a,
+.site-header .site-nav .linklike {
   color: var(--chrome-fg);
   text-decoration: none;
 }
 
-.site-header .site-nav a:hover {
+.site-header .site-nav a:hover,
+.site-header .site-nav .linklike:hover {
   color: var(--chrome-fg-bright);
+}
+
+/* Sign-out is a POST, so the control is a form and a button — an anchor would
+   be followed by every prefetcher and link scanner that touches the page, and
+   the same-origin guard only sees state-changing methods. It has to LOOK like
+   the four links beside it, so the button's own chrome is removed here and the
+   shared rules above do the rest. `font: inherit` is the load-bearing one: a
+   button does not inherit the page's font family or size from its ancestor, so
+   without it the word "Sign out" is set in the browser's default UI face next
+   to four links that are not. */
+.site-header .site-nav .sign-out {
+  display: inline-flex;
+}
+
+.site-header .site-nav .linklike {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
 }
 
 .site-footer {
@@ -406,6 +447,117 @@ main {
 
 .back-to-top:hover {
   background: var(--fg);
+}
+
+/* RFC 224 — forms. Sign-in, registration and change-email are the first forms
+   public-web serves, and these are the rules that make a control usable rather
+   than merely present. There is no inline `style` anywhere in the markup and
+   there cannot be: the content-security policy carries no 'unsafe-inline', and
+   ShellMechanismTest's source sweep fails the build over one.
+
+   The measure is deliberately left alone. A form reads in the same column the
+   prose does, so nothing here touches `--measure`; the form card's own width is
+   `--form-measure`, a token so every form card web/05 adds stays the same width
+   as these three. */
+
+.auth-form {
+  max-width: var(--form-measure);
+}
+
+/* A stack, not a grid: every field is one label above one control, and the gap
+   is the only thing separating them. `display: block` on the label is what puts
+   the control on its own line — a label and an input are both inline by
+   default, so without it the two sit side by side and wrap unpredictably at
+   narrow widths. */
+.field {
+  margin-bottom: 1rem;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--muted);
+}
+
+/* `width: 100%` plus the inherited border-box sizing is what keeps a text input
+   inside the column on a phone: an input's default width is a browser-chosen
+   character count that ignores its container entirely. The font size is floored
+   at `--input-font-size-min` rather than at a bare `1rem`, because iOS Safari
+   zooms the whole page when a focused input is set below 16px and never zooms
+   back out — and `1rem` moves when the 1024px block re-declares
+   `--font-size-root`. */
+.auth-form input {
+  width: 100%;
+  min-height: var(--tap-target);
+  padding: 0.5rem 0.75rem;
+  font-size: max(1rem, var(--input-font-size-min));
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+}
+
+.auth-form input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The submit button carries the tap-target floor for the same reason the nav
+   links do, and `font: inherit` for the same reason the sign-out button does. */
+.auth-form button {
+  min-height: var(--tap-target);
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  color: var(--bg);
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+/* The two error shapes, and they are two because they say different things: a
+   form-level message is one sentence about the whole attempt ("Email or
+   password is incorrect"), and a field-level list is several separate problems
+   :service returned, which must stay separate or two problems read as one.
+
+   Colour is not the only signal. An error is inside its own element with its
+   own text, so it is announced and readable without colour vision — a red
+   border alone would say nothing to a screen reader and nothing at all to
+   someone who cannot see the difference. */
+.form-error,
+.field-error {
+  color: var(--error);
+  margin-bottom: 1rem;
+}
+
+.field-error {
+  padding-left: 1.25rem;
+}
+
+/* A post-redirect-get confirmation. It is not an error and must not look like
+   one: the same shape, the ordinary foreground colour. */
+.notice {
+  color: var(--fg);
+  margin-bottom: 1rem;
+}
+
+/* The signed-in account summary: a definition list is the honest markup for
+   label/value pairs, and this makes it read as a two-column list instead of the
+   browser default's indented block. */
+.account dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 1rem;
+  row-gap: 0.5rem;
+}
+
+.account dt {
+  color: var(--muted);
+}
+
+.account dd {
+  margin: 0;
 }
 
 /* ---------------------------------------------------------------------------

@@ -352,7 +352,10 @@ private fun bandSaidAboveOf(basis: MoneyBasis): IncomeBand? =
  * one fact about the family into two computations that only convention kept
  * equal.
  */
-suspend fun ApplicationCall.respondCostReportPage(profile: CollegeCostProfile) {
+suspend fun ApplicationCall.respondCostReportPage(
+  profile: CollegeCostProfile,
+  nav: ShellNav = ShellNav.SignedOut,
+) {
   val residencyBases = residencyBasesOf(profile)
   val shape = ReportShape.of(profile)
   // ONE derivation of the money basis for the whole page, like the residency
@@ -365,7 +368,7 @@ suspend fun ApplicationCall.respondCostReportPage(profile: CollegeCostProfile) {
   // residency sentence) and where the blended hint is said (RFC 188).
   val basisIsThisSchool = shape is ReportShape.OneSchool
   respondHtml {
-    siteLayout(PAGE_TITLE, noindex = true) {
+    siteLayout(PAGE_TITLE, noindex = true, nav = nav) {
       section("report") {
         h1 { +REPORT_HEADING }
         p("report-live") { +LIVE_LINE }

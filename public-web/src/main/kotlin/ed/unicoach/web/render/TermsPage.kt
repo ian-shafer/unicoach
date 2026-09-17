@@ -12,9 +12,9 @@ import kotlinx.html.section
  * through [siteLayout] — not from a static HTML file — so it inherits the shared
  * chrome. The marker "Terms of Service" proves this body rendered.
  */
-suspend fun ApplicationCall.respondTermsPage() {
+suspend fun ApplicationCall.respondTermsPage(nav: ShellNav = ShellNav.SignedOut) {
   respondHtml {
-    siteLayout("Terms of Service") {
+    siteLayout("Terms of Service", nav = nav) {
       section("legal") {
         h1 { +"Terms of Service" }
         p {

@@ -12,9 +12,9 @@ import kotlinx.html.section
  * it carries the shared header/footer chrome. The marker "Your college coach"
  * proves this body rendered.
  */
-suspend fun ApplicationCall.respondHomePage() {
+suspend fun ApplicationCall.respondHomePage(nav: ShellNav = ShellNav.SignedOut) {
   respondHtml {
-    siteLayout("Home") {
+    siteLayout("Home", nav = nav) {
       section("hero") {
         h1 { +"Your college coach" }
         p {

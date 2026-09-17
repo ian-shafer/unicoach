@@ -1,5 +1,7 @@
 package ed.unicoach.web
 
+import ed.unicoach.auth.AuthService
+import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.web.assets.WebAssets
@@ -37,7 +39,16 @@ val TEST_REQUEST_LOG_CONFIG =
  * verifier, a report test passes a source, and the twenty call sites that care
  * about neither pass nothing. Adding a parameter to `publicWebModule` is then
  * one edit here rather than twenty mechanical ones, none of which a reader can
- * tell from a deliberate choice.
+ * tell from a deliberate choice. RFC 224 added three, and this is the edit.
+ *
+ * The auth collaborators default to the REAL ones over the test database
+ * ([WebAuthTestSupport]) rather than to fakes. `AuthService` is a final class
+ * with five collaborators of its own, so a fake would be a second
+ * implementation of the login rules — the very thing brief decision D13 says
+ * must have one home — and every suite asserting against it would be asserting
+ * against the test's own idea of authentication. The cost is that public-web's
+ * whole test suite now needs the test database, which `bin/test` provides for
+ * every run anyway.
  */
 fun Application.testPublicWebModule(
   emailVerifier: EmailVerifier = FakeEmailVerifier(),
@@ -45,8 +56,20 @@ fun Application.testPublicWebModule(
   openInAppUrl: String? = TEST_OPEN_IN_APP_URL,
   requestLoggingConfig: RequestLoggingConfig = TEST_REQUEST_LOG_CONFIG,
   bundleUrl: () -> String = { WebAssets.MAIN },
+  authService: AuthService = WebAuthTestSupport.authService,
+  emailVerificationService: EmailVerificationService = WebAuthTestSupport.emailVerificationService,
+  publicWebConfig: PublicWebConfig = WebAuthTestSupport.publicWebConfig,
 ) {
-  publicWebModule(emailVerifier, costReportSource, openInAppUrl, requestLoggingConfig, bundleUrl)
+  publicWebModule(
+    emailVerifier,
+    costReportSource,
+    openInAppUrl,
+    requestLoggingConfig,
+    bundleUrl,
+    authService,
+    emailVerificationService,
+    publicWebConfig,
+  )
 }
 
 /**

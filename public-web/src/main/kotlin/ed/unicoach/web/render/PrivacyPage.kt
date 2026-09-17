@@ -12,9 +12,9 @@ import kotlinx.html.section
  * through [siteLayout] — not from a static HTML file — so it inherits the shared
  * chrome. The marker "Privacy Policy" proves this body rendered.
  */
-suspend fun ApplicationCall.respondPrivacyPage() {
+suspend fun ApplicationCall.respondPrivacyPage(nav: ShellNav = ShellNav.SignedOut) {
   respondHtml {
-    siteLayout("Privacy Policy") {
+    siteLayout("Privacy Policy", nav = nav) {
       section("legal") {
         h1 { +"Privacy Policy" }
         p {

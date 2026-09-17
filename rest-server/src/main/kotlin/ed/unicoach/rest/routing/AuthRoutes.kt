@@ -4,7 +4,9 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.AuthProvider
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
+import ed.unicoach.rest.auth.clearSessionCookie
 import ed.unicoach.rest.auth.resolveCaller
+import ed.unicoach.rest.auth.setSessionCookie
 import ed.unicoach.rest.models.AppleLoginRequest
 import ed.unicoach.rest.models.ChangeEmailRequest
 import ed.unicoach.rest.models.ChangeEmailResponse
@@ -30,34 +32,6 @@ import io.ktor.server.routing.*
 import io.ktor.server.routing.RoutingContext
 
 // Removed respondAppError
-
-private fun ApplicationCall.setSessionCookie(
-  token: String,
-  sessionConfig: ed.unicoach.rest.auth.SessionConfig,
-) {
-  response.cookies.append(
-    name = sessionConfig.cookieName,
-    value = token,
-    domain = sessionConfig.cookieDomain,
-    path = "/",
-    secure = sessionConfig.cookieSecure,
-    httpOnly = true,
-    extensions = mapOf("SameSite" to "Strict"),
-  )
-}
-
-private fun ApplicationCall.clearSessionCookie(sessionConfig: ed.unicoach.rest.auth.SessionConfig) {
-  response.cookies.append(
-    name = sessionConfig.cookieName,
-    value = "",
-    domain = sessionConfig.cookieDomain,
-    path = "/",
-    secure = sessionConfig.cookieSecure,
-    httpOnly = true,
-    maxAge = 0L,
-    extensions = mapOf("SameSite" to "Strict"),
-  )
-}
 
 class AuthRouteHandler(
   private val authService: AuthService,
@@ -135,7 +109,7 @@ class AuthRouteHandler(
   }
 
   private suspend fun RoutingContext.respondRegisterSuccess(outcome: ed.unicoach.auth.RegisterResult.Success) {
-    call.setSessionCookie(outcome.token, sessionConfig)
+    call.setSessionCookie(sessionConfig, outcome.token)
     call.respond(HttpStatusCode.Created, RegisterResponse(PublicUser.from(outcome.user)))
   }
 
@@ -205,7 +179,7 @@ class AuthRouteHandler(
   }
 
   private suspend fun RoutingContext.respondLoginSuccess(outcome: ed.unicoach.auth.LoginResult.Success) {
-    call.setSessionCookie(outcome.token, sessionConfig)
+    call.setSessionCookie(sessionConfig, outcome.token)
     call.respond(HttpStatusCode.OK, LoginResponse(PublicUser.from(outcome.user)))
   }
 
@@ -351,7 +325,7 @@ class AuthRouteHandler(
   }
 
   private suspend fun RoutingContext.respondSsoLoginSuccess(outcome: ed.unicoach.auth.SsoLoginResult.Success) {
-    call.setSessionCookie(outcome.token, sessionConfig)
+    call.setSessionCookie(sessionConfig, outcome.token)
     call.respond(HttpStatusCode.OK, LoginResponse(PublicUser.from(outcome.user)))
   }
 

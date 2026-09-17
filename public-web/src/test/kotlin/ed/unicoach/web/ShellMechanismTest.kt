@@ -2,6 +2,14 @@ package ed.unicoach.web
 
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
+import ed.unicoach.web.render.ACCOUNT_CLASS
+import ed.unicoach.web.render.AUTH_FORM_CLASS
+import ed.unicoach.web.render.FIELD_CLASS
+import ed.unicoach.web.render.FIELD_ERROR_CLASS
+import ed.unicoach.web.render.FORM_ERROR_CLASS
+import ed.unicoach.web.render.LINKLIKE_CLASS
+import ed.unicoach.web.render.NOTICE_CLASS
+import ed.unicoach.web.render.SIGN_OUT_FORM_CLASS
 import ed.unicoach.web.render.ShellWidth
 import ed.unicoach.web.render.siteLayout
 import io.ktor.client.request.get
@@ -330,6 +338,110 @@ class ShellMechanismTest {
       }
     }
 
+/**
+   * The RFC 224 form classes, joined to the served stylesheet exactly as the
+   * chrome classes are.
+   *
+   * The forms are the first controls on this site a family has to TYPE into, and
+   * an unstyled `input` is not a cosmetic problem: its default width ignores its
+   * container, so it overflows the column on a phone, and iOS Safari zooms the
+   * whole page when a focused control is set below 16px and never zooms back
+   * out. A rule missing here is that, and nothing else in the tree joins the
+   * markup half to the stylesheet half.
+   */
+  @Test
+  fun `mechanism - every form class the markup renders is styled by the served stylesheet`() =
+    testApplication {
+      application { testPublicWebModule() }
+
+      val markup = client.get("/sign-in").bodyAsText()
+      val css = stripBlockComments(fetchServedStylesheet())
+      // The CONSTANTS, never their values. `AUTH_FORM_CLASS` and its siblings
+      // are the one home of each class name; retyping the value here would let a
+      // renamed constant leave the page unstyled with this test still green,
+      // which is the single failure the test exists to prevent.
+      for (formClass in listOf(AUTH_FORM_CLASS, FIELD_CLASS)) {
+        assertTrue(
+          Regex("""class="[^"]*\b$formClass\b""").containsMatchIn(markup),
+          "the rendered sign-in form carries no [$formClass] class: the markup half of the form contract was renamed",
+        )
+        assertTrue(
+          Regex("""\.$formClass\b""").containsMatchIn(css),
+          "the served stylesheet has no rule naming [.$formClass]: the class the form renders is unstyled",
+        )
+      }
+      for (stateClass in listOf(
+        FORM_ERROR_CLASS,
+        FIELD_ERROR_CLASS,
+        NOTICE_CLASS,
+        SIGN_OUT_FORM_CLASS,
+        LINKLIKE_CLASS,
+        ACCOUNT_CLASS,
+      )) {
+        assertTrue(
+          Regex("""\.$stateClass\b""").containsMatchIn(css),
+          "the served stylesheet has no rule naming [.$stateClass]: a class the RFC 224 pages render is unstyled",
+        )
+      }
+    }
+
+  /**
+   * The tap-target floor, for the controls RFC 224 added.
+   *
+   * Stated separately from the chrome one above because it fails for a different
+   * reason and is fixed in a different rule — and because a text input and a
+   * submit button are the two things on this site a thumb has to hit precisely.
+   */
+  @Test
+  fun `mechanism - the served stylesheet floors every form control at the tap target`() =
+    testApplication {
+      application { testPublicWebModule() }
+
+      val css = fetchServedStylesheet()
+      for (selector in listOf(
+        ".$AUTH_FORM_CLASS input",
+        ".$AUTH_FORM_CLASS button",
+        ".site-header .site-nav .$LINKLIKE_CLASS",
+      )) {
+        assertTrue(
+          declares(css, selector, property = "min-height", valueFragment = "var(--tap-target"),
+          "[$selector] declares no min-height of var(--tap-target): that control is not thumb-sized",
+        )
+      }
+    }
+
+  /**
+   * iOS Safari zooms the page when a focused input's font size is under 16px,
+   * and it does not zoom back out — the family is left on a page they have to
+   * pinch to read, on the one page of the site they cannot skip.
+   *
+   * The floor is a TOKEN, not a bare `1rem`: `1rem` resolves through
+   * `--font-size-root`, which the 1024px block re-declares, so a later slice
+   * that steps that token down would silently re-open the zoom trap with a
+   * test that pinned the spelling `1rem` still green. The token is asserted
+   * against the 16px floor and then the input is asserted to read it.
+   */
+  @Test
+  fun `mechanism - the form inputs are floored at a font size iOS will not zoom`() =
+    testApplication {
+      application { testPublicWebModule() }
+
+      val css = fetchServedStylesheet()
+      val floor =
+        declarationBlocksFor(css, ":root")
+          .flatten()
+          .firstOrNull { it.property == "--input-font-size-min" }
+      assertEquals(
+        INPUT_FONT_SIZE_MIN,
+        floor?.value,
+        "--input-font-size-min is not the [$INPUT_FONT_SIZE_MIN] floor iOS zooms below",
+      )
+      assertTrue(
+        declares(css, ".$AUTH_FORM_CLASS input", property = "font-size", valueFragment = "var(--input-font-size-min"),
+        "the form inputs do not read --input-font-size-min: iOS Safari will zoom the page on focus and not zoom back",
+      )
+    }
+
   /**
    * One response, asserted twice: the status, so a route that stopped answering
    * cannot pass by 404ing with a policy on it, and then the policy itself. The
@@ -418,7 +530,11 @@ class ShellMechanismTest {
     /** The finger floor (Apple/Material), asserted against `--tap-target`. */
     const val TAP_TARGET = "44px"
 
+    /** The iOS Safari focus-zoom floor, asserted against `--input-font-size-min`. */
+    const val INPUT_FONT_SIZE_MIN = "16px"
+
     /**
+
      * ONE leaf declaration block: a selector list, an opening brace, a body
      * with no brace in it. Written once because both CSS readers here parse the
      * same stylesheet and two copies of one regex drift apart at the first fix

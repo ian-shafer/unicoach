@@ -258,9 +258,12 @@ fun ExplainerPage.thirdPartyLeaks(): List<ThirdPartyLeak> =
   }
 
 /** Renders [page] through the shared [siteLayout], like every other public-web page. */
-suspend fun ApplicationCall.respondExplainerPage(page: ExplainerPage) {
+suspend fun ApplicationCall.respondExplainerPage(
+  page: ExplainerPage,
+  nav: ShellNav = ShellNav.SignedOut,
+) {
   respondHtml {
-    siteLayout(page.title) {
+    siteLayout(page.title, nav = nav) {
       val markers = page.referenceMarkers()
       section("guide") {
         renderMasthead(page)

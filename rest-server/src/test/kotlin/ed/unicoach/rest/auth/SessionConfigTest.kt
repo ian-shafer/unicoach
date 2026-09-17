@@ -60,7 +60,7 @@ class SessionConfigTest {
   }
 
   @Test
-  fun `derives cookieDomain from APP_DOMAIN substitution in rest-server conf`() {
+  fun `derives cookieDomain from APP_DOMAIN substitution in the packaged conf`() {
     // cookieDomain, server.port, and session.cookieSecure now all pull from
     // required ${VAR} substitutions (no HOCON default); all must be supplied for
     // the packaged conf to resolve offline.
@@ -72,7 +72,7 @@ class SessionConfigTest {
           SERVER_PORT = 8080
           SESSION_COOKIE_SECURE = false
           """.trimIndent(),
-        ).withFallback(ConfigFactory.parseResources("rest-server.conf"))
+        ).withFallback(packagedConf())
         .resolve(
           ConfigResolveOptions
             .defaults()
@@ -91,8 +91,7 @@ class SessionConfigTest {
     // a required substitution. Resolving the packaged conf without APP_DOMAIN (and
     // without system-env fallback) leaves it unresolved and resolution fails.
     assertFailsWith<ConfigException.UnresolvedSubstitution> {
-      ConfigFactory
-        .parseResources("rest-server.conf")
+      packagedConf()
         .resolve(
           ConfigResolveOptions
             .defaults()
@@ -113,7 +112,7 @@ class SessionConfigTest {
           APP_DOMAIN = cookie.example.test
           SERVER_PORT = 8080
           """.trimIndent(),
-        ).withFallback(ConfigFactory.parseResources("rest-server.conf"))
+        ).withFallback(packagedConf())
         .resolve(
           ConfigResolveOptions
             .defaults()
@@ -132,7 +131,7 @@ class SessionConfigTest {
           SERVER_PORT = 8080
           SESSION_COOKIE_SECURE = true
           """.trimIndent(),
-        ).withFallback(ConfigFactory.parseResources("rest-server.conf"))
+        ).withFallback(packagedConf())
         .resolve(
           ConfigResolveOptions
             .defaults()
@@ -140,5 +139,19 @@ class SessionConfigTest {
         )
 
     assertTrue(SessionConfig.from(config).getOrThrow().cookieSecure)
+  }
+
+  companion object {
+    /**
+     * The packaged conf as `rest-server` actually loads it: `session.conf`
+     * (`:common`, RFC 224 D-B — the ONE home for the shared cookie identity)
+     * beneath `rest-server.conf`. Before RFC 224 the `session { }` block was
+     * inside `rest-server.conf`; these assertions are unchanged, which is the
+     * point — the move is behaviour-preserving.
+     */
+    private fun packagedConf() =
+      ConfigFactory
+        .parseResources("rest-server.conf")
+        .withFallback(ConfigFactory.parseResources("session.conf"))
   }
 }
