@@ -337,6 +337,25 @@ THIS file, so the line lives here and the spec points at it):
   Suite green: 3,372 executed, 0 failures; the pre-commit gate ran at full
   scope.
 
+- `web/03/the-typescript-rail` LANDED as RFC 225 (main@c93fb073 + bf72d002,
+  2026-09-16) — the build path for every line of client TypeScript: sources
+  under `public-web/src/main/ts`, one `bin/build-web-assets` running
+  `deno check`, `deno lint`, `deno test` and `deno bundle` into a
+  content-hashed, minified bundle in the static mount, a classpath manifest read
+  at boot so no page ever types the bundle name, a `-c` staleness gate in the
+  commit hook, the hashed bundle served
+  `Cache-Control: public, max-age=31536000,
+  immutable` while other assets are
+  not, and a served-bytes test that walks every registered page and grades its
+  resources against the real policy. The one enhancement is a back-to-top link
+  on long pages; with JavaScript off, nothing is inserted. The enforcing
+  content-security policy is UNCHANGED — the bundle is a same-origin file, which
+  `script-src 'self'` already permits. RFC 210's render-package source sweep was
+  DELETED in this slice (Ian's standing rule: tests never do static analysis; no
+  test over a bad test). Full suite 3,568 executed, 0 failures;
+  `web-assets-scripts-tests` runs 23 assertions in the gate; 11 Deno tests run
+  inside every build.
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
