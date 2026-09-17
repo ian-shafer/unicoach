@@ -39,6 +39,8 @@ the first failure. With -n, runs only the named ones, still in this order:
                             the SAT/ACT calendar seed generator, no cluster
   test-state-programme-seed-scripts-tests
                             the state school-day programme seed generator
+  fafsa-deadline-seed-scripts-tests
+                            the FAFSA filing-deadline seed generator, no cluster
   gate-scope-scripts-tests  the commit gate's path-to-harness map, no cluster
   web-assets-scripts-tests  the client-side TypeScript rail, deno only, no
                             cluster
@@ -108,20 +110,21 @@ fi
 #    variable is cleared for that child only -- its private cluster is
 #    deliberately unrelated to the shared one this stack points at.
 #
-# The cheap five above q-scripts-tests are all cheap for the same reason: they
+# The cheap six above q-scripts-tests are all cheap for the same reason: they
 # drive a script that reads files and a git tree, so a temp directory is the
 # whole environment they need. ship (the /ship land lock), prompt-seed (the coach
 # prompt generator, RFC 181), docs (the /chart land path, RFC 201, which also
 # gates bin/pre-commit's refusal to commit in the root checkout), test-calendar
-# (RFC 197) and test-state-programme (RFC 208) -- the last two reach refusals
-# that are reachable ONLY from a bad CSV, so they are executed here and nowhere
-# else.
+# (RFC 197), test-state-programme (RFC 208) and fafsa-deadline (RFC 223) -- the
+# last three reach refusals that are reachable ONLY from a bad CSV, so they are
+# executed here and nowhere else.
 HARNESSES=(
   bin/ship-scripts-tests
   bin/prompt-seed-scripts-tests
   bin/docs-scripts-tests
   bin/test-calendar-seed-scripts-tests
   bin/test-state-programme-seed-scripts-tests
+  bin/fafsa-deadline-seed-scripts-tests
   bin/gate-scope-scripts-tests
   bin/web-assets-scripts-tests
   bin/q-scripts-tests

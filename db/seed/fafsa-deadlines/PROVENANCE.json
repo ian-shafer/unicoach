@@ -1,0 +1,79 @@
+{
+  "source": "hand-typed from each publisher's own page: the federal rows from the Federal Register, ed.gov and FSA Partner Connect, read 2026-09-15; the state rows from each state agency's own page, read 2026-09-14",
+  "readings": {
+    "2026-09-14": 124,
+    "2026-09-15": 4
+  },
+  "readings_note": "checked_on and expires_on are PER ROW, not per corpus: the state rows were read on 14 September 2026 and the four federal rows on the 15th, and each is believed for one year from the day it was read. A corpus-level pair of dates would be false about one of the two readings, which is why this manifest does not carry one.",
+  "note": "One row per (award year, jurisdiction, program, date-type). Absence of a jurisdiction NEVER means the state publishes no deadline -- it means we could not confirm one against the agency's own page, and the public page says so in our own words. A state that publishes none has a 'none' ROW, with its citation. Past expires_on the service refuses to name a date; the build fails 90 days before that, per jurisdiction, and it fails outright when the corpus holds no rows for the FAFSA cycle now being filed. Every reading is believed for ONE YEAR from the day it was read: expires_on is checked_on plus 365 days, a fact about the READING and not a promise about the cycle. That is what makes the 90-day guard able to fire at all -- an expiry pinned to the end of the award year would sit nine months past the cycle it describes and the guard could never bite inside the filing window.",
+  "cycles": {
+    "2026-27": {
+      "jurisdictions": 47,
+      "rows": 107
+    },
+    "2027-28": {
+      "jurisdictions": 11,
+      "rows": 21
+    }
+  },
+  "cycles_note": "Two FAFSA cycles are open at once from October to June, so the corpus holds the verified rows of both and every row names its own cycle (brief 0012 D23). Each jurisdiction is shown at the newest cycle we VERIFIED.",
+  "coverage": {
+    "jurisdictions_attempted": 51,
+    "jurisdictions_with_rows": 47,
+    "absent": [
+      "AR",
+      "DE",
+      "NC",
+      "NH"
+    ],
+    "absent_note": "NEEDS HUMAN EYES. All four block machine reading, and no row for any of them could be confirmed against the agency's own page. Arkansas (ACCESS consolidated scholarships), Delaware (SEED/Inspire and DHEO state aid), North Carolina and New Hampshire. Someone must telephone or open these pages in a browser and type the answer. Until then the public page says we went to the agency and could not get an answer, and names the agency to call (brief 0012 D9).",
+    "out_of_scope": [
+      "PR",
+      "GU",
+      "VI"
+    ],
+    "out_of_scope_note": "Puerto Rico, Guam and the US Virgin Islands were not researched (brief 0012 D13). The page says so plainly rather than omitting them silently.",
+    "rows": 128,
+    "federal_rows": 4
+  },
+  "known_limits": {
+    "federal_corrections_deadline": "The Federal Register (91 FR 37096, 22 June 2026) publishes 11 September 2027 as the last day to correct a filed 2026-27 FAFSA, and that is the committed row. studentaid.gov is reported to publish 12 September 2027. On 2026-09-15 that page could not be read by any client we have: it serves a JavaScript shell; its own content endpoint https://studentaid.gov/content/en/fafsa-deadlines.json still publishes the 2023-24 figures; none of its 24 application bundles contains a 2027 date; a search-engine user agent is blocked; and the Internet Archive answered 429 and then 503. The only support for the 12th is a Google search-index snippet, which is not a page we read. The disagreement is recorded here rather than resolved, and the unread date is not committed (brief 0012 D9, D17).",
+    "federal_submission_time_of_day": "The Federal Register notice does NOT attach its 11:59 p.m. (Central Time) footnote to the 30 June 2027 submission rows -- only to the electronic corrections rows. So the committed submission row carries the day and no time. studentaid.gov's own 2026-27 paper FAFSA PDF corroborates the day: 'We must receive your application no later than June 30, 2027.'",
+    "federal_2027_28_deadlines": "Not committed. The Federal Register deadline notice for the 2027-28 award year is not published yet, and the only figures available are unverified. The 2027-28 form_opens row is WORDING and not a date: both publishers state an upper bound ('public release by Oct. 1, 2026'; the statute's 'not later than October 1 prior to the applicant's planned year of enrollment'), and the 2026-27 form opened a week early.",
+    "south_dakota_aggregator_row": "The harvest carried a South Dakota row of per-institution FAFSA priority dates sourced to a commercial aggregator (Mapping Your Future) linked from the state site. It is not committed: the public page renders `publisher` as the link text, so that row would print an aggregator's name as South Dakota's answer. South Dakota's verified 'this state sets no FAFSA deadline' row, from its own site, is committed.",
+    "maine_prior_cycle": "The harvest carried one verified 2025-26 Maine row, kept for context by the researchers. It is not committed: that cycle is closed. Maine's 2026-27 row is committed.",
+    "unverified_rows_dropped": "21 harvested rows were never confirmed against the publisher's own page and are not committed, including all three rows whose deadline could not be established at all (Delaware, Arkansas, Rhode Island). A missing row IS the unknown; the table has no fourth kind (brief 0012 D9)."
+  },
+  "sha256": {
+    "deadlines.csv": "3a26b01c4095601db286503e48abc0882fcca6b8cdb892313b3e9329d6f8e9f3"
+  },
+  "rows_by_file": {
+    "deadlines.csv": 128
+  },
+  "judgement_calls": {
+    "OR_ND_stale_open_date": "Oregon's and North Dakota's own pages still tell students to file 'as soon as possible after October 1'. That has not been the FAFSA open date since 2023-24 -- the 2026-27 form opened 24 September 2025. The publisher's sentence is stored UNCHANGED, because rewriting an agency's own words is not something this corpus does; the federal row beside it carries the true open date with its own citation.",
+    "MA_deadline": "Massachusetts is 30 June, from the agency's own page, not the 1 May printed by widely-copied third-party tables.",
+    "MI_closed_programmes": "Michigan's widely-printed 1 July belongs to two CLOSED programmes. The committed Michigan rows are the current flagship award, whose page publishes no deadline (a verified 'none'), and two yearless 'by July 1' rules carried as wording.",
+    "yearless_recurring_dates": "Alaska (30 June) and Michigan (1 July, twice) publish a recurring month and day with NO year. They are committed as 'wording' with the publisher's rule, not as dates: choosing a year would be us inventing the fact.",
+    "IL_MAP_two_rows": "Illinois' MAP grant keeps both of its facts: the 23 April 2026 suspension date as the final deadline, and the standing 'file as soon as possible' rule as the priority deadline. Collapsing them would delete a date a family acts on.",
+    "TN_TSAA_two_rows": "Tennessee's TSAA likewise keeps its 1 April date and its priority rule as two rows.",
+    "VA_VTAG_split": "Virginia's two VTAG dates are split by event on the publisher's own two sentences: 15 September is the priority deadline, 1 December the final one ('will be considered for an award only if funds are available').",
+    "state_own_applications": "Where a state demands its OWN application as well as the FAFSA, that step is its own row with its own date: Tennessee Promise's application (2 November 2026), New Jersey's two NJFAMS state-record rows, Mississippi's MAAPP window, Pennsylvania's two school-type rows, and the DC and Florida application windows. A single date per state would make a family miss half the work (brief 0012 D14).",
+    "arizona_institutional_row": "The harvest's Arizona row of university priority dates is NOT committed: its own note says 'do not present as a state deadline', and this corpus renders every row as the jurisdiction's answer. Arizona ships its real state row, the Arizona Promise Scholarship priority date.",
+    "publisher_names": "`publisher` is the link text a family reads, so agency initials are expanded to the agency's own name (PHEAA -> Pennsylvania Higher Education Assistance Agency, OSSE -> Office of the State Superintendent of Education, KHEAA -> Kentucky Higher Education Assistance Authority). A brand a page actually uses for itself is kept (MI Student Aid, GAfutures, Next Steps Idaho).",
+    "quoting_convention": "In `deadline_as_published`, double quotes mean VERBATIM publisher text; an unquoted cell is our own factual description of what we read. Smart quotes, en dashes and non-breaking spaces from agency pages were transliterated to ASCII; no wording was otherwise changed."
+  },
+  "link_sweep": {
+    "file": "link-status.csv",
+    "swept_on": "2026-09-16",
+    "tool": "bin/check-link, with this repo's own reading of the codes (2xx found; 404/410 not_found; anything else unknown WITH the date we asked)",
+    "urls": 84,
+    "found": 78,
+    "not_found": 1,
+    "unknown": 5,
+    "why": "RFC 220 made every citation carry its evidence: external_documents.url_checked_on is NOT NULL and url_status has no default, so a url cannot be stored until somebody has asked. The seed therefore writes url, url_status and url_checked_on, and the generator REFUSES a cited url with no swept answer.",
+    "not_found_note": "https://hathawayscholarship.org/resources/paying/fafsa/ answered 404. It is stored as not_found rather than dropped: whether to render an anchor is a read-time decision, and Wyoming's row is still true about what that page said on 14 September.",
+    "unknown_note": "Five urls could not be answered for: North Dakota's ndus.edu (TLS certificate chain we cannot verify) and four pages that refuse every client we have with 403 (New York HESC, Illinois ISAC, and two Virginia SCHEV pages). 'unknown WITH a date' means we asked and got no usable answer; recording a live agency page as dead would be a worse answer than the one a family experiences.",
+    "timeouts_note": "Three michigan.gov urls timed out at 30 seconds in the first pass and answered 200 at 90 seconds. The later answer is the recorded one: a slow host is not an unreachable host."
+  }
+}

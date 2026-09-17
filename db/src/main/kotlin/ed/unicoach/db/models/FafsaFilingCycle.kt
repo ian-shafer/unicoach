@@ -46,6 +46,35 @@ object FafsaFilingCycle {
   val FILING_OPENS_IN: Month = Month.OCTOBER
 
   /**
+   * The FIRST day a fact about [awardYear]'s cycle may fall on: 1 July of the
+   * calendar year before it, the summer before the form opens.
+   *
+   * THE KOTLIN HOME OF A BOUND THE DATABASE ALSO STATES, and the pair is
+   * deliberate rather than a copy nobody noticed. `fafsa_cycle_opens_on` in
+   * `create-fafsa-filing-deadlines.sql` calls itself "one home for a bound two
+   * CHECK constraints ask for", and it must stay in SQL because a CHECK
+   * constraint can call nothing else. The generator that writes the seeds
+   * carries a third statement of it in python, tied to the SQL by its harness.
+   * What is NOT acceptable is a FOURTH copy hidden in one test class, which is
+   * where this rule lived until RFC 223's review: `fafsa/03`'s service and page
+   * need the same window to decide what to render, and a private helper in a
+   * seed test is invisible to them.
+   */
+  fun windowOpens(awardYear: AcademicYear): LocalDate = LocalDate.of(awardYear.firstCalendarYear - 1, Month.JULY, 1)
+
+  /**
+   * The LAST day a fact about [awardYear]'s cycle may fall on: 31 December of
+   * the calendar year after it.
+   *
+   * IT IS COARSE AND CANNOT BE TIGHT, which the DDL argues at length: two
+   * cycles genuinely overlap in the calendar, because the 2026-27 corrections
+   * deadline (11 September 2027) falls eleven months AFTER the 2027-28 form
+   * opened. No pair of dates separates the two cycles, so a window that refused
+   * every neighbouring cycle's date would refuse true rows.
+   */
+  fun windowCloses(awardYear: AcademicYear): LocalDate = LocalDate.of(awardYear.firstCalendarYear + 1, Month.DECEMBER, LAST_DAY_OF_DECEMBER)
+
+  /**
    * The cycle being filed on [today]: October or later means NEXT year's award
    * year, otherwise this year's.
    *
@@ -59,4 +88,7 @@ object FafsaFilingCycle {
 
   /** The cycle being filed at [clock]'s instant. */
   fun currentFilingYear(clock: Clock): AcademicYear = currentFilingYear(LocalDate.now(clock))
+
+  /** 31 December, the far end of a cycle's window, named so the day is not a bare number. */
+  private const val LAST_DAY_OF_DECEMBER = 31
 }
