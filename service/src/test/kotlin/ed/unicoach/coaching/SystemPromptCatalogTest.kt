@@ -237,6 +237,7 @@ class SystemPromptCatalogTest {
       BORROWING("Borrowing is a different question from price, and you"),
       SEARCH_RULER("A college search now ranks on one of two prices, and which"),
       INTENDED_SUBJECTS("A student may also tell you what they want to study, and it is"),
+      PREDICTION("Never call a school a reach, a match or a safety"),
     }
 
     /**
@@ -1887,6 +1888,110 @@ class SystemPromptCatalogTest {
     )
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
     assertFalse(CODE_EQUALS_WORD.containsMatchIn(paragraph), "the new paragraph must transcribe no source codebook")
+  }
+
+  private fun predictionParagraph(): String = paragraphAt(CoachParagraph.PREDICTION)
+
+  /**
+   * The prediction paragraph (RFC 219), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
+   *
+   * Two halves, and BOTH are asserted on purpose. The prohibition alone is a
+   * different rule from the one approved: a coach that only refuses teaches a
+   * family to ask somewhere that will answer. So the paragraph has to name what
+   * we hold instead, and it has to say who actually makes the judgement.
+   */
+  @Test
+  fun `the served prediction paragraph refuses a label and offers what we hold instead`() {
+    val paragraph = predictionParagraph()
+
+    // The three labels themselves are pinned by CoachParagraph.PREDICTION's
+    // opener, which paragraphOf must already match to locate this paragraph at
+    // all -- so asserting them again here would be an assertion that cannot
+    // fail. What is NOT in the opener, and is the half of D3 a reworded rule
+    // would quietly lose, is the reason: the labels are refused BECAUSE each is
+    // an admission prediction under another name.
+    assertParagraphStates(
+      paragraph,
+      "is an admission prediction wearing another word, and you do not make one",
+      "brief 0011 D3: the labels are refused as predictions, and the copy says why rather than only forbidding",
+    )
+    assertParagraphStates(
+      paragraph,
+      "fit score, a grade or a star rating",
+      "brief 0011 D4: a score of the coach's own is an admission prediction wearing another word",
+    )
+    assertParagraphStates(
+      paragraph,
+      "what a school costs this family",
+      "the refusal must offer what we DO hold, or it teaches the family to ask elsewhere",
+    )
+    assertParagraphStates(
+      paragraph,
+      "the school's own admissions office",
+      "the judgement has an owner, and the coach names it rather than leaving a gap",
+    )
+    // Position is load-bearing (RFC 219): this is a standing "never", and it has
+    // to be read BEFORE the tool copy that hands the coach the figures a
+    // prediction would be built from. Every assertion above finds the opener
+    // ANYWHERE in the body, so without this one the block could move below the
+    // tool paragraphs and the whole test would stay green.
+    //
+    // The two indices are guarded differently on purpose. predictionAt needs no
+    // presence check: predictionParagraph() above already went through
+    // paragraphOf, which FAILS when the opener is absent, so reaching this line
+    // proves it is there. costAt has had no such witness in this test, and
+    // indexOf answers -1 rather than failing, so an ordering test written
+    // against a money paragraph that had been renamed away would pass while
+    // comparing against nothing. It gets its own assertion first.
+    val body = servedBody()
+    val predictionAt = body.indexOf(openerOf(CoachParagraph.PREDICTION))
+    val costAt = body.indexOf(openerOf(CoachParagraph.COST))
+    assertTrue(
+      costAt >= 0,
+      "the served prompt must still carry the money paragraph, or this ordering claim has no second half to be true about",
+    )
+    assertTrue(
+      predictionAt in 0 until costAt,
+      "the prediction rule must be read before the first tool paragraph, not after the copy that hands the coach its figures",
+    )
+    assertParagraphKeepsTheStandingCopyRules("the prediction paragraph", paragraph)
+  }
+
+  /**
+   * The rollback this RFC documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION` set to the version below the pin), and
+   * v39 is the row this run lands on top of.
+   *
+   * The literal is deliberate. `system_prompts` is insert-only, so v39's body
+   * never changes and this assertion stays true forever — including after a
+   * LATER prompt run lands on top of this one, which is exactly when a test
+   * keyed on "the version one below the pin" would start failing for a reason
+   * that has nothing to do with this copy. The moving half is already covered
+   * by `the version one below the pin is still selectable`.
+   */
+  @Test
+  fun `coach v39 stays selectable and does not carry the prediction paragraph`() {
+    val v39 =
+      SystemPromptsDao
+        .findByNameAndVersion(session, coaching.systemPromptName, "v39")
+        .getOrElse { cause ->
+          fail(
+            "system_prompts has no row [${coaching.systemPromptName}/v39]; it is the rollback target RFC 219 " +
+              "documents, and the catalog is insert-only, so every version it has ever cut stays " +
+              "selectable. Re-migrate: nix develop -c bin/test",
+            cause,
+          )
+        }
+
+    assertTrue(
+      bodyOf(v39).contains(CoachParagraph.COST),
+      "v39 must still be a whole coach prompt -- it carries the money paragraph every version since v3 has",
+    )
+    assertFalse(
+      bodyOf(v39).contains(CoachParagraph.PREDICTION),
+      "the rollback target must not already carry the prediction paragraph, or rolling back to it changes nothing",
+    )
   }
 
   private fun fafsaProcessParagraph(): String = paragraphAt(CoachParagraph.FAFSA_PROCESS)
