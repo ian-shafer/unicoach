@@ -95,6 +95,11 @@ class CollegeScorecardLoader(
   // the run is one no test can substitute, and this one is the write
   // precondition of the canonical fill two phases later.
   private val ipedsChargesLoader: IpedsChargesLoader = IpedsChargesLoader(database, ioDispatcher),
+  // The program-grained money fill (RFC 218), injected like its siblings: it
+  // re-parses the field-of-study CSV in its own `program-money` phase, after
+  // `canonical-money` and before `search-index`, and the `fields` phase that
+  // wrote its program rows is its write precondition.
+  private val programMoneyLoader: ProgramMoneyLoader = ProgramMoneyLoader(database),
 ) {
   private val logger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
 
@@ -500,6 +505,13 @@ class CollegeScorecardLoader(
      * precondition, not this run's vocabulary file.
      */
     val canonicalMoney: CanonicalMoneyLoader.FillResult,
+    /**
+     * The `program-money` rebuild (RFC 218). NOT nullable, for the reason
+     * [canonicalMoney] is not: the phase runs in every ingest -- the
+     * field-of-study CSV is a required positional and the loaded vocabulary
+     * TABLES are its precondition, not this run's vocabulary file.
+     */
+    val programMoney: ProgramMoneyLoader.FillResult,
     val unknownCodes: CodebookLoader.UnknownCodeReport? = null,
   ) {
     /**
@@ -589,6 +601,30 @@ class CollegeScorecardLoader(
             "canonical-money: [${canonicalMoney.ipedsChargesIgnoredRows}] staged IC_AY row(s) passed " +
               "over as stale [${canonicalMoney.ipedsChargesIgnored.mapKeys { it.key.slug }}] — " +
               "re-run with --ic-ay to prune them",
+          )
+        }
+        // The program-grained money fill (RFC 218). The phase runs in every
+        // ingest -- the field-of-study CSV is a required positional -- so the
+        // line itself is unconditional, like `programs:` above it and unlike
+        // the optional GROUPS. The omit-vs-zero rule applies to the second
+        // line: the three cell tallies are printed only when there ARE some, so
+        // a healthy run does not teach an operator to skip past three empty
+        // maps.
+        appendLine(
+          "program-money: [${programMoney.seen}] row(s) seen — [${programMoney.mapped}] mapped, " +
+            "[${programMoney.rowsWritten}] program_money_stats row(s) written " +
+            "[${programMoney.statusCounts.mapKeys { it.key.value }}], " +
+            "[${programMoney.skipped}] skipped (${summarizeSkips(programMoney.skipsByReason)})",
+        )
+        if (programMoney.cellsSuppressedByPublisher.isNotEmpty() ||
+          programMoney.fieldsCoercedToNull.isNotEmpty() ||
+          programMoney.unrecognisedTokens.isNotEmpty()
+        ) {
+          appendLine(
+            "          cells by column: " +
+              "publisher-suppressed [${programMoney.cellsSuppressedByPublisher}], " +
+              "coerced [${programMoney.fieldsCoercedToNull}], " +
+              "unrecognised token [${programMoney.unrecognisedTokens}]",
           )
         }
         // The SFA line, under the same rule: printed only when that group was
@@ -867,6 +903,14 @@ class CollegeScorecardLoader(
     // `CollegeScorecardIngestTest` is what would catch a swap back: with the
     // old order, two identical ingests produced two different indexes.
     val canonicalMoney = phase("canonical-money", committedPhases) { canonicalMoneyLoader.fill(institution.file, sfa) }
+    // The program-grained money rebuild (RFC 218), beside the institution one
+    // and never inside it: a DELETE + batch re-insert of `program_money_stats`
+    // from a second pass over the pinned field-of-study CSV, in its own
+    // transaction. It runs AFTER `fields` -- which wrote the `college_programs`
+    // rows it points at, and is its write precondition -- and before
+    // `search-index`, which reads none of it: nothing a family can see reads
+    // this table yet, and the reader is a later slice's work.
+    val programMoney = phase("program-money", committedPhases) { programMoneyLoader.fill(fields.file) }
     // The third derived rebuild of phase 2 (RFC 150 D47), between
     // `canonical-money` and the read-only unknown-code report: it reads
     // `colleges`, `college_ipeds`, `college_programs_census`, `subjects` and now
@@ -935,6 +979,7 @@ class CollegeScorecardLoader(
       subjects = subjectResult,
       moneyVocabulary = moneyVocabularyResult,
       canonicalMoney = canonicalMoney,
+      programMoney = programMoney,
       unknownCodes = unknownCodes,
     )
   }
@@ -1629,75 +1674,87 @@ class CollegeScorecardLoader(
     return MapResult.Mapped(college, coercions.toMap(), pairsDropped.toMap())
   }
 
-  /** The validated key/required columns of a field-of-study row, resolved to a
-   * [NewCollegeProgram] by the load loop once its owning college is found. */
-  private data class ProgramFields(
-    val ipedsUnitId: Int,
-    val cipCode: String,
-    val cipTitle: String,
-    val credentialLevel: Int,
-  )
-
-  private fun mapField(record: CSVRecord): MapResult<ProgramFields> {
-    // Mechanism B: known source sentinels in required/key columns are skipped
-    // under their own precise bucket before any DB work, never silently.
-    if (stringOrNull(record, COL_UNITID) == "NA") {
-      logger.debug("Skipping program row [line={}]: UNITID=NA sentinel", record.recordNumber)
-      return MapResult.Skipped(SkipReason.IpedsUnitIdNa)
-    }
-
-    val ipedsUnitId = intOrNull(record, COL_UNITID)
-    val cipCode = stringOrNull(record, COL_CIPCODE)
-    val cipTitle = stringOrNull(record, COL_CIPDESC)
-    val credentialLevel = intOrNull(record, COL_CREDLEV)
-
-    if (ipedsUnitId == null || cipCode == null || cipTitle == null || credentialLevel == null) {
-      val missing =
-        buildList {
-          if (ipedsUnitId == null) add("ipeds_unit_id")
-          if (cipCode == null) add("cip_code")
-          if (cipTitle == null) add("cip_title")
-          if (credentialLevel == null) add("credential_level")
-        }
-      logger.debug(
-        "Skipping program row [line={}]: missing required field {} " +
-          "[ipeds_unit_id={}] [cip_code={}] [cip_title={}] [credential_level={}]",
-        record.recordNumber,
-        missing,
-        ipedsUnitId,
-        cipCode,
-        cipTitle,
-        credentialLevel,
-      )
-      return MapResult.Skipped(SkipReason.MissingRequiredField(missing))
-    }
-
-    // Mechanism B: CREDLEV=99 ("Non-Credential Program") and any other
-    // out-of-domain credential level. credential_level is NOT NULL and part of
-    // the upsert key, so it cannot be nulled; pre-filter to a named bucket
-    // instead of a generic constraint reject + savepoint round-trip.
-    if (credentialLevel !in CREDENTIAL_LEVEL_MIN..CREDENTIAL_LEVEL_MAX) {
-      logger.debug(
-        "Skipping program row [line={}]: credential_level [{}] out of domain [ipeds_unit_id={}]",
-        record.recordNumber,
-        credentialLevel,
-        ipedsUnitId,
-      )
-      return MapResult.Skipped(SkipReason.CredentialLevelOutOfDomain)
-    }
-
-    return MapResult.Mapped(
-      ProgramFields(
-        ipedsUnitId = ipedsUnitId,
-        cipCode = cipCode,
-        cipTitle = cipTitle,
-        credentialLevel = credentialLevel,
-      ),
-      emptyMap(),
-    )
-  }
-
   companion object {
+    /**
+     * The validated key/required columns of a field-of-study row, resolved to a
+     * [NewCollegeProgram] by the load loop once its owning college is found.
+     *
+     * INTERNAL rather than private, and in the companion, because
+     * [ProgramMoneyLoader] streams the SAME file a second time and must drop
+     * exactly the rows this phase dropped (RFC 218). Two copies of "which
+     * field-of-study rows are loadable" is two places for them to disagree, and
+     * the disagreement would be a money row about a program that is not there.
+     */
+    internal data class ProgramFields(
+      val ipedsUnitId: Int,
+      val cipCode: String,
+      val cipTitle: String,
+      val credentialLevel: Int,
+    )
+
+    /** The one field-of-study row validation; see [ProgramFields] for why it is shared. */
+    internal fun mapField(record: CSVRecord): MapResult<ProgramFields> {
+      // Mechanism B: known source sentinels in required/key columns are skipped
+      // under their own precise bucket before any DB work, never silently.
+      if (stringOrNull(record, COL_UNITID) == "NA") {
+        fieldLogger.debug("Skipping program row [line={}]: UNITID=NA sentinel", record.recordNumber)
+        return MapResult.Skipped(SkipReason.IpedsUnitIdNa)
+      }
+
+      val ipedsUnitId = intOrNull(record, COL_UNITID)
+      val cipCode = stringOrNull(record, COL_CIPCODE)
+      val cipTitle = stringOrNull(record, COL_CIPDESC)
+      val credentialLevel = intOrNull(record, COL_CREDLEV)
+
+      if (ipedsUnitId == null || cipCode == null || cipTitle == null || credentialLevel == null) {
+        val missing =
+          buildList {
+            if (ipedsUnitId == null) add("ipeds_unit_id")
+            if (cipCode == null) add("cip_code")
+            if (cipTitle == null) add("cip_title")
+            if (credentialLevel == null) add("credential_level")
+          }
+        fieldLogger.debug(
+          "Skipping program row [line={}]: missing required field {} " +
+            "[ipeds_unit_id={}] [cip_code={}] [cip_title={}] [credential_level={}]",
+          record.recordNumber,
+          missing,
+          ipedsUnitId,
+          cipCode,
+          cipTitle,
+          credentialLevel,
+        )
+        return MapResult.Skipped(SkipReason.MissingRequiredField(missing))
+      }
+
+      // Mechanism B: CREDLEV=99 ("Non-Credential Program") and any other
+      // out-of-domain credential level. credential_level is NOT NULL and part of
+      // the upsert key, so it cannot be nulled; pre-filter to a named bucket
+      // instead of a generic constraint reject + savepoint round-trip.
+      if (credentialLevel !in CREDENTIAL_LEVEL_MIN..CREDENTIAL_LEVEL_MAX) {
+        fieldLogger.debug(
+          "Skipping program row [line={}]: credential_level [{}] out of domain [ipeds_unit_id={}]",
+          record.recordNumber,
+          credentialLevel,
+          ipedsUnitId,
+        )
+        return MapResult.Skipped(SkipReason.CredentialLevelOutOfDomain)
+      }
+
+      return MapResult.Mapped(
+        ProgramFields(
+          ipedsUnitId = ipedsUnitId,
+          cipCode = cipCode,
+          cipTitle = cipTitle,
+          credentialLevel = credentialLevel,
+        ),
+        emptyMap(),
+      )
+    }
+
+    /** [mapField] lives in the companion so both readers of the field-of-study file share it; the class logger is an instance property. */
+    private val fieldLogger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
+
     /**
      * `college_index_build.method_version` for this derivation logic
      * (1 = RFC 139, 2 = RFC 144's IPEDS source family, 3 = RFC 146's derived
@@ -1907,8 +1964,21 @@ class CollegeScorecardLoader(
         COL_OTHEREXPENSE_FAM,
       ) + NET_PRICE_BASES.flatMap { listOf("$it$SUFFIX_PUBLIC", "$it$SUFFIX_PRIVATE") }
 
-    /** Every field-of-study column [mapField] reads; derived like [REQUIRED_INSTITUTION_COLUMNS]. */
-    internal val REQUIRED_FIELDS_COLUMNS = listOf(COL_UNITID, COL_CIPCODE, COL_CIPDESC, COL_CREDLEV)
+    /**
+     * Every field-of-study column THIS RUN reads; derived like
+     * [REQUIRED_INSTITUTION_COLUMNS].
+     *
+     * "This run", not "[mapField]", for the reason the institution list states
+     * about its own money columns: the three field-of-study money variables are
+     * read by [ProgramMoneyLoader], which re-parses THIS SAME FILE in the
+     * `program-money` phase, and this is the one header assertion the run makes
+     * on it. Dropping them would move a missing-column failure from one loud
+     * check before any write to a silent hole in that fill. The names come from
+     * [ScorecardFieldOfStudyColumns], which owns them.
+     */
+    internal val REQUIRED_FIELDS_COLUMNS =
+      listOf(COL_UNITID, COL_CIPCODE, COL_CIPDESC, COL_CREDLEV) +
+        ScorecardFieldOfStudyColumns.LOADED_VARIABLES
 
     /**
      * The nullable curated columns whose non-null counts the change summary

@@ -5,6 +5,9 @@ import ed.unicoach.db.dao.ConstraintDiagnostics
 import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UpsertOutcome
+import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.FigureReading
+import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 import ed.unicoach.error.errorCategory
@@ -83,6 +86,18 @@ sealed interface SkipReason {
 
   data object NoCollegeForIpedsUnitId : SkipReason
 
+  /**
+   * A field-of-study money row whose (institution, CIP code, credential level)
+   * is in no `college_programs` row (RFC 218).
+   *
+   * It cannot happen in a normal run -- the `fields` phase wrote that program
+   * minutes earlier in the same ingest, from the same file -- so it is counted,
+   * named and skipped rather than assumed away: the one way to see a rebuild
+   * running against a stale `college_programs` is for this number to stop being
+   * zero.
+   */
+  data object NoProgramForKey : SkipReason
+
   /** `UNITID=NA` field-of-study rows: non-IPEDS institutions absent from the
    * institution file (RFC 78). Detected and counted, not linked. */
   data object IpedsUnitIdNa : SkipReason
@@ -135,6 +150,7 @@ sealed interface SkipReason {
       when (this) {
         is MissingRequiredField -> "missing_required_field"
         NoCollegeForIpedsUnitId -> "no_college_for_ipeds_unit_id"
+        NoProgramForKey -> "no_program_for_key"
         IpedsUnitIdNa -> "ipeds_unit_id_na"
         CredentialLevelOutOfDomain -> "credential_level_out_of_domain"
         CipCodeMalformed -> "cip_code_malformed"
@@ -292,23 +308,29 @@ data class PairDrop(
 
 /**
  * Per-column counts of WHY a status-preserving read produced no value (RFC
- * 206).
+ * 206, third arm added by RFC 218 / brief 0011 D45).
  *
- * ONE object rather than two parallel maps threaded side by side, because it
- * is one fact with two arms (brief 0011 D37): a cell that bore no usable value
- * either carried a number this loader refused ([coercedToNull]) or carried the
- * publisher's suppression sentinel ([suppressedByPublisher]). They are never
- * both, and a column that stops carrying one of them is exactly the regression
- * RFC 206 exists to make visible -- which the per-STATUS row totals cannot
- * show, because they do not name the column.
+ * ONE object rather than three parallel maps threaded side by side, because it
+ * is one fact with three arms (brief 0011 D37): a cell that bore no usable
+ * value either carried a number this loader refused ([coercedToNull]), or
+ * carried the publisher's suppression sentinel ([suppressedByPublisher]), or
+ * carried a PRESENT token this seam has never been taught
+ * ([unrecognisedTokens]). They are never two at once, and a column that stops
+ * carrying one of them is exactly the regression RFC 206 exists to make visible
+ * -- which the per-STATUS row totals cannot show, because they do not name the
+ * column.
  *
- * BOTH arms are keyed by the SOURCE COLUMN the cell was read from, so the two
- * counts of one column can be read side by side and neither needs a second
- * name to be looked up by.
+ * ALL THREE arms are keyed by the SOURCE COLUMN the cell was read from, so the
+ * counts of one column can be read side by side and none needs a second name to
+ * be looked up by. The third arm is keyed by column ALONE and not by
+ * (column, token): the token is already named, per cell, in the WARN line that
+ * still fires beside it, and a per-token key would make one malformed export
+ * print thousands of map entries in the operator summary.
  */
 internal class CellAbsenceTally {
   private val coerced = mutableMapOf<String, Int>()
   private val suppressed = mutableMapOf<String, Int>()
+  private val unrecognised = mutableMapOf<String, Int>()
 
   /** Mechanism A's tally: a valid value outside the column's domain, nulled. */
   fun recordCoercedToNull(column: String) {
@@ -320,9 +342,21 @@ internal class CellAbsenceTally {
     suppressed.merge(column, 1, Int::plus)
   }
 
+  /**
+   * A PRESENT token that is neither a known blank, nor a null sentinel, nor a
+   * suppression sentinel, and does not parse: a spelling nobody taught this
+   * seam. Counted so a sudden change is VISIBLE in the operator summary rather
+   * than only discoverable by somebody who already suspects it (D45).
+   */
+  fun recordUnrecognisedToken(column: String) {
+    unrecognised.merge(column, 1, Int::plus)
+  }
+
   val coercedToNull: Map<String, Int> get() = coerced.toMap()
 
   val suppressedByPublisher: Map<String, Int> get() = suppressed.toMap()
+
+  val unrecognisedTokens: Map<String, Int> get() = unrecognised.toMap()
 }
 
 /**
@@ -500,7 +534,7 @@ internal object CsvIngestSupport {
       tally.recordSuppressedByPublisher(column)
       return StatusfulCell.SuppressedByPublisher
     }
-    val value = parse(raw) ?: return mapToNotReported(record, column, raw)
+    val value = parse(raw) ?: return mapToNotReported(record, column, raw, tally)
     return StatusfulCell.Reported(value)
   }
 
@@ -516,19 +550,25 @@ internal object CsvIngestSupport {
    * every one of those cells reached families as "this school did not report
    * it". The status is unchanged -- this only refuses to be silent about it.
    *
-   * WARN, not DEBUG, and the sibling per-row coercion line at [logCoercedCell]
-   * is the contrast that settles it: that one is DEBUG because a run tally
-   * carries the same fact to the operator summary, so the per-cell line is only
-   * ever detail. This one has no tally by design, so the log line IS the
-   * report -- a level nobody enables by default would be the silence again,
-   * spelled differently.
+   * COUNTED **AND** WARNED, and neither replaces the other (RFC 218, brief 0011
+   * D45). This arm used to have no tally, so the WARN line was the whole report
+   * -- and a log line is invisible until somebody already suspects a problem.
+   * It now records [CellAbsenceTally.recordUnrecognisedToken] for the column,
+   * which is what makes a sudden change visible in the operator summary; the
+   * WARN line STAYS, because the counter says how many and in which column
+   * while the line says which row and which token. Contrast the sibling per-row
+   * coercion line at [logCoercedCell], which is DEBUG: a reader chasing a
+   * number in the summary needs the token here, and the token is the one thing
+   * a count cannot carry.
    */
   private fun mapToNotReported(
     record: CSVRecord,
     column: String,
     raw: String,
+    tally: CellAbsenceTally,
   ): StatusfulCell<Nothing> {
     if (raw !in NULL_SENTINELS) {
+      tally.recordUnrecognisedToken(column)
       logger.warn(
         "Unrecognised non-numeric cell read as not-reported [column={}] [line={}] [value={}]",
         column,
@@ -599,12 +639,19 @@ internal object CsvIngestSupport {
     tally: CellAbsenceTally,
   ): StatusfulCell<Int> = statusfulIntCell(record, column, tally).coercedToDomain(record.recordNumber, min, max, column, tally)
 
-  /** [doubleOrNull] with the absence reason preserved; see [StatusfulCell]. */
+  /**
+   * [doubleOrNull] with the absence reason preserved; see [StatusfulCell].
+   *
+   * Non-finite parses (`NaN`, `Infinity`) are REJECTED here and take the
+   * unrecognised-token arm (counted and WARNed) rather than reaching a dollar
+   * conversion that would throw on them: one impossible cell must not abort a
+   * wholesale rebuild.
+   */
   fun statusfulDoubleCell(
     record: CSVRecord,
     column: String,
     tally: CellAbsenceTally,
-  ): StatusfulCell<Double> = statusfulCell(record, column, tally, String::toDoubleOrNull)
+  ): StatusfulCell<Double> = statusfulCell(record, column, tally) { raw -> raw.toDoubleOrNull()?.takeIf { it.isFinite() } }
 
   /** Mechanism A over a status-preserving double read; see [coercedToDomain]. */
   fun statusfulDoubleCellInDomain(
@@ -1032,3 +1079,17 @@ internal object CsvIngestSupport {
     return cause
   }
 }
+
+/**
+ * The one cell-reading -> [FigureReading] mapping (RFC 158 D3), written once: a
+ * value exists exactly when its status bears one, by construction. Lifted out of
+ * [CanonicalMoneyLoader] so the field-of-study loader shares the same three arms
+ * rather than carrying a second copy (RFC 218): a fourth [FigureStatus] arm must
+ * still be added here and nowhere else.
+ */
+internal fun <T> CsvIngestSupport.StatusfulCell<T>.reading(): FigureReading<T> =
+  when (this) {
+    is CsvIngestSupport.StatusfulCell.Reported -> FigureReading.Present(value, ValueBearingStatus.REPORTED)
+    CsvIngestSupport.StatusfulCell.SuppressedByPublisher -> FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER)
+    CsvIngestSupport.StatusfulCell.NotReported -> FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION)
+  }

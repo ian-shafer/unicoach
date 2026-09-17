@@ -1,10 +1,10 @@
-UNITID,CIPCODE,CIPDESC,CREDLEV
-110100,260702,Marine Biology and Biological Oceanography,3
-110100,110701,Computer Science,3
-220200,260101,Biology/Biological Sciences General,3
-220200,540101,History,3
-330300,141001,Electrical and Electronics Engineering,3
-330300,260702,Marine Biology and Biological Oceanography,5
-440400,230101,English Language and Literature General,3
-550500,510801,Medical/Clinical Assistant,2
-110100,0901,Communication and Media Studies,3
+UNITID,CIPCODE,CIPDESC,CREDLEV,EARN_MDN_4YR,DEBT_ALL_STGP_EVAL_MDN,DEBT_ALL_STGP_EVAL_MDN10YRPAY
+110100,260702,Marine Biology and Biological Oceanography,3,52000,21500,227.86
+110100,110701,Computer Science,3,PS,PS,PS
+220200,260101,Biology/Biological Sciences General,3,NA,NA,NA
+220200,540101,History,3,38000,PS,PS
+330300,141001,Electrical and Electronics Engineering,3,61000,29500,312.49
+330300,260702,Marine Biology and Biological Oceanography,5,47000,23000,243.50
+440400,230101,English Language and Literature General,3,PS,NA,NA
+550500,510801,Medical/Clinical Assistant,2,31000,17000,180.00
+110100,0901,Communication and Media Studies,3,NOT_A_NUMBER,19000,201.10

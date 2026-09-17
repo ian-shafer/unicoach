@@ -16,6 +16,7 @@ import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
+import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.ResidencyBasis
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
@@ -352,6 +353,10 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
       // The sibling headcount table restates the same two statuses (RFC 162),
       // so it is pinned by the same test rather than by its migration's word.
       "cohort_population_counts_value_iff_status_check",
+      // The program-grained sibling (RFC 218) restates the same two statuses,
+      // so it joins this list: a table missing from it is a table this pin
+      // silently does not cover.
+      "program_money_stats_amount_iff_status_check",
     )) {
       val definition = constraintDefinition(constraint)
       val listed =
@@ -416,6 +421,13 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
     // The publisher axis is a DOMAIN now (RFC 170), not a CHECK per table, so
     // there is ONE constraint to pin -- which is the point of making it one.
     assertEquals(MoneySource.entries.map { it.value }.toSet(), listed("money_source_check"))
+    // The program-grained measure vocabulary (RFC 218), pinned here beside its
+    // institution-level cousin rather than only in the DAO suite: this is the
+    // one test that walks every money CHECK list in the schema.
+    assertEquals(
+      ProgramMoneyMeasure.entries.map { it.value }.toSet(),
+      listed("program_money_stats_measure_check"),
+    )
   }
 
   @Test

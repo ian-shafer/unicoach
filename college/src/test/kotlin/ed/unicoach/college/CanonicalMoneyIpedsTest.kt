@@ -346,6 +346,10 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
         "cohort_money_stats.source",
         "cohort_population_counts.source",
         "price_figures.source",
+        // The program-grained sibling (RFC 218) declares `source money_source`
+        // like every other fact table: the list of publishers is ONE list,
+        // wherever the question is asked.
+        "program_money_stats.source",
         "source_documents.source",
       ),
       query(

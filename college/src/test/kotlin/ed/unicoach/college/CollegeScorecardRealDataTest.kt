@@ -217,6 +217,23 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     }
 
   @Test
+  fun `the real field-of-study cells map to the statuses the publisher wrote`() =
+    runBlocking {
+      // The committed 178-column fixture carries the publisher's own PS tokens
+      // (RFC 218): the synthetic fixture proves the three-arm mapping, this
+      // proves the suppression sentinel against cells nobody hand-wrote. The
+      // fixture's NA cells all sit on rows the fields phase skips (CREDLEV=99,
+      // UNITID=NA), so the not-reported arm has no real reachable cell here;
+      // the synthetic fixture holds that arm.
+      loader.load(institutionCsv, fieldsCsv)
+      ProgramMoneyLoader(database).fill(fieldsCsv)
+      assertEquals(
+        setOf("reported", "suppressed_by_publisher"),
+        query("SELECT DISTINCT status FROM program_money_stats") { rs -> rs.getString(1) }.toSet(),
+      )
+    }
+
+  @Test
   fun `COSTT4_A sits inside the IN-STATE arrangement span at every public row we hold (RFC 157)`() =
     runBlocking {
       // The falsifier for RFC 157, run over the real rows this repo actually

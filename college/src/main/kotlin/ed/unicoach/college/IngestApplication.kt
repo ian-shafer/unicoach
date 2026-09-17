@@ -698,7 +698,9 @@ private fun logCanonicalMoneyRun(money: CanonicalMoneyLoader.FillResult) {
       "[{}] in-state tuition cell(s) withheld (IPEDS residency tiers differ, RFC 183 D1), " +
       "[{}] withheld for want of any staged IC_AY residency evidence; " +
       "publisher-suppressed cell(s) READ, by column [{}] (RFC 206: reads, " +
-      "not rows -- a cell no mapping read is in no column's count)",
+      "not rows -- a cell no mapping read is in no column's count); " +
+      "unrecognised token(s) READ, by column [{}] (RFC 218: a present cell this " +
+      "seam has no rule for, read as not-reported)",
     money.priceFigureRows,
     money.priceFigureStatusCounts.mapKeys { it.key.value },
     money.priceFigureSourceCounts.mapKeys { it.key.value },
@@ -718,6 +720,9 @@ private fun logCanonicalMoneyRun(money: CanonicalMoneyLoader.FillResult) {
     // landed, never which column carried them, and a column that stops
     // carrying suppressions is the RFC 206 defect returning unseen.
     money.cellsSuppressedByPublisher,
+    // The third arm of the same tally (D45): counted here because a WARN line
+    // nobody is looking for is not a report.
+    money.unrecognisedTokens,
   )
 }
 

@@ -16,6 +16,10 @@ dependencies {
   // the file the ingest loads — rather than re-typing the vocabulary.
   testFixturesImplementation(libs.kotlinx.serialization.json)
 
+  // LogWarnCapture: the shared root-logger WARN capture used by :college and
+  // :service tests, so the idiom lives once instead of in three private copies.
+  testFixturesImplementation(libs.logback.classic)
+
   // AdmissionTestCalendarFixture reads db/seed/test-calendar/administrations.csv
   // with a real CSV reader rather than a hand-rolled split (RFC 197).
   testFixturesImplementation(libs.commons.csv)

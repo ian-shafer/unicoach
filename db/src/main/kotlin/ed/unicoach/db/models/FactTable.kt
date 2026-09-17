@@ -19,4 +19,13 @@ enum class FactTable(
   COHORT_MONEY_STATS("cohort_money_stats"),
   COHORT_POPULATION_COUNTS("cohort_population_counts"),
   AID_FORM_REQUIREMENTS("aid_form_requirements"),
+
+  /**
+   * The program-grained money sibling (RFC 218). A member here and not only in
+   * its own DAO because the vocabulary retirement path walks this enum: it
+   * clears the rebuilt sources' fact rows before a retired `figure_statuses`
+   * slug is deleted, and a table it does not know about would fail that delete
+   * with a 23503 nobody could act on.
+   */
+  PROGRAM_MONEY_STATS("program_money_stats"),
 }

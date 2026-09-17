@@ -1,10 +1,9 @@
 package ed.unicoach.coaching.admissions
 
-import ch.qos.logback.classic.spi.ILoggingEvent
-import ch.qos.logback.core.read.ListAppender
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.college.AdmissionTestPolicy
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.captureWarns
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
 import ed.unicoach.db.models.CollegeId
@@ -16,8 +15,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -767,19 +764,6 @@ class CollegeAdmissionsServiceTest {
         ?.average
         ?.score,
     )
-  }
-
-  /** The WARNs an exercise emits, captured off the root logger -- [ed.unicoach.coaching.LlmCallLogTest]'s idiom. */
-  private fun captureWarns(exercise: () -> Unit): List<String> {
-    val root = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as ch.qos.logback.classic.Logger
-    val appender = ListAppender<ILoggingEvent>().apply { start() }
-    root.addAppender(appender)
-    try {
-      exercise()
-    } finally {
-      root.detachAppender(appender)
-    }
-    return appender.list.filter { it.level.levelStr == "WARN" }.map { it.formattedMessage }
   }
 
   // ---------------------------------------------------------------------------

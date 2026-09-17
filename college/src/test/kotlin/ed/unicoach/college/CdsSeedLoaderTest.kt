@@ -808,7 +808,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     try {
       val thrown = assertFailsWith<PartialIngestException> { ingest() }
       assertEquals(
-        listOf("institutions", "fields", "aliases", "cds", "name-words", "canonical-money", "search-index"),
+        listOf("institutions", "fields", "aliases", "cds", "name-words", "canonical-money", "program-money", "search-index"),
         thrown.committedPhases,
       )
       assertEquals("provenance", thrown.failedPhase)

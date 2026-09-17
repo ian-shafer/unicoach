@@ -52,7 +52,19 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       )
 
       val fieldsHeader = CollegeScorecardLoader.REQUIRED_FIELDS_COLUMNS
-      val fieldsValues = mapOf("UNITID" to "910001", "CIPCODE" to "2601", "CIPDESC" to "Biology", "CREDLEV" to "3")
+      // The three money columns join the list with values, not blanks (RFC 218):
+      // a blank would prove only that the header exists, and the read that must
+      // be covered here is ProgramMoneyLoader's, which reads a VALUE.
+      val fieldsValues =
+        mapOf(
+          "UNITID" to "910001",
+          "CIPCODE" to "2601",
+          "CIPDESC" to "Biology",
+          "CREDLEV" to "3",
+          "EARN_MDN_4YR" to "52000",
+          "DEBT_ALL_STGP_EVAL_MDN" to "21500",
+          "DEBT_ALL_STGP_EVAL_MDN10YRPAY" to "227.86",
+        )
       val fields = File.createTempFile("coverage-fields", ".csv")
       fields.deleteOnExit()
       fields.writeText(

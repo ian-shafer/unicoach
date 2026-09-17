@@ -1,8 +1,5 @@
 package ed.unicoach.coaching
 
-import ch.qos.logback.classic.Logger
-import ch.qos.logback.classic.spi.ILoggingEvent
-import ch.qos.logback.core.read.ListAppender
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatMessage
 import ed.unicoach.chat.ChatProvider
@@ -15,6 +12,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.LlmCallsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.captureWarns
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.LlmFailureKind
 import kotlinx.coroutines.CompletableDeferred
@@ -392,19 +390,6 @@ class LlmCallLogTest {
   // ---------------------------------------------------------------------------
   // Frozen cost (RFC 108)
   // ---------------------------------------------------------------------------
-
-  /** Captures WARNs the [exercise] emits via a root-logger [ListAppender]. */
-  private fun captureWarns(exercise: () -> Unit): List<String> {
-    val root = org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as Logger
-    val appender = ListAppender<ILoggingEvent>().apply { start() }
-    root.addAppender(appender)
-    try {
-      exercise()
-    } finally {
-      root.detachAppender(appender)
-    }
-    return appender.list.filter { it.level.levelStr == "WARN" }.map { it.formattedMessage }
-  }
 
   @Test
   fun `a completed call freezes the price book cost with estimated false`() =

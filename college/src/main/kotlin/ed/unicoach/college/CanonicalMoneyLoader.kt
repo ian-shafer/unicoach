@@ -247,6 +247,18 @@ class CanonicalMoneyLoader internal constructor(
      */
     val cellsSuppressedByPublisher: Map<String, Int>,
     /**
+     * Present cells whose token this seam has never been taught, by column name
+     * (RFC 218, brief 0011 D45).
+     *
+     * Neither a blank, nor a publisher null sentinel, nor a suppression
+     * sentinel, and not a number: a spelling nobody wrote a rule for, read as
+     * not-reported. RFC 206 left this arm with a WARN line and no counter, and
+     * a log line is invisible until somebody already suspects a problem. The
+     * number is what makes a sudden change visible; the WARN line, which still
+     * fires, is what names the row and the token.
+     */
+    val unrecognisedTokens: Map<String, Int>,
+    /**
      * Staged IC_AY rows this fill could not map and PASSED OVER, by the drift
      * that made them unmappable (RFC 161; brief 0006 D6).
      *
@@ -404,6 +416,7 @@ class CanonicalMoneyLoader internal constructor(
           inStateTuitionWrittenUnmeasured = scorecard.inStateTuitionWrittenUnmeasured,
           fieldsCoercedToNull = absences.coercedToNull,
           cellsSuppressedByPublisher = absences.suppressedByPublisher,
+          unrecognisedTokens = absences.unrecognisedTokens,
           ipedsChargesIgnored =
             ipedsChargesIgnored.entries
               .sortedBy { it.key.slug }
@@ -448,6 +461,8 @@ class CanonicalMoneyLoader internal constructor(
         "(RFC 183 D1: written, and COUNTED, because it was never measured); " +
         "coercions [{}]; publisher-suppressed cell(s) READ [{}] " +
         "(reads, not rows: a cell a guard above this seam never read is in no column's count); " +
+        "unrecognised token(s) READ [{}] " +
+        "(a present cell this seam has no rule for, read as not-reported and warned about per row); " +
         "[{}] staged IC_AY row(s) passed over as stale [{}]",
       result.priceFigureRows,
       result.priceFigureStatusCounts.mapKeys { it.key.value },
@@ -471,6 +486,7 @@ class CanonicalMoneyLoader internal constructor(
       result.inStateTuitionWrittenUnmeasured,
       result.fieldsCoercedToNull,
       result.cellsSuppressedByPublisher,
+      result.unrecognisedTokens,
       result.ipedsChargesIgnoredRows,
       // Slugs at the edge, like the status and source maps above it.
       result.ipedsChargesIgnored.mapKeys { it.key.slug },
@@ -1945,14 +1961,6 @@ class CanonicalMoneyLoader internal constructor(
         publisherFlag = publisherFlag,
       )
     }
-
-    /** The one cell-reading -> [FigureReading] mapping (D3), written once: a value exists exactly when its status bears one, by construction. */
-    private fun <T> StatusfulCell<T>.reading(): FigureReading<T> =
-      when (this) {
-        is StatusfulCell.Reported -> FigureReading.Present(value, ValueBearingStatus.REPORTED)
-        StatusfulCell.SuppressedByPublisher -> FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER)
-        StatusfulCell.NotReported -> FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION)
-      }
 
     /** An int reading widened to the NUMERIC stat column's shape, status preserved. */
     private fun StatusfulCell<Int>.toDouble(): StatusfulCell<Double> =

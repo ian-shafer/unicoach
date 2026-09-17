@@ -173,6 +173,74 @@ the reason is that file's own contract rather than an oversight:
 A later snapshot that moves the cohort therefore moves `COHORT_TERM` and this
 section, in one edit, with the cell above quoted from the new workbook.
 
+## The three field-of-study money variables (RFC 218)
+
+`EARN_MDN_4YR`, `DEBT_ALL_STGP_EVAL_MDN` and `DEBT_ALL_STGP_EVAL_MDN10YRPAY` are
+read from the **field-of-study** file into `program_money_stats` by
+`ProgramMoneyLoader`. Their cohorts are the publisher's own, read from the same
+workbook as the two sections above — `CollegeScorecardDataDictionary.xlsx`
+(727,278 bytes,
+<https://collegescorecard.ed.gov/files/CollegeScorecardDataDictionary.xlsx>,
+read **2026-09-15**), sheet `FieldOfStudy_Cohort_Map`, column
+`FieldOfStudyMostRecent datafile` — the column for the file we ingest.
+Descriptions and publishers come from sheet `FieldOfStudy_Data_Dictionary`.
+
+| Variable                        | Publisher | Publisher's cohort cell, verbatim                                                                                         | Stored years |
+| ------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `EARN_MDN_4YR`                  | Treasury  | `Treasury AY2017-2018, AY2018-2019 pooled earnings cohort measured in CY2022, CY2023, inflation adjusted to 2024 dollars` | 2017, 2018   |
+| `DEBT_ALL_STGP_EVAL_MDN`        | NSLDS     | `NSLDS pooled AY2018-19, AY2019-20 cohort`                                                                                | 2018, 2019   |
+| `DEBT_ALL_STGP_EVAL_MDN10YRPAY` | NSLDS     | `NSLDS pooled AY2018-19, AY2019-20 cohort`                                                                                | 2018, 2019   |
+
+The workbook's `README` says "Released June 10, 2026" and its `ChangeLog` dates
+the latest `FieldOfStudy_Cohort_Map` refresh to the same day, which is the
+`release` in `PROVENANCE.json` (`06102026`). That is a **date match, not a
+stamped filename**, and this section says so rather than claiming more.
+
+The row stores the two years; this file and `ScorecardFieldOfStudyColumns` store
+the sentence. The two academic years are a fact about the ROW, so they are typed
+`academic_year` columns on `program_money_stats`. Everything else in the cell —
+the calendar years earnings were measured in, and the 2024 dollar base — is a
+fact about the VARIABLE, identical on all ~684,000 rows, so it lives once, in
+`college/.../ScorecardFieldOfStudyColumns.kt`. That object also carries
+`COHORT_SNAPSHOT_RELEASE = "06102026"`, and `ScorecardFieldOfStudyPinTest`
+asserts it equals `PROVENANCE.json`'s `release` — so a re-fetch that moves the
+data fails a test instead of leaving three cohorts dated to a release nobody
+re-read.
+
+**An earnings figure is in 2024 dollars and nothing on its row says so.** The
+inflation base is a named field,
+`ScorecardFieldOfStudyColumns.EARNINGS.inflationBaseYear`, reached from any row
+through its `source_variable`; the
+`COMMENT ON COLUMN
+program_money_stats.source_variable` names that object so a
+reader of the schema alone is sent to it. A sentence that speaks an earnings
+figure without its dollar base is a defect.
+
+Three things the publisher does **not** state, recorded so no later slice
+invents them:
+
+- **No dollar year for either debt column.** The earnings cell names its
+  adjustment; the debt cells name none. The word "inflation" occurs twice in the
+  whole of `FieldOfStudyDataDocumentation.pdf` (891,554 bytes, read 2026-09-15),
+  both inside the earnings paragraph. Missing, not "nominal 2020".
+- **No interest rate tied to this release.** The 10-year payment's method is
+  described only in that PDF, whose own version line reads "Version: June 2024"
+  — two years older than our snapshot. Copy may say "the publisher's own
+  estimate of the monthly payment on a standard 10-year plan"; it may **not**
+  name a rate.
+- **The earnings column and the debt columns are different cohorts from
+  different publishers** — Treasury AY2017-18+AY2018-19 against NSLDS
+  AY2018-19+AY2019-20. That is why the two are never averaged, combined or
+  ratio'd: a debt-to-earnings ratio over them is a figure nobody published.
+
+**They are deliberately NOT added to `dictionary-variable-sources.csv`**, for
+the reason the six score bands above are not — that file's key set must
+**equal** `ScorecardInstitutionColumns.LOADED_VARIABLES`, the INSTITUTION money
+seam's registry; every `VintageGroup` member in it is an institution cohort, so
+joining one would stamp `EARN_MDN_4YR` with a tuition year; and its `Cohort`
+type parses `AcadYr <label>` or empty, while these cohorts are pooled two-year
+spans.
+
 ## Regenerating
 
 Re-run the fetcher; it discovers the current release, downloads it, and rewrites

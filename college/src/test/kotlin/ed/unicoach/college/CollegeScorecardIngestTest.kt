@@ -392,7 +392,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
           runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
         }
       assertEquals(
-        listOf("institutions", "fields", "aliases", "name-words", "canonical-money", "search-index"),
+        listOf("institutions", "fields", "aliases", "name-words", "canonical-money", "program-money", "search-index"),
         thrown.committedPhases,
         "the derived rebuilds register as committed phases too, and `canonical-money` COMMITS BEFORE " +
           "`search-index`, which now sums its price figures (RFC 150/158/169)",
@@ -524,6 +524,60 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val summary = second.humanSummary()
     assertTrue(summary.contains("0 inserted, 0 changed, 5 unchanged"), "summary must state the no-op: $summary")
     assertTrue(summary.contains("build row: ${second.buildId}"))
+  }
+
+  @Test
+  fun `the summary states the program-money fill, with the cell tallies only when there are some`() {
+    // RFC 218. The phase runs in EVERY ingest -- the field-of-study CSV is a
+    // required positional -- so the line itself is unconditional; the omit-vs-zero
+    // rule the other optional blocks follow applies to the second line, which
+    // prints only when a cell was suppressed, coerced or unreadable.
+    val report = ingest()
+    val summary = report.humanSummary()
+    assertTrue(
+      summary.contains("program-money: [9] row(s) seen — [9] mapped, [27] program_money_stats row(s) written"),
+      "summary must state the program-money fill: $summary",
+    )
+    // The committed fixture carries real PS and NA cells and one token this seam
+    // has no rule for, so the second line IS printed here and names all three.
+    assertTrue(summary.contains("cells by column:"), summary)
+    assertTrue(summary.contains("publisher-suppressed [{EARN_MDN_4YR="), summary)
+    assertTrue(summary.contains("unrecognised token [{EARN_MDN_4YR=1}]"), summary)
+    // And the phase's own numbers reached the report, not only the string.
+    assertEquals(9, report.programMoney.seen)
+    assertEquals(27, report.programMoney.rowsWritten)
+    assertEquals(mapOf("EARN_MDN_4YR" to 1), report.programMoney.unrecognisedTokens)
+    assertEquals(emptyMap(), report.programMoney.fieldsCoercedToNull)
+  }
+
+  @Test
+  fun `the cell tallies line is OMITTED when no cell was suppressed, coerced or unreadable`() {
+    // The other half of the omit-vs-zero rule: the `program-money` line itself is
+    // unconditional, and three empty maps under it would teach an operator to
+    // skip past the line that matters.
+    val report =
+      runBlocking {
+        loader.ingest(
+          source(institutionCsv),
+          source(fixture("scorecard-fields-empty-fixture.csv")),
+          source(aliasesJson),
+        )
+      }
+    val summary = report.humanSummary()
+    assertTrue(summary.contains("program-money: [0] row(s) seen"), summary)
+    assertFalse(summary.contains("cells by column:"), "absent means absent: $summary")
+  }
+
+  @Test
+  fun `a second ingest of the same file leaves identical program-money rows`() {
+    val first = ingest()
+    val second = ingest()
+    assertEquals(first.programMoney.rowsWritten, second.programMoney.rowsWritten)
+    assertEquals(first.programMoney.statusCounts, second.programMoney.statusCounts)
+    assertEquals(
+      second.programMoney.rowsWritten,
+      withSession { count(it, "program_money_stats") },
+    )
   }
 
   @Test
@@ -966,7 +1020,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     try {
       val thrown = assertThrows<PartialIngestException> { ingestWithSfa() }
       assertEquals(
-        listOf("institutions", "fields", "aliases", "sfa", "name-words", "canonical-money", "search-index"),
+        listOf("institutions", "fields", "aliases", "sfa", "name-words", "canonical-money", "program-money", "search-index"),
         thrown.committedPhases,
         "`sfa` is a ROW phase and commits before the derived ones; among those, `canonical-money` now " +
           "commits BEFORE `search-index`, which sums its price figures into the index (RFC 169)",
