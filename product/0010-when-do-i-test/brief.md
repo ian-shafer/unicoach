@@ -859,4 +859,14 @@ Two consequences, both binding:
   url-shaped column. The one operator step: a sweep of 887 urls, committed — 861
   found, 13 not_found, 13 unknown, every row dated. No coach copy changed, no
   prompt version cut. Executed: 3,591 tests 0 failures; 1,142 shell assertions;
-  45 calendar-seed assertions.
+  45 calendar-seed assertions. test/06/your-scores LANDED as RFC 207
+  (main@edcdd62c + 19d29e93, 2026-09-17) — the student's own test scores,
+  self-reported and labelled as such: admission_test_score_declines stores the
+  refusal and NOTHING else (status derived via AnswerStatus.of, never stored),
+  and admission_test_scores stores one row per component per sitting — the scale
+  and the SAT's ten-point step are properties of the COMPONENT, and the sitting
+  date is RFC 209's DATE+precision shape decoded to PartialDate only in the DAO.
+  The update_test_scores tool records, corrects, removes and declines in
+  conversation, and the coach context block remembers them across sessions. No
+  superscore stored or spoken; no source column; soft delete. Coach prompt v41
+  (rollback v40). Executed: 3,742 tests, 0 failures.

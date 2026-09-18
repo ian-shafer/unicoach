@@ -7,20 +7,33 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-17 — **THE COLLEGE SCORECARD'S EARNINGS AND DEBT FIGURES PER
-MAJOR ARE NOW LOADED INTO A STORE** (RFC 218,
-`beyond/03/what-this-major-returns`, `main@0bdf86ea` + `63f0aace`). A new
-`program_money_stats` table holds, per (college, CIP field, credential level),
-the Treasury median earnings four years after entry, the NSLDS median federal
-loan debt at completion, and the publisher's own ten-year monthly payment. Every
-figure carries its publisher, its source variable and its typed cohort years;
-the three silence arms — a number, `PS`, `NA` — are kept apart; the third
-absence counter (an unrecognised token, by source column) reaches the operator
-summary; and no debt-to-earnings ratio is computed anywhere. **No family-visible
-change lands in this slice — it fills the store, and
-`beyond/05/the-major-answer` is what makes a family see it.** Full suite **3,707
-executed, 0 failures**; the pre-commit gate re-ran it and passed. **Next free
-RFC 230** (recompute, never copy).
+Updated: 2026-09-17 — **THE COACH CAN NOW REMEMBER THE STUDENT'S OWN SCORES**
+(RFC 207, `main@edcdd62c` + `19d29e93`). "I got 1340 in March" survives to the
+next conversation: `admission_test_score_declines` stores only the refusal —
+"answered" is DERIVED from a live score row, never stored — and
+`admission_test_scores` stores one row per component per sitting, with the
+score's scale and the SAT's ten-point step as properties of the COMPONENT, and
+the sitting date on RFC 209's DATE-plus-precision shape, decoded to
+`PartialDate` only inside the data layer. The `update_test_scores` tool records,
+corrects, removes and declines in conversation, invited and declinable like the
+money profile. **No superscore is stored or spoken** — we hold no school's
+superscore policy — and there is no `source` column, because every row is
+self-reported by definition. Coach prompt **v41**. **Twelve of brief 0010's
+slices are landed.**
+
+Previously — **THE COLLEGE SCORECARD'S EARNINGS AND DEBT FIGURES PER MAJOR ARE
+NOW LOADED INTO A STORE** (RFC 218, `beyond/03/what-this-major-returns`,
+`main@0bdf86ea` + `63f0aace`). A new `program_money_stats` table holds, per
+(college, CIP field, credential level), the Treasury median earnings four years
+after entry, the NSLDS median federal loan debt at completion, and the
+publisher's own ten-year monthly payment. Every figure carries its publisher,
+its source variable and its typed cohort years; the three silence arms — a
+number, `PS`, `NA` — are kept apart; the third absence counter (an unrecognised
+token, by source column) reaches the operator summary; and no debt-to-earnings
+ratio is computed anywhere. **No family-visible change lands in this slice — it
+fills the store, and `beyond/05/the-major-answer` is what makes a family see
+it.** Full suite **3,707 executed, 0 failures**; the pre-commit gate re-ran it
+and passed. **Next free RFC 230** (recompute, never copy).
 
 Previously (2026-09-17) — **THE COACH NOW REFUSES TO LABEL A SCHOOL OR SCORE IT,
 AND NAMES WHAT WE HOLD INSTEAD** (RFC 219,
