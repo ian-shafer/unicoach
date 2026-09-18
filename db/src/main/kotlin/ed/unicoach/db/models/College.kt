@@ -94,4 +94,7 @@ object PublishedScoreScale {
 
   /** `SAT_AVG`: an SAT-equivalent COMPOSITE, the two sections summed. */
   val SAT_COMPOSITE: IntRange = 400..1600
+
+  /** The step every SAT section and the SAT composite are published in: ten points, not one. */
+  val SAT_STEP: Int = 10
 }

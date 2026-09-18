@@ -34,7 +34,9 @@ import ed.unicoach.coaching.report.ShareCostReportChatTool
 import ed.unicoach.coaching.report.ShareTokenDeriver
 import ed.unicoach.coaching.report.StopCostReportOffersChatTool
 import ed.unicoach.coaching.testing.AdmissionTestTimelineChatTool
+import ed.unicoach.coaching.testing.TestScoreService
 import ed.unicoach.coaching.testing.TestTimelineService
+import ed.unicoach.coaching.testing.UpdateTestScoresChatTool
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
@@ -421,6 +423,11 @@ fun Application.appModule(
         // real one through the InstantSource.system() default, and only a test
         // pins it.
         AdmissionTestTimelineChatTool(TestTimelineService(database)),
+        // "I got 1340 in March" (RFC 207): the student's own scores, so a later
+        // conversation still has the number she gave us in this one. No clock
+        // argument, like every other site -- production reads the real one
+        // through the InstantSource.system() default, and only a test pins it.
+        UpdateTestScoresChatTool(TestScoreService(database)),
         // What the student wants to STUDY (RFC 205). The same two services the
         // REST doors use, so the chat answer and the screen answer are one
         // answer and not two copies of it.

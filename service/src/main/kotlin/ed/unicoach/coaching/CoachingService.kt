@@ -9,6 +9,9 @@ import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.ToolRegistry
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
+import ed.unicoach.coaching.testing.TestScoreCopy
+import ed.unicoach.coaching.testing.TestScores
+import ed.unicoach.coaching.testing.readTestScoresInSession
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.common.util.UsDate
@@ -288,12 +291,13 @@ class CoachingService(
           val pending = openExplicitCommitments(session, studentId)
           val pendingFits = openFitSuggestions(session, studentId)
           val moneyProfile = activeMoneyProfile(session, studentId)
+          val testScores = activeTestScores(session, studentId)
           val graduation = graduationDate(session, studentId)
           PreFlight.Ready(
             Prepared(
               convo,
               prompt,
-              composeSystem(prompt, graduation, pending, pendingFits, moneyProfile),
+              composeSystem(prompt, graduation, pending, pendingFits, moneyProfile, testScores),
               messages,
               pending.map { it.id },
               pendingFits.map { it.id },
@@ -354,6 +358,9 @@ class CoachingService(
           // every turn: what may be used and what must not be re-asked applies
           // mid-conversation too.
           val moneyProfile = activeMoneyProfile(session, studentId)
+          // The scores block rides every turn too (RFC 207): what she told us a
+          // week ago is still what she told us, and a decline is never re-asked.
+          val testScores = activeTestScores(session, studentId)
           // The date block rides every turn, not only the opener (RFC 186): a
           // conversation that ran past midnight, or one resumed a week later,
           // must not be answered against the date it opened on.
@@ -362,7 +369,7 @@ class CoachingService(
             Prepared(
               owned,
               prompt,
-              composeSystem(prompt, graduation, emptyList(), emptyList(), moneyProfile),
+              composeSystem(prompt, graduation, emptyList(), emptyList(), moneyProfile, testScores),
               messages,
               emptyList(),
               emptyList(),
@@ -866,6 +873,19 @@ class CoachingService(
     }
 
   /**
+   * The student's own test scores for the coach context block (RFC 207): the
+   * live refusal, the live scores, and the derived answer status, read through
+   * [readTestScoresInSession] -- the one home of that derivation, shared with
+   * [ed.unicoach.coaching.testing.TestScoreService]. A missing refusal is an
+   * ordinary no-decline, not a fault; any other failure propagates, because a
+   * DB outage must fail the turn, never silently drop the declined-field guard.
+   */
+  private fun activeTestScores(
+    session: ed.unicoach.db.dao.SqlSession,
+    studentId: StudentId,
+  ): TestScores = readTestScoresInSession(session, studentId)
+
+  /**
    * The student's expected high-school graduation date, for the date block
    * (RFC 186) -- [graduationDateOf], which is the one home for the two rules
    * this read turns on (ALL rather than ACTIVE, and a missing row as a located
@@ -905,6 +925,7 @@ class CoachingService(
     pending: List<Commitment>,
     pendingFits: List<FitSuggestionForOpener>,
     moneyProfile: MoneyProfile? = null,
+    testScores: TestScores = TestScores(status = AnswerStatus.UNANSWERED, scores = emptyList()),
   ): String {
     val block =
       buildString {
@@ -958,6 +979,33 @@ class CoachingService(
                 moneyProfile,
               ),
           )
+        }
+        when (testScores.status) {
+          AnswerStatus.ANSWERED -> {
+            appendLine()
+            appendLine(TestScoreCopy.ANSWERED_HEADER)
+            for (score in testScores.scores) {
+              appendLine(TestScoreCopy.scoreLineOf(score.component, score.score.score, score.sitting))
+            }
+          }
+
+          AnswerStatus.DECLINED -> {
+            appendLine()
+            appendLine(TestScoreCopy.DECLINED_LINE)
+          }
+
+          AnswerStatus.UNANSWERED -> {
+            // Nothing to remember: never asked, no refusal, no score. The block
+            // is absent, so a brand-new student's prompt stays byte-identical
+            // to today's.
+          }
+
+          AnswerStatus.UNDECIDED -> {
+            // `AnswerStatus.of` cannot produce this, but a when over the enum
+            // must name the arm -- and reading an undecided score answer as
+            // silence would be row corruption dressed as a blank.
+            throw nonMoneyAnswerStatus(AnswerStatus.UNDECIDED, location = "admission test scores block")
+          }
         }
       }
     return block.trimEnd()

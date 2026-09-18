@@ -134,3 +134,5 @@ adopt-external-documents-for-policy-parameters.sql
 adopt-external-documents-for-test-calendar.sql
 seed-coach-system-prompt-v40.sql
 create-program-money-stats.sql
+seed-coach-system-prompt-v41.sql
+create-admission-test-scores.sql
