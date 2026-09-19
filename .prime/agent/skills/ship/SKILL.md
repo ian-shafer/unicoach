@@ -181,6 +181,20 @@ one:
 - A child can REACT — capture the failing assertion verbatim, check whether it
   reproduces — where a log file only sits there.
 
+**A runner is spawned cheap** (RFC 233). A child is a _runner_ when its whole
+job is to execute a command this session names and report the outcome under the
+contract below — the suite, `bin/test check`, the hook, the land sequence,
+`installDist`, `bin/format`, `bin/shell-tests -n <name>`, a compile. Spawn it
+with `model='deepseek/deepseek-v4-pro'`, the model with a measured record of
+doing this job correctly — RFC 233 carries the figures, which are not repeated
+here. Safe because the run never trusted the runner's prose — phase 5 reads
+`suite-green.txt`, which the shell wrote, and re-derives the count from the
+JUnit XML. If the model is unavailable the spawn fails: retry once with no
+`model` argument and say so in the report. **A runner is never skipped because
+the cheap model was down.** Anything that must DECIDE — which test to re-run,
+whether a failure reproduces, what a trace means — is not a runner and inherits
+this session's model. The line is _run and copy_ versus _look and judge_.
+
 Four conditions, each from a real failure:
 
 1. **State the report contract.** Exit code, executed test counts, and failing
@@ -323,9 +337,18 @@ See [`references/review.md`](references/review.md). Order matters and is not
 negotiable: **Tier 0 → 1 → 2 → 3**, sequential, because each tier's fixes move
 the tree the next tier reviews. Parallelise _within_ a tier only.
 
+Every lens is dispatched with the graded-output instruction in
+[`references/review.md`](references/review.md) — a `**Grade:**` line and a tag
+per finding — and **only `SHOULD-FIX` and `BLOCKING` findings get a fix child**
+(RFC 233). Resolving a Tier 0 finding is the run's call as it always was, with
+one exception: when the amendment would change a decision **Ian approved at the
+gate**, it is his, in the `YOUR DECISION REQUIRED` block.
+
 Persist as you go, one file per lens, so a stall costs one lens rather than the
 tier: `<rs>/findings/lens-plan.json` (ran + skipped, with the skip reason) and
-`<rs>/findings/tier<N>-<lens>.md`. Record the write-scope result too —
+`<rs>/findings/tier<N>-<lens>.md`. The tier's fix plan records what was
+dispatched, what was held as advisory, and any tag the coordinator promoted or
+demoted with its one-line reason. Record the write-scope result too —
 `ship-verify-scope … | tee <rs>/findings/write-scope.txt` — so the archive shows
 the check ran, not merely that nobody complained.
 
@@ -605,6 +628,16 @@ RFC number/slug, landed SHAs with `--stat`, what was built, per-tier findings
 applied/discarded, the test counts actually executed, and **open items** — every
 finding the review declined to decide. Point at
 `.scratch/ship-archive/<run-id>/`.
+
+Then **Advisory findings (not applied)**: every `ADVISORY` finding the tiers
+held, one line each — lens, `file:line`, title (RFC 233). It is a queue for Ian
+like the learning candidates below, and `None` is a real result. For the next
+five lane A runs, also state the grade counts per tier — which must account for
+every lens that ran, since a lens returning no grade is the one case D1 cannot
+tolerate — whether the malformed-report re-dispatch fired and on which lens, the
+number of fix children spawned, and each runner child's model and cost. A guard
+with no trace is indistinguishable from an absent one, which is why the
+re-dispatch line is stated even when the answer is "it did not fire".
 
 Then a **Learning candidates** section: every place review had to argue from
 taste because **no principle in the corpus covered the case**. Not the findings
