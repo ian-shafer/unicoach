@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# ship-scripts-tests — shell assertions over the /ship land lock (RFC 167).
+# ship-scripts-tests — shell assertions over the /ship scripts: ship-lock
+# (RFC 167), ship-land's refusal of a foreign lock holder, ship-order (RFC 180
+# D6) and ship-lens (RFC 234). One harness, one temp-dir style; the sections below
+# are banner-separated and each names its own subject.
 #
-# The subject is .prime/agent/skills/ship/scripts/ship-lock, the repo-wide gate
-# that serialises phase 6 of a /ship run. Its one job that a human cannot eyeball
+# The first subject is .prime/agent/skills/ship/scripts/ship-lock, the repo-wide
+# gate that serialises phase 6 of a /ship run. Its one job that a human cannot eyeball
 # is the exit-code-3 trap: bin/file-lock answers 3 when the lock is already held
 # by an operation MATCHING -o, bin/daemon-up treats that as success, and a land
 # that did the same would sail straight through the lock into the collision the
@@ -25,8 +28,9 @@ help() {
 ship-scripts-tests [options]
 
 Runs the shell assertions over .prime/agent/skills/ship/scripts/ship-lock (and
-ship-land's refusal of a foreign lock holder). Needs no database, no daemon and
-no worktree: each assertion runs against a throwaway git repo under a temp dir.
+ship-land's refusal of a foreign lock holder), ship-order and ship-lens. Needs
+no database, no daemon and no worktree: each assertion runs against a throwaway
+git repo, run scratch and lens corpus under a temp dir.
 
 Options:
   -h: Help
@@ -983,5 +987,815 @@ GIT_DIR="$ESCAPE_GIT_DIR" GIT_INDEX_FILE="$ESCAPE_GIT_DIR/index" \
 [ "$(cksum < "$PROJECT_ROOT/db/schema/ORDER")" = "$REAL_ORDER_BEFORE" ] ||
   fail_test "ship-order under GIT_DIR wrote to the REAL repo's db/schema/ORDER"
 pass_test "GIT_DIR from a hook cannot move ship-order off the run's own repo"
+
+echo ""
+echo "==== ship-lens: the dispatch ledger (RFC 234) ===="
+
+# The subject is .prime/agent/skills/ship/scripts/ship-lens, which turns the
+# lens plan from a document written after the review into an append-only ledger
+# written at dispatch. Every assertion below is behavioural: it builds a ledger
+# and a findings directory in a known state and asserts `missing`'s exit code
+# and which list it names. None greps a skill file for a sentence.
+#
+# THE CORPUS IS FABRICATED, and that is load-bearing twice over. `missing`
+# derives the lens set from the DIRECTORY NAMES under
+# $CODEBASE_ROOT/.claude/skills and their tier from that skill's tiers.md, so a
+# fixture pointing CODEBASE_ROOT at a temp tree is what keeps these assertions
+# off the real 40-lens corpus — which is read-only to /ship, and whose contents
+# would otherwise make this harness fail whenever a lens is added. It also keeps
+# every write inside the temp run-scratch, so no assertion can touch a live run.
+SHIP_LENS="$SHIP_SCRIPTS/ship-lens"
+[ -x "$SHIP_LENS" ] || fail_test "ship-lens is missing or not executable [$SHIP_LENS]"
+
+# ship-lens's exit vocabulary, named once and used at every site below, exactly
+# as ship-order's is above: 1 is the tier's OWN answer, with the faults on
+# stdout; 2 is "the script could not do what was asked" — a record it could not
+# write, or a check it could not run — which is NEVER a clean tier and is the
+# distinction this script was built around. A bare literal asserts an integer,
+# not that meaning.
+SHIP_LENS_FAULTS=1
+SHIP_LENS_CANNOT_RUN=2
+
+LENS_CORPUS="$FIXTURE_DIR/lens-corpus"
+mkdir -p "$LENS_CORPUS/.claude/skills/review-fix"
+# code-review-chain and design-review-chain are the orchestrators that RUN the
+# lenses, not lenses; they are in the glob's way and must be dropped. They carry
+# no tiers.md row, so a ship-lens that kept them would fail the discovery halt.
+for lens in code-review-alpha design-review-beta code-review-gamma code-review-chain design-review-chain; do
+  mkdir -p "$LENS_CORPUS/.claude/skills/$lens"
+  echo "# $lens" > "$LENS_CORPUS/.claude/skills/$lens/SKILL.md"
+done
+# The real tiers.md in miniature: `## Tier <N>` headings over a Markdown table
+# whose data rows open with the skill name in backticks. The prose line naming a
+# skill in backticks is here deliberately — it is the shape that a first-cell
+# parser must not mistake for a row.
+cat > "$LENS_CORPUS/.claude/skills/review-fix/tiers.md" << 'EOF'
+# Review tier manifest (fixture)
+
+## Tier 1 — multi-file / structural
+
+| Skill                |
+| -------------------- |
+| `code-review-alpha`  |
+| `design-review-beta` |
+
+`code-review-alpha` is the one most likely to belong in another tier.
+
+## Tier 2 — single-file
+
+| Skill               |
+| ------------------- |
+| `code-review-gamma` |
+EOF
+
+RS_LENS="$(make_run run-lens "$LENS_CORPUS")"
+LENS_FINDINGS="$RS_LENS/findings"
+LENS_LEDGER="$LENS_FINDINGS/lens-ledger.tsv"
+LENS_OUT="$FIXTURE_DIR/lens.out"
+LENS_ERR="$FIXTURE_DIR/lens.err"
+lens_status=0
+
+# run_lens <args>… — EVERY ship-lens invocation in this section goes through
+# here, against any run scratch and any verb. It records both halves of the
+# answer — the streams in $LENS_OUT/$LENS_ERR and the exit status in
+# $lens_status — so no assertion can drop the status, which is the currency the
+# script's contract is written in.
+run_lens() {
+  lens_status=0
+  "$SHIP_LENS" "$@" > "$LENS_OUT" 2> "$LENS_ERR" || lens_status=$?
+}
+
+# clone_corpus <name> — a private copy of the fixture corpus, and a run scratch
+# pointing at it, in $CORPUS_DIR and $CORPUS_RS. The corpus-shape fixtures each
+# break the copy in one way, so none of them can disturb $LENS_CORPUS.
+clone_corpus() {
+  CORPUS_DIR="$FIXTURE_DIR/lens-corpus-$1"
+  mkdir -p "$CORPUS_DIR/.claude/skills"
+  cp -R "$LENS_CORPUS/.claude/skills/." "$CORPUS_DIR/.claude/skills/"
+  CORPUS_RS="$(make_run "run-lens-$1" "$CORPUS_DIR")"
+  mkdir -p "$CORPUS_RS/findings"
+}
+
+lens_reset() { rm -rf "$LENS_FINDINGS"; mkdir -p "$LENS_FINDINGS"; }
+lens_start() { run_lens -s "$RS_LENS" start -t "$1" -l "$2" -c "$3"; }
+lens_skip() { run_lens -s "$RS_LENS" skip -t "$1" -l "$2" -r "$3"; }
+lens_report() { echo "## Findings" > "$LENS_FINDINGS/tier$1-$2.md"; }
+lens_missing() { run_lens -s "$RS_LENS" missing -t "$1"; }
+lens_said() { grep -q "$1" "$LENS_OUT"; }
+
+# L1. THE FILE IS APPEND-ONLY. Each verb adds exactly one record, in the order
+# the acts happened, and leaves every earlier line byte-identical — the whole
+# claim that makes a `start` line evidence rather than a reconstruction. And
+# none of the three says anything on stdout: a writer's product is the file.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+[ "$lens_status" -eq 0 ] || fail_test "start failed: $(cat "$LENS_ERR")"
+[ ! -s "$LENS_OUT" ] || fail_test "start wrote to stdout: [$(cat "$LENS_OUT")]"
+[ "$(wc -l < "$LENS_LEDGER" | tr -d ' ')" -eq 1 ] ||
+  fail_test "start appended $(wc -l < "$LENS_LEDGER") lines, expected 1"
+[ "$(sed -n 1p "$LENS_LEDGER")" = "$(printf 'start\t1\tcode-review-alpha\tsub-a1')" ] ||
+  fail_test "the start record is [$(sed -n 1p "$LENS_LEDGER")]"
+cp "$LENS_LEDGER" "$FIXTURE_DIR/ledger.after-start"
+run_lens -s "$RS_LENS" done -t 1 -l code-review-alpha
+[ "$lens_status" -eq 0 ] || fail_test "done failed: $(cat "$LENS_ERR")"
+[ ! -s "$LENS_OUT" ] || fail_test "done wrote to stdout: [$(cat "$LENS_OUT")]"
+lens_skip 1 design-review-beta "no wire payload in this diff"
+[ "$lens_status" -eq 0 ] || fail_test "skip failed: $(cat "$LENS_ERR")"
+[ ! -s "$LENS_OUT" ] || fail_test "skip wrote to stdout: [$(cat "$LENS_OUT")]"
+# The reason is the one free-text value the script logs, and it is printed last
+# on the line, where a trailing space is invisible: it is delimited like every
+# other value beside it, so `-r "reason "` and `-r "reason"` do not log alike.
+grep -qF -- "[no wire payload in this diff]" "$LENS_ERR" ||
+  fail_test "the skip log left the free-text reason undelimited; said [$(cat "$LENS_ERR")]"
+[ "$(wc -l < "$LENS_LEDGER" | tr -d ' ')" -eq 3 ] ||
+  fail_test "three records produced $(wc -l < "$LENS_LEDGER") lines"
+head -n 1 "$LENS_LEDGER" | cmp -s - "$FIXTURE_DIR/ledger.after-start" ||
+  fail_test "a later append rewrote the first record: [$(sed -n 1p "$LENS_LEDGER")]"
+[ "$(sed -n 2p "$LENS_LEDGER")" = "$(printf 'done\t1\tcode-review-alpha')" ] ||
+  fail_test "the done record is [$(sed -n 2p "$LENS_LEDGER")]"
+[ "$(sed -n 3p "$LENS_LEDGER")" = "$(printf 'skip\t1\tdesign-review-beta\tno wire payload in this diff')" ] ||
+  fail_test "the skip record is [$(sed -n 3p "$LENS_LEDGER")]"
+pass_test "start, done and skip each append exactly one record, in order, and say nothing on stdout"
+
+# L2. ONE RECORD PER LINE IS THE FILE'S ONLY STRUCTURAL PROMISE. A reason
+# carrying a tab or a newline would be read back as a different record — or as
+# two — so it is refused at append time, and the refusal writes nothing.
+cp "$LENS_LEDGER" "$FIXTURE_DIR/ledger.before-bad-reason"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a skip reason containing a TAB is refused" \
+  "$SHIP_LENS" -s "$RS_LENS" skip -t 1 -l code-review-alpha -r "$(printf 'child\tstalled')"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a skip reason containing a NEWLINE is refused" \
+  "$SHIP_LENS" -s "$RS_LENS" skip -t 1 -l code-review-alpha -r "$(printf 'child\nstalled')"
+cmp -s "$LENS_LEDGER" "$FIXTURE_DIR/ledger.before-bad-reason" ||
+  fail_test "a refused append modified the ledger: [$(cat "$LENS_LEDGER")]"
+pass_test "a refused reason leaves the ledger byte-identical"
+
+# L3. THE CLEAN TIER. Every started lens has a report on disk and the rest of
+# the tier is skipped — the skip IS the override, which is why a skipped lens is
+# not a fault. Nothing on stdout, exit 0.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+lens_missing 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "a fully accounted tier exited $lens_status, said [$(cat "$LENS_OUT")]"
+[ ! -s "$LENS_OUT" ] ||
+  fail_test "a clean tier printed a list: [$(cat "$LENS_OUT")]"
+pass_test "a tier whose starts all have reports, with the rest skipped, exits 0 and prints nothing"
+
+# L3b. THE CHECK LEAVES AN ARTIFACT, clean or not. Phase 7 must report what
+# `missing` printed at each tier close, including "nothing", and a verdict that
+# exists only in the coordinator's head is the reconstruction this whole ledger
+# exists to remove — the same reason the write-scope result is teed to a file.
+# The name ends .txt so the UNDECLARED glob cannot read the record of the check
+# as a lens report, which would make the check fail the next tier.
+[ -f "$LENS_FINDINGS/tier1-missing.txt" ] ||
+  fail_test "a clean tier left no record that the check ran"
+[ ! -s "$LENS_FINDINGS/tier1-missing.txt" ] ||
+  fail_test "a clean tier recorded faults: [$(cat "$LENS_FINDINGS/tier1-missing.txt")]"
+lens_missing 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "the recorded verdict was read back as a lens report; said [$(cat "$LENS_OUT")]"
+pass_test "missing records its verdict in tier<N>-missing.txt, empty on a clean tier, and never reads it back"
+
+# L4. THE 28-CLAIMS CASE: a lens claimed as dispatched with no report on disk.
+# This is the fault the whole script exists for — before the ledger it was
+# indistinguishable from a lens that ran and found nothing.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_skip 1 design-review-beta "no wire payload in this diff"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "a start with no report exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^STALLED.*code-review-alpha" ||
+  fail_test "the stalled child was not named under STALLED; said [$(cat "$LENS_OUT")]"
+pass_test "a start with no tier<N>-<lens>.md exits 1 and names the lens under STALLED"
+
+# L4b. An EMPTY report is the same fault wearing a filename: a child that was
+# spawned, created its file and died writes one. Existence is not enough, and
+# checking non-emptiness still never opens the file.
+: > "$LENS_FINDINGS/tier1-code-review-alpha.md"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "an EMPTY report exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^STALLED.*code-review-alpha" ||
+  fail_test "an empty report was not reported as stalled; said [$(cat "$LENS_OUT")]"
+pass_test "an empty tier<N>-<lens>.md counts as stalled, not as a report"
+
+# L4c. THE SKIP IS THE OVERRIDE, and a stalled child is the case it exists for.
+# "child stalled twice" is the repair references/review.md names for a STALLED
+# line — the archive's rfc-225/rfc-159/rfc-138 recovery — so a skip appended
+# after the start must clear it. Without this the only way to close the tier is
+# to fabricate a report no child produced, which is the behaviour this script
+# exists to catch.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_skip 1 code-review-alpha "child stalled twice"
+lens_skip 1 design-review-beta "no wire payload in this diff"
+lens_missing 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "a skip did not clear the stall it repairs; said [$(cat "$LENS_OUT")]"
+[ ! -s "$LENS_OUT" ] ||
+  fail_test "a skipped lens was still a fault: [$(cat "$LENS_OUT")]"
+# And the give-up stays on the record: the ledger holds both acts, so phase 7
+# reads why the lens did not report.
+grep -q "child stalled twice" "$LENS_LEDGER" ||
+  fail_test "the give-up reason is not in the ledger: [$(cat "$LENS_LEDGER")]"
+pass_test "a skip appended after a stalled start clears STALLED and keeps its reason"
+
+# L5. THE SILENT SKIP: a lens the tier assigns that was neither started nor
+# skipped. Nothing else in the run can see it — there is no file to be missing.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "an undispatched lens exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^UNDISPATCHED.*design-review-beta" ||
+  fail_test "the undispatched lens was not named; said [$(cat "$LENS_OUT")]"
+pass_test "a lens with neither a start nor a skip exits 1 and is named under UNDISPATCHED"
+
+# L6. THE rfc-232 BATCHED-REVIEW CASE, which is why this script exists: a report
+# file on disk that no start line names. One child wrote one file covering
+# several lenses and the plan was written up afterwards as if each had run.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+echo "## a batched review of several lenses" > "$LENS_FINDINGS/tier1-structural.md"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "an undeclared report exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^UNDECLARED.*tier1-structural.md" ||
+  fail_test "the undeclared file was not named; said [$(cat "$LENS_OUT")]"
+pass_test "a tier1-*.md with no start line exits 1 and names the file under UNDECLARED"
+
+# L6b. The names the RUN ITSELF writes are not lens reports and must not be read
+# as undeclared ones, or every tier would fail on its own fix plan. The exempt
+# set is exactly the four names references/review.md defines — the fix plan, the
+# fix report, the outcome records and missing's own output — enumerated in the
+# script and never a filename shape.
+#
+# THIS ASSERTION COVERS THE TWO THAT THE GLOB CAN REACH, and says so. The
+# UNDECLARED scan globs tier<N>-*.md, so tier1-outcomes.jsonl and
+# tier1-missing.txt cannot reach the exempt check at all: delete either name
+# from RUN_WRITTEN and nothing here fails. They are enumerated against a glob
+# that is widened later — that is sound, and it is also why no behavioural
+# assertion can hold them. A test whose NAME claims four is green for the wrong
+# reason, and the .jsonl file is written below only to prove it is ignored.
+rm -f "$LENS_FINDINGS/tier1-structural.md"
+echo "dispatched/held/promoted/contradicted" > "$LENS_FINDINGS/tier1-fix-plan.md"
+echo "what the fix child changed" > "$LENS_FINDINGS/tier1-fix-report.md"
+echo '{"finding":"f1"}' > "$LENS_FINDINGS/tier1-outcomes.jsonl"
+lens_missing 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "the run's own files were read as lens reports; said [$(cat "$LENS_OUT")]"
+pass_test "the run's own tier<N>-fix-plan.md and tier<N>-fix-report.md are not UNDECLARED reports"
+
+# L6c. And NOTHING ELSE is exempt. A batched report can be given any name at
+# all, so a name that merely LOOKS like an artifact of the run — a second
+# attempt, a draft — is still a tier<N>-*.md that no `start` line declared. An
+# exemption for a filename shape no script writes is a hole in exactly the check
+# this script exists for.
+echo "## second attempt" > "$LENS_FINDINGS/tier1-code-review-alpha.attempt2.md"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] ||
+  fail_test "an undeclared file with an artifact-shaped name exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^UNDECLARED.*tier1-code-review-alpha.attempt2.md" ||
+  fail_test "an artifact-shaped filename dodged UNDECLARED; said [$(cat "$LENS_OUT")]"
+rm -f "$LENS_FINDINGS/tier1-code-review-alpha.attempt2.md"
+pass_test "a tier<N>-*.md is UNDECLARED whatever its name suggests"
+
+# L7. Two lenses claiming one child id is a fan-out that was really a batch —
+# free to detect, because the ids are already in the ledger. It is also the
+# honest limit: a coordinator that appends one start per lens while spawning one
+# child for five defeats this exactly as --no-verify defeats the hook.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_start 1 design-review-beta sub-a1
+lens_report 1 code-review-alpha
+lens_report 1 design-review-beta
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "two lenses on one child id exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^SHARED-CHILD.*sub-a1" ||
+  fail_test "the shared child id was not reported; said [$(cat "$LENS_OUT")]"
+pass_test "two start lines sharing one child id exits 1 and names the child"
+
+# L8. ALL THREE IN ONE RUN. A tier does not close while `missing` prints
+# anything, so reporting the first fault and stopping would cost the coordinator
+# one re-dispatch round per kind — the same one-pass rule ship-order follows.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+echo "## a batched review" > "$LENS_FINDINGS/tier1-structural.md"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "the three-fault fixture exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^STALLED.*code-review-alpha" ||
+  fail_test "the combined run did not report the STALLED lens; said [$(cat "$LENS_OUT")]"
+lens_said "^UNDISPATCHED.*design-review-beta" ||
+  fail_test "the combined run did not report the UNDISPATCHED lens; said [$(cat "$LENS_OUT")]"
+lens_said "^UNDECLARED.*tier1-structural.md" ||
+  fail_test "the combined run did not report the UNDECLARED file; said [$(cat "$LENS_OUT")]"
+pass_test "one run reports the stalled child, the undispatched lens AND the undeclared file"
+
+# L9. A RE-DISPATCH IS NOT A FAULT. Each line names its own repair, and
+# re-dispatching a stalled lens is one of the two honest ones: two start lines,
+# one report, nothing missing. A started set kept per LINE rather than per NAME
+# would call this a stall forever.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_start 1 code-review-alpha sub-a2
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+lens_missing 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "a re-dispatched lens exited $lens_status, said [$(cat "$LENS_OUT")]"
+pass_test "a lens re-dispatched after a stall — two starts, one report — exits 0"
+
+# L9b. THE SAME CHILD TWICE IS THE SAME RE-DISPATCH. A stalled child is
+# sometimes re-dispatched to the id it already had, which writes the SAME
+# (child, lens) pair twice — and SHARED-CHILD counts pairs, not lines, for
+# exactly this input. Counting lines would report a routine repair as a batched
+# fan-out and hold the tier open on a fault no coordinator can clear: the record
+# is append-only, so the duplicate start cannot be withdrawn.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+lens_missing 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "a re-dispatch to the same child id exited $lens_status, said [$(cat "$LENS_OUT")]"
+! lens_said "^SHARED-CHILD" ||
+  fail_test "one lens started twice on one child read as two lenses sharing it; said [$(cat "$LENS_OUT")]"
+pass_test "one lens re-dispatched to the SAME child id is not a shared child"
+
+# L10. THE TIERS ARE SEPARATE RUNS. Tier 2 opens with tier 1's ledger lines and
+# tier 1's files already on disk, so a `missing` that ignored the tier field
+# would report every one of them and no tier after the first could ever close.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+echo "## a batched review" > "$LENS_FINDINGS/tier1-structural.md"
+lens_start 2 code-review-gamma sub-b1
+lens_report 2 code-review-gamma
+lens_missing 2
+[ "$lens_status" -eq 0 ] ||
+  fail_test "missing -t 2 read tier-1 lines or files; said [$(cat "$LENS_OUT")]"
+pass_test "missing -t 2 ignores tier-1 ledger lines and tier-1 files"
+
+# L10b. A RECORD THIS SCRIPT DID NOT WRITE. Only a hand edit produces a first
+# field that is not one of the three verbs, and silently skipping the line is the
+# single thing nothing else in the run would ever notice: a half-written `start`
+# would read as a lens that was never dispatched at all.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+printf 'strt\t1\tcode-review-alpha\tsub-a1\n' >> "$LENS_LEDGER"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] ||
+  fail_test "a hand-edited ledger record exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^MALFORMED.*code-review-alpha" ||
+  fail_test "the malformed record was not named; said [$(cat "$LENS_OUT")]"
+pass_test "a ledger record whose first field is not a verb is reported MALFORMED"
+
+# L10c. A SHORT RECORD IS CORRUPT TOO, and it is the corruption that reads as
+# ordinary data. TAB is IFS whitespace, so a positional read COLLAPSES adjacent
+# tabs: `start<TAB>1<TAB><TAB>sub-c1` was mis-parsed as a lens named after the
+# CHILD ID and reported STALLED against a report no lens could ever write. The
+# verb is right in every one of these; only the shape is wrong.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+printf 'start\t1\t\tsub-c1\n' >> "$LENS_LEDGER"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "a record with a lost field exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^MALFORMED.*sub-c1" ||
+  fail_test "a record with a lost field was mis-parsed instead of reported; said [$(cat "$LENS_OUT")]"
+! lens_said "^STALLED" ||
+  fail_test "a child id was read as a lens name; said [$(cat "$LENS_OUT")]"
+pass_test "a record with a missing field is MALFORMED, not silently re-read with its fields shifted"
+
+# L10d. A start with an EMPTY child id is the same fault: it is the one record
+# that would disable the SHARED-CHILD check, and it can only arrive by hand.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+printf 'start\t1\tcode-review-alpha\t\n' >> "$LENS_LEDGER"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] || fail_test "a start with no child id exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^MALFORMED" ||
+  fail_test "a start with no child id was accepted; said [$(cat "$LENS_OUT")]"
+pass_test "a start carrying no child id is MALFORMED rather than a start that opts out of SHARED-CHILD"
+
+# L10e. AND THE SHAPE CHECK IS NOT SCOPED TO A TIER, which is the whole reason
+# MALFORMED exists: a corrupt record is a fact about the FILE. A record whose
+# TIER field is the one that was lost belongs to no tier at all, so a tier-scoped
+# check would hide it until the owning tier closed — which, for a tier already
+# closed, is never.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+printf 'start\t\tcode-review-gamma\tsub-d1\n' >> "$LENS_LEDGER"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] ||
+  fail_test "a record stamped with no tier was invisible to tier 1, exited $lens_status"
+lens_said "^MALFORMED.*code-review-gamma" ||
+  fail_test "a record belonging to no tier was dropped in silence; said [$(cat "$LENS_OUT")]"
+pass_test "a corrupt record is reported by whichever tier closes next, whatever tier it claims"
+
+# L10f. The faults are recorded as well as printed, byte for byte: the archive
+# reads the file, and a file that disagreed with stdout would be worse than none.
+cmp -s "$LENS_OUT" "$LENS_FINDINGS/tier1-missing.txt" ||
+  fail_test "the recorded verdict differs from stdout: [$(cat "$LENS_FINDINGS/tier1-missing.txt")]"
+pass_test "tier<N>-missing.txt holds exactly the fault lines that went to stdout"
+
+# L10g. A MALFORMED LINE NAMES THE LINE AND THE RULE. Only a hand edit produces
+# one, so its reader is a human repairing a file: four structurally different
+# corruptions produced one undifferentiated label while the script had already
+# computed which of the three rules broke, and no line number survived, so the
+# repair began with a hunt. The record stays LAST — it is the field that carries
+# tabs — so the fields ahead of it are fixed.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+printf 'strt\t1\tcode-review-alpha\tsub-a1\n' >> "$LENS_LEDGER"
+printf 'start\t1\tcode-review-alpha\t\n' >> "$LENS_LEDGER"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] ||
+  fail_test "the two hand-edited records exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "$(printf '^MALFORMED\t3\tfirst field')" ||
+  fail_test "the bad verb on ledger line 3 was not located and named; said [$(cat "$LENS_OUT")]"
+lens_said "$(printf '^MALFORMED\t4\tfield 4 of 4 is empty')" ||
+  fail_test "the empty field on ledger line 4 was not located and named; said [$(cat "$LENS_OUT")]"
+pass_test "a MALFORMED line carries the ledger LINE NUMBER and which rule the record broke"
+
+# L10h. AND THE LAST RECORD IS READ. `read` returns false at a final line with
+# no newline, having already assigned it, so the commonest hand-edit artifact —
+# and an interrupted append, whose record is the most recent dispatch — walked
+# straight past the one check that exists for a hand-edited ledger.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+printf 'strt\t1\tcode-review-gamma\tsub-z9' >> "$LENS_LEDGER"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] ||
+  fail_test "an unterminated last record exited $lens_status, expected $SHIP_LENS_FAULTS"
+lens_said "^MALFORMED.*sub-z9" ||
+  fail_test "the unterminated last record was dropped in silence; said [$(cat "$LENS_OUT")]"
+pass_test "a final ledger record with no trailing newline is judged, not dropped"
+
+# L10i. AN UNREADABLE LEDGER IS NOT AN EMPTY ONE, and the two are opposite
+# facts. `[ -f ]` then `done < "$LEDGER"` asks two different questions: bash
+# skips the body of a compound command whose redirection could not be opened, so
+# an IO failure became "the ledger records nothing" — the one state this script
+# treats as legitimate — and every lens came back UNDISPATCHED with a confident
+# exit 1. The OPEN is now the test.
+#
+# The fixture is a mode-000 file, so it cannot be built by a caller who can read
+# anything: that is asserted rather than assumed, because a vacuous version of
+# this test passes for the wrong reason.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_report 1 code-review-alpha
+lens_skip 1 design-review-beta "no wire payload in this diff"
+printf 'strt\t1\tcode-review-alpha\tsub-a1\n' >> "$LENS_LEDGER"
+lens_missing 1
+[ -s "$LENS_FINDINGS/tier1-missing.txt" ] ||
+  fail_test "the fault run left no verdict to be made stale"
+chmod 000 "$LENS_LEDGER"
+[ ! -r "$LENS_LEDGER" ] ||
+  fail_test "the unreadable-ledger fixture is still readable — running as root? this assertion cannot be made"
+lens_missing 1
+chmod 644 "$LENS_LEDGER"
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "an unreadable ledger exited $lens_status, expected $SHIP_LENS_CANNOT_RUN — it was read as an empty one"
+grep -q "cannot be opened" "$LENS_ERR" ||
+  fail_test "the unreadable-ledger halt did not say why; said [$(cat "$LENS_ERR")]"
+[ ! -s "$LENS_OUT" ] ||
+  fail_test "a halt wrote a tier verdict to stdout: [$(cat "$LENS_OUT")]"
+pass_test "an unreadable ledger HALTS with the system code instead of reading as an empty one"
+
+# L10j. AND THE ARCHIVE CAN TELL THE TWO APART. The exit status lives in the
+# coordinator's shell; tier<N>-missing.txt is what phase 7 and the workflow
+# audit read, and an EMPTY file answered for a clean tier, a halted check and a
+# tier never checked at all — while a halt that exited above the write left the
+# PREVIOUS invocation's faults standing as this close's verdict. The file now
+# carries the reason it could not answer.
+! grep -q '^MALFORMED' "$LENS_FINDINGS/tier1-missing.txt" ||
+  fail_test "the halt archived the previous run's faults as this check's verdict: [$(cat "$LENS_FINDINGS/tier1-missing.txt")]"
+grep -q '^INCOMPLETE.*cannot be opened' "$LENS_FINDINGS/tier1-missing.txt" ||
+  fail_test "the halted check left no reason in its verdict file: [$(cat "$LENS_FINDINGS/tier1-missing.txt")]"
+pass_test "a halted check replaces the verdict with one INCOMPLETE line carrying the reason"
+
+# L10k. THE rfc-232 BATCH, WEARING AN INVENTED LENS NAME. The ledger's names
+# were taken as given, so `start 1 structural` plus one batched
+# tier1-structural.md DECLARED that file and the tier closed clean — a bypass of
+# UNDECLARED, the check this script exists for, using the honest `skip` for the
+# two real lenses. A name the manifest does not give this tier now declares
+# nothing, so the file is UNDECLARED and the surplus record is named on stderr.
+lens_reset
+lens_start 1 structural sub-batch
+lens_skip 1 code-review-alpha "batched into one child"
+lens_skip 1 design-review-beta "batched into one child"
+echo "## a batched review of every tier-1 lens" > "$LENS_FINDINGS/tier1-structural.md"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] ||
+  fail_test "a fabricated start legitimised a batched report, exited $lens_status"
+lens_said "^UNDECLARED.*tier1-structural.md" ||
+  fail_test "the batched report was declared by a name no lens has; said [$(cat "$LENS_OUT")]"
+grep -q "structural" "$LENS_ERR" ||
+  fail_test "the surplus ledger name was dropped in silence; said [$(cat "$LENS_ERR")]"
+pass_test "a start naming a lens the manifest does not assign declares no report"
+
+# L10l. THE SUMMARY NAMES THE ARTIFACT. stderr and stdout are different streams:
+# the moment a caller redirects the fault lines, "N line(s) above" points at
+# nothing and names neither the file just written nor the tier's own record.
+grep -q "also written to" "$LENS_ERR" ||
+  fail_test "the summary still says [above]; said [$(cat "$LENS_ERR")]"
+grep -q "tier1-missing.txt" "$LENS_ERR" ||
+  fail_test "the summary did not name the verdict file; said [$(cat "$LENS_ERR")]"
+# And it carries a severity: without the prefix the line that closes a FAILING
+# tier is typographically identical to the clean one, so a reader grepping a
+# captured log for [ERROR] sees a green tier that did not close.
+grep -q "^\[ERROR\] tier 1 is not accounted for" "$LENS_ERR" ||
+  fail_test "the failing summary carried no severity; said [$(cat "$LENS_ERR")]"
+pass_test "the closing summary names the file the faults were also written to"
+
+# L10m. A DIRECTORY IS NOT A REPORT. `-s` is true for any non-empty inode, a
+# directory included, so `mkdir tier1-<lens>.md` in the findings directory
+# cleared the stall — and telling PRESENT from CLAIMED is the check's whole job.
+lens_reset
+lens_start 1 code-review-alpha sub-a1
+lens_skip 1 design-review-beta "no wire payload in this diff"
+mkdir -p "$LENS_FINDINGS/tier1-code-review-alpha.md"
+lens_missing 1
+[ "$lens_status" -eq "$SHIP_LENS_FAULTS" ] ||
+  fail_test "a DIRECTORY named like a report cleared the stall, exited $lens_status"
+lens_said "^STALLED.*code-review-alpha" ||
+  fail_test "a directory was accepted as the lens's report; said [$(cat "$LENS_OUT")]"
+rmdir "$LENS_FINDINGS/tier1-code-review-alpha.md"
+pass_test "a directory named tier<N>-<lens>.md does not clear STALLED"
+
+# L10n. A `done` WITH NO `start` is a ledger that contradicts itself — the reply
+# was recorded and the dispatch record was lost — and the branch evaluated to
+# nothing, so `missing` answered "every lens accounted for". It is a warning and
+# not a sixth fault kind: the report on disk still decides the tier.
+lens_reset
+run_lens -s "$RS_LENS" done -t 1 -l code-review-alpha
+lens_skip 1 code-review-alpha "child stalled twice"
+lens_skip 1 design-review-beta "no wire payload in this diff"
+lens_missing 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "the orphan-done fixture exited $lens_status, expected 0; said [$(cat "$LENS_OUT")]"
+grep -q "done with no start line" "$LENS_ERR" ||
+  fail_test "a done with no start was evaluated to nothing; said [$(cat "$LENS_ERR")]"
+pass_test "a done record with no start line is named on stderr"
+
+# L10o. A WRITE THAT CANNOT HAPPEN IS NOT A DOMAIN ANSWER. `start` IS the
+# mechanism — RFC 234's guarantee holds only because the line is on disk before
+# the child works — and a failed append exited 1 through set -e, a status -h
+# never defined and the one that means "faults found" for the sibling verb. The
+# verdict write had the same leak: exit 1 with an empty list, destroying the
+# sixteen faults it had just computed by failing to archive them.
+#
+# The fixture makes findings/ a FILE, so every write beneath it fails for any
+# user, root included — a chmod fixture would be vacuous for one of them.
+BLOCKED_RS="$(make_run run-lens-blocked "$LENS_CORPUS")"
+: > "$BLOCKED_RS/findings"
+run_lens -s "$BLOCKED_RS" start -t 1 -l code-review-alpha -c sub-a1
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "a start whose ledger could not be written exited $lens_status, expected $SHIP_LENS_CANNOT_RUN"
+grep -q "unrecorded" "$LENS_ERR" ||
+  fail_test "the unwritable ledger did not say the dispatch was lost; said [$(cat "$LENS_ERR")]"
+run_lens -s "$BLOCKED_RS" missing -t 1
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "a verdict that could not be written exited $lens_status, expected $SHIP_LENS_CANNOT_RUN"
+grep -q "tier1-missing.txt" "$LENS_ERR" ||
+  fail_test "the unwritable verdict did not name the file; said [$(cat "$LENS_ERR")]"
+pass_test "a record or verdict that cannot be WRITTEN exits the system code, never a domain answer"
+
+echo ""
+echo "==== ship-lens: usage grammar ===="
+
+# L11. The reserved bin/functions exit codes. ship-lens copies the values rather
+# than sourcing bin/common — it must run outside the dev shell — so these
+# assertions are what stops the copy drifting: a caller that invoked it wrongly
+# must be distinguishable from a run that faulted, and identically so across
+# bin/.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an unknown verb exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_LENS" -s "$RS_LENS" grab -t 1
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$SHIP_LENS" -Z -s "$RS_LENS" missing -t 1
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-s without a value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$SHIP_LENS" -s
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a surplus positional exits EXIT_UNEXPECTED_ARG" \
+  "$SHIP_LENS" -s "$RS_LENS" missing -t 1 tier2
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "missing without -s exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_LENS" missing -t 1
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "start without -c exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_LENS" -s "$RS_LENS" start -t 1 -l code-review-alpha
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "no verb at all exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_LENS" -s "$RS_LENS" -t 1
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a -t that is not a tier number exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_LENS" -s "$RS_LENS" missing -t two
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a -s that is not a run scratch exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_LENS" -s "$FIXTURE_DIR/not-a-run" missing -t 1
+
+# A lens name becomes a FILENAME — tier<N>-<lens>.md — the moment `missing`
+# looks for its report, so a name that is not one is refused before it is
+# written rather than recorded as a claim no file could ever satisfy.
+lens_reset
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a lens name that is a PATH exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_LENS" -s "$RS_LENS" start -t 1 -l ../../escape -c sub-a1
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an empty lens name exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_LENS" -s "$RS_LENS" done -t 1 -l ""
+[ ! -f "$LENS_LEDGER" ] ||
+  fail_test "a refused lens name was appended anyway: [$(cat "$LENS_LEDGER")]"
+pass_test "a refused lens name writes no ledger at all"
+
+# L11b. A REPEATED OPTION IS SURPLUS, NOT A CORRECTION. `-t 1 start -t 2` names
+# two tiers and the ledger records one, so last-wins wrote the record nobody
+# asked for — and the same script already refuses an option the verb does not
+# take, on the argument that a caller who named a value believes it was used.
+# The two-pass parser makes the split form the easy one to hit, so both are
+# refused; CLAUDE.md's bin/ conventions name a repeated flag as a value-shape
+# check that belongs after the grammar.
+lens_reset
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a repeated -t is refused" \
+  "$SHIP_LENS" -s "$RS_LENS" start -t 1 -t 2 -l code-review-alpha -c sub-a1
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "an option repeated ACROSS the verb is refused" \
+  "$SHIP_LENS" -s "$RS_LENS" -t 1 start -t 2 -l code-review-alpha -c sub-a1
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a repeated -l is refused" \
+  "$SHIP_LENS" -s "$RS_LENS" done -t 1 -l code-review-alpha -l design-review-beta
+[ ! -f "$LENS_LEDGER" ] ||
+  fail_test "a refused repeat was recorded anyway: [$(cat "$LENS_LEDGER")]"
+pass_test "a refused repeated option writes no ledger at all"
+
+# L11c. A REFUSAL A CALLER CAN ACT ON. Three payloads described a rule the input
+# satisfied or withheld the input itself: ".hidden" IS letters and a dot, so the
+# stated class accepted the value it had just rejected; an empty -l rendered as
+# "lens [-l ]" where -c and -r both say "is empty" by name; and a reason refused
+# for carrying a tab never showed the reason, so a coordinator that built it
+# from a child's failure text had to go and print the string to find out which
+# character it meant.
+lens_reset
+run_lens -s "$RS_LENS" start -t 1 -l .hidden -c sub-a1
+[ "$lens_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a lens name beginning with a dot exited $lens_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "begins with a dot" "$LENS_ERR" ||
+  fail_test "the refusal named a class that ACCEPTS [.hidden]; said [$(cat "$LENS_ERR")]"
+run_lens -s "$RS_LENS" done -t 1 -l ""
+grep -q "the lens name (-l) is empty" "$LENS_ERR" ||
+  fail_test "an empty lens name was not refused by name; said [$(cat "$LENS_ERR")]"
+BAD_REASON="$(printf 'child\tstalled')"
+run_lens -s "$RS_LENS" skip -t 1 -l code-review-alpha -r "$BAD_REASON"
+grep -qF -- "$(printf '%q' "$BAD_REASON")" "$LENS_ERR" ||
+  fail_test "the refused value was not shown; said [$(cat "$LENS_ERR")]"
+pass_test "a refused value is shown, and each refusal names the rule it applied"
+
+# L12. -h is the one thing besides the lists that stdout carries, because the
+# caller asked for it.
+"$SHIP_LENS" -h > "$LENS_OUT" 2> "$LENS_ERR" || fail_test "-h did not exit 0"
+grep -q "ship-lens -s <run-scratch> missing" "$LENS_OUT" ||
+  fail_test "-h did not write the usage to stdout; said [$(cat "$LENS_OUT")]"
+[ ! -s "$LENS_ERR" ] || fail_test "-h wrote to stderr: [$(cat "$LENS_ERR")]"
+pass_test "-h writes the usage to stdout and nothing to stderr"
+
+# L13. A REVIEW THAT QUIETLY RUNS WITH FEWER LENSES LOOKS EXACTLY LIKE A CLEAN
+# ONE, so neither half of the discovery may answer "nothing". An unreadable
+# tiers.md and an empty skills directory are both halts, not empty tiers — and
+# they exit 2, not 1. Exit 1 is the tier's own answer, with the faults on
+# stdout; a check that could not RUN prints nothing there, which is exactly what
+# a clean tier looks like to a caller reading the lists.
+EMPTY_CORPUS="$FIXTURE_DIR/lens-corpus-empty"
+mkdir -p "$EMPTY_CORPUS/.claude/skills/review-fix"
+cp "$LENS_CORPUS/.claude/skills/review-fix/tiers.md" "$EMPTY_CORPUS/.claude/skills/review-fix/tiers.md"
+RS_LENS_EMPTY="$(make_run run-lens-empty "$EMPTY_CORPUS")"
+mkdir -p "$RS_LENS_EMPTY/findings"
+run_lens -s "$RS_LENS_EMPTY" missing -t 1
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "a corpus with NO lens directories exited $lens_status, expected $SHIP_LENS_CANNOT_RUN — a review with no lenses read as a tier"
+grep -q "no review lenses" "$LENS_ERR" ||
+  fail_test "the empty-corpus halt did not say why; said [$(cat "$LENS_ERR")]"
+[ ! -s "$LENS_OUT" ] ||
+  fail_test "a halt wrote a diagnostic to stdout: [$(cat "$LENS_OUT")]"
+pass_test "a corpus with no lens directories HALTS with the system code instead of reporting a tier"
+
+NO_TIERS_CORPUS="$FIXTURE_DIR/lens-corpus-no-tiers"
+mkdir -p "$NO_TIERS_CORPUS/.claude/skills"
+cp -R "$LENS_CORPUS/.claude/skills/code-review-alpha" "$NO_TIERS_CORPUS/.claude/skills/"
+RS_LENS_NO_TIERS="$(make_run run-lens-no-tiers "$NO_TIERS_CORPUS")"
+mkdir -p "$RS_LENS_NO_TIERS/findings"
+run_lens -s "$RS_LENS_NO_TIERS" missing -t 1
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "an unreadable tier manifest exited $lens_status, expected $SHIP_LENS_CANNOT_RUN — every lens would belong to no tier"
+grep -q "tiers.md" "$LENS_ERR" ||
+  fail_test "the unreadable-manifest halt did not name the file; said [$(cat "$LENS_ERR")]"
+pass_test "an unreadable tiers.md HALTS with the system code instead of leaving every lens tierless"
+
+# L13b. THE RUN STATE IS THE ONLY SOURCE OF THE CORPUS ROOT. SKILL.md phase 1
+# tells every coordinator to hold CODEBASE_ROOT in its shell for the whole run,
+# so an inherited value is always present in practice: if the environment could
+# stand in for a state file that does not name the root, `missing` would judge
+# whichever worktree the environment happened to name and report another
+# corpus's lenses as this run's faults. The argument is the answer.
+NO_ROOT_RS="$FIXTURE_DIR/run-lens-no-root"
+mkdir -p "$NO_ROOT_RS/findings"
+printf 'RUN_ID=run-lens-no-root\nPHASE=reviewing\n' > "$NO_ROOT_RS/state"
+CODEBASE_ROOT="$LENS_CORPUS" run_lens -s "$NO_ROOT_RS" missing -t 1
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "an exported CODEBASE_ROOT stood in for the run's own state, exited $lens_status"
+grep -q "has no CODEBASE_ROOT" "$LENS_ERR" ||
+  fail_test "the halt did not name the missing state key; said [$(cat "$LENS_ERR")]"
+pass_test "an exported CODEBASE_ROOT cannot stand in for the run scratch's state"
+
+# L13c. THE TWO ASYMMETRIES OF CORPUS DISCOVERY, and both are refusals or drops
+# that are silent on every run where their precondition is absent — so without
+# these two fixtures the whole suite passes with either branch deleted.
+#
+# First: a lens DIRECTORY with no row in tiers.md. It belongs to no tier, so no
+# tier ever asks for it and nothing is ever missing — the silent-shrinkage case
+# from the other side, and therefore fatal by name.
+clone_corpus untiered
+mkdir -p "$CORPUS_DIR/.claude/skills/code-review-delta"
+echo "# code-review-delta" > "$CORPUS_DIR/.claude/skills/code-review-delta/SKILL.md"
+run_lens -s "$CORPUS_RS" missing -t 1
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "a lens with no tiers.md row exited $lens_status, expected $SHIP_LENS_CANNOT_RUN — a lens no tier would ever ask for"
+grep -q "code-review-delta" "$LENS_ERR" ||
+  fail_test "the untiered lens was not named; said [$(cat "$LENS_ERR")]"
+# …and it does not take the tier's own faults down with it. The halt is raised
+# after the lists are printed, because a corpus fault that blanked stdout would
+# make the state in which the most is unknown the one that reads cleanest.
+lens_said "^UNDISPATCHED.*code-review-alpha" ||
+  fail_test "the untiered-lens halt swallowed this tier's faults; said [$(cat "$LENS_OUT")]"
+# …and the ARCHIVE keeps both halves too: the halt reason is appended UNDER this
+# tier's own fault lines rather than replacing them, so the file phase 7 reads
+# says what was missing AND why the check stopped.
+grep -q "^UNDISPATCHED" "$CORPUS_RS/findings/tier1-missing.txt" ||
+  fail_test "the halt erased the tier's faults from its verdict file: [$(cat "$CORPUS_RS/findings/tier1-missing.txt")]"
+grep -q "^INCOMPLETE.*code-review-delta" "$CORPUS_RS/findings/tier1-missing.txt" ||
+  fail_test "the corpus halt left no reason in the verdict file: [$(cat "$CORPUS_RS/findings/tier1-missing.txt")]"
+pass_test "a lens directory with no tiers.md row HALTS by name AFTER reporting the tier's own faults"
+
+# L13d. Second, and deliberately NOT symmetrical: a tiers.md ROW whose skill
+# directory is gone is a RETIRED lens. Dropping it is the whole point — kept, it
+# would print UNDISPATCHED forever with no child able to clear it, and the tier
+# could never close. The warning is what keeps the drop from being silent.
+clone_corpus retired
+rm -rf "$CORPUS_DIR/.claude/skills/design-review-beta"
+run_lens -s "$CORPUS_RS" start -t 1 -l code-review-alpha -c sub-a1
+[ "$lens_status" -eq 0 ] || fail_test "start against the retired-lens corpus failed: $(cat "$LENS_ERR")"
+echo "## Findings" > "$CORPUS_RS/findings/tier1-code-review-alpha.md"
+run_lens -s "$CORPUS_RS" missing -t 1
+[ "$lens_status" -eq 0 ] ||
+  fail_test "a retired lens held the tier open; said [$(cat "$LENS_OUT")]"
+grep -q "design-review-beta" "$LENS_ERR" ||
+  fail_test "the retired lens was dropped silently; said [$(cat "$LENS_ERR")]"
+pass_test "a tiers.md row with no skill directory warns and drops the lens"
+
+# L13e. AND THE DROP MUST NOT COVER FOR A DRIFTED GLOB. The three discovery
+# families are owned by references/review.md and restated by /review-fix's step
+# 2; this script's glob is the third copy. When they drift — a new family, a
+# renamed one — the row lands in the retired branch, whose warning then asserts
+# the opposite of the truth: the skill is right there on disk, the lens never
+# runs, and the tier closes clean. That is the silent shrinkage this script
+# exists to prevent, so a row whose SKILL.md exists halts by name instead.
+clone_corpus drifted
+mkdir -p "$CORPUS_DIR/.claude/skills/arch-review-foo"
+echo "# arch-review-foo" > "$CORPUS_DIR/.claude/skills/arch-review-foo/SKILL.md"
+printf '| `arch-review-foo` |\n' >> "$CORPUS_DIR/.claude/skills/review-fix/tiers.md"
+run_lens -s "$CORPUS_RS" missing -t 2
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "a tiers.md row whose skill EXISTS was dropped as retired, exited $lens_status"
+grep -q "arch-review-foo" "$LENS_ERR" ||
+  fail_test "the undiscovered lens was not named; said [$(cat "$LENS_ERR")]"
+pass_test "a tiers.md row whose skill directory exists but discovery missed HALTS instead of being called retired"
+
+# L13f. THE TWO WAYS A TIER CAN HAVE NO LENS, which wore one message and have
+# opposite repairs: add a row, or restore a skill. The script holds the whole
+# assignment when it says this, and told the caller none of it — "no lens is
+# assigned to tier [9]" named neither the manifest nor the tiers that exist,
+# which is exactly what a mistyped -t needs.
+run_lens -s "$RS_LENS" missing -t 7
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "a tier the manifest does not name exited $lens_status, expected $SHIP_LENS_CANNOT_RUN"
+grep -q "no row for tier \[7\]" "$LENS_ERR" ||
+  fail_test "the no-such-tier halt did not name the tier asked for; said [$(cat "$LENS_ERR")]"
+grep -q "tiers \[1 2\]" "$LENS_ERR" ||
+  fail_test "the no-such-tier halt hid the tiers the manifest does assign; said [$(cat "$LENS_ERR")]"
+pass_test "a tier with no row HALTS naming the manifest and the tiers it does assign"
+
+clone_corpus all-retired
+rm -rf "$CORPUS_DIR/.claude/skills/code-review-alpha" "$CORPUS_DIR/.claude/skills/design-review-beta"
+run_lens -s "$CORPUS_RS" missing -t 1
+[ "$lens_status" -eq "$SHIP_LENS_CANNOT_RUN" ] ||
+  fail_test "a tier whose every lens is retired exited $lens_status, expected $SHIP_LENS_CANNOT_RUN"
+grep -q "is retired" "$LENS_ERR" ||
+  fail_test "a tier emptied by retirement was reported as a tier with no row; said [$(cat "$LENS_ERR")]"
+grep -q "code-review-alpha" "$LENS_ERR" ||
+  fail_test "the retired lenses that emptied the tier were not named; said [$(cat "$LENS_ERR")]"
+pass_test "a tier whose every row was dropped as retired HALTS saying so, not [no row for this tier]"
 
 end_tests

@@ -65,6 +65,7 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-verify-scope -s <rs> -f <sha> [-d deny]... [allow]...
     scripts/ship-order   -s <rs> [-n]               # land-time db/schema/ORDER
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
+    scripts/ship-lens    -s <rs> start|done|skip|missing # the per-lens ledger
     scripts/ship-verified record|check|assert       # the CI stand-in
     scripts/ship-lock    -s <rs> acquire|release|status  # the land gate
     scripts/ship-land    -s <rs>                    # assert, ff-merge, teardown
@@ -340,15 +341,37 @@ the tree the next tier reviews. Parallelise _within_ a tier only.
 Every lens is dispatched with the graded-output instruction in
 [`references/review.md`](references/review.md) — a `**Grade:**` line and a tag
 per finding — and **only `SHOULD-FIX` and `BLOCKING` findings get a fix child**
-(RFC 233). Resolving a Tier 0 finding is the run's call as it always was, with
-one exception: when the amendment would change a decision **Ian approved at the
-gate**, it is his, in the `YOUR DECISION REQUIRED` block.
+(RFC 233). A fix child that cannot apply a finding without breaking another rule
+**halts that item**, names both sides, and never picks a side; `review.md` gives
+the four counterparty kinds, the halt line it quotes, and the record it writes
+(RFC 234). A defect a lens reports under `## Out of lens` — real, but outside
+its own rule — is dispatched to that tier's fix batch by its grade like any
+other finding, **but only within this run's own diff**: a defect in code the run
+did not touch is an open item in the report, because fixing it would make the
+landed change something Ian did not approve.
+
+Resolving a Tier 0 finding is the run's call as it always was, with one
+exception: when the amendment would change a decision **Ian approved at the
+gate**, it is his, in the `YOUR DECISION REQUIRED` block. A contradicted
+`BLOCKING` finding goes to him the same way and in the same block, quoting both
+rules and the code (RFC 234) — same rule, same gate.
 
 Persist as you go, one file per lens, so a stall costs one lens rather than the
-tier: `<rs>/findings/lens-plan.json` (ran + skipped, with the skip reason) and
-`<rs>/findings/tier<N>-<lens>.md`. The tier's fix plan records what was
-dispatched, what was held as advisory, and any tag the coordinator promoted or
-demoted with its one-line reason. Record the write-scope result too —
+tier: `<rs>/findings/tier<N>-<lens>.md`, declared in
+`<rs>/findings/lens-ledger.tsv` through `scripts/ship-lens` (RFC 234) — `start`
+at dispatch, before the child does any work; `done` when it replies; `skip` with
+a reason for a lens this diff cannot fire; and
+`ship-lens -s <rs> missing -t <N>` before the tier closes, which must exit 0.
+Empty output is not the test: the script answers "I could not read the corpus"
+with its own status, and a caller that reads stdout cannot tell that from a
+clean tier. It leaves a VERDICT in `<rs>/findings/tier<N>-missing.txt` — the
+faults, or nothing when the tier is clean, or `INCOMPLETE` and the reason when
+the check could not finish — and that file, not memory, is what phase 7 reports
+each tier close from. The ledger replaces `lens-plan.json`, which was written
+from memory afterwards and so could claim a lens ran with no report on disk. The
+tier's fix plan records what was dispatched, what was held as advisory, any tag
+the coordinator promoted or demoted with its one-line reason, and what was
+contradicted. Record the write-scope result too —
 `ship-verify-scope … | tee <rs>/findings/write-scope.txt` — so the archive shows
 the check ran, not merely that nobody complained.
 
@@ -635,9 +658,25 @@ like the learning candidates below, and `None` is a real result. For the next
 five lane A runs, also state the grade counts per tier — which must account for
 every lens that ran, since a lens returning no grade is the one case D1 cannot
 tolerate — whether the malformed-report re-dispatch fired and on which lens, the
-number of fix children spawned, and each runner child's model and cost. A guard
-with no trace is indistinguishable from an absent one, which is why the
-re-dispatch line is stated even when the answer is "it did not fire".
+number of fix children spawned, each runner child's model and cost, the
+contradiction count by `contradicts_kind`, the outcome counts by value and by
+lens, the decline classes, the `Out of lens` count, and what `ship-lens missing`
+printed at each tier close, including "nothing" (RFC 234). A guard with no trace
+is indistinguishable from an absent one, which is why the re-dispatch line is
+stated even when the answer is "it did not fire", and why a tier close that
+found nothing missing still says so.
+
+Then **Contradictions**: every finding recorded `CONTRADICTED`, one line each —
+lens, `file:line`, the counterparty, and why no change satisfied both (RFC 234).
+This is **not** the learning-candidate queue below, and keeping them apart is
+what decides where `/principle` looks: a learning candidate is _no rule covered
+this_, so the corpus is missing something; a contradiction is _two rules covered
+it and disagreed_, so the corpus has something too wide. `None` is a real result
+for both.
+
+Then **Seen but not owned**: every defect a lens reported under `## Out of lens`
+— the lens that saw it, `file:line`, its grade, and whether it was fixed here or
+left as an open item because it sat outside this run's diff (RFC 234).
 
 Then a **Learning candidates** section: every place review had to argue from
 taste because **no principle in the corpus covered the case**. Not the findings

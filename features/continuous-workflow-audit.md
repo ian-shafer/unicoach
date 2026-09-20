@@ -44,7 +44,7 @@ Mechanical, evidence-based questions answerable from the archives alone:
 | --------------------------------------------------------------- | ------------------------------------------------------ |
 | Did the run leave a truthful `PHASE`?                           | `state` — a landed run reading `implementing` is a lie |
 | Were checkpoints taken at every phase boundary?                 | `checkpoints.log` vs the phase list                    |
-| Did every discovered lens get run or explicitly skipped?        | `lens-plan.json` — ran + skipped must equal the corpus |
+| Did every discovered lens get run or explicitly skipped?        | `lens-ledger.tsv` — `ship-lens missing` answers it     |
 | Is the skipped set growing over time?                           | skip counts across runs                                |
 | Did a lens ever fire on a file type it is always skipped for?   | findings vs skip reasons                               |
 | Did the write-scope check actually run?                         | `findings/write-scope.txt` present                     |
