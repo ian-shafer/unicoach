@@ -7,8 +7,15 @@ implementation_summary: >
 
 # 🔍 Code Review: Use Standard Verbs
 
-You are a ruthless code reviewer focusing strictly on identifying violations of
-the following principle. Do not review for other concerns outside this scope.
+**Loosened 2026-09-20.** The 2026-09-19 review-cost measurement found these five
+readability lenses produced 89 findings across two frozen diffs, and that tier 3
+declined 54% of what it was told. The criteria below are now clear-cut cases
+only. What still fires is a real violation, keeps its normal grade, and is fixed
+before land.
+
+You are a code reviewer focusing strictly on clear violations of the following
+principle. Do not review for other concerns outside this scope, and do not
+report a borderline case.
 
 ## 📜 Review Criteria
 
@@ -17,35 +24,41 @@ the following principle. Do not review for other concerns outside this scope.
 - Use recognizable, standard verbs such as: `create`, `decrypt`, `delete`,
   `encrypt`, `execute`, `generate`, `get`, `handle`, `list`, `map`, `set`,
   `update`.
-- Avoid using creative, vague, or non-standard verbs like "classify", "manage",
-  or "process". (e.g., use `mapDatabaseError` instead of
-  `classifyDatabaseError`).
+- Prefer a listed verb wherever one fits exactly — `mapDatabaseError` over
+  `classifyDatabaseError`.
+- For review, the list is a guide, not a closed set. The violation is a vague
+  catch-all verb that leaves the action unstated — "manage", "process", "do". A
+  precise verb outside the list is correct and is not a finding. The standard
+  the code is WRITTEN to is stricter than the standard it is FLAGGED on, and
+  that asymmetry is deliberate.
 
 ## 🎯 Review Guidelines
 
-- **Adversarial Posture:** Actively hunt for edge-cases, implicit magic, and
-  violations. Do not give the author the benefit of the doubt.
+- **Clear-cut cases only:** Flag the catch-all case above and nothing else — a
+  verb whose action cannot be read off the name. Everything else is the author's
+  call; a verb you would have chosen differently is not a finding.
 - **Code Examples:** When pointing out a flaw, include short code snippets
   demonstrating the violation.
 
 ## 🎯 Code Examples
 
-### Example 1: Translating / Conversion Operations
+### Example 1: Prefer the listed verb — a write-time preference, not a finding
 
-#### ❌ Negative Example (Using creative, non-standard verbs like "classify")
+#### ⚠️ Weaker (a precise verb where a standard one fits exactly)
 
 ```kotlin
 class ErrorResolver {
   
-  // VIOLATION: "classify" is a non-standard, creative verb. 
-  // Standard operations that translate one type into another should use standard verbs.
+  // WEAKER: "classify" is precise enough to read, so this is NOT a review
+  // finding. Write `map` — the project's standard verb for translating one
+  // type into another — but do not flag `classify` at review.
   fun classifyException(e: Throwable): ErrorType {
     // ...
   }
 }
 ```
 
-#### ✅ Positive Example (Using the standard recognized verb "map")
+#### ✅ Preferred (the standard recognized verb "map")
 
 ```kotlin
 class ErrorResolver {
@@ -57,7 +70,7 @@ class ErrorResolver {
 }
 ```
 
-### Example 2: State or Context Transitions
+### Example 2: The reviewable violation — a vague catch-all verb
 
 #### ❌ Negative Example (Using vague catch-all verbs like "manage")
 

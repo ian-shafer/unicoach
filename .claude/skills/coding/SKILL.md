@@ -17,10 +17,13 @@ description: Global baseline philosophies for programming safety and data integr
   instantly rejected. Never check if an input is 'missing' (e.g., if count < 1).
   Instead, check if the input is 'exactly what is expected' (e.g., if count !=
   1), rejecting any unexpected surplus data.
-- **Dynamic Variable Formatting (Bracket Serialization)**: ALWAYS wrap dynamic
-  variables in brackets ([]) instead of single quotes ('') when printing strings
-  in non-end-user communications (e.g., logs, CLIs, system outputs). Example:
-  log-info "Processed node [$NODE_ID] successfully."
+- **Dynamic Variable Formatting (Bracket Serialization)**: In non-end-user
+  output (logs, CLIs, internal exceptions), wrap a value in square brackets ([])
+  when its boundaries are not otherwise visible — user input, free text,
+  anything that can be empty or carry leading or trailing spaces. Example:
+  log-info "Rejected sign-in for [$EMAIL]." Do NOT bracket a self-delimiting
+  value: a number, a timestamp, a UUID, an enum constant, a boolean. Never use
+  single quotes as the delimiter.
 - **Avoid Metasyntactic Naming (Concrete Identifiers)**: Do not append ambiguous
   filler words like State, Data, or Info onto entity names. Class and variable
   constructs must evaluate clear structural bounds directly (e.g., use Session
