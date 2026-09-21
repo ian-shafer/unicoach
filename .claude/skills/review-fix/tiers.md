@@ -73,6 +73,7 @@ extracted private helper, a swapped implementation.
 | `code-review-reuse-hardened-primitives`       |
 | `code-review-parameterize-bounds`             |
 | `code-review-single-source-of-truth`          |
+| `code-review-handle-return-values`            |
 
 `structured-payloads` and `unit-encapsulation` are the two most likely to belong
 in Tier 1 — introducing a domain type can ripple to every call site. They sit

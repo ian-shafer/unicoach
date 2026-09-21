@@ -61,6 +61,26 @@ description: Global baseline philosophies for programming safety and data integr
   COMPOSE_FILE="..."). Core interfaces and engines MUST be passed required
   context explicitly via visible command-line arguments or explicit mapping
   configuration files.
+- **Handle return values**: When a value a function returns is the ONLY report
+  of what that function did, the caller MUST read it and act on every state it
+  can hold. Calling such an operation in statement position and dropping what it
+  returned is a violation, and the next line that reports or performs success is
+  then a lie. When the value is a sealed outcome type, reading it means an
+  `else`-free `when` naming every variant, at the site that acts on it; when it
+  is an affected-row count, a "did it happen" boolean or a nullable lookup,
+  reading it means branching on the case that says it did not happen.
+  `getOrThrow()`, `getOrNull()` and `getOrElse {}` unwrap the ERROR envelope
+  only and say nothing about the outcome inside, so on an expected refusal they
+  return NORMALLY — nothing raised, nothing logged. Every user-visible
+  confirmation, redirect, cookie, email and follow-on write belongs INSIDE the
+  branch where the thing actually happened, and the branch where it did not must
+  be observable. This is the call-site half of the shape
+  `design-review-domain-outcomes` mandates: that rule makes an expected refusal
+  a SUCCESSFUL value, and this one makes somebody read it. This is NOT "use
+  every return value": a fluent `this`, a value that only echoes an input, and a
+  value whose every possible content leads to the same next action are not
+  findings, nor is a delegated-but-exhaustive consumer, a test call that is
+  state setup, or a discard the code names and argues in a comment.
 - **Immutable State Returns (Functional Patterns)**: When managing domain state
   or sessions, design models as immutable objects. Interface methods must return
   copies of these models containing mutated state (e.g., func setToken() ->
