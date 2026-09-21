@@ -73,7 +73,6 @@ extracted private helper, a swapped implementation.
 | `code-review-reuse-hardened-primitives`       |
 | `code-review-parameterize-bounds`             |
 | `code-review-single-source-of-truth`          |
-| `code-review-handle-return-values`            |
 
 `structured-payloads` and `unit-encapsulation` are the two most likely to belong
 in Tier 1 — introducing a domain type can ripple to every call site. They sit
@@ -86,8 +85,11 @@ finding is structural — but that is the exception, not the typical case.
 
 ## Tier 3 — 1–4 lines
 
-Renames, message wording, log formatting, a comment. Triaged last because a Tier
-1 fix routinely deletes the line a Tier 3 finding is about.
+Renames, message wording, log formatting, a comment — and a missing branch
+inserted at one call site. The bar is the SIZE of the fix, not whether it is
+cosmetic; a tier whose rows are only ever about the text of a line has stopped
+meaning what this heading says. Triaged last because a Tier 1 fix routinely
+deletes the line a Tier 3 finding is about.
 
 | Skill                               |
 | ----------------------------------- |
@@ -97,3 +99,4 @@ Renames, message wording, log formatting, a comment. Triaged last because a Tier
 | `code-review-bracket-serialization` |
 | `code-review-semantic-output`       |
 | `code-review-contextual-comments`   |
+| `code-review-handle-return-values`  |
