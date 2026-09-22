@@ -36,11 +36,21 @@ description: Opinionated philosophical constraints to apply when writing code.
   context-specific, or transient parameters (such as optimistic flags,
   background sync states, retry counters, or migration tags) directly into
   primary shared domain structures.
-- **Generalization Before Implementation**: Exhaustive Generalization: Evaluate
-  if a problem can be abstracted into shared infrastructure before implementing
-  a specific solution. Generic Primitives with Syntactic Sugar: Code must always
-  be implemented as generic primitives. Primitive Extraction: Centralize generic
-  interactions into broad parent abstractions.
+- **Generalization Before Implementation**: Solve the problem as a generic
+  primitive with thin per-caller sugar, and centralize generic interactions into
+  broad parent abstractions. Generalization is good by default: a reader who
+  learns one generic concept understands every call site without opening the
+  specific implementation, so an obvious, well-named abstraction is worth more
+  machinery than it saves — never skip one because it costs a type or a file.
+  The exception is generality that leaves the code HARDER to understand: an
+  abstraction whose only beneficiary is code that does not exist; a shared
+  helper whose parameters are inert at half its call sites; a mechanism you must
+  open to learn what a call does, including one that takes code as data or
+  builds identifiers by concatenation; a concept the reader must be taught
+  before a call site reads, such as a type hierarchy plus a renderer for a value
+  its one consumer prints verbatim; and a bundle type that only relays values
+  which already travel together. None of that applies where the un-generalized
+  code is already producing a wrong or silent result.
 - **Impossible Misuse**: Design APIs and record structures so that invalid
   states cannot compile. Prevent runtime assertions, optional null checks, or
   state validation blocks by using type-safe schemas (such as strict type
