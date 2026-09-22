@@ -153,9 +153,17 @@ description: Global baseline philosophies for programming safety and data integr
   identifier, not its label — and derive the label at the boundary where it is
   shown. The fix is to READ THE SOURCE, not to extract a helper; if the home
   cannot be reached from the site, the unreachability IS the defect, so thread
-  it or move the site. Does not apply to a test's expected value, a deliberate
+  it or move the site — and when two runtimes each apply the value and neither
+  can read the other, its home is the shell environment, per
+  `CONFIGURATION.md`'s prime directive, unless carrying it there costs more than
+  the two values disagreeing would: judge by what the disagreement DOES, let it
+  stay duplicated (with the reason stated) when the damage is cosmetic or merely
+  displayed and the carriage is genuinely hard, and never duplicate a value
+  whose drift can SPEND money — paid capacity, billed calls, stored data, or a
+  repair somebody funds. Does not apply to a test's expected value, a deliberate
   pin against an immutable record, a derived store with a stated reason that is
-  rebuilt wholesale, or verbatim quotation of a binding text.
+  rebuilt wholesale, verbatim quotation of a binding text, or a cross-runtime
+  duplicate whose removal costs more than its drift would.
 - **Use Standard Verbs**: Function names should be limited to domain nouns
   (e.g., "user", "session") and standard, recognizable verbs like create,
   decrypt, delete, encrypt, execute, generate, get, handle, list, map, set, or
