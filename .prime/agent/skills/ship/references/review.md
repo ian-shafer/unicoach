@@ -229,6 +229,75 @@ grade tag. Report it there; do not fix it, and do not judge whose rule it is.
 instruction quoted. Never infer the grade — inferring it is the caller grading
 the code, which is the thing one-rule-one-reviewer exists to prevent.
 
+### The dispatch message carries everything
+
+A lens child is handed the rule and the diff, not the paths to them (RFC 235).
+The message carries six parts, in this order: the lens's own rule text, the
+output template, the graded-output instruction above, the diff under review, the
+report path to write, and the one-line reply wanted back. No lens dispatch names
+a path and asks the child to fetch it.
+
+What this removes is the opening fetch. A dispatch naming three paths costs
+three tool-call round trips before the child has read anything it was sent for,
+and every turn those round trips add re-reads the whole context at cacheRead
+prices — which, across the archive, is where a review's money actually goes.
+Front-loading was measured before it was adopted: it cuts the turns and the
+cost, loses no recall on the substrate it was tried on, and finds more real
+defects. RFC 235 carries the figures, and they are not repeated here for the
+reason the grade table above gives.
+
+The diff is included for the same reason, not despite its size. It is the part
+every lens must read, so leaving it out keeps exactly the round trip this change
+exists to remove — and it saves the coordinator nothing, because the diff never
+touches the coordinator's context either way.
+
+**Assemble the message in the Python kernel; never generate it.**
+`Path(...).read_text()`, concatenated into a variable, passed to `rlm(...)`. The
+coordinator must not print the assembled message, and must not write the rule or
+diff text into its own reply. This is a correctness rule, not a style one:
+generated content passes through the coordinator's context once to be written
+and then again on every later turn of its own session, and composing a large
+mechanical string token by token is the shape that produces degenerate
+repetition loops. Assembled through a variable, the whole dispatch costs the
+coordinator the cell and a one-line reply.
+
+The child is told it may still leave the message, and exactly when:
+
+```text
+Everything you need is in this message. Open further files ONLY when your rule
+genuinely requires context beyond the diff — `code-review-single-source-of-truth`
+checking whether a fact already has a home elsewhere in the repo is the
+canonical case — and say in your reply HOW MANY files you opened.
+```
+
+A blanket "read nothing" would break precisely the lenses whose rule is about
+the rest of the repository, which is why the clause is narrow rather than
+absolute. The named lens is part of the clause, not decoration: it is the worked
+example of a rule that genuinely requires the repository, and without it the
+permission is a case with nobody in it. `.claude/skills/review-fix/tiers.md`
+owns that name — check it there before quoting it, because a clause naming a
+lens that does not exist is a worked example with nobody in it either.
+
+The reply is one tab-separated line: lens, grade, findings, files opened. The
+last field is the clause above, measured per lens rather than assumed — and the
+obligation is written ONCE, in the text the child actually reads, because a
+second phrasing of it here is what let the two drift apart.
+
+**Target five model calls or fewer, and report the number rather than enforcing
+it.** Nothing stops a child at five and nothing should: a cap would truncate a
+report mid-write and produce a lens that silently found nothing, which is the
+failure this corpus fears most. The measured median is above five, and the turns
+above it are rule-driven reads — a lens that opened no file ran in five or six.
+Front-loading removes the opening fetch, not the reads its rule requires.
+
+Tier 0 carries a fourth body of text: an `impl-review-*` lens is measured
+against the RFC, so its dispatch front-loads the RFC as well as the diff.
+
+The one limit, stated as a limit. When an assembled message would not fit the
+child's input window, the dispatch cannot proceed as one message: split that
+lens by file and record why, and when it cannot run at all say so through
+`ship-lens skip` with the real reason.
+
 ### What gets a fix child
 
 `SHOULD-FIX` and `BLOCKING` findings only. A tier whose reports are all `CLEAN`

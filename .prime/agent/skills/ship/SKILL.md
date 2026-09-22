@@ -392,14 +392,18 @@ the tree the next tier reviews. Parallelise _within_ a tier only.
 Every lens is dispatched with the graded-output instruction in
 [`references/review.md`](references/review.md) — a `**Grade:**` line and a tag
 per finding — and **only `SHOULD-FIX` and `BLOCKING` findings get a fix child**
-(RFC 233). A fix child that cannot apply a finding without breaking another rule
-**halts that item**, names both sides, and never picks a side; `review.md` gives
-the four counterparty kinds, the halt line it quotes, and the record it writes
-(RFC 234). A defect a lens reports under `## Out of lens` — real, but outside
-its own rule — is dispatched to that tier's fix batch by its grade like any
-other finding, **but only within this run's own diff**: a defect in code the run
-did not touch is an open item in the report, because fixing it would make the
-landed change something Ian did not approve.
+(RFC 233). The dispatch carries the rule text, the template, that instruction
+and the diff **inline**, assembled in the Python kernel from files on disk and
+never generated; "The dispatch message carries everything" in the same file is
+the contract, down to the clause that tells a child when it may still open a
+file of its own (RFC 235). A fix child that cannot apply a finding without
+breaking another rule **halts that item**, names both sides, and never picks a
+side; `review.md` gives the four counterparty kinds, the halt line it quotes,
+and the record it writes (RFC 234). A defect a lens reports under
+`## Out of lens` — real, but outside its own rule — is dispatched to that tier's
+fix batch by its grade like any other finding, **but only within this run's own
+diff**: a defect in code the run did not touch is an open item in the report,
+because fixing it would make the landed change something Ian did not approve.
 
 A fix child applies its **whole batch**, runs no command bare, and runs the
 suite ONCE at the end — the rule, with its reasons, is **A fix child runs its
@@ -726,12 +730,14 @@ contradiction count by `contradicts_kind`, the outcome counts by value and by
 lens, the decline classes, the `Out of lens` count, and what `ship-lens missing`
 printed at each tier close, including "nothing" (RFC 234).
 
-One more figure, from RFC 235. State the number of `ship-run` invocations
-recorded in `<rs>/runs/ledger.tsv`: the ledger carries one line per invocation
-and no child identity, so it answers how many runs this run made, not how many
-each child made. A guard with no trace is indistinguishable from an absent one,
-which is why the re-dispatch line is stated even when the answer is "it did not
-fire", and why a tier close that found nothing missing still says so.
+Two more figures, one per half of RFC 235. State the number of `ship-run`
+invocations recorded in `<rs>/runs/ledger.tsv`: the ledger carries one line per
+invocation and no child identity, so it answers how many runs this run made, not
+how many each child made. And state the median model-call count across the run's
+lens children, which is the figure front-loaded dispatch is measured in. A guard
+with no trace is indistinguishable from an absent one, which is why the
+re-dispatch line is stated even when the answer is "it did not fire", and why a
+tier close that found nothing missing still says so.
 
 Then **Contradictions**: every finding recorded `CONTRADICTED`, one line each —
 lens, `file:line`, the counterparty, and why no change satisfied both (RFC 234).
