@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+# ship-suite-green — project RFC 211's three-line suite record out of the
+# ship-run record a suite run just wrote (RFC 235).
+#
+# WHY THIS EXISTS. Phase 5 reuses a green suite instead of re-running it, and
+# what it reads is <run-scratch>/suite-green.txt: exit=, cmd= and tree=, written
+# by the shell that ran the suite rather than retyped by the child that watched
+# it. Until this script the projection was three greps in SKILL.md that every
+# fix child copied out by hand, and each of those greps can match NOTHING and
+# still succeed — a record missing a key appends two lines, phase 5 reads two
+# lines as a record, and the file is append-only so nothing afterwards can tell
+# a short record from a complete one. This is that projection as ONE command
+# with ONE failure mode: three lines, or a halt naming the key it could not
+# find.
+#
+# A RED RECORD IS STILL A RECORD. A failing suite is exactly when phase 5 most
+# needs to know what ran, so exit= is copied whatever it says and this script
+# exits 0. The judging is phase 5's and stays there: it reuses the run only when
+# exit=0, the tree still matches and the command was the unscoped `bin/test`,
+# and it RE-RUNS the suite otherwise. Dropping the lines for a red suite would
+# leave phase 5 unable to tell a suite that failed from a suite nobody ran, and
+# the second of those is the one that must always re-run.
+#
+# WHY NOT A FLAG ON ship-run. ship-run is transparent to its command's exit
+# status — that is its published contract — so it has no way to fail loudly for
+# a fault of its own, and "fail loudly" is this script's whole job.
+#
+# AND THE RECORD HAS TO BE THIS INVOCATION'S. That transparency is also why -a
+# exists: a refused ship-run writes no file, the previous run's green record is
+# left standing, and the caller's exit status cannot tell that from a wrapped
+# command refusing its own arguments in the same reserved band. -a is the
+# instant the caller invoked ship-run; a record that started before it is an
+# earlier run's and is refused. See refuse_stale_record.
+set -euo pipefail
+
+# The diagnostic band, copied from bin/functions WITH THE SAME WORDING rather
+# than sourced — see the same note in ship-run, ship-lens, ship-lock and
+# ship-order. The ship-* scripts source nothing from bin/: they run outside the
+# dev shell, against a checkout they merely point AT. ALL logging goes to
+# stderr; this script's product is a file, so it writes nothing to stdout at all
+# on a normal run.
+#
+# ALL FOUR wrappers are copied, log-error included, although every refusal this
+# script makes today is terminal and reaches for `fatal`. The band is copied
+# WHOLE so the next non-terminal error payload written here has a wrapper to
+# reach for, rather than an `echo "[ERROR] …" >&2` invented beside it — which is
+# how the one prefix a reader greps for acquires a second spelling.
+log-info() { echo "$@" >&2; }
+# shellcheck disable=SC2145
+log-warning() { echo "[WARNING] $@" >&2; }
+# shellcheck disable=SC2145
+log-error() { echo "[ERROR] $@" >&2; }
+fatal() {
+  local status_code=1
+  local OPTIND OPTARG opt
+  # The two getopts failures are DIFFERENT faults and are reported separately: a
+  # `*)` catch-all answers "bad option to fatal: -s" when -s was a perfectly good
+  # option that simply arrived without its value.
+  while getopts ":s:" opt; do
+    case "$opt" in
+      s) status_code="$OPTARG" ;;
+      \?) echo "[FATAL] Unknown option to fatal function: -$OPTARG" >&2; exit 1 ;;
+      :) echo "[FATAL] Option to fatal function requires a value: -$OPTARG" >&2; exit 1 ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  echo "[FATAL] $*" >&2
+  exit "$status_code"
+}
+
+# The reserved usage-error exit codes, copied from bin/functions WITH THE SAME
+# VALUES rather than sourced — see the same note in ship-run and ship-lens. The
+# values must not drift, and bin/ship-scripts-tests is what stops them drifting.
+EXIT_UNKNOWN_OPTION=10
+EXIT_OPTION_REQUIRES_VALUE=11
+EXIT_UNEXPECTED_ARG=20
+EXIT_MISSING_REQUIRED_ARG=21
+EXIT_INVALID_ARG_VALUE=22
+
+# RFC 211's record, in RFC 211's order. Named because the ORDER is part of the
+# format a reader of suite-green.txt expects, and because this is the one place
+# the three key names are written down.
+GREEN_KEYS=(exit cmd tree)
+# Rendered ONCE from the array above, for the help text and for the refusal
+# message: both state which keys an RFC 211 record carries, and a hand-typed
+# copy of that list is a second home for it that changes on its own schedule.
+GREEN_KEYS_TEXT="$(printf '%s=, ' "${GREEN_KEYS[@]}")"
+GREEN_KEYS_TEXT="${GREEN_KEYS_TEXT%, }"
+
+# What each of those keys may CARRY, in the same order — the value's grammar, so
+# the key names stay in GREEN_KEYS and nowhere else. Presence is not the check:
+# `exit=` with nothing after it is a line and not a fact, and suite-green.txt is
+# append-only, so a line phase 5 cannot use is a line nothing can take back.
+GREEN_VALUE_GRAMMARS=('[0-9]+' '.+' '.+')
+
+# The record name's grammar, the same containment rule ship-run applies to the
+# same name and for the same reason: it is half a path, and a `../escape` would
+# read a file outside <rs>/runs/. Written once here too — the match, the refusal
+# and the help all read this one name.
+RECORD_NAME_GRAMMAR='[a-z0-9][a-z0-9-]*'
+
+# The instant grammar, which is ship-run's `started=` spelled out: the UTC form
+# `date -u +%Y-%m-%dT%H:%M:%SZ` prints. Written once and used TWICE — on the -a
+# value the caller passes and on the started= the record carries — because the
+# freshness test below compares them to each other, and a comparison between two
+# values of different shapes is not one.
+STARTED_GRAMMAR='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
+
+help() {
+  # An UNQUOTED here-document: the key list and the name grammar below are
+  # interpolated from the constants above rather than retyped, so adding a key
+  # cannot leave this text promising the old three. Nothing added to this body
+  # may carry a $, a backtick or a backslash that is not meant to expand.
+  cat << EOF
+ship-suite-green -s <run-scratch> -n <name> -a <started-at>
+
+Appends RFC 211's three-line suite record — $GREEN_KEYS_TEXT — to
+<run-scratch>/suite-green.txt, copied verbatim out of the ship-run record that
+<name> wrote. Phase 5 reads that file to decide whether the suite can be reused.
+
+  -s   run-scratch directory
+  -n   the ship-run record name the suite ran under: $RECORD_NAME_GRAMMAR
+  -a   the instant the caller invoked ship-run, as $STARTED_GRAMMAR
+       (\`date -u +%Y-%m-%dT%H:%M:%SZ\`, taken BEFORE the invocation): the
+       record's own started= must be at or after it, or the record is an
+       earlier run's and is refused rather than projected
+  -h   this help
+
+Run it AFTER ship-run and whatever the suite answered: a red record is still a
+record, and phase 5 needs exit= to tell a suite that FAILED from one nobody ran.
+It exits 0 for a red suite and warns; phase 5 then re-runs the suite, which is
+its rule and not this script's.
+
+-a IS THE FRESHNESS CHECK, and it is required because a caller cannot make it
+for itself. A ship-run that REFUSED its invocation — a usage fault, an
+unreachable CODEBASE_ROOT — writes no file at all, so <name>.record is still the
+PREVIOUS run's, complete and green, and projecting it copies that run's exit=
+and tree= into the gate's file for bytes this invocation never tested. The
+caller's exit status cannot tell the two apart: ship-run is transparent to its
+command, so a wrapped command's own usage exit lands in the same reserved band a
+refusal does. The record's started= can, and it is a fact rather than an
+inference. The comparison is at ONE-SECOND resolution, which is all started=
+carries: a stale record whose run both started and finished inside the same
+second as <started-at> is indistinguishable from a fresh one.
+
+It writes three lines or it halts. A record missing one of the keys, carrying
+one of them twice, carrying one with no value, or carrying a started= earlier
+than -a is refused BY NAME rather than silently appended short, resolved
+last-wins, or projected out of a run nobody made, because the file is
+append-only and nothing downstream could tell the difference afterwards.
+
+Each option takes one value and is given at most once; an option given with an
+EMPTY value is refused as a bad value, never read as an option nobody passed.
+
+Stdout carries nothing on a normal run — the product is the file. The summary,
+the warning and every refusal go to stderr.
+
+Exit codes:
+  0                    three lines appended, whatever the suite exited
+  10, 11, 20, 21, 22   usage errors (bin/functions' reserved band); 22 also
+                       answers a record this script will not project — short,
+                       corrupt, or older than -a — and nothing is appended
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH=""
+NAME=""
+SINCE=""
+
+# Which options were actually GIVEN, which is a different fact from what they
+# carry, and the bookkeeping that refuses a repeat — copied from ship-lens and
+# carried in ship-run for the same two reasons. `-s ""` was passed, so answering
+# "a run-scratch (-s) is required" names a repair the caller already made; and
+# `-n green -n suite` names two records where this script projects one, so
+# last-wins projects the record nobody asked for.
+SEEN=""
+given() { case " $SEEN " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+seen_once() {
+  ! given "$1" ||
+    fatal -s "$EXIT_UNEXPECTED_ARG" "option [-$1] was given more than once; it takes one value"
+  SEEN="$SEEN $1"
+}
+
+parse_args() {
+  local OPTIND OPTARG opt
+  while getopts ":s:n:a:h" opt; do
+    case "$opt" in
+      s) seen_once s; RUN_SCRATCH="$OPTARG" ;;
+      n) seen_once n; NAME="$OPTARG" ;;
+      a) seen_once a; SINCE="$OPTARG" ;;
+      h) help 0 ;;
+      \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+      :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  [ "$#" -eq 0 ] ||
+    fatal -s "$EXIT_UNEXPECTED_ARG" "ship-suite-green takes no positional arguments: [$*]"
+
+  given s || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a run-scratch (-s) is required"
+  [ -n "$RUN_SCRATCH" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "the run-scratch (-s) is empty"
+  [ -d "$RUN_SCRATCH" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "run-scratch [$RUN_SCRATCH] is not a directory"
+  [ -r "$RUN_SCRATCH/state" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "no readable state file at [$RUN_SCRATCH/state] — not a run scratch"
+
+  given n || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a record name (-n) is required"
+  # An EMPTY -n falls to this same refusal: an empty string is not a name this
+  # grammar admits.
+  [[ "$NAME" =~ ^${RECORD_NAME_GRAMMAR}$ ]] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "record name [$NAME] is not $RECORD_NAME_GRAMMAR"
+
+  # REQUIRED, and this is the reason it is not a flag a caller may leave off: a
+  # projection made without the freshness fact is exactly the stale-green
+  # projection this option exists to refuse, and it is silent — the file it
+  # appends to is append-only and phase 5 reads it as a measurement. An
+  # invocation that cannot say when it started is refused instead.
+  given a || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "an invocation instant (-a) is required: the record must be THIS invocation's"
+  # An EMPTY -a falls to the grammar refusal too, for the reason -n's does.
+  [[ "$SINCE" =~ ^${STARTED_GRAMMAR}$ ]] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the invocation instant (-a) [$SINCE] is not $STARTED_GRAMMAR"
+}
+
+# record_line <key> — the record's own LINE for <key>, verbatim, or nothing when
+# the key is absent. The line and not the value: what suite-green.txt carries is
+# the record's bytes, so nothing here can re-spell a %q-quoted command on the
+# way through.
+#
+# EXACTLY ONE line may carry the key. A record with `exit=1` and then `exit=0`
+# in it is corrupt — half-overwritten, or two records concatenated — and "the
+# last one wins" is a silent choice between two answers, made in the one script
+# whose whole job is to refuse a record it cannot trust.
+record_line() {
+  local line
+  line="$(LC_ALL=C awk -v key="$1" '
+    index($0, key "=") == 1 { line = $0; seen++ }
+    END {
+      if (seen > 1) exit 3
+      if (seen == 1) print line
+    }' "$RECORD")" ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the record [$RECORD] carries [$1=] more than once — two answers for one key is a corrupt record, not a corrected one"
+  printf '%s' "$line"
+}
+
+GREEN_LINES=""
+EXIT_VALUE=""
+
+resolve_paths() {
+  RECORD="$RUN_SCRATCH/runs/$NAME.record"
+  GREEN="$RUN_SCRATCH/suite-green.txt"
+  [ -r "$RECORD" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "no readable record at [$RECORD] — did ship-run -n [$NAME] run?"
+}
+
+# THE FRESHNESS CHECK. Every other refusal here is about the record's SHAPE;
+# this one is about its PROVENANCE, which is the fault the shape cannot show. A
+# ship-run that refused its invocation — a usage fault, a CODEBASE_ROOT that is
+# no longer a directory — writes no file at all, so <name>.record is still the
+# previous run's: complete, well-shaped, and green for bytes this invocation
+# never tested. Projected, it becomes phase 5's licence to SKIP the suite.
+#
+# The caller cannot make this check from ship-run's exit status. ship-run is
+# transparent to its command, so a wrapped command's own usage exit lands in the
+# same reserved band a refusal does — `bin/test` uses that band — and a caller
+# reading the number alone reports the wrong cause in one direction and projects
+# a stale record in the other. started= is a fact about the record and is asked
+# of the record.
+#
+# ONE-SECOND RESOLUTION, because that is all started= carries. A record whose
+# run both started and finished within the same second as -a passes this check;
+# for the suite this projection exists for, that second does not exist.
+refuse_stale_record() {
+  local line started
+  line="$(record_line started)"
+  [ -n "$line" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the record [$RECORD] carries no started= — nothing in it says which invocation wrote it, so it cannot be shown to be this one's"
+  started="${line#started=}"
+  [[ "$started" =~ ^${STARTED_GRAMMAR}$ ]] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the record [$RECORD] carries [$line], which is not the $STARTED_GRAMMAR instant ship-run writes, so it cannot be compared with the invocation instant (-a) [$SINCE]"
+  # Compared as NUMBERS, over the two instants stripped to their 14 digits: both
+  # are fixed-width UTC, so digit order IS time order, and a numeric comparison
+  # says so without depending on the collation a string comparison would use.
+  # 10# because a leading zero would otherwise be read as octal.
+  [ "$((10#${started//[-:TZ]/}))" -ge "$((10#${SINCE//[-:TZ]/}))" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the record [$RECORD] is an EARLIER run's: it started [$started], before this invocation's [$SINCE] — ship-run wrote no record for the run you are projecting, and nothing is appended"
+}
+
+# Three lines or a halt naming what it could not use. Refused BEFORE anything is
+# written: suite-green.txt is append-only, so a short or unusable projection
+# appended is one nothing downstream can tell from a whole one. A global rather
+# than a command substitution, because `fatal` inside `$( … )` exits only the
+# subshell and the caller would have to re-derive the refusal it just made.
+project_green_lines() {
+  local index key line value missing="" count
+  for index in "${!GREEN_KEYS[@]}"; do
+    key="${GREEN_KEYS[$index]}"
+    line="$(record_line "$key")"
+    if [ -z "$line" ]; then
+      missing="$missing $key"
+      continue
+    fi
+    value="${line#"$key="}"
+    [[ "$value" =~ ^${GREEN_VALUE_GRAMMARS[$index]}$ ]] ||
+      fatal -s "$EXIT_INVALID_ARG_VALUE" "the record [$RECORD] carries [$line], which is not a [$key=] an RFC 211 record can hold: its value must match ${GREEN_VALUE_GRAMMARS[$index]}"
+    [ "$key" != exit ] || EXIT_VALUE="$value"
+    GREEN_LINES="$GREEN_LINES$line
+"
+  done
+
+  # tree= is the key this can actually lose — ship-run omits it when the
+  # directory holds no commit — and a suite record without it is not one: phase
+  # 5 compares that field.
+  [ -z "$missing" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the record [$RECORD] carries no$missing — an RFC 211 record is $GREEN_KEYS_TEXT, and a short one is not one"
+
+  # Counted before the append, not after: the file is append-only and shared
+  # with earlier runs, so its own line count answers nothing about this one.
+  count="$(printf '%s' "$GREEN_LINES" | awk 'END { print NR + 0 }')"
+  [ "$count" -eq "${#GREEN_KEYS[@]}" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "the projection built [$count] lines, not [${#GREEN_KEYS[@]}] — [$RECORD] is not an RFC 211 record"
+}
+
+append_green() { printf '%s' "$GREEN_LINES" >> "$GREEN"; }
+
+# A RED record is still a record: phase 5 needs exit= to tell a suite that
+# FAILED from a suite nobody ran, and it re-runs the suite for both.
+report_projection() {
+  [ "$EXIT_VALUE" = "0" ] ||
+    log-warning "the suite exited [$EXIT_VALUE] — the record is written anyway, and phase 5 will RE-RUN the suite rather than reuse it"
+  log-info "appended [${#GREEN_KEYS[@]}] lines to [$GREEN] from [$RECORD]"
+}
+
+main() {
+  parse_args "$@"
+  resolve_paths
+  refuse_stale_record
+  project_green_lines
+  append_green
+  report_projection
+}
+
+main "$@"

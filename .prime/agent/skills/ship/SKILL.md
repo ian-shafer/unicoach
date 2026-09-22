@@ -66,9 +66,16 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-order   -s <rs> [-n]               # land-time db/schema/ORDER
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
     scripts/ship-lens    -s <rs> start|done|skip|missing # the per-lens ledger
+    scripts/ship-run     -s <rs> -n <name> -- <command>...  # run it, record it
+    scripts/ship-suite-green -s <rs> -n <name> -a <started-at> # RFC 211
     scripts/ship-verified record|check|assert       # the CI stand-in
     scripts/ship-lock    -s <rs> acquire|release|status  # the land gate
     scripts/ship-land    -s <rs>                    # assert, ff-merge, teardown
+
+`ship-run`'s artifacts under `<rs>/runs/` are its own contract — `ship-run -h`,
+which owns it and is interpolated from the constants it describes. One of them
+is this file's business: phase 7 reports the number of `ship-run` invocations,
+and `<rs>/runs/ledger.tsv` is what that is counted from (RFC 235).
 
 Run every script with `-h` for its contract. **Read the run state from disk
 after any compaction — never from memory.**
@@ -215,6 +222,15 @@ Four conditions, each from a real failure:
 4. **A green result is valid only for the commit it ran on.** The reply names
    the SHA; check it has not moved — the same reasoning as the land lock.
 
+**All of the above is the COORDINATOR's.** A fix child spawns no runner: it runs
+the command itself, through [`scripts/ship-run`](scripts/ship-run) (RFC 235).
+That script already bounds what enters its context — the output goes to a file
+and the child reads a record — so a grandchild would read that file and retype
+three facts, at the cost of a spawn round trip charged at fix-child prices and
+one more hop of paraphrase through the one fact that must survive verbatim. The
+capability was probed before the design was written, and depth-2 dispatch works;
+that is what makes this a decision rather than a limitation.
+
 **Foreground** stays right for anything short (under about a minute), and for
 the case where waiting is the only work left. **`nohup` is not banned** — it
 suits fire-and-forget work whose result the run does not need — but a detached
@@ -283,19 +299,54 @@ A deny hit is a reset to the last checkpoint — `scripts/ship-recover -s <rs>`.
 Everything else is a review question. Take the child's report at face value;
 re-verify only where **nothing** reported -- a stall, a kill, or a hand edit.
 
-**That includes the SUITE** (RFC 211). A child that runs
-`nix develop -c bin/test` runs it AFTER `scripts/ship-checkpoint` and EMITS the
-record itself, from the same shell, appending to `<rs>/suite-green.txt`:
+**That includes the SUITE** (RFC 211). A child that runs the suite runs it AFTER
+`scripts/ship-checkpoint` and through [`scripts/ship-run`](scripts/ship-run),
+never bare (RFC 235) — and then EMITS the RFC 211 record from the same shell.
+`ship-run`'s own record does NOT replace it: phase 5 reads
+`<rs>/suite-green.txt`, so the three lines are projected out of the record
+`ship-run` just wrote, `exit=` included:
 
-    nix develop -c bin/test > <rs>/suite.log 2>&1 ; echo "exit=$?" >> <rs>/suite-green.txt
-    echo "cmd=nix develop -c bin/test"        >> <rs>/suite-green.txt
-    echo "tree=$(git rev-parse HEAD^{tree})"  >> <rs>/suite-green.txt
+    suite_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    scripts/ship-run -s <rs> -n suite -- nix develop -c bin/test || true
+    scripts/ship-suite-green -s <rs> -n suite -a "$suite_started"
 
-Emitted, not REPORTED. A hash retyped into a message is prose, and a child that
-runs the suite green, fixes a typo, checkpoints, and honestly reports the
-post-edit hash has produced a record for bytes nothing ever tested. `git`
-answers in the same shell as the suite, so the file is measurement. The child
-still reports the outcome in words, for Ian; phase 5 reads the file.
+The instant is taken BEFORE the invocation and handed to the projection, which
+refuses any record that started earlier than it. That is the one fact the caller
+cannot read off an exit status. A REFUSED `ship-run` — a usage fault, a
+`CODEBASE_ROOT` that is no longer a directory — writes no file at all, so
+`<rs>/runs/suite.record` is still an EARLIER run's: complete, well-shaped and
+green, for bytes this invocation never tested. `started=` is what tells the two
+apart, and the record carries it already.
+
+The status cannot tell them apart, which is why this recipe no longer reads it.
+`ship-run` is transparent to its command, so `bin/test` refusing its OWN
+arguments exits `bin/functions`' reserved band 10-29 exactly as a `ship-run`
+refusal does: a recipe keyed on that band names the wrong cause for the first
+and throws away a record that was written by this invocation and should have
+been projected as a red one. `|| true` here discards nothing the recipe needs —
+the suite's status is in the record's `exit=` and the projection copies it — and
+the refusal it used to hide is now caught by `started=`, as a fact rather than
+an inference.
+
+Every other outcome falls through to the projection, because a RED record is
+still a record: phase 5 needs `exit=` to tell a suite that failed from a suite
+nobody ran, and it re-runs the suite for both. That is phase 5's rule and
+`ship-suite-green` does not anticipate it — it warns, writes the three lines,
+and exits 0.
+
+One command, because this used to be three `grep`s a child retyped, and a `grep`
+that matches nothing appends nothing and still succeeds — a record missing a key
+appended TWO lines that phase 5 read as a record, in a file nothing could
+afterwards tell short from complete. `ship-suite-green` writes three lines or
+halts naming the key it could not find.
+
+Emitted, not REPORTED — and copied, never retyped. A hash retyped into a message
+is prose, and a child that runs the suite green, fixes a typo, checkpoints, and
+honestly reports the post-edit hash has produced a record for bytes nothing ever
+tested. `ship-run` answers `exit=` and `tree=` in the same process that ran the
+suite, and the three lines are lifted out of that answer, so the file is
+measurement. The child still reports the outcome in words, for Ian; phase 5
+reads the file.
 
 Phase 5 then reuses it instead of re-running the same suite over bytes Gradle
 cannot distinguish. Re-running a gate a child reported green, with no edit in
@@ -350,6 +401,13 @@ other finding, **but only within this run's own diff**: a defect in code the run
 did not touch is an open item in the report, because fixing it would make the
 landed change something Ian did not approve.
 
+A fix child applies its **whole batch**, runs no command bare, and runs the
+suite ONCE at the end — the rule, with its reasons, is **A fix child runs its
+build, test and format commands through `scripts/ship-run`** in
+[`references/review.md`](references/review.md) (RFC 235). It is stated there and
+not restated here: two copies of one instruction drift, and the fix-child
+dispatch is built from that file.
+
 Resolving a Tier 0 finding is the run's call as it always was, with one
 exception: when the amendment would change a decision **Ian approved at the
 gate**, it is his, in the `YOUR DECISION REQUIRED` block. A contradicted
@@ -384,9 +442,14 @@ At the point the suite would run — after the tier fixes, which is where the tr
 stops moving inside phase 5 — check FOUR things, not two:
 
     git status --porcelain            # empty
-    git rev-parse HEAD^{tree}         # equals tree= in <rs>/suite-green.txt
-    # exit=0 in that file
+    git rev-parse HEAD^{tree}         # equals tree= in the LAST record in <rs>/suite-green.txt
+    # exit=0 in that record
     # cmd= is exactly "nix develop -c bin/test"
+
+**The LAST record, not the first** (RFC 235). The file is append-only and a run
+now writes several: the implementation child appends one, and every fix pass
+that runs the suite appends another. Reading the first match reads the oldest
+tree in the run, which is exactly the tree the tier fixes moved away from.
 
 All four: do **not** re-run. Cite the record as phase 5's suite evidence, name
 the tree hash in the report, and re-derive the executed count from the JUnit XML
@@ -661,10 +724,14 @@ tolerate — whether the malformed-report re-dispatch fired and on which lens, t
 number of fix children spawned, each runner child's model and cost, the
 contradiction count by `contradicts_kind`, the outcome counts by value and by
 lens, the decline classes, the `Out of lens` count, and what `ship-lens missing`
-printed at each tier close, including "nothing" (RFC 234). A guard with no trace
-is indistinguishable from an absent one, which is why the re-dispatch line is
-stated even when the answer is "it did not fire", and why a tier close that
-found nothing missing still says so.
+printed at each tier close, including "nothing" (RFC 234).
+
+One more figure, from RFC 235. State the number of `ship-run` invocations
+recorded in `<rs>/runs/ledger.tsv`: the ledger carries one line per invocation
+and no child identity, so it answers how many runs this run made, not how many
+each child made. A guard with no trace is indistinguishable from an absent one,
+which is why the re-dispatch line is stated even when the answer is "it did not
+fire", and why a tier close that found nothing missing still says so.
 
 Then **Contradictions**: every finding recorded `CONTRADICTED`, one line each —
 lens, `file:line`, the counterparty, and why no change satisfied both (RFC 234).

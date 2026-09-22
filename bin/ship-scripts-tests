@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ship-scripts-tests — shell assertions over the /ship scripts: ship-lock
 # (RFC 167), ship-land's refusal of a foreign lock holder, ship-order (RFC 180
-# D6) and ship-lens (RFC 234). One harness, one temp-dir style; the sections below
-# are banner-separated and each names its own subject.
+# D6), ship-lens (RFC 234), and ship-run with ship-suite-green (RFC 235). One
+# harness, one temp-dir style; the sections below are banner-separated and each
+# names its own subject.
 #
 # The first subject is .prime/agent/skills/ship/scripts/ship-lock, the repo-wide
 # gate that serialises phase 6 of a /ship run. Its one job that a human cannot eyeball
@@ -28,9 +29,10 @@ help() {
 ship-scripts-tests [options]
 
 Runs the shell assertions over .prime/agent/skills/ship/scripts/ship-lock (and
-ship-land's refusal of a foreign lock holder), ship-order and ship-lens. Needs
-no database, no daemon and no worktree: each assertion runs against a throwaway
-git repo, run scratch and lens corpus under a temp dir.
+ship-land's refusal of a foreign lock holder), ship-order, ship-lens, ship-run
+and ship-suite-green. Needs no database, no daemon and no worktree: each
+assertion runs against a throwaway git repo, run scratch and lens corpus under
+a temp dir.
 
 Options:
   -h: Help
@@ -1797,5 +1799,1034 @@ grep -q "is retired" "$LENS_ERR" ||
 grep -q "code-review-alpha" "$LENS_ERR" ||
   fail_test "the retired lenses that emptied the tier were not named; said [$(cat "$LENS_ERR")]"
 pass_test "a tier whose every row was dropped as retired HALTS saying so, not [no row for this tier]"
+
+echo ""
+echo "==== ship-run: the command wrapper and record emitter (RFC 235) ===="
+
+# ship-run is what keeps a build log OUT of a fix child's context: it runs the
+# command with its output redirected to a file and prints a RECORD — exit code,
+# counts, and a bounded excerpt of the failing output. The load-bearing word in
+# that design is VERBATIM, and asking a model nicely for verbatim text is not a
+# guarantee and cannot be tested. It is a SCRIPT precisely so this harness can
+# assert the one property the child can no longer check for itself: every line
+# of <name>.failing is byte-identical to a line of <name>.log.
+#
+# NO GRADLE AND NO POSTGRES HERE EITHER. The command under test is a small shell
+# script this section writes, so its output is fixed and the assertions are
+# exact — a real build's output is exactly the thing this script exists to stop
+# anyone reading, and a test that grepped one would be asserting a tool's
+# formatting rather than this script's fidelity.
+SHIP_RUN="$SHIP_SCRIPTS/ship-run"
+[ -x "$SHIP_RUN" ] || fail_test "ship-run is missing or not executable [$SHIP_RUN]"
+
+# ship-run's published excerpt contract (`ship-run -h`), named ONCE for this
+# whole section. Every fixture size below is one of these three figures in
+# disguise — a quiet fixture longer than the fallback, a flood far longer than
+# the cap, an expected range that is the matched line plus its context — so a
+# bare 50 or 200 in an assertion is a SECOND home for a bound ship-run owns,
+# and one edit to a constant would leave six unrelated-looking lines wrong.
+RUN_CONTEXT_LINES=3
+RUN_EXCERPT_CAP=200
+RUN_FALLBACK_LINES=50
+
+# init_fixture_repo <dir> <seed-file> — a throwaway repo with ONE commit in it,
+# printing HEAD's tree, which is the fact every caller wants next and the field
+# `tree=` states. ONE writer: the identity AND the signing setting are the
+# repo's own, never the machine's, and a copy that set two of the three would
+# fail every commit on a developer whose ~/.gitconfig has commit.gpgsign=true —
+# for a reason the section under test does not own.
+init_fixture_repo() {
+  local repo="$1" seed="$2"
+  mkdir -p "$repo"
+  git init -q "$repo"
+  git -C "$repo" config user.email "ship-scripts-tests@example.invalid"
+  git -C "$repo" config user.name "ship-scripts-tests"
+  git -C "$repo" config commit.gpgsign false
+  echo "$seed" > "$repo/$seed"
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "fixture"
+  git -C "$repo" rev-parse 'HEAD^{tree}'
+}
+
+# A commit, because `tree=` is the field phase 5 keys its suite-record reuse on
+# and an empty repo cannot answer it.
+RUN_REPO="$FIXTURE_DIR/run-repo"
+RUN_TREE="$(init_fixture_repo "$RUN_REPO" seed.txt)"
+
+# The instant this section starts, in ship-run's own `started=` spelling. Every
+# record written below starts at or after it, so it is the freshness floor the
+# ship-suite-green section hands to `-a`. Taken HERE and not down there: a floor
+# from the epoch would make every `-a` in those assertions vacuous, and one
+# taken after the runs would refuse all of them for the wrong reason.
+RUN_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+RS_RUN="$(make_run run-run "$RUN_REPO")"
+RUNS_DIR="$RS_RUN/runs"
+RUN_OUT="$FIXTURE_DIR/run.out"
+RUN_ERR="$FIXTURE_DIR/run.err"
+run_status=0
+
+# run_ship_run <args>… — EVERY invocation goes through here. It records BOTH
+# halves of the answer, the streams and the exit status, because this script's
+# published contract IS its exit status: it is transparent to the command, so an
+# assertion that drops the status is testing nothing about the one field the
+# caller acts on.
+run_ship_run() {
+  run_status=0
+  "$SHIP_RUN" "$@" > "$RUN_OUT" 2> "$RUN_ERR" || run_status=$?
+}
+
+# The record is key=value lines, one per line, and every assertion below reads
+# it through these two rather than re-writing the same grep: a field that is
+# ABSENT must be distinguishable from one that is empty, and `grep -c` answers
+# the second question where `cut` silently answers neither.
+record_value() { sed -n "s/^$2=//p" "$RUNS_DIR/$1.record"; }
+# grep answers 0 for "the record carries this key", 1 for "it does not", and 2
+# or more for "I could not read the record at all" — and every absence assertion
+# below acts on the FALSE case, so collapsing those last two to false would let
+# "ship-run wrote no record" pass as "the field is absent", which is the one
+# thing those assertions exist to distinguish. The same split ship-run makes on
+# its own failure-pattern scan, for its reason. fail_test exits, so the caller
+# keeps a two-state answer.
+record_has() {
+  local grep_status=0
+  grep -qE "^$2=" "$RUNS_DIR/$1.record" || grep_status=$?
+  case "$grep_status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) fail_test "could not read [$RUNS_DIR/$1.record] (grep exited [$grep_status]) — [$2] is neither present nor absent in it" ;;
+  esac
+}
+
+# assert_record <name> <field> <expected> [note] — the record's field, compared
+# ONCE and reported from that same read. Retyped per site, the value in the
+# failure message is a SECOND read of a file the next command may already have
+# rewritten, so a failure can report a value no assertion ever saw. The note is
+# what the field is being asserted FOR, when the field name alone does not say.
+assert_record() {
+  local actual note
+  actual="$(record_value "$1" "$2")"
+  note="${4:-}"
+  [ "$actual" = "$3" ] ||
+    fail_test "$1.record says $2=[$actual], expected [$3]${note:+ — $note}"
+}
+
+# ── Usage: the reserved band, and not one byte written ───────────────────────
+
+# R1. A usage fault is the caller's mistake, and the script has not run
+# anything, so it must leave nothing behind for a later reader to mistake for a
+# result. The runs directory is removed first and asserted absent afterwards —
+# an empty-but-present directory would already be a claim that something ran.
+rm -rf "$RUNS_DIR"
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ship-run without -s exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_RUN" -n missing-s -- /bin/sh -c true
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ship-run without -n exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_RUN" -s "$RS_RUN" -- /bin/sh -c true
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a record name outside [a-z0-9][a-z0-9-]* exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_RUN" -s "$RS_RUN" -n Bad_Name -- /bin/sh -c true
+# The name becomes four filenames, so this one is a containment check as much as
+# a grammar check: a name carrying a slash writes outside <rs>/runs/.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a record name containing a path separator is refused" \
+  "$SHIP_RUN" -s "$RS_RUN" -n ../escape -- /bin/sh -c true
+# Without the separator the grammar is ambiguous the moment the command carries
+# an option of its own — `ship-run -s <rs> -n x bin/test -f` would hand -f to
+# getopts. A missing `--` is therefore a fault, and a DIFFERENT one from a
+# missing command: the repairs are not the same.
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a command with no -- separator exits EXIT_UNEXPECTED_ARG" \
+  "$SHIP_RUN" -s "$RS_RUN" -n no-sep /bin/sh -c true
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "a -- with no command exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_RUN" -s "$RS_RUN" -n empty-cmd --
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a -d that is not a directory exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_RUN" -s "$RS_RUN" -n bad-dir -d "$FIXTURE_DIR/no-such-dir" -- /bin/sh -c true
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a -s that is not a run scratch exits EXIT_INVALID_ARG_VALUE" \
+  "$SHIP_RUN" -s "$FIXTURE_DIR" -n no-state -- /bin/sh -c true
+# ship-run copies the reserved values rather than sourcing bin/common, exactly
+# as ship-lock and ship-lens do, so these two are what stop the copy drifting.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$SHIP_RUN" -Z -s "$RS_RUN" -n opt -- /bin/sh -c true
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-n without a value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$SHIP_RUN" -s "$RS_RUN" -n
+[ ! -e "$RUNS_DIR" ] ||
+  fail_test "a usage fault wrote under [$RUNS_DIR]: [$(ls -A "$RUNS_DIR")]"
+pass_test "ten usage faults wrote no file at all under <rs>/runs/"
+
+# R1b. Four refusals no happy path can reach. A guard is silent on every run
+# whose precondition is absent, so an inverted or unreachable one costs nothing
+# until the day it is needed — and these four are exactly the ones `make_run`'s
+# good state file and a well-formed command can never trigger.
+rm -rf "$RUNS_DIR"
+# The record's one structural promise is one key per line, so a command word
+# carrying a newline would be written and read back as two keys.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a command word containing a newline is refused" \
+  "$SHIP_RUN" -s "$RS_RUN" -n newline-word -- /bin/sh -c 'echo one
+echo two'
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an empty -d is refused" \
+  "$SHIP_RUN" -s "$RS_RUN" -n empty-dir -d "" -- /bin/sh -c true
+RS_NO_ROOT="$FIXTURE_DIR/run-no-root"
+mkdir -p "$RS_NO_ROOT"
+echo "RUN_ID=run-no-root" > "$RS_NO_ROOT/state"
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "a state with no CODEBASE_ROOT and no -d is refused" \
+  "$SHIP_RUN" -s "$RS_NO_ROOT" -n no-root -- /bin/sh -c true
+RS_BAD_ROOT="$FIXTURE_DIR/run-bad-root"
+mkdir -p "$RS_BAD_ROOT"
+echo "CODEBASE_ROOT=$FIXTURE_DIR/no-such-codebase" > "$RS_BAD_ROOT/state"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a CODEBASE_ROOT that is not a directory is refused" \
+  "$SHIP_RUN" -s "$RS_BAD_ROOT" -n bad-root -- /bin/sh -c true
+for refused_rs in "$RS_RUN" "$RS_NO_ROOT" "$RS_BAD_ROOT"; do
+  [ ! -e "$refused_rs/runs" ] ||
+    fail_test "a refused run wrote under [$refused_rs/runs]: [$(ls -A "$refused_rs/runs")]"
+done
+pass_test "four refusals no happy path reaches: newline word, empty -d, absent and bad CODEBASE_ROOT"
+
+# R1c. The one-key-per-line promise is not the command words' alone. `dir=`,
+# `log=` and `failing=` interpolate the -s and -d paths RAW, so a directory
+# whose name carries a newline would split the record into keys nobody declared
+# — the same fault the refused command word makes, through a field nobody
+# checked. Both paths are refused; the third free-text field, `-n`, cannot reach
+# the record at all, because the anchored name admits no newline, and the fourth,
+# `cmd=`, is %q-quoted. The name case is asserted here so that claim is not
+# taken on trust.
+rm -rf "$RUNS_DIR"
+NEWLINE_DIR="$FIXTURE_DIR/new$(printf '\nline')-dir"
+mkdir -p "$NEWLINE_DIR"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a -d whose path carries a newline is refused" \
+  "$SHIP_RUN" -s "$RS_RUN" -n newline-dir -d "$NEWLINE_DIR" -- /bin/sh -c true
+NEWLINE_RS="$NEWLINE_DIR/scratch"
+mkdir -p "$NEWLINE_RS"
+echo "CODEBASE_ROOT=$RUN_REPO" > "$NEWLINE_RS/state"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a -s whose path carries a newline is refused" \
+  "$SHIP_RUN" -s "$NEWLINE_RS" -n newline-scratch -- /bin/sh -c true
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a record name carrying a newline is refused" \
+  "$SHIP_RUN" -s "$RS_RUN" -n "$(printf 'two\nnames')" -- /bin/sh -c true
+[ ! -e "$RUNS_DIR" ] ||
+  fail_test "a refused path wrote under [$RUNS_DIR]: [$(ls -A "$RUNS_DIR")]"
+[ ! -e "$NEWLINE_RS/runs" ] ||
+  fail_test "a refused -s wrote under [$NEWLINE_RS/runs]"
+pass_test "every free-text field the record names is refused a newline: -d, -s and -n"
+
+# R1d. An option given with an EMPTY value was GIVEN, and a repeated option is
+# surplus rather than a correction — CLAUDE.md names both value-shape checks by
+# name. `-s ""` answered "a run-scratch (-s) is required", which names a repair
+# the caller had already made, and `-n suite -n compile` named two records and
+# wrote one.
+rm -rf "$RUNS_DIR"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an EMPTY -s is a bad value, not an absent option" \
+  "$SHIP_RUN" -s "" -n empty-scratch -- /bin/sh -c true
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an EMPTY -n is a bad value, not an absent option" \
+  "$SHIP_RUN" -s "$RS_RUN" -n "" -- /bin/sh -c true
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a repeated -n is refused, not resolved last-wins" \
+  "$SHIP_RUN" -s "$RS_RUN" -n first -n second -- /bin/sh -c true
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a repeated -s is refused" \
+  "$SHIP_RUN" -s "$RS_RUN" -s "$RS_RUN" -n twice-s -- /bin/sh -c true
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a repeated -d is refused" \
+  "$SHIP_RUN" -s "$RS_RUN" -n twice-d -d "$RUN_REPO" -d "$RUN_REPO" -- /bin/sh -c true
+# The record the last-wins reading would have written is the assertion: a refusal
+# that still wrote `second.record` would be no refusal at all.
+[ ! -e "$RUNS_DIR" ] ||
+  fail_test "a refused option wrote under [$RUNS_DIR]: [$(ls -A "$RUNS_DIR")]"
+pass_test "an empty option value and a repeated option are each refused, by their own code"
+
+# R1e. A directory that EXISTS but cannot be entered is a fault of this script,
+# not a result of the command. `[ -d ]` accepts it, `cd` then fails, and an
+# unchecked failure exits 1 under set -e — which is exactly what "the command
+# exited 1" means everywhere else here, and what a caller writing
+# `ship-run … && next` acts on.
+UNENTERABLE_DIR="$FIXTURE_DIR/unenterable"
+mkdir -p "$UNENTERABLE_DIR"
+chmod 000 "$UNENTERABLE_DIR"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a directory that cannot be entered exits in the reserved band" \
+  "$SHIP_RUN" -s "$RS_RUN" -n unenterable -d "$UNENTERABLE_DIR" -- /bin/sh -c true
+"$SHIP_RUN" -s "$RS_RUN" -n unenterable -d "$UNENTERABLE_DIR" -- /bin/sh -c true > "$RUN_OUT" 2> "$RUN_ERR" || true
+grep -q "$UNENTERABLE_DIR" "$RUN_ERR" ||
+  fail_test "the refusal did not name the directory it could not enter: [$(cat "$RUN_ERR")]"
+chmod 755 "$UNENTERABLE_DIR"
+[ ! -e "$RUNS_DIR" ] ||
+  fail_test "a directory that could not be entered wrote a record: [$(ls -A "$RUNS_DIR")]"
+pass_test "a directory that cannot be entered is refused by name in the reserved band, writing nothing"
+
+# R1f. A value that did not reconstruct names the file it came from. "state has
+# no CODEBASE_ROOT" sent its reader to find the state file by hand, which is the
+# lookup this script exists to remove.
+"$SHIP_RUN" -s "$RS_NO_ROOT" -n no-root -- /bin/sh -c true > "$RUN_OUT" 2> "$RUN_ERR" || true
+grep -q "$RS_NO_ROOT/state" "$RUN_ERR" ||
+  fail_test "the CODEBASE_ROOT refusal did not name the state file it read: [$(cat "$RUN_ERR")]"
+pass_test "the refusal for an unusable CODEBASE_ROOT names the state file it read"
+
+# ── The record ───────────────────────────────────────────────────────────────
+
+# R2. The record IS the product. A caller that reads nothing else must be able
+# to answer: did it pass, what was run, against which tree, and where is the
+# output it is not reading.
+run_ship_run -s "$RS_RUN" -n green -- /bin/sh -c 'echo first; echo second'
+[ "$run_status" -eq 0 ] || fail_test "a succeeding command exited $run_status: [$(cat "$RUN_ERR")]"
+assert_record green exit 0 "a succeeding command"
+# `cmd=` has to say what ran, unambiguously. Asserting its exact spelling would
+# pin bash's %q style rather than the property, so the field is RE-PARSED by a
+# shell and compared with the argv ship-run was given: three words, the third
+# carrying a space and a semicolon, which joined with plain spaces would read
+# back as five.
+cmd_roundtrip="$(eval "printf '[%s]' $(record_value green cmd)")"
+[ "$cmd_roundtrip" = "[/bin/sh][-c][echo first; echo second]" ] ||
+  fail_test "cmd=[$(record_value green cmd)] re-parses as [$cmd_roundtrip]"
+pass_test "cmd= re-parses as the argv ship-run ran, word for word"
+assert_record green tree "$RUN_TREE" "the fixture repo's tree"
+assert_record green dir "$RUN_REPO" "CODEBASE_ROOT from the run state"
+assert_record green log "$RUNS_DIR/green.log"
+[ -f "$RUNS_DIR/green.log" ] || fail_test "the record names a log that does not exist"
+assert_record green log_lines "$(awk 'END { print NR + 0 }' "$RUNS_DIR/green.log")" "the log's own line count"
+pass_test "the record carries exit, cmd, dir, tree and a log that exists with its line count"
+
+# R2e. The artifacts `-h` declares are the WHOLE contract of that directory. The
+# freshness marker and the JUnit scan's spool files are ship-run's own working
+# state, and their life ends with the process however it ends — so a reader of
+# <rs>/runs/ never finds a file the contract does not name, and a marker left
+# behind never outlives the run that wrote it.
+run_leftovers="$(ls -A "$RUNS_DIR" | grep '^\.' || true)"
+[ -z "$run_leftovers" ] ||
+  fail_test "a completed run left its own working files behind: [$run_leftovers]"
+pass_test "a run leaves the artifacts -h declares and none of its own scaffolding"
+
+# R2c. `-d` is the ONLY way a caller runs somewhere other than CODEBASE_ROOT,
+# and every other run in this section takes the default — a `-d` dropped on the
+# floor passes all of them. Its own repo, so the option is proved by three
+# independent facts: where the command ran, `dir=`, and `tree=`.
+ALT_REPO="$FIXTURE_DIR/alt-repo"
+ALT_TREE="$(init_fixture_repo "$ALT_REPO" alt.txt)"
+# The command writes a file into its own working directory rather than printing
+# `pwd`: a printed path answers physically or logically depending on which
+# `pwd` ran, and a fixture under a symlinked $TMPDIR would fail for a reason
+# that has nothing to do with -d. A file either landed in -d or it did not.
+run_ship_run -s "$RS_RUN" -n elsewhere -d "$ALT_REPO" -- /bin/sh -c 'echo ran > ran-here.txt'
+[ "$run_status" -eq 0 ] || fail_test "a run with -d exited $run_status: [$(cat "$RUN_ERR")]"
+[ -f "$ALT_REPO/ran-here.txt" ] ||
+  fail_test "the command did not run in -d [$ALT_REPO]"
+[ ! -e "$RUN_REPO/ran-here.txt" ] ||
+  fail_test "the command ran in CODEBASE_ROOT [$RUN_REPO] despite -d"
+assert_record elsewhere dir "$ALT_REPO" "-d was ignored"
+assert_record elsewhere tree "$ALT_TREE" "-d's own tree"
+pass_test "-d moves the command itself, the dir= field and the tree= field off CODEBASE_ROOT"
+
+# R2d. -s IS the run scratch. Every state file carries a RUN_SCRATCH= line of
+# its own — ship-claim writes it — so a scratch that was copied, moved, or
+# addressed by a second valid path would have -s validated and its files
+# written under the RECORDED path instead. Only a state naming a DIFFERENT
+# scratch can see this: every other fixture records the path it is passed.
+RS_MOVED="$FIXTURE_DIR/run-moved"
+mkdir -p "$RS_MOVED"
+{
+  echo "RUN_ID=run-moved"
+  echo "CODEBASE_ROOT=$RUN_REPO"
+  echo "RUN_SCRATCH=$FIXTURE_DIR/run-recorded-elsewhere"
+} > "$RS_MOVED/state"
+run_ship_run -s "$RS_MOVED" -n moved -- /bin/sh -c 'echo moved'
+[ "$run_status" -eq 0 ] || fail_test "a run under a moved scratch exited $run_status: [$(cat "$RUN_ERR")]"
+[ -f "$RS_MOVED/runs/moved.record" ] ||
+  fail_test "-s [$RS_MOVED] holds no record; the state file's RUN_SCRATCH won"
+[ ! -e "$FIXTURE_DIR/run-recorded-elsewhere" ] ||
+  fail_test "the run wrote under the state file's RUN_SCRATCH [$FIXTURE_DIR/run-recorded-elsewhere]"
+[ "$(sed -n 's/^log=//p' "$RS_MOVED/runs/moved.record")" = "$RS_MOVED/runs/moved.log" ] ||
+  fail_test "log=[$(sed -n 's/^log=//p' "$RS_MOVED/runs/moved.record")] is not under -s"
+pass_test "the state file's own RUN_SCRATCH does not retarget the files -s named"
+
+# R2b. The output went to the LOG and to NEITHER stream — the whole reason this
+# script exists. A record that carried the command's own output would be a
+# strictly more expensive way of streaming it. The fixture is a script rather
+# than an inline `sh -c`, because a command's own text is in `cmd=` and an
+# assertion that its OUTPUT is absent must not be able to match that.
+OUTPUT_FIXTURE="$FIXTURE_DIR/output-fixture.sh"
+cat > "$OUTPUT_FIXTURE" << 'EOF'
+#!/bin/sh
+echo "opaque-stdout-marker"
+echo "opaque-stderr-marker" >&2
+EOF
+chmod +x "$OUTPUT_FIXTURE"
+run_ship_run -s "$RS_RUN" -n hidden -- "$OUTPUT_FIXTURE"
+[ "$(cat "$RUNS_DIR/hidden.log")" = "$(printf 'opaque-stdout-marker\nopaque-stderr-marker')" ] ||
+  fail_test "the log is not the command's interleaved output: [$(cat "$RUNS_DIR/hidden.log")]"
+grep -q "opaque-" "$RUN_OUT" &&
+  fail_test "the command's output reached ship-run's stdout: [$(cat "$RUN_OUT")]"
+grep -q "opaque-" "$RUN_ERR" &&
+  fail_test "the command's output reached ship-run's stderr: [$(cat "$RUN_ERR")]"
+pass_test "both of the command's streams land in the log and in neither of ship-run's"
+
+# R3. Transparent to the command. A caller writing `ship-run … && next` is
+# testing the COMMAND, so a wrapper that exited 0 on a failed build would make
+# every such caller silently wrong.
+run_ship_run -s "$RS_RUN" -n seven -- /bin/sh -c 'exit 7'
+[ "$run_status" -eq 7 ] || fail_test "a command exiting 7 made ship-run exit $run_status"
+assert_record seven exit 7 "a command that exited 7"
+pass_test "ship-run exits with the COMMAND's status and records it"
+
+# R3b. The command's stdin is /dev/null, and this is the one assertion that can
+# tell. Both output streams were always redirected and stdin was not, so a
+# command that prompts read the CALLER's stdin — and the design has a fix child
+# background a long run and END ITS TURN, so a command blocked on a read never
+# returns, the completion follow-up never arrives, and the child stalls with no
+# signal at all. The harness therefore feeds ship-run a stdin with something in
+# it: a fixture that ECHOES what it read fails this assertion by reporting the
+# harness's own bytes, where one run against a closed stdin could not.
+STDIN_FIXTURE="$FIXTURE_DIR/stdin-fixture.sh"
+cat > "$STDIN_FIXTURE" << 'EOF'
+#!/bin/sh
+if read -r line; then
+  echo "read-from-stdin: $line"
+else
+  echo "read-from-stdin: eof"
+fi
+EOF
+chmod +x "$STDIN_FIXTURE"
+echo "caller-stdin-leaked" > "$FIXTURE_DIR/stdin.in"
+run_status=0
+"$SHIP_RUN" -s "$RS_RUN" -n stdin-eof -- "$STDIN_FIXTURE" \
+  < "$FIXTURE_DIR/stdin.in" > "$RUN_OUT" 2> "$RUN_ERR" || run_status=$?
+[ "$run_status" -eq 0 ] ||
+  fail_test "a command that reads stdin exited $run_status: [$(cat "$RUN_ERR")]"
+[ "$(cat "$RUNS_DIR/stdin-eof.log")" = "read-from-stdin: eof" ] ||
+  fail_test "the command did not read EOF on stdin: [$(cat "$RUNS_DIR/stdin-eof.log")]"
+pass_test "the wrapped command reads EOF on stdin rather than the caller's own"
+
+# ── VERBATIM: the assertion this script exists to make testable ──────────────
+
+# R4. A fix child that has stopped reading the output cannot detect a corrupted
+# excerpt, and will confidently repair the wrong thing. The fixture's failing
+# line therefore carries the three characters a paraphrase, a re-quote or a
+# `printf "$line"` would each damage — a double quote, a backslash and a tab —
+# and the excerpt is compared with cmp, not with a pattern: a pattern that
+# tolerates one of them tests nothing.
+FAIL_FIXTURE="$FIXTURE_DIR/failing-fixture.sh"
+cat > "$FAIL_FIXTURE" << 'EOF'
+#!/bin/sh
+echo "starting the fixture"
+printf 'ASSERTION FAILED: expected "a\\b" got\t"c\\d"\n'
+echo "  at Widget.kt:12"
+echo "  context two"
+echo "  context three"
+echo "a quiet trailing line no pattern matches"
+exit 1
+EOF
+chmod +x "$FAIL_FIXTURE"
+
+run_ship_run -s "$RS_RUN" -n verbatim -- "$FAIL_FIXTURE"
+[ "$run_status" -eq 1 ] || fail_test "the failing fixture exited $run_status, expected 1"
+# R4a. The general property first, because it is the weakest and so the one that
+# localises a break: EVERY line of the excerpt is, whole, a line of the log. A
+# selection rule that joined, trimmed or invented a line fails here whatever
+# range it picked.
+while IFS= read -r excerpt_line; do
+  grep -qxF -- "$excerpt_line" "$RUNS_DIR/verbatim.log" ||
+    fail_test "an excerpt line is in no log line: [$excerpt_line]"
+done < "$RUNS_DIR/verbatim.failing"
+pass_test "every line of .failing appears, whole, in .log"
+
+# R4b. Then the RANGE, which the property above cannot see: a selection that
+# dropped the context lines would still hold every test above and hand the child
+# a failure with its cause cut off. Line 2 matches, and D7 keeps
+# RUN_CONTEXT_LINES lines of FOLLOWING context after it, so the expected range
+# is derived from that constant rather than retyped — built with sed from the
+# log itself and compared with cmp, not with a pattern.
+sed -n "2,$((2 + RUN_CONTEXT_LINES))p" "$RUNS_DIR/verbatim.log" > "$FIXTURE_DIR/verbatim.expected"
+cmp -s "$FIXTURE_DIR/verbatim.expected" "$RUNS_DIR/verbatim.failing" ||
+  fail_test "the excerpt is not the log's own lines 2-$((2 + RUN_CONTEXT_LINES)): [$(cat "$RUNS_DIR/verbatim.failing")]"
+pass_test "the failing excerpt is byte-identical to the log lines it selected (cmp)"
+
+# R4c. And the log itself did not damage them on the way in. Both assertions
+# above compare the excerpt with the LOG, so a command whose output was mangled
+# on its way INTO the log satisfies them exactly. This one compares against the
+# bytes the fixture printed.
+printf 'ASSERTION FAILED: expected "a\\b" got\t"c\\d"\n' > "$FIXTURE_DIR/verbatim.line"
+sed -n '1p' "$RUNS_DIR/verbatim.failing" > "$FIXTURE_DIR/verbatim.first"
+cmp -s "$FIXTURE_DIR/verbatim.line" "$FIXTURE_DIR/verbatim.first" ||
+  fail_test "the quote, backslash or tab was altered: [$(cat -v "$FIXTURE_DIR/verbatim.first")]"
+pass_test "the fixture's quote, backslash and tab survive into .failing unaltered"
+
+# ── Never empty on failure ───────────────────────────────────────────────────
+
+# R5. The pattern set is incomplete by construction — it is a claim about what
+# failure output looks like, and the day a new tool is added it is wrong. A
+# child told "it failed" with nothing to look at is the failure this fallback
+# exists to prevent, so a failure matching no pattern gets the log's last lines.
+# The fixture takes its OWN length, so the one figure that matters — "longer
+# than the fallback" — is derived from RUN_FALLBACK_LINES at the call rather
+# than buried as a literal inside a quoted here-document.
+QUIET_FIXTURE="$FIXTURE_DIR/quiet-fixture.sh"
+cat > "$QUIET_FIXTURE" << 'EOF'
+#!/bin/sh
+awk -v total="$1" 'BEGIN { for (i = 1; i <= total; i++) print "plain output line " i }'
+exit 3
+EOF
+chmod +x "$QUIET_FIXTURE"
+run_ship_run -s "$RS_RUN" -n quiet -- "$QUIET_FIXTURE" "$((RUN_FALLBACK_LINES + 10))"
+[ "$run_status" -eq 3 ] || fail_test "the quiet fixture exited $run_status, expected 3"
+[ -s "$RUNS_DIR/quiet.failing" ] ||
+  fail_test "a failure matching no pattern produced an EMPTY excerpt"
+tail -n "$RUN_FALLBACK_LINES" "$RUNS_DIR/quiet.log" > "$FIXTURE_DIR/quiet.expected"
+cmp -s "$FIXTURE_DIR/quiet.expected" "$RUNS_DIR/quiet.failing" ||
+  fail_test "the fallback excerpt is not the log's last $RUN_FALLBACK_LINES lines"
+assert_record quiet failing_lines "$RUN_FALLBACK_LINES" "the fallback keeps the log's last lines"
+pass_test "a failure no pattern matched falls back to the log's last $RUN_FALLBACK_LINES lines, verbatim"
+
+# R5b. A failure that printed NOTHING still leaves the file, empty, and a record
+# that says it is empty. A missing file is a third state the child would have to
+# interpret, and the interpretation it would reach — "the excerpt did not get
+# written, so look at the log" — is the behaviour this design removed.
+run_ship_run -s "$RS_RUN" -n mute -- /bin/sh -c 'exit 4'
+[ "$run_status" -eq 4 ] || fail_test "the mute fixture exited $run_status, expected 4"
+[ -f "$RUNS_DIR/mute.failing" ] ||
+  fail_test "a zero-output failure left NO .failing file"
+[ ! -s "$RUNS_DIR/mute.failing" ] ||
+  fail_test "a zero-output failure invented excerpt content: [$(cat "$RUNS_DIR/mute.failing")]"
+assert_record mute failing_lines 0 "a zero-output failure"
+pass_test "a zero-output failure leaves an EMPTY .failing and a record that says so"
+
+# ── The cap ──────────────────────────────────────────────────────────────────
+
+# R6. The bound is the point. A failure that matches 5,000 lines would otherwise
+# put 5,000 lines into the context this script exists to keep bounded — the
+# excerpt would become the log by another route.
+# FLOOD_LINES is "far more than the cap", stated as that rather than as 5,000.
+FLOOD_LINES=$((RUN_EXCERPT_CAP * 25))
+FLOOD_FIXTURE="$FIXTURE_DIR/flood-fixture.sh"
+cat > "$FLOOD_FIXTURE" << 'EOF'
+#!/bin/sh
+awk -v total="$1" 'BEGIN { for (i = 1; i <= total; i++) print "e: error: something went wrong at " i }'
+exit 1
+EOF
+chmod +x "$FLOOD_FIXTURE"
+run_ship_run -s "$RS_RUN" -n flood -- "$FLOOD_FIXTURE" "$FLOOD_LINES"
+flood_lines="$(awk 'END { print NR + 0 }' "$RUNS_DIR/flood.failing")"
+[ "$flood_lines" -le "$RUN_EXCERPT_CAP" ] ||
+  fail_test "the excerpt cap did not hold: .failing has $flood_lines lines, cap $RUN_EXCERPT_CAP"
+[ "$flood_lines" -gt 0 ] || fail_test "the capped excerpt is empty"
+assert_record flood failing_lines "$flood_lines" "the excerpt's own line count"
+assert_record flood failing_truncated yes "a capped excerpt"
+# "Truncated" is only useful if the child can reach the rest, so the record must
+# still name a log that exists.
+[ -s "$(record_value flood log)" ] ||
+  fail_test "a truncated excerpt names no readable log: [$(record_value flood log)]"
+pass_test "a $FLOOD_LINES-line failure is capped at $RUN_EXCERPT_CAP lines and says failing_truncated=yes, naming the log"
+
+# R6b. And the flag is a measurement, not a constant. A small failure keeps
+# everything it selected, so it must say so — a `yes` on every failure would
+# send a child to the log every time and cost exactly what this script saved.
+assert_record verbatim failing_truncated no "a 4-line excerpt kept everything it selected"
+pass_test "an uncapped excerpt says failing_truncated=no"
+
+# ── A clean run has nothing to excerpt ───────────────────────────────────────
+
+# R7. Success is not "no pattern matched". A green suite prints test NAMES, and
+# a test named `rejects a FAILED payload` matches the pattern set exactly as a
+# real failure does — so the excerpt is keyed on the EXIT STATUS, and a child is
+# never handed failing text for a run that passed.
+run_ship_run -s "$RS_RUN" -n noisy-green -- /bin/sh -c 'echo "ok: rejects a FAILED payload"; echo "e: error: is what this test asserts"'
+[ "$run_status" -eq 0 ] || fail_test "the noisy-green fixture exited $run_status, expected 0"
+assert_record noisy-green failing_lines 0 "a PASSING run has nothing to excerpt"
+[ ! -s "$RUNS_DIR/noisy-green.failing" ] ||
+  fail_test "a passing run whose output matched the pattern set still wrote an excerpt"
+pass_test "a run that exits 0 has nothing to excerpt, however its output reads"
+
+# ── The JUnit sum ────────────────────────────────────────────────────────────
+
+# R8. The counts are re-derived from the XML the run produced, never read from
+# the command's own summary line — RFC 211's rule, for its reason: a reported
+# count is a sentence and an emitted count is an artifact.
+JUNIT_FIXTURE="$FIXTURE_DIR/junit-fixture.sh"
+cat > "$JUNIT_FIXTURE" << 'EOF'
+#!/bin/sh
+results="$1/build/test-results/test"
+mkdir -p "$results"
+printf '<testsuite name="A" tests="12" skipped="1" failures="2" errors="0">\n</testsuite>\n' > "$results/a.xml"
+# TWO suites in one file, because Gradle's aggregated results are written that
+# way and a summer that took the first tag it found would be silently short by
+# every suite after it.
+printf '<testsuite name="B1" tests="10" skipped="0" failures="0" errors="1">\n</testsuite>\n<testsuite name="B2" tests="20" skipped="0" failures="0" errors="2">\n</testsuite>\n' > "$results/b.xml"
+echo "wrote the results"
+EOF
+chmod +x "$JUNIT_FIXTURE"
+run_ship_run -s "$RS_RUN" -n counted -- "$JUNIT_FIXTURE" "$RUN_REPO"
+[ "$run_status" -eq 0 ] || fail_test "the junit fixture exited $run_status: [$(cat "$RUN_ERR")]"
+assert_record counted tests 42 "summed across two files and three suites of 12, 10 and 20"
+assert_record counted failures 2
+assert_record counted errors 3 "1 in suite B1 plus 2 in suite B2"
+assert_record counted skipped 1
+assert_record counted junit_result_files 2 "the two results files the run produced"
+record_has counted junit_omitted &&
+  fail_test "a run whose counts were written also said why they were not: [$(record_value counted junit_omitted)]"
+pass_test "the four JUnit counts are summed across every XML the run produced, and the file count is stated"
+
+# R8b. THE FRESHNESS FILTER, which is the load-bearing half. build/test-results
+# survives between runs, so a command that compiled nothing and executed nothing
+# would otherwise be credited with the PREVIOUS run's green count — the worst
+# answer this script could give, because it is the answer phase 5 reuses.
+touch -t 200001010000 "$RUN_REPO/build/test-results/test/a.xml" "$RUN_REPO/build/test-results/test/b.xml"
+STALE_FIXTURE="$FIXTURE_DIR/stale-fixture.sh"
+cat > "$STALE_FIXTURE" << 'EOF'
+#!/bin/sh
+results="$1/build/test-results/test"
+mkdir -p "$results"
+printf '<testsuite name="C" tests="5" skipped="0" failures="0" errors="0">\n</testsuite>\n' > "$results/c.xml"
+EOF
+chmod +x "$STALE_FIXTURE"
+run_ship_run -s "$RS_RUN" -n fresh-only -- "$STALE_FIXTURE" "$RUN_REPO"
+assert_record fresh-only tests 5 "a stale XML from an earlier run was counted"
+pass_test "an XML older than the run itself is NOT counted"
+
+# R8c. And a run that produced no XML omits the four fields rather than writing
+# zeros. `tests=0` is an ANSWER — "it executed none" — and a run that never asked
+# the question must not give it, or a phase 5 reading the record cannot tell a
+# format check from a suite that ran nothing.
+rm -rf "$RUN_REPO/build"
+run_ship_run -s "$RS_RUN" -n no-xml -- /bin/sh -c 'echo nothing to see'
+for field in tests failures errors skipped; do
+  record_has no-xml "$field" &&
+    fail_test "a run with no JUnit XML wrote [$field=$(record_value no-xml "$field")]"
+done
+# And the absence says WHY, in a key of its own: "it executed no test" and
+# "nothing here could read what it wrote" are different answers, and four
+# missing keys say neither.
+assert_record no-xml junit_result_files 0 "the count is stated whatever it is"
+assert_record no-xml junit_omitted no_results "why the four counts are absent"
+pass_test "a run that produced no JUnit XML omits the four counts and names the reason"
+
+# R8d. NOTHING HERE GUESSES. A <testsuite> tag this scan cannot read — the sum
+# is a tag scan and not an XML parser — is refused BY NAME, and the counts are
+# omitted with their reason, rather than coerced to the four zeros that read
+# exactly like a suite which executed nothing. The record's own `tests=0` rule
+# is the argument: a zero is an answer, and this run never got to ask.
+rm -rf "$RUN_REPO/build"
+UNREADABLE_FIXTURE="$FIXTURE_DIR/unreadable-junit-fixture.sh"
+cat > "$UNREADABLE_FIXTURE" << 'EOF'
+#!/bin/sh
+results="$1/build/test-results/test"
+mkdir -p "$results"
+# Single-quoted attributes are legal XML and this scan cannot read them: the
+# four values are there and it can see none of them.
+printf "<testsuite name='D' tests='7' skipped='0' failures='0' errors='0'>\n</testsuite>\n" > "$results/d.xml"
+EOF
+chmod +x "$UNREADABLE_FIXTURE"
+run_ship_run -s "$RS_RUN" -n unreadable-xml -- "$UNREADABLE_FIXTURE" "$RUN_REPO"
+[ "$run_status" -eq 0 ] || fail_test "the unreadable-junit fixture exited $run_status: [$(cat "$RUN_ERR")]"
+for field in tests failures errors skipped; do
+  record_has unreadable-xml "$field" &&
+    fail_test "a <testsuite> the scan could not read still wrote [$field=$(record_value unreadable-xml "$field")]"
+done
+assert_record unreadable-xml junit_omitted unreadable "a results file nothing here could read"
+grep -q "d.xml" "$RUN_ERR" ||
+  fail_test "the unreadable results file was not named on stderr: [$(cat "$RUN_ERR")]"
+pass_test "a <testsuite> this scan cannot read omits the counts, names the file, and says which absence it is"
+
+# R8e. And the same for a results file that cannot be OPENED: grep answers 1 for
+# "no tag here", which a results directory may legitimately hold, and 2 for "I
+# could not look", which is a sum short by a file nobody can see. They used to
+# be one `|| continue`. The control above — the same fixture, every file
+# readable, tests=42 — is what makes this one non-vacuous.
+rm -rf "$RUN_REPO/build"
+HALF_READABLE_FIXTURE="$FIXTURE_DIR/half-readable-junit-fixture.sh"
+cat > "$HALF_READABLE_FIXTURE" << 'EOF'
+#!/bin/sh
+results="$1/build/test-results/test"
+mkdir -p "$results"
+printf '<testsuite name="A" tests="12" skipped="1" failures="2" errors="0">\n</testsuite>\n' > "$results/a.xml"
+printf '<testsuite name="B" tests="30" skipped="0" failures="0" errors="3">\n</testsuite>\n' > "$results/b.xml"
+chmod 000 "$results/b.xml"
+EOF
+chmod +x "$HALF_READABLE_FIXTURE"
+run_ship_run -s "$RS_RUN" -n half-readable -- "$HALF_READABLE_FIXTURE" "$RUN_REPO"
+chmod 644 "$RUN_REPO/build/test-results/test/b.xml"
+record_has half-readable tests &&
+  fail_test "a run with an unopenable results file published a SHORT sum: tests=[$(record_value half-readable tests)]"
+assert_record half-readable junit_omitted unreadable "one file could not be opened"
+pass_test "a results file that cannot be opened omits the counts rather than summing short"
+
+# R8f. And the scan's OWN failure is a third way to be short. find's errors used
+# to go to /dev/null, so a results subtree it could not walk arrived here as an
+# empty list — which the record then stated by omitting the counts, i.e. as
+# "this run executed no test". The readable file beside it is what makes the
+# assertion sharp: there IS a count to publish, and it is withheld because the
+# scan could not see everything.
+rm -rf "$RUN_REPO/build"
+UNWALKABLE_FIXTURE="$FIXTURE_DIR/unwalkable-junit-fixture.sh"
+cat > "$UNWALKABLE_FIXTURE" << 'EOF'
+#!/bin/sh
+results="$1/build/test-results/test"
+mkdir -p "$results/closed"
+printf '<testsuite name="A" tests="12" skipped="1" failures="2" errors="0">\n</testsuite>\n' > "$results/a.xml"
+chmod 000 "$results/closed"
+EOF
+chmod +x "$UNWALKABLE_FIXTURE"
+run_ship_run -s "$RS_RUN" -n unwalkable -- "$UNWALKABLE_FIXTURE" "$RUN_REPO"
+chmod 755 "$RUN_REPO/build/test-results/test/closed"
+record_has unwalkable tests &&
+  fail_test "a run whose results tree could not be walked published counts anyway: tests=[$(record_value unwalkable tests)]"
+assert_record unwalkable junit_omitted unreadable "the scan could not walk the whole tree"
+pass_test "a results subtree the scan cannot walk omits the counts rather than reporting what it could see"
+rm -rf "$RUN_REPO/build"
+
+# ── The state file, the stale record and the ledger ──────────────────────────
+
+# R10. `-s` names the run scratch and the state file supplies ONE key,
+# CODEBASE_ROOT. It used to be SOURCED, which handed every line in that file the
+# power to assign a variable parse_args had already validated — `NAME` becomes
+# four filenames, `RUN_DIR` is where the command runs, `EXCERPT_CAP` is the
+# bound on what a child reads — and `ship-state set` accepts any
+# [A-Z][A-Z0-9_]* key, so this is a retargeting path rather than a hypothesis.
+# The fixture state sets all three, and none of them may change anything.
+RS_HOSTILE="$FIXTURE_DIR/run-hostile"
+mkdir -p "$RS_HOSTILE"
+{
+  echo "RUN_ID=run-hostile"
+  echo "CODEBASE_ROOT=$RUN_REPO"
+  echo "NAME=hijacked"
+  echo "RUN_DIR=$FIXTURE_DIR/no-such-codebase"
+  echo "EXCERPT_CAP=5"
+} > "$RS_HOSTILE/state"
+# record_value reads $RUNS_DIR, and this one run writes under a different
+# scratch; swapped for the four assertions and put back immediately.
+RUNS_DIR_UNDER_TEST="$RUNS_DIR"
+RUNS_DIR="$RS_HOSTILE/runs"
+run_ship_run -s "$RS_HOSTILE" -n honest -- "$FLOOD_FIXTURE" "$FLOOD_LINES"
+[ "$run_status" -eq 1 ] || fail_test "the run under a hostile state exited $run_status, expected 1"
+[ -f "$RS_HOSTILE/runs/honest.record" ] ||
+  fail_test "the state file's NAME= retargeted the record away from the -n given"
+[ ! -e "$RS_HOSTILE/runs/hijacked.record" ] ||
+  fail_test "the state file's NAME= wrote a record of its own"
+assert_record honest dir "$RUN_REPO" "the state file's RUN_DIR= moved the run off CODEBASE_ROOT"
+[ "$(awk 'END { print NR + 0 }' "$RS_HOSTILE/runs/honest.failing")" = "$RUN_EXCERPT_CAP" ] ||
+  fail_test "the state file's EXCERPT_CAP= changed the excerpt bound: .failing has $(awk 'END { print NR + 0 }' "$RS_HOSTILE/runs/honest.failing") lines, expected $RUN_EXCERPT_CAP"
+RUNS_DIR="$RUNS_DIR_UNDER_TEST"
+pass_test "the state file supplies CODEBASE_ROOT only: its NAME=, RUN_DIR= and EXCERPT_CAP= are inert"
+
+# R11. `tree=` is ABSENT, never a placeholder, when the directory holds no
+# commit — the same rule the four JUnit counts keep, and this is the field it
+# matters most for: phase 5 keys its suite-record reuse on `tree=`, so two
+# unrelated treeless runs both answering `unknown` would compare EQUAL and a
+# green record would be reused for bytes it never ran on.
+PLAIN_DIR="$FIXTURE_DIR/not-a-repo"
+mkdir -p "$PLAIN_DIR"
+run_ship_run -s "$RS_RUN" -n treeless -d "$PLAIN_DIR" -- /bin/sh -c 'echo ran'
+[ "$run_status" -eq 0 ] || fail_test "a run outside a repo exited $run_status: [$(cat "$RUN_ERR")]"
+record_has treeless tree &&
+  fail_test "a directory with no commit still wrote tree=[$(record_value treeless tree)]"
+[ -s "$RUNS_DIR/treeless.record" ] ||
+  fail_test "a run outside a repo wrote no record at all"
+grep -q "git rev-parse" "$RUN_ERR" ||
+  fail_test "the warning did not carry git's own command and answer; it said [$(cat "$RUN_ERR")]"
+pass_test "a run in a directory with no repository OMITS tree= and warns carrying git's own words"
+
+# R11b. And the REASON is a key of its own, measured rather than assumed: an
+# absent tree= used to mean "no commit here" whatever had happened, and a
+# directory that is not a repository at all is a different repair from a
+# repository nobody has committed to yet. The two states are asserted against
+# each other, because either one alone passes a script that answers one word.
+assert_record treeless tree_absent not_a_repository "a plain directory is not a repository"
+EMPTY_REPO="$FIXTURE_DIR/empty-repo"
+mkdir -p "$EMPTY_REPO"
+git init -q "$EMPTY_REPO"
+run_ship_run -s "$RS_RUN" -n uncommitted -d "$EMPTY_REPO" -- /bin/sh -c 'echo ran'
+[ "$run_status" -eq 0 ] || fail_test "a run in an empty repo exited $run_status: [$(cat "$RUN_ERR")]"
+record_has uncommitted tree &&
+  fail_test "a repository with no commit wrote tree=[$(record_value uncommitted tree)]"
+assert_record uncommitted tree_absent no_commit "a repository nobody has committed to"
+pass_test "why tree= is absent is its own key, and no_commit is distinguishable from not_a_repository"
+
+# R12. A run killed part-way must not leave the PREVIOUS run's record standing
+# beside THIS run's log. The log was always truncated first and the record
+# written last, so an interrupted second run — a killed background handle, a
+# terminated turn — left an exit=0 with a stale tree and a stale green count
+# describing a log that is now somebody else's: the same stale-green answer the
+# JUnit freshness filter exists to refuse, one level up.
+# The fixture names its OWN process and then BECOMES the sleep, so the harness
+# can end it: `kill` reaches the ship-run shell only, and the command runs in a
+# subshell of its own, so a fixture that merely spawned `sleep` would be
+# orphaned and hold the log open for five more seconds after the assertions had
+# moved on.
+SLEEP_FIXTURE="$FIXTURE_DIR/sleep-fixture.sh"
+cat > "$SLEEP_FIXTURE" << 'EOF'
+#!/bin/sh
+echo $$ > killable-running.txt
+exec sleep 5
+EOF
+chmod +x "$SLEEP_FIXTURE"
+run_ship_run -s "$RS_RUN" -n killable -- /bin/sh -c 'echo the first run'
+[ -s "$RUNS_DIR/killable.record" ] ||
+  fail_test "the first run left no record for the second to have to clear"
+rm -f "$RUN_REPO/killable-running.txt"
+"$SHIP_RUN" -s "$RS_RUN" -n killable -- "$SLEEP_FIXTURE" > /dev/null 2>&1 &
+killable_pid=$!
+# Waited FOR, not slept past: the fixture drops its own marker in the run
+# directory the instant it starts, and a fixed sleep would be a race on a loaded
+# box. The marker is the fixture's, not ship-run's — the log cannot serve,
+# because the PREVIOUS run's log is still there until this one truncates it.
+# Named, because the number a loaded box trips is the one worth being able to
+# find and argue with — and because 100 and 0.1 multiplied out to a ten-second
+# budget that nothing here said was ten seconds.
+RUN_START_POLL_SECONDS=0.1
+RUN_START_POLL_ATTEMPTS=100
+killable_waits=0
+while [ ! -s "$RUN_REPO/killable-running.txt" ] &&
+  [ "$killable_waits" -lt "$RUN_START_POLL_ATTEMPTS" ]; do
+  sleep "$RUN_START_POLL_SECONDS"
+  killable_waits=$((killable_waits + 1))
+done
+[ -s "$RUN_REPO/killable-running.txt" ] ||
+  fail_test "the backgrounded run never started within [$RUN_START_POLL_ATTEMPTS] polls of [$RUN_START_POLL_SECONDS]s"
+# KILL and not TERM: bash defers a terminating signal until the foreground
+# command it is waiting on returns, so a TERM here would be handled five seconds
+# later — after write_record — and the assertion would silently test nothing.
+kill -KILL "$killable_pid" 2> /dev/null
+wait "$killable_pid" 2> /dev/null || true
+# The fixture is a process of its own and SIGKILL reached only ship-run, so it
+# is ended here rather than left running in the fixture repo. The freshness
+# marker goes with it: ship-run removes its scaffolding on exit, and SIGKILL is
+# the one exit that runs no handler.
+kill -KILL "$(cat "$RUN_REPO/killable-running.txt")" 2> /dev/null || true
+rm -f "$RUNS_DIR/.killable.started"
+[ -f "$RUNS_DIR/killable.record" ] ||
+  fail_test "the killed run removed the record rather than emptying it"
+[ ! -s "$RUNS_DIR/killable.record" ] ||
+  fail_test "a killed run left a record standing: [$(cat "$RUNS_DIR/killable.record")]"
+pass_test "a run killed before it writes leaves an EMPTY record, not the previous run's"
+
+# R13. <rs>/runs/ is keyed by -n, so a fix child that compiles five times under
+# one name leaves ONE record — and phase 7 reports the number of ship-run
+# invocations per fix child. Recollection is exactly what RFC 211 and this
+# script exist to replace, so the count is appended, one line per invocation, to
+# a file no run truncates.
+# Counted with a missing file as zero rather than as an error: a ledger that is
+# never written is exactly the regression this asserts, and it must fail BY NAME
+# rather than by an arithmetic fault three lines later.
+ledger_before="$(awk 'END { print NR + 0 }' "$RUNS_DIR/ledger.tsv" 2> /dev/null || echo 0)"
+run_ship_run -s "$RS_RUN" -n repeated -- /bin/sh -c 'echo once'
+run_ship_run -s "$RS_RUN" -n repeated -- /bin/sh -c 'exit 5'
+ledger_after="$(awk 'END { print NR + 0 }' "$RUNS_DIR/ledger.tsv" 2> /dev/null || echo 0)"
+[ "$((ledger_after - ledger_before))" -eq 2 ] ||
+  fail_test "two invocations of one name appended $((ledger_after - ledger_before)) ledger lines, expected 2"
+# Each field NAMES ITSELF, so a reader of one line needs no legend: the third
+# column being `5` said nothing about whether 5 was a status, a count or a flag.
+[ "$(tail -n 1 "$RUNS_DIR/ledger.tsv" | cut -f2)" = "name=repeated" ] ||
+  fail_test "the ledger's last line does not name the run: [$(tail -n 1 "$RUNS_DIR/ledger.tsv")]"
+[ "$(tail -n 1 "$RUNS_DIR/ledger.tsv" | cut -f3)" = "exit=5" ] ||
+  fail_test "the ledger's last line does not carry the exit status: [$(tail -n 1 "$RUNS_DIR/ledger.tsv")]"
+# The record was REPLACED by the second run and the ledger was not: that is the
+# whole reason the ledger exists.
+assert_record repeated exit 5 "the second run of a name replaces the record"
+pass_test "every invocation appends one ledger.tsv line, and a repeated -n appends a second"
+
+# ── stdout discipline ────────────────────────────────────────────────────────
+
+# R9. bin/ rule two: stdout carries only what the caller asked for, and the
+# caller asked for the record. This is not tidiness — the record is parsed, and
+# a progress line on stdout becomes a field nobody declared.
+run_ship_run -s "$RS_RUN" -n streams -- /bin/sh -c 'echo build output'
+cmp -s "$RUN_OUT" "$RUNS_DIR/streams.record" ||
+  fail_test "stdout is not exactly the record: [$(cat "$RUN_OUT")]"
+[ -s "$RUN_ERR" ] || fail_test "ship-run reported no progress at all on stderr"
+grep -qE "^(running|exit) " "$RUN_ERR" ||
+  fail_test "the progress and closing summary are not on stderr; it said [$(cat "$RUN_ERR")]"
+pass_test "stdout is exactly the record; progress and the summary are on stderr"
+
+run_ship_run -h
+[ "$run_status" -eq 0 ] || fail_test "-h exited $run_status"
+[ -s "$RUN_OUT" ] || fail_test "-h printed no help on stdout"
+grep -q "ship-run -s <run-scratch>" "$RUN_OUT" ||
+  fail_test "-h did not print the usage line on stdout; said [$(cat "$RUN_OUT")]"
+[ ! -s "$RUN_ERR" ] || fail_test "-h wrote to stderr: [$(cat "$RUN_ERR")]"
+pass_test "-h prints help on stdout, nothing on stderr, and exits 0"
+
+echo ""
+echo "==== ship-suite-green: RFC 211's record, projected (RFC 235) ===="
+
+# The projection phase 5 reads. It used to be three greps in SKILL.md that every
+# fix child retyped, and a grep that matches NOTHING appends nothing and still
+# succeeds — so a record missing a key appended a TWO-line record that phase 5
+# read as a whole one, into an append-only file where nothing afterwards could
+# tell the two apart. These assertions are that failure mode, closed.
+SHIP_SUITE_GREEN="$SHIP_SCRIPTS/ship-suite-green"
+[ -x "$SHIP_SUITE_GREEN" ] ||
+  fail_test "ship-suite-green is missing or not executable [$SHIP_SUITE_GREEN]"
+
+GREEN_OUT="$FIXTURE_DIR/green.out"
+GREEN_ERR="$FIXTURE_DIR/green.err"
+GREEN_FILE="$RS_RUN/suite-green.txt"
+green_status=0
+run_suite_green() {
+  green_status=0
+  "$SHIP_SUITE_GREEN" "$@" > "$GREEN_OUT" 2> "$GREEN_ERR" || green_status=$?
+}
+
+# S1. A usage fault writes nothing: the file is APPEND-ONLY and shared with
+# every earlier suite run, so a half-written projection cannot be taken back.
+rm -f "$GREEN_FILE"
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ship-suite-green without -s exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_SUITE_GREEN" -n green -a "$RUN_SINCE"
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ship-suite-green without -n exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -a "$RUN_SINCE"
+# Every OTHER option is given, so each of these names one fault and not two —
+# and -a is one of them now, because it is required.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ship-suite-green without -a exits EXIT_MISSING_REQUIRED_ARG" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n green
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a record name outside [a-z0-9][a-z0-9-]* is refused" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n Bad_Name -a "$RUN_SINCE"
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a positional argument is refused" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n green -a "$RUN_SINCE" extra
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$SHIP_SUITE_GREEN" -Z -s "$RS_RUN" -n green -a "$RUN_SINCE"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "a name with no ship-run record is refused" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n no-such-run -a "$RUN_SINCE"
+[ ! -e "$GREEN_FILE" ] ||
+  fail_test "a refused projection wrote [$GREEN_FILE]: [$(cat "$GREEN_FILE")]"
+pass_test "seven usage faults wrote no suite-green.txt at all"
+
+# S2. The projection itself: three lines, in RFC 211's order, byte-identical to
+# the record's own — nothing here may re-spell a %q-quoted command on the way
+# through, because phase 5 compares `cmd=` exactly.
+run_suite_green -s "$RS_RUN" -n green -a "$RUN_SINCE"
+[ "$green_status" -eq 0 ] || fail_test "the projection exited $green_status: [$(cat "$GREEN_ERR")]"
+[ ! -s "$GREEN_OUT" ] ||
+  fail_test "the projection wrote to stdout: [$(cat "$GREEN_OUT")]"
+[ "$(awk 'END { print NR + 0 }' "$GREEN_FILE")" = "3" ] ||
+  fail_test "the projection appended $(awk 'END { print NR + 0 }' "$GREEN_FILE") lines, expected 3"
+{
+  grep '^exit=' "$RUNS_DIR/green.record"
+  grep '^cmd=' "$RUNS_DIR/green.record"
+  grep '^tree=' "$RUNS_DIR/green.record"
+} > "$FIXTURE_DIR/green.expected"
+cmp -s "$FIXTURE_DIR/green.expected" "$GREEN_FILE" ||
+  fail_test "the projection is not the record's own three lines: [$(cat "$GREEN_FILE")]"
+pass_test "the projection appends exit=, cmd= and tree=, byte-identical to the record"
+
+# S3. A RED record is still a record. A failing suite is exactly when phase 5
+# most needs exit=, and a projection that dropped it would leave phase 5 unable
+# to tell a suite that failed from a suite nobody ran.
+run_suite_green -s "$RS_RUN" -n seven -a "$RUN_SINCE"
+[ "$green_status" -eq 0 ] ||
+  fail_test "a red record made the projection exit $green_status: [$(cat "$GREEN_ERR")]"
+[ "$(awk 'END { print NR + 0 }' "$GREEN_FILE")" = "6" ] ||
+  fail_test "the second projection did not append three more lines"
+grep -qx "exit=7" "$GREEN_FILE" ||
+  fail_test "the red record's exit= was not appended: [$(cat "$GREEN_FILE")]"
+grep -q "WARNING" "$GREEN_ERR" ||
+  fail_test "a red record was projected with no warning; stderr said [$(cat "$GREEN_ERR")]"
+pass_test "a red record is projected too, exits 0, and warns that phase 5 will re-run"
+
+# S4. And a SHORT record halts. `tree=` is the key this can actually lose —
+# ship-run omits it when the directory holds no commit — and appending two lines
+# is the silent failure the script exists to end.
+run_suite_green -s "$RS_RUN" -n treeless -a "$RUN_SINCE"
+[ "$green_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a record with no tree= exited $green_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "carries no tree" "$GREEN_ERR" ||
+  fail_test "the halt did not name the key it could not find: [$(cat "$GREEN_ERR")]"
+[ "$(awk 'END { print NR + 0 }' "$GREEN_FILE")" = "6" ] ||
+  fail_test "a record missing tree= appended $(awk 'END { print NR + 0 }' "$GREEN_FILE") lines before halting"
+pass_test "a record missing tree= halts naming it, and appends nothing"
+
+# S5. PRESENCE IS NOT THE CHECK. This script's whole claim is "three lines or a
+# halt", and it promised three LINES: `tree=` with nothing after it is a line
+# and not a fact, and a record carrying `exit=` twice is corrupt rather than
+# corrected — "the last one wins" is a silent choice between two answers, made
+# in the one script written to refuse a record it cannot trust. The file is
+# append-only, so a line phase 5 cannot use is a line nothing can take back.
+RS_SHAPES="$(make_run run-shapes "$RUN_REPO")"
+SHAPES_GREEN="$RS_SHAPES/suite-green.txt"
+mkdir -p "$RS_SHAPES/runs"
+# make_shape_record <name> <line>… — a record written by hand, because ship-run
+# writes none of these shapes: they are what a truncated, concatenated or
+# hand-edited record looks like, which is the case this script exists for.
+make_shape_record() {
+  local name="$1"
+  shift
+  printf '%s\n' "$@" > "$RS_SHAPES/runs/$name.record"
+}
+
+# The CONTROL first, so every refusal below differs from an accepted record in
+# exactly the one field it names. Its started= is the freshness floor itself,
+# which is the BOUNDARY the projection admits: -a is "at or after", so a record
+# written in the same second as the invocation instant is this invocation's.
+make_shape_record whole "exit=0" "cmd=bin/test" "tree=$RUN_TREE" "started=$RUN_SINCE"
+run_suite_green -s "$RS_SHAPES" -n whole -a "$RUN_SINCE"
+[ "$green_status" -eq 0 ] ||
+  fail_test "a well-formed hand-written record was refused: [$(cat "$GREEN_ERR")]"
+[ "$(awk 'END { print NR + 0 }' "$SHAPES_GREEN")" = "3" ] ||
+  fail_test "the control record appended $(awk 'END { print NR + 0 }' "$SHAPES_GREEN") lines, expected 3"
+
+make_shape_record empty-tree "exit=0" "cmd=bin/test" "tree=" "started=$RUN_SINCE"
+run_suite_green -s "$RS_SHAPES" -n empty-tree -a "$RUN_SINCE"
+[ "$green_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a record with an empty tree= exited $green_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "tree" "$GREEN_ERR" ||
+  fail_test "the halt did not name the key with no value: [$(cat "$GREEN_ERR")]"
+
+make_shape_record twice-exit "exit=1" "cmd=bin/test" "tree=$RUN_TREE" "exit=0" "started=$RUN_SINCE"
+run_suite_green -s "$RS_SHAPES" -n twice-exit -a "$RUN_SINCE"
+[ "$green_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a record carrying exit= twice exited $green_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "more than once" "$GREEN_ERR" ||
+  fail_test "the halt did not say the key was carried twice: [$(cat "$GREEN_ERR")]"
+
+make_shape_record wordy-exit "exit=green" "cmd=bin/test" "tree=$RUN_TREE" "started=$RUN_SINCE"
+run_suite_green -s "$RS_SHAPES" -n wordy-exit -a "$RUN_SINCE"
+[ "$green_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a record whose exit= is not a number exited $green_status, expected $EXIT_INVALID_ARG_VALUE"
+
+[ "$(awk 'END { print NR + 0 }' "$SHAPES_GREEN")" = "3" ] ||
+  fail_test "a refused record appended to the file: it now has $(awk 'END { print NR + 0 }' "$SHAPES_GREEN") lines"
+pass_test "an empty value, a doubled key and a non-numeric exit= are each refused, appending nothing"
+
+# S5b. The same two value-shape rules the scripts apply to their own options:
+# an option given with an EMPTY value was given, and a repeated option is
+# surplus rather than a correction.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an EMPTY -s is a bad value, not an absent option" \
+  "$SHIP_SUITE_GREEN" -s "" -n green -a "$RUN_SINCE"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an EMPTY -n is a bad value, not an absent option" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n "" -a "$RUN_SINCE"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an EMPTY -a is a bad value, not an absent option" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n green -a ""
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a repeated -n is refused, not resolved last-wins" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n green -n seven -a "$RUN_SINCE"
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a repeated -a is refused, not resolved last-wins" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n green -a "$RUN_SINCE" -a "$RUN_SINCE"
+# An instant this script cannot COMPARE is refused at the door rather than
+# compared as a string and silently ordered by whatever it happens to spell:
+# `-a` is one half of a comparison, and half a comparison is not one.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an -a that is not the instant ship-run writes is refused" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n green -a "this morning"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "an -a in local time, without the Z, is refused" \
+  "$SHIP_SUITE_GREEN" -s "$RS_RUN" -n green -a "2026-09-22T01:00:00"
+
+# S5c. FRESHNESS, which is the one thing a record's SHAPE cannot show. A
+# ship-run that refused its invocation writes no file, so <name>.record is still
+# the previous run's — complete, well-shaped, and green for bytes this
+# invocation never tested — and projecting it hands phase 5 a licence to skip
+# the suite. The control above, `whole`, is the same record with a started= this
+# invocation's, so each refusal here differs from an accepted projection in the
+# one field it names.
+make_shape_record stale "exit=0" "cmd=bin/test" "tree=$RUN_TREE" "started=2000-01-01T00:00:00Z"
+run_suite_green -s "$RS_SHAPES" -n stale -a "$RUN_SINCE"
+[ "$green_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a record from an EARLIER run exited $green_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "2000-01-01T00:00:00Z" "$GREEN_ERR" ||
+  fail_test "the halt did not name the instant the record was written: [$(cat "$GREEN_ERR")]"
+grep -q "EARLIER" "$GREEN_ERR" ||
+  fail_test "the halt did not say the record is an earlier run's: [$(cat "$GREEN_ERR")]"
+
+# A record with no started= at all cannot be shown to be this invocation's
+# either, and "I could not check" is refused rather than read as "it passed".
+make_shape_record undated "exit=0" "cmd=bin/test" "tree=$RUN_TREE"
+run_suite_green -s "$RS_SHAPES" -n undated -a "$RUN_SINCE"
+[ "$green_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a record with no started= exited $green_status, expected $EXIT_INVALID_ARG_VALUE"
+grep -q "started" "$GREEN_ERR" ||
+  fail_test "the halt did not name the key it could not date the record by: [$(cat "$GREEN_ERR")]"
+
+# And a started= that is not the instant ship-run writes is not half a
+# comparison either: it is refused rather than ordered by whatever it spells.
+make_shape_record wordy-started "exit=0" "cmd=bin/test" "tree=$RUN_TREE" "started=this morning"
+run_suite_green -s "$RS_SHAPES" -n wordy-started -a "$RUN_SINCE"
+[ "$green_status" -eq "$EXIT_INVALID_ARG_VALUE" ] ||
+  fail_test "a record whose started= is not an instant exited $green_status, expected $EXIT_INVALID_ARG_VALUE"
+
+[ "$(awk 'END { print NR + 0 }' "$SHAPES_GREEN")" = "3" ] ||
+  fail_test "a record refused for freshness appended anyway: the file now has $(awk 'END { print NR + 0 }' "$SHAPES_GREEN") lines"
+pass_test "a record from an earlier run, an undated one and an undatable one are each refused by name, appending nothing"
 
 end_tests

@@ -1,0 +1,836 @@
+#!/usr/bin/env bash
+# ship-run — run one command for a /ship child, keep its output OFF that child's
+# context, and EMIT the record (RFC 235 W8).
+#
+# WHY THIS EXISTS. A fix child that runs `nix develop -c bin/test` pays the whole
+# log into its context, and then re-reads it on every later turn until it
+# finishes. The archive's rfc-155 run carries five such logs inside ONE fix
+# pass. Across the archive fix children burned 1,513M cacheRead tokens at a
+# median of 65 model calls each; what a review costs is the number of times a
+# child re-reads what it already has. So the command runs here, the output goes
+# to a FILE, and the tool result the child reads is a bounded record.
+#
+# THE RULE IS ABOUT WHAT ENTERS CONTEXT, NOT ABOUT THE TRANSPORT. Piping a log
+# to a file and then reading the file back costs exactly what streaming it cost.
+# The file is not the point; the record is.
+#
+# WHY A SCRIPT AND NOT A PROMPT. The load-bearing word in this half is VERBATIM.
+# Once a child stops reading the output, a summarised failing assertion becomes
+# a corrupted signal it cannot detect, and it then confidently repairs the wrong
+# thing. Asking a model nicely for verbatim text is not a guarantee and cannot
+# be tested. The excerpt is therefore written by THIS script, from the same
+# shell that ran the command, exactly as RFC 211 made the suite record an
+# emitted artifact rather than a reported one — and bin/ship-scripts-tests
+# asserts every line of <name>.failing is byte-identical to a line of
+# <name>.log, which is the only form of that guarantee a harness can check.
+#
+# THE EXCERPT IS A GUESS ABOUT WHAT MATTERED, and says so. A fixed pattern set
+# is a claim about failure formats that is incomplete the day a new tool is
+# added, so a failure that matched nothing gets the log's LAST LINES rather than
+# nothing at all: a child must never be told "it failed" with nothing to look
+# at. What the harness protects is the excerpt's FIDELITY — the bytes are the
+# log's bytes — never its RELEVANCE. The whole log is on disk and named in the
+# record, one read away when the excerpt is not enough.
+#
+# WHO RUNS IT. A fix child, for its own builds, tests and formatting; a runner
+# child, for the coordinator's. A fix child does NOT spawn a child of its own to
+# run a command: with this script in place that grandchild would read a file and
+# retype three facts, at the cost of a spawn round trip in the fix child and one
+# more hop of paraphrase through the one guarantee this script exists to
+# protect. The depth-2 probe behind that decision is in RFC 235.
+set -euo pipefail
+
+# The diagnostic band, copied from bin/functions WITH THE SAME WORDING rather
+# than sourced — the same note the exit codes below carry. ALL logging goes to
+# stderr; stdout carries only what the caller asked for, which here is the
+# record and the help text.
+#
+# ALL FOUR wrappers, and the fourth is not decoration. "I could not look" and "I
+# could not open this file" are ERROR payloads — each costs the record four
+# published fields — and spelled [WARNING] they read as the script's advisory
+# notes, which is what they were before log-error was copied in.
+#
+# WORD FOR WORD, not approximately. A copy is only as good as its sameness: two
+# spellings of one band leave a reader unable to say which home is authoritative,
+# and the ship-* copies had already drifted from bin/functions in the `$@` below
+# before this one was written. The ONE line that deliberately differs is
+# fatal()'s `:` arm — bin/functions repeats its `\?` message there, answering
+# "unknown option" for an option that was perfectly well known and merely
+# arrived without its value — and ship-lens and ship-order carry that same
+# correction with the same note.
+log-info() { echo "$@" >&2; }
+# shellcheck disable=SC2145
+log-warning() { echo "[WARNING] $@" >&2; }
+# shellcheck disable=SC2145
+log-error() { echo "[ERROR] $@" >&2; }
+fatal() {
+  local status_code=1
+  local OPTIND OPTARG opt
+  # The two getopts failures are DIFFERENT faults and are reported separately: a
+  # `*)` catch-all answers "bad option to fatal: -s" when -s was a perfectly good
+  # option that simply arrived without its value.
+  while getopts ":s:" opt; do
+    case "$opt" in
+      s) status_code="$OPTARG" ;;
+      \?) echo "[FATAL] Unknown option to fatal function: -$OPTARG" >&2; exit 1 ;;
+      :) echo "[FATAL] Option to fatal function requires a value: -$OPTARG" >&2; exit 1 ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  echo "[FATAL] $*" >&2
+  exit "$status_code"
+}
+
+# The reserved usage-error exit codes, copied from bin/functions WITH THE SAME
+# VALUES rather than sourced — see the same note in ship-lock, ship-order and
+# ship-lens. The ship-* scripts source nothing from bin/: they run outside the
+# dev shell, against a checkout they merely point AT. The values must not drift,
+# and bin/ship-scripts-tests is what stops them drifting.
+EXIT_UNKNOWN_OPTION=10
+EXIT_OPTION_REQUIRES_VALUE=11
+EXIT_UNEXPECTED_ARG=20
+EXIT_MISSING_REQUIRED_ARG=21
+EXIT_INVALID_ARG_VALUE=22
+
+# The excerpt's shape. Three constants, named because every one of them is a
+# judgement that a future run may want to argue with, and a bare 200 in the
+# middle of a pipeline argues with nobody.
+CONTEXT_LINES=3   # lines of FOLLOWING context kept after each matched line
+EXCERPT_CAP=200   # most lines .failing may hold when a pattern matched
+FALLBACK_LINES=50 # log lines kept when the command failed and nothing matched
+
+# The record name's grammar. It becomes four filenames, so this is a
+# containment rule and not a style choice — and it is written ONCE: the match
+# below, the refusal it prints and the help text above all read this name, and
+# ship-suite-green carries the same constant for the same reason.
+RECORD_NAME_GRAMMAR='[a-z0-9][a-z0-9-]*'
+
+# The failure-pattern set. Deliberately a list of small patterns rather than one
+# regex literal: each line is one claim about what a failure looks like, and a
+# claim is easier to add to, delete and argue with on its own line. It is NOT a
+# specification of failure output — see the header — which is why the fallback
+# below exists and is not optional.
+FAILURE_PATTERNS=(
+  'FAILED'
+  'FAILURE'
+  '^e: '            # kotlinc
+  '[Ee]rror:'
+  '\[ERROR\]'
+  '\[FATAL\]'
+  'fatal:'
+  'Exception'
+  'Caused by:'
+  'AssertionError'
+  '[Aa]ssertion failed'
+  'expected:'
+  'not ok'          # TAP
+  'panic:'
+  'Segmentation fault'
+  '❌'
+  '✗'
+)
+
+help() {
+  # An UNQUOTED here-document: the three excerpt figures below are interpolated
+  # from the constants above rather than retyped, so changing one cannot leave
+  # this text quietly promising the old bound — and every document in the skill
+  # points here as the owner of that contract, which makes a stale figure here a
+  # stale figure everywhere. Nothing added to this body may carry a $, a
+  # backtick or a backslash that is not meant to expand.
+  cat << EOF
+ship-run -s <run-scratch> -n <name> [-d <dir>] -- <command>...
+
+Runs <command> with its whole output redirected to a file, and prints a RECORD
+of the run — never the output. What a child reads is bounded whatever the
+command printed.
+
+Writes, under <run-scratch>/runs/:
+
+  <name>.log       stdout and stderr of the command, interleaved, nothing else
+  <name>.failing   the failing excerpt: lines matching the failure-pattern set
+                   plus $CONTEXT_LINES lines of following context each, in file
+                   order, de-duplicated, capped at $EXCERPT_CAP lines. When the
+                   command FAILED and nothing matched, the log's last
+                   $FALLBACK_LINES lines instead — a failure is never reported
+                   with nothing to look at. Empty on success, and empty (not
+                   missing) when a failure printed nothing at all.
+  <name>.record    key=value lines: cmd, dir, exit, tree, started, log,
+                   log_lines, failing, failing_lines, failing_truncated,
+                   junit_result_files, and — only when that count is above zero
+                   and every one of those files could be read — tests,
+                   failures, errors, skipped, summed across them. cmd carries
+                   each word shell-quoted, so one argument containing a space
+                   is distinguishable from two; every path it names is
+                   absolute, so the record reads from any directory.
+                   A field that does not apply is ABSENT, never a placeholder:
+                   another run's placeholder would compare EQUAL to this one's.
+                   WHY it is absent is a key of its OWN, never a value in the
+                   field itself — tree_absent= names which of no_commit,
+                   not_a_repository or no_git left tree= out, and
+                   junit_omitted= names which of no_results or unreadable left
+                   the four counts out.
+  ledger.tsv       ONE APPENDED LINE PER INVOCATION, whatever its -n, every
+                   field NAMED in the line itself: started=, name=, exit=,
+                   cmd=, tab-separated. The three files above are keyed by
+                   <name> and a second run of that name replaces them, so this
+                   is the only place the NUMBER of runs — the figure phase 7
+                   reports — survives.
+
+The three <name> files are emptied BEFORE the command runs, so a run killed
+part-way leaves an empty record rather than the PREVIOUS run's standing beside
+this run's log.
+
+Every line of <name>.failing is byte-identical to a line of <name>.log. That is
+the guarantee this script exists to make testable, and bin/ship-scripts-tests
+asserts it.
+
+  -s   run-scratch directory; its state file supplies CODEBASE_ROOT
+  -n   record name: $RECORD_NAME_GRAMMAR
+  -d   directory to run in (default: CODEBASE_ROOT from the run state)
+  -h   this help
+
+Each option takes one value and is given at most once: a repeated option names
+two things where this script can record one, so it is refused rather than
+resolved last-wins. An option given with an EMPTY value is refused as a bad
+value, never read as an option nobody passed.
+
+Everything after -- is the command. It is executed directly, with no shell
+re-interpretation, so quoting and globbing are the caller's own. Its stdin is
+/dev/null: a command that prompts then reads EOF and returns, where inheriting
+this script's stdin would leave it blocked forever on a caller that has ended
+its turn. A command word containing a newline is refused, and so is a -s or -d
+path carrying one: the record's one structural promise is one key per line, and
+dir=, log= and failing= interpolate those paths raw.
+
+Stdout is the record and nothing else. Progress and the closing summary are
+diagnostics and go to stderr.
+
+Exit codes:
+  the COMMAND's own status — this script is transparent to it
+  10, 11, 20, 21, 22   usage errors (bin/functions' reserved band); a usage
+                       fault writes no file at all. 22 also answers a fault of
+                       THIS script that stopped the command running — a
+                       directory that exists but cannot be entered — because a
+                       fault of the wrapper is not a result of the command and
+                       must not be recorded as one; no record is written for it.
+EOF
+  exit "${1:-0}"
+}
+
+# ── Step 1: what the caller asked for ─────────────────────────────────────────
+RUN_SCRATCH=""
+NAME=""
+RUN_DIR=""
+CMD=()
+
+# Which options were actually GIVEN, which is a different fact from what they
+# carry: `-d ""` is a bad VALUE and `-d` absent is no answer at all, and the two
+# have different repairs and different reserved codes. Carried in a list rather
+# than one flag per option so a repeated option can be refused with the same
+# bookkeeping — copied from ship-lens, which already refuses both.
+SEEN=""
+given() { case " $SEEN " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# A repeated option is surplus, not a correction: `-n suite -n compile` names
+# two records and this script writes one, so last-wins writes the record nobody
+# asked for. Refused, exactly as ship-lens refuses it and for its reason.
+seen_once() {
+  ! given "$1" ||
+    fatal -s "$EXIT_UNEXPECTED_ARG" "option [-$1] was given more than once; it takes one value"
+  SEEN="$SEEN $1"
+}
+
+# Every path the record names has to be openable from ANY directory: a child
+# that backgrounds a long run, ends its turn and wakes up in a different working
+# directory reads `log=` from there. `cd … && pwd` rather than `realpath`: the
+# logical form keeps the spelling the caller used, so `dir=` compares equal to
+# the path that was passed, and `realpath` is not on every PATH this script runs
+# under.
+#
+# `cd` can fail on a directory `[ -d ]` accepts — one this user may not traverse
+# — and an unchecked failure here exits 1 under set -e, which is exactly what
+# "the command exited 1" means everywhere else in this script. Refused by name,
+# in the reserved band: fatal's status leaves the command substitution under
+# set -e, so the caller's assignment carries it.
+absolute_dir() {
+  (cd "$1" 2> /dev/null && pwd) ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "cannot enter [$1] — it is a directory this user may not traverse"
+}
+
+parse_args() {
+  # The original argument vector, kept because getopts CONSUMES the `--` and
+  # then cannot tell you it was there. After the loop, OPTIND-2 is the index of
+  # the last token getopts read; when that token is `--`, the separator was
+  # given. Without this, `ship-run -s <rs> -n x bin/test` — a command with no
+  # separator — would be indistinguishable from the correct form, and the
+  # grammar would quietly accept the one spelling that breaks as soon as the
+  # command carries an option of its own.
+  local orig_count=$#
+  local orig=("$@")
+  local OPTIND OPTARG opt sep_index
+
+  while getopts ":s:n:d:h" opt; do
+    case "$opt" in
+      s) seen_once s; RUN_SCRATCH="$OPTARG" ;;
+      n) seen_once n; NAME="$OPTARG" ;;
+      d) seen_once d; RUN_DIR="$OPTARG" ;;
+      h) help 0 ;;
+      \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+      :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+
+  sep_index=$((OPTIND - 2))
+  shift $((OPTIND - 1))
+
+  if [ "$sep_index" -ge 0 ] && [ "$sep_index" -lt "$orig_count" ] &&
+    [ "${orig[$sep_index]}" = "--" ]; then
+    # Separator present: everything left is the command, and there may be none.
+    [ "$#" -gt 0 ] ||
+      fatal -s "$EXIT_MISSING_REQUIRED_ARG" "nothing follows [--] — a command is required"
+    CMD=("$@")
+  else
+    # No separator. A stray positional is a DIFFERENT fault from no command at
+    # all, and they have different repairs — add the `--`, or add a command.
+    [ "$#" -eq 0 ] ||
+      fatal -s "$EXIT_UNEXPECTED_ARG" "the command must follow [--]: [$*]"
+    fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a command is required, after [--]"
+  fi
+
+  # GIVEN, then the VALUE: an option passed with an empty value was passed, and
+  # answering "a run-scratch (-s) is required" to `-s ""` names a repair the
+  # caller already made. The two faults keep their own reserved codes.
+  given s || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a run-scratch (-s) is required"
+  [ -n "$RUN_SCRATCH" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "the run-scratch (-s) is empty"
+  [ -d "$RUN_SCRATCH" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "run-scratch [$RUN_SCRATCH] is not a directory"
+  [ -r "$RUN_SCRATCH/state" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "no readable state file at [$RUN_SCRATCH/state] — not a run scratch"
+  RUN_SCRATCH="$(absolute_dir "$RUN_SCRATCH")"
+
+  given n || fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a record name (-n) is required"
+  # The name becomes four filenames. Anchored, so a `../escape` or a name
+  # carrying a slash is refused here rather than writing outside <rs>/runs/ —
+  # and an EMPTY -n falls to this same refusal, because an empty string is not
+  # a name this grammar admits.
+  [[ "$NAME" =~ ^${RECORD_NAME_GRAMMAR}$ ]] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "record name [$NAME] is not $RECORD_NAME_GRAMMAR"
+
+  if given d; then
+    [ -n "$RUN_DIR" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "the directory (-d) is empty"
+    [ -d "$RUN_DIR" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "directory [$RUN_DIR] is not a directory"
+    RUN_DIR="$(absolute_dir "$RUN_DIR")"
+  fi
+
+  # ONE record per line is the record file's only structural promise, so a
+  # command word carrying a newline is refused at the door rather than written
+  # and read back as two keys — the same refusal, for the same reason, that
+  # ship-lens makes on a ledger field.
+  local word
+  for word in "${CMD[@]}"; do
+    case "$word" in
+      *$'\n'*) fatal -s "$EXIT_INVALID_ARG_VALUE" "a command word contains a newline: [$word]" ;;
+    esac
+  done
+}
+
+# ── Step 2: the run's own state ───────────────────────────────────────────────
+# READ, never SOURCED, and exactly one key. `.` on the state file hands every
+# line in it the power to assign a variable this script owns, AFTER parse_args
+# has validated them — NAME becomes four filenames below, RUN_DIR is where the
+# command runs, CMD is what runs, EXCERPT_CAP is the bound on what a child
+# reads — and `ship-state set` accepts any [A-Z][A-Z0-9_]* key, so that is a
+# live retargeting path rather than a hypothetical one. Saving and restoring one
+# name at a time is the shape that leaves the NEXT name exposed, so the hazard
+# is removed instead of defended: awk can neither execute nor assign anything,
+# and exactly one value crosses back.
+#
+# state_value <key> — the state's value for <key>, or nothing. The LAST matching
+# line wins, which is what sourcing did, so a state file that repeats a key is
+# read the way every other ship script reads it.
+state_value() {
+  LC_ALL=C awk -v key="$1" '
+    index($0, key "=") == 1 { value = substr($0, length(key) + 2) }
+    END { print value }' "$RUN_SCRATCH/state"
+}
+
+load_state() {
+  # -d is the caller's answer and outranks the state, which is then not consulted
+  # at all: that is the honest statement of what -d means.
+  ! given d || return 0
+
+  # Both refusals NAME THE FILE they read, and the first lists the keys it did
+  # find: a value that did not reconstruct sends its reader to the file it came
+  # from, and "state has no CODEBASE_ROOT" with no path is a lookup the reader
+  # then has to make by hand.
+  local codebase_root
+  codebase_root="$(state_value CODEBASE_ROOT)"
+  [ -n "$codebase_root" ] ||
+    fatal -s "$EXIT_MISSING_REQUIRED_ARG" "state [$RUN_SCRATCH/state] supplies no CODEBASE_ROOT (absent or empty) and no directory (-d) was given — its keys are [$(LC_ALL=C sed -n 's/=.*//p' "$RUN_SCRATCH/state" | tr '\n' ' ')]"
+  [ -d "$codebase_root" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "CODEBASE_ROOT [$codebase_root], from [$RUN_SCRATCH/state], is not a directory"
+  RUN_DIR="$(absolute_dir "$codebase_root")"
+}
+
+# ── Step 2b: the paths the record will name ───────────────────────────────────
+# ONE KEY PER LINE is the record's only structural promise, and a command word
+# is not the only thing that can break it. dir=, log= and failing= interpolate a
+# path RAW — the -s scratch and the run directory — so a directory whose name
+# carries a newline splits the record into keys nobody declared. Refused rather
+# than encoded, and refused for the same reason everywhere: an encoded path is
+# one a reader has to decode before it can open it. The other two free-text
+# fields cannot break the promise and so are not checked here — `-n` is anchored
+# to [a-z0-9][a-z0-9-]* above, which admits no newline, and `cmd=` is %q-quoted,
+# which renders one as $'\n'.
+reject_newline_paths() {
+  local path
+  for path in "$RUN_SCRATCH" "$RUN_DIR"; do
+    case "$path" in
+      *$'\n'*) fatal -s "$EXIT_INVALID_ARG_VALUE" "a path the record names contains a newline: [$path]" ;;
+    esac
+  done
+}
+
+# ── Text helpers ──────────────────────────────────────────────────────────────
+# awk, not `wc -l`: wc counts NEWLINES, so a final line with no trailing newline
+# is not counted at all and every count in the record would be one short for
+# exactly the command that died mid-line — which is the interesting case.
+count_lines() { awk 'END { print NR + 0 }' "$1"; }
+
+# ── Scaffolding: this script's own files, not the caller's artifacts ─────────
+# -h declares FOUR files under <rs>/runs/ and a reader is entitled to treat that
+# list as the contract. The freshness marker and the JUnit scan's two spool
+# files are this script's own working state, so their life ends with this
+# process HOWEVER it ends — a fatal, a set -e fault, a terminated turn — rather
+# than on the one code path that reaches the end of main. SIGKILL cannot be
+# trapped and is the one case that still leaves them; the next run of that name
+# truncates them.
+SCAFFOLDING=()
+# scaffold <path> — declare <path> this script's own working file. It is removed
+# when the process ends, whether or not the step that created it got that far.
+scaffold() { SCAFFOLDING+=("$1"); }
+remove_scaffolding() {
+  [ "${#SCAFFOLDING[@]}" -eq 0 ] || rm -f "${SCAFFOLDING[@]}"
+}
+trap remove_scaffolding EXIT
+
+# ── Step 3: run it ────────────────────────────────────────────────────────────
+# The command is executed directly — no `eval`, no `bash -c` — so a path with a
+# space stays one argument and nothing the caller quoted is re-interpreted here.
+run_command() {
+  mkdir -p "$RUNS_DIR"
+  # ALL THREE of this name's files are emptied BEFORE the command runs. The log
+  # and the excerpt already were; the record is the one a reader TRUSTS, and a
+  # run killed before write_record — a terminated turn, a killed background
+  # handle — would otherwise leave the PREVIOUS run's exit=0, with its tree and
+  # its green counts, standing beside a log that is now this run's. That is the
+  # same stale-green answer the JUnit freshness filter below exists to refuse,
+  # one level up. Emptied rather than removed, for the reason .failing is: a
+  # missing file is a third state the reader has to interpret.
+  : > "$LOG"
+  : > "$FAILING"
+  : > "$RECORD"
+
+  # The freshness marker for the JUnit sum below. A FILE, not a timestamp
+  # string: `find -newer` compares the two inodes' mtimes at whatever resolution
+  # the filesystem keeps, where a seconds-granularity `-newermt` would count a
+  # stale XML written in the same second as this run's own.
+  MARKER="$RUNS_DIR/.$NAME.started"
+  scaffold "$MARKER"
+  : > "$MARKER"
+  STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  log-info "running [$CMD_TEXT]"
+  log-info "  in  [$RUN_DIR]"
+  log-info "  log [$LOG]"
+
+  # `cd` was proved possible at parse time, and a chmod or a removal between
+  # then and here reopens the window. Its failure is OURS, not the command's:
+  # returned raw it is written to the record as `exit=1` beside `cmd=`, a
+  # result for bytes nothing executed. Proved with a marker the command cannot
+  # forge, because a command is free to return any status this arm could
+  # otherwise have reserved.
+  #
+  # stdin is /dev/null. Both output streams were always redirected and stdin was
+  # not, so a command that prompts — a credential read, a nix confirmation —
+  # blocked on the stdin of a child that had already ended its turn, and the
+  # completion follow-up never came. EOF is an answer; a hang is not.
+  local entered="$RUNS_DIR/.$NAME.entered"
+  scaffold "$entered"
+  rm -f "$entered"
+  STATUS=0
+  ( cd "$RUN_DIR" && : > "$entered" && exec "${CMD[@]}" ) < /dev/null > "$LOG" 2>&1 || STATUS=$?
+  [ -e "$entered" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "could not enter [$RUN_DIR] — no command was run and no record was written"
+  rm -f "$entered"
+
+  LOG_LINES="$(count_lines "$LOG")"
+}
+
+# ── Step 4: the failing excerpt ───────────────────────────────────────────────
+# Byte-exactness is the whole contract, so every line that reaches .failing is
+# SELECTED from the log by line number and copied — never reformatted, never
+# re-quoted, never passed through a substitution. LC_ALL=C throughout: a build
+# log is not guaranteed to be valid UTF-8, and a grep that dies on an illegal
+# byte sequence would silently produce an empty excerpt for the one run that
+# most needed one.
+# The log lines that matched, kept with the following CONTEXT_LINES lines each —
+# a Kotlin compiler error's caret line and an assertion's expected/actual sit
+# AFTER the line that names the failure. De-duplicated because overlapping
+# windows are the normal case, re-emitted in FILE order so the excerpt reads as
+# the log reads, capped, and SELECTED from the log by line number so every line
+# is byte-identical to the log's own.
+excerpt_matched_lines() {
+  local nums="$1" want count
+  want="$(printf '%s\n' "$nums" | awk -v ctx="$CONTEXT_LINES" -v last="$LOG_LINES" '
+    { for (i = 0; i <= ctx; i++) { n = $1 + i; if (n <= last) seen[n] = 1 } }
+    END { for (n in seen) print n }' | sort -n)"
+  count="$(printf '%s\n' "$want" | awk 'END { print NR + 0 }')"
+  if [ "$count" -gt "$EXCERPT_CAP" ]; then
+    want="$(printf '%s\n' "$want" | head -n "$EXCERPT_CAP")"
+    FAILING_TRUNCATED=yes
+  fi
+  # `$want` is UNQUOTED on purpose, and this is the one word-split in the script.
+  # printf must see ONE ARGUMENT PER LINE NUMBER, so `list` reaches awk
+  # space-separated. Quoted, printf emits the whole newline-joined block as one
+  # word, split(list, a, " ") yields one unusable element, `keep` matches
+  # nothing, and .failing comes out EMPTY for a run that FAILED — while exit=,
+  # log_lines= and failing_truncated= all still read as a normal run, so nothing
+  # downstream can tell. An SC2086 "fix" here IS that regression, which is why
+  # the warning is disabled rather than obeyed.
+  # shellcheck disable=SC2086
+  LC_ALL=C awk -v list="$(printf '%s ' $want)" '
+    BEGIN { n = split(list, a, " "); for (i = 1; i <= n; i++) keep[a[i]] = 1 }
+    (FNR in keep)' "$LOG" > "$FAILING"
+}
+
+# THE FALLBACK, and it is not optional. The pattern set is incomplete by
+# construction; a failure it did not recognise must still hand the child
+# something to look at, and the last lines are where a command that died said
+# why. A failure that printed NOTHING leaves this file empty — empty, and
+# present, so the record's failing_lines=0 is a fact rather than a missing file
+# the child has to interpret.
+excerpt_log_tail() {
+  tail -n "$FALLBACK_LINES" "$LOG" > "$FAILING"
+  [ "$LOG_LINES" -le "$FALLBACK_LINES" ] || FAILING_TRUNCATED=yes
+}
+
+build_excerpt() {
+  local pattern matched nums scan_status=0
+
+  : > "$FAILING"
+  FAILING_TRUNCATED=no
+
+  # A SUCCESSFUL run has nothing to excerpt. Not "no pattern matched a green
+  # log" — a green log may well carry the word FAILURE in a test NAME, and an
+  # excerpt of a passing run is a child sent to fix nothing.
+  if [ "$STATUS" -eq 0 ]; then
+    FAILING_LINES=0
+    return 0
+  fi
+
+  pattern="$(printf '%s|' "${FAILURE_PATTERNS[@]}")"
+  pattern="${pattern%|}"
+
+  # -a: a log holding a NUL byte is still a log, and BSD grep would otherwise
+  # answer "Binary file matches" and select nothing.
+  #
+  # grep answers 1 for "no line matched" and 2 or more for "I could not look",
+  # and the pipeline that used to carry this hid BOTH behind `cut`'s status. A
+  # scan that never ran then produced the same fallback excerpt as a quiet log,
+  # and the child read the log's tail believing the pattern set had been
+  # consulted. The two are separated here and the second one SAYS SO.
+  matched="$(LC_ALL=C grep -a -n -E "$pattern" "$LOG")" || scan_status=$?
+  [ "$scan_status" -le 1 ] ||
+    log-error "the failure-pattern scan of [$LOG] exited [$scan_status] — the excerpt is the log's LAST LINES, not a pattern match"
+
+  nums=""
+  [ "$scan_status" -ne 0 ] || nums="$(printf '%s\n' "$matched" | cut -d: -f1)"
+
+  if [ -n "$nums" ]; then
+    excerpt_matched_lines "$nums"
+  else
+    excerpt_log_tail
+  fi
+
+  FAILING_LINES="$(count_lines "$FAILING")"
+}
+
+# ── Step 5: the JUnit sum (RFC 235 D6) ────────────────────────────────────────
+# D6: the record carries the executed counts, re-derived from the XML THIS run
+# produced and never read from the command's own summary line — RFC 211's rule,
+# for its reason: a reported count is a sentence and an emitted count is an
+# artifact.
+#
+# EVERYTHING THIS SCRIPT KNOWS ABOUT A TEST FRAMEWORK IS IN THIS ONE FUNCTION,
+# and that is the point of it being one. The rest of the script wraps ANY
+# command; Gradle's results layout (<module>/build/test-results/**/*.xml) and
+# JUnit's four <testsuite> attributes are one toolchain's business, so a second
+# toolchain is a change here and nowhere else. Gradle owns that layout and this
+# script runs outside the dev shell, with nothing to derive it from: if a build
+# ever moves its results the four fields are OMITTED — that is the cost of the
+# coupling, and it is why the record states junit_result_files= whatever the
+# answer is and junit_omitted= WHY the four counts are not there. "It executed
+# no test" and "nothing here could read what it wrote" are different answers
+# and the record gives them different words.
+#
+# NOTHING HERE GUESSES. A `find` that could not walk the tree, a results file
+# grep could not read, and a <testsuite> tag whose four attributes are not each
+# there exactly once all mark the sum UNTRUSTWORTHY, and an untrustworthy sum is
+# OMITTED with its reason on stderr — never published short, and never coerced
+# to a zero that reads as a measurement. This is a tag SCAN and not an XML
+# parser: it cannot read single-quoted attributes, a tag split over two lines,
+# or a value containing `>`, and the honest answer to a tag it cannot read is
+# to refuse it by name.
+#
+# THE FRESHNESS FILTER IS THE LOAD-BEARING PART. `build/test-results` survives
+# between runs, so a command that compiled nothing and ran no test would
+# otherwise be credited with the previous run's execution — a green count for a
+# run that executed nothing is the worst answer this script could give. The
+# filter is by TIME, not by process: two ship-run calls overlapping in one
+# directory each count the other's XML, so a long command is backgrounded ALONE.
+# suite_counts <tags> — the four counts of one results file, space-separated,
+# summed across EVERY <testsuite> tag in it: Gradle's aggregated results carry
+# several per file, and a summer that took the first would be silently short by
+# every suite after it. Exits non-zero for a tag this scan cannot read.
+suite_counts() {
+  # The leading space in each match is not decoration: without it `tests` also
+  # matches `subtests="4"`, and the count would be silently wrong in the one
+  # direction nobody checks.
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    # EXACTLY ONE of each attribute, per tag. None means this is not a tag this
+    # scan understands; two means it is not a tag at all. Both are REFUSED —
+    # the alternative is a green `tests=0` for a file nothing here could read,
+    # and a zero is read as a measurement.
+    function attribute(text, name,   value, seen) {
+      seen = 0
+      while (match(text, " " name "=\"[0-9]+\"")) {
+        value = substr(text, RSTART, RLENGTH)
+        sub(/^[^"]*"/, "", value)
+        sub(/"$/, "", value)
+        seen++
+        text = substr(text, RSTART + RLENGTH)
+      }
+      if (seen != 1) exit 3
+      return value
+    }
+    {
+      tests += attribute($0, "tests")
+      failures += attribute($0, "failures")
+      errors += attribute($0, "errors")
+      skipped += attribute($0, "skipped")
+    }
+    END { print tests + 0, failures + 0, errors + 0, skipped + 0 }'
+}
+
+sum_junit() {
+  # The ONE toolchain assumption in this script, named at the top of the
+  # function the header's claim is about rather than buried at the end of a
+  # find expression.
+  local junit_xml_name='*.xml'
+  local junit_results_path='*/build/test-results/*'
+  local xml attrs counts grep_status file_tests file_failures file_errors file_skipped
+  local xml_list="$RUNS_DIR/.$NAME.xml-list"
+  local scan_err="$RUNS_DIR/.$NAME.scan-err"
+  local find_status=0
+
+  JUNIT_FILES=0
+  JUNIT_UNREADABLE=0
+  JUNIT_TESTS=0
+  JUNIT_FAILURES=0
+  JUNIT_ERRORS=0
+  JUNIT_SKIPPED=0
+
+  # Through a FILE and not a process substitution, so find's own exit status is
+  # observable, and with its stderr kept rather than discarded: an unreadable
+  # results subtree used to arrive here as an empty list, which the record then
+  # stated as "no counts" — the very answer the header calls indistinguishable
+  # from "this run executed no test".
+  scaffold "$xml_list"
+  scaffold "$scan_err"
+  find "$RUN_DIR" -type f -name "$junit_xml_name" -path "$junit_results_path" \
+    -newer "$MARKER" -print0 > "$xml_list" 2> "$scan_err" || find_status=$?
+  if [ "$find_status" -ne 0 ] || [ -s "$scan_err" ]; then
+    JUNIT_UNREADABLE=1
+    log-error "the JUnit scan of [$RUN_DIR] exited [$find_status] and could not read everything, so the counts are omitted: [$(tr '\n' ';' < "$scan_err")]"
+  fi
+
+  while IFS= read -r -d '' xml; do
+    grep_status=0
+    attrs="$(LC_ALL=C grep -a -o '<testsuite [^>]*' "$xml")" || grep_status=$?
+    case "$grep_status" in
+      0) ;;
+      # 1 is "no <testsuite> tag in this file", which a results directory may
+      # legitimately hold; anything above it is a READ failure, and a sum short
+      # by a file it could not open is not a sum.
+      1) continue ;;
+      *)
+        JUNIT_UNREADABLE=1
+        log-error "could not read [$xml] (grep exited [$grep_status]) — the counts are omitted rather than summed short"
+        continue
+        ;;
+    esac
+    counts="$(suite_counts "$attrs")" || {
+      JUNIT_UNREADABLE=1
+      log-error "[$xml] carries a <testsuite> this scan cannot read — the counts are omitted rather than coerced to zero"
+      continue
+    }
+    read -r file_tests file_failures file_errors file_skipped <<< "$counts"
+    JUNIT_FILES=$((JUNIT_FILES + 1))
+    JUNIT_TESTS=$((JUNIT_TESTS + file_tests))
+    JUNIT_FAILURES=$((JUNIT_FAILURES + file_failures))
+    JUNIT_ERRORS=$((JUNIT_ERRORS + file_errors))
+    JUNIT_SKIPPED=$((JUNIT_SKIPPED + file_skipped))
+  done < "$xml_list"
+
+  rm -f "$xml_list" "$scan_err"
+}
+
+# ── Step 6: the record ────────────────────────────────────────────────────────
+# Written to the file FIRST and then copied to stdout, so the archive and the
+# caller read the same bytes and a caller that redirected stdout away has lost
+# nothing.
+# git, run against the directory the COMMAND ran in and nothing else.
+# `git -C <dir>` is NOT authoritative while GIT_DIR is set: the environment wins
+# and -C is silently ignored. Git hooks export GIT_DIR and GIT_INDEX_FILE, and
+# phase 6 runs commands beside the hook, so `tree=` would name the HOOK's
+# repository rather than the directory the command ran in. Stripped for THIS
+# script's own calls only — the wrapped command's environment is the caller's
+# business and is handed to it exactly as it arrived.
+git_here() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$RUN_DIR" "$@"
+}
+
+TREE=""
+TREE_ABSENT=""
+
+# HEAD's tree, and when there is none, WHY there is none — ASKED, not assumed.
+# rev-parse fails for several reasons and the record's reader repairs a
+# different thing for each, so "no commit in [dir]" was a conclusion this script
+# had not measured: a git that is not on PATH and a directory that is not a
+# repository both printed it. Not fatal either way: a command may legitimately
+# run outside a repository.
+measure_tree() {
+  local git_out git_status=0
+  git_out="$(git_here rev-parse 'HEAD^{tree}' 2>&1)" || git_status=$?
+  if [ "$git_status" -eq 0 ]; then
+    TREE="$git_out"
+    TREE_ABSENT=""
+    return 0
+  fi
+
+  TREE=""
+  if git_here rev-parse --git-dir > /dev/null 2>&1; then
+    TREE_ABSENT=no_commit
+  elif ! command -v git > /dev/null 2>&1; then
+    TREE_ABSENT=no_git
+  else
+    TREE_ABSENT=not_a_repository
+  fi
+  # git's OWN words and its status, not a paraphrase of them: a dubious-
+  # ownership refusal and an empty repository are one sentence apart here and
+  # two different repairs for the reader.
+  log-warning "no tree= for [$RUN_DIR] ($TREE_ABSENT): git rev-parse HEAD^{tree} exited [$git_status] saying [$git_out]"
+  return 0
+}
+
+# The record's fields, one key per line. A field that does not apply is ABSENT,
+# never a placeholder — phase 5 keys its suite-record reuse on tree=, and two
+# unrelated treeless runs carrying one sentinel would compare EQUAL: a green
+# record reused for bytes it never ran on, where an absent key matches nothing.
+# WHY it is absent is a key of its own, so no reader has to carry the rule that
+# a missing key means one particular thing.
+render_record() {
+  echo "cmd=$CMD_TEXT"
+  echo "dir=$RUN_DIR"
+  echo "exit=$STATUS"
+  if [ -n "$TREE" ]; then
+    echo "tree=$TREE"
+  else
+    echo "tree_absent=$TREE_ABSENT"
+  fi
+  echo "started=$STARTED"
+  echo "log=$LOG"
+  echo "log_lines=$LOG_LINES"
+  echo "failing=$FAILING"
+  echo "failing_lines=$FAILING_LINES"
+  echo "failing_truncated=$FAILING_TRUNCATED"
+  # How many results files THIS run produced is stated whatever the answer: a
+  # reader must never have to infer it from four missing keys. The four counts
+  # themselves are OMITTED, not zeroed, when there were none or when one of
+  # them could not be read — `tests=0` is an answer, "it executed none", and a
+  # run that never got to ask the question must not give it — and
+  # junit_omitted= says which of the two happened.
+  echo "junit_result_files=$JUNIT_FILES"
+  if [ "$JUNIT_UNREADABLE" -ne 0 ]; then
+    echo "junit_omitted=unreadable"
+  elif [ "$JUNIT_FILES" -eq 0 ]; then
+    echo "junit_omitted=no_results"
+  else
+    echo "tests=$JUNIT_TESTS"
+    echo "failures=$JUNIT_FAILURES"
+    echo "errors=$JUNIT_ERRORS"
+    echo "skipped=$JUNIT_SKIPPED"
+  fi
+}
+
+# ONE LINE PER INVOCATION, appended and never truncated. The three <name> files
+# are keyed by -n and a second run of that name replaces them, so the NUMBER of
+# ship-run invocations — the figure phase 7 reports (RFC 235) — is derivable
+# only from a file no run rewrites. Each field NAMES ITSELF: `…\tsuite\t0\t…`
+# left a reader to decide whether the 0 was an exit code, a count or a flag, and
+# the answer lived only in this script's help. Tab-separated still, so the line
+# stays greppable and `wc -l` still counts invocations, and it keeps the
+# record's discipline: %q leaves the command on one line, and a path carrying a
+# newline was refused at the door.
+append_ledger() {
+  printf 'started=%s\tname=%s\texit=%s\tcmd=%s\n' \
+    "$STARTED" "$NAME" "$STATUS" "$CMD_TEXT" >> "$RUNS_DIR/ledger.tsv"
+}
+
+report_run() {
+  log-info "exit [$STATUS] — log [$LOG] ([$LOG_LINES] lines), failing [$FAILING] ([$FAILING_LINES] lines)"
+  [ "$FAILING_TRUNCATED" = "no" ] ||
+    log-warning "the excerpt was capped — the rest is in [$LOG]"
+}
+
+write_record() {
+  measure_tree
+  render_record > "$RECORD"
+  cat "$RECORD"
+  append_ledger
+  report_run
+}
+
+# ── Step 2c: the names this run writes under ─────────────────────────────────
+# Derived once, from validated input, so main reads as the six steps of a run
+# rather than as a naming convention with steps in it. Each word of the command
+# is shell-quoted, so `cmd=` states what ran unambiguously: joined with plain
+# spaces, ONE argument containing a space reads exactly like TWO arguments, and
+# a reader of the record — or a phase 5 comparing it — cannot tell which command
+# was actually run. %q is the faithful form and it stays one line, which is the
+# record's only structural promise.
+derive_record_paths() {
+  RUNS_DIR="$RUN_SCRATCH/runs"
+  LOG="$RUNS_DIR/$NAME.log"
+  FAILING="$RUNS_DIR/$NAME.failing"
+  RECORD="$RUNS_DIR/$NAME.record"
+  CMD_TEXT="$(printf '%q ' "${CMD[@]}")"
+  CMD_TEXT="${CMD_TEXT% }"
+}
+
+main() {
+  parse_args "$@"
+  load_state
+  reject_newline_paths
+  derive_record_paths
+
+  run_command
+  build_excerpt
+  sum_junit
+  write_record
+
+  # Transparent to the command: a caller testing `ship-run … && …` is testing
+  # the command, which is the only status that means anything here.
+  exit "$STATUS"
+}
+
+main "$@"
