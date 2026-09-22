@@ -146,9 +146,14 @@ No judgement left in this part. Do not start it before all four gates pass.
 2. **Frontmatter.** `name`, a one-sentence `description` of what it reviews, and
    an `implementation_summary` written as an instruction to the person _writing_
    the code, not to the reviewer. That field is what gets compiled.
-3. **Origin.** Add a single line under the title recording the evidence this
-   principle came from -- the incident, and the run or date. A principle with an
-   `Origin:` was paid for; one without is inherited text nobody has tested.
+3. **No origin line.** A review principle STANDS ALONE. The reviewer applying it
+   has the file and nothing else, so every sentence in it must help decide the
+   case in front of them; where the rule came from does not. Do not add an
+   `Origin:` line, and delete one you find -- the evidence goes in the COMMIT
+   MESSAGE, where `git log` and `git blame` keep it and no reviewer can mistake
+   it for something to weigh. If a past incident is genuinely the clearest way
+   to teach the rule, it belongs in the BAD example, written as code with the
+   defect in it, not as a paragraph of history under the title.
 4. **Register it.** Add the row to the correct tier table in
    `.claude/skills/review-fix/tiers.md`. An unregistered principle **halts**
    every `/ship` review, by design. Add a skill, add a row.

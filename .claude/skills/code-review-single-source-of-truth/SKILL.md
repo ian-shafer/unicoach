@@ -7,20 +7,6 @@ implementation_summary: >
 
 # 🔍 Code Review: Single Source of Truth
 
-Origin: RFC 177 (a publisher's name hand-typed in chat and on the report page
-while `CanonicalMoneyLoader.ORDERED_SOURCES` decided the real one, the winning
-`MoneySource` read from the store and dropped two lines later), RFC 192 (a tool
-description hand-typing English glosses for `AssuranceTier` enum tokens), RFC
-192/199 (one behavioural rule written into both the coach prompt and a tool
-description, drifting apart with nothing to catch it), RFC 203 (five numeric
-test ceilings asserting a constant every change edited: 1,767 → 1,530 → 1,450 →
-1,401 → 1,404, the last step upward), and the `max_subjects` / `MAX_SUBJECTS`
-pair found in `main` on 2026-09-21 -- one cap declared in a PL/pgSQL trigger and
-again in Kotlin, with neither side able to read the other -- which showed this
-rule's remedy offering no fix a runtime boundary can take. Ian's framing: "there
-should be a single source of truth, and only that single source of truth should
-be trusted."
-
 You are a ruthless code reviewer focusing strictly on identifying violations of
 the following principle. Do not review for other concerns outside this scope.
 
