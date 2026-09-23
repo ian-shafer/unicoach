@@ -66,16 +66,21 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-order   -s <rs> [-n]               # land-time db/schema/ORDER
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
     scripts/ship-lens    -s <rs> start|done|skip|missing # the per-lens ledger
-    scripts/ship-run     -s <rs> -n <name> -- <command>...  # run it, record it
-    scripts/ship-suite-green -s <rs> -n <name> -a <started-at> # RFC 211
+    scripts/ship-run     -s <rs> -n <name> -c <caller> [-g] -- <command>...
+                         # run it, record it; -g writes phase 5's suite record
     scripts/ship-verified record|check|assert       # the CI stand-in
     scripts/ship-lock    -s <rs> acquire|release|status  # the land gate
     scripts/ship-land    -s <rs>                    # assert, ff-merge, teardown
 
 `ship-run`'s artifacts under `<rs>/runs/` are its own contract — `ship-run -h`,
 which owns it and is interpolated from the constants it describes. One of them
-is this file's business: phase 7 reports the number of `ship-run` invocations,
-and `<rs>/runs/ledger.tsv` is what that is counted from (RFC 235).
+is this file's business: phase 7 reports the number of `ship-run` invocations
+**per caller**, and `<rs>/runs/ledger.tsv` is what that is counted from. It
+records EVENTS — a `start` line before the command runs, an `end` line after —
+so a run killed mid-command is still counted, and counting invocations is
+counting `start` lines (RFC 236). `ship-run -h` gives the two lines' fields,
+including what an invocation that named no caller writes; they are not restated
+here, because a second copy of a wire format is one nothing checks.
 
 Run every script with `-h` for its contract. **Read the run state from disk
 after any compaction — never from memory.**
@@ -301,52 +306,49 @@ re-verify only where **nothing** reported -- a stall, a kill, or a hand edit.
 
 **That includes the SUITE** (RFC 211). A child that runs the suite runs it AFTER
 `scripts/ship-checkpoint` and through [`scripts/ship-run`](scripts/ship-run),
-never bare (RFC 235) — and then EMITS the RFC 211 record from the same shell.
-`ship-run`'s own record does NOT replace it: phase 5 reads
-`<rs>/suite-green.txt`, so the three lines are projected out of the record
-`ship-run` just wrote, `exit=` included:
+never bare (RFC 235) — with **`-g`**, which writes phase 5's own file from the
+same process:
 
-    suite_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    scripts/ship-run -s <rs> -n suite -- nix develop -c bin/test || true
-    scripts/ship-suite-green -s <rs> -n suite -a "$suite_started"
+    scripts/ship-run -s <rs> -n suite -c <caller> -g -- nix develop -c bin/test
 
-The instant is taken BEFORE the invocation and handed to the projection, which
-refuses any record that started earlier than it. That is the one fact the caller
-cannot read off an exit status. A REFUSED `ship-run` — a usage fault, a
-`CODEBASE_ROOT` that is no longer a directory — writes no file at all, so
-`<rs>/runs/suite.record` is still an EARLIER run's: complete, well-shaped and
-green, for bytes this invocation never tested. `started=` is what tells the two
-apart, and the record carries it already.
+One command. No status arithmetic, no second command, no timestamp. `-g` appends
+RFC 211's record to `<rs>/suite-green.txt` from the values the process that RAN
+the suite already holds, byte-identical to the record it just wrote —
+`ship-run -h` gives the keys, interpolated from the one array that defines them,
+and they are not restated here. It re-reads nothing, so nothing has to ask
+whether the record it found belongs to this invocation (RFC 236).
 
-The status cannot tell them apart, which is why this recipe no longer reads it.
-`ship-run` is transparent to its command, so `bin/test` refusing its OWN
-arguments exits `bin/functions`' reserved band 10-29 exactly as a `ship-run`
-refusal does: a recipe keyed on that band names the wrong cause for the first
-and throws away a record that was written by this invocation and should have
-been projected as a red one. `|| true` here discards nothing the recipe needs —
-the suite's status is in the record's `exit=` and the projection copies it — and
-the refusal it used to hide is now caught by `started=`, as a fact rather than
-an inference.
+That question is why this recipe was three lines and a timestamp until RFC 236,
+and it is worth knowing why it could not be answered. The projection was a
+SECOND process reading `<rs>/runs/suite.record`, and a `ship-run` that REFUSED
+its invocation — a usage fault, a `CODEBASE_ROOT` that is no longer a directory
+— writes no record at all, so the PREVIOUS run's stood there: complete,
+well-shaped and green, for bytes this invocation never tested. The exit status
+cannot tell the two apart, because `ship-run` is transparent to its command and
+`bin/test` refusing its OWN arguments exits `bin/functions`' reserved band
+exactly as a refusal does. Nor could a one-second `started=` window, which is a
+window and not a fact. The process that ran the command does not have the
+question to answer.
 
-Every other outcome falls through to the projection, because a RED record is
-still a record: phase 5 needs `exit=` to tell a suite that failed from a suite
-nobody ran, and it re-runs the suite for both. That is phase 5's rule and
-`ship-suite-green` does not anticipate it — it warns, writes the three lines,
-and exits 0.
+A RED run is projected too, and says so on stderr. Phase 5 needs `exit=` to tell
+a suite that FAILED from a suite nobody ran, and it re-runs the suite for both —
+that is phase 5's rule, and `-g` does not anticipate it. What `-g` will NOT do
+is write a PART of the record: when a key cannot be measured — `tree=`, when the
+directory is not a repository — it writes NONE of the lines and names the
+reason, because the file is append-only and phase 5 keys on all of them, so a
+fragment is one nothing downstream can tell from a whole record.
 
-One command, because this used to be three `grep`s a child retyped, and a `grep`
-that matches nothing appends nothing and still succeeds — a record missing a key
-appended TWO lines that phase 5 read as a record, in a file nothing could
-afterwards tell short from complete. `ship-suite-green` writes three lines or
-halts naming the key it could not find.
+`-c <caller>` is the invoking child's own name, and it is REQUIRED (RFC 236 D5,
+amended). `ship-run` cannot discover it, and phase 7's invocation figure is per
+caller: an unnamed invocation and a named one must not look alike in a file
+whose only job is counting.
 
 Emitted, not REPORTED — and copied, never retyped. A hash retyped into a message
 is prose, and a child that runs the suite green, fixes a typo, checkpoints, and
 honestly reports the post-edit hash has produced a record for bytes nothing ever
 tested. `ship-run` answers `exit=` and `tree=` in the same process that ran the
-suite, and the three lines are lifted out of that answer, so the file is
-measurement. The child still reports the outcome in words, for Ian; phase 5
-reads the file.
+suite, and writes the record itself, so the file is measurement. The child still
+reports the outcome in words, for Ian; phase 5 reads the file.
 
 Phase 5 then reuses it instead of re-running the same suite over bytes Gradle
 cannot distinguish. Re-running a gate a child reported green, with no edit in
@@ -731,13 +733,17 @@ lens, the decline classes, the `Out of lens` count, and what `ship-lens missing`
 printed at each tier close, including "nothing" (RFC 234).
 
 Two more figures, one per half of RFC 235. State the number of `ship-run`
-invocations recorded in `<rs>/runs/ledger.tsv`: the ledger carries one line per
-invocation and no child identity, so it answers how many runs this run made, not
-how many each child made. And state the median model-call count across the run's
-lens children, which is the figure front-loaded dispatch is measured in. A guard
-with no trace is indistinguishable from an absent one, which is why the
-re-dispatch line is stated even when the answer is "it did not fire", and why a
-tier close that found nothing missing still says so.
+invocations recorded in `<rs>/runs/ledger.tsv` — the count of `start` lines —
+**per caller**: each line carries a `caller=` field holding the `-c` that
+invocation passed, so the figure is per fix child rather than per run. `-c` is
+required, so every line in that file is attributed and the figure has no
+unattributed remainder (RFC 236 D5, amended in tier 2). A run that was killed
+still counts, because its `start` line was written before the command ran and
+stands there with no `end` beside it. And state the median model-call count
+across the run's lens children, which is the figure front-loaded dispatch is
+measured in. A guard with no trace is indistinguishable from an absent one,
+which is why the re-dispatch line is stated even when the answer is "it did not
+fire", and why a tier close that found nothing missing still says so.
 
 Then **Contradictions**: every finding recorded `CONTRADICTED`, one line each —
 lens, `file:line`, the counterparty, and why no change satisfied both (RFC 234).

@@ -316,27 +316,29 @@ Held findings reach Ian in the phase 7 report under **Advisory findings (not
 applied)**, one line each: lens, `file:line`, title. `None` is a real result.
 
 **A fix child runs its build, test and format commands through
-[`scripts/ship-run`](../scripts/ship-run), never bare** (RFC 235). `rfc-155`'s
-archive carries five `bin-test` logs inside ONE fix pass: each was paid into
-that child's context and then re-read on every turn it had left. What the child
-reads is the record and the failing excerpt; the whole log stays on disk, named
-in the record, and it opens that only when the excerpt is not enough. The suite
-runs ONCE per batch, at the end — never once per finding — while per-item
-compiles are encouraged, through the same script, with only their error lines
-read back. A long command is started in the background and the turn ENDS; the
-completion follow-up wakes the child, so it neither sits blocking nor needs a
-child of its own to wait for it. A suite run phase 5 will reuse still emits RFC
-211's three-line `<rs>/suite-green.txt` record from the same shell, projected
-out of the record `ship-run` just wrote by
-[`scripts/ship-suite-green`](../scripts/ship-suite-green) — `ship-run`'s own
-record does not replace it, the projection is one command that writes three
-lines or halts, and the recipe is in [`../SKILL.md`](../SKILL.md), where the RFC
-211 rule lives. Copy that recipe whole: it takes the invocation's instant BEFORE
-`ship-run` and hands it to the projection as `-a`, which refuses any record that
-started earlier. A REFUSED `ship-run` writes no file and leaves the previous
-run's record standing, green, to be projected as this one's; `ship-run`'s exit
-status cannot show that, because a wrapped command's own usage exit lands in the
-same reserved band a refusal does, and `started=` can.
+[`scripts/ship-run`](../scripts/ship-run), never bare, passing its own name as
+`-c`** (RFC 235, RFC 236). `rfc-155`'s archive carries five `bin-test` logs
+inside ONE fix pass: each was paid into that child's context and then re-read on
+every turn it had left. What the child reads is the record and the failing
+excerpt; the whole log stays on disk, named in the record, and it opens that
+only when the excerpt is not enough. The suite runs ONCE per batch, at the end —
+never once per finding — while per-item compiles are encouraged, through the
+same script, with only their error lines read back. A long command is started in
+the background and the turn ENDS; the completion follow-up wakes the child, so
+it neither sits blocking nor needs a child of its own to wait for it. A suite
+run phase 5 will reuse is made with **`-g`**, which appends RFC 211's record to
+`<rs>/suite-green.txt` from the process that RAN the suite (RFC 236). The recipe
+is in [`../SKILL.md`](../SKILL.md), where the RFC 211 rule lives; copy it whole.
+It is one line, and it takes no timestamp and no status arithmetic — the
+projection used to be a second process re-reading the record, which cannot tell
+a record this invocation wrote from one a refused invocation left behind.
+
+`-c` is the child's own name, and it is REQUIRED (RFC 236 D5, amended in tier
+2). `ship-run` cannot discover who invoked it, and phase 7 reports the
+invocation count per caller: an invocation that named nobody and one that named
+itself must not look alike in a file whose only job is counting, so the script
+refuses the first rather than writing a placeholder every reader has to know to
+disbelieve.
 
 This is the one statement of that rule; `SKILL.md`'s phase 5 points here for it
 rather than restating it.
