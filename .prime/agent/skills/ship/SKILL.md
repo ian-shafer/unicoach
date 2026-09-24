@@ -364,16 +364,48 @@ blocking loses a real insight, silent acceptance compounds drift.
 
 **A change to the coach system prompt is an edit to
 `prompts/coach-system-prompt.md`, and to nothing else** (RFC 181, RFC 185). The
-seed migration under `db/schema/` is a GENERATED artifact that phase 6 rewrites
-from that file: a hand-written seed is overwritten, and a hand-edited one is
-refused. The body IS that file, verbatim -- no trim, no join, no re-wrap -- so
-Markdown works and a line break is body text. Author it **one sentence per
-line**: that line granularity is the whole reason two runs editing different
-paragraphs now merge without a conflict. `prompts/` is excluded from `deno fmt`
-in `deno.json`, because a reflow would silently rewrite the prompt; keep it
-excluded. A tab and an interior double space are ordinary text now. Do not touch
-the `systemPromptVersion` pin -- phase 6 owns it, because the version label is
-only knowable at land.
+seed migration under `db/schema/` is a GENERATED artifact that `bin/prompt-seed`
+rewrites from that file — this run invokes it, in phase 4 and again in phase 5,
+and phase 6 invokes it once more at land: a hand-written seed is overwritten,
+and a hand-edited one is refused. The body IS that file, verbatim -- no trim, no
+join, no re-wrap -- so Markdown works and a line break is body text. Author it
+**one sentence per line**: that line granularity is the whole reason two runs
+editing different paragraphs now merge without a conflict. `prompts/` is
+excluded from `deno fmt` in `deno.json`, because a reflow would silently rewrite
+the prompt; keep it excluded. A tab and an interior double space are ordinary
+text now.
+
+**Never hand-write the generated artifacts; DO run the generator.** The seed
+migration, its `db/schema/ORDER` line and the `systemPromptVersion` pin in
+`service/src/main/resources/service.conf` are written by `bin/prompt-seed` and
+by nothing else — a hand-written seed is overwritten, a hand-edited one is
+refused, and a hand-typed pin drifts off the label the moment another run lands
+first. The prohibition is on AUTHORING those three artifacts, not on invoking
+the script. **A run that authors prompt prose runs the generator itself**, as
+soon as the prose is written and before it runs the suite:
+
+    nix develop -c bin/prompt-seed -b "$(scripts/ship-state -s <rs> get BASE_SHA)"
+
+Pass `-b` explicitly, here and in every other example in this file: the default
+base is `main`, and a run claimed against any other base would classify the
+PARENT branch's landed coach seed as its own generated file and delete it.
+
+Re-running it is free and self-correcting. It deletes only the seed its own run
+generated — never one the base already has — and recomputes the label from the
+base it is given, so `v42` becomes `v43` by itself when a sibling lands first.
+It writes nothing at all when the authored body matches the catalog tip's. That
+is why phase 5 runs it again after the rebase and phase 6 runs it again at land:
+the land-time call is the last word on the label, not the first. Nothing in this
+file, and nothing in `bin/prompt-seed -h`, says to defer the FIRST run until
+land — the land-time run is mandatory, not exclusive.
+
+**The suite cannot be green until it has run once.** `SystemPromptCatalogTest`'s
+`the pinned coach prompt body is exactly the authored source file` reads the
+catalog row the pin names and compares its body byte-for-byte with
+`prompts/coach-system-prompt.md`. With new prose authored and no seed generated,
+the pinned row either does not exist, so the test ERRORS, or still holds the old
+body, so it FAILS. Generate first, then run the suite; otherwise the record
+written to `<rs>/suite-green.txt` is a red one that means nothing.
 
 ### 5. verify
 
@@ -438,6 +470,31 @@ the coordinator promoted or demoted with its one-line reason, and what was
 contradicted. Record the write-scope result too —
 `ship-verify-scope … | tee <rs>/findings/write-scope.txt` — so the archive shows
 the check ran, not merely that nobody complained.
+
+**If this run authored prompt prose, regenerate the seed before the suite** (RFC
+181, RFC 185). Phase 4 already generated one, but verify rebases, and a rebase
+moves `BASE_SHA` and so moves the version label. Run the generator again — after
+the rebase and after the tier fixes, so it sees the tree that is being tested —
+and checkpoint what it wrote:
+
+    nix develop -c bin/prompt-seed -b "$(scripts/ship-state -s <rs> get BASE_SHA)"
+
+A run that authored nothing may run it too: it compares bodies, finds them
+equal, writes no seed, appends no `ORDER` line, moves no pin, and exits 0.
+
+**A missing generated seed is NOT a defect, and must not be reported as a red
+suite.** When prose has been authored and the generator has not run since,
+`SystemPromptCatalogTest` errors (the pinned row does not exist) or fails (the
+pinned row holds the old body). That is the generator being owed, not a bug in
+the code, the test or the prompt. Do not open a finding on it, do not dispatch a
+fix child at it, and above all do not "fix" it by hand-editing a seed or by
+rolling `systemPromptVersion` back to the catalog tip — that only converts the
+error into a body-diff failure. Run the generator, then re-run the suite.
+
+It follows that such a run can never REUSE a `suite-green.txt` record written
+before the generator ran. The seed is a `db/schema/*.sql` file, which is outside
+the docs-only set below, so the tree check already forces the re-run — that is
+the rule working, not an exception to it.
 
 Then the suite — `nix develop -c bin/test`, dispatched to a child like any other
 long command — and, for any UI change, screenshots as artifacts (see
@@ -589,14 +646,23 @@ recomputes the version label as one past the highest coach seed in `BASE_SHA`,
 and rewrites it from the source. So it must run **after** the final rebase, or
 the label is a prediction of a tip that has since moved, and **before** the
 squash and the commit, so the regenerated seed lands inside the hook-verified
-tree. A run that touched no prompt writes NOTHING -- no seed, no `ORDER` line,
-no repin -- because a version is cut only when the authored body differs from
-the catalog tip's (RFC 185 D6). That is what makes it safe to run on every land,
-exactly like `ship-order`; it used to mint a new immutable row at every land
-instead, whether or not a word was authored. **Pass `-b` explicitly.** The
-default base is `main`, and a run claimed against any other base would then
-classify the PARENT branch's landed coach seed as its own generated file and
-delete it — the one file this script must never touch. `ship-land` re-runs it as
+tree. That is a RE-run, not the first one: a run that authored prose generated
+in phase 4 and again in phase 5, because its own suite could not go green
+otherwise, and this call is what makes the label true for the tree that actually
+lands. Phase 6 therefore never skips it on the grounds that verify already
+generated a seed — and verify never defers to phase 6 on the grounds that phase
+6 owns the label. Both are true: the label is only FINAL at land, and an earlier
+label costs nothing to replace.
+
+A run that touched no prompt writes NOTHING -- no seed, no `ORDER` line, no
+repin -- because a version is cut only when the authored body differs from the
+catalog tip's (RFC 185 D6). That is what makes it safe to run on every land, and
+at every earlier point too, exactly like `ship-order`; it used to mint a new
+immutable row at every land instead, whether or not a word was authored. **Pass
+`-b` explicitly.** The default base is `main`, and a run claimed against any
+other base would then classify the PARENT branch's landed coach seed as its own
+generated file and delete it — the one file this script must never touch.
+`ship-land` re-runs it as
 `bin/prompt-seed -b "$BASE_SHA" -d "$CODEBASE_ROOT/db/schema" -n` before the
 fast-forward and refuses with that script's own status (3 = regenerate, anything
 else = the corpus or the source file is refused). The fix is
@@ -607,12 +673,12 @@ It also owns the **pin**: it rewrites `systemPromptVersion = "vNN"` in
 `service/src/main/resources/service.conf` to the row this land leaves the
 runtime serving — the label it just generated, or the catalog TIP when it
 generated none, which moves the pin BACKWARD off a version an earlier run cut
-and a later edit reverted. The label is computed at land, so a literal nobody
-moves drifts from it the moment another run lands first — the seed says `v25`
-while the pin still says `v24`, and the runtime is served a row this run did not
-generate. The append-only comment log above that pin is still the **author's**
-to write; the script rewrites the one assignment line and passes every other
-byte of the file through.
+and a later edit reverted. The label is only FINAL at land, so a literal nobody
+moves — or one a run typed by hand in verify — drifts from it the moment another
+run lands first — the seed says `v25` while the pin still says `v24`, and the
+runtime is served a row this run did not generate. The append-only comment log
+above that pin is still the **author's** to write; the script rewrites the one
+assignment line and passes every other byte of the file through.
 
 `db/schema/ORDER` is marked `merge=union` in `.gitattributes`. A rebase
 therefore never stops on it: git keeps both sides' lines, with the newly landed
