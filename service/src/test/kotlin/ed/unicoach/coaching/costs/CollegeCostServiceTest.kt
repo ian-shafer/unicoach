@@ -3,23 +3,32 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.costs.CostsTestDb.addToCollegeList
 import ed.unicoach.coaching.costs.CostsTestDb.answerBand
+import ed.unicoach.coaching.costs.CostsTestDb.answerIntendedSubjects
 import ed.unicoach.coaching.costs.CostsTestDb.answerLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
 import ed.unicoach.coaching.costs.CostsTestDb.createStudent
 import ed.unicoach.coaching.costs.CostsTestDb.declineBand
+import ed.unicoach.coaching.costs.CostsTestDb.declineIntendedSubjects
 import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.CostsTestDb.seedCollege
+import ed.unicoach.coaching.costs.CostsTestDb.seedProgram
+import ed.unicoach.coaching.costs.CostsTestDb.seedProgramMoney
+import ed.unicoach.coaching.costs.CostsTestDb.seedSubject
+import ed.unicoach.coaching.costs.CostsTestDb.undecidedIntendedSubjects
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureAddress
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.figureGroup
+import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.common.util.CalendarYear
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.AssuranceTier
+import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.CohortAidScope
 import ed.unicoach.db.models.CohortPopulation
 import ed.unicoach.db.models.CohortResidencyScope
@@ -33,6 +42,7 @@ import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
+import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
@@ -3585,4 +3595,751 @@ class CollegeCostServiceTest {
     // resolve here, so nothing is left unreachable.
     assertNull(figureProvenanceSummaryOf(emptyList()))
   }
+
+  // ---------------------------------------------------------------------------
+  // The major answer (RFC 231)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The ONE matched program of a one-program fixture, and its figures.
+   *
+   * A helper rather than four lines in every test, and it ASSERTS the shape as it
+   * walks it: a college that should carry one program and does not is a failure
+   * named where it happened, not a cast error three lines later.
+   */
+  private fun soleProgramFiguresOf(college: ProgramReturnCollege): List<ProgramReturnFigure> =
+    assertIs<ProgramReturnProgram.WithFigures>(
+      assertIs<ProgramReturnCollege.WithPrograms>(college).programs.single(),
+    ).figures
+
+  /** The one selected college of a one-college fixture's one subject. */
+  private fun soleCollegeOf(section: ProgramReturn): ProgramReturnCollege =
+    section.subjects
+      .single()
+      .colleges
+      .single()
+
+  @Test
+  fun `a student nobody has asked has no program_return section`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("No Answer U"))
+
+    assertNull(profileOf(student).programReturn, "no stored field means no program_return section")
+  }
+
+  @Test
+  fun `a declined or undecided answer degrades to no program_return section`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Declined U"))
+    declineIntendedSubjects(student)
+    assertNull(profileOf(student).programReturn, "a decline is a real answer and must not arm the section")
+
+    val other = createStudent()
+    addToCollegeList(other, seedCollege("Undecided U"))
+    undecidedIntendedSubjects(other)
+    assertNull(profileOf(other).programReturn, "undecided is a real answer and must not arm the section")
+  }
+
+  @Test
+  fun `an answered student gets per subject per college per program the typed figures`() {
+    seedSubject("nursing", "Nursing", "51")
+    seedSubject("physics", "Physics", "40")
+    val student = createStudent()
+    val a = seedCollege("Major A")
+    val b = seedCollege("Major B")
+    addToCollegeList(student, a)
+    addToCollegeList(student, b)
+
+    seedProgramMoney(seedProgram(a, cipCode = "5101"))
+    seedProgramMoney(seedProgram(b, cipCode = "5102"))
+    seedProgramMoney(seedProgram(b, cipCode = "4001"))
+    answerIntendedSubjects(student, "nursing", "physics")
+
+    val subjects = assertNotNull(profileOf(student).programReturn).subjects
+    assertEquals(setOf("nursing", "physics"), subjects.map { it.subjectSlug }.toSet())
+
+    val nursing = subjects.single { it.subjectSlug == "nursing" }
+    assertEquals("Nursing", nursing.subjectName)
+    assertEquals(setOf(a, b), nursing.colleges.map { it.collegeId }.toSet())
+    val nursingAtA = assertIs<ProgramReturnCollege.WithPrograms>(nursing.colleges.single { it.collegeId == a })
+    assertEquals(
+      listOf("5101"),
+      nursingAtA.programs.map { it.cipCode.value },
+      "the program the subject matched, by its own code",
+    )
+    val figures = soleProgramFiguresOf(nursingAtA)
+    assertEquals(
+      listOf(
+        ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY,
+        ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION,
+        ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT,
+      ),
+      figures.map { it.measure },
+      "the three figures are in declaration order",
+    )
+    val earnings = assertIs<ProgramReturnFigure.Reported>(figures.first())
+    assertEquals(CostsTestDb.PROGRAM_EARNINGS_USD, earnings.amountUsd)
+    assertEquals(ScorecardFieldOfStudyColumns.EARNINGS.publisher, earnings.provenance.publisher)
+    assertEquals(CalendarYear(2024), earnings.provenance.inflationBaseYear)
+    assertEquals(CostsTestDb.PROGRAM_EARNINGS_COHORT_FIRST_YEAR, earnings.provenance.cohortFirstYear)
+    assertEquals(CostsTestDb.PROGRAM_EARNINGS_COHORT_LAST_YEAR, earnings.provenance.cohortLastYear)
+    val debt =
+      assertIs<ProgramReturnFigure.Reported>(
+        figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION },
+      )
+    assertEquals(ScorecardFieldOfStudyColumns.DEBT.publisher, debt.provenance.publisher)
+    assertNull(debt.provenance.inflationBaseYear, "the publisher names no dollar base for debt")
+    assertEquals(CostsTestDb.PROGRAM_DEBT_COHORT_FIRST_YEAR, debt.provenance.cohortFirstYear)
+    assertEquals(CostsTestDb.PROGRAM_DEBT_COHORT_LAST_YEAR, debt.provenance.cohortLastYear)
+    val payment =
+      assertIs<ProgramReturnFigure.Reported>(
+        figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT },
+      )
+    assertEquals(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT.publisher, payment.provenance.publisher)
+    assertNull(payment.provenance.inflationBaseYear)
+
+    val physics = subjects.single { it.subjectSlug == "physics" }
+    assertIs<ProgramReturnCollege.NoProgram>(physics.colleges.single { it.collegeId == a })
+    assertIs<ProgramReturnCollege.WithPrograms>(physics.colleges.single { it.collegeId == b })
+  }
+
+  /**
+   * Q2: two matched programs at ONE college, with BYTE-IDENTICAL figures.
+   *
+   * The pathological input for the data-loss defect: the two programs differ in
+   * nothing a value-based deduplication can see, so a read that did not carry
+   * the program's identity merged them and one major vanished. Two programs whose
+   * figures DIFFER would survive a value-based dedup too, which is why this
+   * fixture makes them identical -- and why it asserts the two are TOLD APART by
+   * their `cip_code` rather than merely counted.
+   */
+  @Test
+  fun `two matched programs at one college with identical figures are two entries, told apart by cip_code`() {
+    seedSubject("biology", "Biology", "26")
+    val student = createStudent()
+    val collegeId = seedCollege("Two Majors U")
+    addToCollegeList(student, collegeId)
+    // Identical in every stored column but the program they belong to: the same
+    // measures, amounts, statuses, cohort years and source variables.
+    seedProgramMoney(seedProgram(collegeId, cipCode = "2607"))
+    seedProgramMoney(seedProgram(collegeId, cipCode = "260707"))
+    answerIntendedSubjects(student, "biology")
+
+    val college = assertIs<ProgramReturnCollege.WithPrograms>(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    assertEquals(
+      listOf("2607", "260707"),
+      college.programs.map { it.cipCode.value },
+      "both programs survive and each says which one it is, in CIP order",
+    )
+    college.programs.forEach { program ->
+      val figures = assertIs<ProgramReturnProgram.WithFigures>(program).figures
+      assertEquals(
+        CostsTestDb.PROGRAM_EARNINGS_USD,
+        assertIs<ProgramReturnFigure.Reported>(figures.first()).amountUsd,
+        "and each carries its own full set of figures: [${program.cipCode.value}]",
+      )
+    }
+  }
+
+  @Test
+  fun `suppressed and not-reported are two typed arms and neither carries an amount`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Silence U")
+    addToCollegeList(student, collegeId)
+    seedProgramMoney(
+      seedProgram(collegeId, cipCode = "5101"),
+      earnings = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+      debt = FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION),
+      payment = FigureReading.Present(CostsTestDb.PROGRAM_MONTHLY_PAYMENT_USD, ValueBearingStatus.REPORTED),
+    )
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    assertIs<ProgramReturnFigure.Suppressed>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY })
+    assertIs<ProgramReturnFigure.NotReported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION })
+    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT })
+  }
+
+  @Test
+  fun `a subject no program matches is NoProgram with the college name and no figures`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("No Nursing U")
+    addToCollegeList(student, collegeId)
+    answerIntendedSubjects(student, "nursing")
+
+    val subject = assertNotNull(profileOf(student).programReturn).subjects.single()
+    val college = assertIs<ProgramReturnCollege.NoProgram>(subject.colleges.single())
+    assertEquals(collegeId, college.collegeId)
+    assertEquals("No Nursing U", college.name)
+  }
+
+  /**
+   * Q1: the THIRD availability arm. A school that RUNS the matched program and
+   * for which the publisher gave us no figure at all.
+   *
+   * It is neither of the other two absences, and the read that proves it is the
+   * PROGRAM read: a section built from `program_money_stats` alone cannot see
+   * this college_programs row, so it would say the school does not run the
+   * program -- a gap in our data spoken as a statement about a school.
+   */
+  @Test
+  fun `a matched program we hold no figure for says so, and is not the no-program arm`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Runs It But No Figures U")
+    addToCollegeList(student, collegeId)
+    // The program row exists; NO program_money_stats row is written for it.
+    seedProgram(collegeId, cipCode = "5101")
+    answerIntendedSubjects(student, "nursing")
+
+    val college = assertIs<ProgramReturnCollege.WithPrograms>(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    val program = assertIs<ProgramReturnProgram.NoPublishedFigures>(college.programs.single())
+    assertEquals("5101", program.cipCode.value, "the arm still names the program it is about")
+  }
+
+  /**
+   * Q1 at the MEASURE level: a program we hold ONE figure for renders all three
+   * measures, and the two we hold nothing for each say so.
+   *
+   * A short `figures` array is an absence with no reason -- a reader cannot tell
+   * which measure is missing, or whether the publisher suppressed it -- so the
+   * shape forbids one.
+   */
+  @Test
+  fun `a measure we hold no row for gets its own entry, never a short figures array`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("One Figure U")
+    addToCollegeList(student, collegeId)
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    // Delete the two debt rows, leaving a program with one stored measure.
+    CoachingTestDb.connection
+      .prepareStatement("DELETE FROM program_money_stats WHERE college_program_id = ? AND measure <> ?")
+      .use { stmt ->
+        stmt.setObject(1, programId)
+        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.executeUpdate()
+      }
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    assertEquals(
+      ProgramMoneyMeasure.entries,
+      figures.map { it.measure },
+      "every measure gets an entry, in declaration order",
+    )
+    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY })
+    assertIs<ProgramReturnFigure.NoFigure>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION })
+    assertIs<ProgramReturnFigure.NoFigure>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT })
+  }
+
+  /**
+   * Q1/H4, DRIVEN FROM THE VOCABULARY: every legal `figure_statuses` value gets a
+   * wire answer, and none of them raises.
+   *
+   * `program_money_stats.status` is `TEXT NOT NULL REFERENCES
+   * figure_statuses(slug)`, so the WHOLE vocabulary is storable -- and three of
+   * the six once threw, taking the entire cost answer for that student down with
+   * them. Driven from [FigureStatus.entries] rather than a literal list, so a
+   * SEVENTH status fails HERE, loudly, instead of quietly finding a crash path.
+   */
+  @Test
+  fun `every legal figure status is spoken as itself, and none refuses the answer`() {
+    seedSubject("nursing", "Nursing", "51")
+    FigureStatus.entries.forEach { status ->
+      val student = createStudent()
+      val collegeId = seedCollege("Status ${status.value} Program U")
+      addToCollegeList(student, collegeId)
+      val programId = seedProgram(collegeId, cipCode = "5101")
+      seedProgramMoney(programId)
+      // Written through raw SQL because the Kotlin reading types refuse most of
+      // these pairings, which is exactly why the TABLE is the thing to drive
+      // from: `program_money_stats_amount_iff_status_check` decides whether the
+      // amount rides along, and it names the two value-bearing statuses.
+      CoachingTestDb.connection
+        .prepareStatement(
+          "UPDATE program_money_stats SET status = ?, amount_usd = ? WHERE college_program_id = ? AND measure = ?",
+        ).use { stmt ->
+          stmt.setString(1, status.value)
+          if (status.valueBearing) {
+            stmt.setInt(2, CostsTestDb.PROGRAM_EARNINGS_USD)
+          } else {
+            stmt.setNull(2, java.sql.Types.INTEGER)
+          }
+          stmt.setObject(3, programId)
+          stmt.setString(4, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+          stmt.executeUpdate()
+        }
+      answerIntendedSubjects(student, "nursing")
+
+      val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+      val earnings =
+        assertIs<ProgramReturnFigure.Held>(
+          figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
+          "a stored status the answer cannot speak is a crash a family sees: [${status.value}]",
+        )
+      assertEquals(status, earnings.status, "the arm speaks the stored status as itself")
+      assertEquals(
+        status.valueBearing,
+        earnings is ProgramReturnFigure.Valued,
+        "a number rides on exactly the value-bearing statuses: [${status.value}]",
+      )
+      assertEquals(
+        ScorecardFieldOfStudyColumns.EARNINGS.publisher,
+        earnings.provenance.publisher,
+        "and every arm still carries its provenance",
+      )
+    }
+  }
+
+  /**
+   * Q5: the cohort SENTENCE and the row's YEARS agree on the rows the ingest
+   * actually writes.
+   *
+   * The check the implementation stands on, asserted from the loader's own side:
+   * `ProgramMoneyLoader` writes `variable.cohortFirstYear` / `cohortLastYear`, so
+   * ordinary rows agree and take the normal path. If this ever failed, the
+   * agreement rule would be quietly routing EVERY figure into the no-row arm.
+   */
+  @Test
+  fun `the rows the ingest writes agree with the registry's own cohort sentence`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Agreeing Cohort U")
+    addToCollegeList(student, collegeId)
+    seedProgramMoney(seedProgram(collegeId, cipCode = "5101"))
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    figures.forEach { figure ->
+      val held = assertIs<ProgramReturnFigure.Held>(figure, "an ordinary row must take the agreeing path: [${figure.measure.value}]")
+      // The provenance's years are the REGISTRY's by construction (the type reads
+      // them off the entry), so comparing the two here would assert nothing. The
+      // claim is the ARM: the row this fixture STORED -- with the years the loader
+      // writes -- was stamped rather than routed into the no-row arm, which only
+      // happens when the stored years and the registry's agree.
+      assertTrue(
+        held.provenance.cohortSentence == held.provenance.variable.publisherCohortCell,
+        "and the sentence is the registry's verbatim cell",
+      )
+    }
+    // Every variable the registry carries is exercised here, so the agreement is
+    // asserted for all three and not only for the earnings row.
+    assertEquals(
+      ScorecardFieldOfStudyColumns.VARIABLES.size,
+      figures.size,
+      "one figure per published variable",
+    )
+  }
+
+  /**
+   * Q5, the other side: a row whose cohort years the registry's sentence does NOT
+   * describe.
+   *
+   * A registry re-pin is OUR edit and must never make a stored row unreadable.
+   * The figure takes the no-row arm -- the only honest thing to say is that we
+   * hold nothing for it -- while every figure beside it still answers, and the
+   * read does not refuse.
+   */
+  @Test
+  fun `a row whose cohort the registry sentence does not describe takes the no-figure arm and never refuses`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Re-pinned Cohort U")
+    addToCollegeList(student, collegeId)
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    // The state a registry re-pin leaves behind: a stored row still pooling the
+    // cohort it was ingested at, under a registry that now publishes another.
+    CoachingTestDb.connection
+      .prepareStatement(
+        "UPDATE program_money_stats SET cohort_first_year = 2013, cohort_last_year = 2014 " +
+          "WHERE college_program_id = ? AND measure = ?",
+      ).use { stmt ->
+        stmt.setObject(1, programId)
+        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.executeUpdate()
+      }
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    assertIs<ProgramReturnFigure.NoFigure>(
+      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
+      "a sentence about another cohort beside this figure would contradict it in front of a family",
+    )
+    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION })
+    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT })
+  }
+
+  /**
+   * Q6: two cohorts stored for one measure, at the SERVICE seam.
+   *
+   * One measure, one answer, and the answer is the most recent cohort with its
+   * own years said. The DAO test asserts the selection is the query's; this
+   * asserts the family sees one figure rather than the same measure twice.
+   */
+  @Test
+  fun `two stored cohorts of one measure render once, as the most recent cohort`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Two Cohorts U")
+    addToCollegeList(student, collegeId)
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    // A SECOND, OLDER earnings cohort beside the one the fixture wrote: the
+    // natural key admits it, so this is a supported state and not corruption.
+    CoachingTestDb.connection
+      .prepareStatement(
+        "INSERT INTO program_money_stats (college_program_id, measure, cohort_first_year, cohort_last_year, " +
+          "amount_usd, status, source, source_variable) VALUES (?, ?, 2013, 2014, ?, ?, ?, ?)",
+      ).use { stmt ->
+        stmt.setObject(1, programId)
+        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.setInt(3, OLDER_COHORT_EARNINGS_USD)
+        stmt.setString(4, FigureStatus.REPORTED.value)
+        stmt.setString(5, MoneySource.SCORECARD.value)
+        stmt.setString(6, ScorecardFieldOfStudyColumns.EARN_MDN_4YR)
+        stmt.executeUpdate()
+      }
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    assertEquals(
+      ProgramMoneyMeasure.entries,
+      figures.map { it.measure },
+      "one entry per measure: the same measure is never served twice",
+    )
+    val earnings =
+      assertIs<ProgramReturnFigure.Reported>(
+        figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
+      )
+    assertEquals(CostsTestDb.PROGRAM_EARNINGS_USD, earnings.amountUsd, "the most recent cohort's own figure")
+    assertEquals(CostsTestDb.PROGRAM_EARNINGS_COHORT_FIRST_YEAR, earnings.provenance.cohortFirstYear)
+    assertEquals(CostsTestDb.PROGRAM_EARNINGS_COHORT_LAST_YEAR, earnings.provenance.cohortLastYear)
+  }
+
+  @Test
+  fun `the store's scorecard source never becomes the spoken publisher`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Provenance U")
+    addToCollegeList(student, collegeId)
+    seedProgramMoney(seedProgram(collegeId, cipCode = "5101"))
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
+    assertEquals(
+      ScorecardFieldOfStudyColumns.VARIABLES.map { it.publisher }.toSet(),
+      figures.map { assertIs<ProgramReturnFigure.Held>(it).provenance.publisher }.toSet(),
+      "the publisher a family is told is the registry's, never a literal beside it",
+    )
+  }
+
+  @Test
+  fun `the program-return read adds no query per college or subject`() {
+    seedSubject("nursing", "Nursing", "51")
+    seedSubject("physics", "Physics", "40")
+    val student = createStudent()
+    val ids =
+      (1..5).map { n ->
+        seedCollege("Program Batch $n").also { addToCollegeList(student, it) }
+      }
+    ids.forEachIndexed { i, id ->
+      seedProgramMoney(seedProgram(id, cipCode = if (i % 2 == 0) "5101" else "4001"))
+    }
+    answerIntendedSubjects(student, "nursing", "physics")
+
+    val one = CoachingTestDb.CountingSession()
+    val five = CoachingTestDb.CountingSession()
+    // BOTH dimensions move, or the name is a claim the body does not make: one
+    // college and one subject against five colleges and two subjects.
+    answerIntendedSubjects(student, "nursing")
+    assertEquals(1, service.readInSession(one, student, ids.take(1)).colleges.size)
+    answerIntendedSubjects(student, "nursing", "physics")
+    assertEquals(5, service.readInSession(five, student, ids).colleges.size)
+    assertEquals(
+      one.prepared.size,
+      five.prepared.size,
+      "the program reads are batched over colleges and subjects, never one query per pair: " +
+        "one=[${one.prepared}] five=[${five.prepared}]",
+    )
+  }
+
+  /**
+   * The status decision at a behavioural seam, over the WHOLE enum: `answered`
+   * arms the section, and every other status degrades to no section while the
+   * school-level figures stay the answer.
+   *
+   * The `when` below is exhaustive on purpose, exactly as the service's own is:
+   * a fifth `AnswerStatus` stops the build here too, so nobody can add one
+   * without saying what the major answer does with it (RFC 231).
+   */
+  @Test
+  fun `only an answered intended-subjects status arms the program_return section`() {
+    seedSubject("nursing", "Nursing", "51")
+    AnswerStatus.entries.forEach { status ->
+      val student = createStudent()
+      val collegeId = seedCollege("Status ${status.value} U")
+      addToCollegeList(student, collegeId)
+      seedProgramMoney(seedProgram(collegeId, cipCode = "5101"))
+      val armsTheSection =
+        when (status) {
+          AnswerStatus.ANSWERED -> {
+            answerIntendedSubjects(student, "nursing")
+            true
+          }
+
+          // Nobody has asked this student, so there is no row to write.
+          AnswerStatus.UNANSWERED -> {
+            false
+          }
+
+          AnswerStatus.DECLINED -> {
+            declineIntendedSubjects(student)
+            false
+          }
+
+          AnswerStatus.UNDECIDED -> {
+            undecidedIntendedSubjects(student)
+            false
+          }
+        }
+
+      val section = profileOf(student).programReturn
+      if (armsTheSection) {
+        assertNotNull(section, "an answered student gets the section: status=[${status.value}]")
+      } else {
+        assertNull(section, "only an answered student gets the section: status=[${status.value}]")
+      }
+    }
+  }
+
+  /**
+   * A `source_variable` NO registry entry carries -- the widening case, driven
+   * from the SCHEMA's permission and not from today's ingest.
+   *
+   * `program_money_stats.source_variable` is `TEXT NOT NULL` under a non-empty
+   * CHECK alone, so any string is a legal stored value and a fourth ingested
+   * Scorecard column would store cleanly. Refusing it took the whole
+   * `college_cost_profile` answer down for that student over one row we cannot
+   * attribute. Written with raw SQL for the reason the status-vocabulary test
+   * is: a test that could only produce this row through today's narrow loader
+   * would be asserting the narrowness, not the behaviour.
+   */
+  @Test
+  fun `a source_variable the field-of-study registry does not carry takes the no-figure arm and never refuses`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Unknown Variable U")
+    addToCollegeList(student, collegeId)
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    answerIntendedSubjects(student, "nursing")
+    // ONE measure only: the two figures beside it are the evidence that a row we
+    // cannot stamp costs a family that row and nothing else.
+    CoachingTestDb.connection
+      .prepareStatement(
+        "UPDATE program_money_stats SET source_variable = 'EARN_MDN_NOPE' " +
+          "WHERE college_program_id = ? AND measure = ?",
+      ).use { stmt ->
+        stmt.setObject(1, programId)
+        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.executeUpdate()
+      }
+
+    val profile = profileOf(student)
+    assertEquals(1, profile.colleges.size, "the whole cost answer still returns, with its school-level figures")
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profile.programReturn)))
+    assertIs<ProgramReturnFigure.NoFigure>(
+      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
+      "a row we cannot attribute is a row we hold nothing usable for, not a crash a family sees",
+    )
+    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION })
+    assertIs<ProgramReturnFigure.Reported>(
+      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT },
+    )
+  }
+
+  /**
+   * A row whose `source` is NOT the publisher whose file the field-of-study
+   * registry describes -- the ENVELOPE, audited before the inner lookup.
+   *
+   * Driven from the SCHEMA's permission and not from today's ingest.
+   * `program_money_stats.source` is the `money_source` DOMAIN, whose
+   * `money_source_check` admits four publishers, and
+   * `create-program-money-stats.sql` adds no CHECK narrowing it here -- so a row
+   * of another publisher's file stores cleanly. Stamping it from
+   * `ScorecardFieldOfStudyColumns` would speak that publisher's variable to a
+   * family under the Scorecard's publisher, cohort sentence and dollar base.
+   * Written with raw SQL for the reason the `source_variable` test above is: a
+   * test that could only produce this row through today's narrow loader would
+   * be asserting the narrowness, not the behaviour.
+   */
+  @Test
+  fun `a row whose source is not the field-of-study publisher takes the no-figure arm and never refuses`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Other Publisher U")
+    addToCollegeList(student, collegeId)
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    answerIntendedSubjects(student, "nursing")
+    // ONE measure only: the two figures beside it are the evidence that a row we
+    // may not attribute costs a family that row and nothing else.
+    CoachingTestDb.connection
+      .prepareStatement(
+        "UPDATE program_money_stats SET source = ? WHERE college_program_id = ? AND measure = ?",
+      ).use { stmt ->
+        stmt.setString(1, MoneySource.IPEDS_SFA.value)
+        stmt.setObject(2, programId)
+        stmt.setString(3, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.executeUpdate()
+      }
+
+    val profile = profileOf(student)
+    assertEquals(1, profile.colleges.size, "the whole cost answer still returns, with its school-level figures")
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profile.programReturn)))
+    assertIs<ProgramReturnFigure.NoFigure>(
+      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
+      "another publisher's row is never stamped with the Scorecard's publisher: it says nothing instead",
+    )
+    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION })
+    assertIs<ProgramReturnFigure.Reported>(
+      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT },
+    )
+  }
+
+  @Test
+  fun `an answered student with no college selected gets no section, never an empty colleges array`() {
+    // The section's convention is ABSENT, never empty (RFC 231). With nothing
+    // to answer about, a subject entry whose `colleges` array is `[]` would be
+    // a second spelling of the absence the non-answered statuses already spell
+    // null, and the payload forbids the empty shape.
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    answerIntendedSubjects(student, "nursing")
+
+    assertNull(
+      profileOf(student).programReturn,
+      "no selected college is nothing to answer about: the section is absent",
+    )
+  }
+
+  /**
+   * A row whose stored `measure` is not the one its own `source_variable`
+   * publishes -- the registry DISAGREEING with the store.
+   *
+   * The publisher, the verbatim cohort cell and the dollar base are read off the
+   * VARIABLE, so serving this row would put a debt figure under the earnings
+   * publisher and the 2024 dollar base. It says nothing instead. A disagreement
+   * between the registry and a stored row is OUR edit exactly as a re-pin is,
+   * and the settled rule for those is the no-figure arm and never a refusal:
+   * one row must not take a family's whole cost answer down.
+   */
+  @Test
+  fun `a stored measure the row's own source_variable does not publish takes the no-figure arm and never refuses`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedCollege("Mismatched Variable U")
+    addToCollegeList(student, collegeId)
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    answerIntendedSubjects(student, "nursing")
+    CoachingTestDb.connection
+      .prepareStatement(
+        "UPDATE program_money_stats SET source_variable = 'DEBT_ALL_STGP_EVAL_MDN' " +
+          "WHERE college_program_id = ? AND measure = ?",
+      ).use { stmt ->
+        stmt.setObject(1, programId)
+        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.executeUpdate()
+      }
+
+    val profile = profileOf(student)
+    assertEquals(1, profile.colleges.size, "the whole cost answer still returns, with its school-level figures")
+    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profile.programReturn)))
+    assertIs<ProgramReturnFigure.NoFigure>(
+      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
+      "a debt variable never stamps an earnings row: the figure says nothing rather than saying it wrongly",
+    )
+    val debt = assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION })
+    assertEquals(
+      ScorecardFieldOfStudyColumns.DEBT.publisher,
+      debt.provenance.publisher,
+      "and the figures beside it are stamped by their own variables",
+    )
+    assertIs<ProgramReturnFigure.Reported>(
+      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT },
+    )
+  }
+
+  /**
+   * The two DOORS that carry the section's ABSENT-never-empty claim (RFC 231),
+   * each driven on its own answer.
+   *
+   * There is no throw left to observe: both constructors are private, so a short
+   * `figures` array, an all-absent one and a provenance whose years the registry
+   * does not describe are states no call site can spell -- the compiler carries
+   * those three claims, exactly as it carries the empty `programs` list that
+   * [ProgramReturnCollege.WithPrograms]'s head parameter forbids. What is still
+   * worth asserting is what each factory ANSWERS, because the assembly only ever
+   * hands them legal input: a factory that totalled the measures wrongly, or one
+   * that stamped a disagreeing cohort instead of answering null, would pass every
+   * other test in this file.
+   */
+  @Test
+  fun `the two doors total the measure set, choose the no-figures arm, and refuse a disagreeing cohort`() {
+    val agreeing =
+      assertNotNull(
+        ProgramFigureProvenance.ofAgreeingCohort(
+          ScorecardFieldOfStudyColumns.EARNINGS,
+          ScorecardFieldOfStudyColumns.EARNINGS.cohortFirstYear,
+          ScorecardFieldOfStudyColumns.EARNINGS.cohortLastYear,
+        ),
+        "the registry's own years must take the agreeing path, or this test proves nothing",
+      )
+    val earnings = ProgramReturnFigure.Reported(CostsTestDb.PROGRAM_EARNINGS_USD, agreeing)
+
+    val fromOneFigure =
+      assertIs<ProgramReturnProgram.WithFigures>(
+        ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode("5101"), mapOf(earnings.measure to earnings)),
+        "one held figure is a program we hold figures for",
+      )
+    assertEquals(
+      ProgramMoneyMeasure.entries,
+      fromOneFigure.figures.map { it.measure },
+      "every measure gets an entry, in declaration order, whatever was held",
+    )
+    assertEquals(
+      listOf(earnings),
+      fromOneFigure.figures.filterIsInstance<ProgramReturnFigure.Held>(),
+      "and the measures we held nothing for are the no-figure arm rather than a short array",
+    )
+
+    val fromNothing =
+      assertIs<ProgramReturnProgram.NoPublishedFigures>(
+        ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode("5101"), emptyMap()),
+        "a program we could stamp nothing for is [NoPublishedFigures], never an all-absent figure list",
+      )
+    assertEquals("5101", fromNothing.cipCode.value, "and it still names the program it is about")
+
+    assertNull(
+      ProgramFigureProvenance.ofAgreeingCohort(
+        ScorecardFieldOfStudyColumns.EARNINGS,
+        AcademicYear(2013),
+        AcademicYear(2014),
+      ),
+      "a cohort the registry's own cell does not describe is never stamped",
+    )
+  }
 }
+
+/**
+ * An OLDER earnings cohort's figure, for the two-cohort case: materially
+ * different from the fixture's own, so a read that served the wrong cohort is
+ * caught by the number and not only by the years.
+ */
+private const val OLDER_COHORT_EARNINGS_USD = 39000

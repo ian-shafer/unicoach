@@ -317,7 +317,11 @@ object FafsaProcessCopy {
         FafsaProcessTopic.THE_FORM_IS_FREE,
         // The line below names the Department of Education as the party a family
         // may NOT be charged by (20 U.S.C. 1090(d)(3)), never as the publisher of
-        // a money figure, so it carries the sweep's own per-line marker.
+        // a money figure. Its `money-attribution-exempt` marker is VESTIGIAL as
+        // of RFC 231 -- the source-text sweep that read it is deleted, and D7's
+        // surviving half is the compile-time one (`MoneySourceCopy`'s `when`s
+        // with no `else`), which no comment can arm or disarm. The marker is left
+        // in place as a recorded follow-up.
         "The FAFSA is free: no one -- not the " +
           "Department of Education, not a contractor, " + // money-attribution-exempt: a fee ban, not an attribution
           "not a servicer or a software provider -- may charge a family for collecting, processing or " +

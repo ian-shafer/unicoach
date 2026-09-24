@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.CalendarYear
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -98,7 +99,7 @@ class ScorecardFieldOfStudyPinTest {
     // is the ONE place a reader finds the dollar base before speaking it out
     // loud. NULL on the debt columns is a FINDING, not an omission: the
     // publisher names no dollar year for debt anywhere.
-    assertEquals(2024, ScorecardFieldOfStudyColumns.EARNINGS.inflationBaseYear)
+    assertEquals(CalendarYear(2024), ScorecardFieldOfStudyColumns.EARNINGS.inflationBaseYear)
     assertNull(ScorecardFieldOfStudyColumns.DEBT.inflationBaseYear)
     assertNull(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT.inflationBaseYear)
     assertEquals(

@@ -590,11 +590,12 @@ object ScoreBandWire {
  * NAMED WITHOUT THE PUBLISHER, deliberately. `ScorecardScoreBandCitation`
  * would put the literal "Scorecard" on every line that mentions the type --
  * the field declaration, the factory, two copy constants and the renderer --
- * and RFC 177's ban is stated over LIVE LINES containing a publisher's name,
- * so each of those would need its own `money-attribution-exempt` marker. A
- * guard that has to be waived six times to name a type is a guard being worn
- * down; the publisher is named ONCE, in the sentence below, where the
- * exemption is true and legible.
+ * five places a re-pin to another publisher's file would have to be chased, and
+ * five chances for one of them to be missed. The publisher is named ONCE, in the
+ * sentence below, which is the sentence a family is shown. (Until RFC 231 this
+ * also avoided five per-line `money-attribution-exempt` waivers of RFC 177 D7's
+ * source-text sweep; that sweep is deleted, so the count is now a
+ * maintenance argument and not a waiver argument.)
  *
  * An `object` rather than a data class with a year field, because there is
  * nothing per-school or per-row to carry: one pinned file publishes one cohort
@@ -639,12 +640,15 @@ object ScoreBandCitation {
 
   /** The sentence fragment the coach says, with the publisher and the cohort in it rather than beside it. */
   val citedAs: String =
-    // The publisher is named in a LIVE string and the RFC 177 ban is on naming
-    // the publisher of a canonical MONEY row. A percentile score is not a
-    // money figure and this seam publishes none, so the line carries its own
-    // exemption rather than deriving words from MoneySourceCopy -- reaching
-    // into the money seam's copy object is how a testing fact ends up inside
-    // the money vocabulary.
+    // The publisher is named in a LIVE string, and RFC 177's ban was on naming
+    // the publisher of a canonical MONEY row. A percentile score is not a money
+    // figure and this seam publishes none, so the line says the publisher itself
+    // rather than deriving words from MoneySourceCopy -- reaching into the money
+    // seam's copy object is how a testing fact ends up inside the money
+    // vocabulary. The `money-attribution-exempt` marker on it is VESTIGIAL as of
+    // RFC 231: the source-text sweep that read it is deleted, D7's surviving
+    // half is `MoneySourceCopy`'s exhaustive `when`s, and the marker is left in
+    // place as a recorded follow-up.
     "the U.S. Department of Education's College Scorecard, " + // money-attribution-exempt: a score band is not a money figure
       "for the class that entered in $COHORT_TERM"
 }

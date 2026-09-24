@@ -8,7 +8,6 @@ import ed.unicoach.db.dao.ProgramMoneyDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
-import ed.unicoach.db.models.MoneySource
 import org.apache.commons.csv.CSVRecord
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -263,8 +262,12 @@ class ProgramMoneyLoader(
         .setScale(0, RoundingMode.HALF_UP)
         .intValueExact()
 
-    /** The one publisher of every row this loader writes. */
-    internal val SOURCE = MoneySource.SCORECARD
+    /**
+     * The one publisher of every row this loader writes -- read off the
+     * registry this loader writes FROM, so the ingest and the read that audits
+     * its rows cannot name two different publishers for one file.
+     */
+    internal val SOURCE = ScorecardFieldOfStudyColumns.SOURCE
 
     /**
      * Dollars, never negative -- the loader-side twin of

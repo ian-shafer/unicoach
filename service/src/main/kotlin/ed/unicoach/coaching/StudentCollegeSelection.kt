@@ -55,7 +55,13 @@ internal class StudentCollegeSelection private constructor(
    */
   fun <T> map(build: (College, CollegeListEntry) -> T): List<T> = selected.map { id -> build(collegeOf(id), entryById.getValue(id)) }
 
-  private fun collegeOf(id: CollegeId): College =
+  /**
+   * The `colleges` row behind one selected id, or the invariant break named:
+   * the list-entry FK guarantees the row exists, so a miss is a defect that
+   * must fail naming the student and the college -- never a bare
+   * `NoSuchElementException` out of a lookup a caller rebuilt for itself.
+   */
+  fun collegeOf(id: CollegeId): College =
     collegeById[id] ?: error(
       "invariant broken: active list entry references a college listByIds did not return " +
         "(the list-entry FK guarantees the colleges row exists): " +

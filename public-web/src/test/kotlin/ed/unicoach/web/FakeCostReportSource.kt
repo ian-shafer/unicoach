@@ -555,6 +555,7 @@ fun costProfile(
     unknownCollegeIds = emptyList(),
     moneyProfile = moneyProfile,
     comparisonBasis = ComparisonBasis.of(colleges, moneyProfile),
+    programReturn = null,
   )
 
 /** A merit-aid section with its own CDS citation, the second source the page cites separately. */

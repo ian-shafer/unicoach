@@ -7,16 +7,22 @@ import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.costs.CostsTestDb.answerBand
+import ed.unicoach.coaching.costs.CostsTestDb.answerIntendedSubjects
 import ed.unicoach.coaching.costs.CostsTestDb.answerLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
 import ed.unicoach.coaching.costs.CostsTestDb.createStudent
 import ed.unicoach.coaching.costs.CostsTestDb.declineBand
 import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
+import ed.unicoach.coaching.costs.CostsTestDb.seedProgram
+import ed.unicoach.coaching.costs.CostsTestDb.seedProgramMoney
+import ed.unicoach.coaching.costs.CostsTestDb.seedSubject
+import ed.unicoach.coaching.costs.CostsTestDb.undecidedIntendedSubjects
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
+import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AbsenceStatus
@@ -30,6 +36,7 @@ import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
+import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
@@ -114,6 +121,45 @@ class CollegeCostChatToolTest {
   private fun errorOf(result: JsonObject): String? = result["error"]?.jsonPrimitive?.content
 
   private fun collegesOf(result: JsonObject) = result.getValue("colleges").jsonArray.map { it.jsonObject }
+
+  /**
+   * The `program_return` section, refused BY NAME when it is absent: the
+   * section's whole claim is ABSENT, never empty (RFC 231), so a reader that
+   * turned a missing key into `emptyList()` would make the two
+   * indistinguishable -- and the absence tests below assert the raw key
+   * themselves.
+   */
+  private fun programReturnOf(result: JsonObject): List<JsonObject> =
+    assertNotNull(
+      result[CollegeCostChatTool.PROGRAM_RETURN_KEY],
+      "the payload carries no [${CollegeCostChatTool.PROGRAM_RETURN_KEY}] section: [$result]",
+    ).jsonArray.map { it.jsonObject }
+
+  /** The single subject entry's single college -- the one-subject, one-college fixtures' own walk. */
+  private fun soleProgramCollegeOf(result: JsonObject): JsonObject =
+    programReturnOf(result)
+      .single()
+      .getValue(CollegeCostChatTool.PROGRAM_COLLEGES_KEY)
+      .jsonArray
+      .map { it.jsonObject }
+      .single()
+
+  /** That college's matched programs, in payload order. */
+  private fun programsOf(college: JsonObject): List<JsonObject> =
+    college
+      .getValue(CollegeCostChatTool.PROGRAM_PROGRAMS_KEY)
+      .jsonArray
+      .map { it.jsonObject }
+
+  /** The single matched program of a one-program fixture. */
+  private fun soleProgramOf(result: JsonObject): JsonObject = programsOf(soleProgramCollegeOf(result)).single()
+
+  /** That program's figures, in payload order. */
+  private fun programFiguresOf(result: JsonObject): List<JsonObject> =
+    soleProgramOf(result)
+      .getValue(CollegeCostChatTool.PROGRAM_FIGURES_KEY)
+      .jsonArray
+      .map { it.jsonObject }
 
   private fun execute(
     student: StudentId,
@@ -4461,6 +4507,506 @@ class CollegeCostChatToolTest {
   // The legend itself (RFC 192): the rules it must NOT carry
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // The program_return section (RFC 231)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `program_return is absent until the intended-subjects answer is answered`() {
+    val student = createStudent()
+    seedListedCollege(student, "No Field U")
+    assertNull(
+      execute(student)[CollegeCostChatTool.PROGRAM_RETURN_KEY],
+      "no stored answer: the section is absent",
+    )
+
+    val undecided = createStudent()
+    seedListedCollege(undecided, "Undecided Field U")
+    undecidedIntendedSubjects(undecided)
+    assertNull(
+      execute(undecided)[CollegeCostChatTool.PROGRAM_RETURN_KEY],
+      "a real non-answered status: the section is absent",
+    )
+  }
+
+  @Test
+  fun `program_return renders subject-first with the three figures in order`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "Return U")
+    seedProgramMoney(seedProgram(collegeId, cipCode = "5101"))
+    answerIntendedSubjects(student, "nursing")
+
+    val subject = programReturnOf(execute(student)).single()
+    assertEquals("nursing", subject.getValue("subject_slug").jsonPrimitive.content)
+    assertEquals("Nursing", subject.getValue("subject_name").jsonPrimitive.content)
+    val college =
+      subject
+        .getValue(CollegeCostChatTool.PROGRAM_COLLEGES_KEY)
+        .jsonArray
+        .map { it.jsonObject }
+        .single()
+    assertEquals(collegeId.value.toString(), college.getValue("college_id").jsonPrimitive.content)
+    val program = programsOf(college).single()
+    assertEquals("5101", program.getValue(CollegeCostChatTool.PROGRAM_CIP_CODE_KEY).jsonPrimitive.content)
+    val figures = program.getValue(CollegeCostChatTool.PROGRAM_FIGURES_KEY).jsonArray.map { it.jsonObject }
+    assertEquals(
+      listOf(
+        ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value,
+        ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION.value,
+        ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT.value,
+      ),
+      figures.map { it.getValue("measure").jsonPrimitive.content },
+      "the three figures are in declaration order",
+    )
+    val earnings = figures[0]
+    assertEquals(
+      CostsTestDb.PROGRAM_EARNINGS_USD,
+      earnings
+        .getValue("amount_usd")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(FigureStatus.REPORTED.value, earnings.getValue("status").jsonPrimitive.content)
+    assertEquals(ScorecardFieldOfStudyColumns.EARNINGS.publisher, earnings.getValue("publisher").jsonPrimitive.content)
+    assertEquals(
+      ScorecardFieldOfStudyColumns.EARNINGS.inflationBaseYear?.year,
+      earnings
+        .getValue("inflation_base_year")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(
+      CostsTestDb.PROGRAM_EARNINGS_COHORT_FIRST_YEAR.firstCalendarYear,
+      earnings
+        .getValue("cohort_first_year")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(
+      CostsTestDb.PROGRAM_EARNINGS_COHORT_LAST_YEAR.firstCalendarYear,
+      earnings
+        .getValue("cohort_last_year")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertTrue(
+      earnings
+        .getValue("cohort_sentence")
+        .jsonPrimitive.content
+        .contains("Treasury AY2017-2018"),
+    )
+    val debt = figures[1]
+    assertEquals(
+      CostsTestDb.PROGRAM_DEBT_USD,
+      debt
+        .getValue("amount_usd")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(ScorecardFieldOfStudyColumns.DEBT.publisher, debt.getValue("publisher").jsonPrimitive.content)
+    assertFalse(
+      debt.containsKey(CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY),
+      "the publisher names no dollar base for debt",
+    )
+    assertEquals(
+      CostsTestDb.PROGRAM_DEBT_COHORT_FIRST_YEAR.firstCalendarYear,
+      debt
+        .getValue("cohort_first_year")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(
+      CostsTestDb.PROGRAM_DEBT_COHORT_LAST_YEAR.firstCalendarYear,
+      debt
+        .getValue("cohort_last_year")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    val payment = figures[2]
+    assertEquals(
+      CostsTestDb.PROGRAM_MONTHLY_PAYMENT_USD,
+      payment
+        .getValue("amount_usd")
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT.publisher, payment.getValue("publisher").jsonPrimitive.content)
+    assertFalse(payment.containsKey(CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY))
+  }
+
+  @Test
+  fun `a suppressed program figure carries no amount and never the school-level figure`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "Suppressed U")
+    seedProgramMoney(
+      seedProgram(collegeId, cipCode = "5101"),
+      earnings = FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
+    )
+    answerIntendedSubjects(student, "nursing")
+
+    val result = execute(student)
+    val earnings =
+      programFiguresOf(result).single {
+        it.getValue(CollegeCostChatTool.PROGRAM_MEASURE_KEY).jsonPrimitive.content ==
+          ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value
+      }
+    assertEquals(
+      FigureStatus.SUPPRESSED_BY_PUBLISHER.value,
+      earnings.getValue(CollegeCostChatTool.PROGRAM_STATUS_KEY).jsonPrimitive.content,
+    )
+    assertFalse(
+      earnings.containsKey(CollegeCostChatTool.PROGRAM_AMOUNT_USD_KEY),
+      "a suppressed figure has no number to substitute",
+    )
+    assertEquals(ScorecardFieldOfStudyColumns.EARNINGS.publisher, earnings.getValue("publisher").jsonPrimitive.content)
+    // The school-level median earnings stay where they were: a different figure
+    // at a different grain, never a substitute for the suppressed program one.
+    assertTrue(collegesOf(result).single().containsKey(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName))
+  }
+
+  @Test
+  fun `a college with no matching program says so with no figures`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "No Program U")
+    answerIntendedSubjects(student, "nursing")
+
+    val college = soleProgramCollegeOf(execute(student))
+    assertEquals(collegeId.value.toString(), college.getValue("college_id").jsonPrimitive.content)
+    assertEquals("No Program U", college.getValue("name").jsonPrimitive.content)
+    assertFalse(
+      college.containsKey(CollegeCostChatTool.PROGRAM_PROGRAMS_KEY),
+      "no programs key for a no-program college",
+    )
+    val availability = college.getValue(CollegeCostChatTool.PROGRAM_AVAILABILITY_KEY).jsonObject
+    assertEquals(CollegeCostChatTool.PROGRAM_NO_PROGRAM_BASIS, availability.getValue("basis").jsonPrimitive.content)
+    assertEquals(CollegeCostChatTool.PROGRAM_NO_PROGRAM_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
+  }
+
+  /**
+   * Q2 at the WIRE: two matched programs at one college, with byte-identical
+   * figures, are two entries carrying their own codes.
+   *
+   * The payload half of the data-loss defect. Identical figures on purpose: two
+   * programs whose numbers differ would survive a value-based deduplication too,
+   * so only this fixture proves the read carries IDENTITY.
+   */
+  @Test
+  fun `two matched programs at one college render as two entries, each with its own cip_code`() {
+    seedSubject("biology", "Biology", "26")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "Two Majors U")
+    seedProgramMoney(seedProgram(collegeId, cipCode = "2607"))
+    seedProgramMoney(seedProgram(collegeId, cipCode = "260707"))
+    answerIntendedSubjects(student, "biology")
+
+    val programs = programsOf(soleProgramCollegeOf(execute(student)))
+    assertEquals(
+      listOf("2607", "260707"),
+      programs.map { it.getValue(CollegeCostChatTool.PROGRAM_CIP_CODE_KEY).jsonPrimitive.content },
+      "two programs, told apart on the wire by their own codes",
+    )
+    programs.forEach { program ->
+      assertEquals(
+        ProgramMoneyMeasure.entries.map { it.value },
+        program
+          .getValue(CollegeCostChatTool.PROGRAM_FIGURES_KEY)
+          .jsonArray
+          .map {
+            it.jsonObject
+              .getValue(CollegeCostChatTool.PROGRAM_MEASURE_KEY)
+              .jsonPrimitive.content
+          },
+        "and each carries its own full set of figures",
+      )
+    }
+  }
+
+  /**
+   * Q1's THIRD arm at the wire: the school runs the matched program and we hold
+   * no published figure for it.
+   *
+   * Distinguishable from the no-program arm (a different key, one level out, and
+   * a different basis) and from a suppressed figure (which has a status and a
+   * publisher). Three silences, three shapes.
+   */
+  @Test
+  fun `a matched program with no stored figure carries its own basis, not the no-program one`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "Runs It U")
+    seedProgram(collegeId, cipCode = "5101")
+    answerIntendedSubjects(student, "nursing")
+
+    val college = soleProgramCollegeOf(execute(student))
+    assertFalse(
+      college.containsKey(CollegeCostChatTool.PROGRAM_AVAILABILITY_KEY),
+      "the school RUNS the program, so the no-program sentence must not be said about it",
+    )
+    val program = programsOf(college).single()
+    assertEquals("5101", program.getValue(CollegeCostChatTool.PROGRAM_CIP_CODE_KEY).jsonPrimitive.content)
+    assertFalse(program.containsKey(CollegeCostChatTool.PROGRAM_FIGURES_KEY), "no figures key when we hold none")
+    val availability = program.getValue(CollegeCostChatTool.PROGRAM_FIGURES_AVAILABILITY_KEY).jsonObject
+    assertEquals(
+      CollegeCostChatTool.PROGRAM_NO_PUBLISHED_FIGURES_BASIS,
+      availability.getValue("basis").jsonPrimitive.content,
+    )
+    assertEquals(
+      CollegeCostChatTool.PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT,
+      availability.getValue("statement").jsonPrimitive.content,
+    )
+    // The three bases are three DIFFERENT codes, so no reader can fold two of
+    // them together.
+    assertEquals(
+      3,
+      setOf(
+        CollegeCostChatTool.PROGRAM_NO_PROGRAM_BASIS,
+        CollegeCostChatTool.PROGRAM_NO_PUBLISHED_FIGURES_BASIS,
+        CollegeCostChatTool.PROGRAM_NO_FIGURE_BASIS,
+      ).size,
+      "the three absences carry three distinct basis codes",
+    )
+  }
+
+  /**
+   * Q1 at the MEASURE level, on the wire: `figures` is never short, and the
+   * measure we hold nothing for says so instead of vanishing.
+   */
+  @Test
+  fun `a measure with no stored row renders its own sentence, and the figures array stays full length`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "One Figure U")
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    CoachingTestDb.connection
+      .prepareStatement("DELETE FROM program_money_stats WHERE college_program_id = ? AND measure <> ?")
+      .use { stmt ->
+        stmt.setObject(1, programId)
+        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.executeUpdate()
+      }
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = programFiguresOf(execute(student))
+    assertEquals(
+      ProgramMoneyMeasure.entries.map { it.value },
+      figures.map { it.getValue(CollegeCostChatTool.PROGRAM_MEASURE_KEY).jsonPrimitive.content },
+      "every measure gets an entry",
+    )
+    val debt =
+      figures.single {
+        it.getValue(CollegeCostChatTool.PROGRAM_MEASURE_KEY).jsonPrimitive.content ==
+          ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION.value
+      }
+    assertFalse(debt.containsKey(CollegeCostChatTool.PROGRAM_STATUS_KEY), "no stored row means no stored status to say")
+    assertFalse(debt.containsKey(CollegeCostChatTool.PROGRAM_PUBLISHER_KEY), "and no publisher to stamp it with")
+    val availability = debt.getValue(CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY).jsonObject
+    assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_BASIS, availability.getValue("basis").jsonPrimitive.content)
+    assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
+  }
+
+  /**
+   * The FOURTH reason a figure can say "no figure", at the wire: a row we hold
+   * and cannot STAMP -- here, a `source_variable` the field-of-study registry
+   * does not carry.
+   *
+   * It renders as the measure-level absence, which is what it is to a family: we
+   * hold no published figure for that measure. The distinctions this test
+   * defends are the ones a reader could otherwise collapse -- it is NOT the
+   * publisher's own silence (no `status`, no `publisher`), it is NOT the school
+   * not running the program (no `program_availability` on the college), and it
+   * is NOT the program having nothing at all (the two figures beside it still
+   * answer, under their own publishers). Why the operator's distinction is not
+   * ALSO on this wire: it is our ingest's, it cannot be acted on by a family or
+   * a coach, and it is said in full in a located WARN instead.
+   *
+   * Written with raw SQL because the schema PERMITS this row -- `source_variable`
+   * is `TEXT NOT NULL` under a non-empty CHECK alone -- and today's loader is
+   * simply narrower than the column. A fixture that could only produce it
+   * through the loader would be asserting the narrowness.
+   */
+  @Test
+  fun `a figure we cannot stamp renders the measure-level absence, told apart from a silence and from a missing program`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "Unstampable U")
+    val programId = seedProgram(collegeId, cipCode = "5101")
+    seedProgramMoney(programId)
+    CoachingTestDb.connection
+      .prepareStatement(
+        "UPDATE program_money_stats SET source_variable = 'EARN_MDN_NOPE' " +
+          "WHERE college_program_id = ? AND measure = ?",
+      ).use { stmt ->
+        stmt.setObject(1, programId)
+        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.executeUpdate()
+      }
+    answerIntendedSubjects(student, "nursing")
+
+    val result = execute(student)
+    val college = soleProgramCollegeOf(result)
+    assertFalse(
+      college.containsKey(CollegeCostChatTool.PROGRAM_AVAILABILITY_KEY),
+      "the school RUNS the program: a row we cannot attribute must never be spoken as a school not running it",
+    )
+    val figures = programFiguresOf(result)
+    assertEquals(
+      ProgramMoneyMeasure.entries.map { it.value },
+      figures.map { it.getValue(CollegeCostChatTool.PROGRAM_MEASURE_KEY).jsonPrimitive.content },
+      "every measure still gets an entry",
+    )
+    val earnings =
+      figures.single {
+        it.getValue(CollegeCostChatTool.PROGRAM_MEASURE_KEY).jsonPrimitive.content ==
+          ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value
+      }
+    assertFalse(earnings.containsKey(CollegeCostChatTool.PROGRAM_STATUS_KEY), "a row we cannot stamp states no status")
+    assertFalse(earnings.containsKey(CollegeCostChatTool.PROGRAM_PUBLISHER_KEY), "and stamps no publisher on it")
+    assertFalse(earnings.containsKey(CollegeCostChatTool.PROGRAM_AMOUNT_USD_KEY), "and carries no number")
+    val availability = earnings.getValue(CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY).jsonObject
+    assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_BASIS, availability.getValue("basis").jsonPrimitive.content)
+    assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
+    // The other two figures answer as themselves: one row we cannot attribute
+    // costs a family that row and nothing beside it.
+    val debt =
+      figures.single {
+        it.getValue(CollegeCostChatTool.PROGRAM_MEASURE_KEY).jsonPrimitive.content ==
+          ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION.value
+      }
+    assertEquals(FigureStatus.REPORTED.value, debt.getValue(CollegeCostChatTool.PROGRAM_STATUS_KEY).jsonPrimitive.content)
+    assertEquals(
+      ScorecardFieldOfStudyColumns.DEBT.publisher,
+      debt.getValue(CollegeCostChatTool.PROGRAM_PUBLISHER_KEY).jsonPrimitive.content,
+    )
+    // And the three absence codes stay three, exactly as the no-published-figures
+    // test asserts: this arm reuses the measure-level one and invents no fourth.
+    assertEquals(
+      3,
+      setOf(
+        CollegeCostChatTool.PROGRAM_NO_PROGRAM_BASIS,
+        CollegeCostChatTool.PROGRAM_NO_PUBLISHED_FIGURES_BASIS,
+        CollegeCostChatTool.PROGRAM_NO_FIGURE_BASIS,
+      ).size,
+      "the three absences carry three distinct basis codes",
+    )
+  }
+
+  @Test
+  fun `the scorecard store source is never the spoken publisher`() {
+    seedSubject("nursing", "Nursing", "51")
+    val student = createStudent()
+    val collegeId = seedListedCollege(student, "Publisher U")
+    seedProgramMoney(seedProgram(collegeId, cipCode = "5101"))
+    answerIntendedSubjects(student, "nursing")
+
+    val figures = programFiguresOf(execute(student))
+    assertEquals(
+      ScorecardFieldOfStudyColumns.VARIABLES.map { it.publisher }.toSet(),
+      figures.map { it.getValue(CollegeCostChatTool.PROGRAM_PUBLISHER_KEY).jsonPrimitive.content }.toSet(),
+      "the publisher a family is told is the registry's, never the store's source",
+    )
+  }
+
+  @Test
+  fun `the description lists the program_return keys`() {
+    val description =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+    val keys =
+      listOf(
+        CollegeCostChatTool.PROGRAM_RETURN_KEY,
+        CollegeCostChatTool.PROGRAM_SUBJECT_SLUG_KEY,
+        CollegeCostChatTool.PROGRAM_SUBJECT_NAME_KEY,
+        CollegeCostChatTool.PROGRAM_PROGRAMS_KEY,
+        CollegeCostChatTool.PROGRAM_CIP_CODE_KEY,
+        CollegeCostChatTool.PROGRAM_FIGURES_KEY,
+        CollegeCostChatTool.PROGRAM_MEASURE_KEY,
+        CollegeCostChatTool.PROGRAM_AMOUNT_USD_KEY,
+        CollegeCostChatTool.PROGRAM_STATUS_KEY,
+        CollegeCostChatTool.PROGRAM_PUBLISHER_KEY,
+        CollegeCostChatTool.PROGRAM_COHORT_FIRST_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_COHORT_LAST_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_COHORT_SENTENCE_KEY,
+        CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_AVAILABILITY_KEY,
+        CollegeCostChatTool.PROGRAM_FIGURES_AVAILABILITY_KEY,
+        CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY,
+      )
+    keys.forEach { key ->
+      assertTrue(description.contains(key), "the legend must name [$key]: [$description]")
+    }
+
+    // "In payload order" is the legend's whole claim (RFC 231): a model told the
+    // keys in one order and handed them in another is exactly the drift a legend
+    // exists to prevent, and containment passes on any permutation. Asserted
+    // over the keys that have an entry of their OWN -- subject_slug,
+    // subject_name and measure are named inside those entries -- and scoped to
+    // the program_return block, so an earlier section's line starting with the
+    // same word cannot stand in for one of these.
+    //
+    // The order is the payload's NESTING, outermost first, with each level's
+    // absence arm right after the key it replaces: colleges -> programs (or the
+    // no-program sentence) -> cip_code -> figures (or the no-figures sentence)
+    // -> one figure's keys -> the no-figure sentence.
+    val programLegend =
+      description
+        .lines()
+        .dropWhile { !it.startsWith("${CollegeCostChatTool.PROGRAM_RETURN_KEY} - ") }
+    val entryKeys =
+      listOf(
+        CollegeCostChatTool.PROGRAM_RETURN_KEY,
+        CollegeCostChatTool.PROGRAM_PROGRAMS_KEY,
+        CollegeCostChatTool.PROGRAM_AVAILABILITY_KEY,
+        CollegeCostChatTool.PROGRAM_CIP_CODE_KEY,
+        CollegeCostChatTool.PROGRAM_FIGURES_KEY,
+        CollegeCostChatTool.PROGRAM_FIGURES_AVAILABILITY_KEY,
+        CollegeCostChatTool.PROGRAM_AMOUNT_USD_KEY,
+        CollegeCostChatTool.PROGRAM_STATUS_KEY,
+        CollegeCostChatTool.PROGRAM_PUBLISHER_KEY,
+        CollegeCostChatTool.PROGRAM_COHORT_FIRST_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_COHORT_LAST_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_COHORT_SENTENCE_KEY,
+        CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY,
+      )
+    val entryLines =
+      entryKeys.map { key ->
+        // ONE predicate, because the legend has ONE shape: every key gets an
+        // entry of its own, so nothing here has to parse a composite line.
+        val at = programLegend.indexOfFirst { line -> line.startsWith("$key - ") }
+        assertTrue(at >= 0, "the legend must give [$key] an entry of its own: [$description]")
+        key to at
+      }
+    assertEquals(
+      entryKeys,
+      entryLines.sortedBy { it.second }.map { it.first },
+      "the legend describes the program_return keys in payload order, never in the order they were typed: [$entryLines]",
+    )
+    ProgramMoneyMeasure.entries.forEach { measure ->
+      assertTrue(description.contains("\"${measure.value}\""), "the legend must name every program measure: [$description]")
+    }
+    ScorecardFieldOfStudyColumns.VARIABLES.map { it.publisher }.distinct().forEach { publisher ->
+      assertTrue(
+        description.contains("\"$publisher\""),
+        "the legend must name the publisher [$publisher] the payload carries: [$description]",
+      )
+    }
+    // EVERY legal stored status gets a word in the legend, driven from the
+    // vocabulary: `program_money_stats.status` references the whole
+    // `figure_statuses` table, so a status the legend does not name is a code the
+    // model would be handed with nothing said about it.
+    FigureStatus.entries.forEach { status ->
+      assertTrue(
+        description.contains("\"${status.value}\""),
+        "the legend must name every legal program figure status: [${status.value}]",
+      )
+    }
+  }
+
   @Test
   fun `the description is a legend, not a rulebook`() {
     val description =
@@ -4496,6 +5042,10 @@ class CollegeCostChatToolTest {
       // lives in the prompt, and re-adding it here must fail.
       "ONCE for the SET",
       "never once per figure",
+      // RFC 198's two-publisher rule, said for the major answer (RFC 231): it is
+      // a rule about what to SAY, so it is stated once, in the prompt paragraph,
+      // and re-adding it to this schema legend must fail.
+      "in one table row-set",
     ).forEach { behaviour ->
       assertFalse(
         description.contains(behaviour),

@@ -6,14 +6,19 @@ import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
+import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.IntendedSubjectsDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.dao.NewProgramMoneyStat
+import ed.unicoach.db.dao.ProgramMoneyDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.SubjectTaxonomyFixture
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AidForm
 import ed.unicoach.db.models.AidFormApplicantGroup
@@ -23,9 +28,11 @@ import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryEdit
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.CredentialLevel
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.IntendedSubjectWrite
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneyMeasure
@@ -40,6 +47,7 @@ import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.ValueBearingStatus
 import kotlinx.coroutines.runBlocking
+import java.util.UUID
 
 /**
  * The costs tests' own fixture, shared by [CollegeCostServiceTest] and
@@ -153,6 +161,14 @@ object CostsTestDb {
       "colleges",
       "students",
       "users",
+      // The major answer (RFC 231) reads the stored intended subjects, the
+      // taxonomy they point at, and the program-grained money store, so the
+      // costs fixture owns all five and resets them with it.
+      "subjects",
+      "intended_subjects",
+      "intended_subject_status",
+      "college_programs",
+      "program_money_stats",
     )
     // `colleges.state` and `colleges.locale` are foreign keys into the codebook
     // reference tables since migration 0067, so a college cannot be inserted
@@ -1010,6 +1026,112 @@ object CostsTestDb {
           status = entry.status,
           reasons = entry.reasons,
           livingPlan = plan,
+        ),
+      ).getOrThrow()
+  }
+
+  // ---------------------------------------------------------------------------
+  // The major answer (RFC 231): subjects, the stored answer, and program money
+  // ---------------------------------------------------------------------------
+
+  /** One authored taxonomy row; [prefixes] are the canonical digits-only CIP prefixes. */
+  fun seedSubject(
+    slug: String,
+    name: String,
+    vararg prefixes: String,
+  ) = SubjectTaxonomyFixture.insertSubject(sqlSession, slug, name, *prefixes)
+
+  /** Records an ANSWERED intended-subjects answer through the real write path, so the deferred triggers fire. */
+  fun answerIntendedSubjects(
+    student: StudentId,
+    vararg slugs: String,
+  ) = runBlocking {
+    database.withConnection { session ->
+      IntendedSubjectsDao.replaceAnswer(session, student, IntendedSubjectWrite.Subjects(slugs.toList())).getOrThrow()
+    }
+  }
+
+  fun declineIntendedSubjects(student: StudentId) =
+    runBlocking {
+      database.withConnection { session ->
+        IntendedSubjectsDao.replaceAnswer(session, student, IntendedSubjectWrite.Declined).getOrThrow()
+      }
+    }
+
+  fun undecidedIntendedSubjects(student: StudentId) =
+    runBlocking {
+      database.withConnection { session ->
+        IntendedSubjectsDao.replaceAnswer(session, student, IntendedSubjectWrite.Undecided).getOrThrow()
+      }
+    }
+
+  /** One `college_programs` row on [collegeId], returning its id. */
+  fun seedProgram(
+    collegeId: CollegeId,
+    cipCode: String,
+    credentialLevel: Int = CredentialLevel.BACHELORS.code,
+  ): UUID = SubjectTaxonomyFixture.insertProgram(sqlSession, collegeId, cipCode, credentialLevel = credentialLevel)
+
+  /**
+   * The three amounts [seedProgramMoney] writes, named for the reason every
+   * other figure here is: an assertion reads the fixture's own figure back
+   * instead of re-typing it, so the seed and the expectation cannot drift in
+   * two files at once.
+   */
+  const val PROGRAM_EARNINGS_USD = 61000
+  const val PROGRAM_DEBT_USD = 24000
+  const val PROGRAM_MONTHLY_PAYMENT_USD = 260
+
+  /**
+   * The cohorts those figures pool, READ OFF THE REGISTRY the ingest itself
+   * writes from (`ProgramMoneyLoader` writes `variable.cohortFirstYear` /
+   * `cohortLastYear` for every [ScorecardFieldOfStudyColumns.VARIABLES] member).
+   *
+   * Not four literals beside it: the row this fixture seeds has to BE the row
+   * the ingest would write, or "ordinary rows take the agreeing path" is a claim
+   * about a second transcription of the registry rather than about the ingest.
+   * The earnings cohort and the debt cohort are dated differently in the
+   * registry itself, so a test that mixes the two up still fails.
+   */
+  val PROGRAM_EARNINGS_COHORT_FIRST_YEAR = ScorecardFieldOfStudyColumns.EARNINGS.cohortFirstYear
+  val PROGRAM_EARNINGS_COHORT_LAST_YEAR = ScorecardFieldOfStudyColumns.EARNINGS.cohortLastYear
+  val PROGRAM_DEBT_COHORT_FIRST_YEAR = ScorecardFieldOfStudyColumns.DEBT.cohortFirstYear
+  val PROGRAM_DEBT_COHORT_LAST_YEAR = ScorecardFieldOfStudyColumns.DEBT.cohortLastYear
+
+  /**
+   * The three program figures a bachelor's program has, in the loader's own
+   * (measure, cohort, source variable) shape -- reported by default, with each
+   * silence arm reachable by overriding one [FigureReading].
+   */
+  fun seedProgramMoney(
+    programId: UUID,
+    earnings: FigureReading<Int> = FigureReading.Present(PROGRAM_EARNINGS_USD, ValueBearingStatus.REPORTED),
+    debt: FigureReading<Int> = FigureReading.Present(PROGRAM_DEBT_USD, ValueBearingStatus.REPORTED),
+    payment: FigureReading<Int> = FigureReading.Present(PROGRAM_MONTHLY_PAYMENT_USD, ValueBearingStatus.REPORTED),
+  ) {
+    // The LOADER's own row shape: measure, both cohort years and the source
+    // variable all come off the registry entry, exactly as `ProgramMoneyLoader`
+    // takes them, so a row seeded here is a row the ingest would write.
+    fun stat(
+      variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable,
+      reading: FigureReading<Int>,
+    ) = NewProgramMoneyStat(
+      collegeProgramId = programId,
+      measure = variable.measure,
+      cohortFirstYear = variable.cohortFirstYear,
+      cohortLastYear = variable.cohortLastYear,
+      reading = reading,
+      source = MoneySource.SCORECARD,
+      sourceVariable = variable.sourceVariable,
+    )
+
+    ProgramMoneyDao
+      .batchInsert(
+        sqlSession,
+        listOf(
+          stat(ScorecardFieldOfStudyColumns.EARNINGS, earnings),
+          stat(ScorecardFieldOfStudyColumns.DEBT, debt),
+          stat(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT, payment),
         ),
       ).getOrThrow()
   }

@@ -8,14 +8,17 @@ import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.coaching.putCollegeIdsSchema
+import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.putIncomeBand
 import ed.unicoach.db.models.putLivingPlan
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
@@ -76,6 +79,11 @@ class CollegeCostChatTool(
   private fun profileObject(profile: CollegeCostProfile): JsonObject =
     buildJsonObject {
       putJsonArray("colleges") { profile.colleges.forEach { add(collegeObject(profile, it)) } }
+      // The major answer (RFC 231): absent, never empty, when the intended
+      // subjects are unanswered, declined or undecided. Present it is the
+      // colleges re-keyed by subject and then by matched program --
+      // subject_slug -> colleges -> programs -> figures.
+      profile.programReturn?.let { put(PROGRAM_RETURN_KEY, programReturnArray(it)) }
       put("count", profile.colleges.size)
       if (profile.unknownCollegeIds.isNotEmpty()) {
         putJsonArray("unknown_college_ids") {
@@ -92,6 +100,129 @@ class CollegeCostChatTool(
       // replaced named one anyway (RFC 177).
       MoneySourceCopy.spokenListOf(profile.moneySources)?.let { put(SOURCE_KEY, it) }
     }
+
+  /**
+   * The `program_return` array (RFC 231), in the stored answer's own order: one
+   * entry per subject, then one entry per selected college, then one entry per
+   * matched program in CIP order, then the figures in [ProgramMoneyMeasure]
+   * declaration order.
+   */
+  private fun programReturnArray(section: ProgramReturn): JsonArray = JsonArray(section.subjects.map(::programReturnSubjectObject))
+
+  private fun programReturnSubjectObject(subject: ProgramReturnSubject): JsonObject =
+    buildJsonObject {
+      put(PROGRAM_SUBJECT_SLUG_KEY, subject.subjectSlug)
+      put(PROGRAM_SUBJECT_NAME_KEY, subject.subjectName)
+      putJsonArray(PROGRAM_COLLEGES_KEY) { subject.colleges.forEach { add(programReturnCollegeObject(it)) } }
+    }
+
+  /**
+   * One college's slice: its matched programs, or the ONE sentence that says no
+   * program matched -- never an empty `programs` array.
+   */
+  private fun programReturnCollegeObject(college: ProgramReturnCollege): JsonObject =
+    buildJsonObject {
+      put(COLLEGE_ID_KEY, college.collegeId.value.toString())
+      put(COLLEGE_NAME_KEY, college.name)
+      when (college) {
+        is ProgramReturnCollege.WithPrograms -> {
+          putJsonArray(PROGRAM_PROGRAMS_KEY) { college.programs.forEach { add(programObject(it)) } }
+        }
+
+        // No matched bachelor's program: the name and the sentence, never an
+        // empty programs array.
+        is ProgramReturnCollege.NoProgram -> {
+          putJsonObject(PROGRAM_AVAILABILITY_KEY) {
+            put(BASIS_KEY, PROGRAM_NO_PROGRAM_BASIS)
+            put(STATEMENT_KEY, PROGRAM_NO_PROGRAM_STATEMENT)
+          }
+        }
+      }
+    }
+
+  /**
+   * One matched program, keyed by the CIP code the publisher publishes at: its
+   * figures, or the sentence that says we hold none of them.
+   *
+   * The code rides on EVERY entry, including the no-figures one, because it is
+   * the program's identity: a college running two programs one subject reaches
+   * carries two entries, and an entry with no code would leave a family unable
+   * to tell which major it is about (RFC 231).
+   */
+  private fun programObject(program: ProgramReturnProgram): JsonObject =
+    buildJsonObject {
+      put(PROGRAM_CIP_CODE_KEY, program.cipCode.value)
+      when (program) {
+        is ProgramReturnProgram.WithFigures -> {
+          putJsonArray(PROGRAM_FIGURES_KEY) { program.figures.forEach { add(programReturnFigureObject(it)) } }
+        }
+
+        // The school RUNS the program and the publisher gave us nothing for it
+        // -- its own basis, so it can never be read as the school not running
+        // it and never as a publisher's suppression.
+        is ProgramReturnProgram.NoPublishedFigures -> {
+          putJsonObject(PROGRAM_FIGURES_AVAILABILITY_KEY) {
+            put(BASIS_KEY, PROGRAM_NO_PUBLISHED_FIGURES_BASIS)
+            put(STATEMENT_KEY, PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT)
+          }
+        }
+      }
+    }
+
+  /**
+   * One measure's entry. EVERY measure gets one, so a measure we hold no row for
+   * says so in its own words rather than leaving a short array a reader has to
+   * diff against the measure list to notice.
+   */
+  private fun programReturnFigureObject(figure: ProgramReturnFigure): JsonObject =
+    buildJsonObject {
+      put(PROGRAM_MEASURE_KEY, figure.measure.value)
+      when (figure) {
+        is ProgramReturnFigure.Held -> {
+          putHeldProgramFigure(figure)
+        }
+
+        is ProgramReturnFigure.NoFigure -> {
+          putJsonObject(PROGRAM_MEASURE_AVAILABILITY_KEY) {
+            put(BASIS_KEY, PROGRAM_NO_FIGURE_BASIS)
+            put(STATEMENT_KEY, PROGRAM_NO_FIGURE_STATEMENT)
+          }
+        }
+      }
+    }
+
+  /**
+   * A figure we hold a row for: its status, its number where the status bears
+   * one, and its provenance.
+   *
+   * The status is the ARM's own ([ProgramReturnFigure.Held.status]), so no
+   * silence can be stamped with another's code. The `when` is exhaustive with no
+   * `else` over the whole `figure_statuses` vocabulary, because the amount rides
+   * on exactly the two value-bearing statuses and a seventh status must be
+   * decided here before it compiles -- the seam that once threw for three of the
+   * six legal values and took the whole cost answer down with it.
+   */
+  private fun JsonObjectBuilder.putHeldProgramFigure(figure: ProgramReturnFigure.Held) {
+    when (figure) {
+      is ProgramReturnFigure.Valued -> {
+        put(PROGRAM_AMOUNT_USD_KEY, figure.amountUsd)
+      }
+
+      is ProgramReturnFigure.Suppressed,
+      is ProgramReturnFigure.NotReported,
+      is ProgramReturnFigure.NotApplicable,
+      is ProgramReturnFigure.NotCollectedByUs,
+      -> {
+        Unit
+      }
+    }
+    put(PROGRAM_STATUS_KEY, figure.status.value)
+    put(PROGRAM_PUBLISHER_KEY, figure.provenance.publisher)
+    put(PROGRAM_COHORT_FIRST_YEAR_KEY, figure.provenance.cohortFirstYear.firstCalendarYear)
+    put(PROGRAM_COHORT_LAST_YEAR_KEY, figure.provenance.cohortLastYear.firstCalendarYear)
+    put(PROGRAM_COHORT_SENTENCE_KEY, figure.provenance.cohortSentence)
+    figure.provenance.inflationBaseYear?.let { put(PROGRAM_INFLATION_BASE_YEAR_KEY, it.year) }
+  }
 
   /**
    * The five facts a side-by-side holds constant (RFC 151), each rendered as a
@@ -196,8 +327,8 @@ class CollegeCostChatTool(
    */
   private fun collegeResidencyObject(college: CollegeResidencyBasis): JsonObject =
     buildJsonObject {
-      put("college_id", college.collegeId.value.toString())
-      put("name", college.name)
+      put(COLLEGE_ID_KEY, college.collegeId.value.toString())
+      put(COLLEGE_NAME_KEY, college.name)
       put(TUITION_BASIS_KEY, college.tuition.code)
       // The raw control code that defeated the residency line, beside the
       // failure it caused: an operator reading this entry never has to open the
@@ -236,8 +367,8 @@ class CollegeCostChatTool(
    */
   private fun collegeBlendedFigureObject(college: CollegeBlendedFigureBasis): JsonObject =
     buildJsonObject {
-      put("college_id", college.collegeId.value.toString())
-      put("name", college.name)
+      put(COLLEGE_ID_KEY, college.collegeId.value.toString())
+      put(COLLEGE_NAME_KEY, college.name)
       put(BASIS_KEY, college.code.value)
       putBlendedFiguresApply(college.applies)
       put(STATEMENT_KEY, college.statement)
@@ -317,8 +448,8 @@ class CollegeCostChatTool(
    */
   private fun collegeLivingPlanObject(row: CollegeLivingPlan): JsonObject =
     buildJsonObject {
-      put("college_id", row.collegeId.value.toString())
-      put("name", row.name)
+      put(COLLEGE_ID_KEY, row.collegeId.value.toString())
+      put(COLLEGE_NAME_KEY, row.name)
       putChosenLivingPlan(row.chosen)
     }
 
@@ -383,8 +514,8 @@ class CollegeCostChatTool(
    */
   private fun incompleteArrangementObject(entry: IncompleteArrangement): JsonObject =
     buildJsonObject {
-      put("college_id", entry.collegeId.value.toString())
-      put("name", entry.name)
+      put(COLLEGE_ID_KEY, entry.collegeId.value.toString())
+      put(COLLEGE_NAME_KEY, entry.name)
       putJsonArray("missing") { entry.missing.forEach { add(JsonPrimitive(it.value)) } }
       put("reason", entry.reason.value)
     }
@@ -415,8 +546,8 @@ class CollegeCostChatTool(
         dated.colleges.forEach {
           add(
             buildJsonObject {
-              put("college_id", it.collegeId.value.toString())
-              put("name", it.name)
+              put(COLLEGE_ID_KEY, it.collegeId.value.toString())
+              put(COLLEGE_NAME_KEY, it.name)
             },
           )
         }
@@ -439,8 +570,8 @@ class CollegeCostChatTool(
     val emitted = mutableSetOf<CostField>()
 
     return buildJsonObject {
-      put("college_id", cost.collegeId.value.toString())
-      put("name", cost.name)
+      put(COLLEGE_ID_KEY, cost.collegeId.value.toString())
+      put(COLLEGE_NAME_KEY, cost.name)
       put("city", cost.city)
       put("state", cost.state)
       put("control", cost.control.label)
@@ -1330,6 +1461,20 @@ class CollegeCostChatTool(
     const val TOOL_NAME = "college_cost_profile"
 
     /**
+     * The two keys that IDENTIFY a college wherever this payload names one --
+     * the top-level results, the dated-college lists, the per-school basis
+     * entries, and the major answer's own college entries.
+     *
+     * Constants rather than seven copies of two literals, like every other key
+     * the DESCRIPTION quotes back to the model (see [ARRANGEMENT_KEY]): a payload
+     * that spelled one of them differently in one section would be two wire
+     * vocabularies in one answer, and only the reader diffing sections would
+     * know.
+     */
+    const val COLLEGE_ID_KEY = "college_id"
+    const val COLLEGE_NAME_KEY = "name"
+
+    /**
      * The wire key naming the publishers this answer's own figures came from
      * (RFC 177).
      *
@@ -1866,6 +2011,92 @@ class CollegeCostChatTool(
         "${MoneyProfileChatTool.TOOL_NAME}), every school they have not decided separately about can lead " +
         "with that one price picture instead of three."
 
+    /** The major answer's own section (RFC 231): present only when the intended-subjects answer is `answered`. */
+    const val PROGRAM_RETURN_KEY = "program_return"
+
+    /** The stored subject's slug and resolved name, at the head of one `program_return` entry. */
+    const val PROGRAM_SUBJECT_SLUG_KEY = "subject_slug"
+    const val PROGRAM_SUBJECT_NAME_KEY = "subject_name"
+
+    /** One entry per selected college, inside one subject entry -- the section's own array. */
+    const val PROGRAM_COLLEGES_KEY = "colleges"
+
+    /** One entry per MATCHED program inside one college entry: the publisher's own grain. */
+    const val PROGRAM_PROGRAMS_KEY = "programs"
+
+    /** The matched program's own CIP code, which is its identity inside one college. */
+    const val PROGRAM_CIP_CODE_KEY = "cip_code"
+
+    /** The per-program figures: one entry per `ProgramMoneyMeasure`, always. */
+    const val PROGRAM_FIGURES_KEY = "figures"
+
+    /** One figure's measure, one of the `ProgramMoneyMeasure` values. */
+    const val PROGRAM_MEASURE_KEY = "measure"
+
+    /**
+     * Whole US dollars; present on exactly the two value-bearing statuses
+     * (`reported` and `imputed_by_publisher`), and on no other.
+     *
+     * The PARTITION rather than one member of it: the `when` in
+     * [putHeldProgramFigure] decides this over
+     * [ProgramReturnFigure.Valued], so a doc naming one status drifts behind
+     * the code the moment the other one is stored.
+     */
+    const val PROGRAM_AMOUNT_USD_KEY = "amount_usd"
+
+    /** The figure's silence arm or `reported`; the code beside the amount. */
+    const val PROGRAM_STATUS_KEY = "status"
+
+    /** Who published the figure, from that variable's `ScorecardFieldOfStudyColumns` entry. */
+    const val PROGRAM_PUBLISHER_KEY = "publisher"
+
+    /** The first and last academic year the publisher's cohort pools, each as its start year. */
+    const val PROGRAM_COHORT_FIRST_YEAR_KEY = "cohort_first_year"
+    const val PROGRAM_COHORT_LAST_YEAR_KEY = "cohort_last_year"
+
+    /** The publisher's own cohort cell, verbatim -- the evidence for the years and the dollar base. */
+    const val PROGRAM_COHORT_SENTENCE_KEY = "cohort_sentence"
+
+    /** The calendar year whose dollars the figure is in, where its registry entry names one. */
+    const val PROGRAM_INFLATION_BASE_YEAR_KEY = "inflation_base_year"
+
+    /**
+     * THE SCHOOL's: no bachelor's program matched the subject's prefixes here, so
+     * the college entry carries no `programs` array at all.
+     *
+     * The FIRST of three absences this section keeps apart, and the only one that
+     * is a statement about a school's offering. The other two are gaps in what we
+     * HOLD about a program the school does run, and collapsing any two of them
+     * would turn one into the other in front of a family.
+     */
+    const val PROGRAM_AVAILABILITY_KEY = "program_availability"
+    const val PROGRAM_NO_PROGRAM_BASIS = "no_program"
+    const val PROGRAM_NO_PROGRAM_STATEMENT = "This school does not run that program."
+
+    /**
+     * OURS, at the PROGRAM: the school runs the matched program and we hold no
+     * published figure for any of its measures.
+     *
+     * Its own key and its own basis code, one level in from
+     * [PROGRAM_AVAILABILITY_KEY]: a school that runs a major we have no figures
+     * for must never be described as a school that does not run it.
+     */
+    const val PROGRAM_FIGURES_AVAILABILITY_KEY = "program_figures_availability"
+    const val PROGRAM_NO_PUBLISHED_FIGURES_BASIS = "no_published_figures"
+    const val PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT = "This school runs that program and we hold no published figures for it."
+
+    /**
+     * OURS, at ONE MEASURE: we hold no row for this measure of a program whose
+     * other measures we do hold.
+     *
+     * The THIRD absence, and the reason `figures` is never short: an entry that
+     * simply vanished would be an absence with no reason, indistinguishable from
+     * a measure the publisher suppressed.
+     */
+    const val PROGRAM_MEASURE_AVAILABILITY_KEY = "measure_availability"
+    const val PROGRAM_NO_FIGURE_BASIS = "no_figure_held"
+    const val PROGRAM_NO_FIGURE_STATEMENT = "We hold no published figure for that measure of that program at this school."
+
     // The legend is the tool's whole job (RFC 192): one entry per wire key, what
     // it means, and what values it takes, in payload order. Every behavioural
     // rule -- what to SAY to the family -- lives in the coach system prompt, and
@@ -1892,12 +2123,11 @@ class CollegeCostChatTool(
         "$FIGURE_SOURCE_KEY overrides. A figure's $ASSURANCE_KEY is its own entry's when the entry has one " +
         "and $FIGURE_PROVENANCE_KEY's otherwise; $FIGURE_SOURCE_KEY resolves the same way.\n" +
         "$STATEMENT_KEY - the sentence to say for that entry.\n" +
-        "$STATUS_KEY - \"${FigureStatus.NOT_REPORTED_BY_INSTITUTION.value}\" (school reported nothing) | " +
-        "\"${FigureStatus.NOT_APPLICABLE.value}\" (does not apply there, source says so) | " +
-        "\"${FigureStatus.SUPPRESSED_BY_PUBLISHER.value}\" (publisher withheld it for privacy) | " +
-        "\"${FigureStatus.NOT_COLLECTED_BY_US.value}\" (OURS, not gathered yet) | " +
-        "\"${FigureStatus.IMPUTED_BY_PUBLISHER.value}\" (figure IS shown, publisher's own estimate) | " +
-        "\"${FigureStatus.REPORTED.value}\" (shown plainly, no $STATEMENT_KEY).\n" +
+        // The vocabulary, code AND gloss, read off FigureStatusCopy: this
+        // legend and the major answer's below list the same six statuses, and
+        // they described them in two different wordings while each typed its
+        // own.
+        "$STATUS_KEY - " + FigureStatusCopy.LEGEND_VOCABULARY + ".\n" +
         "$HELD_ACADEMIC_YEAR_KEY - on a \"${FigureStatus.NOT_COLLECTED_BY_US.value}\" entry: the year we " +
         "DO hold that figure for.\n" +
         "$ASSUMED_BY_UNICOACH_KEY - keys whose amount is OURS: on no publisher's tier, and no " +
@@ -1961,6 +2191,13 @@ class CollegeCostChatTool(
         "all three arrangements; at a public school, built on in-state tuition. " +
         "${CostField.NET_PRICE.wireName} is on that same in-state basis, and both are absent for an " +
         "out-of-state family at a public school.\n" +
+        // The three lines below name IPEDS in a LIVE string: the housing flag is
+        // a survey answer, not a money figure. Their `money-attribution-exempt`
+        // markers are VESTIGIAL as of RFC 231 -- the source-text sweep that read
+        // them is deleted, and D7's surviving half is the compile-time one
+        // (`MoneySourceCopy`'s `when`s with no `else`), which no comment can arm
+        // or disarm. They are left in place as a recorded follow-up, so nothing
+        // here depends on where these literals are split.
         "$OFFERS_ON_CAMPUS_HOUSING_KEY - \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": true " +
         "(IPEDS: has halls) | false " + // money-attribution-exempt: IPEDS housing flag, not a money figure
         "(IPEDS: no residence halls) | absent " + // money-attribution-exempt: the same flag
@@ -1985,9 +2222,51 @@ class CollegeCostChatTool(
         "$COMPARISON_BASIS_KEY - present with two or more colleges: who the figures describe, the " +
         "residency, $BLENDED_FIGURE_BASIS_KEY (with $APPLIES_KEY), the way of living, the academic years, " +
         "and what aid means in a net price. Each carries $BASIS_KEY + $STATEMENT_KEY, and a dated fact " +
-        "names its $DATED_COLLEGES_KEY by college_id and name.\n" +
+        "names its $DATED_COLLEGES_KEY by $COLLEGE_ID_KEY and $COLLEGE_NAME_KEY.\n" +
         "$BY_COLLEGE_KEY - present inside a fact only where the schools differ or one has its own thing " +
         "to say; where it is absent the $STATEMENT_KEY above it is true of every school in the call.\n" +
+        "$PROGRAM_RETURN_KEY - present only when the intended-subjects answer is \"answered\": the selected " +
+        "colleges re-keyed by subject. Each entry carries $PROGRAM_SUBJECT_SLUG_KEY, $PROGRAM_SUBJECT_NAME_KEY " +
+        "and a \"$PROGRAM_COLLEGES_KEY\" array of one entry per selected college ($COLLEGE_ID_KEY, " +
+        "$COLLEGE_NAME_KEY, and either " +
+        "$PROGRAM_PROGRAMS_KEY or $PROGRAM_AVAILABILITY_KEY).\n" +
+        "$PROGRAM_PROGRAMS_KEY - one entry per matched bachelor's program at that college, in $PROGRAM_CIP_CODE_KEY " +
+        "order; a school can run two programs one subject reaches, and each carries its own figures.\n" +
+        "$PROGRAM_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a COLLEGE entry, instead of " +
+        "$PROGRAM_PROGRAMS_KEY (\"$PROGRAM_NO_PROGRAM_BASIS\": \"$PROGRAM_NO_PROGRAM_STATEMENT\").\n" +
+        "$PROGRAM_CIP_CODE_KEY - the program's own CIP code, which is which program the entry is about.\n" +
+        "$PROGRAM_FIGURES_KEY - one entry per measure, ALWAYS every measure and in this order: " +
+        ProgramMoneyMeasure.entries.joinToString(", ") { "\"${it.value}\"" } + ". Each carries " +
+        "$PROGRAM_MEASURE_KEY and then either $PROGRAM_STATUS_KEY with its provenance " +
+        "($PROGRAM_PUBLISHER_KEY, $PROGRAM_COHORT_FIRST_YEAR_KEY, $PROGRAM_COHORT_LAST_YEAR_KEY, " +
+        "$PROGRAM_COHORT_SENTENCE_KEY, and $PROGRAM_INFLATION_BASE_YEAR_KEY on the measures named for it below) or " +
+        "$PROGRAM_MEASURE_AVAILABILITY_KEY.\n" +
+        "$PROGRAM_FIGURES_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a PROGRAM entry, instead of " +
+        "$PROGRAM_FIGURES_KEY (\"$PROGRAM_NO_PUBLISHED_FIGURES_BASIS\": " +
+        "\"$PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT\").\n" +
+        // The value-bearing HALF of the partition, from the property FigureStatus
+        // owns: naming its two members here is a rule that goes quietly wrong
+        // the moment a seventh status carries a number.
+        "$PROGRAM_AMOUNT_USD_KEY - whole US dollars; present only when $PROGRAM_STATUS_KEY is " +
+        FigureStatus.entries.filter { it.valueBearing }.joinToString(" or ") { "\"${it.value}\"" } +
+        ".\n" +
+        "$PROGRAM_STATUS_KEY - " + FigureStatusCopy.LEGEND_VOCABULARY + ".\n" +
+        "$PROGRAM_PUBLISHER_KEY - " +
+        ScorecardFieldOfStudyColumns.VARIABLES.joinToString(" | ") { "\"${it.publisher}\" (${it.measure.value})" } +
+        ".\n" +
+        "$PROGRAM_COHORT_FIRST_YEAR_KEY - the first academic year the publisher's cohort pools, as its start " +
+        "year; this ROW's own cohort, which the store may hold at more than one date.\n" +
+        "$PROGRAM_COHORT_LAST_YEAR_KEY - the last academic year the publisher's cohort pools, as its start " +
+        "year.\n" +
+        "$PROGRAM_COHORT_SENTENCE_KEY - the publisher's own cohort cell, verbatim, for the figure beside it; it " +
+        "describes the two years above.\n" +
+        "$PROGRAM_INFLATION_BASE_YEAR_KEY - the calendar year whose dollars the figure is in; carried only on " +
+        ScorecardFieldOfStudyColumns.VARIABLES
+          .filter { it.inflationBaseYear != null }
+          .joinToString(", ") { "\"${it.measure.value}\"" } +
+        ", because the publisher names a dollar year for no other measure.\n" +
+        "$PROGRAM_MEASURE_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a FIGURE entry, instead of " +
+        "$PROGRAM_STATUS_KEY (\"$PROGRAM_NO_FIGURE_BASIS\": \"$PROGRAM_NO_FIGURE_STATEMENT\").\n" +
         "Read-only: this tool changes nothing."
   }
 }

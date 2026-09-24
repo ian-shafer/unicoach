@@ -213,12 +213,15 @@ data class IpedsAdmissionsCitation(
 ) {
   /** The sentence fragment the coach says, with the collection year in it rather than beside it. */
   val citedAs: String
-    // The publisher is named in a LIVE string, and the RFC 177 ban is on
-    // naming a publisher of a canonical MONEY row. A test policy is not a
-    // money figure and this survey publishes none, so the line carries its own
-    // exemption rather than deriving words from MoneySourceCopy -- reaching
-    // into the money seam's copy object is exactly how a testing fact would
-    // end up inside the money vocabulary.
+    // The publisher is named in a LIVE string, and RFC 177's ban was on naming
+    // a publisher of a canonical MONEY row. A test policy is not a money figure
+    // and this survey publishes none, so the line says the publisher itself
+    // rather than deriving words from MoneySourceCopy -- reaching into the money
+    // seam's copy object is exactly how a testing fact would end up inside the
+    // money vocabulary. The `money-attribution-exempt` marker on it is VESTIGIAL
+    // as of RFC 231: the source-text sweep that read it is deleted, D7's
+    // surviving half is `MoneySourceCopy`'s exhaustive `when`s, and the marker is
+    // left in place as a recorded follow-up.
     get() =
       "the U.S. Department of Education's IPEDS admissions survey, " + // money-attribution-exempt: a test policy is not a money figure
         "collected in $surveyYear"

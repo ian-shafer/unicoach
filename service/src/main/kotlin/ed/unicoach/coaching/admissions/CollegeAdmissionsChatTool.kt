@@ -252,14 +252,14 @@ class CollegeAdmissionsChatTool(
     // The ethos contract rides the tool description (RFC 148): each school's
     // own document, the denominator said in full, and the two silences named.
     //
-    // TWO lines below name IPEDS and so carry `money-attribution-exempt`
-    // markers (RFC 177): the ban is on naming the publisher of a canonical
-    // MONEY row in a live string, and a school's admission-test policy is not a
-    // money figure. The marker is scoped per LINE, never per file, which is why
-    // those two string literals are split where they are -- the publisher's
-    // name and its marker have to end up on the same line. Re-wrapping this
-    // paragraph without carrying the markers along re-arms the ban and fails
-    // MoneyAttributionNamesNoPublisherTest.
+    // TWO lines below name IPEDS and carry `money-attribution-exempt` markers
+    // (RFC 177): the ban was on naming the publisher of a canonical MONEY row
+    // in a live string, and a school's admission-test policy is not a money
+    // figure. The markers are VESTIGIAL as of RFC 231 -- the source-text sweep
+    // that read them is deleted, and D7's surviving half is a compile-time one
+    // (`MoneySourceCopy`'s `when`s with no `else`) that no comment can arm or
+    // disarm. They are left in place and recorded as a follow-up, so nothing
+    // here depends on where the string literals are split.
     val DESCRIPTION =
       "Read what the colleges on the student's list published about themselves in their own Common Data Set: " +
         "the non-need (merit) aid they give, what the admission office says it weighs, and their application " +

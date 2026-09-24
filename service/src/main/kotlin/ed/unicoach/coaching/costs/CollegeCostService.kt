@@ -22,8 +22,10 @@ import ed.unicoach.db.dao.BorrowingDao
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
+import ed.unicoach.db.dao.IntendedSubjectsDao
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
+import ed.unicoach.db.dao.ProgramMoneyDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
@@ -40,6 +42,8 @@ import ed.unicoach.db.models.CollegeMeritAid
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
+import ed.unicoach.db.models.IntendedSubjectAnswer
+import ed.unicoach.db.models.IntendedSubjectName
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.MoneySource
@@ -1028,6 +1032,20 @@ data class CollegeCostProfile(
    * See [ComparisonBasis] for why assembling it costs no query.
    */
   val comparisonBasis: ComparisonBasis?,
+  /**
+   * The major answer (RFC 231): per stored subject, per selected college, per
+   * MATCHED PROGRAM, the three published program figures -- null when the
+   * intended-subjects answer is not `answered`, so the section is absent and
+   * the school-level median earnings and debt stay the degrade.
+   *
+   * Present only on the profile rather than on each [CollegeCost], because the
+   * wire section is keyed by SUBJECT first (subject_slug -> colleges ->
+   * programs -> figures) and no per-college object can carry that order alone.
+   * The program level is the publisher's own grain: one college can run two
+   * bachelor's programs one subject's prefixes both reach, and keying without
+   * the CIP code is how two of them became one.
+   */
+  val programReturn: ProgramReturn?,
 ) {
   /**
    * The in-answer upgrade invitations (RFC 135, RFC 145) for one returned
@@ -1329,6 +1347,12 @@ class CollegeCostService(
     // `SELECT * FROM colleges` as the source of every cost figure.
     val figuresById = canonicalCostReader.read(session, selection.selected)
 
+    // The major answer (RFC 231), on the SAME connection: the intended-subjects
+    // answer, and -- only when it is `answered` -- two batched reads over the
+    // colleges and subjects already selected, one per question.
+    val intended = IntendedSubjectsDao.readAnswer(session, studentId).getOrThrow()
+    val programReturn = programReturnFor(session, selection, intended)
+
     val costs =
       selection.map { college, entry ->
         costOf(
@@ -1356,8 +1380,62 @@ class CollegeCostService(
       // Reads the per-college list above, so it is built after it. Why it costs
       // no query of its own is stated once, on [ComparisonBasis].
       comparisonBasis = ComparisonBasis.of(costs, moneyProfile),
+      programReturn = programReturn,
     )
   }
+
+  /**
+   * The major answer (RFC 231): the `program_return` section, or null when the
+   * intended-subjects answer is anything but `answered` -- then the section is
+   * absent and the school-level median earnings and debt stay the degrade.
+   *
+   * This method owns the three things that are the READ path's own: which
+   * answer statuses arm the section, the two batched reads over the selected
+   * colleges and the stored subject slugs, and the connection they run on. The
+   * shaping is [programReturnOf], beside the types it builds.
+   */
+  private fun programReturnFor(
+    session: SqlSession,
+    selection: StudentCollegeSelection,
+    intended: IntendedSubjectAnswer,
+  ): ProgramReturn? {
+    val subjects = subjectsSpokenFor(intended) ?: return null
+    val slugs = subjects.map { it.slug }
+    // TWO reads, because they answer two questions. The PROGRAM question --
+    // which matched bachelor's programs a school runs -- is what tells "this
+    // school does not run that program" apart from "we hold no figures for the
+    // program it does run", and only `college_programs` can answer it: a read
+    // that can see `program_money_stats` alone would speak a gap in OUR data as
+    // a statement about a school's offering.
+    val matches = ProgramMoneyDao.bachelorProgramsBySubject(session, selection.selected, slugs).getOrThrow()
+    val rows = ProgramMoneyDao.programMoneyBySubject(session, selection.selected, slugs).getOrThrow()
+    return programReturnOf(
+      subjects = subjects,
+      collegeIds = selection.selected,
+      nameOf = { collegeId -> selection.collegeOf(collegeId).name },
+      matches = matches,
+      rows = rows,
+    )
+  }
+
+  /**
+   * The stored subjects the major answer speaks for, or null when the answer is
+   * not `answered` -- the degrade decision, and nothing else (RFC 231).
+   *
+   * The three non-answered arms degrade IDENTICALLY -- no section, and the
+   * school-level figures stay the answer -- but they are named one by one
+   * rather than folded into an `else`: a fifth status must stop the build here
+   * and be decided, never fall silently into the degrade.
+   */
+  private fun subjectsSpokenFor(intended: IntendedSubjectAnswer): List<IntendedSubjectName>? =
+    when (intended.status) {
+      AnswerStatus.ANSWERED -> intended.subjects
+
+      AnswerStatus.UNANSWERED,
+      AnswerStatus.DECLINED,
+      AnswerStatus.UNDECIDED,
+      -> null
+    }
 
   /** RFC 134's fallback convention: an absent money-profile row reads as all-unanswered, not an error. */
   private fun moneyProfileOf(
@@ -1729,9 +1807,13 @@ class CollegeCostService(
   ) {
     if (!CostBreakdown.publishedOnCampusContradictsFlag(served, offersOnCampusHousing)) return
     logger.warn(
-      // The two lines below name both publishers on purpose, and carry the
-      // exemption marker the D7 sweep reads: this is an OPERATOR log line about
-      // the IPEDS/Scorecard housing disagreement, not family-facing money copy.
+      // The two lines below name both publishers on purpose: this is an
+      // OPERATOR log line about the IPEDS/Scorecard housing disagreement, not
+      // family-facing money copy. Their `money-attribution-exempt` markers are
+      // VESTIGIAL as of RFC 231 -- the source-text sweep that read them is
+      // deleted, and D7's surviving half is the compile-time one
+      // (`MoneySourceCopy`'s `when`s with no `else`), which no comment can arm
+      // or disarm. The markers are left in place and recorded as a follow-up.
       "college=[{}] ipeds_unit_id=[{}] IPEDS offers_housing=false " + // money-attribution-exempt: operator log
         "but the Scorecard publishes on-campus " + // money-attribution-exempt: operator log
         "figures [{}]; rendering the published on-campus arrangement and reporting the flag beside it",

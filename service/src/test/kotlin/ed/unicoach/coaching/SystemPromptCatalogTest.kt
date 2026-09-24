@@ -239,6 +239,7 @@ class SystemPromptCatalogTest {
       SEARCH_RULER("A college search now ranks on one of two prices, and which"),
       INTENDED_SUBJECTS("A student may also tell you what they want to study, and it is"),
       PREDICTION("Never call a school a reach, a match or a safety"),
+      PROGRAM_RETURN("When the student asks what graduates of their major earn or owe"),
     }
 
     /**
@@ -431,8 +432,7 @@ class SystemPromptCatalogTest {
    *
    * Resolved relative to the module directory, which is the working directory of
    * a `:service` test, on this suite's own precedent — `ForbiddenCostArithmeticTest`
-   * reads `File("../db/src/main/kotlin/...")` and
-   * `MoneyAttributionNamesNoPublisherTest` reads `File("../public-web/src/main")`.
+   * reads `File("../db/src/main/kotlin/...")`.
    * A root walk looking for `settings.gradle.kts` would be a second way of
    * answering a question this suite already answers one way.
    */
@@ -905,10 +905,13 @@ class SystemPromptCatalogTest {
     )
     assertTrue(moneyParagraph.contains("tuition and fees"), "the glossary term for the price the school sets")
     assertTrue(moneyParagraph.contains("housing and food"), "the glossary term that retires room and board")
-    // RFC 177's POSITIVE half. MoneyAttributionNamesNoPublisherTest bans the
-    // fixed publisher name, which a prompt with no attribution sentence at all
-    // would also satisfy; this is the assertion that says the attribution must
-    // be there and must be to the source the TOOL names.
+    // RFC 177's POSITIVE half. D7's surviving half is a COMPILE-TIME one --
+    // `MoneySourceCopy`'s `when`s with no `else`, which force a publisher to be
+    // spoken through the registry before it builds -- and a prompt with no
+    // attribution sentence at all satisfies that too (RFC 231 deleted the
+    // source-text sweep that was the other half). This is the assertion that
+    // says the attribution must be there, and must be to the source the TOOL
+    // names.
     assertTrue(
       moneyParagraph.contains("the source the tool names beside it"),
       "RFC 177: every cost figure is attributed to the source the tool names, never to a fixed publisher",
@@ -1559,6 +1562,23 @@ class SystemPromptCatalogTest {
    */
   @Test
   fun `the version before the answer-shape paragraph is selectable and does not carry it`() {
+    assertTheVersionBeforeItDoesNotCarry(CoachParagraph.ANSWER_SHAPE, "the answer-shape paragraph")
+  }
+
+  /**
+   * One paragraph's rollback, stated as the RELATION the test above describes:
+   * the lowest `coach` version carrying [paragraph] must have a selectable
+   * predecessor that does not carry it.
+   *
+   * One implementation because every paragraph asks the same question of the
+   * same catalog, and the reason a literal is wrong (above) is a reason about
+   * `bin/prompt-seed`, not about any one RFC. [name] is only what the failure
+   * calls the paragraph.
+   */
+  private fun assertTheVersionBeforeItDoesNotCarry(
+    paragraph: CoachParagraph,
+    name: String,
+  ) {
     val versionNumbers = mutableListOf<Int>()
     connection.prepareStatement("SELECT version FROM system_prompts WHERE name = ?").use { statement ->
       statement.setString(1, coaching.systemPromptName)
@@ -1575,13 +1595,13 @@ class SystemPromptCatalogTest {
       SystemPromptsDao
         .findByNameAndVersion(session, coaching.systemPromptName, "v$number")
         .getOrNull()
-        ?.let { row -> bodyOf(row).contains(CoachParagraph.ANSWER_SHAPE) }
+        ?.let { row -> bodyOf(row).contains(paragraph) }
     }
 
     val first =
       assertNotNull(
         versionNumbers.sorted().firstOrNull { carries(it) == true },
-        "no coach version carries the answer-shape paragraph; bin/prompt-seed cuts one at land from prompts/coach-system-prompt.md",
+        "no coach version carries $name; bin/prompt-seed cuts one at land from prompts/coach-system-prompt.md",
       )
     // The predecessor is the HIGHEST version below [first], not [first - 1]:
     // the labels are contiguous today and nothing promises they stay so, and a
@@ -1590,7 +1610,7 @@ class SystemPromptCatalogTest {
     val predecessor =
       assertNotNull(
         versionNumbers.filter { it < first }.maxOrNull(),
-        "the answer-shape paragraph must be an ADDITION to an earlier body, never the first coach version",
+        "$name must be an ADDITION to an earlier body, never the first coach version",
       )
     assertEquals(
       false,
@@ -1993,6 +2013,80 @@ class SystemPromptCatalogTest {
       bodyOf(v39).contains(CoachParagraph.PREDICTION),
       "the rollback target must not already carry the prediction paragraph, or rolling back to it changes nothing",
     )
+  }
+
+  private fun programReturnParagraph(): String = paragraphAt(CoachParagraph.PROGRAM_RETURN)
+
+  /**
+   * The program-return paragraph (RFC 231), asserted in the body the runtime is
+   * actually SERVED -- the row `service.conf` pins.
+   *
+   * It is a money paragraph, so it must keep the standing money copy rules AND
+   * state the three rules that are the slice's own: suppressed and no-program
+   * are two sentences, the school-level figure is never substituted for a
+   * suppressed one, and the Treasury earnings figure and the NSLDS payment
+   * never share a table row-set (RFC 198).
+   */
+  @Test
+  fun `the served program-return paragraph reads the section and keeps the three silence rules`() {
+    val paragraph = programReturnParagraph()
+    assertParagraphStates(
+      paragraph,
+      "read the program_return section of college_cost_profile",
+      "the coach cannot read a section the prompt never names",
+    )
+    assertParagraphStates(
+      paragraph,
+      "say each figure with its publisher and its cohort years",
+      "a program figure is spoken with its publisher and its cohort, never bare",
+    )
+    assertParagraphStates(
+      paragraph,
+      "never put the school-level figure in place of a suppressed one",
+      "the slice's acceptance criterion: suppression is never answered by substitution",
+    )
+    assertParagraphStates(
+      paragraph,
+      "the school not running that program",
+      "no-program and suppressed are two different sentences, and both must be nameable",
+    )
+    assertParagraphStates(
+      paragraph,
+      "coverage limit once",
+      "the coverage limit is said once in an answer, not beside every figure (D19)",
+    )
+    assertParagraphStates(
+      paragraph,
+      "school-level median earnings and median debt",
+      "with no stored subject the school-level figures are the answer, not a hook for a question",
+    )
+    assertParagraphStates(
+      paragraph,
+      "Never put the Treasury earnings figure and the NSLDS payment in one table row-set",
+      "RFC 198: two publishers and two cohorts may share an answer, never one table row-set",
+    )
+    assertParagraphKeepsTheStandingCopyRules("program return", paragraph)
+  }
+
+  /**
+   * The rollback RFC 231 documents, stated as the same RELATION every other
+   * rollback here is: the lowest `coach` version carrying the program-return
+   * paragraph has a selectable predecessor that does not carry it, so
+   * `COACHING_SYSTEM_PROMPT_VERSION=<predecessor>` really does serve a body
+   * without this slice's rules.
+   *
+   * No version literal, because there is none to write: `bin/prompt-seed` cuts
+   * the label at land, and which number this paragraph gets is decided by the
+   * order the runs open at the time take the land lock.
+   *
+   * It is a PARTIAL rollback -- the `program_return` payload and its legend
+   * still ship -- which is safe because the payload is data and the legend
+   * carries no behavioural rule, so a section the prompt no longer routes to
+   * goes unread.
+   */
+  @Test
+  fun `the version before the program-return paragraph is selectable and does not carry it`() {
+    assertTheVersionBeforeItDoesNotCarry(CoachParagraph.PROGRAM_RETURN, "the program-return paragraph")
   }
 
   private fun fafsaProcessParagraph(): String = paragraphAt(CoachParagraph.FAFSA_PROCESS)

@@ -39,9 +39,11 @@ enum class FilingLink {
  * here rather than ship wordless, which is exactly how `not_collected_by_us`
  * once reached production with no sentence at all.
  *
- * These sentences NAME NO PUBLISHER, and not merely because
- * `MoneyAttributionNamesNoPublisherTest` sweeps this source set for publisher
- * names. Composing [MoneySourceCopy.labelOf] into the mandatory-survey sentence
+ * These sentences NAME NO PUBLISHER, and the reason is not a sweep -- RFC 231
+ * deleted that test, and RFC 177 D7 now holds through [MoneySourceCopy]'s
+ * `when`s with no `else`, which force a publisher to be spoken through the
+ * registry before this file compiles.
+ * Composing [MoneySourceCopy.labelOf] into the mandatory-survey sentence
  * would print a FALSE claim: sixteen of the Scorecard's twenty-four strings are
  * on that tier, and the college did not report those to the Scorecard -- it
  * reported them to IPEDS and the Scorecard re-published them. The

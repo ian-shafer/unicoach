@@ -28,8 +28,7 @@ class RenderPathMakesNoNetworkCallTest {
    * render it.
    *
    * Cross-module `File("../...")` is this repo's own shape for a sweep whose
-   * subject lives elsewhere (`MoneyAttributionNamesNoPublisherTest` reads
-   * `../public-web/src/main`, `ForbiddenCostArithmeticTest` reads
+   * subject lives elsewhere (`ForbiddenCostArithmeticTest` reads
    * `../db/.../dao`). Gradle runs each module's tests from its own directory,
    * so the relative paths are stable.
    */

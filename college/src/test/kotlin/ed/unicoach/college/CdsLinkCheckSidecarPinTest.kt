@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
  *
  * So the script's own source is READ and its two constants compared against the
  * loader's -- the shape this repo already uses to sweep sources it does not
- * compile (`MoneyAttributionNamesNoPublisherTest`, `RenderPathMakesNoNetworkCallTest`).
+ * compile (`RenderPathMakesNoNetworkCallTest`).
  * A rename on EITHER side fails here, before any sweep is run.
  */
 class CdsLinkCheckSidecarPinTest {

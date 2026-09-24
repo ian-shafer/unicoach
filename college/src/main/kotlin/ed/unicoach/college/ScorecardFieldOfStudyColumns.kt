@@ -1,6 +1,8 @@
 package ed.unicoach.college
 
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.common.util.CalendarYear
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.ProgramMoneyMeasure
 
 /**
@@ -53,7 +55,7 @@ import ed.unicoach.db.models.ProgramMoneyMeasure
  * figure from one is never averaged, combined or ratio'd with a figure from the
  * other.
  */
-internal object ScorecardFieldOfStudyColumns {
+object ScorecardFieldOfStudyColumns {
   const val EARN_MDN_4YR = "EARN_MDN_4YR"
   const val DEBT_ALL_STGP_EVAL_MDN = "DEBT_ALL_STGP_EVAL_MDN"
   const val DEBT_ALL_STGP_EVAL_MDN10YRPAY = "DEBT_ALL_STGP_EVAL_MDN10YRPAY"
@@ -77,6 +79,20 @@ internal object ScorecardFieldOfStudyColumns {
    * `db/seed/scorecard/FETCH-NOTES.md` together.
    */
   const val COHORT_SNAPSHOT_RELEASE: String = "06102026"
+
+  /**
+   * WHOSE file this registry describes, as `program_money_stats.source` spells
+   * it -- the one value a row must claim before anything here may attribute it.
+   *
+   * Here and not only in the loader, because it is a fact about the REGISTRY
+   * and both sides need it: the ingest stamps it onto every row it writes, and
+   * the read audits a row's own `source` against it before resolving a
+   * `source_variable` through [ofOrNull]. The `money_source` domain admits four
+   * publishers and no CHECK on `program_money_stats` narrows it, so "this row
+   * is one of ours to attribute" is a question with an answer, and the answer
+   * is stated once.
+   */
+  val SOURCE: MoneySource = MoneySource.SCORECARD
 
   /**
    * One field-of-study money variable, and everything true of EVERY row that
@@ -110,8 +126,12 @@ internal object ScorecardFieldOfStudyColumns {
      * NULL on both debt columns is a finding, not an omission: the publisher
      * names no dollar year for debt anywhere in the workbook or the
      * documentation, so we say nothing about debt in today's dollars.
+     *
+     * A [CalendarYear] and never an [AcademicYear]: it names the dollars the
+     * figure is expressed in, not a year of school, and the two are not
+     * interchangeable in either direction.
      */
-    val inflationBaseYear: Int?,
+    val inflationBaseYear: CalendarYear?,
   ) {
     init {
       require(cohortLastYear >= cohortFirstYear) {
@@ -139,7 +159,7 @@ internal object ScorecardFieldOfStudyColumns {
       publisherCohortCell =
         "Treasury AY2017-2018, AY2018-2019 pooled earnings cohort measured in CY2022, CY2023, " +
           "inflation adjusted to 2024 dollars",
-      inflationBaseYear = 2024,
+      inflationBaseYear = CalendarYear(2024),
     )
 
   /** Median Stafford and Grad PLUS loan debt disbursed at this institution, published by NSLDS. */

@@ -149,6 +149,45 @@ object FigureStatusCopy {
       }
     }
 
+  /**
+   * What the MODEL is told a status MEANS, in a tool legend -- one gloss per
+   * status, read by every legend that lists the vocabulary.
+   *
+   * ONE home, because the payload lists these codes in two places (the
+   * college-level `figure_statuses` legend and the major answer's per-figure
+   * one) and the two were already describing one vocabulary in two wordings on
+   * the commit that copied them. The CODE is derived from [FigureStatus] at
+   * both sites; this is the other half of the same fact.
+   *
+   * Distinct from [agentlessStatementOf], which is the sentence a FAMILY is
+   * shown and is byte-frozen against the immutable prompt row. These are
+   * shorthand for a model reading a key legend, and they are free to be
+   * reworded -- in one place.
+   *
+   * Exhaustive with no `else`, like every `when` here: a seventh status must be
+   * glossed before either legend compiles.
+   */
+  fun legendGlossOf(status: FigureStatus): String =
+    when (status) {
+      FigureStatus.REPORTED -> "the publisher published the number, shown plainly"
+      FigureStatus.IMPUTED_BY_PUBLISHER -> "figure IS shown, publisher's own estimate"
+      FigureStatus.NOT_REPORTED_BY_INSTITUTION -> "the school reported nothing for that cell"
+      FigureStatus.NOT_APPLICABLE -> "does not apply there, source says so"
+      FigureStatus.SUPPRESSED_BY_PUBLISHER -> "the publisher withheld the figure for privacy"
+      FigureStatus.NOT_COLLECTED_BY_US -> "OURS, not gathered yet"
+    }
+
+  /**
+   * The status vocabulary as a tool legend lists it: every code, each with the
+   * one gloss [legendGlossOf] owns, in [FigureStatus] declaration order.
+   *
+   * A property and not two `joinToString` calls at two legend sites, for the
+   * reason the gloss has one home: the SHAPE of the list is as copyable as its
+   * words, and a second spelling of it is a second thing to keep in step.
+   */
+  val LEGEND_VOCABULARY: String
+    get() = FigureStatus.entries.joinToString(" | ") { "\"${it.value}\" (${legendGlossOf(it)})" }
+
   /** Whose gap a figure with this status is -- the input to the [ArrangementGap]/[NoTotalReason] routing below. */
   fun ownerOf(status: FigureStatus): FigureGapOwner =
     when (status) {
