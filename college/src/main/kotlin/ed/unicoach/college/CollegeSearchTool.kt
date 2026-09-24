@@ -130,6 +130,7 @@ class CollegeSearchTool(
       // financial aid in it at all.
       putPriceRuler(page.priceRuler)
       putSourceYears(page.sourceYears)
+      putFigureSources(ScorecardOutcomeCitations.presentIn(page.matches))
     }
   }
 
@@ -261,7 +262,8 @@ class CollegeSearchTool(
         "`total_matches` (every college matching the filters, uncapped) — cite " +
         "`total_matches` when stating how many schools match. Returns matching real " +
         "institutions with size, selectivity, net price, and outcome context " +
-        "(completion rate within 150% of normal time, median earnings, Pell share). Each result carries " +
+        "(completion rate within 150% of normal time, median earnings, Pell share). " +
+        FIGURE_SOURCES_NOTE + " Each result carries " +
         "`college_id`, the college's stable identifier — exactly what the " +
         "`update_college_list` tool's `college_id` parameter takes, so copy it " +
         "verbatim from a result and never construct or guess one. Each result also carries " +

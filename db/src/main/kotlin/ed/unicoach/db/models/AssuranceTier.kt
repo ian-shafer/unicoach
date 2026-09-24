@@ -12,8 +12,8 @@ package ed.unicoach.db.models
  *
  * DERIVED, never stored: a pure function of the `(source, source_variable)`
  * pair both fact tables already hold ([of]). No column, no migration, no seeded
- * table, and nothing on [MoneySource] -- of the eighteen Scorecard cells this
- * corpus loads, sixteen are re-published IPEDS and only two are federal
+ * table, and nothing on [MoneySource] -- of the twenty-one Scorecard cells this
+ * corpus loads, nineteen are re-published IPEDS and only two are federal
  * administrative records, so a tier hung on the publisher would be wrong about
  * most of one publisher's file.
  *
@@ -65,19 +65,20 @@ enum class AssuranceTier(
     ): AssuranceTier = PublishedCell.of(source, sourceVariable, location).assurance
 
     /**
-     * The twenty-four Scorecard `source_variable` strings this corpus loads,
+     * The twenty-seven Scorecard `source_variable` strings this corpus loads,
      * and the tier each one is on.
      *
-     * Twenty-four strings for eighteen conceptual cells: `NPT4` and its five
-     * income bands are each published twice, `_PUB` and `_PRIV`, and the loader
-     * picks one per institution from `CONTROL`. The map is keyed on the LITERAL
-     * string a row carries, so it needs all twenty-four.
+     * Twenty-seven strings for twenty-one conceptual cells: `NPT4` and its
+     * five income bands are each published twice, `_PUB` and `_PRIV`, and the
+     * loader picks one per institution from `CONTROL`. The map is keyed on the
+     * LITERAL string a row carries, so it needs all twenty-seven.
      *
-     * Sixteen of the eighteen cells are IPEDS, re-published: the Scorecard is
-     * mostly a relay, and the college filed those with IPEDS. The two that are
-     * not are `GRAD_DEBT_MDN` (NSLDS, the federal loan file) and
+     * Nineteen of the twenty-one cells are IPEDS, re-published: the Scorecard
+     * is mostly a relay, and the college filed those with IPEDS. The two that
+     * are not are `GRAD_DEBT_MDN` (NSLDS, the federal loan file) and
      * `MD_EARN_WNE_P10` (Treasury tax records) -- administrative records about
-     * students, kept for another purpose entirely.
+     * students, kept for another purpose entirely. RFC 226 adds three IPEDS
+     * outcome cells (`ADM_RATE`, `C150_4`, `UGDS`), all relayed IPEDS.
      *
      * Written as DATA and not as a `when`, because that is what it is: a
      * transcription of another publisher's own `SOURCE` column, pinned against
@@ -120,6 +121,10 @@ enum class AssuranceTier(
         // The two that are NOT the Scorecard relaying IPEDS.
         put("GRAD_DEBT_MDN", ADMINISTRATIVE_RECORD)
         put("MD_EARN_WNE_P10", ADMINISTRATIVE_RECORD)
+        // The three outcome cells RFC 226 dates: IPEDS again.
+        put("ADM_RATE", MANDATORY_SURVEY)
+        put("C150_4", MANDATORY_SURVEY)
+        put("UGDS", MANDATORY_SURVEY)
       }
   }
 }

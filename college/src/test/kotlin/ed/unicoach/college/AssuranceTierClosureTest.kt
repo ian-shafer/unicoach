@@ -38,6 +38,20 @@ class AssuranceTierClosureTest {
    */
   private val scorecardVariables: Set<String> = ScorecardInstitutionColumns.LOADED_VARIABLES
 
+  /**
+   * The three outcome columns RFC 226 dates, read off the same registry as the
+   * money strings: the transcription and the tier map now answer for the UNION
+   * of the two registries, never for the money fill alone.
+   */
+  private val outcomeVariables: Set<String> = ScorecardInstitutionColumns.OUTCOME_VARIABLES
+
+  /**
+   * The whole dated Scorecard key space: money plus outcome, READ off the
+   * registry that owns both halves rather than re-joined here. The dictionary
+   * pin reads the same member, so the CSV's key-set contract has one home.
+   */
+  private val datedScorecardVariables: Set<String> = ScorecardInstitutionColumns.DATED_VARIABLES
+
   @Test
   fun `every IPEDS SFA variable the loader stages resolves, and to the compelled-survey tier`() {
     val variables = SfaVariables.ALL.toSet()
@@ -79,17 +93,29 @@ class AssuranceTierClosureTest {
   fun `every Scorecard string the loader writes resolves, and the two administrative records are the two`() {
     assertEquals(24, scorecardVariables.size, "eight prices and sixteen cohort cells, as the registry expands them")
     assertEquals(
-      scorecardVariables,
-      AssuranceTier.SCORECARD_TIERS.keys,
-      "the map answers for exactly the strings the loader writes -- no unread key, no unwritten one",
+      setOf(ScorecardInstitutionColumns.ADM_RATE, ScorecardInstitutionColumns.C150_4, ScorecardInstitutionColumns.UGDS),
+      outcomeVariables,
+      "the three outcome columns RFC 226 dates",
     )
-    val byTier = scorecardVariables.groupBy { AssuranceTier.of(MoneySource.SCORECARD, it, ROW) }
+    assertEquals(
+      datedScorecardVariables,
+      AssuranceTier.SCORECARD_TIERS.keys,
+      "the map answers for exactly the strings we date -- no unread key, no unwritten one",
+    )
+    val byTier = datedScorecardVariables.groupBy { AssuranceTier.of(MoneySource.SCORECARD, it, ROW) }
     assertEquals(
       setOf(ScorecardInstitutionColumns.GRAD_DEBT_MDN, ScorecardInstitutionColumns.MD_EARN_WNE_P10),
       byTier[AssuranceTier.ADMINISTRATIVE_RECORD]?.toSet(),
       "the federal loan file and the tax file, and nothing else the Scorecard relays",
     )
-    assertEquals(22, byTier[AssuranceTier.MANDATORY_SURVEY]?.size, "the other 22 strings are re-published IPEDS")
+    // The SET, not its size: a string that moves tier is then printed by the
+    // assertion that caught it, instead of leaving a reader to diff a 27-row
+    // registry against a count that went up by one.
+    assertEquals(
+      datedScorecardVariables - setOf(ScorecardInstitutionColumns.GRAD_DEBT_MDN, ScorecardInstitutionColumns.MD_EARN_WNE_P10),
+      byTier[AssuranceTier.MANDATORY_SURVEY]?.toSet(),
+      "every dated string but the federal loan file and the tax file is the Scorecard re-publishing IPEDS",
+    )
     assertTrue(AssuranceTier.VOLUNTARY_SELF_REPORT !in byTier, "the Scorecard publishes nothing self-reported")
   }
 
@@ -100,7 +126,7 @@ class AssuranceTierClosureTest {
     // which is the whole point, because the tier is then wrong.
     val dictionary = ScorecardDictionaryTranscription.sourceByVariable
 
-    assertEquals(scorecardVariables.size, dictionary.size, "one row per string the loader writes")
+    assertEquals(datedScorecardVariables.size, dictionary.size, "one row per string we date")
     assertEquals(AssuranceTier.SCORECARD_TIERS.keys, dictionary.keys, "the transcription and the map name one set")
     for ((variable, source) in dictionary) {
       // The publisher's own SOURCE column decides the tier: IPEDS means the
@@ -114,7 +140,15 @@ class AssuranceTierClosureTest {
         }
       assertEquals(expected, AssuranceTier.of(MoneySource.SCORECARD, variable, ROW), "dictionary row [$variable]")
     }
-    assertEquals(22, dictionary.values.count { it == "IPEDS" }, "sixteen IPEDS cells, published as 22 strings")
+    // STRINGS, not cells, and the two are different numbers: the nineteen IPEDS
+    // cells `AssuranceTier` counts are the sixteen money cells (published as 22
+    // strings, because `NPT4` and its five bands are each published twice on
+    // `CONTROL`) plus the three outcome cells, which are one string each.
+    assertEquals(
+      datedScorecardVariables - setOf(ScorecardInstitutionColumns.GRAD_DEBT_MDN, ScorecardInstitutionColumns.MD_EARN_WNE_P10),
+      dictionary.filterValues { it == "IPEDS" }.keys,
+      "22 money strings for sixteen money cells, plus 3 outcome cells: the nineteen IPEDS cells as strings",
+    )
   }
 
   @Test
@@ -142,6 +176,6 @@ class AssuranceTierClosureTest {
     const val ROW = "the assurance-tier closure walk (the loaders' key space)"
 
     /** The sha256 recorded in `db/seed/scorecard/FETCH-NOTES.md` for the committed transcription. */
-    const val DICTIONARY_SHA256 = "329f4ec4cc9cb2ff4d941519d50aba46949a46bbb0f6d29f52c862673dbf778b"
+    const val DICTIONARY_SHA256 = "2ccc060e06daa912eace96323c4faa54667542fa839c7251208537557675527a"
   }
 }

@@ -357,6 +357,89 @@ class CollegeSearchToolTest {
     }
 
   @Test
+  fun `figure_sources names exactly the outcome figures the returned rows carry`() =
+    runBlocking {
+      insert(newCollege(843))
+
+      val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("CA")) }) })
+
+      assertNull(result["error"])
+      val figureSources =
+        assertNotNull(result["figure_sources"], "the answer carries no figure_sources block at all: $result").jsonObject
+      assertEquals(
+        setOf(
+          "undergrad_enrollment_headcount",
+          "admission_rate_share",
+          "completion_rate_150pct_4yr_share",
+        ),
+        figureSources.keys,
+        "every returned row carries all three stamped figures, so all three are stamped",
+      )
+      val completion =
+        assertNotNull(
+          figureSources["completion_rate_150pct_4yr_share"],
+          "the completion rate is not stamped: $figureSources",
+        ).jsonObject
+      assertTrue(
+        assertNotNull(completion["cited_as"], "the completion stamp says nothing: $completion")
+          .jsonPrimitive.content
+          .contains("full-time, for the first time"),
+        "the completion stamp carries the population, not just the period",
+      )
+    }
+
+  @Test
+  fun `figure_sources omits a figure no returned row carries`() =
+    runBlocking {
+      val college = newCollege(844).copy(completionRate150pct4yrShare = null)
+      insert(college)
+
+      val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("CA")) }) })
+
+      assertNull(result["error"])
+      val figureSources =
+        assertNotNull(result["figure_sources"], "the answer carries no figure_sources block at all: $result").jsonObject
+      assertFalse(
+        figureSources.containsKey("completion_rate_150pct_4yr_share"),
+        "no row carries a completion rate, so none is stamped",
+      )
+      assertTrue(
+        figureSources.containsKey("undergrad_enrollment_headcount"),
+        "the other two outcome columns are still stamped",
+      )
+      // The numeric keys are untouched by the stamp (the slice's acceptance).
+      // ABSENCE is the PAGE-level contract only: `putFigureSources` drops a
+      // stamp no row can carry. A ROW never drops a key -- `putOrNull`
+      // (CollegeQueryVocabulary.kt) writes a labelled `null` for every unknown
+      // scalar, so the shape of a row is the same for every college and a
+      // reader never has to tell "missing key" from "missing figure". Asserted
+      // the same way as `locale_type` below: an unknown figure is an absence,
+      // never a bare number -- and the stamp did not change that.
+      val row = (result["colleges"] as JsonArray).single().jsonObject
+      assertEquals(
+        JsonNull,
+        row["completion_rate_150pct_4yr_share"],
+        "the row still carries the figure it does not have as a labelled null",
+      )
+      // The seeded row itself, not two retyped copies of `newCollege`'s
+      // defaults: the claim is that the STAMP edits no figure, so the
+      // expectation is what was inserted.
+      assertEquals(
+        college.undergradEnrollmentHeadcount,
+        assertNotNull(row["undergrad_enrollment_headcount"], "the enrolment headcount key was removed: $row")
+          .jsonPrimitive.intOrNull,
+        "the enrolment headcount survives the stamp",
+      )
+      assertEquals(
+        college.admissionRateShare,
+        assertNotNull(row["admission_rate_share"], "the admission rate key was removed: $row")
+          .jsonPrimitive.content
+          .toDouble(),
+        "the admission rate survives the stamp",
+      )
+    }
+
+  @Test
   fun `programs is OMITTED on a search that asked nothing about programs`() =
     runBlocking {
       seedWithMarineBiology(806)

@@ -136,3 +136,4 @@ seed-coach-system-prompt-v40.sql
 create-program-money-stats.sql
 seed-coach-system-prompt-v41.sql
 create-admission-test-scores.sql
+seed-coach-system-prompt-v42.sql

@@ -777,6 +777,7 @@ class SimilarCollegesTool(
       // return "a college" must describe it the same way.
       putPriceRuler(page.priceRuler)
       putSourceYears(page.sourceYears)
+      putFigureSources(ScorecardOutcomeCitations.presentIn(page.matches.map { it.match }))
     }
 
   /**
@@ -1120,6 +1121,6 @@ class SimilarCollegesTool(
         "active four-year institutions; the anchor never appears among its own peers. Cite " +
         "`total_candidates` when saying how many schools were considered, and say " +
         "`excluded_unknown` in plain words -- those schools could not be judged on that axis, which " +
-        "is not the same as failing it. " + NET_PRICE_BASIS_NOTE
+        "is not the same as failing it. " + FIGURE_SOURCES_NOTE + " " + NET_PRICE_BASIS_NOTE
   }
 }

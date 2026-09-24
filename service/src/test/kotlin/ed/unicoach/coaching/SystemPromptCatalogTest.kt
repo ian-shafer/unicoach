@@ -223,6 +223,7 @@ class SystemPromptCatalogTest {
       TESTING_TIMELINE("When they ask when to take a test"),
       LIVING_ARRANGEMENT("When a school reports its costs by living arrangement,"),
       SEARCH("When a student names something they want to study, search"),
+      OUTCOME_FIGURES("A search result may carry outcome figures about a school"),
       COMPARISON("When two or more schools appear together, the cost tool"),
       ANSWER_SHAPE("Lead a money answer with the number"),
       NAME_LOOKUP("When the student names a school in words -- the full name,"),
@@ -2219,6 +2220,8 @@ class SystemPromptCatalogTest {
 
   private fun searchRulerParagraph(): String = paragraphAt(CoachParagraph.SEARCH_RULER)
 
+  private fun outcomeFiguresParagraph(): String = paragraphAt(CoachParagraph.OUTCOME_FIGURES)
+
   /**
    * The search-ruler paragraph (RFC 169), asserted in the body the runtime is
    * actually SERVED — the row `service.conf` pins.
@@ -2275,6 +2278,40 @@ class SystemPromptCatalogTest {
     // PAYLOAD keys and TOOL names, and no canonical table or publisher column.
     assertFalse(paragraph.contains("price_figures"), "a canonical table name is never said to a family")
     assertFalse(paragraph.contains("CHG"), "an IPEDS charge code is never said to a family")
+  }
+
+  /**
+   * The outcome-figures paragraph (RFC 226), asserted in the body the runtime
+   * is actually SERVED: the three stamped search figures are now quotable,
+   * WITH the sentence the payload's `figure_sources` entry carries. The Pell
+   * share is the fourth search figure and is deliberately NOT licensed here
+   * (RFC 226 §5), so it is not among them.
+   */
+  @Test
+  fun `the served outcome-figures paragraph licences the three stamped figures and demands their population`() {
+    val paragraph = outcomeFiguresParagraph()
+
+    assertTrue(
+      paragraph.contains("figure_sources"),
+      "the paragraph routes the coach to the payload key that carries each figure's stamp",
+    )
+    assertTrue(
+      paragraph.contains("never from memory"),
+      "the stamp is read, not assembled",
+    )
+    assertTrue(
+      paragraph.contains("never a bare graduation percentage"),
+      "a completion rate is never a bare graduation percentage; the population rides in the cited_as sentence",
+    )
+    assertTrue(
+      paragraph.contains("not this student's chance of admission"),
+      "an admission rate is not this student's chance of admission; the per-round scope rides in the cited_as sentence",
+    )
+    assertTrue(
+      paragraph.contains("never a judgement about the school"),
+      "an enrolment headcount is a size, not a quality",
+    )
+    assertParagraphKeepsTheStandingCopyRules("the outcome-figures paragraph", paragraph)
   }
 
   /**

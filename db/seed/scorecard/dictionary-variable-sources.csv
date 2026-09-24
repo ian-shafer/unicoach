@@ -23,3 +23,6 @@ NPT44_PRIV,IPEDS,AcadYr 2023-24
 NPT45_PRIV,IPEDS,AcadYr 2023-24
 GRAD_DEBT_MDN,NSLDS,
 MD_EARN_WNE_P10,Treasury,
+ADM_RATE,IPEDS,Fall 2024
+C150_4,IPEDS,"Fall 2018 or AcadYr 2018-19 cohort (differs by institutional calendar)"
+UGDS,IPEDS,Fall 2024

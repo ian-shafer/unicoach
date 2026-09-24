@@ -94,17 +94,21 @@ dictionary dates it to (RFC 183). How many columns that is, is the file's own
 answer — it is stated there and restated nowhere else, so a column added to the
 loader moves one number in one place.
 
-`most_recent_cohort` is the `Cohort/Measure in "Most Recent" Datafile` value
-from the workbook's `Most_Recent_Inst_Cohort_Map` sheet, as the publisher writes
-it — which variable carries which year is the CSV's own answer, stated there and
-restated nowhere else, exactly like the column count above. It is EMPTY for the
-two administrative records, because the publisher pools them across cohorts
-(`GRAD_DEBT_MDN` is NSLDS FY2020+FY2021, `MD_EARN_WNE_P10` is a Treasury
-two-cohort measure) and states no academic year for either — an empty cell is
-"no academic year", never "unknown". `ScorecardDictionaryPinTest` asserts the
-loader's two year constants against this column, so a snapshot bump that
-re-dates a variable fails a test instead of quietly re-dating every price we
-serve.
+`most_recent_cohort` is the LEADING clause of the
+`Cohort/Measure in "Most Recent" Datafile` value from the workbook's
+`Most_Recent_Inst_Cohort_Map` sheet — the part before the `, reported in` the
+sheet appends to every row. A cell reads `AcadYr 2024-25`, not
+`AcadYr 2024-25, reported in IPEDS DCY2024-25`; the trailing clause is the
+collection year, not the period the figure describes, and it is identical on
+every row. Which variable carries which year is the CSV's own answer, stated
+there and restated nowhere else, exactly like the column count above. It is
+EMPTY for the two administrative records, because the publisher pools them
+across cohorts (`GRAD_DEBT_MDN` is NSLDS FY2020+FY2021, `MD_EARN_WNE_P10` is a
+Treasury two-cohort measure) and states no academic year for either — an empty
+cell is "no academic year", never "unknown". `ScorecardDictionaryPinTest`
+asserts the loader's two year constants against this column, so a snapshot bump
+that re-dates a variable fails a test instead of quietly re-dating every price
+we serve.
 
 It is transcribed rather than pinned, on the `IpedsImputationFlag` precedent: a
 small table that changes when NCES re-sources a column is authored vocabulary
@@ -127,12 +131,42 @@ The committed transcription's own digest, so an undocumented edit of it fails a
 test rather than moving a tier quietly:
 
 - `dictionary-variable-sources.csv` — sha256
-  `329f4ec4cc9cb2ff4d941519d50aba46949a46bbb0f6d29f52c862673dbf778b`
+  `2ccc060e06daa912eace96323c4faa54667542fa839c7251208537557675527a`
 
 `AssuranceTier.SCORECARD_TIERS` is asserted against this file column by column,
 and the digest above is typed beside that test. `PROVENANCE.json` deliberately
 carries none of this: the fetcher writes that file whole and would erase a
 hand-added key.
+
+## The three outcome columns (RFC 226)
+
+`ADM_RATE`, `C150_4` and `UGDS` joined the transcription in RFC 226. They are
+the three outcome figures a search row carries that had NO stamp at all, and
+brief 0011 D47 dates every figure a family can see. Their rows are the same hand
+transcription as the 24 beside them, read from the same workbook and the same
+two sheets: `SOURCE` from `Institution_Data_Dictionary`, and the leading
+`Cohort/Measure` clause from `Most_Recent_Inst_Cohort_Map`.
+
+**What each of the three is sourced to, and dated to, is NOT restated here.**
+That is the CSV's own answer, stated there and restated nowhere else, exactly as
+the column count and the `most_recent_cohort` convention above are — and for the
+same reason: a re-dated snapshot moves `dictionary-variable-sources.csv`, and a
+table in this file that repeated those cells would go stale with nothing able to
+contradict it. `ScorecardDictionaryPinTest` reads the committed CSV for all
+three, and `AssuranceTierClosureTest` pins its digest, so the transcription
+cannot be re-dated or re-sourced quietly.
+
+All three cells are entering TERMS rather than academic years, which is why the
+`Cohort` type carries a `StatedTerm` arm at all. One of them contains a comma,
+so it is quoted in the CSV; the reader is `commons-csv` with a default format,
+and `ScorecardDictionaryPinTest` asserts the round trip against the committed
+file. The leading-clause convention above applies here too: the workbook appends
+`, reported in IPEDS DCY2024-25` to each of these cells.
+
+This RFC PARTLY SUPERSEDES the RFC 195 decision below: its two reasons for
+keeping non-money dates in Kotlin are now spent FOR THESE THREE, so they live in
+the CSV. The six score-band variables and `SAT_AVG` stay in Kotlin exactly as
+RFC 195 left them.
 
 ## The six percentile score-band variables (RFC 195)
 
@@ -158,17 +192,21 @@ asserts the two agree, so a re-fetch that moves the data fails a test instead of
 leaving the sentence dated to a cohort nobody checked.
 
 **They are deliberately NOT added to `dictionary-variable-sources.csv`**, and
-the reason is that file's own contract rather than an oversight:
+the reason is that file's own contract rather than an oversight. RFC 226 partly
+supersedes the two reasons below FOR THE THREE OUTCOME COLUMNS (`ADM_RATE`,
+`C150_4`, `UGDS`) — they now live in the CSV, with a third `Cohort` arm for a
+term — while the score-band variables stay in Kotlin for exactly the reasons
+stated here:
 
 - `ScorecardDictionaryPinTest` asserts that the file's key set **equals**
-  `ScorecardInstitutionColumns.LOADED_VARIABLES` — the canonical-money fill's
-  registry. A band is not money and is not in that registry, so adding a row for
-  it fails that test, correctly: the file is the money seam's pin, not a general
-  dictionary.
-- Its `Cohort` type parses **`AcadYr` strings only**. "Fall 2024" is a term, not
-  an academic year, so the one thing a row there would have to state is the one
-  thing that column cannot hold — and the nearest legal value would silently
-  re-date the band by a year.
+  `ScorecardInstitutionColumns.DATED_VARIABLES` — the money fill's registry plus
+  the three outcome columns, joined once in the registry object rather than in
+  each suite that checks it. A band is neither money nor an outcome figure and
+  is in neither registry, so adding a row for it fails that test, correctly.
+- Its `Cohort` type once parsed **`AcadYr` strings only**. RFC 226 added a
+  `StatedTerm` arm, so a Fall term CAN now be held there — but a score band is
+  dated by `ScoreBandCitation.COHORT_TERM` inside its own sentence, and folding
+  it into the CSV is a second decision nobody has taken.
 
 A later snapshot that moves the cohort therefore moves `COHORT_TERM` and this
 section, in one edit, with the cell above quoted from the new workbook.
@@ -235,8 +273,8 @@ invents them:
 
 **They are deliberately NOT added to `dictionary-variable-sources.csv`**, for
 the reason the six score bands above are not — that file's key set must
-**equal** `ScorecardInstitutionColumns.LOADED_VARIABLES`, the INSTITUTION money
-seam's registry; every `VintageGroup` member in it is an institution cohort, so
+**equal** `ScorecardInstitutionColumns.DATED_VARIABLES`, the INSTITUTION seam's
+registries; every `VintageGroup` member in it is an institution cohort, so
 joining one would stamp `EARN_MDN_4YR` with a tuition year; and its `Cohort`
 type parses `AcadYr <label>` or empty, while these cohorts are pooled two-year
 spans.

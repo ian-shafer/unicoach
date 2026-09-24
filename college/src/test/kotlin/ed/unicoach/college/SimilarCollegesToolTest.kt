@@ -132,6 +132,7 @@ class SimilarCollegesToolTest {
     undergradEnrollmentHeadcount: Int? = 2000,
     admissionRateShare: Double? = 0.14,
     satAverageEquivalentScore: Int? = 1420,
+    completionRate150pct4yrShare: Double? = 0.9,
   ) = NewCollege(
     ipedsUnitId = ipedsUnitId,
     opeid = null,
@@ -152,7 +153,7 @@ class SimilarCollegesToolTest {
     satMath75thPercentileScore = null,
     actComposite25thPercentileScore = null,
     actComposite75thPercentileScore = null,
-    completionRate150pct4yrShare = 0.9,
+    completionRate150pct4yrShare = completionRate150pct4yrShare,
     website = null,
   )
 
@@ -276,8 +277,15 @@ class SimilarCollegesToolTest {
     }
   }
 
-  /** The acceptance criteria's universe, anchor first. */
-  private fun seedUniverse(): College {
+  /**
+   * The acceptance criteria's universe, anchor first.
+   *
+   * [completionRate] is varied across the WHOLE universe rather than one
+   * college because `figure_sources` is a PAGE-level stamp: a figure is
+   * dropped only when NO returned row carries it, so the omission case needs
+   * every seeded college to lack it, not one.
+   */
+  private fun seedUniverse(completionRate: Double? = 0.9): College {
     val anchor =
       insert(
         newCollege(
@@ -286,6 +294,7 @@ class SimilarCollegesToolTest {
           undergradEnrollmentHeadcount = 1800,
           admissionRateShare = 0.09,
           satAverageEquivalentScore = 1450,
+          completionRate150pct4yrShare = completionRate,
         ),
         defaultMoney.copy(netPricePerYearUsd = 28400),
       )
@@ -296,6 +305,7 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 2000,
         admissionRateShare = 0.14,
         satAverageEquivalentScore = 1420,
+        completionRate150pct4yrShare = completionRate,
       ),
       defaultMoney.copy(netPricePerYearUsd = 30000),
     )
@@ -306,6 +316,7 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 2200,
         admissionRateShare = 0.10,
         satAverageEquivalentScore = 1440,
+        completionRate150pct4yrShare = completionRate,
       ),
       defaultMoney.copy(netPricePerYearUsd = 26000),
     )
@@ -318,6 +329,7 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 65000,
         admissionRateShare = 0.88,
         satAverageEquivalentScore = 1150,
+        completionRate150pct4yrShare = completionRate,
       ),
       defaultMoney.copy(netPricePerYearUsd = 15000),
     )
@@ -329,6 +341,7 @@ class SimilarCollegesToolTest {
         undergradEnrollmentHeadcount = 40000,
         admissionRateShare = 0.80,
         satAverageEquivalentScore = 1100,
+        completionRate150pct4yrShare = completionRate,
       ),
       defaultMoney.copy(netPricePerYearUsd = 45000),
     )
@@ -525,6 +538,100 @@ class SimilarCollegesToolTest {
         constraints(result).any { it.contains("admission rate above") },
         "${constraints(result)}",
       )
+    }
+
+  /**
+   * The value a peer row carries under [key], with the KEY's own absence named.
+   *
+   * A row never drops a key -- `putOrNull` writes a labelled null for every
+   * unknown scalar -- so a missing key is the regression these assertions
+   * exist for, and a `!!` would report it as a context-free NPE with the row
+   * nowhere in the message.
+   */
+  private fun JsonObject.figureAt(key: String): JsonPrimitive =
+    assertNotNull(this[key], "the row carries no [$key] key at all; it carries $keys: $this").jsonPrimitive
+
+  @Test
+  fun `figure_sources stamps the outcome figures the peer list carries`() =
+    runBlocking {
+      val anchor = seedUniverse()
+
+      val result = tool.execute(anchorInput(anchor))
+      assertNull(result["error"], "$result")
+      val figureSources =
+        assertNotNull(result["figure_sources"], "the answer carries no figure_sources block at all: $result").jsonObject
+      assertEquals(
+        setOf(
+          "undergrad_enrollment_headcount",
+          "admission_rate_share",
+          "completion_rate_150pct_4yr_share",
+        ),
+        figureSources.keys,
+        "the peer list carries all three stamped figures, so all three are stamped",
+      )
+      val admission =
+        assertNotNull(figureSources["admission_rate_share"], "the admission rate is not stamped: $figureSources").jsonObject
+      assertTrue(
+        assertNotNull(admission["cited_as"], "the admission stamp says nothing: $admission")
+          .jsonPrimitive.content
+          .contains("one overall rate, not a rate for any single application round"),
+        "the admission stamp carries Ian's nine words",
+      )
+      // The slice's other acceptance criterion: no figure key is removed. The
+      // stamp is PAGE-level and never edits a row, so every returned peer still
+      // carries all three numeric keys with their numbers. Asserted on the
+      // VALUE rather than on `containsKey`, because a row NEVER drops a key --
+      // `putOrNull` (CollegeQueryVocabulary.kt) writes a labelled null for
+      // every unknown scalar, so presence alone would pass on a row that lost
+      // its figure.
+      (result["colleges"] as JsonArray).forEach { peer ->
+        val row = peer.jsonObject
+        assertNotNull(
+          row.figureAt("undergrad_enrollment_headcount").intOrNull,
+          "the enrolment headcount survives the stamp: $row",
+        )
+        assertNotNull(
+          row.figureAt("admission_rate_share").doubleOrNull,
+          "the admission rate survives the stamp: $row",
+        )
+        assertNotNull(
+          row.figureAt("completion_rate_150pct_4yr_share").doubleOrNull,
+          "the completion rate survives the stamp: $row",
+        )
+      }
+    }
+
+  @Test
+  fun `figure_sources omits a figure no peer carries`() =
+    runBlocking {
+      // The whole universe is seeded with no completion rate, because the stamp
+      // is page-level: one peer without the figure would leave the others
+      // carrying it and the key would stay, correctly.
+      val anchor = seedUniverse(completionRate = null)
+
+      val result = tool.execute(anchorInput(anchor))
+
+      assertNull(result["error"], "$result")
+      val figureSources =
+        assertNotNull(result["figure_sources"], "the answer carries no figure_sources block at all: $result").jsonObject
+      assertFalse(
+        figureSources.containsKey("completion_rate_150pct_4yr_share"),
+        "no peer carries a completion rate, so none is stamped: $figureSources",
+      )
+      assertEquals(
+        setOf("undergrad_enrollment_headcount", "admission_rate_share"),
+        figureSources.keys,
+        "the other two outcome columns are still stamped",
+      )
+      // The ROW is unchanged by the omission: the figure it does not have is a
+      // labelled null, never a missing key (`putOrNull`).
+      (result["colleges"] as JsonArray).forEach { peer ->
+        assertEquals(
+          JsonNull,
+          peer.jsonObject["completion_rate_150pct_4yr_share"],
+          "the row still carries the figure it does not have as a labelled null: $peer",
+        )
+      }
     }
 
   // ---------------------------------------------------------------------------

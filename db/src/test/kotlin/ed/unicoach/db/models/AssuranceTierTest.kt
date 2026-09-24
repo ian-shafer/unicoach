@@ -68,20 +68,21 @@ class AssuranceTierTest {
   }
 
   @Test
-  fun `the map holds the twenty-four strings the loader writes, and no more`() {
-    // Twenty-four strings for eighteen cells: the NPT4 family is published
-    // twice, `_PUB` and `_PRIV`, and the map is keyed on the literal string a
-    // row carries. Both counts are true and they count different things.
-    assertEquals(24, AssuranceTier.SCORECARD_TIERS.size)
+  fun `the map holds the twenty-seven strings the loader writes, and no more`() {
+    // Twenty-seven strings for twenty-one cells: the NPT4 family is published
+    // twice, `_PUB` and `_PRIV`, the map is keyed on the literal string a row
+    // carries, and RFC 226 added the three outcome cells ADM_RATE, C150_4 and
+    // UGDS. Both counts are true and they count different things.
+    assertEquals(27, AssuranceTier.SCORECARD_TIERS.size)
     assertEquals(
       2,
       AssuranceTier.SCORECARD_TIERS.values.count { it == AssuranceTier.ADMINISTRATIVE_RECORD },
       "exactly two of the Scorecard's columns are federal administrative records",
     )
     assertEquals(
-      22,
+      25,
       AssuranceTier.SCORECARD_TIERS.values.count { it == AssuranceTier.MANDATORY_SURVEY },
-      "the other twenty-two strings are the sixteen IPEDS cells it re-publishes",
+      "the other twenty-five strings are the nineteen IPEDS cells it re-publishes",
     )
   }
 

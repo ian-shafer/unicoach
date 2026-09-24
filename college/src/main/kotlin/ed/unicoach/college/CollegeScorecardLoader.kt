@@ -1864,17 +1864,18 @@ class CollegeScorecardLoader(
     private const val COL_LATITUDE = "LATITUDE"
     private const val COL_LONGITUDE = "LONGITUDE"
     private const val COL_CONTROL = ScorecardInstitutionColumns.CONTROL
-    private const val COL_UGDS = "UGDS"
-    private const val COL_ADM_RATE = "ADM_RATE"
+    private const val COL_UGDS = ScorecardInstitutionColumns.UGDS
+    private const val COL_ADM_RATE = ScorecardInstitutionColumns.ADM_RATE
     private const val COL_SAT_AVG = "SAT_AVG"
 
     // The six published percentile score bands (RFC 195). `SATVR*` is SAT
     // critical reading and `SATMT*` SAT math, per the dictionary's
     // `Institution_Data_Dictionary` sheet; `ACTCM*` is the ACT cumulative
     // (composite). This loader's own constants, not
-    // [ScorecardInstitutionColumns] members: that home exists for the columns
-    // the canonical-money fill re-parses from the same file, and a score is
-    // not money.
+    // [ScorecardInstitutionColumns] members: that home exists for columns the
+    // money fill re-parses AND for the outcome columns RFC 226 dates, and a
+    // score band is neither -- it is dated by its own citation, not by
+    // `dictionary-variable-sources.csv`.
     private const val COL_SATVR25 = "SATVR25"
     private const val COL_SATVR75 = "SATVR75"
     private const val COL_SATMT25 = "SATMT25"
@@ -1884,7 +1885,7 @@ class CollegeScorecardLoader(
     private const val COL_COSTT4_A = ScorecardInstitutionColumns.COSTT4_A
     private const val COL_TUITIONFEE_IN = ScorecardInstitutionColumns.TUITIONFEE_IN
     private const val COL_TUITIONFEE_OUT = ScorecardInstitutionColumns.TUITIONFEE_OUT
-    private const val COL_C150_4 = "C150_4"
+    private const val COL_C150_4 = ScorecardInstitutionColumns.C150_4
     private const val COL_MD_EARN_WNE_P10 = ScorecardInstitutionColumns.MD_EARN_WNE_P10
     private const val COL_GRAD_DEBT_MDN = ScorecardInstitutionColumns.GRAD_DEBT_MDN
     private const val COL_PCTPELL = ScorecardInstitutionColumns.PCTPELL

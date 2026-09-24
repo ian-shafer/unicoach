@@ -54,6 +54,37 @@ internal val NET_PRICE_BASIS_NOTE =
     "out-of-state family is ranked on a published price, and the result says so."
 
 /**
+ * The `figure_sources` block a search answer carries, and how a coach must
+ * speak its figures (RFC 226). One statement for BOTH tools that return "a
+ * college" (RFC 153 D70).
+ *
+ * The rule is scoped to OUTCOME figures, and says what still dates the rest.
+ * An absolute "a figure it does not list carries no stated period" reads as an
+ * instruction to stop dating the money figures, which `source_years` dates on
+ * the same page and which carry no `figure_sources` entry at all -- and the
+ * coach prompt tells the coach to say those years five lines above.
+ *
+ * DELIBERATELY SAID TWICE. The same rule is stated a second time in
+ * `prompts/coach-system-prompt.md`'s outcome-figures paragraph (the one opening
+ * "A search result may carry outcome figures about a school"), whose closing
+ * sentences say this in the prompt's own voice. Neither side can read the
+ * other: the prompt is authored text frozen into an immutable `system_prompts`
+ * row, so it can neither read this constant nor be written from it, and this
+ * constant is a tool DESCRIPTION, which the prompt row is not. What the two
+ * disagreeing costs is a wording a model reads -- never a number a family is
+ * shown, and no money -- so the plumbing that would share them costs more than
+ * the drift. A reworded rule is edited in BOTH places, and each names the other.
+ *
+ * One SENTENCE group, with no glue on either end: a call site joins it to the
+ * copy around it with a visible separator.
+ */
+internal val FIGURE_SOURCES_NOTE =
+  "The page-level `figure_sources` object names the publisher, population and period of the outcome " +
+    "figures it lists. An outcome figure it does not list carries no stated period or population, so " +
+    "never date that figure and never say whom it counts; the page's own `source_years` still dates " +
+    "every other figure here."
+
+/**
  * The one sentence naming the ruler a result was produced on — the thing D14(a)
  * requires a published ranking to SAY rather than leave a reader to infer.
  *
@@ -117,6 +148,16 @@ internal fun JsonObjectBuilder.putPriceRuler(ruler: PriceRuler) {
 }
 
 /**
+ * The three outcome wire keys the row serializer writes that are also stamped
+ * by `figure_sources` (RFC 226). Owned here, beside [matchObject], so the row
+ * and [ScorecardOutcomeCitations] cannot spell a figure's wire key two ways: a
+ * rename reaches both at compile time.
+ */
+internal const val WIRE_UNDERGRAD_ENROLLMENT_HEADCOUNT = "undergrad_enrollment_headcount"
+internal const val WIRE_ADMISSION_RATE_SHARE = "admission_rate_share"
+internal const val WIRE_COMPLETION_RATE_150PCT_4YR_SHARE = "completion_rate_150pct_4yr_share"
+
+/**
  * The ONE rendering of a [CollegeMatch] as a tool result row (RFC 153 D70).
  *
  * It was `CollegeSearchTool`'s private method until `similar_colleges` needed
@@ -152,8 +193,8 @@ internal fun matchObject(
     val locale = vocabulary.localeOf(match.locale)
     putOrNull("locale_type", locale?.type?.word)
     putOrNull("locale_detail", locale?.detail?.word)
-    putOrNull("undergrad_enrollment_headcount", match.undergradEnrollmentHeadcount)
-    putOrNull("admission_rate_share", match.admissionRateShare)
+    putOrNull(WIRE_UNDERGRAD_ENROLLMENT_HEADCOUNT, match.undergradEnrollmentHeadcount)
+    putOrNull(WIRE_ADMISSION_RATE_SHARE, match.admissionRateShare)
     putRulerPrice(match, ruler)
     // One self-describing array rather than five opaque per-quintile keys
     // (RFC 142): every amount arrives beside the band code AND the dollar
@@ -174,7 +215,7 @@ internal fun matchObject(
         }
       }
     }
-    putOrNull("completion_rate_150pct_4yr_share", match.completionRate150pct4yrShare)
+    putOrNull(WIRE_COMPLETION_RATE_150PCT_4YR_SHARE, match.completionRate150pct4yrShare)
     putOrNull("median_earnings_10y_after_entry_usd", match.medianEarnings10yAfterEntryUsd)
     putOrNull("median_debt_at_completion_usd", match.medianDebtAtCompletionUsd)
     putOrNull("pell_share", match.pellShare)
@@ -268,6 +309,51 @@ internal fun JsonObjectBuilder.putSourceYears(sourceYears: Map<String, IntRange>
           put("earliest", years.first)
           put("latest", years.last)
         }
+      }
+    }
+  }
+}
+
+/**
+ * The ONE rendering of `figure_sources`: the publisher, population and period
+ * of each outcome figure the returned rows carry, keyed by the figure's own
+ * wire key (RFC 226), in sorted key order.
+ *
+ * Per ANSWER, not per row: these stamps are properties of the snapshot, not of
+ * the college, so one copy at page level is the fact stated once rather than
+ * once per row. A key is ABSENT when no returned row carries that figure, on
+ * `putSourceYears`' own precedent — which is what
+ * [ScorecardOutcomeCitations.presentIn] decides, for this renderer and for the
+ * fit lens's prose alike.
+ *
+ * Each key is taken FROM the citation it stamps. It used to be the caller's own
+ * map key, so a map pairing one figure's wire key with ANOTHER figure's
+ * citation compiled, and shipped the completion rate's population and period
+ * under the Pell share's key — a confident, precisely-attributed sentence about
+ * the wrong measure. A list of citations cannot say that.
+ *
+ * Sorted for the same reason as its two siblings here, [putSourceYears] and
+ * [putExcludedUnknown]: a reader sees the same order from every tool. This
+ * renderer makes that promise, so this renderer IMPOSES it -- through
+ * [ScorecardOutcomeCitations.inWireOrder], the one home of the order -- rather
+ * than inheriting whatever order its caller happened to build. A second caller
+ * assembling its own list used to emit unsorted keys under a doc saying
+ * otherwise.
+ *
+ * A figure is stamped at most ONCE: a list naming one citation twice would
+ * write its key twice, and the reader would see whichever copy survived rather
+ * than a refusal. The citations themselves need no such check -- [Citation] is
+ * a closed enum ([ScorecardOutcomeCitations.Citation]), so a stamp that is not
+ * one of ours cannot be constructed.
+ */
+internal fun JsonObjectBuilder.putFigureSources(citations: List<ScorecardOutcomeCitations.Citation>) {
+  require(citations.distinct().size == citations.size) {
+    "one stamp per figure: [${citations.map { it.wireKey }}] names a figure twice"
+  }
+  putJsonObject("figure_sources") {
+    ScorecardOutcomeCitations.inWireOrder(citations).forEach { citation ->
+      putJsonObject(citation.wireKey) {
+        put("cited_as", citation.citedAs)
       }
     }
   }

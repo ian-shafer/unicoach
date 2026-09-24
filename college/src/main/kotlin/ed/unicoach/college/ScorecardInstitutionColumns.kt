@@ -28,6 +28,13 @@ internal object ScorecardInstitutionColumns {
   const val GRAD_DEBT_MDN = "GRAD_DEBT_MDN"
   const val MD_EARN_WNE_P10 = "MD_EARN_WNE_P10"
 
+  // The three outcome columns the `colleges` fill writes (RFC 226): moved here
+  // off `CollegeScorecardLoader`'s private literals so the name is stated once
+  // and the citation object and the loader cannot spell it two ways.
+  const val ADM_RATE = "ADM_RATE"
+  const val C150_4 = "C150_4"
+  const val UGDS = "UGDS"
+
   /** The control-keyed net-price column base: overall `NPT4` plus the five income bands. */
   const val NET_PRICE_BASE = "NPT4"
 
@@ -204,6 +211,33 @@ internal object ScorecardInstitutionColumns {
    * of three sets could still represent one column claiming two years.
    */
   val LOADED_VARIABLES: Set<String> = VINTAGE_GROUP_BY_VARIABLE.keys
+
+  /**
+   * The Scorecard columns the `colleges` fill writes that a FAMILY is shown as
+   * a figure, each dated by `dictionary-variable-sources.csv` (RFC 226).
+   *
+   * Not money, so NOT in [VINTAGE_GROUP_BY_VARIABLE]: that map is the money
+   * fill's own statement of which year IT stamps a cell with, and an outcome
+   * column the money fill never writes has no business in it (brief 0011
+   * D36/D37 — model each thing as what it is). Dated all the same, because
+   * brief 0011 D47 dates every figure a family can see and not only the money
+   * ones.
+   */
+  val OUTCOME_VARIABLES: Set<String> = setOf(ADM_RATE, C150_4, UGDS)
+
+  /**
+   * Every Scorecard column whose date we cite: the money fill's registry plus
+   * the outcome figures.
+   *
+   * This is `db/seed/scorecard/dictionary-variable-sources.csv`'s key-set
+   * contract (RFC 226) -- one dated row per member, and no row for anything
+   * else. Stated HERE, beside the two registries it joins, because the union is
+   * a fact about the registries and not about either of the suites that check
+   * it: the tier-closure walk and the dictionary pin each used to spell the
+   * expression themselves, so a third registry would have been added to one
+   * file and silently not the other.
+   */
+  val DATED_VARIABLES: Set<String> = LOADED_VARIABLES + OUTCOME_VARIABLES
 
   /** The registered columns of one vintage group, in registry order. */
   private fun variablesOf(group: VintageGroup): Set<String> =

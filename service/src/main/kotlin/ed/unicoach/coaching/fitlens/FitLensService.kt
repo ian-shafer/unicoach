@@ -21,6 +21,8 @@ import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.college.Codebook
 import ed.unicoach.college.CollegeQueryVocabulary
 import ed.unicoach.college.CollegeSearchService
+import ed.unicoach.college.ScorecardOutcomeCitations // money-attribution-exempt: a type name for OUTCOME figures, not a money attribution
+import ed.unicoach.college.ScorecardOutcomeCitations.Citation // money-attribution-exempt: a type name for OUTCOME figures, not a money attribution
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
 import ed.unicoach.db.dao.ClaimsDao
@@ -958,18 +960,77 @@ class FitLensService(
             "it in words.)",
         )
       }
+      appendOutcomeFigureNote(matches)
       for (match in matches) {
         appendLine(
           "- collegeId=[${match.id.asString}] name=[${match.name}] city=[${match.city}] " +
             "state=[${match.state}] control=[${match.control}] " +
-            "undergradEnrollmentHeadcount=[${match.undergradEnrollmentHeadcount ?: NOT_REPORTED}] " +
-            "admissionRateShare=[${match.admissionRateShare ?: NOT_REPORTED}] " +
+            "${digestFieldOf(Citation.UNDERGRAD_ENROLLMENT)}=[${match.undergradEnrollmentHeadcount ?: NOT_REPORTED}] " +
+            "${digestFieldOf(Citation.ADMISSION_RATE)}=[${match.admissionRateShare ?: NOT_REPORTED}] " +
             netPriceSegment(netPrices, match.id) +
-            "completionRate150pct4yrShare=[${match.completionRate150pct4yrShare ?: NOT_REPORTED}] " +
+            "${digestFieldOf(Citation.COMPLETION_RATE)}=[${match.completionRate150pct4yrShare ?: NOT_REPORTED}] " +
             "medianEarnings10yAfterEntryUsd=[${match.medianEarnings10yAfterEntryUsd ?: NOT_REPORTED}] " +
             "programs=[${match.programTitles.orEmpty().joinToString("; ")}]",
         )
       }
+    }
+
+  /**
+   * The paragraph that hands the model the stamp sentence for every outcome
+   * figure [matches] actually carries -- the one the search payload stamps that
+   * figure with -- chosen by the SAME decision the payload path makes (RFC 226):
+   * which figures are stamped is [ScorecardOutcomeCitations.presentIn]'s answer,
+   * asked here rather than re-stated as a hand-written list of three. This
+   * paragraph used to name all three citations and state all three stamps
+   * unconditionally, so a fourth citation would have reached the wire and not
+   * this paragraph, and a page whose rows carry no completion rate still got a
+   * completion sentence.
+   *
+   * Nothing at all when no returned row carries a stamped figure: a paragraph
+   * explaining stamps the model cannot see is the same defect the net-price
+   * paragraph above guards against.
+   *
+   * Its own step, beside the net-price note and the row lines, because
+   * [buildReasonContext] is the ORDER of the digest's paragraphs and each
+   * paragraph is its own decision -- the third one written inline is the one
+   * that turned the builder into a page of prose.
+   *
+   * The sentences are given INLINE, and the copy says so. It used to send the
+   * model to "their figure_sources entry", which is a key of the SEARCH
+   * payload: this surface is prose and carries no such object, so the
+   * instruction pointed at a lookup the model cannot perform here. Each figure
+   * is named by [digestFieldOf] -- the name the ROWS below use -- because a
+   * paragraph naming it `admission_rate_share` beside a row saying
+   * `admissionRateShare=[0.14]` leaves the model to match two spellings by eye.
+   */
+  private fun StringBuilder.appendOutcomeFigureNote(matches: List<CollegeMatch>) {
+    val outcomeCitations = ScorecardOutcomeCitations.presentIn(matches) // money-attribution-exempt: outcome figures, not money
+    if (outcomeCitations.isEmpty()) return
+    appendLine(
+      outcomeCitations.joinToString(
+        prefix =
+          "(Each outcome figure these rows carry is said with the sentence given for it here, never " +
+            "from memory; each is named by the field name the rows below use: ",
+        separator = "; ",
+        postfix = ".)",
+      ) { citation -> "${digestFieldOf(citation)} is ${citation.citedAs}" },
+    )
+  }
+
+  /**
+   * The name THIS surface calls an outcome figure by: the digest's own
+   * camelCase field name, not the search payload's snake_case wire key.
+   *
+   * One home for each name, read by the stamp paragraph and by the row line
+   * that prints the number, so the two cannot name one figure two ways. A
+   * `when` over the closed [Citation] enum, so a fourth figure does not
+   * compile until this surface has decided what to call it.
+   */
+  private fun digestFieldOf(citation: Citation): String =
+    when (citation) {
+      Citation.UNDERGRAD_ENROLLMENT -> "undergradEnrollmentHeadcount"
+      Citation.ADMISSION_RATE -> "admissionRateShare"
+      Citation.COMPLETION_RATE -> "completionRate150pct4yrShare"
     }
 
   // ---------------------------------------------------------------------------

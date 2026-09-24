@@ -36,11 +36,48 @@ class ScorecardDictionaryPinTest {
   private fun dictionaryYear(year: AcademicYear): Cohort = Cohort.StatedAcademicYear(year)
 
   @Test
-  fun `the transcription dates every variable the loader writes, and only those`() {
+  fun `the transcription dates every variable whose date we cite, and only those`() {
     assertEquals(
-      ScorecardInstitutionColumns.LOADED_VARIABLES,
+      ScorecardInstitutionColumns.DATED_VARIABLES,
       cohortByVariable.keys,
-      "one dated row per string the loader writes -- an undated string is a figure served with no stated year",
+      "one dated row per string whose date we cite -- money and outcome alike; an undated string is a figure served with no stated year",
+    )
+  }
+
+  @Test
+  fun `the money registry and the outcome registry are disjoint`() {
+    // A column that is both money and outcome would be dated by two owners and
+    // the file would not say which won.
+    assertEquals(
+      emptySet(),
+      ScorecardInstitutionColumns.LOADED_VARIABLES intersect ScorecardInstitutionColumns.OUTCOME_VARIABLES,
+      "no Scorecard column is both a money cell and an outcome figure",
+    )
+  }
+
+  @Test
+  fun `the three outcome cells carry the publisher's exact term clause`() {
+    assertEquals(
+      Cohort.StatedTerm("Fall 2024", 2024),
+      cohortByVariable[ScorecardInstitutionColumns.ADM_RATE],
+      "ADM_RATE is an entering term, carried verbatim with its year parsed",
+    )
+    // This equality IS the round-trip assertion the RFC asks for, made against
+    // the COMMITTED file rather than a copy. C150_4's cell contains a comma, so
+    // the file quotes it, and a hand-edited quoted cell is exactly the kind of
+    // thing that reads as two columns -- but a cell read as two columns cannot
+    // carry the clause whole, so it cannot equal the string below. A test that
+    // wrote its own temp CSV and parsed that proved the READER and said nothing
+    // about the artifact we ship.
+    assertEquals(
+      Cohort.StatedTerm("Fall 2018 or AcadYr 2018-19 cohort (differs by institutional calendar)", 2018),
+      cohortByVariable[ScorecardInstitutionColumns.C150_4],
+      "C150_4's quoted cell is ONE column, comma and all, and a term sentence rather than an AcadYr year",
+    )
+    assertEquals(
+      Cohort.StatedTerm("Fall 2024", 2024),
+      cohortByVariable[ScorecardInstitutionColumns.UGDS],
+      "UGDS is an entering term, carried verbatim with its year parsed",
     )
   }
 
