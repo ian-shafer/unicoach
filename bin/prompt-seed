@@ -105,9 +105,17 @@ rebase. That reading holds only for a CURRENT base — a base ref behind its
 upstream would report another run's landed seed the same way — so such a base
 is refused rather than acted on, and no applied migration is ever touched.
 
-Run it at land, between the final rebase and the squash, so the label is
-computed from the tree that is landing and the regenerated seed is part of the
-hook-verified commit.
+IT IS A RECONCILE, NOT A MINT. Everything it writes is a function of two inputs
+— the source file and <base-ref> — so run it whenever either of them changes,
+and it brings the seed, its ORDER line and the pin back into agreement with
+both. When they already agree it writes nothing, so a second run costs one body
+comparison and never adds a row. That is what makes an early run safe: a label
+cut against a base that then moves is replaced, not duplicated.
+
+The LAST run must be at land, between the final rebase and the squash. Only
+there is <base-ref> the tip this commit lands on, so only there is the label
+final and the regenerated seed part of the hook-verified commit. An earlier run
+does not satisfy that requirement; it only makes the tree testable before it.
 
 Options:
   -b: The base ref this run lands on (default: main)

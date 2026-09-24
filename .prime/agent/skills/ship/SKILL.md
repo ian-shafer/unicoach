@@ -381,14 +381,28 @@ migration, its `db/schema/ORDER` line and the `systemPromptVersion` pin in
 by nothing else — a hand-written seed is overwritten, a hand-edited one is
 refused, and a hand-typed pin drifts off the label the moment another run lands
 first. The prohibition is on AUTHORING those three artifacts, not on invoking
-the script. **A run that authors prompt prose runs the generator itself**, as
-soon as the prose is written and before it runs the suite:
+the script.
+
+**It is an invariant, not a schedule.** Those three artifacts are computed from
+exactly two things — the authored source file, and `BASE_SHA` — and they must
+agree with both. So **regenerate whenever either one moves**:
 
     nix develop -c bin/prompt-seed -b "$(scripts/ship-state -s <rs> get BASE_SHA)"
 
+In this workflow that means three moments: as soon as prompt prose is written
+and before the suite runs (here), after every rebase (phase 5), and at land
+(phase 6). They are CONSEQUENCES of the invariant, not a list to memorise — a
+fourth moment nobody wrote down, such as a conflict resolved by hand or a
+sibling landing while this run waits, is answered by the same rule with no edit
+to this file. A schedule would have to be extended for each one, which is how
+the previous wording ("phase 6 owns it") came to be read two ways in one wave.
+
 Pass `-b` explicitly, here and in every other example in this file: the default
 base is `main`, and a run claimed against any other base would classify the
-PARENT branch's landed coach seed as its own generated file and delete it.
+PARENT branch's landed coach seed as its own generated file and delete it. That
+warning gets MORE load-bearing as the trigger gets more general, not less: a
+rule that says "regenerate whenever the base moves" is a rule that invokes this
+script more often.
 
 Re-running it is free and self-correcting. It deletes only the seed its own run
 generated — never one the base already has — and recomputes the label from the
@@ -472,10 +486,11 @@ contradicted. Record the write-scope result too —
 the check ran, not merely that nobody complained.
 
 **If this run authored prompt prose, regenerate the seed before the suite** (RFC
-181, RFC 185). Phase 4 already generated one, but verify rebases, and a rebase
-moves `BASE_SHA` and so moves the version label. Run the generator again — after
-the rebase and after the tier fixes, so it sees the tree that is being tested —
-and checkpoint what it wrote:
+181, RFC 185). This is phase 4's invariant applied to the one input verify
+changes: the rebase moves `BASE_SHA`, so a label computed against the old base
+no longer agrees with it. Run the generator again — after the rebase and after
+the tier fixes, so it sees the tree that is being tested — and checkpoint what
+it wrote:
 
     nix develop -c bin/prompt-seed -b "$(scripts/ship-state -s <rs> get BASE_SHA)"
 
@@ -703,14 +718,14 @@ reassurance, not the gate, and holding the lock through review would serialise
 the part of a run that has no reason to be serial. The hook does not RE-run the
 suite; it IS the run (RFC 211). What reaches `main` is hook-verified exactly as
 strongly as before: `bin/pre-commit` runs `bin/format -c` and the full
-`bin/test check` — Gradle, Postgres, both `installDist` builds, and all SEVEN
-shell harnesses. Say it precisely: the hook validates the WORKING TREE, not the
-index (CLAUDE.md: "the hook validates the whole working TREE rather than the
-commit"). What ties that to the commit is `ship-verified record`'s own guard —
-it records nothing when the working tree differs from the index — so such a
-commit gets no marker and `ship-land`'s assert refuses it. RFC 211 removed a
-rehearsal, not a check. When the hook fails on a harness rather than on Gradle,
-follow the shell-harness procedure below.
+`bin/test check` — Gradle, Postgres, both `installDist` builds, and every shell
+harness `bin/shell-tests` aggregates. Say it precisely: the hook validates the
+WORKING TREE, not the index (CLAUDE.md: "the hook validates the whole working
+TREE rather than the commit"). What ties that to the commit is
+`ship-verified record`'s own guard — it records nothing when the working tree
+differs from the index — so such a commit gets no marker and `ship-land`'s
+assert refuses it. RFC 211 removed a rehearsal, not a check. When the hook fails
+on a harness rather than on Gradle, follow the shell-harness procedure below.
 
 **A base that advanced by `product/**` commits only does NOT cost a second gate
 run** (RFC 193). Those commits never take the lock — a `docs:` commit is an
@@ -726,11 +741,13 @@ before. The fast path skips the **gate**, not the ancestry check: the
 fast-forward is still confirmed, and `main` can move again while step 3a runs.
 Say in the report which of the two happened; the run state says so too.
 
-**If the hook fails on a SHELL HARNESS** — any of the seven:
-`ship-scripts-tests`, `prompt-seed-scripts-tests`, `docs-scripts-tests`,
-`test-calendar-seed-scripts-tests`, `q-scripts-tests`, `db-scripts-tests`,
-`scripts-tests` — the answer is written down, so it is not improvised at the
-gate (RFC 211). In this order:
+**If the hook fails on a SHELL HARNESS** — any of the ones
+`nix develop -c bin/shell-tests -h` lists — the answer is written down, so it is
+not improvised at the gate (RFC 211). **The set is NOT copied here.** It was,
+and the copy said SEVEN while the real set had grown to twelve; CLAUDE.md warns
+about this exact file-level failure and says `bin/shell-tests -h` is the one
+place that knows. A run that needs the list asks the script, at the gate, where
+the answer is current. In this order:
 
 1. **Release the lock first**, before diagnosing anything:
    `scripts/ship-lock -s <rs> release`.
@@ -741,13 +758,14 @@ gate (RFC 211). In this order:
 3. **Classify, in this order.** _Environmental_ (missing `installDist` artifact,
    a daemon another checkout stopped, a Postgres hiccup) — fix the environment,
    change no code, re-enter phase 6 at the top. _This run's defect_ — fix,
-   `ship-checkpoint`, and re-run ONLY the harness that failed, BY ITS OWN NAME
-   from the seven above — note `bin/scripts-tests` has no prefix, so a
-   `bin/<name>-scripts-tests` template cannot name the largest and likeliest of
-   them; the full gate is the hook and it runs next anyway. _Pre-existing and
-   not this run's_ — confirm it fails at `BASE_SHA` too, from the original
-   checkout, then **stop and report to Ian**. Repairing an unrelated harness
-   inside a land is a new run with its own approval.
+   `ship-checkpoint`, and re-run ONLY the harness that failed, BY THE NAME the
+   hook printed, which is the name `bin/shell-tests -n <name>` takes — note
+   `bin/scripts-tests` has no prefix, so a `bin/<name>-scripts-tests` template
+   cannot name the largest and likeliest of them; the full gate is the hook and
+   it runs next anyway. _Pre-existing and not this run's_ — confirm it fails at
+   `BASE_SHA` too, from the original checkout, then **stop and report to Ian**.
+   Repairing an unrelated harness inside a land is a new run with its own
+   approval.
 4. **Re-enter the phase 6 block at the top** — `ship-lock acquire`, then
    `ship-rebase` — never at the `git commit`.
 5. **Never `--no-verify` past it.** The `--no-verify` commits this repo permits
