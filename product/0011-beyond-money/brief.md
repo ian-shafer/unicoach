@@ -592,6 +592,90 @@ nudge, never a bare repeat.
       family-visible change — it fills the store, and beyond/05 is what makes it
       reachable. Full suite 3,707 executed, 0 failures; the gate re-ran it and passed.
 
+    beyond/11/stamp-the-search-figures LANDED as RFC 226 (main@fe69cc1c,
+      2026-09-23) — a search result now carries a page-level `figure_sources` block on
+      both `search_colleges` and `similar_colleges`, keyed by each figure's own wire key,
+      and the coach prompt (**v42**, rollback v41, PARTIAL) says each stamped figure with
+      the sentence that entry gives it — who published it, whom it counts, the period it
+      describes — in the same breath as the number and never from memory. A completion
+      rate is never a bare graduation percentage; an admission rate is not this student's
+      chance of admission; an undergraduate enrolment figure is a size, never a judgement.
+      The worked example carries NO literal period and NO literal share (Ian, option 3)
+      and is conditioned on the entry being PRESENT, so it cannot contradict the new
+      protection beside it: an outcome figure with no entry is never dated and never
+      attributed. The Pell share stays deliberately UNSTAMPED — search serves it from two
+      sources at two vintages, so one page-level sentence would be true of some rows and
+      false of others; its stamp waits on the stored-stamp fix. Review caught two defects
+      that would have reached a family: `putFigureSources` wrote the CALLER's map key, so
+      one figure's population and period shipped under ANOTHER figure's key, closed by
+      deriving the key from the citation and closed for good by making `Citation` an enum
+      so a fourth figure is a COMPILE error at every routing site; and the copy claimed
+      EVERY outcome figure arrives stamped while the Pell share deliberately does not. No
+      new door — it changes what the coach SAYS about figures it already returned. No new
+      tables. 2,509 executed, 0 failures; the gate ran the full check on the same tree.
+
+    beyond/05/the-major-answer LANDED as RFC 231 (main@404fc0d9,
+      2026-09-23) — a family can now ask what graduates of THEIR OWN major earn and owe
+      at a school. No new surface: the existing `college_cost_profile` chat tool is
+      widened with a `program_return` section, keyed by matched programme
+      (`colleges[].programs[] = { cip_code, figures[] }`) because the publisher's grain IS
+      the programme (Ian, Q2). Four answers, each its own sentence, and only the last is a
+      statement about the school: we hold figures, each said with its publisher (Treasury
+      for earnings, NSLDS for both debt figures) and its cohort years in the publisher's
+      own words; the publisher SUPPRESSED a figure, said as withheld for privacy and never
+      replaced by the school-level number; the school RUNS the programme but we hold no
+      published figures for it (Ian, Q1); and no matching programme at that school. With
+      no stored subject the section is absent, the answer degrades to the school-level
+      medians with their limits stated, and the coach does not nag. Coach prompt **v43**,
+      rollback v42, PARTIAL — the pin removes the paragraph while the payload and its
+      legend still ship. No new tables. Also landed on Ian's standing rule: the
+      source-text sweep `MoneyAttributionNamesNoPublisherTest` is DELETED; RFC 177 D7
+      keeps its compile-time half (`MoneySourceCopy`'s `when` with no `else`), which is
+      the half that actually forces a new publisher to be spoken, so no guarantee is
+      dropped. Review found four crashes on values the SCHEMA permits but today's ingest
+      never writes — three legal `figure_statuses` values, an unregistered
+      `source_variable`, a row whose measure its variable does not publish, and a legal
+      non-Scorecard `source` — each of which would have taken the WHOLE cost answer down
+      for that student; all now answer a sentence. A `SELECT DISTINCT` was silently
+      collapsing two different programmes with identical figures. 3,625 executed, 0
+      failures; the gate ran the full check, Gradle 96/96 up-to-date.
+
+### Spec defect found by `beyond/05`'s review (recorded 2026-09-23)
+
+The slice text DEFINED the "no matching programme" sentence by the PROGRAMME
+question — no `college_programs` row matched the subject's CIP prefixes — but
+LISTED it as one of four outcomes of the MONEY read. Any faithful implementation
+therefore infers a school's course offering from whether we hold a figure for
+it, and the first one did: a school with a real bachelor's nursing programme we
+held no figures for was described to the family as a school that does not run
+nursing. **A silence in our data was allowed to become a statement about a
+school.**
+
+Thirteen independent reviewers found it out of lens. It was fixed under Ian's Q1
+ruling (2026-09-23) by splitting the programme lookup from the money read and
+giving the gap its own sentence. The acceptance criterion is reworded for any
+future slice that reads this section:
+
+> Whether a school runs the major is answered by the programme records, never by
+> whether we hold a figure for it. Four answers are possible and each is its own
+> sentence: the school runs it and we hold figures; the school runs it and we
+> hold no figure for one measure; the school runs it and we hold no published
+> figures at all; and no matching programme at that school. Only the last is a
+> statement about the school. A silence in our data is never spoken as one — and
+> the school-level median earnings or debt is never put in place of any of the
+> four, least of all in place of a figure the publisher suppressed.
+
+**The generalisation, which outlives this slice.** The same mistake appeared
+four times in one implementation, in four costumes: an exception, a crash, a
+contradiction, and a silence. Stated once:
+
+> We hold nothing usable, and the code's answer is an exception, a crash, a
+> contradiction, or silence — never a sentence.
+
+`family/02/invite-and-accept` hit the same class independently in a different
+subsystem with no shared reviewer — two silences folded into one value, so an
+unreadable relationship word became `parent`. Corroboration, not coincidence.
+
 ### D45 — the third arm is a counter, not a log (Ian, 2026-09-14, verbatim: "yes")
 
 `beyond/02` landed TWO counters (values coerced out of range, values the

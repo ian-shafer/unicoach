@@ -236,6 +236,27 @@ THIS file, so the line lives here and the spec points at it):
   as a link), and recorded 5 asked-and-unanswered. The build fails when the
   filing cycle has no rows and 90 days before any reading expires. Full
   pre-commit gate green on the landed tree (verified tree recorded).
+- `fafsa/03/one-answer-for-both-doors` LANDED as RFC 230 (main@9f8719f1,
+  2026-09-23) — one `FafsaDeadlineService` now answers FAFSA dates for BOTH
+  future doors, so the page (`fafsa/04`) and the coach (`fafsa/05`) cannot tell
+  one family two different stories about the same deadline. Three refusal arms
+  stay apart and TYPED — the service returns a reason, the door writes the
+  words: we hold NO dates at all; we hold healthy dates whose filing year has
+  already PASSED, which is the named failure this slice exists to prevent,
+  serving last year's deadlines as this year's; or we hold this year's dates but
+  no longer BELIEVE them, because the day a human last verified them has run
+  out. A refusal also writes ONE operator line naming the day, the filing year,
+  the cycles held and the earliest expiry, because "seed the next cycle" and
+  "re-verify the corpus" are different fixes. `missingJurisdictions` ships TYPED
+  as `List<DeadlineJurisdiction.State>` — four lenses across two tiers asked for
+  it, and the seeded `us_states` set was proven equal to `UsStateCodes.ALL` both
+  ways before the conversion was made total, with RFC 229's keying making that
+  agreement structural rather than true-of-today's-seed. Gate answers honoured:
+  device-zone fallback America/Los_Angeles, jurisdiction on the container. NO
+  DOOR YET — a family cannot reach anything new today, and both `fafsa/04` and
+  `fafsa/05` BLOCKS-depend on this one and are now unblocked. No migration, no
+  table, no prompt version, no flag: not wiring the door IS the rollback. Phase
+  5 1,951 executed, 0 failures; the gate ran the full check, 0 failures.
 
 ## LEARN — running notes (appended as slices land)
 

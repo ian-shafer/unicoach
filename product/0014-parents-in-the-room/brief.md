@@ -59,6 +59,29 @@ Status:
     path is covered; under-13 is refused with `403 age_requirement_not_met` and
     writes nothing, and the under-13 actual-knowledge runbook
     (`policy/under-13-actual-knowledge.md`) is written down.
+  - `family/02/invite-and-accept` LANDED as RFC 232 (`main@8c4d7dca`,
+    2026-09-23) — a student can now invite a parent or supporter, and the person
+    they invite can accept without installing anything. In the iOS app, Settings
+    gains a **"Family & Supporters"** section; the invite action mints a private
+    link and opens the normal iPhone share sheet with the message already
+    written. The recipient taps the link, lands on a WEB page naming who invited
+    them, and is connected either by signing in to an existing account or by
+    creating one in the same visit. The link is single-use and expires after 14
+    days; all five refusal causes — expired, used, revoked, self-sent, closed
+    account — show the SAME neutral message, so the page never reveals whether a
+    link existed. New table `supporter_invites` stores the token only as a
+    SHA-256 hash, with a test proving the raw token is absent from the row;
+    migration `supporter-invites.sql` (no number, RFC 180). Rollback is config,
+    not a flag: `SUPPORTER_INVITE_TOKEN_TTL` shortens the window and
+    `SUPPORTER_INVITE_URL_BASE` moves the destination; backing the feature out
+    is a revert. Review caught a defect its OWN earlier fix had introduced,
+    found independently by eight lenses: an unreadable relationship word
+    silently became `parent` while the 400 arm was unreachable dead code, so
+    `{"relationship":"uncle"}` returned 201 Created with the wrong relationship
+    recorded about a family. Absence and unreadability are now decided
+    separately and a misspelling is refused by name. Revocation is built end to
+    end but reaches no user — a door for it is a new slice. Phase 5 3,583
+    executed, 0 failures; the gate ran the full check in 802s, 0 failures.
 - **Renumbered 0012 -> 0014 on 2026-09-14, before landing.** Two sibling
   sessions took `0012-fafsa-support` and `0013-unicoach-on-the-web` while this
   brief was between its gates. Slice IDs are unaffected — they key off the
