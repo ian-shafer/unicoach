@@ -30,20 +30,40 @@ object FafsaFilingDeadlineDao {
   private const val TABLE = "fafsa_filing_deadlines"
 
   /**
+   * Every column [mapRow] reads: the deadline row itself plus its two citation
+   * urls (RFC 213) -- the source an INNER join, because `source_document_id` is
+   * NOT NULL and a row that cites nothing cannot exist, and the archive a LEFT
+   * join, because most rows needed no archived address.
+   *
+   * ONE HOME, because a read that projected a different set of columns, or
+   * joined a different pair of documents, would not be readable by the one
+   * mapper. Each read below adds only what actually differs: its filter and its
+   * order.
+   */
+  private val SELECT_WITH_CITATIONS =
+    """
+    SELECT d.*, s.url AS source_url, a.url AS archive_url
+    FROM $TABLE d
+    JOIN external_documents s ON s.id = d.source_document_id
+    LEFT JOIN external_documents a ON a.id = d.archive_document_id
+    """.trimIndent()
+
+  /**
    * Every row of ONE cycle, federal rows first.
    *
    * THE YEAR IS THE ARGUMENT AND NOT AN OPTION, because the award year is the
    * row's identity: state deadlines recur annually, so an unfiltered read
    * returns last cycle's 1 March beside this cycle's and nothing downstream can
-   * tell them apart. There is deliberately no `listAll`.
+   * tell them apart. There is deliberately no `listAll` FOR ANY RENDERER:
+   * every door reads only what `FafsaDeadlineService` returns. That service is
+   * the ONE reader that may see all cycles, because it is the one that DECIDES
+   * the live set (D23); its whole-table read is [listAll].
    *
    * IT COSTS ONE STATEMENT, whatever the size of the corpus -- about sixty rows
    * per cycle, read whole. Nothing here runs a statement per row.
    *
-   * THE TWO JOINS ARE THE CITATION (RFC 213), exactly as on the sibling table:
-   * the source is an INNER join, because `source_document_id` is NOT NULL and a
-   * row that cites nothing cannot exist, and the archive is a LEFT join, because
-   * most rows needed no archived address.
+   * THE TWO JOINS ARE THE CITATION (RFC 213), exactly as on the sibling table;
+   * they and the projection live in [SELECT_WITH_CITATIONS], which argues them.
    *
    * `state ASC NULLS FIRST` is the federal-rows-lead order the public page
    * renders, and NULLS FIRST is explicit because PostgreSQL's ascending default
@@ -57,16 +77,41 @@ object FafsaFilingDeadlineDao {
     session
       .queryList(
         """
-        SELECT d.*, s.url AS source_url, a.url AS archive_url
-        FROM $TABLE d
-        JOIN external_documents s ON s.id = d.source_document_id
-        LEFT JOIN external_documents a ON a.id = d.archive_document_id
-        WHERE d.award_year = ?
-        ORDER BY d.state ASC NULLS FIRST, d.program, d.event
-        """.trimIndent(),
+        |$SELECT_WITH_CITATIONS
+        |WHERE d.award_year = ?
+        |ORDER BY d.state ASC NULLS FIRST, d.program, d.event
+        """.trimMargin(),
         bind = { stmt -> stmt.setInt(1, awardYear.firstCalendarYear) },
         map = ::mapRow,
       )
+
+  /**
+   * Every row, every cycle -- the read `FafsaDeadlineService` uses to decide the
+   * live set (D23), and deliberately the ONLY reader that may see all cycles.
+   *
+   * The newest-cycle-per-jurisdiction decision is a computation over the whole
+   * table, so the honest cost is one statement reading it whole. The table is
+   * append-only and reference-sized -- tens of rows per cycle, and no number
+   * written here, because an append-only corpus makes any count in a comment
+   * wrong at the next refresh. The alternative -- one statement
+   * per jurisdiction to find its newest year, then another per winner -- is one
+   * statement per jurisdiction for a reference table, the exact shape every
+   * other read here refuses.
+   *
+   * `state ASC NULLS FIRST, award_year DESC, program, event` is the DAO order
+   * the service hands the page and the coach: federal rows lead, and within a
+   * jurisdiction the newest cycle's rows come first. Nothing downstream may
+   * re-sort a served row; the service already returned them in this order.
+   */
+  fun listAll(session: SqlSession): Result<List<FafsaFilingDeadline>> =
+    session.queryList(
+      """
+      |$SELECT_WITH_CITATIONS
+      |ORDER BY d.state ASC NULLS FIRST, d.award_year DESC, d.program, d.event
+      """.trimMargin(),
+      bind = {},
+      map = ::mapRow,
+    )
 
   /**
    * One row, on the natural key `(award_year, state, program, event)` -- for the

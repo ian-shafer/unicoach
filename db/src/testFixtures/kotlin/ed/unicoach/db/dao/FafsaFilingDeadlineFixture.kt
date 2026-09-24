@@ -15,14 +15,15 @@ import java.time.format.DateTimeParseException
 /**
  * The committed FAFSA deadline corpus under `db/seed/fafsa-deadlines/`, read
  * FROM DISK (RFC 223 section 8), on the [AdmissionTestStateProgrammeFixture]
- * precedent. NOTHING HERE TOUCHES THE DATABASE: the subject is the committed
- * FILE, before any migration has a chance to load it.
+ * precedent -- and the arbitrary-row seeder `:service`'s `FafsaDeadlineService`
+ * suites write through (RFC 230), on that same precedent's other half.
  *
- * IT READS THE CORPUS AND DOES NOT SEED ARBITRARY ROWS, which is the half of
- * the precedent that does NOT carry over: the state-programme fixture writes
- * hypothetical rows for `:service` suites and deliberately does NOT read its
- * corpus, and this one does exactly the opposite. A suite that wants an
- * arbitrary deadline row builds one from the model directly.
+ * THE READER HALF NEVER TOUCHES THE DATABASE: its subject is the committed
+ * FILE, before any migration has a chance to load it. THE SEEDER HALF writes
+ * HYPOTHETICAL rows through [FafsaFilingDeadlineDao.upsert], never the
+ * committed corpus: a suite that controls which cycle or which `expires_on` a
+ * row carries has to write its own rows, and a committed row near its expiry
+ * fails the build (D20).
  *
  * It lives in `testFixtures` and not in `:db`'s test source set because the
  * CSV READER lives here: every other
@@ -31,6 +32,11 @@ import java.time.format.DateTimeParseException
  * source set alone. Putting it one source set over would have bought a new
  * `testImplementation` line for nothing. The landed precedent outranks the
  * design doc (CLAUDE.md).
+ *
+ * `us_states` IS A PRECONDITION for the seeder. Every state row foreign-keys
+ * `us_states(usps_code)`, so a caller seeds [CodebookReferenceFixture] first --
+ * otherwise every state write fails with a missing reference rather than with
+ * anything about deadlines.
  *
  * THE CSV IS RFC 4180 AND IS PARSED BY A REAL CSV READER (`commons-csv`),
  * because the cells carry the publishers' own sentences and those sentences
@@ -114,6 +120,131 @@ object FafsaFilingDeadlineFixture {
 
   /** How a jurisdiction is named in a guard message: its USPS code, or [FEDERAL_LABEL]. */
   fun label(jurisdiction: DeadlineJurisdiction): String = jurisdiction.uspsCode ?: FEDERAL_LABEL
+
+  /**
+   * One arbitrary deadline row, with the defaults a suite does not care about
+   * already filled. A field is a PARAMETER when a landed case varies it -- the
+   * live set varies [awardYear] and [jurisdiction], expiry varies [expiresOn]
+   * and [checkedOn] -- and a fixture's own constant when none does: the
+   * publisher and the citation are [DEFAULT_PUBLISHER] and
+   * [defaultSourceUrl], with no archive, because no case is about them. A
+   * suite that becomes about the citation adds the parameter back in the same
+   * commit as the case that overrides it, and not before.
+   *
+   * The defaults satisfy the schema's CHECKs for a [DEFAULT_AWARD_YEAR] row:
+   * [DEFAULT_CHECKED_ON] is inside the cycle's window and before
+   * [DEFAULT_EXPIRES_ON], and the published day is inside the cycle's own
+   * window.
+   */
+  fun deadline(
+    awardYear: AcademicYear = DEFAULT_AWARD_YEAR,
+    jurisdiction: DeadlineJurisdiction = DeadlineJurisdiction.Federal,
+    program: String = DEFAULT_PROGRAM,
+    event: AidDeadlineEvent = AidDeadlineEvent.PRIORITY_DEADLINE,
+    deadline: PublishedDeadline = DEFAULT_DEADLINE,
+    checkedOn: LocalDate = DEFAULT_CHECKED_ON,
+    expiresOn: LocalDate = DEFAULT_EXPIRES_ON,
+  ): NewFafsaFilingDeadline =
+    NewFafsaFilingDeadline(
+      awardYear = awardYear,
+      jurisdiction = jurisdiction,
+      program = program,
+      event = event,
+      deadline = deadline,
+      publisher = DEFAULT_PUBLISHER,
+      sourceUrl = defaultSourceUrl(jurisdiction, program),
+      archiveUrl = null,
+      checkedOn = checkedOn,
+      expiresOn = expiresOn,
+    )
+
+  /**
+   * The page a fixture row cites when the case is not about the citation.
+   *
+   * NAMED, because since RFC 213 the url is a row of `external_documents` and a
+   * suite that wants to assert the citation survived the join has to be able to
+   * say which url it expects without re-typing the format.
+   */
+  fun defaultSourceUrl(
+    jurisdiction: DeadlineJurisdiction,
+    program: String,
+  ): String {
+    // [label] IS the `uspsCode ?: the federal word` rule, and [FEDERAL_LABEL] is
+    // that word's one home: spelling either again here would be this function
+    // and that one able to disagree about the federal government's name.
+    val scope = label(jurisdiction).lowercase()
+    return "https://example-aid.$scope.gov/${program.replace(" ", "-").lowercase()}"
+  }
+
+  /**
+   * Empties the corpus. NAMED and called by the caller, never hidden inside a
+   * `seed` verb ([AdmissionTestCalendarFixture]'s rule).
+   *
+   * THE CITATIONS ARE DELIBERATELY LEFT, though [seed] writes them: since
+   * RFC 213 `external_documents` is SHARED with every other corpus and
+   * de-duplicated on url, so a row this fixture wrote may be the row another
+   * corpus cites -- and a teardown that deleted it would take somebody else's
+   * citation with it. `FafsaFilingDeadlineDaoTest` and
+   * `FafsaFilingDeadlineSchemaTest` state the same rule in the same words. The
+   * documents left behind are unreferenced url rows that no read of this table
+   * can reach: every read here joins FROM a deadline row, so a document with no
+   * deadline row cannot appear in any answer or any count.
+   */
+  fun deleteAll(session: SqlSession) {
+    session.prepareStatement("DELETE FROM fafsa_filing_deadlines").use { it.executeUpdate() }
+  }
+
+  /**
+   * Writes [rows] through the DAO's own upsert, so a fixture cannot write a row
+   * the read path could not have read.
+   *
+   * A REFUSED WRITE NAMES ITS OWN ROW. This object's whole promise is that a bad
+   * row is located, and `us_states` being absent makes every state write fail
+   * with a missing reference rather than with anything about deadlines -- so the
+   * failure carries the row's natural key and keeps the driver's fault as its
+   * cause, instead of leaving a constraint name to be reverse-engineered into
+   * one of a whole corpus of writes.
+   */
+  fun seed(
+    session: SqlSession,
+    rows: List<NewFafsaFilingDeadline>,
+  ) {
+    rows.forEachIndexed { index, new ->
+      FafsaFilingDeadlineDao.upsert(session, new).getOrElse { cause ->
+        throw IllegalStateException(
+          "seeding deadline row [$index] of [${rows.size}] failed: " +
+            "awardYear=[${new.awardYear.label}] jurisdiction=[${label(new.jurisdiction)}] " +
+            "program=[${new.program}] event=[${new.event}]",
+          cause,
+        )
+      }
+    }
+  }
+
+  /** The award year [deadline] describes by default. */
+  val DEFAULT_AWARD_YEAR: AcademicYear = AcademicYear(2027)
+
+  /** A day inside [DEFAULT_AWARD_YEAR]'s filing window, and before [DEFAULT_EXPIRES_ON]. */
+  val DEFAULT_CHECKED_ON: LocalDate = LocalDate.of(2026, 9, 14)
+
+  /** The end of that cycle's filing season, after [DEFAULT_CHECKED_ON] as the schema requires. */
+  val DEFAULT_EXPIRES_ON: LocalDate = LocalDate.of(2027, 7, 31)
+
+  /** The published day [deadline] carries by default, inside [DEFAULT_AWARD_YEAR]'s window. */
+  val DEFAULT_DEADLINE_DATE: LocalDate = LocalDate.of(2027, 3, 2)
+
+  /**
+   * The whole published deadline [deadline] carries by default: the day and the
+   * publisher's own words for it. Named so a suite can assert what an
+   * unremarkable row says without re-typing either half.
+   */
+  val DEFAULT_DEADLINE: PublishedDeadline = PublishedDeadline.OnDate(DEFAULT_DEADLINE_DATE, "March 2, 2027")
+
+  /** The program a row names when the case is not about the program. */
+  const val DEFAULT_PROGRAM = "State student aid"
+
+  /** The agency a row names when the case is not about the publisher. */
+  const val DEFAULT_PUBLISHER = "A state aid agency"
 
   private fun <T> parse(of: (CSVRecord) -> T): List<T> =
     // The reader is opened INSIDE its own `use`, because `parse` reads the

@@ -416,16 +416,62 @@ object CodebooksDao {
         "FROM ${CodebookTable.US_STATES.tableName} ORDER BY name",
       bind = {},
       map = { rs ->
-        val kindValue = rs.getString("jurisdiction_kind")
+        val code = rs.getString("code")
         UsState(
-          code = rs.getString("code"),
+          code = code,
           name = rs.getString("name"),
-          // A value the CHECK admits but [JurisdictionKind] does not name means
-          // the enum and the migration have diverged; say that here rather than
-          // hand a caller a kind it cannot interpret.
-          jurisdictionKind =
-            JurisdictionKind.fromValue(kindValue)
-              ?: throw SQLException("us_states row [${rs.getString("code")}] has unknown jurisdiction_kind [$kindValue]"),
+          jurisdictionKind = jurisdictionKind(rs.getString("jurisdiction_kind"), code),
+        )
+      },
+    )
+
+  /**
+   * The stored `jurisdiction_kind` value of the `us_states` row published as
+   * [uspsCode], as the enum.
+   *
+   * ONE HOME, because a value the CHECK admits but [JurisdictionKind] does not
+   * name means the enum and the migration have diverged; every read of this
+   * column owes the reader that same sentence rather than its own copy of it.
+   *
+   * IT TAKES THE TWO VALUES AND NOT THE CURSOR: each caller's own mapper then
+   * names the columns its SELECT is obliged to project, at the point it reads
+   * them, instead of this helper resting on an unwritten `AS code` aliasing
+   * convention that a differently-aliased read would break only inside the
+   * error path.
+   */
+  private fun jurisdictionKind(
+    storedValue: String,
+    uspsCode: String,
+  ): JurisdictionKind =
+    JurisdictionKind.fromValue(storedValue)
+      ?: throw SQLException("us_states row [$uspsCode] has unknown jurisdiction_kind [$storedValue]")
+
+  /**
+   * Every published `us_states` row WITH its IPEDS region name attached, in NAME
+   * order -- the read `FafsaDeadlineService` builds its region grouping from
+   * (RFC 230). One INNER JOIN of `us_states` to `ipeds_regions`; `ipeds_region`
+   * is NOT NULL, so an inner join drops nothing a left join would keep.
+   *
+   * Its own read rather than a widening of [usStates], because [UsState] is the
+   * served vocabulary type and must not grow a field no vocabulary reader asks
+   * for (RFC 165). [UsStateRegion] is the shape the deadline service needs, and
+   * lives beside [UsState] so the two reads stay distinguishable.
+   */
+  fun usStatesWithRegion(session: SqlSession): Result<List<UsStateRegion>> =
+    session.queryList(
+      "SELECT s.${CodebookTable.US_STATES.keyColumn} AS code, s.name AS name, " +
+        "s.jurisdiction_kind AS jurisdiction_kind, r.name AS region " +
+        "FROM ${CodebookTable.US_STATES.tableName} s " +
+        "JOIN ${CodebookTable.IPEDS_REGIONS.tableName} r ON r.slug = s.ipeds_region " +
+        "ORDER BY s.name",
+      bind = {},
+      map = { rs ->
+        val uspsCode = rs.getString("code")
+        UsStateRegion(
+          uspsCode = uspsCode,
+          name = rs.getString("name"),
+          jurisdictionKind = jurisdictionKind(rs.getString("jurisdiction_kind"), uspsCode),
+          region = rs.getString("region"),
         )
       },
     )
@@ -977,6 +1023,23 @@ data class UsState(
   val code: String,
   val name: String,
   val jurisdictionKind: JurisdictionKind,
+)
+
+/**
+ * One published `us_states` row WITH the region the page groups by: the postal
+ * code, the state's name, its authored [JurisdictionKind], and the
+ * `ipeds_regions.name` its `ipeds_region` slug resolves to (RFC 230).
+ *
+ * The [UsState] read deliberately omits the region (RFC 165); this is the shape
+ * the one reader that needs it -- `FafsaDeadlineService` -- takes instead, so
+ * the served vocabulary type does not grow a field only the deadline page asks
+ * for.
+ */
+data class UsStateRegion(
+  val uspsCode: String,
+  val name: String,
+  val jurisdictionKind: JurisdictionKind,
+  val region: String,
 )
 
 /** One stored codebook row: its natural key and its published code (null when the key is the code). */
