@@ -13,12 +13,16 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
+import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
+import ed.unicoach.family.SupporterInviteConfig
+import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
@@ -92,6 +96,13 @@ object WebAuthTestSupport {
       AppleIdTokenVerifier(DisabledIdTokenVerifier),
     )
 
+  val supporterInviteService =
+    SupporterInviteService(
+      database,
+      SupporterInviteConfig.from(config).getOrThrow(),
+      TokenGenerator(),
+    )
+
   /** Truncates users (cascading to sessions) and the job queue, for an isolated test. */
   fun resetDatabase() {
     withConnection { connection ->
@@ -100,6 +111,24 @@ object WebAuthTestSupport {
   }
 
   fun uniqueEmail(): String = "web-auth-${UUID.randomUUID()}@example.com"
+
+  /**
+   * Seeds a `students` row for [user] through RFC 209's ONE fixture, so the
+   * decomposed graduation columns and the RFC 222 date of birth are stated where
+   * they are owned. The owning user must already exist.
+   *
+   * A hand-written INSERT here was the 34th copy of a statement RFC 209 exists
+   * to have exactly one of; the dependency it avoided is one line that
+   * `:admin-web`, `:rest-server`, `:service`, `:college` and `:db` have each
+   * already paid.
+   */
+  fun seedStudent(user: User): StudentId {
+    val studentId = UUID.randomUUID()
+    withConnection { connection ->
+      StudentRowFixture.insert(connection, studentId, user.id.value)
+    }
+    return StudentId(studentId)
+  }
 
   /**
    * Seeds a user directly through the DAO.
@@ -248,6 +277,39 @@ object WebAuthTestSupport {
 
   /** How many queued jobs of [type] exist — registration must enqueue exactly one SEND_EMAIL. */
   fun jobCount(type: String): Int = queryInt("SELECT count(*) FROM jobs WHERE job_type = '$type'")
+
+  /** How many supporter-student links exist at all (RFC 232 routing tests). */
+  fun supporterLinkCount(): Int = queryInt("SELECT count(*) FROM supporter_student_links")
+
+  /** How many supporter invites have been consumed (RFC 232 routing tests). */
+  fun consumedInviteCount(): Int = queryInt("SELECT count(*) FROM supporter_invites WHERE consumed_at IS NOT NULL")
+
+  /**
+   * Drives the invite behind [rawToken] into a DEAD state, by its hash.
+   *
+   * RFC 232 promises ONE refusal body for six states, and three of them —
+   * expired, consumed, revoked — cannot be reached through any door the suite
+   * can drive: expiry is 14 days away, and nothing in the product revokes. So
+   * the suite writes the state and then asks the route, which is the only way
+   * the uniformity claim can be tested at all.
+   *
+   * By hash, never by id, because the hash is the only handle a caller holding
+   * the raw token has — the same lookup the route itself makes.
+   */
+  fun expireInvite(rawToken: String) = setInviteState(rawToken, "expires_at = NOW() - INTERVAL '1 day'")
+
+  fun revokeInvite(rawToken: String) = setInviteState(rawToken, "revoked_at = NOW()")
+
+  fun consumeInvite(rawToken: String) = setInviteState(rawToken, "consumed_at = NOW()")
+
+  private fun setInviteState(
+    rawToken: String,
+    assignment: String,
+  ) {
+    execute("UPDATE supporter_invites SET $assignment WHERE token_hash = ?") { statement ->
+      statement.setBytes(1, TokenHash.fromRawToken(rawToken).value)
+    }
+  }
 
   const val DEFAULT_PASSWORD = "Password123!"
 

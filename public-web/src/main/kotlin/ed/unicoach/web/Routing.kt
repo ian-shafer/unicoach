@@ -8,6 +8,11 @@ import ed.unicoach.auth.LoginResult
 import ed.unicoach.auth.RegisterResult
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
+import ed.unicoach.db.models.UserId
+import ed.unicoach.family.AcceptInviteOutcome
+import ed.unicoach.family.InviteMissReason
+import ed.unicoach.family.InvitePreviewOutcome
+import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHANGE_EMAIL_PATH
@@ -30,6 +35,7 @@ import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
 import ed.unicoach.web.render.ChangeEmailFormState
 import ed.unicoach.web.render.EMAIL_FIELD
+import ed.unicoach.web.render.InviteViewer
 import ed.unicoach.web.render.NAME_FIELD
 import ed.unicoach.web.render.PASSWORD_FIELD
 import ed.unicoach.web.render.RegisterFormState
@@ -42,6 +48,7 @@ import ed.unicoach.web.render.respondAccountPage
 import ed.unicoach.web.render.respondChangeEmailPage
 import ed.unicoach.web.render.respondCostReportPage
 import ed.unicoach.web.render.respondHomePage
+import ed.unicoach.web.render.respondInvitePage
 import ed.unicoach.web.render.respondNotFoundPage
 import ed.unicoach.web.render.respondPrivacyPage
 import ed.unicoach.web.render.respondRegisterPage
@@ -103,6 +110,13 @@ const val REPORT_PATH = "/report"
 const val REPORT_TOKEN_PARAM = TOKEN_QUERY_PARAM
 
 /**
+ * The path a supporter invite link points at (RFC 232). Named for the same
+ * reason [REPORT_PATH] is: half of a contract the compiler cannot see, where the
+ * other half is `supporterInvite.inviteUrlBase` in `service.conf`.
+ */
+const val INVITE_PATH = "/invite"
+
+/**
  * The user-agent substring that means "iPhone".
  *
  * The open-in-app affordance on the verification result page is iPhone-only, so
@@ -126,6 +140,9 @@ private val reportLog = LoggerFactory.getLogger("ed.unicoach.web.CostReport")
 
 /** The auth routes' own log: WHY a refusal happened, which the rendered page must never say. */
 private val authLog = LoggerFactory.getLogger("ed.unicoach.web.Auth")
+
+/** The invite routes' own log: WHY a link resolved to nothing or an accept was refused, never rendered. */
+private val inviteLog = LoggerFactory.getLogger("ed.unicoach.web.SupporterInvite")
 
 /**
  * A year, as a DURATION. `max-age` is counted in seconds, so the header spells
@@ -207,6 +224,7 @@ fun Application.installPublicWebRouting(
   authService: AuthService,
   emailVerificationService: EmailVerificationService,
   sessionConfig: WebSessionConfig,
+  supporterInviteService: SupporterInviteService,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
@@ -262,11 +280,8 @@ fun Application.installPublicWebRouting(
       // carrying two tokens is a request we have no reading of, so a repeated
       // key falls into the hold-screen arm rather than silently discarding the
       // surplus.
-      val token =
-        call.request.queryParameters
-          .getAll(TOKEN_FIELD)
-          ?.singleOrNull()
-      if (token.isNullOrBlank()) {
+      val token = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken()
+      if (token == null) {
         call.respondVerificationHold(authService, sessionConfig)
       } else {
         call.respondVerifyEmailConfirm(token, call.shellNav(authService, sessionConfig))
@@ -283,13 +298,13 @@ fun Application.installPublicWebRouting(
       // Read DEFENSIVELY, and EXACTLY one token: a body that is not a form at
       // all, or that carries zero or two `token` fields, is a request we have no
       // reading of and renders the same page as any bad token — never a 503.
-      val token = call.formParametersOrNull()?.getAll(TOKEN_FIELD)?.singleOrNull()
+      val token = presentedToken(call.formParametersOrNull()?.getAll(TOKEN_FIELD)).usableToken()
       val isIPhone =
         call.request
           .userAgent()
           ?.contains(IPHONE_USER_AGENT_TOKEN) ?: false
       val outcome =
-        if (token.isNullOrBlank()) {
+        if (token == null) {
           VerifyEmailOutcome.InvalidToken
         } else {
           emailVerifier.verify(token).toOutcome()
@@ -297,9 +312,11 @@ fun Application.installPublicWebRouting(
       call.respondVerifyEmailResult(outcome, openInAppUrl, isIPhone, call.shellNav(authService, sessionConfig))
     }
 
-    authRoutes(authService, emailVerificationService, sessionConfig)
+    authRoutes(authService, emailVerificationService, sessionConfig, supporterInviteService)
 
     reportRoute(costReportSource, authService, sessionConfig)
+
+    inviteRoute(supporterInviteService, authService, sessionConfig)
 
     // ONE name for the classpath package this mount serves, read from
     // [WebAssets] — the same constant [WebAssets] resolves the packaged bundle
@@ -307,6 +324,112 @@ fun Application.installPublicWebRouting(
     // shows up as a 404 for the script, not as a failure.
     staticResources("/", WebAssets.STATIC_RESOURCE_PACKAGE).cacheImmutableBundle()
   }
+}
+
+/**
+ * Accept the invite a just-authenticated recipient presented, and say which
+ * notice their next page must carry (RFC 232).
+ *
+ * `null` means NO invite was presented, so the caller redirects to its ordinary
+ * destination. Everything else is an answer about the invite.
+ *
+ * The outcome is BOUND, not discarded. `SupporterInviteService.accept` returns its three refusals
+ * as SUCCESSFUL values, so `getOrThrow()` unwraps the `Result` and hands the
+ * refusal straight back: a dead token, a self-addressed invite or a supporter
+ * with no student profile used to redirect with "You are now connected" and no
+ * link behind it.
+ *
+ * A refusal gets ONE sentence for all three cases, exactly as `POST /invite`
+ * serves one body for all three: naming which one fired would make the door an
+ * enumeration oracle for a token the holder may not own. The reason is LOGGED.
+ *
+ * This is deliberately NOT one transaction with the registration or the login
+ * above it — see the acceptance mechanics in RFC 232. A fault here leaves the
+ * account created and the invite still LIVE, which is the recoverable half:
+ * the recipient opens the same link again. That recovery is what the FAULT arm
+ * below renders: the caller is signed in and their account is made, so a 500
+ * would strand them on an error page instead of the sentence that tells them
+ * to open the link again. It is logged at ERROR, because unlike a refusal it
+ * is nobody's ordinary state.
+ */
+private suspend fun acceptPresentedInvite(
+  supporterInviteService: SupporterInviteService,
+  presented: PresentedToken,
+  recipientUserId: UserId,
+  door: String,
+): WebNotice? {
+  val inviteToken =
+    when (presented) {
+      // The ONLY silent arm: this request presented no invite at all, so the
+      // door redirects to its ordinary destination.
+      PresentedToken.Absent -> {
+        return null
+      }
+
+      // A token key that carried nothing, and a key carrying two credentials,
+      // are both presented invites we have no reading of. Answering them the way
+      // an absent one is answered drops a presented credential in silence, where
+      // every other refusal in this file says so.
+      PresentedToken.Blank -> {
+        return refusedPresentedInvite(InviteMissReason.BLANK_TOKEN, recipientUserId, door)
+      }
+
+      PresentedToken.Repeated -> {
+        return refusedPresentedInvite(InviteMissReason.REPEATED_TOKEN_PARAM, recipientUserId, door)
+      }
+
+      is PresentedToken.One -> {
+        presented.raw
+      }
+    }
+  val outcome =
+    supporterInviteService.accept(inviteToken, recipientUserId).getOrElse { failure ->
+      inviteLog.error(
+        "supporter invite accept faulted: door=[{}] userId=[{}]",
+        door,
+        recipientUserId.asString,
+        failure,
+      )
+      return WebNotice.INVITE_NOT_ACCEPTED
+    }
+  return when (outcome) {
+    is AcceptInviteOutcome.Success -> {
+      WebNotice.INVITE_ACCEPTED
+    }
+
+    is AcceptInviteOutcome.InvalidToken,
+    AcceptInviteOutcome.SelfLinkProhibited,
+    AcceptInviteOutcome.StudentProfileRequired,
+    -> {
+      inviteLog.debug(
+        "supporter invite accept refused: door=[{}] userId=[{}] outcome=[{}]",
+        door,
+        recipientUserId.asString,
+        outcome,
+      )
+      WebNotice.INVITE_NOT_ACCEPTED
+    }
+  }
+}
+
+/**
+ * A presented invite this door could not even read. Recorded with the DOOR and
+ * the CALLER, because "supporter invite accept refused on authentication" is
+ * true of both authenticating doors, for any outcome, for any user — and the
+ * operator holding a family's complaint has nothing else to join on.
+ */
+private fun refusedPresentedInvite(
+  reason: InviteMissReason,
+  recipientUserId: UserId,
+  door: String,
+): WebNotice {
+  inviteLog.debug(
+    "supporter invite accept refused: door=[{}] userId=[{}] reason=[{}]",
+    door,
+    recipientUserId.asString,
+    reason,
+  )
+  return WebNotice.INVITE_NOT_ACCEPTED
 }
 
 /**
@@ -332,128 +455,176 @@ private fun Route.authRoutes(
   authService: AuthService,
   emailVerificationService: EmailVerificationService,
   sessionConfig: WebSessionConfig,
+  supporterInviteService: SupporterInviteService,
 ) {
-  get(SIGN_IN_PATH) { call.respondSignInPage(nav = call.shellNav(authService, sessionConfig)) }
+  // `/invite` sends a signed-out recipient to these two doors with the RAW
+  // invite token in the query string, so both scope it secret exactly as
+  // `/invite` does (RFC 232). Redacting it on `/invite` alone kept the token
+  // out of one log line and wrote it into the next one — and redaction covers
+  // the LOG only, so both doors also carry `/invite`'s link-holder privacy
+  // headers: a URL holding a live single-use credential must not be kept by a
+  // shared cache, indexed, or handed on in a `Referer`.
+  route(SIGN_IN_PATH) {
+    secretQueryParams(TOKEN_FIELD)
+    setLinkHolderPrivacyHeaders()
 
-  post(SIGN_IN_PATH) {
-    val form =
-      call.formParametersOrNull() ?: return@post call.respondSignInPage(
-        SignInFormState.Rejected(""),
-        call.shellNav(authService, sessionConfig),
-      )
-    val email = form.formField(EMAIL_FIELD)
-    val password = form.formField(PASSWORD_FIELD)
-    if (email == null || password == null) {
-      return@post call.respondSignInPage(
-        SignInFormState.Rejected(email.orEmpty()),
-        call.shellNav(authService, sessionConfig),
+    get {
+      // Through the ONE reader, like every other token door in this file:
+      // `queryParameters[name]` is `getAll(name).firstOrNull()`, so a link
+      // carrying two tokens used to plant the first of them in the hidden field.
+      call.respondSignInPage(
+        nav = call.shellNav(authService, sessionConfig),
+        token = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken(),
       )
     }
 
-    val result =
-      authService
-        .login(
-          email = email,
-          password = password,
-          // The CURRENT cookie, so `:service` can revoke the row it names in the
-          // same transaction that inserts the new one. Session fixation is
-          // handled there and not here (D13): `mintSession` is the only code
-          // that knows what "replacing a session" means.
-          oldCookieToken = call.request.sessionCookieToken(sessionConfig),
-          sessionExpiration = sessionConfig.expiration,
-          userAgent = call.request.userAgent(),
-          // The socket PEER, not a forwarded header: a header an attacker sets
-          // is spoofable by construction, and this value is what an operator
-          // reads when they ask "where did this session come from" — a number
-          // that misleads them there is worse than none. Behind our TLS proxy
-          // the peer is the proxy, which is a known, honest limitation.
-          initialIp = call.request.origin.remoteHost,
-        ).getOrThrow()
-
-    when (result) {
-      is LoginResult.Success -> {
-        call.setWebSessionCookie(sessionConfig, result.token)
-        call.respondSeeOther(ACCOUNT_PATH)
+    post {
+      val form =
+        call.formParametersOrNull() ?: return@post call.respondSignInPage(
+          SignInFormState.Rejected(""),
+          call.shellNav(authService, sessionConfig),
+        )
+      val email = form.formField(EMAIL_FIELD)
+      val password = form.formField(PASSWORD_FIELD)
+      val presentedInvite = presentedToken(form.getAll(TOKEN_FIELD))
+      if (email == null || password == null) {
+        return@post call.respondSignInPage(
+          SignInFormState.Rejected(email.orEmpty()),
+          call.shellNav(authService, sessionConfig),
+          presentedInvite.usableToken(),
+        )
       }
 
-      // All FOUR failures, one answer. The branches are listed rather than
-      // folded into an `else` so that a fifth failure case added to
-      // `LoginResult` fails to compile here instead of quietly falling into a
-      // default — which is how a new branch grows its own distinguishable
-      // message and turns the form into an enumeration oracle.
-      is LoginResult.InvalidEmail,
-      LoginResult.UserNotFound,
-      LoginResult.PasswordNotSet,
-      LoginResult.PasswordMismatch,
-      -> {
-        // The reason is LOGGED, never rendered: the page says one sentence for
-        // all four (SIGN_IN_ERROR), because naming the failure turns the form
-        // into an enumeration oracle. A refusal recorded nowhere leaves a
-        // locked-out family and a credential-stuffing run indistinguishable.
-        // `rest-server` logs the same fact at the same boundary.
-        authLog.info("web sign-in refused: outcome=[{}]", result)
-        call.respondSignInPage(SignInFormState.Rejected(email), call.shellNav(authService, sessionConfig))
+      val result =
+        authService
+          .login(
+            email = email,
+            password = password,
+            // The CURRENT cookie, so `:service` can revoke the row it names in the
+            // same transaction that inserts the new one. Session fixation is
+            // handled there and not here (D13): `mintSession` is the only code
+            // that knows what "replacing a session" means.
+            oldCookieToken = call.request.sessionCookieToken(sessionConfig),
+            sessionExpiration = sessionConfig.expiration,
+            userAgent = call.request.userAgent(),
+            // The socket PEER, not a forwarded header: a header an attacker sets
+            // is spoofable by construction, and this value is what an operator
+            // reads when they ask "where did this session come from" — a number
+            // that misleads them there is worse than none. Behind our TLS proxy
+            // the peer is the proxy, which is a known, honest limitation.
+            initialIp = call.request.origin.remoteHost,
+          ).getOrThrow()
+
+      when (result) {
+        is LoginResult.Success -> {
+          call.setWebSessionCookie(sessionConfig, result.token)
+          val inviteNotice =
+            acceptPresentedInvite(supporterInviteService, presentedInvite, result.user.id, SIGN_IN_PATH)
+          call.respondSeeOther(noticeUrl(ACCOUNT_PATH, inviteNotice))
+        }
+
+        // All FOUR failures, one answer. The branches are listed rather than
+        // folded into an `else` so that a fifth failure case added to
+        // `LoginResult` fails to compile here instead of quietly falling into a
+        // default — which is how a new branch grows its own distinguishable
+        // message and turns the form into an enumeration oracle.
+        is LoginResult.InvalidEmail,
+        LoginResult.UserNotFound,
+        LoginResult.PasswordNotSet,
+        LoginResult.PasswordMismatch,
+        -> {
+          // The reason is LOGGED, never rendered: the page says one sentence for
+          // all four (SIGN_IN_ERROR), because naming the failure turns the form
+          // into an enumeration oracle. A refusal recorded nowhere leaves a
+          // locked-out family and a credential-stuffing run indistinguishable.
+          // `rest-server` logs the same fact at the same boundary.
+          authLog.info("web sign-in refused: outcome=[{}]", result)
+          call.respondSignInPage(
+            SignInFormState.Rejected(email),
+            call.shellNav(authService, sessionConfig),
+            presentedInvite.usableToken(),
+          )
+        }
       }
     }
   }
 
-  get(REGISTER_PATH) { call.respondRegisterPage(nav = call.shellNav(authService, sessionConfig)) }
+  // Secret-scoped and link-holder private for the same reason as the sign-in
+  // door above (RFC 232).
+  route(REGISTER_PATH) {
+    secretQueryParams(TOKEN_FIELD)
+    setLinkHolderPrivacyHeaders()
 
-  post(REGISTER_PATH) {
-    val form =
-      call.formParametersOrNull() ?: return@post call.respondRegisterPage(
-        RegisterFormState.Invalid("", "", emptyList(), emptyList()),
-        call.shellNav(authService, sessionConfig),
-      )
-    val name = form.formField(NAME_FIELD)
-    val email = form.formField(EMAIL_FIELD)
-    val password = form.formField(PASSWORD_FIELD)
-    if (name == null || email == null || password == null) {
-      return@post call.respondRegisterPage(
-        RegisterFormState.Invalid(name.orEmpty(), email.orEmpty(), emptyList(), emptyList()),
-        call.shellNav(authService, sessionConfig),
+    get {
+      // The single-token rule, as on the sign-in door above.
+      call.respondRegisterPage(
+        nav = call.shellNav(authService, sessionConfig),
+        token = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken(),
       )
     }
 
-    val result =
-      authService
-        .register(
-          email = email,
-          name = name,
-          password = password,
-          oldCookieToken = call.request.sessionCookieToken(sessionConfig),
-          sessionExpiration = sessionConfig.expiration,
-          userAgent = call.request.userAgent(),
-          // Same peer-over-forwarded-header reasoning as the sign-in call above.
-          initialIp = call.request.origin.remoteHost,
-        ).getOrThrow()
-
-    when (result) {
-      is RegisterResult.Success -> {
-        call.setWebSessionCookie(sessionConfig, result.token)
-        // To the hold screen, not to /account: registration leaves the address
-        // unverified, so /account would immediately bounce them here anyway and
-        // the extra redirect would be the family's first impression of the
-        // product.
-        call.respondSeeOther(VERIFY_EMAIL_PATH)
-      }
-
-      is RegisterResult.ValidationFailure -> {
-        // BOTH halves: `RegistrationValidator` states every rule as a
-        // `FieldError` and leaves `errors` empty, so carrying one half alone
-        // renders a 400 that names no problem at all. `rest-server` merges the
-        // same two channels at the same boundary (AuthRoutes).
-        call.respondRegisterPage(
-          RegisterFormState.Invalid(name, email, result.fieldErrors, result.errors),
+    post {
+      val form =
+        call.formParametersOrNull() ?: return@post call.respondRegisterPage(
+          RegisterFormState.Invalid("", "", emptyList(), emptyList()),
           call.shellNav(authService, sessionConfig),
+        )
+      val name = form.formField(NAME_FIELD)
+      val email = form.formField(EMAIL_FIELD)
+      val password = form.formField(PASSWORD_FIELD)
+      val presentedInvite = presentedToken(form.getAll(TOKEN_FIELD))
+      if (name == null || email == null || password == null) {
+        return@post call.respondRegisterPage(
+          RegisterFormState.Invalid(name.orEmpty(), email.orEmpty(), emptyList(), emptyList()),
+          call.shellNav(authService, sessionConfig),
+          presentedInvite.usableToken(),
         )
       }
 
-      is RegisterResult.DuplicateEmail -> {
-        call.respondRegisterPage(
-          RegisterFormState.Duplicate(name, email),
-          call.shellNav(authService, sessionConfig),
-        )
+      val result =
+        authService
+          .register(
+            email = email,
+            name = name,
+            password = password,
+            oldCookieToken = call.request.sessionCookieToken(sessionConfig),
+            sessionExpiration = sessionConfig.expiration,
+            userAgent = call.request.userAgent(),
+            // Same peer-over-forwarded-header reasoning as the sign-in call above.
+            initialIp = call.request.origin.remoteHost,
+          ).getOrThrow()
+
+      when (result) {
+        is RegisterResult.Success -> {
+          call.setWebSessionCookie(sessionConfig, result.token)
+          // To the hold screen, not to /account: registration leaves the address
+          // unverified, so /account would immediately bounce them here anyway and
+          // the extra redirect would be the family's first impression of the
+          // product.
+          val inviteNotice =
+            acceptPresentedInvite(supporterInviteService, presentedInvite, result.user.id, REGISTER_PATH)
+          call.respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, inviteNotice))
+        }
+
+        is RegisterResult.ValidationFailure -> {
+          // BOTH halves: `RegistrationValidator` states every rule as a
+          // `FieldError` and leaves `errors` empty, so carrying one half alone
+          // renders a 400 that names no problem at all. `rest-server` merges the
+          // same two channels at the same boundary (AuthRoutes).
+          call.respondRegisterPage(
+            RegisterFormState.Invalid(name, email, result.fieldErrors, result.errors),
+            call.shellNav(authService, sessionConfig),
+            presentedInvite.usableToken(),
+          )
+        }
+
+        is RegisterResult.DuplicateEmail -> {
+          call.respondRegisterPage(
+            RegisterFormState.Duplicate(name, email),
+            call.shellNav(authService, sessionConfig),
+            presentedInvite.usableToken(),
+          )
+        }
       }
     }
   }
@@ -476,7 +647,7 @@ private fun Route.authRoutes(
     // post-redirect-get is more than tidiness: rendering the confirmation from
     // the POST leaves a reload re-submitting it, and a reload of THIS form sends
     // another email. The confirmation is rendered by the GET that follows.
-    call.respondSeeOther("$VERIFY_EMAIL_PATH?$NOTICE_QUERY_PARAM=${WebNotice.RESENT.key}")
+    call.respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, WebNotice.RESENT))
   }
 
   getVerified(ACCOUNT_PATH, authService, sessionConfig) { caller ->
@@ -505,7 +676,7 @@ private fun Route.authRoutes(
       // the page they actually land on, and the message ("Check the new address
       // for a verification link") was written for that page anyway.
       is ChangeEmailResult.Success -> {
-        call.respondSeeOther("$VERIFY_EMAIL_PATH?$NOTICE_QUERY_PARAM=${WebNotice.EMAIL_CHANGED.key}")
+        call.respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, WebNotice.EMAIL_CHANGED))
       }
 
       // :service's own message, carried verbatim by the state that renders it
@@ -540,6 +711,65 @@ private const val NOTICE_QUERY_PARAM = "notice"
  * key. One reader, so the key and its closed value set are read in one place.
  */
 private fun ApplicationCall.requestedNotice(): WebNotice? = request.queryParameters[NOTICE_QUERY_PARAM]?.let(WebNotice::fromKey)
+
+/**
+ * [path] carrying [notice], or [path] alone when there is nothing to say: the
+ * WRITER half of [requestedNotice], so the query key is spelled once per side.
+ *
+ * Every door that redirects with a confirmation goes through here. Five sites
+ * built the same string by hand, two of them repeating the same
+ * `if (notice == null)` in two different shapes.
+ */
+private fun noticeUrl(
+  path: String,
+  notice: WebNotice?,
+): String = if (notice == null) path else "$path?$NOTICE_QUERY_PARAM=${notice.key}"
+
+/**
+ * WHAT a request presented on a single-token key: the one usable token, or
+ * which miss it was.
+ *
+ * `queryParameters[name]` is `getAll(name).firstOrNull()`, so a link carrying
+ * two tokens is a request we have no reading of rather than silently the first
+ * of them. That rule is subtle and security-bearing, and four doors re-derived
+ * it from `getAll(...).singleOrNull()`; it has one name here instead. Each door
+ * keeps its OWN miss vocabulary, which is the only part that differs.
+ */
+private sealed interface PresentedToken {
+  data class One(
+    val raw: String,
+  ) : PresentedToken
+
+  /** The key was not present at all: this request presented no token. */
+  data object Absent : PresentedToken
+
+  /** The key WAS present and carried nothing usable — a truncated link, not an absent one. */
+  data object Blank : PresentedToken
+
+  /** Two or more values on the one key: two credentials, not one. */
+  data object Repeated : PresentedToken
+}
+
+/**
+ * The ONE token [values] carries, or which miss it was. [values] is a `getAll`.
+ *
+ * Nothing is `null` here on purpose: a nullable `raw` member let a consumer
+ * null-check it and then identity-test the object to recover what the type had
+ * already said, so a fourth case would be read as the third instead of failing
+ * to compile.
+ */
+private fun presentedToken(values: List<String>?): PresentedToken {
+  if (values == null) return PresentedToken.Absent
+  if (values.size > 1) return PresentedToken.Repeated
+  val single = values.singleOrNull()
+  return if (single.isNullOrBlank()) PresentedToken.Blank else PresentedToken.One(single)
+}
+
+/**
+ * The token when exactly one usable one was presented, for the doors that want
+ * only "usable or not" and answer every miss the same way.
+ */
+private fun PresentedToken.usableToken(): String? = (this as? PresentedToken.One)?.raw
 
 /**
  * The submitted form, or `null` when the body was not one.
@@ -780,13 +1010,15 @@ private fun Route.reportRoute(
       // EXACTLY one token, never the first of several. `queryParameters[name]`
       // is `getAll(name).firstOrNull()`, so `?token=junk&token=<live>` was a
       // request we have no reading of, answered by discarding the surplus.
-      val presented = call.request.queryParameters.getAll(REPORT_TOKEN_PARAM)
-      val token = presented?.singleOrNull()
       val outcome =
-        when {
-          presented != null && presented.size > 1 -> CostReportOutcome.NotFound(MissReason.REPEATED_TOKEN_PARAM)
-          token.isNullOrBlank() -> CostReportOutcome.NotFound(MissReason.BLANK_TOKEN)
-          else -> costReportSource.getByShareToken(token).getOrThrow()
+        when (val presented = presentedToken(call.request.queryParameters.getAll(REPORT_TOKEN_PARAM))) {
+          PresentedToken.Repeated -> CostReportOutcome.NotFound(MissReason.REPEATED_TOKEN_PARAM)
+
+          PresentedToken.Absent,
+          PresentedToken.Blank,
+          -> CostReportOutcome.NotFound(MissReason.BLANK_TOKEN)
+
+          is PresentedToken.One -> costReportSource.getByShareToken(presented.raw).getOrThrow()
         }
       when (outcome) {
         is CostReportOutcome.Found -> {
@@ -803,4 +1035,155 @@ private fun Route.reportRoute(
       }
     }
   }
+}
+
+/**
+ * `GET /invite?token=<raw>` and `POST /invite` — the supporter invite accept
+ * page (RFC 232).
+ *
+ * The GET is OPEN and side-effect free: it previews the invite and renders the
+ * ceiling statement before any sign-in or sign-up, so a scanner prefetch of the
+ * link cannot burn the single-use token. The POST is SIGNED_IN but NOT VERIFIED
+ * (correction X8): a parent or student can accept before verifying their email,
+ * or the flow deadlocks behind `EmailVerificationGate`.
+ *
+ * A missing, blank, unknown, consumed, expired or revoked token renders the SAME
+ * branded 404 as any unmatched route — one body, no oracle that a token was once
+ * real, the `/report` precedent.
+ */
+private fun Route.inviteRoute(
+  supporterInviteService: SupporterInviteService,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+) {
+  route(INVITE_PATH) {
+    secretQueryParams(TOKEN_FIELD)
+    setLinkHolderPrivacyHeaders()
+    get {
+      // EXACTLY one token, never the first of several — the same rule as /report,
+      // and branched on the TYPE so every member of it is named here.
+      when (val presented = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD))) {
+        // Two tokens is not "no token": an operator reading this line has to be
+        // able to tell a truncated link from a link pasted twice.
+        PresentedToken.Repeated -> {
+          call.respondInviteMiss(InviteMissReason.REPEATED_TOKEN_PARAM, authService, sessionConfig)
+        }
+
+        PresentedToken.Absent,
+        PresentedToken.Blank,
+        -> {
+          call.respondInviteMiss(InviteMissReason.BLANK_TOKEN, authService, sessionConfig)
+        }
+
+        is PresentedToken.One -> {
+          call.respondPreviewedInvite(presented.raw, supporterInviteService, authService, sessionConfig)
+        }
+      }
+    }
+
+    post {
+      // SIGNED_IN but NOT VERIFIED (correction X8), through the same wrapper the
+      // auth routes use so the access class is stated once rather than resolved
+      // by hand.
+      handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig) { caller ->
+        val token =
+          when (val presented = presentedToken(call.formParametersOrNull()?.getAll(TOKEN_FIELD))) {
+            // Every other miss on this door logs WHY before rendering the
+            // identical page; that is the stated reason the page can be uniform,
+            // so this arm is not the one silent one.
+            PresentedToken.Repeated -> {
+              call.respondInviteMiss(InviteMissReason.REPEATED_TOKEN_PARAM, authService, sessionConfig)
+              return@handleAccess
+            }
+
+            PresentedToken.Absent,
+            PresentedToken.Blank,
+            -> {
+              call.respondInviteMiss(InviteMissReason.BLANK_TOKEN, authService, sessionConfig)
+              return@handleAccess
+            }
+
+            is PresentedToken.One -> {
+              presented.raw
+            }
+          }
+        val outcome = supporterInviteService.accept(token, caller.user.id).getOrThrow()
+        when (outcome) {
+          is AcceptInviteOutcome.Success -> {
+            call.respondSeeOther(noticeUrl(ACCOUNT_PATH, WebNotice.INVITE_ACCEPTED))
+          }
+
+          is AcceptInviteOutcome.InvalidToken,
+          AcceptInviteOutcome.SelfLinkProhibited,
+          AcceptInviteOutcome.StudentProfileRequired,
+          -> {
+            inviteLog.debug(
+              "supporter invite accept refused: door=[{}] userId=[{}] outcome=[{}]",
+              INVITE_PATH,
+              caller.user.id.asString,
+              outcome,
+            )
+            call.respondNotFoundPage(call.shellNav(authService, sessionConfig))
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The invite behind [token], rendered for whoever is reading it.
+ *
+ * WHO is reading decides what the page offers. The inviter's own accept can only
+ * be refused (`SelfLinkProhibited`), and that refusal renders the same branded
+ * 404 a dead token gets — so offering them the button tells the person who
+ * minted a LIVE link that it is dead.
+ */
+private suspend fun ApplicationCall.respondPreviewedInvite(
+  token: String,
+  supporterInviteService: SupporterInviteService,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+) {
+  when (val outcome = supporterInviteService.preview(token).getOrThrow()) {
+    is InvitePreviewOutcome.Valid -> {
+      val caller = resolveWebCaller(authService, sessionConfig)
+      respondInvitePage(
+        inviterName = outcome.inviterName,
+        inviterRole = outcome.inviterRole,
+        relationship = outcome.relationship,
+        token = token,
+        viewer = inviteViewer(caller?.user?.id, outcome.inviterUserId),
+      )
+    }
+
+    is InvitePreviewOutcome.Invalid -> {
+      respondInviteMiss(outcome.reason, authService, sessionConfig)
+    }
+  }
+}
+
+/** WHO is reading the invite, which is what decides the action the page offers. */
+private fun inviteViewer(
+  callerUserId: UserId?,
+  inviterUserId: UserId,
+): InviteViewer =
+  when (callerUserId) {
+    null -> InviteViewer.SIGNED_OUT
+    inviterUserId -> InviteViewer.INVITER
+    else -> InviteViewer.SIGNED_IN
+  }
+
+/**
+ * The reason is LOGGED, never rendered: the 404 body is byte-identical for every
+ * dead token, which is what stops a stranger holding one learning that it was
+ * ever real.
+ */
+private suspend fun ApplicationCall.respondInviteMiss(
+  reason: InviteMissReason,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+) {
+  inviteLog.debug("supporter invite link resolved to nothing: reason=[{}]", reason)
+  respondNotFoundPage(shellNav(authService, sessionConfig))
 }

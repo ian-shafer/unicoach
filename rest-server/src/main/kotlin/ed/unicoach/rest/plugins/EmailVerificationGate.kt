@@ -5,6 +5,7 @@ import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.auth.resolveCaller
 import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
+import ed.unicoach.rest.routing.SUPPORTER_INVITE_ACCEPT_PATH
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCallPipeline
@@ -35,7 +36,19 @@ fun Application.configureEmailVerificationGate(
 ) {
   intercept(ApplicationCallPipeline.Plugins) {
     val path = call.request.path()
-    if (path == "/healthz" || path.startsWith("/api/v1/auth/")) {
+    // Ktor 3 matches a route whether or not the request spells a trailing
+    // slash, so `/api/v1/supporter-invites/accept/` reaches the accept handler.
+    // An EXACT string match on the raw path exempts one spelling and gates the
+    // other, which puts the X8 deadlock one character away.
+    val routedPath = path.trimEnd('/').ifEmpty { "/" }
+    if (
+      routedPath == "/healthz" ||
+      path.startsWith("/api/v1/auth/") ||
+      // RFC 232 (correction X8): a parent or student must be able to accept a
+      // supporter invite before verifying their email, or acceptance deadlocks
+      // behind this global interceptor.
+      routedPath == SUPPORTER_INVITE_ACCEPT_PATH
+    ) {
       return@intercept
     }
 

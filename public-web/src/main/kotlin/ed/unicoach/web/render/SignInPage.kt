@@ -78,6 +78,7 @@ sealed interface SignInFormState {
 suspend fun ApplicationCall.respondSignInPage(
   state: SignInFormState = SignInFormState.Fresh,
   nav: ShellNav = ShellNav.SignedOut,
+  token: String? = null,
 ) {
   respondHtml(state.status) {
     siteLayout(SIGN_IN_HEADING, nav = nav) {
@@ -92,10 +93,11 @@ suspend fun ApplicationCall.respondSignInPage(
         after = {
           p {
             +"New to unicoach? "
-            a(href = REGISTER_PATH) { +"Create an account" }
+            a(href = pathCarryingToken(REGISTER_PATH, token)) { +"Create an account" }
           }
         },
       ) {
+        tokenField(token)
         textField(
           name = EMAIL_FIELD,
           labelText = "Email",

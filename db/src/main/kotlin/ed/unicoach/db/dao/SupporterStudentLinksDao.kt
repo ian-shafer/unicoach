@@ -38,6 +38,13 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
   private const val SUPPORTER_LIVE = "supporter_student_links_supporter_live"
   private const val STUDENT_LIVE = "supporter_student_links_student_live"
 
+  // The PARTIAL unique index that makes one ACTIVE link per pair — the fourth
+  // schema-owned name, stated here for the reason the three above are. PRIVATE,
+  // like them: a caller racing another accept meets it as an
+  // ActiveSupporterLinkException and names the TYPE, so a rename in the
+  // migration cannot quietly change what `:service` does.
+  private const val ACTIVE_LINK_INDEX = "supporter_student_links_supporter_student_active_idx"
+
   private fun mapLink(rs: ResultSet): SupporterStudentLink {
     val id = SupporterStudentLinkId(UUID.fromString(rs.getString("id")))
     return SupporterStudentLink(
@@ -290,7 +297,7 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
    */
   private fun mapCreateError(input: NewSupporterStudentLink): (SQLException) -> Exception =
     { e ->
-      mapGuardRefusal(e) ?: mapChildWriteError(
+      mapGuardRefusal(e) ?: mapActiveLinkRefusal(e) ?: mapChildWriteError(
         e,
         mapOf(
           "supporter_student_links_supporter_id_fkey" to
@@ -300,6 +307,16 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
         ),
       )
     }
+
+  /**
+   * The one-ACTIVE-link-per-pair refusal, typed. Null when this failure is not
+   * that index, so the ordinary SQLSTATE mapping still answers everything else.
+   */
+  private fun mapActiveLinkRefusal(e: SQLException): Exception? {
+    val serverError = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
+    if (serverError?.constraint != ACTIVE_LINK_INDEX) return null
+    return ActiveSupporterLinkException(e, serverError.constraint, serverError.detail)
+  }
 
   /**
    * The update-path mapping. No foreign key can fire — `supporter_id` and

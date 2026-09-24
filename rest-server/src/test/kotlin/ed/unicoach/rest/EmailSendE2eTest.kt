@@ -123,6 +123,7 @@ class EmailSendE2eTest {
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
+            supporterInviteConfigFrom(config),
           )
         }
 

@@ -4,6 +4,7 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.VerifyEmailResult
+import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.common.logging.Detail
 import ed.unicoach.web.common.logging.HeaderSelection
@@ -59,6 +60,7 @@ fun Application.testPublicWebModule(
   authService: AuthService = WebAuthTestSupport.authService,
   emailVerificationService: EmailVerificationService = WebAuthTestSupport.emailVerificationService,
   publicWebConfig: PublicWebConfig = WebAuthTestSupport.publicWebConfig,
+  supporterInviteService: SupporterInviteService = WebAuthTestSupport.supporterInviteService,
 ) {
   publicWebModule(
     emailVerifier,
@@ -69,6 +71,7 @@ fun Application.testPublicWebModule(
     authService,
     emailVerificationService,
     publicWebConfig,
+    supporterInviteService,
   )
 }
 

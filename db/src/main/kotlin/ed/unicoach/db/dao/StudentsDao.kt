@@ -104,6 +104,19 @@ object StudentsDao :
         student
       }
 
+  /**
+   * The student owned by [userId], or null when this user is not one.
+   *
+   * The [findByUserId] answer as a VALUE: "this user has no student profile" is
+   * the ordinary state of every supporter, and a caller asking that question
+   * should not have to type-test the error channel to read the answer.
+   */
+  fun findByUserIdOrNull(
+    session: SqlSession,
+    userId: UserId,
+    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+  ): Result<Student?> = findByUserId(session, userId, scope).orNullOnNotFound()
+
   fun findByIdForUpdate(
     session: SqlSession,
     id: StudentId,

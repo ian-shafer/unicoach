@@ -17,6 +17,43 @@ struct RegisterResponse: Codable {
     let user: PublicUser
 }
 
+/// The relationship a supporter holds to a student (brief 0014 D22 vocabulary).
+///
+/// A closed set, named once: a `String` seam accepted any word at all, so a typo
+/// compiled, shipped, and came back as something the caller never asked for.
+enum SupporterRelationship: String, Codable, Sendable {
+    case parent
+    case guardian
+    case grandparent
+    case supporter
+}
+
+/// Which side minted the invite (RFC 232).
+enum InviterRole: String, Codable, Sendable {
+    case student
+    case supporter
+}
+
+/// `POST /api/v1/supporter-invites` body (RFC 232). `relationship` is optional
+/// and defaults to `parent` on the server.
+struct CreateSupporterInviteRequest: Codable {
+    let relationship: SupporterRelationship?
+}
+
+/// The minted supporter invite (RFC 232). The raw token rides only in `inviteUrl`.
+///
+/// `expiresAt` is a `Date`, like every other timestamp in this file:
+/// `APIClient.jsonDecoder` already parses the server's ISO-8601 instants, and a
+/// `String` here would leave the first consumer that must say "expires in 3
+/// days" hand-parsing it at a call site instead of at the decode.
+struct SupporterInviteResponse: Codable {
+    let id: UUID
+    let inviteUrl: String
+    let inviterRole: InviterRole
+    let relationship: SupporterRelationship
+    let expiresAt: Date
+}
+
 struct FieldError: Codable, Equatable {
     let field: String
     let message: String

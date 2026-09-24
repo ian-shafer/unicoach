@@ -70,6 +70,21 @@ object UsersDao :
         user
       }
 
+  /**
+   * The user [id] names, or null when no row in [scope] carries it.
+   *
+   * [findById]'s answer as a VALUE, the [StudentsDao.findByUserIdOrNull] shape.
+   * A caller reading a row that merely POINTS at a user — a live invite naming
+   * its inviter, whose account may since have been SOFT deleted, so no foreign
+   * key cascade fired — should not have to type-test the error channel to learn
+   * the user is gone, and must not serve a 500 when it is.
+   */
+  fun findByIdOrNull(
+    session: SqlSession,
+    id: UserId,
+    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+  ): Result<User?> = findById(session, id, scope).orNullOnNotFound()
+
   fun findByIdForUpdate(
     session: SqlSession,
     id: UserId,

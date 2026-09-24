@@ -15,6 +15,7 @@ import SwiftUI
 /// entitlement simply has no status to show.
 struct SettingsView: View {
     let authClient: AuthClientProtocol
+    let supporterInviteClient: SupporterInviteClientProtocol
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
 
@@ -29,15 +30,23 @@ struct SettingsView: View {
     @State private var isChangingEmail = false
     @State private var isLoggingOut = false
 
+    /// What the family section is showing (RFC 232). ONE value, so a stale link
+    /// beside a fresh error — or a spinner beside either — is not representable.
+    /// Three independent flags made those combinations legal and left their
+    /// assignment order the only thing preventing them.
+    @State private var inviteState: InviteState = .idle
+
     init(
         user: PublicUser,
         authClient: AuthClientProtocol,
+        supporterInviteClient: SupporterInviteClientProtocol,
         subscriptionViewModel: SubscriptionViewModel,
         onEmailChanged: @escaping (PublicUser) async -> Void,
         onLogout: @escaping () async -> Void
     ) {
         _user = State(initialValue: user)
         self.authClient = authClient
+        self.supporterInviteClient = supporterInviteClient
         self.subscriptionViewModel = subscriptionViewModel
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
@@ -49,6 +58,8 @@ struct SettingsView: View {
                 identity
 
                 appearanceSection
+
+                familySection
 
                 SubscriptionSection(viewModel: subscriptionViewModel)
 
@@ -101,6 +112,99 @@ struct SettingsView: View {
                 }
             )
         }
+    }
+
+    /// The four states the invite control can be in (RFC 232).
+    enum InviteState: Equatable {
+        case idle
+        case minting
+        case minted(URL)
+        case failed(String)
+    }
+
+    /// The state that FOLLOWS minting a link (RFC 232).
+    ///
+    /// It answers with a value rather than assigning three fields, so the
+    /// caller has one assignment point and no intermediate combination exists.
+    /// The previous link is gone the moment minting starts: a mint that fails
+    /// must not leave the last token on screen, where it may already have been
+    /// consumed.
+    ///
+    /// No relationship is sent. The server owns the product default, and the
+    /// response reports the word it used — a literal here is the client
+    /// asserting a vocabulary it does not own.
+    ///
+    /// A link the app cannot parse is a FAILURE, not silence: `URL(string:)`
+    /// returning nil used to leave no share control, no message and no sign the
+    /// tap had done anything at all.
+    private func mintedInviteState() async -> InviteState {
+        do {
+            let invite = try await supporterInviteClient.createInvite(relationship: nil)
+            guard let url = URL(string: invite.inviteUrl) else {
+                return .failed(ErrorResponse.unexpected.message)
+            }
+            return .minted(url)
+        } catch {
+            return .failed((error as? ErrorResponse)?.message ?? ErrorResponse.unexpected.message)
+        }
+    }
+
+    private func mintInvite() async {
+        inviteState = .minting
+        inviteState = await mintedInviteState()
+    }
+
+    /// The inviter's door (RFC 232): mint a shareable link and hand it to the
+    /// system share sheet, so the act of sharing IS the inviter's consent.
+    private var familySection: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.sm) {
+            Text("Family & Supporters")
+                .dsOverlineStyle()
+                .foregroundStyle(Color.dsTextSecondary)
+
+            LoadingButton(
+                inviteState == .minting ? "Preparing link…" : "Invite a parent or supporter",
+                isLoading: inviteState == .minting,
+                role: .primary,
+                accessibilityIdentifier: "inviteSupporterButton",
+                accessibilityLabel: "Invite a parent or supporter",
+                action: { Task { await mintInvite() } }
+            )
+
+            switch inviteState {
+            case .idle, .minting:
+                EmptyView()
+            case let .minted(url):
+                shareInvite(url)
+            case let .failed(message):
+                inviteFailure(message)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The share sheet for a minted link.
+    ///
+    /// The URL travels as the ITEM so the share sheet still renders a tappable,
+    /// previewable link, and RFC 232's sentence rides with it as the message. A
+    /// bare URL from an unknown sender is the exact context-free link a parent
+    /// is told never to tap.
+    private func shareInvite(_ url: URL) -> some View {
+        ShareLink(
+            item: url,
+            subject: Text("Join me on unicoach"),
+            message: Text("Join me on unicoach to support my college journey: \(url.absoluteString)")
+        ) {
+            Label("Share invite link", systemImage: "square.and.arrow.up")
+        }
+        .accessibilityIdentifier("shareInviteLink")
+    }
+
+    private func inviteFailure(_ message: String) -> some View {
+        Text(message)
+            .font(.dsBody)
+            .foregroundStyle(Color.dsTextSecondary)
+            .accessibilityIdentifier("inviteError")
     }
 
     /// Dark mode is no longer only a device setting (DESIGN.md §2.1): the
@@ -163,6 +267,7 @@ private final class SettingsPreviewAuthClient: AuthClientProtocol, @unchecked Se
         SettingsView(
             user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
             authClient: SettingsPreviewAuthClient(),
+            supporterInviteClient: PreviewSupporterInviteClient(),
             subscriptionViewModel: SubscriptionViewModel(
                 usageClient: PreviewCoachingUsageClient(),
                 store: PreviewSubscriptionStore(),

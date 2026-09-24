@@ -175,13 +175,32 @@ class ClosedStudentLinkException(
  * without parsing log text. Both are null when the cause is not a
  * `PSQLException` (the defaults keep existing construction sites unchanged).
  */
-class ConstraintViolationException(
+open class ConstraintViolationException(
   cause: Throwable,
   override val constraint: String? = null,
   override val detail: String? = null,
-) : DaoException("Database constraint violation", cause),
+  message: String = "Database constraint violation",
+) : DaoException(message, cause),
   ConstraintDiagnostics,
   PermanentError
+
+/**
+ * An ACTIVE link already joins this supporter and student (RFC 221/232) — the
+ * `supporter_student_links_supporter_student_active_idx` partial unique index.
+ *
+ * The FOURTH refusal of that table, given the typed shape its three trigger
+ * siblings have. A caller racing a concurrent accept used to recognise it by
+ * string-matching a schema-owned INDEX NAME published out of `:db`, which made a
+ * migration's rename a silent behaviour change in `:service`. A subclass of
+ * [ConstraintViolationException] and not a sibling of it, because it IS one:
+ * every caller that buckets by constraint keeps working, and the one caller that
+ * cares names the type.
+ */
+class ActiveSupporterLinkException(
+  cause: Throwable,
+  constraint: String? = null,
+  detail: String? = null,
+) : ConstraintViolationException(cause, constraint, detail, "An active link already joins this supporter and student")
 
 class DatabaseException(
   cause: Throwable,

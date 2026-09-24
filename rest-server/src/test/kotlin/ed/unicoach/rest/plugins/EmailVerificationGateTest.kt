@@ -12,6 +12,7 @@ import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.costReportConfigFrom
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.VerifyEmailRequest
+import ed.unicoach.rest.supporterInviteConfigFrom
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -442,5 +443,6 @@ private fun io.ktor.server.application.Application.moduleWith(
     ed.unicoach.rest.subscriptionPlansFrom(config),
     ed.unicoach.rest.testAppleNotificationVerifier(),
     costReportConfigFrom(config),
+    supporterInviteConfigFrom(config),
   )
 }

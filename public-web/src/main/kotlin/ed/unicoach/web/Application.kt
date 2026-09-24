@@ -12,6 +12,8 @@ import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.family.SupporterInviteConfig
+import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
@@ -88,10 +90,12 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val databaseConfig = DatabaseConfig.from(config).getOrThrow()
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
+  val supporterInviteConfig = SupporterInviteConfig.from(config).getOrThrow()
 
   val database = Database(databaseConfig)
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
   val costReportSource: CostReportSource = ServiceCostReportSource(database, CollegeCostService(database))
+  val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator())
 
   val authServices = WebAuthServices.build(emailVerificationConfig, database)
 
@@ -109,6 +113,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         authService = authServices.authService,
         emailVerificationService = authServices.emailVerificationService,
         publicWebConfig = publicWebConfig,
+        supporterInviteService = supporterInviteService,
       )
     }
 
@@ -188,6 +193,7 @@ fun Application.publicWebModule(
   authService: AuthService,
   emailVerificationService: EmailVerificationService,
   publicWebConfig: PublicWebConfig,
+  supporterInviteService: SupporterInviteService,
 ) {
   // READ the bundle name while the module installs (RFC 225). WebAssets is an
   // `object`, so its manifest refusals run at class-init — and nothing touched
@@ -229,5 +235,6 @@ fun Application.publicWebModule(
     authService,
     emailVerificationService,
     publicWebConfig.session,
+    supporterInviteService,
   )
 }

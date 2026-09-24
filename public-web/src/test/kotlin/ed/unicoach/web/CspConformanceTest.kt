@@ -605,6 +605,8 @@ class CspConformanceTest {
       mapOf(
         RegisteredRoute(HttpMethod.Get, "/healthz") to "a JSON liveness probe: no HTML, so no resource for a policy to govern",
         RegisteredRoute(HttpMethod.Get, "/report") to "needs a live share token; ReportLinkContractTest owns that route",
+        RegisteredRoute(HttpMethod.Get, "/invite") to
+          "needs a live invite token: InviteRoutingTest mints one and renders the page, InviteLinkContractTest pins the link path",
         RegisteredRoute(HttpMethod.Get, "/account") to
           "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
         RegisteredRoute(HttpMethod.Get, "/account/email") to

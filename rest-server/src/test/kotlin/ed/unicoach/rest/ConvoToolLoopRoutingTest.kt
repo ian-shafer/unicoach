@@ -209,6 +209,7 @@ class ConvoToolLoopRoutingTest {
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
+            supporterInviteConfigFrom(config),
           )
         }
       server.start(wait = false)

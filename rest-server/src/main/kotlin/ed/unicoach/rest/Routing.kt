@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import ed.unicoach.error.FieldError
+import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.routing.AppleNotificationRouteHandler
@@ -14,6 +15,7 @@ import ed.unicoach.rest.routing.MoneyProfileRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
 import ed.unicoach.rest.routing.SubjectsRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
+import ed.unicoach.rest.routing.SupporterInviteRoutes
 import ed.unicoach.rest.routing.VocabularyRouteHandler
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -63,6 +65,7 @@ fun Application.configureRouting(
   vocabularyService: ed.unicoach.vocabulary.VocabularyService,
   subjectVocabularyService: ed.unicoach.coaching.SubjectVocabularyService,
   intendedSubjectsService: ed.unicoach.coaching.IntendedSubjectsService,
+  supporterInviteService: ed.unicoach.family.SupporterInviteService,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
@@ -86,6 +89,8 @@ fun Application.configureRouting(
     SubjectsRouteHandler(authService, studentService, subjectVocabularyService, sessionConfig)
   val intendedSubjectsRouteHandler =
     IntendedSubjectsRouteHandler(authService, studentService, intendedSubjectsService, sessionConfig)
+  val supporterInviteRouteHandler =
+    SupporterInviteRoutes(authService, studentService, sessionConfig, supporterInviteService)
   routing {
     route("/healthz") {
       get {
@@ -108,5 +113,6 @@ fun Application.configureRouting(
     vocabularyRouteHandler.registerRoutes(this)
     subjectsRouteHandler.registerRoutes(this)
     intendedSubjectsRouteHandler.registerRoutes(this)
+    supporterInviteRouteHandler.registerRoutes(this)
   }
 }

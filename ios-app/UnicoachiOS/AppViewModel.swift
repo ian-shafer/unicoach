@@ -20,6 +20,7 @@ class AppViewModel: ObservableObject {
     let appleSignInProvider: SsoSignInProviding
     let cookieStorage: CookieStorageProtocol
     let coachingUsageClient: CoachingUsageClientProtocol
+    let supporterInviteClient: SupporterInviteClientProtocol
 
     /// The StoreKit rail and the one `TransactionRecorder` over it.
     ///
@@ -95,6 +96,7 @@ class AppViewModel: ObservableObject {
         subjectsClient: SubjectsClientProtocol? = nil,
         intendedSubjectsClient: IntendedSubjectsClientProtocol? = nil,
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
+        supporterInviteClient: SupporterInviteClientProtocol? = nil,
         subscriptionClient: SubscriptionClientProtocol? = nil,
         subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = AppViewModel.defaultSubscriptionStore(),
         googleSignInProvider: SsoSignInProviding = GoogleSignInProvider(),
@@ -109,6 +111,7 @@ class AppViewModel: ObservableObject {
         self.subjectsClient = subjectsClient ?? SubjectsClient(apiClient: apiClient)
         self.intendedSubjectsClient = intendedSubjectsClient ?? IntendedSubjectsClient(apiClient: apiClient)
         self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)
+        self.supporterInviteClient = supporterInviteClient ?? SupporterInviteClient(apiClient: apiClient)
         self.googleSignInProvider = googleSignInProvider
         self.appleSignInProvider = appleSignInProvider
         self.cookieStorage = cookieStorage

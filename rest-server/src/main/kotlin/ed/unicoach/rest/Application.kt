@@ -42,6 +42,8 @@ import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.family.SupporterInviteConfig
+import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
@@ -137,6 +139,11 @@ fun startServer(
 
   val costReportConfig =
     CostReportConfig
+      .from(config)
+      .getOrThrow()
+
+  val supporterInviteConfig =
+    SupporterInviteConfig
       .from(config)
       .getOrThrow()
 
@@ -251,6 +258,7 @@ fun startServer(
             subscriptionPlans,
             appleNotificationVerifier,
             costReportConfig,
+            supporterInviteConfig,
           )
 
           install(SessionExpiryPlugin) {
@@ -297,6 +305,7 @@ fun Application.appModule(
   subscriptionPlans: SubscriptionPlans,
   appleNotificationVerifier: AppleNotificationVerifier,
   costReportConfig: CostReportConfig,
+  supporterInviteConfig: SupporterInviteConfig,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -307,6 +316,7 @@ fun Application.appModule(
 
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
+  val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, tokenGenerator)
   val emailVerificationService =
     EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
@@ -467,5 +477,6 @@ fun Application.appModule(
     vocabularyService,
     subjectVocabularyService,
     intendedSubjectsService,
+    supporterInviteService,
   )
 }

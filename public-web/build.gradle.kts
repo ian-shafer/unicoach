@@ -33,6 +33,9 @@ dependencies {
   // The one home of the UC San Diego Scorecard row (RFC 157), shared with the
   // :service cost tests that seed the same row.
   testImplementation(testFixtures(project(":service")))
+  // RFC 209's ONE `students` INSERT (StudentRowFixture), the same dependency
+  // :admin-web, :rest-server, :service and :college already carry.
+  testImplementation(testFixtures(project(":db")))
 }
 
 tasks.withType<Test> {

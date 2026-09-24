@@ -17,6 +17,7 @@ struct AuthenticatedRootView: View {
     let vocabularyClient: VocabularyClientProtocol
     let subjectsClient: SubjectsClientProtocol
     let intendedSubjectsClient: IntendedSubjectsClientProtocol
+    let supporterInviteClient: SupporterInviteClientProtocol
     let onProfileRequired: () -> Void
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
@@ -128,6 +129,7 @@ struct AuthenticatedRootView: View {
         subjectsClient: SubjectsClientProtocol,
         intendedSubjectsClient: IntendedSubjectsClientProtocol,
         coachingUsageClient: CoachingUsageClientProtocol,
+        supporterInviteClient: SupporterInviteClientProtocol,
         subscriptionStore: SubscriptionStoreProtocol,
         transactionRecorder: TransactionRecording,
         onProfileRequired: @escaping () -> Void,
@@ -142,6 +144,7 @@ struct AuthenticatedRootView: View {
         self.vocabularyClient = vocabularyClient
         self.subjectsClient = subjectsClient
         self.intendedSubjectsClient = intendedSubjectsClient
+        self.supporterInviteClient = supporterInviteClient
         self.onProfileRequired = onProfileRequired
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
@@ -366,6 +369,7 @@ struct AuthenticatedRootView: View {
             SettingsView(
                 user: user,
                 authClient: authClient,
+                supporterInviteClient: supporterInviteClient,
                 subscriptionViewModel: subscriptionViewModel,
                 onEmailChanged: onEmailChanged,
                 onLogout: onLogout
@@ -500,6 +504,7 @@ private final class AuthenticatedRootPreviewIntendedSubjectsClient: IntendedSubj
         subjectsClient: AuthenticatedRootPreviewSubjectsClient(),
         intendedSubjectsClient: AuthenticatedRootPreviewIntendedSubjectsClient(),
         coachingUsageClient: PreviewCoachingUsageClient(),
+        supporterInviteClient: PreviewSupporterInviteClient(),
         subscriptionStore: PreviewSubscriptionStore(),
         transactionRecorder: PreviewTransactionRecorder(),
         onProfileRequired: {},

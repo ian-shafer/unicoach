@@ -1,5 +1,6 @@
 package ed.unicoach.web.render
 
+import io.ktor.http.encodeURLParameter
 import kotlinx.html.FORM
 import kotlinx.html.FlowContent
 import kotlinx.html.FormMethod
@@ -8,6 +9,7 @@ import kotlinx.html.SECTION
 import kotlinx.html.div
 import kotlinx.html.form
 import kotlinx.html.h1
+import kotlinx.html.hiddenInput
 import kotlinx.html.id
 import kotlinx.html.input
 import kotlinx.html.label
@@ -49,6 +51,27 @@ const val PASSWORD_FIELD = "password"
 const val NAME_FIELD = "name"
 
 const val TOKEN_FIELD = "token"
+
+/**
+ * [path], carrying [token] on the one query key every invite door reads, or
+ * [path] alone when no invite is in flight (RFC 232).
+ *
+ * The render-side sibling of `ed.unicoach.common.config.tokenLink`, which joins
+ * the same key onto an ABSOLUTE minted base. Written once because four render
+ * sites spliced it by hand, and percent-encoded because the value arrives from
+ * a URL a human may have hand-edited: a token carrying `&` or `#` would
+ * otherwise silently become a different query string.
+ */
+fun pathCarryingToken(
+  path: String,
+  token: String?,
+): String = if (token == null) path else "$path?$TOKEN_FIELD=${token.encodeURLParameter()}"
+
+/** The hidden field that carries [token] through a form POST, or nothing when there is none. */
+fun FlowContent.tokenField(token: String?) {
+  if (token == null) return
+  hiddenInput(name = TOKEN_FIELD) { value = token }
+}
 
 // The shared form controls for every public-web form (RFC 224).
 //
@@ -99,6 +122,8 @@ enum class WebNotice(
 ) {
   EMAIL_CHANGED("email-changed", EMAIL_CHANGED_CONFIRMATION),
   RESENT("resent", RESEND_CONFIRMATION),
+  INVITE_ACCEPTED("invite-accepted", INVITE_ACCEPTED_CONFIRMATION),
+  INVITE_NOT_ACCEPTED("invite-not-accepted", INVITE_NOT_ACCEPTED_NOTICE),
   ;
 
   companion object {
