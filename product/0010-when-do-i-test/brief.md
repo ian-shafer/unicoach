@@ -4,8 +4,12 @@
 
 ## Status
 
-- **Phase:** EXECUTE — **waves 1 and 2 COMPLETE** (RFCs 186, 187, 195, 197).
-  Next startable: `test/04.5/one-date-seam`, `test/05`, `test/06`.
+- **Phase:** EXECUTE — **waves 1, 2 and 3 COMPLETE, and wave 4's first slice
+  landed** (RFCs 186, 187, 195, 197, 207, 208, 209, 213, 220, 227, 228, 229,
+  239). Only `test/08/the-psat-is-money` remains, and its PREFER edge on
+  `test/07` is now met: the curated award corpus and its `checked_on` discipline
+  exist, so the PSAT slice extends a seam rather than inventing a second one.
+  Ask `slice-board`, not this line.
 - **Gate 1 (prioritisation):** **APPROVED by Ian 2026-09-10, verbatim:
   "approve".** All fourteen decisions taken at their defaults. D4, D10 and D13
   already carried Ian's pre-approval amendments (explain the stakes once; infer
@@ -869,4 +873,33 @@ Two consequences, both binding:
   The update_test_scores tool records, corrects, removes and declines in
   conversation, and the coach context block remembers them across sessions. No
   superscore stored or spoken; no source column; soft delete. Coach prompt v41
-  (rollback v40). Executed: 3,742 tests, 0 failures.
+  (rollback v40). Executed: 3,742 tests, 0 failures. test/07/a-score-is-money
+  LANDED as RFC 239 (main@a53b7be3 + 483ca64b, 2026-09-25) — at eighteen curated
+  public universities a test score band IS a price, and the coach now says so:
+  the band, the dollars a year, whether a score must be submitted to qualify at
+  all, that school's superscore rule FOR SCHOLARSHIP MONEY, and the last sitting
+  that still makes its money deadline. Two tables (college_automatic_awards +
+  college_automatic_award_bands, one row per published CELL so a score x GPA
+  matrix survives) and a hand-typed corpus: 60 award rows over 40 schools, 571
+  cells, 53 pages read 2026-09-24 and re-answered by bin/check-link. Five honest
+  answers, not two: a score moves the money here / this school publishes a table
+  a score does not affect / we read the page and there is no automatic award /
+  we have not read this school / its own rule does not permit a combination.
+  Loaded by the INGEST run, not a migration, because colleges arrive from the
+  import (D27's failure); the loader REFUSES an unknown unit id, a name that
+  disagrees with ours, a GPA the column cannot store exactly, a score off the
+  published scale, a band under a publishes-nothing row, and a claim with no
+  publisher's words — each by file, line and cell. Ian reversed the draft's
+  refusal to compute a combination ("Math is easy, right?"): we combine best
+  SECTIONS where the school's page accepts it, never totals, never across ACT's
+  2025 three-vs-four-subject change, and never called an ACT Superscore.
+  Review's three blocking findings were all wrong money that no test caught: a
+  top award priced in WORDS ranked as $0, a student below every band treated as
+  earning nothing, and a four-decimal GPA rounded by Postgres into another
+  tier's row. Coach prompt v45 (rollback v44). Executed: 3,837 tests 0 failures;
+  1,154 shell assertions; the committed corpus loads into a real database with
+  zero refusals, now a test. Door: the chat, plus a report-award-grid block on
+  the family cost report that names the school's grid and NOTHING about the
+  student's score. Owed re-reads (PROVENANCE.json): Ole Miss in-state, Oklahoma,
+  Wyoming, Montana State and Utah still publish only their Fall 2026 grid; UVA
+  refuses every client we have.
