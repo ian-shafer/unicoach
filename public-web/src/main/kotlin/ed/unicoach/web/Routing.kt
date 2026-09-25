@@ -33,8 +33,10 @@ import ed.unicoach.web.common.http.respondSeeOther
 import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
+import ed.unicoach.web.fafsa.FafsaDeadlineSource
 import ed.unicoach.web.render.ChangeEmailFormState
 import ed.unicoach.web.render.EMAIL_FIELD
+import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.InviteViewer
 import ed.unicoach.web.render.NAME_FIELD
 import ed.unicoach.web.render.PASSWORD_FIELD
@@ -47,6 +49,7 @@ import ed.unicoach.web.render.WebNotice
 import ed.unicoach.web.render.respondAccountPage
 import ed.unicoach.web.render.respondChangeEmailPage
 import ed.unicoach.web.render.respondCostReportPage
+import ed.unicoach.web.render.respondFafsaPage
 import ed.unicoach.web.render.respondHomePage
 import ed.unicoach.web.render.respondInvitePage
 import ed.unicoach.web.render.respondNotFoundPage
@@ -220,6 +223,7 @@ private val ImmutableBundleCachePlugin =
 fun Application.installPublicWebRouting(
   emailVerifier: EmailVerifier,
   costReportSource: CostReportSource,
+  fafsaDeadlines: FafsaDeadlineSource,
   openInAppUrl: String?,
   authService: AuthService,
   emailVerificationService: EmailVerificationService,
@@ -266,6 +270,7 @@ fun Application.installPublicWebRouting(
     get("/terms") { call.respondTermsPage(call.shellNav(authService, sessionConfig)) }
     get("/privacy") { call.respondPrivacyPage(call.shellNav(authService, sessionConfig)) }
     get(WHO_PAYS_PATH) { call.respondWhoPaysPage(call.shellNav(authService, sessionConfig)) }
+    get(FAFSA_PATH) { call.respondFafsaPage(fafsaDeadlines, call.shellNav(authService, sessionConfig)) }
 
     // Side-effect-free confirm step: a non-blank token renders the confirm form.
     //

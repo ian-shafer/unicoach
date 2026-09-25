@@ -126,10 +126,12 @@ object FafsaFilingDeadlineFixture {
    * already filled. A field is a PARAMETER when a landed case varies it -- the
    * live set varies [awardYear] and [jurisdiction], expiry varies [expiresOn]
    * and [checkedOn] -- and a fixture's own constant when none does: the
-   * publisher and the citation are [DEFAULT_PUBLISHER] and
-   * [defaultSourceUrl], with no archive, because no case is about them. A
-   * suite that becomes about the citation adds the parameter back in the same
-   * commit as the case that overrides it, and not before.
+   * publisher is [DEFAULT_PUBLISHER] and the page is [defaultSourceUrl],
+   * because no case is about either. [archiveUrl] IS a parameter, and arrived
+   * with the case that overrides it: a suite asserting what a door does with an
+   * archived address -- offered where the sweep still finds it, withheld where
+   * it recorded a grave -- cannot seed the row it needs without one. It defaults
+   * to no archive, which is what the committed corpus holds for most rows.
    *
    * The defaults satisfy the schema's CHECKs for a [DEFAULT_AWARD_YEAR] row:
    * [DEFAULT_CHECKED_ON] is inside the cycle's window and before
@@ -142,6 +144,7 @@ object FafsaFilingDeadlineFixture {
     program: String = DEFAULT_PROGRAM,
     event: AidDeadlineEvent = AidDeadlineEvent.PRIORITY_DEADLINE,
     deadline: PublishedDeadline = DEFAULT_DEADLINE,
+    archiveUrl: String? = null,
     checkedOn: LocalDate = DEFAULT_CHECKED_ON,
     expiresOn: LocalDate = DEFAULT_EXPIRES_ON,
   ): NewFafsaFilingDeadline =
@@ -153,7 +156,7 @@ object FafsaFilingDeadlineFixture {
       deadline = deadline,
       publisher = DEFAULT_PUBLISHER,
       sourceUrl = defaultSourceUrl(jurisdiction, program),
-      archiveUrl = null,
+      archiveUrl = archiveUrl,
       checkedOn = checkedOn,
       expiresOn = expiresOn,
     )

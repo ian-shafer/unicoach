@@ -2,6 +2,7 @@ package ed.unicoach.web
 
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
+import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.WHO_PAYS_PATH
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
@@ -564,6 +565,7 @@ class CspConformanceTest {
         PublicPage("/terms"),
         PublicPage("/privacy"),
         PublicPage(WHO_PAYS_PATH),
+        PublicPage(FAFSA_PATH),
         // Both branches of the confirm step: no token renders the outcome page,
         // a token renders the confirm FORM, and they are different pages.
         PublicPage("/verify-email"),

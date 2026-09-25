@@ -4,8 +4,10 @@ import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AidDeadlineEvent
 import ed.unicoach.db.models.AidDeadlineKind
 import ed.unicoach.db.models.DeadlineJurisdiction
+import ed.unicoach.db.models.NewExternalDocument
 import ed.unicoach.db.models.NewFafsaFilingDeadline
 import ed.unicoach.db.models.PublishedDeadline
+import ed.unicoach.db.models.SourceUrlStatus
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -141,7 +143,7 @@ class FafsaFilingDeadlineDaoTest {
     // The citation survives the move into external_documents (RFC 213): the
     // read joins both urls back.
     assertEquals(sourceUrlFor("Cal Grant"), california.sourceUrl)
-    assertEquals("https://web.archive.org/ca", california.archiveUrl)
+    assertEquals("https://web.archive.org/ca", california.archive?.url)
     assertEquals(CHECKED_ON, california.checkedOn)
     assertEquals(EXPIRES_ON, california.expiresOn)
 
@@ -158,13 +160,74 @@ class FafsaFilingDeadlineDaoTest {
       texas.deadline !is PublishedDeadline.OnDate,
       "a wording row must read back as words, never as a guessed date",
     )
-    assertNull(texas.archiveUrl, "a row that needed no archive must read back as null, not as its own source")
+    assertNull(texas.archive, "a row that needed no archive must read back as null, not as its own source")
 
     val wyoming = rows.single { it.jurisdiction == DeadlineJurisdiction.State.of("WY")!! }
     // A VERIFIED absence, with a citation -- which is a different thing from a
     // missing row, and the public page prints them differently (D9).
     assertEquals(PublishedDeadline.NonePublished("no state filing deadline is published"), wyoming.deadline)
     assertEquals(sourceUrlFor("Hathaway Scholarship"), wyoming.sourceUrl)
+  }
+
+  /**
+   * RFC 200 reaches this table: a row's two urls are read back WITH the link
+   * sweep's verdict on each, because the public page cannot obey "never link to
+   * a grave" without it and must not decide it for itself.
+   *
+   * A citing write records FOUND on the day it read the page
+   * ([ExternalDocumentsDao.citationIds]); a SWEEP is what changes that, so the
+   * sweep is what this case runs.
+   */
+  @Test
+  fun `each citation reads back with the link sweep's verdict, and no archive means no archive verdict`() {
+    FafsaFilingDeadlineDao
+      .upsert(
+        session,
+        deadline(
+          jurisdiction = DeadlineJurisdiction.State.of("WY")!!,
+          program = "Hathaway Scholarship",
+          deadline = PublishedDeadline.NonePublished("no state filing deadline is published"),
+        ),
+      ).getOrThrow()
+    ExternalDocumentsDao
+      .upsert(
+        session,
+        NewExternalDocument(
+          url = sourceUrlFor("Hathaway Scholarship"),
+          urlStatus = SourceUrlStatus.NOT_FOUND,
+          urlCheckedOn = LocalDate.of(2026, 9, 16),
+        ),
+      ).getOrThrow()
+
+    val wyoming = FafsaFilingDeadlineDao.listAll(session).getOrThrow().single()
+
+    assertEquals(
+      SourceUrlStatus.NOT_FOUND,
+      wyoming.sourceUrlStatus,
+      "the sweep's verdict did not reach the row that cites the swept page",
+    )
+    assertNull(wyoming.archive, "a row with no archived address must carry no verdict about one either")
+  }
+
+  /** A row read through an archive carries a verdict for that address too, separately from its source's. */
+  @Test
+  fun `an archived citation carries its own verdict`() {
+    FafsaFilingDeadlineDao
+      .upsert(
+        session,
+        deadline(
+          jurisdiction = DeadlineJurisdiction.State.of("CA")!!,
+          program = "Cal Grant",
+          archiveUrl = "https://web.archive.org/ca-verdict",
+        ),
+      ).getOrThrow()
+
+    val california = FafsaFilingDeadlineDao.listAll(session).getOrThrow().single()
+
+    // Both were written by the CITING path, which records what it knows on the
+    // day it read the page and never overwrites a sweep (RFC 182).
+    assertEquals(SourceUrlStatus.FOUND, california.sourceUrlStatus)
+    assertEquals(SourceUrlStatus.FOUND, california.archive?.urlStatus)
   }
 
   @Test

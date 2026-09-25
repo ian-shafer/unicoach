@@ -65,6 +65,26 @@ enum class SourceUrlStatus(
         NOT_FOUND -> true
       }
 
+  /**
+   * Whether we are still willing to point a reader at the address this verdict
+   * is about, as an ANCHOR (RFC 200) -- the ONE place that question is
+   * answered, for a college's Common Data Set filing, a state agency's
+   * deadline page and a hand-typed corpus entry alike.
+   *
+   * An exhaustive `when` with no `else`, and written ONCE for the reason
+   * [requiresCheckedOn] is: a status added later must ANSWER this here rather
+   * than inherit "yes" from a `!= NOT_FOUND` written in whichever page asked
+   * last. Only a recorded 404 drops the anchor -- a check that could not reach
+   * the network is OUR gap and never the publisher's silence.
+   */
+  val rendersAsAnchor: Boolean
+    get() =
+      when (this) {
+        UNKNOWN -> true
+        FOUND -> true
+        NOT_FOUND -> false
+      }
+
   companion object {
     /**
      * The status behind a stored value, or null where the string is none of

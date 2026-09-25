@@ -1,5 +1,6 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.render.FAFSA_PATH
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -31,7 +32,7 @@ class WebAuthGateTest {
     testApplication {
       application { testPublicWebModule() }
 
-      for (path in listOf("/", "/terms", "/privacy", "/healthz", "/site.css", "/sign-in", "/register")) {
+      for (path in listOf("/", "/terms", "/privacy", FAFSA_PATH, "/healthz", "/site.css", "/sign-in", "/register")) {
         assertEquals(HttpStatusCode.OK, client.get(path).status, "[$path] is no longer reachable signed out")
       }
     }

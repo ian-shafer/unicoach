@@ -1,5 +1,6 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.util.requireCitedPageUrl
 import java.time.LocalDate
 import java.util.UUID
 
@@ -52,8 +53,10 @@ data class NewExternalDocument(
     // refused where it is written rather than at the statement. There is no
     // third check for a missing date: [urlCheckedOn]'s TYPE is that check now.
     require(url.isNotEmpty()) { "external document url is empty: an empty url is a url-shaped absence" }
-    require(url.startsWith("http://") || url.startsWith("https://")) {
-      "external document url [$url] has no http(s) scheme: the scheme is stated, never guessed at"
-    }
+    // THE SCHEME RULE IS [requireCitedPageUrl]'s, and this row is where that
+    // rule comes from: the readers that cite a document had each re-typed it,
+    // three of them more strictly than this table, so the bar now has one home
+    // and every citing type reads it from there.
+    requireCitedPageUrl(url, "external document url")
   }
 }

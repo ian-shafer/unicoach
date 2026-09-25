@@ -8,6 +8,7 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.coaching.aid.FafsaDeadlineService
 import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
@@ -23,6 +24,8 @@ import ed.unicoach.web.auth.installWebAuthGate
 import ed.unicoach.web.common.http.installSameOriginGuard
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import ed.unicoach.web.common.logging.configureRequestLogging
+import ed.unicoach.web.fafsa.FafsaDeadlineSource
+import ed.unicoach.web.fafsa.ServiceFafsaDeadlineSource
 import ed.unicoach.web.render.respondForbiddenPage
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.ServiceCostReportSource
@@ -95,6 +98,9 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val database = Database(databaseConfig)
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
   val costReportSource: CostReportSource = ServiceCostReportSource(database, CollegeCostService(database))
+  // RFC 230 assigned this construction site to `fafsa/04`: the public page and
+  // the coach read ONE service, so the two doors cannot disagree about a date.
+  val fafsaDeadlines: FafsaDeadlineSource = ServiceFafsaDeadlineSource(FafsaDeadlineService(database))
   val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator())
 
   val authServices = WebAuthServices.build(emailVerificationConfig, database)
@@ -105,6 +111,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       publicWebModule(
         emailVerifier,
         costReportSource,
+        fafsaDeadlines,
         publicWebConfig.openInAppUrl,
         requestLoggingConfig,
         // `bundleUrl` keeps its default (WebAssets.MAIN); the three auth
@@ -187,6 +194,7 @@ fun main() {
 fun Application.publicWebModule(
   emailVerifier: EmailVerifier,
   costReportSource: CostReportSource,
+  fafsaDeadlines: FafsaDeadlineSource,
   openInAppUrl: String?,
   requestLoggingConfig: RequestLoggingConfig,
   bundleUrl: () -> String = { WebAssets.MAIN },
@@ -231,6 +239,7 @@ fun Application.publicWebModule(
   installPublicWebRouting(
     emailVerifier,
     costReportSource,
+    fafsaDeadlines,
     openInAppUrl,
     authService,
     emailVerificationService,

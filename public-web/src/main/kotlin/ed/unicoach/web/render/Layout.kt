@@ -182,6 +182,11 @@ fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
       a(href = "/") { +"Home" }
       a(href = "/terms") { +"Terms" }
       a(href = "/privacy") { +"Privacy" }
+      // THE DOOR TO THE FAFSA PAGE (RFC 238). A page only a URL-typer can
+      // reach is not a page a family reaches, and this is the one place a
+      // signed-out visitor is offered it. The label reads the page's own
+      // title, on the line below's rule.
+      a(href = FAFSA_PATH) { +FAFSA_TITLE }
       // Label and path both read from the page itself, so the header cannot
       // name it one thing while the page calls itself another.
       a(href = WHO_PAYS_PATH) { +whoPaysPage.title }

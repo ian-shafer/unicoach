@@ -259,6 +259,34 @@ main {
   margin-top: 1.75rem;
 }
 
+/* EVERY DATA TABLE ON THIS SITE, written once. A data table is a grid on a
+   laptop and one card per row on a phone, each value re-labelled with the
+   column it came from (the `data-label` the renderer writes). The Family Cost
+   Report's money grid (RFC 155) and the guides' cited tables (RFC 238) are the
+   same mechanism, so it is stated here against the one class both of them
+   carry (`DataTable.kt`), and each page's own class below tunes only what that
+   page actually differs in. The stacking half is in section 6 with the other
+   media block. Two copies of this would be one fix half applied. */
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+/* The header row is quiet: it labels the grid rather than competing with it. */
+.data-table thead th {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* RFC 155 — the Family Cost Report. Wide screens get a real table; below the
    phone breakpoint every row stacks into a card per school, because the parent
    reading a link pasted into a message is on a phone and a five-column table
@@ -301,24 +329,10 @@ main {
   font-size: 0.9rem;
 }
 
+/* What the report's table differs in, and nothing else: its spacing, and its
+   figures. */
 .report-table {
-  width: 100%;
-  border-collapse: collapse;
   margin: 1rem 0;
-}
-
-.report-table th,
-.report-table td {
-  border-bottom: 1px solid var(--border);
-  padding: 0.5rem 0.6rem;
-  text-align: left;
-  vertical-align: top;
-}
-
-.report-table thead th {
-  font-size: 0.85rem;
-  text-transform: none;
-  color: var(--muted);
 }
 
 .report-table .report-value {
@@ -420,6 +434,37 @@ main {
 
 .guide-sources li {
   margin-bottom: 0.6rem;
+  overflow-wrap: anywhere;
+}
+
+/* RFC 238 — the /fafsa deadline tables. One table per region, and every ROW
+   carries its own citation in its last cell rather than a marker into the list
+   at the foot: there are more agency pages here than that list could hold, and
+   a family scanning for its own state wants the agency's name in front of it.
+
+   The MECHANISM is .data-table's, above and shared with the report's table:
+   below the breakpoint the grid becomes one card per row, each value
+   re-labelled with the column it came from. What is left here is what this
+   page differs in -- its spacing, its caption, and the quiet citation cell. */
+
+.guide-table {
+  margin: 1rem 0 2rem;
+}
+
+/* The region's name, above its own table. A caption and not a heading: it
+   labels this table rather than opening a new run of the page. */
+.guide-table caption {
+  text-align: left;
+  font-weight: 600;
+  padding-bottom: 0.4rem;
+}
+
+/* The row's own citation: quiet, because it is standing material beside the
+   fact, and `overflow-wrap` because an agency's name can be long and a phone
+   card is narrow. */
+.guide-cell-source {
+  color: var(--muted);
+  font-size: 0.85rem;
   overflow-wrap: anywhere;
 }
 
@@ -569,42 +614,47 @@ main {
    each. Three were permitted; each one is a place a later slice can get wrong.
    --------------------------------------------------------------------------- */
 
-/* 640px — the phone. The report table stops being a grid and becomes one card
-   per school (RFC 155). */
+/* 640px — the phone. A DATA TABLE stops being a grid and becomes one card per
+   row: the report's schools (RFC 155) and /fafsa's jurisdictions (RFC 238) get
+   the same answer, so it is written once, for the class both of them carry. A
+   table of fifty-one jurisdictions, or of five figures, is unreadable as a grid
+   at 320px. */
 @media (max-width: 640px) {
-  .report-table,
-  .report-table tbody,
-  .report-table tr,
-  .report-table th,
-  .report-table td {
+  .data-table,
+  .data-table tbody,
+  .data-table tr,
+  .data-table th,
+  .data-table td {
     display: block;
     width: 100%;
   }
 
-  .report-table thead {
+  .data-table thead {
     display: none;
   }
 
-  .report-table tr {
+  .data-table tr {
     border-bottom: 1px solid var(--border);
     padding: 0.5rem 0;
   }
 
-  .report-table th,
-  .report-table td {
+  .data-table th,
+  .data-table td {
     border-bottom: none;
     padding: 0.15rem 0;
   }
 
-  .report-table .report-value {
-    text-align: left;
-  }
-
-  /* The column header the grid no longer shows, restored beside the figure. */
-  .report-table .report-value[data-label]::before {
+  /* The column header the grid no longer shows, restored beside the value. */
+  .data-table [data-label]::before {
     content: attr(data-label) ": ";
     color: var(--muted);
     font-size: 0.85rem;
+  }
+
+  /* The report's figures are the one thing that differs: right-aligned in the
+     grid, left-aligned once the row is a card. */
+  .report-table .report-value {
+    text-align: left;
   }
 }
 

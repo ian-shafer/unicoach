@@ -69,10 +69,14 @@ enum class StateGap(
    * own agency's page (D9).
    *
    * SAID AS WHAT THE DATA OWNS. `missingJurisdictions` is a served
-   * jurisdiction with no live row, and it records no attempt at all -- so this
-   * is never "we went to their page and were blocked", which would be a claim
-   * about somebody else's page that the first partly harvested cycle makes
-   * false.
+   * jurisdiction with no live row, and this code says exactly that and nothing
+   * more. Since RFC 238 the value can ALSO carry the agency whose own page a
+   * person opened and got no deadline from ([MissingJurisdiction.agency]), and
+   * this door serves none of it -- the `/fafsa` page is where that citation is
+   * printed, per jurisdiction, beside the gap. So this gap is still never "we
+   * went to their page and were blocked", which for a jurisdiction that merely
+   * lost its rows in a re-seed would be a claim about somebody else's page that
+   * nothing in our data supports.
    */
   NOT_VERIFIED(
     "not_verified",
@@ -273,7 +277,21 @@ class FafsaDeadlineChatTool(
       // pages, and a family checking one date needs the page that date came from.
       put(PUBLISHER_KEY, deadline.publisher)
       put(SOURCE_URL_KEY, deadline.sourceUrl)
-      put(ARCHIVE_URL_KEY, deadline.archiveUrl?.let(::JsonPrimitive) ?: JsonNull)
+      // AN ARCHIVED ADDRESS WE RECORDED AS A GRAVE IS NOT OFFERED, and the
+      // question is ASKED and never re-spelled: the one home for "may this
+      // address still be pointed at" is [SourceUrlStatus.rendersAsAnchor], so a
+      // status added later is answered there rather than inheriting "yes" from a
+      // `!= NOT_FOUND` written here. Handing the model a url we know answers 404
+      // is the same harm as an anchor onto one -- the coach reads it aloud -- and
+      // the key is already an explicit null for a row that was read through no
+      // archive at all, so a withheld address needs no new vocabulary.
+      put(
+        ARCHIVE_URL_KEY,
+        deadline.archive
+          ?.takeIf { it.urlStatus.rendersAsAnchor }
+          ?.url
+          ?.let(::JsonPrimitive) ?: JsonNull,
+      )
       put(CHECKED_ON_KEY, deadline.checkedOn.toString())
     }
 
@@ -377,8 +395,9 @@ class FafsaDeadlineChatTool(
    *
    * The `not_verified` list is the service's own
    * [FafsaDeadlines.Resolved.missingJurisdictions] and is never re-derived here
-   * (D9); it records no attempt at all, so it is never "we went to their page
-   * and were blocked". [StateGap.NOT_SERVED] is a claim about the FAMILY's
+   * (D9); what this door says about it is that we hold no verified deadline, and
+   * never the agency that value may name ([StateGap.NOT_VERIFIED]), so it is
+   * never "we went to their page and were blocked". [StateGap.NOT_SERVED] is a claim about the FAMILY's
    * jurisdiction rather than about our data, so it is the one arm that has to be
    * TESTED before it is said.
    */
@@ -395,7 +414,7 @@ class FafsaDeadlineChatTool(
     // the codebook.
     val coveredJurisdictions =
       resolved.states.mapTo(mutableSetOf()) { it.jurisdiction.uspsCode } +
-        resolved.missingJurisdictions.map { it.uspsCode }
+        resolved.missingJurisdictions.map { it.jurisdiction.uspsCode }
     return when {
       // Covered, and we hold no live row for it (D9): we hold no deadline for
       // that state that a human has verified. It is NOT a claim that anybody
@@ -736,7 +755,8 @@ class FafsaDeadlineChatTool(
         "the time zone a date cannot hold.\n" +
         "$PUBLISHER_KEY / $SOURCE_URL_KEY / $ARCHIVE_URL_KEY - who published this row and the page it was read " +
         "from, per row; $ARCHIVE_URL_KEY is the archived address where that agency's page opens for no client " +
-        "we have, and is null where none was needed.\n" +
+        "we have, and is null where none was needed or where that archived address is itself no longer " +
+        "served.\n" +
         "$CHECKED_ON_KEY - the day WE read that page.\n" +
         "$NO_DEADLINES_KEY - present and true when there is no live answer at all. Then $REASON_KEY is one of " +
         "$NO_DEADLINES_REASONS, $HELD_AWARD_YEARS_KEY names the cycles we hold, $REFUSAL_KEY is what to say, " +

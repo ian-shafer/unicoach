@@ -1,5 +1,6 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.render.FAFSA_PATH
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -28,12 +29,18 @@ class ShellNavTest {
     testApplication {
       application { testPublicWebModule() }
 
-      for (path in listOf("/", "/terms", "/privacy", "/sign-in", "/register")) {
+      for (path in listOf("/", "/terms", "/privacy", FAFSA_PATH, "/sign-in", "/register")) {
+        // OK FIRST, and the path read from the page that owns it. The branded
+        // 404 renders this very header, so both assertions below pass for a
+        // path that is no longer a page at all -- which is what a renamed
+        // route would leave behind.
+        val response = client.get(path)
+        assertEquals(HttpStatusCode.OK, response.status, "[$path] is not a page")
         // The HEADER, not the whole page. The registration page also links to
         // sign-in from its own body ("Already have an account?"), which is a
         // different link with a different job; counting over the whole document
         // would make this test pass or fail on page copy.
-        val header = headerOf(client.get(path).bodyAsText())
+        val header = headerOf(response.bodyAsText())
         assertEquals(
           1,
           Regex("<a href=\"/sign-in\">Sign in</a>").findAll(header).count(),
@@ -78,13 +85,23 @@ class ShellNavTest {
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
 
-      for (path in listOf("/terms", "/privacy", "/guides/who-pays-for-college-advice", "/no-such-page")) {
-        val shellHeader =
-          headerOf(
-            noFollowClient()
-              .get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }
-              .bodyAsText(),
-          )
+      // EACH PATH WITH THE STATUS IT OWES. The 404 page is deliberately in the
+      // set -- it is a page a signed-in family reaches -- and it renders the
+      // same header as every other, so without the expected status beside it a
+      // real page that had been renamed away would pass here as "the 404".
+      val pages =
+        listOf(
+          "/terms" to HttpStatusCode.OK,
+          "/privacy" to HttpStatusCode.OK,
+          "/guides/who-pays-for-college-advice" to HttpStatusCode.OK,
+          FAFSA_PATH to HttpStatusCode.OK,
+          "/no-such-page" to HttpStatusCode.NotFound,
+        )
+      for ((path, expected) in pages) {
+        val response =
+          noFollowClient().get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }
+        assertEquals(expected, response.status, "[$path] did not answer as the page this case is about")
+        val shellHeader = headerOf(response.bodyAsText())
         assertTrue(
           shellHeader.contains("action=\"/sign-out\""),
           "[$path] renders no sign-out control for a signed-in family: they cannot sign out from this page",

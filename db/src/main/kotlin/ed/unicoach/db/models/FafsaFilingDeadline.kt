@@ -170,7 +170,7 @@ sealed interface DeadlineJurisdiction {
  *
  * Hand-typed from each publisher's page (brief 0010 D19, the RFC 197
  * precedent), which is why every row carries its OWN citation
- * ([sourceUrl]/[archiveUrl], [checkedOn]) and its OWN [expiresOn] rather than
+ * ([sourceUrl]/[archive], [checkedOn]) and its OWN [expiresOn] rather than
  * the table carrying one. Expiry is NOT decided here: `fafsa/03`'s service owns
  * the refusal, and this layer returns rows and their dates.
  *
@@ -209,8 +209,27 @@ data class FafsaFilingDeadline(
   val publisher: String,
   /** The agency's own page, read through the `external_documents` join. A row cites something or it does not exist. */
   val sourceUrl: String,
-  /** The archived address the row was read through, where the agency's page opens for no client we have. Null where none was needed. */
-  val archiveUrl: String?,
+  /**
+   * Whether [sourceUrl] was still served when the link sweep last asked
+   * (RFC 200), read from the document beside the url it is about.
+   *
+   * RECORDED AT INGEST, never asked at render: a family waiting on a state
+   * agency's web server is the failure this column exists to prevent. Only
+   * [SourceUrlStatus.NOT_FOUND] drops the anchor -- the rule is
+   * [SourceUrlStatus]'s and is stated once, there.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
+  /**
+   * The archived address the row was read through, WITH the sweep's verdict on
+   * it, where the agency's page opens for no client we have. Null where none
+   * was needed.
+   *
+   * ONE VALUE and not a url beside a status ([ArchivedCitation]): the pair
+   * cannot then say a row has a dead archive it never had, nor an address
+   * nothing has ever been asked about. The nullability is the LEFT join's, not
+   * a default.
+   */
+  val archive: ArchivedCitation?,
   /** The day a human read [sourceUrl]. A day in the world, so a `LocalDate` and not an instant. */
   val checkedOn: LocalDate,
   /**

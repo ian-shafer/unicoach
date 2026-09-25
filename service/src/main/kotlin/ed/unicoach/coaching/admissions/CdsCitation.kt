@@ -91,32 +91,25 @@ data class CdsCitation(
 
   /**
    * Whether we are still willing to point a reader at the college's own file
-   * (RFC 200) -- the ONE place that question is answered.
+   * (RFC 200), as this type's callers ask it.
    *
    * Every surface that withholds something because the file is gone asks THIS:
    * [linkTargetOrNull] drops the anchor, [putCitation] emits a note instead of
    * a url, and `AidPolicyWire` drops the sentence that promises the link (via
-   * `FilingLink`). Written once, because the rule is one rule -- a fourth
-   * status, or a second reason to withhold a link, is then added here and
-   * nowhere else, instead of being hunted across three spellings in two
-   * packages.
+   * `FilingLink`).
+   *
+   * IT DELEGATES AND DOES NOT DECIDE. The rule is one rule and its one home is
+   * [SourceUrlStatus.rendersAsAnchor], an exhaustive `when` with no `else`, so
+   * a fourth status -- or a second reason to withhold a link -- is answered
+   * there and nowhere else, instead of being hunted across three spellings in
+   * two packages. In particular nothing here, and nothing in any page, may
+   * spell the question `!= NOT_FOUND`: that form inherits "yes" for a status
+   * nobody has thought about yet.
    *
    * A PROPERTY and not a function: it cannot fault and it reads as the fact it
    * is, unlike [linkTarget], which can.
    */
-  val linksToFile: Boolean get() =
-    when (sourceUrlStatus) {
-      // EXHAUSTIVE, with no `else`, deliberately. This is the one predicate
-      // that decides whether we point a family at a school's file, so a status
-      // added later must be ANSWERED here rather than inheriting "yes" from a
-      // `!= NOT_FOUND`. That is what makes the claim elsewhere in this RFC --
-      // that a fourth answer fails to compile -- true at this seam too.
-      SourceUrlStatus.FOUND -> true
-
-      SourceUrlStatus.UNKNOWN -> true
-
-      SourceUrlStatus.NOT_FOUND -> false
-    }
+  val linksToFile: Boolean get() = sourceUrlStatus.rendersAsAnchor
 
   /**
    * The `href` for a filing we are still willing to point at, or null where the

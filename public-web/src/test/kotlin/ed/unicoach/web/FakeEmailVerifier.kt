@@ -9,6 +9,7 @@ import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.common.logging.Detail
 import ed.unicoach.web.common.logging.HeaderSelection
 import ed.unicoach.web.common.logging.RequestLoggingConfig
+import ed.unicoach.web.fafsa.FafsaDeadlineSource
 import ed.unicoach.web.report.CostReportSource
 import io.ktor.server.application.Application
 import java.util.concurrent.atomic.AtomicInteger
@@ -54,6 +55,7 @@ val TEST_REQUEST_LOG_CONFIG =
 fun Application.testPublicWebModule(
   emailVerifier: EmailVerifier = FakeEmailVerifier(),
   costReportSource: CostReportSource = FakeCostReportSource(),
+  fafsaDeadlines: FafsaDeadlineSource = FakeFafsaDeadlineSource(),
   openInAppUrl: String? = TEST_OPEN_IN_APP_URL,
   requestLoggingConfig: RequestLoggingConfig = TEST_REQUEST_LOG_CONFIG,
   bundleUrl: () -> String = { WebAssets.MAIN },
@@ -65,6 +67,7 @@ fun Application.testPublicWebModule(
   publicWebModule(
     emailVerifier,
     costReportSource,
+    fafsaDeadlines,
     openInAppUrl,
     requestLoggingConfig,
     bundleUrl,

@@ -44,14 +44,17 @@ import ed.unicoach.coaching.aid.FafsaDeadlineChatTool.Companion.STATE_NAME_KEY
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.ExternalDocumentsDao
 import ed.unicoach.db.dao.FafsaFilingDeadlineFixture
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AidDeadlineEvent
 import ed.unicoach.db.models.DeadlineJurisdiction
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneyProfileUpsert
+import ed.unicoach.db.models.NewExternalDocument
 import ed.unicoach.db.models.NewFafsaFilingDeadline
 import ed.unicoach.db.models.PublishedDeadline
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
@@ -175,6 +178,63 @@ class FafsaDeadlineChatToolTest {
         "the day a human read that page rides on the row",
       )
     }
+  }
+
+  /**
+   * The archived address a row was read THROUGH reaches the family while the
+   * sweep still finds it, and is WITHHELD where the sweep recorded a grave
+   * (RFC 200).
+   *
+   * THE COACH SAYS THIS ADDRESS OUT LOUD, which is why the rule reaches this
+   * door at all: a url handed to the model as data is a url a family is sent
+   * to, so "never point a reader at a grave" is the same rule here as on the
+   * page, asked through the one home for it
+   * ([SourceUrlStatus.rendersAsAnchor]).
+   *
+   * BOTH HALVES IN ONE CASE, because the withholding half passes for the wrong
+   * reason on its own: a row that carries no archive at all also serves a null,
+   * so the grave is only distinguishable beside an archived address that DID
+   * arrive.
+   */
+  @Test
+  fun `an archived address is served while it resolves, and withheld where we recorded a grave`() {
+    val student = student()
+    answerResidency(student, "CA")
+    seed(
+      listOf(
+        row(jurisdiction = state("CA"), program = CAL_GRANT, archiveUrl = LIVE_ARCHIVE),
+        row(
+          jurisdiction = state("CA"),
+          program = CAL_GRANT_IN_WORDS,
+          deadline = PublishedDeadline.InWords(IN_WORDS),
+          archiveUrl = DEAD_ARCHIVE,
+        ),
+      ),
+    )
+    // The SWEEP's verdict, written as a sweep writes it -- after the citing
+    // write, which is the only order that can overwrite what citing recorded.
+    ExternalDocumentsDao
+      .upsert(
+        CoachingTestDb.sqlSession,
+        NewExternalDocument(url = DEAD_ARCHIVE, urlStatus = SourceUrlStatus.NOT_FOUND, urlCheckedOn = ARCHIVE_SWEPT_ON),
+      ).getOrThrow()
+
+    val payload = execute(student)
+
+    val archivesByProgram =
+      payload
+        .getValue(STATE_DEADLINES_KEY)
+        .jsonArray
+        .associate { served ->
+          val deadline = served.jsonObject
+          deadline.getValue(PROGRAM_KEY).jsonPrimitive.content to stringOrNull(deadline.getValue(ARCHIVE_URL_KEY))
+        }
+
+    assertEquals(
+      mapOf(CAL_GRANT to LIVE_ARCHIVE, CAL_GRANT_IN_WORDS to null),
+      archivesByProgram,
+      "the archived copy a family can still open is served, and the one we recorded as gone is not offered",
+    )
   }
 
   /**
@@ -846,7 +906,14 @@ class FafsaDeadlineChatToolTest {
       )
       assertEquals(deadline.publisher, json.getValue(PUBLISHER_KEY).jsonPrimitive.content, "[$label] publisher")
       assertEquals(deadline.sourceUrl, json.getValue(SOURCE_URL_KEY).jsonPrimitive.content, "[$label] source url")
-      assertEquals(deadline.archiveUrl, stringOrNull(json.getValue(ARCHIVE_URL_KEY)), "[$label] archive url")
+      assertEquals(
+        // THE DOOR'S OWN RULE, asked the one way it may be asked: an archived
+        // address is the service's while the sweep still finds it, and is
+        // withheld where the sweep recorded a grave.
+        deadline.archive?.takeIf { it.urlStatus.rendersAsAnchor }?.url,
+        stringOrNull(json.getValue(ARCHIVE_URL_KEY)),
+        "[$label] archive url",
+      )
       assertEquals(deadline.checkedOn.toString(), json.getValue(CHECKED_ON_KEY).jsonPrimitive.content, "[$label] checked on")
     }
   }
@@ -891,6 +958,15 @@ class FafsaDeadlineChatToolTest {
 
     /** A publisher that was read and publishes no deadline at all -- a verified absence, in its own words. */
     const val NONE_PUBLISHED = "no state deadline is published"
+
+    /** An archived copy the sweep still finds: offered, because a family can open it. */
+    const val LIVE_ARCHIVE = "https://web.archive.org/web/20260914/https://example-aid.ca.gov/cal-grant"
+
+    /** An archived copy the sweep recorded as gone: withheld, because pointing a family at it wastes their time. */
+    const val DEAD_ARCHIVE = "https://web.archive.org/web/20260914/https://example-aid.ca.gov/cal-grant-entitlement"
+
+    /** The day the sweep last asked about those two addresses -- after [FafsaFilingDeadlineFixture.DEFAULT_CHECKED_ON]. */
+    val ARCHIVE_SWEPT_ON: LocalDate = LocalDate.of(2026, 9, 16)
 
     /** Every key one deadline row carries, and exactly those. */
     val ROW_KEYS =

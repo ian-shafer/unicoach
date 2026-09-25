@@ -7,11 +7,13 @@ import ed.unicoach.db.dao.FafsaFilingDeadlineDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsStateRegion
 import ed.unicoach.db.models.AidDeadlineEvent
+import ed.unicoach.db.models.ArchivedCitation
 import ed.unicoach.db.models.DeadlineJurisdiction
 import ed.unicoach.db.models.FafsaFilingCycle
 import ed.unicoach.db.models.FafsaFilingDeadline
 import ed.unicoach.db.models.JurisdictionKind
 import ed.unicoach.db.models.PublishedDeadline
+import ed.unicoach.db.models.SourceUrlStatus
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import java.time.InstantSource
@@ -83,15 +85,46 @@ sealed interface FafsaDeadlines {
      * The served jurisdictions (D13) we hold nothing for, in `us_states.name`
      * order; never a silent gap.
      *
-     * TYPED, the same [DeadlineJurisdiction.State] a served state carries two
-     * fields above: the two halves of one answer are then comparable without a
-     * convention, and a door cannot mis-key a gap with a state name or a
-     * lowercased code. It is total: `us_states` publishes exactly the 59 codes
-     * [DeadlineJurisdiction.State] admits, so nothing is dropped in the typing.
+     * It carries a whole [MissingJurisdiction] and no longer a bare code,
+     * because the `/fafsa` page prints all 51 jurisdictions GROUPED BY REGION
+     * and a bare code has neither a name nor a region to be grouped or printed
+     * by. The two alternatives were both worse: the page re-reading
+     * `us_states` itself, which is a second query and a page deriving what the
+     * service is for; or the page holding its own name-and-region map, which is
+     * a second region vocabulary (gate-2 D10). The values come from the SAME
+     * `CodebooksDao` read the served half already pays for.
      */
-    val missingJurisdictions: List<DeadlineJurisdiction.State>,
+    val missingJurisdictions: List<MissingJurisdiction>,
   ) : FafsaDeadlines
 }
+
+/**
+ * A served jurisdiction (D13) we hold no deadline row for: who it is, where it
+ * sits, and the agency whose own page we could not read (D9).
+ *
+ * It carries [jurisdiction] as well as [name] for the reason the served half
+ * does: the two halves of one answer stay comparable by the same typed key, and
+ * a door cannot mis-key a gap with a display name.
+ */
+data class MissingJurisdiction(
+  val jurisdiction: DeadlineJurisdiction.State,
+  /** Its `us_states.name` -- the same read the served half's name comes from. */
+  val name: String,
+  /** Its `ipeds_regions.name`, so the page groups it exactly as it groups a served state. */
+  val region: String,
+  /**
+   * The agency whose page we opened and got no deadline from, or null where
+   * this run recorded no reason for the gap.
+   *
+   * NULLABLE, though all four of today's gaps carry one and a test says so. The
+   * corpus is a statement about the SEED it was written against, and the
+   * honest degradation for a jurisdiction that loses its rows in a later
+   * re-seed is a page saying only that we hold nothing for it -- never a
+   * refusal that blanks the table for all 51, and never a named agency we did
+   * not actually try.
+   */
+  val agency: FafsaUnreadableAgencies.UnreadableAgency?,
+)
 
 /** The live window: which cycles it names, and the EARLIEST expiry any live row carries. */
 data class FafsaDeadlineWindow(
@@ -108,7 +141,22 @@ data class FafsaDeadline(
   val deadline: PublishedDeadline,
   val publisher: String,
   val sourceUrl: String,
-  val archiveUrl: String?,
+  /**
+   * Whether [sourceUrl] still answered when the sweep last asked (RFC 200).
+   *
+   * SERVED, because "never link to a grave" is a rule about rendering and the
+   * renderer cannot obey it without this fact. It is the STORE's answer,
+   * recorded at ingest: a door that decided this for itself would be a literal
+   * in a page rather than a reading of the corpus, and nothing on this path
+   * asks a state agency's web server anything.
+   */
+  val sourceUrlStatus: SourceUrlStatus,
+  /**
+   * The archived address this row was read THROUGH, with the sweep's verdict on
+   * THAT address -- one value, null for exactly the rows that were read through
+   * none ([ArchivedCitation]).
+   */
+  val archive: ArchivedCitation?,
   val checkedOn: LocalDate,
 )
 
@@ -139,6 +187,18 @@ data class StateDeadlines(
 class FafsaDeadlineService(
   private val database: Database,
   private val clock: InstantSource = InstantSource.system(),
+  /**
+   * The agencies whose own page we could not read (RFC 238), GIVEN and not
+   * reached for.
+   *
+   * The corpus decides what a gap says about itself, so it is context this
+   * service is handed rather than a singleton read inside the read path: a test
+   * can then state its own scenario instead of borrowing whichever four entries
+   * production happens to ship. The default is the production corpus, so the
+   * boot site keeps its one-argument construction.
+   */
+  private val unreadableAgencyOf: (DeadlineJurisdiction.State) -> FafsaUnreadableAgencies.UnreadableAgency? =
+    FafsaUnreadableAgencies::of,
 ) {
   suspend fun get(zone: ZoneId? = null): Result<FafsaDeadlines> =
     try {
@@ -247,6 +307,7 @@ class FafsaDeadlineService(
     val (federalRows, stateRows) = splitByJurisdiction(live)
     val federal = federalRows.map(::deadlineOf)
     val states = servedStates(stateRows, statesWithRegion.associateBy { it.uspsCode })
+    reportStaleUnreadableEntries(states)
     return FafsaDeadlines.Resolved(
       asOf = today,
       filingYear = filingYear,
@@ -331,7 +392,7 @@ class FafsaDeadlineService(
   private fun missingJurisdictions(
     statesWithRegion: List<UsStateRegion>,
     states: List<StateDeadlines>,
-  ): List<DeadlineJurisdiction.State> {
+  ): List<MissingJurisdiction> {
     val served = states.mapTo(mutableSetOf()) { it.jurisdiction }
     return statesWithRegion
       .filter { it.jurisdictionKind.isServedJurisdiction() }
@@ -340,9 +401,51 @@ class FafsaDeadlineService(
         // is the codebook and the model having diverged -- say so, rather than
         // serve a code no door can key. Total today: us_states publishes exactly
         // the 59 codes UsStateCodes.ALL names.
-        DeadlineJurisdiction.State.of(state.uspsCode)
-          ?: throw IllegalStateException("us_states row [${state.uspsCode}] is not a state DeadlineJurisdiction names")
-      }.filter { it !in served }
+        val jurisdiction =
+          DeadlineJurisdiction.State.of(state.uspsCode)
+            ?: throw IllegalStateException(
+              "us_states row [${state.uspsCode}] is not a state DeadlineJurisdiction names",
+            )
+        jurisdiction to state
+      }.filter { (jurisdiction, _) -> jurisdiction !in served }
+      .map { (jurisdiction, state) ->
+        MissingJurisdiction(
+          jurisdiction = jurisdiction,
+          // The SAME read the served half names its states from, so the page
+          // cannot print one state's name from one vocabulary and its
+          // neighbour's from another.
+          name = state.name,
+          region = state.region,
+          agency = unreadableAgencyOf(jurisdiction),
+        )
+      }
+  }
+
+  /**
+   * Records an unreadable-agency entry the seed has OVERTAKEN: a jurisdiction we
+   * now hold live rows for, still named as one we could not read.
+   *
+   * IT DOES NOT REFUSE THE READ, and that is the whole decision. A served
+   * jurisdiction never reaches [FafsaDeadlines.Resolved.missingJurisdictions]
+   * -- the gap list is the unserved half by construction -- so no door can
+   * print the corpus's "we tried and got no answer" beside a date we did read.
+   * There is nothing to withhold, only a stale constant to delete. Refusing
+   * would answer `fafsa/02` FIXING a gap with a 503 for all fifty-one
+   * jurisdictions and the coach's tool with them, which is the harm the
+   * nullable [MissingJurisdiction.agency] exists to avoid in the other
+   * direction.
+   *
+   * The operator gets the line that says which entry to delete, and it names
+   * every overtaken jurisdiction rather than the first.
+   */
+  private fun reportStaleUnreadableEntries(states: List<StateDeadlines>) {
+    val overtaken = states.map { it.jurisdiction }.filter { unreadableAgencyOf(it) != null }
+    if (overtaken.isEmpty()) return
+    logger.warn(
+      "FafsaUnreadableAgencies is stale: overtakenJurisdictions=[{}] now hold live fafsa_filing_deadlines rows, " +
+        "so delete those corpus entries",
+      overtaken.map { it.uspsCode }.sorted(),
+    )
   }
 
   /**
@@ -380,7 +483,8 @@ class FafsaDeadlineService(
       deadline = row.deadline,
       publisher = row.publisher,
       sourceUrl = row.sourceUrl,
-      archiveUrl = row.archiveUrl,
+      sourceUrlStatus = row.sourceUrlStatus,
+      archive = row.archive,
       checkedOn = row.checkedOn,
     )
 

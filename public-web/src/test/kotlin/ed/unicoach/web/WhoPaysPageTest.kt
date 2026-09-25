@@ -19,6 +19,7 @@ import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -121,7 +122,11 @@ class WhoPaysPageTest {
     }
     // The one clock read, and the only thing that can catch a date typed into
     // the future: a page cannot have been fetched on a day that has not come.
-    assertFalse(whoPaysPage.asOf.isAfter(LocalDate.now()), "the page is dated in the future")
+    // `asOf` is nullable since RFC 238, where a page with no dated content
+    // prints no line. This page always has one, and saying so here is the
+    // assertion, not a null check to work around.
+    val asOf = assertNotNull(whoPaysPage.asOf, "the guide lost its as-of date")
+    assertFalse(asOf.isAfter(LocalDate.now()), "the page is dated in the future")
   }
 
   @Test
@@ -254,7 +259,7 @@ class WhoPaysPageTest {
   @Test
   fun `the as-of date is visible`() {
     assertTrue(
-      renderedBody().contains("As of ${UsDate.of(whoPaysPage.asOf)}"),
+      renderedBody().contains("As of ${UsDate.of(assertNotNull(whoPaysPage.asOf))}"),
       "the page does not print its as-of date",
     )
   }

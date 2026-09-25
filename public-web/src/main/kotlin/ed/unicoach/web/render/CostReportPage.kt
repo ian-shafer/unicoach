@@ -531,7 +531,7 @@ private fun FlowContent.summaryTable(
   section("report-summary") {
     h2 { +SUMMARY_HEADING }
     p("report-hint") { +heldArrangementHint(held) }
-    table("report-table report-summary-table") {
+    table("$DATA_TABLE_CLASS report-table report-summary-table") {
       thead { summaryHeaderRow(held) }
       tbody { profile.colleges.forEach { summaryRow(it, held, bandSaidAbove) } }
     }
@@ -573,7 +573,7 @@ private fun TBODY.summaryRow(
       // Words, not money: the constant this table holds, said in every row so
       // the stacked phone card still names it.
       td("report-value report-way-of-living") {
-        attributes["data-label"] = WAY_OF_LIVING_COLUMN
+        attributes[DATA_LABEL] = WAY_OF_LIVING_COLUMN
         +arrangement.label
       }
     }
@@ -725,7 +725,7 @@ private fun FlowContent.priceTable(
 ) {
   val arrangements = cost.breakdown?.arrangements.orEmpty()
   val columnCount = if (arrangements.isEmpty()) SINGLE_COLUMN_COUNT else arrangements.size
-  table("report-table") {
+  table("$DATA_TABLE_CLASS report-table") {
     thead { priceTableHeaderRow(arrangements) }
     tbody {
       tuitionRow(cost, arrangements)
@@ -1157,7 +1157,7 @@ private fun TR.valueCell(
   figure: SchoolFigure,
 ) {
   td("report-value") {
-    attributes["data-label"] = columnLabel
+    attributes[DATA_LABEL] = columnLabel
     figureBody(figure)
   }
 }

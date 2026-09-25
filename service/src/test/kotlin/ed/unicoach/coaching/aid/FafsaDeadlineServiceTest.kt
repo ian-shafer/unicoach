@@ -4,9 +4,12 @@ import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.DatabaseException
+import ed.unicoach.db.dao.ExternalDocumentsDao
 import ed.unicoach.db.dao.FafsaFilingDeadlineFixture
 import ed.unicoach.db.models.DeadlineJurisdiction
+import ed.unicoach.db.models.NewExternalDocument
 import ed.unicoach.db.models.NewFafsaFilingDeadline
+import ed.unicoach.db.models.SourceUrlStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -286,17 +289,160 @@ class FafsaDeadlineServiceTest {
         // halves of it.
         assertEquals(
           ABSENT,
-          resolved.missingJurisdictions.mapTo(mutableSetOf()) { it.uspsCode },
+          resolved.missingJurisdictions.mapTo(mutableSetOf()) { it.jurisdiction.uspsCode },
           "exactly the four unverified jurisdictions -- and no territory, though PR/GU/VI are seeded and hold no row either",
         )
         assertEquals(
           listOf("AR", "DE", "NH", "NC"),
-          resolved.missingJurisdictions.map { it.uspsCode },
+          resolved.missingJurisdictions.map { it.jurisdiction.uspsCode },
           "us_states.name order: Arkansas, Delaware, New Hampshire, North Carolina",
         )
       } finally {
         CodebookReferenceFixture.removeOtherJurisdictions(CoachingTestDb.connection)
       }
+    }
+
+  /**
+   * D9, the half a bare code could never carry: a jurisdiction we hold nothing
+   * for arrives with the name and the region the page groups it by, and the
+   * agency whose own page we tried.
+   */
+  @Test
+  fun `a jurisdiction we hold nothing for carries its name, its region and the agency we tried`() =
+    runTest {
+      seed(
+        CodebookReferenceFixture.STATES
+          .filter { it.uspsCode !in ABSENT }
+          .map { row(jurisdiction = state(it.uspsCode)) },
+      )
+
+      val resolved = assertIs<FafsaDeadlines.Resolved>(read(serviceAt(AFTER_OCTOBER_2026)))
+
+      resolved.missingJurisdictions.forEach { gap ->
+        val published = publishedStateOf(gap.jurisdiction.uspsCode)
+        assertEquals(published.name, gap.name, "a gap is named from the same read a served state is")
+        assertEquals(regionName(published.ipedsRegion), gap.region, "a gap carries the region the page groups it by")
+      }
+      // EVERY one of them, not merely some: the page's sentence for a gap with
+      // no recorded agency is shorter and names nobody, so a silent null here
+      // would be a page quietly saying less about a state we did try.
+      assertEquals(
+        emptyList(),
+        resolved.missingJurisdictions.filter { it.agency == null }.map { it.name },
+        "a jurisdiction we hold nothing for has no recorded agency to ask",
+      )
+      resolved.missingJurisdictions.forEach { gap ->
+        assertEquals(
+          FafsaUnreadableAgencies.of(gap.jurisdiction),
+          gap.agency,
+          "the gap carries some other agency than the corpus records for it",
+        )
+      }
+    }
+
+  /**
+   * The corpus is a statement about the SEED, and a later harvest is allowed to
+   * overtake it: a jurisdiction we now hold rows for is one we CAN read.
+   *
+   * THE ROWS WIN, AND THE READ DOES NOT REFUSE. A served jurisdiction never
+   * reaches the gap list, so no door can print "we tried and got no answer"
+   * beside the date it just read -- there is nothing to withhold, only a stale
+   * constant for an operator to delete. Refusing would answer a data FIX with a
+   * blank page for all fifty-one.
+   */
+  @Test
+  fun `a jurisdiction the corpus calls unreadable, that now holds rows, is served and no longer a gap`() =
+    runTest {
+      val overtaken = state("AR")
+      // ITS OWN CORPUS, not production's: the scenario is "an entry the seed has
+      // overtaken", and the service is handed exactly that.
+      val stale =
+        FafsaUnreadableAgencies.UnreadableAgency(
+          FafsaProcessCopy.FafsaDocument(
+            publisher = "An Agency We Could Not Read",
+            title = "Financial Aid",
+            url = "https://aid.example.test/overtaken",
+          ),
+          urlStatus = SourceUrlStatus.UNKNOWN,
+        )
+      seed(listOf(row(jurisdiction = overtaken), row(jurisdiction = state("CA"))))
+
+      val resolved =
+        assertIs<FafsaDeadlines.Resolved>(
+          read(serviceAt(AFTER_OCTOBER_2026) { jurisdiction -> stale.takeIf { jurisdiction == overtaken } }),
+        )
+
+      assertTrue(
+        resolved.states.any { it.jurisdiction == overtaken },
+        "a jurisdiction we now hold rows for was not served",
+      )
+      assertEquals(
+        emptyList(),
+        resolved.missingJurisdictions.filter { it.jurisdiction == overtaken },
+        "a served jurisdiction is still named as one we could not read, which is the contradiction itself",
+      )
+    }
+
+  /** The corpus the service is GIVEN is the one a gap carries -- not a singleton it reached for. */
+  @Test
+  fun `a gap carries the agency the service was given, and not the production corpus`() =
+    runTest {
+      val given =
+        FafsaUnreadableAgencies.UnreadableAgency(
+          FafsaProcessCopy.FafsaDocument(
+            publisher = "A Stated Agency",
+            title = "Financial Aid",
+            url = "https://aid.example.test/stated",
+          ),
+          urlStatus = SourceUrlStatus.FOUND,
+        )
+      seed(listOf(row(jurisdiction = state("CA"))))
+
+      val resolved = assertIs<FafsaDeadlines.Resolved>(read(serviceAt(AFTER_OCTOBER_2026) { given }))
+
+      assertEquals(
+        listOf(given),
+        resolved.missingJurisdictions
+          .map { it.agency }
+          .distinct(),
+        "the read answered from some corpus other than the one it was handed",
+      )
+    }
+
+  /**
+   * The link status now rides on every served row, because the page cannot
+   * obey "never link to a grave" without it and must not decide it itself.
+   */
+  @Test
+  fun `a served row carries the link status of its own citation`() =
+    runTest {
+      seed(listOf(row(jurisdiction = state("CA"))))
+      val cited = FafsaFilingDeadlineFixture.defaultSourceUrl(state("CA"), FafsaFilingDeadlineFixture.DEFAULT_PROGRAM)
+      ExternalDocumentsDao
+        .upsert(
+          CoachingTestDb.sqlSession,
+          NewExternalDocument(url = cited, urlStatus = SourceUrlStatus.NOT_FOUND, urlCheckedOn = LocalDate.parse("2026-09-16")),
+        ).getOrThrow()
+
+      val resolved = assertIs<FafsaDeadlines.Resolved>(read(serviceAt(AFTER_OCTOBER_2026)))
+
+      assertEquals(
+        SourceUrlStatus.NOT_FOUND,
+        resolved.states
+          .single()
+          .deadlines
+          .single()
+          .sourceUrlStatus,
+        "the sweep's verdict did not reach the door that has to obey it",
+      )
+      assertNull(
+        resolved.states
+          .single()
+          .deadlines
+          .single()
+          .archive,
+        "a row with no archive carries no archived citation, and so no verdict about one",
+      )
     }
 
   /** The answering read costs the stated number of statements. */
@@ -489,9 +635,21 @@ class FafsaDeadlineServiceTest {
     to: String,
   ) = CoachingTestDb.connection.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.executeUpdate() }
 
-  /** The service with today pinned -- an INSTANT with no zone on it, because the service applies the caller's zone. */
-  private fun serviceAt(instant: String): FafsaDeadlineService =
-    FafsaDeadlineService(CoachingTestDb.database, InstantSource.fixed(Instant.parse(instant)))
+  /**
+   * The service with today pinned -- an INSTANT with no zone on it, because the
+   * service applies the caller's zone -- and, where a case is about them, its
+   * own unreadable agencies.
+   *
+   * The corpus is a CONSTRUCTOR ARGUMENT, so a case states the scenario it is
+   * about instead of borrowing whichever four entries production happens to
+   * ship; it defaults to the production corpus, which is what every other case
+   * here wants.
+   */
+  private fun serviceAt(
+    instant: String,
+    unreadableAgencyOf: (DeadlineJurisdiction.State) -> FafsaUnreadableAgencies.UnreadableAgency? =
+      FafsaUnreadableAgencies::of,
+  ): FafsaDeadlineService = FafsaDeadlineService(CoachingTestDb.database, InstantSource.fixed(Instant.parse(instant)), unreadableAgencyOf)
 
   private suspend fun read(
     service: FafsaDeadlineService,

@@ -30,3 +30,27 @@ package ed.unicoach.common.util
  * link.
  */
 fun isWebUrl(value: String): Boolean = value.startsWith("https://", ignoreCase = true) || value.startsWith("http://", ignoreCase = true)
+
+/**
+ * Refuses [url] unless it is an address this codebase is willing to CITE,
+ * naming [subject] so the refusal says which citation it is about.
+ *
+ * ONE HOME FOR ONE RULE. Five value types guarded "a page we cite" with their
+ * own copy of a scheme test, and three of those copies demanded `https://`
+ * alone -- which is not the bar the store keeps. `external_documents` accepts
+ * `http` by an explicit decision (its DDL: "http IS ACCEPTED, https
+ * PREFERRED ... an https-only CHECK would refuse data we have"), and the
+ * landed corpus holds plain-http agency pages and plain-http archived
+ * addresses. A stricter bar in a reader does not raise a publisher's standard;
+ * it deletes their row from the page, or faults the whole read.
+ *
+ * WHAT IT IS NOT: a parse. The question is [isWebUrl]'s -- the scheme, and
+ * nothing else -- so a caller with a url that must also have a host, resolve or
+ * exist asks that separately.
+ */
+fun requireCitedPageUrl(
+  url: String,
+  subject: String,
+) {
+  require(isWebUrl(url)) { "$subject is not an absolute http(s) page, got [$url]" }
+}

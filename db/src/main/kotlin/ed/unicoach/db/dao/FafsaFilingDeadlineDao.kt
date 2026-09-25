@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AidDeadlineEvent
 import ed.unicoach.db.models.AidDeadlineKind
+import ed.unicoach.db.models.ArchivedCitation
 import ed.unicoach.db.models.DeadlineJurisdiction
 import ed.unicoach.db.models.FafsaFilingDeadline
 import ed.unicoach.db.models.FafsaFilingDeadlineId
@@ -39,14 +40,73 @@ object FafsaFilingDeadlineDao {
    * joined a different pair of documents, would not be readable by the one
    * mapper. Each read below adds only what actually differs: its filter and its
    * order.
+   *
+   * THE LINK STATUS RIDES WITH EACH URL (RFC 200, RFC 228). A citation that
+   * renders an anchor has to know whether that anchor points at a grave, and
+   * the answer was recorded by the sweep at ingest -- projected here rather
+   * than asked at render, because no family may wait on a state agency's web
+   * server. The archive's status is nullable exactly as its url is: the LEFT
+   * join is what makes both null together.
    */
   private val SELECT_WITH_CITATIONS =
     """
-    SELECT d.*, s.url AS source_url, a.url AS archive_url
+    SELECT d.*,
+           s.url AS source_url, s.url_status AS source_url_status,
+           a.url AS archive_url, a.url_status AS archive_url_status
     FROM $TABLE d
     JOIN external_documents s ON s.id = d.source_document_id
     LEFT JOIN external_documents a ON a.id = d.archive_document_id
     """.trimIndent()
+
+  /**
+   * The columns of `external_documents` this read projects, and nothing else.
+   *
+   * The cases are named for what they HOLD and not `URL`/`URL_STATUS`:
+   * `RenderPathMakesNoNetworkCallTest` sweeps this package's source for the token
+   * `URL(`, which an enum case declaration matches, and that sweep is the guard
+   * that no read path opens a connection. The projected column names are the
+   * values below, so nothing about the SQL changes.
+   */
+  private enum class CitationColumn(
+    val column: String,
+  ) {
+    /** The address itself. */
+    ADDRESS("url"),
+
+    /** What the link sweep last answered for that address. */
+    ADDRESS_STATUS("url_status"),
+  }
+
+  /** The two documents a deadline row cites, and the alias prefix each one's columns carry. */
+  private enum class CitedDocument(
+    val documentId: String,
+    val prefix: String,
+  ) {
+    SOURCE("source_document_id", "source"),
+    ARCHIVE("archive_document_id", "archive"),
+  }
+
+  /**
+   * One citation column of a `RETURNING` clause: a column of the document
+   * behind [document], which `RETURNING` cannot reach through a join the way
+   * [SELECT_WITH_CITATIONS] does.
+   *
+   * ONE HOME, so the source half and the archive half cannot drift apart by a
+   * column name: [mapRow] reads FOUR aliases and every one of them is built
+   * here.
+   *
+   * BOTH HALVES ARE TYPES AND THE ALIAS IS DERIVED, never given. Three free
+   * strings admitted every combination and only four were correct -- nothing
+   * refused the archive's address projected under the source's alias, and
+   * nothing refused a `column` that is not a column of `external_documents` at
+   * all, which is spliced straight into SQL.
+   */
+  private fun citationColumn(
+    document: CitedDocument,
+    column: CitationColumn,
+  ): String =
+    "(SELECT e.${column.column} FROM external_documents e WHERE e.id = $TABLE.${document.documentId}) " +
+      "AS ${document.prefix}_${column.column}"
 
   /**
    * Every row of ONE cycle, federal rows first.
@@ -165,8 +225,10 @@ object FafsaFilingDeadlineDao {
               checked_on = EXCLUDED.checked_on,
               expires_on = EXCLUDED.expires_on
             RETURNING *,
-              (SELECT e.url FROM external_documents e WHERE e.id = $TABLE.source_document_id) AS source_url,
-              (SELECT e.url FROM external_documents e WHERE e.id = $TABLE.archive_document_id) AS archive_url
+              ${citationColumn(CitedDocument.SOURCE, CitationColumn.ADDRESS)},
+              ${citationColumn(CitedDocument.SOURCE, CitationColumn.ADDRESS_STATUS)},
+              ${citationColumn(CitedDocument.ARCHIVE, CitationColumn.ADDRESS)},
+              ${citationColumn(CitedDocument.ARCHIVE, CitationColumn.ADDRESS_STATUS)}
             """.trimIndent(),
             bind = { stmt ->
               // A cursor, never twelve hand-typed ordinals
@@ -216,6 +278,9 @@ object FafsaFilingDeadlineDao {
     val program = rs.getString("program")
     val location = "$TABLE (award_year [${awardYear.label}] state [${state ?: "federal"}] program [$program])"
     val eventRaw = rs.getString("event")
+    // Read ONCE: the url is the citation, and it is also the evidence a corrupt
+    // status slug needs, so the decode below names the address it decoded for.
+    val sourceUrl = rs.getString("source_url")
     return FafsaFilingDeadline(
       id = FafsaFilingDeadlineId(UUID.fromString(rs.getString("id"))),
       awardYear = awardYear,
@@ -236,8 +301,36 @@ object FafsaFilingDeadlineDao {
           ?: throw corruptValue(eventRaw, "AidDeadlineEvent", "$location.event"),
       deadline = mapDeadline(rs, location),
       publisher = rs.getString("publisher"),
-      sourceUrl = rs.getString("source_url"),
-      archiveUrl = rs.getString("archive_url"),
+      sourceUrl = sourceUrl,
+      // The slug is DECODED, never defaulted: the one status that drops an
+      // anchor is NOT_FOUND, so a value silently read as UNKNOWN would keep a
+      // link to a grave and nothing would say so ([decodeSourceUrlStatus]).
+      //
+      // The location names WHICH of the row's two documents it decoded, AND the
+      // address: both decodes reported one byte-identical location, so a corrupt
+      // slug left an operator with two `external_documents` rows and nothing
+      // saying which one holds it.
+      sourceUrlStatus =
+        decodeSourceUrlStatus(rs.getString("source_url_status"), "$location.source_url_status url [$sourceUrl]"),
+      // BOTH HALVES OR NEITHER: the url and its verdict come off the one
+      // LEFT-joined document, so a row the join found no archive for carries
+      // no [ArchivedCitation] at all rather than a url with nothing said about
+      // it. The combination is TESTED and not assumed on one half -- the sibling
+      // mapper refuses a half-shaped read by name, and a projection that has
+      // drifted is located here rather than resolved to whichever half arrived.
+      archive =
+        rs.getString("archive_url").let { url ->
+          val archiveStatus = rs.getString("archive_url_status")
+          require((url == null) == (archiveStatus == null)) {
+            "$location.archive: url [$url] and url_status [$archiveStatus]; the join yields both or neither"
+          }
+          url?.let {
+            ArchivedCitation(
+              it,
+              decodeSourceUrlStatus(archiveStatus, "$location.archive_url_status url [$it]"),
+            )
+          }
+        },
       checkedOn = rs.getDate("checked_on").toLocalDate(),
       expiresOn = rs.getDate("expires_on").toLocalDate(),
     )
