@@ -8,6 +8,7 @@ import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.aid.FafsaDeadlineChatTool
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
@@ -449,4 +450,33 @@ class ConvoToolLoopRoutingTest {
       assertTrue(advertised.contains("find_college"), "the registry must advertise find_college, got [$advertised]")
       assertTrue(advertised.contains("search_colleges"), "beside the structured search it does not replace")
     }
+
+  /**
+   * RFC 237: the coach's FAFSA-deadline paragraph routes a "when is it due"
+   * turn to `fafsa_deadlines`, and a paragraph pointing at a tool the wired
+   * registry does not OFFER is a door that does not open. Registration is the
+   * whole of that slice's claim and is otherwise carried by the compiler alone,
+   * so this asserts it where the appModule's own registry is observable from
+   * outside: the tool list it advertises on a real turn.
+   */
+  @Test
+  fun `the wired registry advertises the FAFSA deadline tool`() {
+    runBlocking {
+      resetLoop(SEARCH_COLLEGES_TOOL_USE)
+      val cookie = registerWithStudent()
+      val created =
+        client.post(url("/api/v1/conversations")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(CreateConversationRequest("when is the FAFSA due?", null)))
+        }
+      assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+
+      val advertised = requests[0].tools.map { it["name"]!!.jsonPrimitive.content }
+      assertTrue(
+        advertised.contains(FafsaDeadlineChatTool.TOOL_NAME),
+        "the RFC 237 paragraph routes to a tool the appModule must actually offer, got [$advertised]",
+      )
+    }
+  }
 }

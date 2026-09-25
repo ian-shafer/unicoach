@@ -62,6 +62,26 @@ object BareSourceCodeGuard {
   fun codeToWordPatternFires(): Boolean = CODE_EQUALS_WORD.containsMatchIn("region (1=New England)")
 
   /**
+   * A Common Data Set field id (`H.801`, `H.209`): a SOURCE's own identifier for
+   * a question, never a word a family says.
+   *
+   * It lives HERE, beside [CODE_EQUALS_WORD], for the reason that pattern gives:
+   * two suites had hand-typed this one in four places (three in
+   * `SystemPromptCatalogTest`, one in `FafsaProcessChatToolTest`), and a
+   * raw-string regex that can never match reads as covered, which is worse than
+   * no guard at all. RFC 237 moved all four onto this pattern, so the count is
+   * history rather than a plan. The positive control is therefore a CALL rather
+   * than a literal each caller has to remember to write.
+   */
+  val CDS_FIELD_ID: Regex = Regex("""H\.\d""")
+
+  /** A self-check on [CDS_FIELD_ID], so a consumer's sweep cannot read as covered while matching nothing. */
+  fun cdsFieldIdPatternFires(): Boolean = CDS_FIELD_ID.containsMatchIn(A_CDS_FIELD_ID)
+
+  /** The CDS field the FAFSA itself is: a string this guard must react to. */
+  private const val A_CDS_FIELD_ID = "H.801"
+
+  /**
    * Every way [payload] carries a bare source code, in the general form RFC 143
    * put in place of RFC 142's string-specific grep: a `qN` bucket token, the
    * `NPT4` column family, or any field carrying a bare number that is not a

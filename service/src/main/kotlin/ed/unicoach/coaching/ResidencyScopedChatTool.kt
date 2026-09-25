@@ -45,7 +45,7 @@ abstract class ResidencyScopedChatTool(
     studentId: StudentId,
     input: JsonObject,
   ): JsonObject {
-    val residency = Residency.forStudent(studentId, readProfile)
+    val residency = Residency.forStudent(studentId, name, readProfile)
     return addResidencyOffer(search(input, residency.familyResidencyState), residency)
   }
 }

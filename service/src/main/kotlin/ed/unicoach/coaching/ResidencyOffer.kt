@@ -105,25 +105,37 @@ internal sealed interface Residency {
 
     /**
      * Reads the residency for [studentId]. Never fails: every unknown, and every
-     * fault, is the net-price ruler.
+     * fault, is that caller's own no-residency behaviour -- the net-price ruler
+     * for the two search doors, the federal rows with a labelled gap for
+     * `fafsa_deadlines`.
+     *
+     * [caller] is the tool that will run degraded, and it is a PARAMETER because
+     * this helper has more than one consumer: a wrong search answer and a wrong
+     * FAFSA answer would otherwise be one indistinguishable log line, and the
+     * operator reading it cannot tell which door lost the family's state. Every
+     * call site already has its own `name` to pass.
      *
      * [readProfile] is a SEAM, not a framework. The [Cause.READ_FAILED] branch is
      * the one a Postgres-backed test cannot reach on demand, and it is the branch
-     * that decides whether a database fault turns a working search into an error
+     * that decides whether a database fault turns a working answer into an error
      * or into the behaviour that shipped for a year. A function-typed parameter
      * makes it testable and adds nothing else.
      */
     suspend fun forStudent(
       studentId: StudentId,
+      caller: String,
       readProfile: suspend (StudentId) -> Result<GetMoneyProfileResult>,
     ): Residency =
       readProfile(studentId).fold(
-        onSuccess = ::forProfile,
-        onFailure = { error -> onReadFailure(studentId, error) },
+        onSuccess = { outcome -> forProfile(outcome, caller) },
+        onFailure = { error -> onReadFailure(studentId, caller, error) },
       )
 
     /** The residency a profile read ANSWERS with — one altitude, no fault handling. */
-    private fun forProfile(outcome: GetMoneyProfileResult): Residency =
+    private fun forProfile(
+      outcome: GetMoneyProfileResult,
+      caller: String,
+    ): Residency =
       when (outcome) {
         // No profile row at all is not a decline: nobody has asked yet.
         is GetMoneyProfileResult.NotFound -> {
@@ -134,7 +146,7 @@ internal sealed interface Residency {
           val profile = outcome.profile
           when (profile.residencyStatus) {
             AnswerStatus.ANSWERED -> {
-              onAnswered(profile.studentId, profile.residencyState)
+              onAnswered(profile.studentId, caller, profile.residencyState)
             }
 
             AnswerStatus.UNANSWERED -> {
@@ -185,13 +197,16 @@ internal sealed interface Residency {
      */
     private fun onAnswered(
       studentId: StudentId,
+      caller: String,
       storedState: String?,
     ): Residency {
       val state = storedState?.let(UsStateCodes::parse)
       if (state == null) {
         logger.error(
-          "money_profiles row for student [{}] says residency is answered but holds [{}], which is not a " +
-            "published USPS code -- the search runs on the net-price ruler; the row violates its own CHECK",
+          "money_profiles row says residency is answered but holds no published USPS code: caller=[{}] " +
+            "student=[{}] storedState=[{}] -- the caller runs on its no-residency behaviour; the row " +
+            "violates its own CHECK",
+          caller,
           studentId.asString,
           storedState,
         )
@@ -200,14 +215,21 @@ internal sealed interface Residency {
       return OnFile(state)
     }
 
-    /** A money-profile read that FAULTED: logged with the throwable, and never a failed search. */
+    /** A money-profile read that FAULTED: logged with the throwable and with the caller that will run degraded. */
     private fun onReadFailure(
       studentId: StudentId,
+      caller: String,
       error: Throwable,
     ): Residency {
+      // The caller is NAMED but is not assumed to be the search: this helper has
+      // a second consumer (`fafsa_deadlines`, RFC 237), which serves the federal
+      // rows with a labelled gap and has no net-price ruler at all. An operator
+      // chasing "the coach did not know my state" must be able to tell which
+      // door degraded, and a sentence about search would answer the wrong one.
       logger.warn(
-        "a residency read for the search tools failed for student [{}]: the search runs on the net-price " +
-          "ruler, which is what it did before a residency-correct one existed",
+        "a residency read failed: caller=[{}] student=[{}] -- the caller runs on its no-residency " +
+          "behaviour, which is what it did before a residency-correct one existed",
+        caller,
         studentId.asString,
         error,
       )

@@ -421,6 +421,19 @@ fun Application.appModule(
         // than more payload on it, and a curated corpus, so it reads nothing.
         ed.unicoach.coaching.aid
           .FafsaProcessChatTool(),
+        // The DATE half of that same subject (RFC 237): the coach speaks the
+        // FAFSA dates the public page will show, from the one read both doors
+        // render -- the federal dates every family is bound by, plus this
+        // family's own state's, whose state comes from their money profile and
+        // never from the model. No clock argument, like every other site --
+        // production reads the real one through the InstantSource.system()
+        // default, and only a test pins it.
+        ed.unicoach.coaching.aid
+          .FafsaDeadlineChatTool(
+            ed.unicoach.coaching.aid
+              .FafsaDeadlineService(database),
+            moneyProfileService,
+          ),
         ShareCostReportChatTool(costReportShareService),
         RevokeCostReportShareChatTool(costReportShareService),
         // "Never suggest sharing again" (RFC 160): needs no secret — it writes

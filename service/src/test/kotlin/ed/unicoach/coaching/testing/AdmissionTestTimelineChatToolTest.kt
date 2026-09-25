@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.testing
 
 import ed.unicoach.chat.BareSourceCodeGuard
+import ed.unicoach.chat.PayloadDateGuard
 import ed.unicoach.coaching.COACH_ZONE_LABEL
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.AdmissionsTestDb
@@ -104,7 +105,7 @@ class AdmissionTestTimelineChatToolTest {
           .toSet() +
           setOf(TODAY.toString(), RESOLVED_ANCHOR.toString())
 
-      val found = DATE_PATTERN.findAll(payload.toString()).map { it.value }.toSet()
+      val found = PayloadDateGuard.datesIn(payload).toSet()
       assertTrue(found.isNotEmpty(), "the payload must contain dates at all, or this sweep proves nothing")
       assertEquals(
         emptySet(),
@@ -143,12 +144,12 @@ class AdmissionTestTimelineChatToolTest {
       assertTrue(refusal.contains("ACT"), "the refusal must name ACT: [$refusal]")
       assertEquals(
         emptyList(),
-        DATE_PATTERN.findAll(payload.toString()).map { it.value }.toList(),
+        PayloadDateGuard.datesIn(payload),
         "past expiry the tool returns dates for nothing: [$payload]",
       )
       // And the positive control for the sweep above: the pattern does fire on a
       // payload that DOES carry a date, so an empty result means what it says.
-      assertTrue(DATE_PATTERN.containsMatchIn("""{"as_of":"2026-09-11"}"""), "the date pattern must be able to fire")
+      assertTrue(PayloadDateGuard.isoDatePatternFires(), "the date pattern must be able to fire")
     }
 
   /** The fee-waiver date on the wire is the derivation, and it says so in the same object. */
@@ -502,7 +503,7 @@ class AdmissionTestTimelineChatToolTest {
       )
       assertEquals(
         emptyList(),
-        DATE_PATTERN.findAll(payload.toString()).map { it.value }.toList(),
+        PayloadDateGuard.datesIn(payload),
         "a refusal names no date, whichever refusal it is: [$payload]",
       )
     }
@@ -818,7 +819,7 @@ class AdmissionTestTimelineChatToolTest {
       )
       assertEquals(
         emptyList(),
-        DATE_PATTERN.findAll(payload.toString()).map { it.value }.toList(),
+        PayloadDateGuard.datesIn(payload),
         "a state record on a refusal would put a date back on it: [$payload]",
       )
     }
@@ -903,9 +904,6 @@ class AdmissionTestTimelineChatToolTest {
 
     /** The anchor the seeded November 1 round resolves to for a 2027 graduation. */
     val RESOLVED_ANCHOR: LocalDate = LocalDate.parse("2026-11-01")
-
-    /** An ISO date anywhere in a payload string, `why` sentences included. */
-    val DATE_PATTERN = Regex("""\d{4}-\d{2}-\d{2}""")
 
     /** The section this RFC 208 half is about, named once. */
     const val SCHOOL_DAY_SECTION = "school_day_programme"

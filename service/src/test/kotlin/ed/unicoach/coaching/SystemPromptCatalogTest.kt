@@ -4,6 +4,7 @@ import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.coaching.admissions.AdmissionsField
 import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
 import ed.unicoach.coaching.admissions.TestPolicyCopy
+import ed.unicoach.coaching.aid.FafsaDeadlineChatTool
 import ed.unicoach.coaching.aid.FafsaProcessChatTool
 import ed.unicoach.coaching.aid.FederalAidPolicyChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
@@ -233,6 +234,7 @@ class SystemPromptCatalogTest {
       RESIDENCY_BASIS("At a public school, the published price and the price"),
       FEDERAL_AID("When a family asks about the Pell Grant or federal student"),
       FAFSA_PROCESS("When a family asks who files the FAFSA, whose information"),
+      FAFSA_DEADLINES("When a family asks when the FAFSA is due"),
       SHARE_NUDGE("When your opening reflections include one about sharing"),
       NEED_AND_FORMS("When a family asks whether a school meets full financial"),
       BORROWING("Borrowing is a different question from price, and you"),
@@ -312,6 +314,14 @@ class SystemPromptCatalogTest {
     private val FAFSA_PROCESS_TOOL_NAME = FafsaProcessChatTool.TOOL_NAME
 
     /**
+     * The FAFSA-DEADLINE tool the RFC 237 paragraph routes to, read from the
+     * tool itself for the reason [FAFSA_PROCESS_TOOL_NAME] states: the pairing
+     * under test is SEEDED COPY versus SHIPPING TOOL, and the date half of the
+     * FAFSA subject is a second tool and not more payload on the process one.
+     */
+    private val FAFSA_DEADLINES_TOOL_NAME = FafsaDeadlineChatTool.TOOL_NAME
+
+    /**
      * The opt-out tool the v17 paragraph names (RFC 160), read from the tool
      * itself on the same precedent as [SHARE_REPORT_TOOL_NAME]: the pairing
      * under test is SEEDED COPY versus SHIPPING TOOL.
@@ -359,6 +369,14 @@ class SystemPromptCatalogTest {
      * fire. Every use here is preceded by the shared positive control.
      */
     private val CODE_EQUALS_WORD = BareSourceCodeGuard.CODE_EQUALS_WORD
+
+    /**
+     * The Common Data Set field-id pattern, from the same one home (RFC 237):
+     * this suite hand-typed it in three places, which is the copy count the
+     * shared pattern exists to remove. Every use here is preceded by the shared
+     * positive control, so a sweep cannot read as covered while matching nothing.
+     */
+    private val CDS_FIELD_ID = BareSourceCodeGuard.CDS_FIELD_ID
 
     private lateinit var connection: Connection
 
@@ -2155,7 +2173,43 @@ class SystemPromptCatalogTest {
     assertTrue(paragraph.contains(CollegeCostChatTool.TOOL_NAME), "and the tool that section rides on")
 
     assertParagraphKeepsTheStandingCopyRules("the FAFSA-process paragraph", paragraph)
-    assertFalse(Regex("H\\.\\d").containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
+    assertTrue(BareSourceCodeGuard.cdsFieldIdPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CDS_FIELD_ID.containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
+  }
+
+  private fun fafsaDeadlinesParagraph(): String = paragraphAt(CoachParagraph.FAFSA_DEADLINES)
+
+  /**
+   * The FAFSA-DEADLINE paragraph (RFC 237) routes the coach to the tool by the
+   * tool's OWN name, and forbids the thing that tool exists to replace: a FAFSA
+   * date named from memory.
+   *
+   * The testing-timeline paragraph's shape, one subject along, and asserted in
+   * the body the runtime is actually SERVED. The paragraph states no figure, so
+   * it can call the standing copy-rule helper.
+   */
+  @Test
+  fun `the FAFSA-deadline paragraph routes to the tool and forbids a date from memory`() {
+    val paragraph = fafsaDeadlinesParagraph()
+    assertParagraphStates(
+      paragraph,
+      FAFSA_DEADLINES_TOOL_NAME,
+      "the coach cannot call a tool the prompt never names",
+    )
+    assertParagraphStates(
+      paragraph,
+      "never name a FAFSA date from memory",
+      "every FAFSA date a family acts on comes from the tool, and the prompt is where that is stated",
+    )
+    // The one tool name in this paragraph nothing else pins: the paragraph tells
+    // the coach to RECORD the state, so a renamed write tool must break this copy
+    // loudly rather than leave the coach calling a tool that does not exist.
+    assertParagraphStates(
+      paragraph,
+      MoneyProfileChatTool.TOOL_NAME,
+      "the paragraph names the tool that records the family's state, and a rename must break here",
+    )
+    assertParagraphKeepsTheStandingCopyRules("the FAFSA-deadline paragraph", paragraph)
   }
 
   /**
@@ -2288,7 +2342,8 @@ class SystemPromptCatalogTest {
     // is reported as v20's own rather than as the catalog's.
     assertParagraphKeepsTheStandingCopyRules("the need-and-forms paragraph", paragraph)
     // No bare CDS field id may reach the model, and the prompt is context too.
-    assertFalse(Regex("H\\.\\d").containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
+    assertTrue(BareSourceCodeGuard.cdsFieldIdPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CDS_FIELD_ID.containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
   }
 
   /**
@@ -2600,7 +2655,8 @@ class SystemPromptCatalogTest {
     // is reported as v21's own rather than as the catalog's.
     assertParagraphKeepsTheStandingCopyRules("the borrowing paragraph", paragraph)
     // No bare CDS field id may reach the model, and the prompt is context too.
-    assertFalse(Regex("H\\.\\d").containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
+    assertTrue(BareSourceCodeGuard.cdsFieldIdPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CDS_FIELD_ID.containsMatchIn(paragraph), "a CDS field id must never appear in the prompt")
   }
 
   /**

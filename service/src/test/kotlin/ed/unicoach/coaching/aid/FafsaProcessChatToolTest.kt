@@ -236,7 +236,8 @@ class FafsaProcessChatToolTest {
     assertFalse(BareSourceCodeGuard.CODE_EQUALS_WORD.containsMatchIn(payload), "the payload transcribes a source codebook")
     // The FAFSA is Common Data Set H.801; a family is told the form's name.
     assertFalse(payload.contains("H.801"), "a CDS field id must never reach a family")
-    assertFalse(Regex("""H\.\d""").containsMatchIn(payload), "nor any other CDS field id")
+    assertTrue(BareSourceCodeGuard.cdsFieldIdPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(BareSourceCodeGuard.CDS_FIELD_ID.containsMatchIn(payload), "nor any other CDS field id")
   }
 
   @Test
