@@ -82,6 +82,45 @@ Status:
     separately and a misspelling is refused by name. Revocation is built end to
     end but reaches no user — a door for it is a new slice. Phase 5 3,583
     executed, 0 failures; the gate ran the full check in 802s, 0 failures.
+  - `family/03/the-parent-account` LANDED as RFC 241 (`main@60aae041`,
+    2026-09-25) — a parent now has an account of their own. An account holding
+    neither a student profile nor a supporter row is asked ONCE, inside the app,
+    "who are you here for?" — "I'm the student" or "I'm supporting a student" —
+    where before iOS routed it into the STUDENT onboarding form from eleven call
+    sites (correction X4). Choosing the supporter path mints the `supporters`
+    row and lands on a parent home: what linking adds, the invite action,
+    college search (which works with no student row), and settings. With one
+    linked student the home names them quietly; with two or more it carries a
+    switcher built from the design system's own pick-one control, and the
+    selection is held per user id ON THE DEVICE, because D14 forbids server-side
+    "current student" state. Both role-choice paths are reversible while
+    unanswered. Two new doors and **no schema change at all** — no table, no
+    column, no migration: `POST /api/v1/supporters` (idempotent, 201 then 200,
+    one refusal `409 supporter_closed`) and `GET /api/v1/supporters/me` (the
+    supporter and the roster, or 404). The roster read is ONE statement that can
+    return only the link id, the student id, the relationship word and the
+    student's display name — never a date of birth or a graduation date — and a
+    response test plus the published OpenAPI schema both assert it, because
+    reading a linked student's data is `family/05` and this slice must not
+    decide it by accident. `CallerAuthentication` was SPLIT out of
+    `CallerResolution` so the supporter doors cannot send
+    `student_profile_required` at all. **D21's open question is answered in
+    code**: parent-ness is the `supporters` row, minted by the invite accept or
+    now by the explicit choice, and `SupporterService` is its single writer.
+    Also repairs a pre-existing break RFC 232 left: the iOS test target did not
+    compile on `main`, so nothing iOS could be tested or photographed. Review
+    ran 41 lenses over four tiers and applied 40 fixes; five mattered, and all
+    five were invisible to a green suite — a sign-out during a roster refresh
+    could resurrect the home, "I'm the student" was a one-way door with no
+    return, a fifth relationship word would have cost a parent the WHOLE home, a
+    closed supporter row answered `400 "already exists"` about a row that does
+    not exist, and the roster join did not check the `users` row it renders the
+    name from. Two held decisions were challenged under the dissent clause: "no
+    refresh on appear" was OVERTURNED by two lenses independently and became a
+    fix; the `defer` on the re-resolution latch was upheld with its reason
+    written at the line. Gate: full check, 1,135s, 0 failures, verified tree
+    recorded. iOS 722 tests, 0 failures; 84 snapshots, 0 drift on the 74
+    pre-existing scenes.
 - **Renumbered 0012 -> 0014 on 2026-09-14, before landing.** Two sibling
   sessions took `0012-fafsa-support` and `0013-unicoach-on-the-web` while this
   brief was between its gates. Slice IDs are unaffected — they key off the
