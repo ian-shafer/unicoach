@@ -640,7 +640,7 @@ nudge, never a bare repeat.
       collapsing two different programmes with identical figures. 3,625 executed, 0
       failures; the gate ran the full check, Gradle 96/96 up-to-date.
 
-    beyond/06/finish-like-me LANDED as RFC 242 (main@609de137 + <DOC_SHA>,
+    beyond/06/finish-like-me LANDED as RFC 242 (main@609de137 + 419c9b86,
       2026-09-25) — a family can now see how many students actually finish at a
       college, counted over eight years and counting part-time and transfer
       students, with the figure for students on a federal Pell grant and the
