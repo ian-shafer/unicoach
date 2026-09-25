@@ -30,7 +30,15 @@ class TestScoreCopyTest {
       "A score kept that way is what the student told us: it is self-reported and never an official score from the testing agency, so never state it as verified.",
       "If she would rather not share scores at all, record that with the same tool and never raise the question again yourself.",
       "No answer of yours is ever gated on a stored score.",
-      "Scores from different sittings are never added together, and never presented as a school's superscore.",
+      // NARROWED BY RFC 239 (D-F), not retracted. The old sentence forbade the
+      // coach from combining sittings AT ALL; the curated corpus now holds
+      // schools that say in writing they accept a combined score, and
+      // `college_automatic_awards` computes one under three guardrails. What
+      // survives is the rule that mattered: the coach never does that arithmetic
+      // from memory, and our figure is never presented as a score the school
+      // holds -- and never as an "ACT Superscore", which is ACT's own computed
+      // and reported figure and not ours.
+      "Scores from different sittings are never added together from memory and never presented as a score the school holds: only the college_automatic_awards tool combines best sections, only where that school's own page says it accepts a combined score, and what it returns is our arithmetic over the school's stated rule and is never called an ACT Superscore.",
       "When she corrects or removes a score, record that with the same tool, and never mention a score she has asked you to remove.",
     )
 

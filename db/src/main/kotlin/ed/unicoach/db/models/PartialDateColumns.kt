@@ -3,7 +3,9 @@ package ed.unicoach.db.models
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
 import java.time.LocalDate
+import java.time.Month
 import java.time.Year
+import java.time.YearMonth
 
 /**
  * The codec between a [PartialDate] and the two columns that store it: a real
@@ -40,6 +42,33 @@ object PartialDateColumns {
 
       is PartialDate.YearAndMonth -> {
         LocalDate.of(date.year.value, date.monthOf, 1)
+      }
+
+      is PartialDate.FullDate -> {
+        date.date
+      }
+    }
+
+  /**
+   * The LAST day of the period the date names -- `2026-12-31` for `2026`,
+   * `2026-12-31` for `2026-12`, the day itself for a full date.
+   *
+   * BESIDE [periodStart] because it is the same fact read from the other end,
+   * and because a caller that needs it has a PUBLISHED BOUND to honour:
+   * "through December 2026" admits every December sitting, so an end computed
+   * one caller at a time silently shortens somebody's window. It is not a
+   * column -- nothing stores it -- but it is the same codec's other half, and
+   * the first caller that needed it (`AutomaticAward.lastSittingThroughDay`)
+   * had written its own `when` over [PartialDate] to get it.
+   */
+  fun periodEnd(date: PartialDate): LocalDate =
+    when (date) {
+      is PartialDate.YearOnly -> {
+        LocalDate.of(date.year.value, Month.DECEMBER, 31)
+      }
+
+      is PartialDate.YearAndMonth -> {
+        YearMonth.of(date.year.value, date.monthOf).atEndOfMonth()
       }
 
       is PartialDate.FullDate -> {

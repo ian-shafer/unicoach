@@ -345,12 +345,24 @@ class AdmissionTestTimelineChatToolTest {
         AdmissionTestTimelineChatTool.DESCRIPTION.contains("from memory"),
         "the description must forbid naming a date from memory",
       )
-      // The superscore sentence says we HOLD NOTHING and sends them to the
-      // school's own page. It must never instruct the coach to state a policy
-      // from a record: nothing in this repo holds one (RFC 187's lesson).
+      // The superscore sentence says THIS TOOL holds nothing, and since RFC 239
+      // it hands the question on rather than ending it: college_automatic_awards
+      // holds the SCHOLARSHIP rule for the schools that corpus has read, and
+      // every other school still goes to its own page. Both halves are asserted,
+      // because the failure this guards against is the tool inviting the coach to
+      // state a policy nothing in the repo sources -- and the fix for that is a
+      // NAMED source, not a silence.
       assertTrue(
         AdmissionTestTimelineChatTool.DESCRIPTION.contains("holds no school's superscore rule"),
-        "the description must say we hold no superscore rule, rather than telling the coach to state one",
+        "the description must say THIS tool holds no superscore rule, rather than telling the coach to state one from it",
+      )
+      assertTrue(
+        AdmissionTestTimelineChatTool.DESCRIPTION.contains(AutomaticAwardChatTool.TOOL_NAME),
+        "the description must hand the scholarship score rule to the tool that does hold it",
+      )
+      assertTrue(
+        AdmissionTestTimelineChatTool.DESCRIPTION.contains("for every other school say they would have to check that school's own page"),
+        "every school the curated corpus has not read must still go to its own page",
       )
     }
 

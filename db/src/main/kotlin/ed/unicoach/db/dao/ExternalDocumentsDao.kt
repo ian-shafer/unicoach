@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.ExternalDocument
 import ed.unicoach.db.models.ExternalDocumentId
 import ed.unicoach.db.models.NewExternalDocument
 import ed.unicoach.db.models.SourceUrlStatus
@@ -139,6 +140,41 @@ object ExternalDocumentsDao {
     idOf(session, NewExternalDocument(sourceUrl, SourceUrlStatus.FOUND, readOn)).mapCatching { sourceId ->
       sourceId to archiveUrl?.let { idOf(session, NewExternalDocument(it, SourceUrlStatus.FOUND, readOn)).getOrThrow() }
     }
+
+  /**
+   * The document we hold for [url], or null where we hold none -- a READ, which
+   * is the whole point: [idOf] would CREATE the row, and a caller asking "do we
+   * have a citation for this rule yet" must not answer its own question by
+   * writing one.
+   *
+   * `AutomaticAwardService` is the caller: ACT's composite-rounding rule is
+   * ACT's published arithmetic and not ours, so the combination is refused
+   * while this returns null, and the refusal names the missing page (RFC 220,
+   * RFC 239 D-H guardrail 2).
+   */
+  fun findByUrl(
+    session: SqlSession,
+    url: String,
+  ): Result<ExternalDocument?> =
+    session
+      .queryList(
+        "SELECT * FROM external_documents WHERE url = ?",
+        bind = { stmt: PreparedStatement -> stmt.setString(1, url) },
+        map = ::mapDocument,
+      ).map { it.firstOrNull() }
+
+  private fun mapDocument(rs: java.sql.ResultSet): ExternalDocument {
+    val url = rs.getString("url")
+    val statusRaw = rs.getString("url_status")
+    return ExternalDocument(
+      id = ExternalDocumentId(UUID.fromString(rs.getString("id"))),
+      url = url,
+      urlStatus =
+        SourceUrlStatus.fromValue(statusRaw)
+          ?: throw corruptValue(statusRaw, "SourceUrlStatus", "external_documents.url_status (url [$url])"),
+      urlCheckedOn = rs.getDate("url_checked_on").toLocalDate(),
+    )
+  }
 
   private fun mapId(rs: java.sql.ResultSet): ExternalDocumentId = ExternalDocumentId(UUID.fromString(rs.getString("id")))
 }

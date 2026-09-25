@@ -586,14 +586,7 @@ object CodebooksDao {
         stmt.setString(2, row.name)
         jsonbArrayBinder(row.cipPrefixes)(stmt, 3)
       },
-      map = { rs ->
-        val inserted = rs.getBoolean("inserted")
-        when {
-          rs.wasNull() -> UpsertOutcome.UNCHANGED
-          inserted -> UpsertOutcome.INSERTED
-          else -> UpsertOutcome.CHANGED
-        }
-      },
+      map = { rs -> rs.upsertOutcome() },
       mapError = ::mapCodebookWriteError,
     )
   }

@@ -163,6 +163,10 @@ class ComparisonBasisTest {
       meritAid = null,
       aidPolicy = null,
       borrowing = BorrowingCoverage.NoFiling,
+      // NAMED, not defaulted away: an empty list is the VERIFIED "this school
+      // publishes no curated automatic-award grid" answer, and a comparison
+      // basis is assembled from figures, so it is the right answer here.
+      automaticAwards = emptyList(),
       chosen = chosen,
     )
 

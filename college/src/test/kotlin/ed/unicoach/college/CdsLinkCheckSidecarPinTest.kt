@@ -43,9 +43,9 @@ class CdsLinkCheckSidecarPinTest {
   @Test
   fun `the checker and the loader agree on the sidecar's filename`() {
     assertTrue(
-      script.readText().contains("""OUTPUT_NAME = "${CdsSeedLoader.LINK_STATUS_FILE}""""),
-      "bin/cds-link-sweep's OUTPUT_NAME has drifted from CdsSeedLoader.LINK_STATUS_FILE " +
-        "([${CdsSeedLoader.LINK_STATUS_FILE}]): the checker would write a file the loader never reads",
+      script.readText().contains("""OUTPUT_NAME = "${LINK_STATUS_FILE}""""),
+      "bin/cds-link-sweep's OUTPUT_NAME has drifted from LINK_STATUS_FILE " +
+        "([${LINK_STATUS_FILE}]): the checker would write a file the loader never reads",
     )
   }
 
@@ -71,12 +71,12 @@ class CdsLinkCheckSidecarPinTest {
     // happened to launch from -- a file that decides whether a family is shown
     // a link, chosen by cwd. Resolved from the ABSOLUTE parent, there is no
     // fallback left to take.
-    val bare = CdsSeedLoader.sidecarBeside(File("aid-policy.csv"))
-    assertEquals(File(File("").absoluteFile, CdsSeedLoader.LINK_STATUS_FILE).path, bare.path)
+    val bare = sidecarBeside(File("aid-policy.csv"))
+    assertEquals(File(File("").absoluteFile, LINK_STATUS_FILE).path, bare.path)
     assertTrue(bare.isAbsolute, "the sidecar path must never be relative to the launcher: [$bare]")
 
     // And the ordinary case is unchanged: beside the seed it describes.
-    val beside = CdsSeedLoader.sidecarBeside(File("/tmp/seed/cds/aid-policy.csv"))
-    assertEquals(File("/tmp/seed/cds/${CdsSeedLoader.LINK_STATUS_FILE}"), beside)
+    val beside = sidecarBeside(File("/tmp/seed/cds/aid-policy.csv"))
+    assertEquals(File("/tmp/seed/cds/${LINK_STATUS_FILE}"), beside)
   }
 }

@@ -15,6 +15,9 @@ import ed.unicoach.coaching.costs.canonical.ServedFigures
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.publishedTuitionTiersOf
 import ed.unicoach.coaching.costs.canonical.residencyTiersOf
+import ed.unicoach.coaching.testing.AutomaticAwardAnswer
+import ed.unicoach.coaching.testing.AutomaticAwardReader
+import ed.unicoach.coaching.testing.AutomaticAwardService
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AidPolicyDao
@@ -399,6 +402,39 @@ data class CollegeCost(
    * in it is a price, and nothing in this class subtracts it from one.
    */
   val borrowing: BorrowingCoverage,
+  /**
+   * What this school PUBLISHES about its automatic merit awards (RFC 239) --
+   * one answer per grid it publishes, and never anything about the student.
+   *
+   * A LIST AND NOT ONE ANSWER, because residency is part of the corpus's key:
+   * of the 40 curated colleges, 20 publish TWO grids (an in-state one and an
+   * out-of-state one), and Iowa State and Kansas State gate the in-state award
+   * on a score while paying the out-of-state one on GPA alone. A single field
+   * would have to pick one of them, and residency for tuition purposes is a
+   * legal status the SCHOOL determines -- `AutomaticAwardService` refuses to
+   * pick it for exactly that reason, and this field refuses with it. Both grids
+   * ride, each naming its own [ed.unicoach.db.models.ResidencyBasis], and the
+   * surface says which is which.
+   *
+   * NOTHING ABOUT THE STUDENT IS IN HERE, and that is the point rather than an
+   * omission (RFC 239 D-E): these come from
+   * [ed.unicoach.coaching.testing.AutomaticAwardReader.gridAnswersInSession],
+   * which takes no student id and reads no score, so the shared Family Cost
+   * Report -- which a logged-out parent reads -- cannot render a score it never
+   * held. [AutomaticAwardAnswer] has no standing on it AT ALL -- a standing
+   * exists only inside the student-scoped `StudentAwardAnswer` that the chat
+   * door returns -- so this is a property of the type and not of this field's
+   * good behaviour. The school's own dates in it are still computed and still
+   * true, because a deadline is a fact about the school.
+   *
+   * NOT DEFAULTED, unlike its first landed shape. An empty list is the VERIFIED
+   * answer "we read the corpus and this school has no curated grid", so a
+   * default would make "nobody wired the read" state that absence on our
+   * authority -- the same collapse the five-arm answer type exists to prevent,
+   * and the one it would be spending the compiler's ability to demand the field
+   * from the next construction site to buy.
+   */
+  val automaticAwards: List<AutomaticAwardAnswer>,
   /**
    * The way of living this answer LEADS with, resolved once here from the
    * school's own override and the family's usual plan (RFC 152 D2a), rather
@@ -1248,6 +1284,24 @@ class CollegeCostService(
    * Defaulted, so no root has to name it.
    */
   private val canonicalCostReader: CanonicalCostReader = DbCanonicalCostReader(database),
+  /**
+   * The curated automatic-award read (RFC 239), injected for the reason
+   * [canonicalCostReader] is: a test must be able to hand this service a clock,
+   * and `expires_on` is the one question in this read that has one.
+   *
+   * AN INTERFACE AND NOT THE CONCRETE SERVICE, exactly as [canonicalCostReader]
+   * beside it: Kotlin classes are final, so injecting the class was a `new` with
+   * a different spelling and no caller could hand in a stub.
+   *
+   * IT IS CALLED THROUGH ITS STUDENT-FREE DOOR
+   * ([AutomaticAwardReader.gridAnswersInSession]) and never through
+   * `readInSession`, so no test score is read on the cost path at all -- which
+   * is what keeps a score off the shared report page by construction rather than
+   * by the renderer's restraint (RFC 239 D-E). The five-arm rule stays in that
+   * service: a second `when` over `award_kind` here would be a second place for
+   * "expired outranks the kind" to be decided differently.
+   */
+  private val automaticAwardService: AutomaticAwardReader = AutomaticAwardService(database),
 ) {
   suspend fun getForStudent(
     studentId: StudentId,
@@ -1347,6 +1401,16 @@ class CollegeCostService(
     // `SELECT * FROM colleges` as the source of every cost figure.
     val figuresById = canonicalCostReader.read(session, selection.selected)
 
+    // The curated automatic-award grids (RFC 239), batched the same way and on
+    // the same connection: `gridAnswersInSession` costs
+    // [AutomaticAwardService.GRID_READ_STATEMENTS] statements for the whole
+    // answer whatever the length of the list, so a fifty-school list still costs
+    // three reads here and not fifty. It takes no student id and reads no score.
+    val awardsByCollege =
+      automaticAwardService
+        .gridAnswersInSession(session, selection.selected)
+        .groupBy { it.collegeId }
+
     // The major answer (RFC 231), on the SAME connection: the intended-subjects
     // answer, and -- only when it is `answered` -- two batched reads over the
     // colleges and subjects already selected, one per question.
@@ -1370,6 +1434,7 @@ class CollegeCostService(
           // not collected this yet" and say it to a family with no log line;
           // a contract that ever slips must fail loudly instead.
           figuresById.getValue(college.id),
+          awardsByCollege[college.id].orEmpty(),
         )
       }
 
@@ -1570,6 +1635,7 @@ class CollegeCostService(
     borrowingRow: CollegeBorrowing?,
     offersOnCampusHousing: Boolean?,
     figures: CollegeFigures,
+    automaticAwards: List<AutomaticAwardAnswer>,
   ): CollegeCost {
     // The family's own answer, resolved ONCE: it selects the net-price row, the
     // vintage label that dates it, and the status spoken beside it, and those
@@ -1636,6 +1702,11 @@ class CollegeCostService(
       // whose cells we could not read is our gap and not its silence.
       // [BorrowingCoverage.of] decides which of the four, once.
       borrowing = BorrowingCoverage.of(college.name, borrowingRow),
+      // Handed straight through: WHICH arm each grid is -- expired, none
+      // published, no score effect, a score grid -- was decided once, in
+      // `AutomaticAwardService`, and nothing here re-decides it. A college with
+      // no curated grid gets an empty list, not a made-up arm.
+      automaticAwards = automaticAwards,
       // Two rules, two helpers, orchestrated here: WHICH plan applies (the
       // entry and the profile) is a different question from whether THIS
       // school prices it (the breakdown and the housing flag).

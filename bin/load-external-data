@@ -17,7 +17,15 @@ Defaulted for you, with NO flag to override any of them:
   -s db/data/subjects.json           -a db/seed/cds/admission-factors.csv
   -v db/data/money-vocabulary.json   -d db/seed/cds/deadlines.csv
                                      -p db/seed/cds/aid_policy.csv
+  -w db/seed/automatic-awards/awards.csv
+  -b db/seed/automatic-awards/bands.csv
   -H -I -A -C -Y -y -S -f            read from db/seed/ipeds/PROVENANCE.json
+
+db/seed/automatic-awards/link-status.csv is checked for here and passed to
+nothing: bin/ingest-colleges' award phase reads it from beside the -w file, so it
+has no flag to default. It is checked anyway, because this script's whole job is
+that every required input is named before the JVM starts -- and that file is
+required: the phase refuses a cited url with no committed answer.
 
 bin/ingest-colleges keeps every one of its flags and is still the tool to reach
 for when a path is unusual; this wrapper's entire value is that it has no
@@ -114,6 +122,13 @@ CDS_MERIT_AID="$PROJECT_ROOT/db/seed/cds/merit-aid.csv"
 CDS_ADMISSION_FACTORS="$PROJECT_ROOT/db/seed/cds/admission-factors.csv"
 CDS_DEADLINES="$PROJECT_ROOT/db/seed/cds/deadlines.csv"
 CDS_AID_POLICY="$PROJECT_ROOT/db/seed/cds/aid_policy.csv"
+# The hand-typed automatic-award corpus (RFC 239). The third file is the corpus's
+# committed link answers, which the phase reads from beside AWARDS_CSV rather
+# than from a flag -- so it is named here to be CHECKED, never to be passed.
+AUTOMATIC_AWARDS_DIR="$PROJECT_ROOT/db/seed/automatic-awards"
+AWARDS_CSV="$AUTOMATIC_AWARDS_DIR/awards.csv"
+AWARD_BANDS_CSV="$AUTOMATIC_AWARDS_DIR/bands.csv"
+AWARDS_LINK_STATUS_CSV="$AUTOMATIC_AWARDS_DIR/link-status.csv"
 IPEDS_DIR="$PROJECT_ROOT/db/seed/ipeds"
 IPEDS_MANIFEST="$IPEDS_DIR/PROVENANCE.json"
 
@@ -239,6 +254,9 @@ require_inputs() {
   require_input "$CDS_ADMISSION_FACTORS" "the CDS admission-factors seed; run bin/fetch-cds-seed"
   require_input "$CDS_DEADLINES" "the CDS deadlines seed; run bin/fetch-cds-seed"
   require_input "$CDS_AID_POLICY" "the CDS aid-policy seed; run bin/fetch-cds-seed"
+  require_input "$AWARDS_CSV" "the hand-typed automatic-award corpus; it is committed at db/seed/automatic-awards/awards.csv"
+  require_input "$AWARD_BANDS_CSV" "the automatic-award band cells; they are committed at db/seed/automatic-awards/bands.csv"
+  require_input "$AWARDS_LINK_STATUS_CSV" "the automatic-award corpus's committed link answers, read from beside awards.csv; they are committed at db/seed/automatic-awards/link-status.csv"
   require_input "$IPEDS_HD" "the IPEDS HD survey file; run bin/fetch-ipeds"
   require_input "$IPEDS_IC" "the IPEDS IC survey file; run bin/fetch-ipeds"
   require_input "$IPEDS_ADM" "the IPEDS ADM survey file; run bin/fetch-ipeds"
@@ -271,6 +289,8 @@ build_ingest_command() {
     -a "$CDS_ADMISSION_FACTORS"
     -d "$CDS_DEADLINES"
     -p "$CDS_AID_POLICY"
+    -w "$AWARDS_CSV"
+    -b "$AWARD_BANDS_CSV"
     -H "$IPEDS_HD"
     -I "$IPEDS_IC"
     -A "$IPEDS_ADM"

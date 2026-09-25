@@ -27,7 +27,13 @@ import ed.unicoach.coaching.costs.canonical.AssuranceTierGrouping
 import ed.unicoach.coaching.costs.canonical.CoveredFigure
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
+import ed.unicoach.coaching.testing.AutomaticAwardAnswer
 import ed.unicoach.common.money.WholeDollars
+import ed.unicoach.common.util.PublishedGpa
+import ed.unicoach.common.util.UsDate
+import ed.unicoach.db.models.AutomaticAward
+import ed.unicoach.db.models.AutomaticAwardBand
+import ed.unicoach.db.models.BandScoreAxis
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
@@ -56,6 +62,7 @@ import kotlinx.html.th
 import kotlinx.html.thead
 import kotlinx.html.tr
 import kotlinx.html.ul
+import ed.unicoach.db.models.ResidencyBasis as PublishedResidency
 
 // The Family Cost Report (RFC 155): the parent-facing page behind a student's
 // share link. It renders the SAME computation the coach reads in chat
@@ -92,6 +99,39 @@ private const val REPORT_HEADING = "Your student's college list"
 
 /** The tier block's own heading -- page chrome, not money copy: the sentences under it are the domain's (RFC 191). */
 private const val KINDS_HEADING = "What kind of numbers these are"
+
+/**
+ * The heading over one school's published automatic-scholarship grid (RFC 239),
+ * scoped by [gridHeadingOf] to the students the school published it for.
+ *
+ * "Scholarships" and not "awards": RFC 141's vocabulary is this page's
+ * throughout, and the one sentence on the page that says "automatic award" is
+ * the standing one below, which is the corpus's own name for the thing.
+ */
+private const val AWARD_GRID_HEADING = "Automatic scholarships this school publishes"
+
+/**
+ * WHAT KIND OF NUMBER a published grid is, said ONCE for the page (RFC 191) and
+ * never per school -- the same rule the assurance-tier sentences beside it obey.
+ *
+ * It is the one thing a family most needs said about this block: the school
+ * published a table, and a table is not an offer anybody has made them.
+ *
+ * "SCHOLARSHIP" AND NOT "AWARD", although RFC 239's prose wrote the sentence with
+ * the second word. This page may not say "award" at all (RFC 141's vocabulary,
+ * and the sweep in `CostReportPageTest` that executes it), because that word
+ * makes published money sound granted -- which is the exact confusion THIS
+ * sentence exists to prevent. A school's own band names and its own published
+ * words are quoted verbatim and are a different thing: RFC 141 governs our
+ * vocabulary, not a quotation of theirs.
+ */
+private const val AWARD_KIND_SENTENCE = "An automatic scholarship is published by the school and is not a financial aid offer."
+
+/** A `gpa_only_grid` school in one sentence: it pays automatically, and a test score does not move what it pays. */
+private const val NO_SCORE_EFFECT_LINE = "A test score does not change what this school's automatic scholarships pay."
+
+/** The published cell that asks for no test score -- the tier a student who submits none lands in, at a school where a score IS money. */
+private const val NO_SCORE_ROW_LABEL = "no test score"
 
 /** D-A said aloud: the parent must know the page moves under them, because it does. */
 private const val LIVE_LINE = "This report is live \u2014 it updates as your student updates their list."
@@ -669,6 +709,7 @@ private fun FlowContent.schoolSection(
     // summary table above to have said it.
     if (basisIsThisSchool) p("report-hint") { +schoolBlendedHint(cost) }
     meritBlock(cost)
+    awardGridBlocks(cost)
     debtBlock(cost)
   }
 }
@@ -1234,6 +1275,259 @@ private fun FlowContent.meritBlock(cost: CollegeCost) {
 }
 
 /**
+ * What this school PUBLISHES about its automatic scholarships (RFC 239) -- one
+ * block per published grid, and nothing whatever about the student.
+ *
+ * NOTHING ABOUT THE STUDENT IS THE WHOLE RULE HERE (D-E). This page is read by a
+ * logged-out parent from a share link, and it holds no test score:
+ * [CollegeCost.automaticAwards] comes from the student-free door of
+ * `AutomaticAwardService`, so there is no score, no band a student reaches and no
+ * point gap in scope to print. "Your student scored 1250, so this school pays
+ * $6,000" would be a NEW privacy ruling for this page rather than an inherited
+ * one, and RFC 239 declines to make it. The absence is asserted by test, because
+ * that assertion IS the ruling.
+ *
+ * ONE BLOCK PER GRID, because residency is part of what the school published: of
+ * the 40 curated colleges, 20 publish two grids -- one for students they class
+ * as residents and one for everybody else -- and which of them a family falls
+ * under is a legal status the SCHOOL determines. Printing one of them would be
+ * picking that status for the family; printing both, each scoped by its own
+ * heading, prints what the school published and picks nothing.
+ *
+ * A SIBLING OF [meritBlock] AND NOT A CHILD OF IT (RFC 190): that block
+ * attributes everything under its heading to one Common Data Set filing, and a
+ * curated scholarship page is a second publisher. Each block here names its own.
+ */
+private fun FlowContent.awardGridBlocks(cost: CollegeCost) {
+  cost.automaticAwards.mapNotNull { printableGridOf(it) }.forEach { awardGridBlock(it) }
+}
+
+/** One grid this page will print, with the heading that scopes it to the students the school published it for. */
+private data class PrintableGrid(
+  val award: AutomaticAward,
+  val heading: String,
+  /** True for a `score_grid` school: a test score changes the money. False for a school whose automatic table a score does not move. */
+  val scoreIsMoney: Boolean,
+)
+
+/**
+ * Which grids this page prints, decided ONCE so the block and the standing
+ * sentence in [tierKindsSection] can never disagree about whether the page
+ * speaks about automatic scholarships at all.
+ *
+ * An exhaustive `when` with no `else`, the [borrowingParagraphs] shape: three of
+ * the five answers return before a section is opened, and a sixth arm must say
+ * here whether this page speaks it.
+ *
+ *  - `NotCurated` -- we have not read this school. The page is not the place to
+ *    explain our own corpus coverage (the rule [borrowingParagraphs] states).
+ *  - `NonePublished` -- a verified absence. True, cited, and not a scholarship
+ *    grid: a heading over nothing is what [meritBlock] refuses.
+ *  - `Expired` -- our reading of this school is stale, so it is not shown to a
+ *    family as current money (D7/D20).
+ */
+private fun printableGridOf(answer: AutomaticAwardAnswer): PrintableGrid? {
+  val award: AutomaticAward
+  val scoreIsMoney: Boolean
+  when (answer) {
+    is AutomaticAwardAnswer.NotCurated -> {
+      return null
+    }
+
+    is AutomaticAwardAnswer.NonePublished -> {
+      return null
+    }
+
+    is AutomaticAwardAnswer.Expired -> {
+      return null
+    }
+
+    is AutomaticAwardAnswer.NoScoreEffect -> {
+      award = answer.award
+      scoreIsMoney = false
+    }
+
+    is AutomaticAwardAnswer.ScoreBands -> {
+      award = answer.award
+      scoreIsMoney = true
+    }
+  }
+  return PrintableGrid(award = award, heading = gridHeadingOf(award.residencyBasis), scoreIsMoney = scoreIsMoney)
+}
+
+/**
+ * WHO the school published this grid for, said in the heading. NEVER ABSENT:
+ * the three bases the table admits each have a heading, and the two it refuses
+ * are corruption rather than a silence this page is entitled to.
+ *
+ * ALIASED AT THE IMPORT as `PublishedResidency`, because this file already has
+ * a `ResidencyBasis`: [ed.unicoach.coaching.costs.ResidencyBasis] is the
+ * FAMILY's basis for a price, and this one is the axis the SCHOOL published a
+ * grid on. Two different facts that must never be read as one.
+ *
+ * `in_district` and `unknown` are refused by the table's own CHECK
+ * (`create-college-automatic-awards.sql`), so no stored row reaches them --
+ * which is why reaching them is CORRUPTION AND IS NAMED rather than a grid this
+ * page quietly declines to print. A school publishing two grids would otherwise
+ * print one of them and read as complete, and nothing -- not the page, not a log
+ * -- would say a current, cited grid had been suppressed. This page answers
+ * every other absence with a labelled blank (`NOT_REPORTED`, [withheldBlankFor],
+ * [blankFor]); the one thing it does not do is show a family a shorter table
+ * than the school published with nothing saying so.
+ */
+private fun gridHeadingOf(residency: PublishedResidency): String =
+  when (residency) {
+    PublishedResidency.NOT_APPLICABLE -> {
+      AWARD_GRID_HEADING
+    }
+
+    PublishedResidency.IN_STATE -> {
+      "$AWARD_GRID_HEADING for students it classes as in-state"
+    }
+
+    PublishedResidency.OUT_OF_STATE -> {
+      "$AWARD_GRID_HEADING for students it classes as out-of-state"
+    }
+
+    PublishedResidency.IN_DISTRICT, PublishedResidency.UNKNOWN -> {
+      error(
+        "automatic award grid carries residency basis [${residency.value}], which this page cannot name an " +
+          "audience for (college_automatic_awards_residency_basis_check refuses it, so this row is corrupt)",
+      )
+    }
+  }
+
+/**
+ * One school's published grid: who it is for, who published it and when we read
+ * it, what it asks a student to submit, the day scores must be there by, and the
+ * cells themselves.
+ *
+ * ATTRIBUTED ONCE, ABOVE THE CELLS (RFC 190), exactly as [meritBlock] and
+ * [borrowingParagraphs] are: the claimant and the day we read the page, then
+ * everything that came off it. Never once per band.
+ *
+ * NOT A LINK, unlike [sourceLink]. That helper renders a [CdsCitation], whose
+ * `linkTargetOrNull` asserts the scheme before anything reaches an `href` --
+ * "href is where escaping does not save a logged-out parent". This corpus's
+ * `source_url` has no such door yet, so the publisher is named and no anchor is
+ * opened; naming the publisher is what the citation owes a family.
+ *
+ * The block is ABSENT only where the school published NO cell at all -- a
+ * heading and a citation with nothing under them is a section claiming the
+ * school published something while showing nothing it published ([meritBlock]'s
+ * rule). Every cell the school did publish is printed: [bandLine] can no longer
+ * drop one, so a shorter grid than the school's is not a state this page has.
+ */
+private fun FlowContent.awardGridBlock(grid: PrintableGrid) {
+  val award = grid.award
+  // In the order the read served them (`AutomaticAwardsDao` orders by test, then
+  // by the bottom of the band, then by the grade point average floor -- the
+  // order a school prints its own grid in), so this page never re-sorts a
+  // school's table into an order it did not publish.
+  val cells = award.bands.map { bandLine(it, grid.scoreIsMoney) }
+  if (cells.isEmpty()) return
+  section("report-award-grid") {
+    h3 { +grid.heading }
+    p("report-source") { +"Source: ${award.publisher}, read on ${UsDate.of(award.checkedOn)}." }
+    if (!grid.scoreIsMoney) p { +NO_SCORE_EFFECT_LINE }
+    // The school's OWN sentence about submitting a score where it published one.
+    // Where it published none, the silence is stated as the silence it is --
+    // never resolved into a "yes" or a "no" the page would be inventing.
+    p("report-award-requirement") {
+      +(award.scoreRequirementAsPublished ?: "This school does not say whether a test score must be submitted.")
+    }
+    // THROUGH THE ONE DATE SEAM. [UsDate] is the only thing in this repo that
+    // gives a date a human shape, and it returns a date and nothing else -- the
+    // sentence around it is this caller's.
+    award.scoreDeadline?.let { deadline -> p("report-award-deadline") { +"Scores must be with this school by ${UsDate.of(deadline)}." } }
+    ul { cells.forEach { cell -> li { +cell } } }
+  }
+}
+
+/**
+ * One published cell, as a family reads it: what the school calls it, what it
+ * asks for, and what it pays.
+ *
+ * THE SCHOOL'S OWN WORDS WHERE IT PUBLISHES NO FIGURE. Nineteen of the 571
+ * committed cells pay "tuition and fees" rather than a number, and they are the
+ * TOP bands -- rendering a blank or a zero there would show a school's best
+ * award as its worst.
+ *
+ * NO CELL IS EVER DROPPED. This used to answer null for a cell it could not
+ * price, and the caller's `mapNotNull` then printed the surviving cells as the
+ * school's grid -- a family reading an incomplete money table that looks
+ * complete, with nothing saying so. [AutomaticAwardBand] refuses at construction
+ * to carry neither an amount nor the school's words, so [paysOf] reads that
+ * guarantee instead of adding a null arm whose only effect is a silent drop.
+ *
+ * A cell on [BandScoreAxis.NoScore] names no test: that is the published
+ * NO-SCORE row -- the tier a student who submits nothing lands in -- and it is
+ * what makes "a score is worth more than no score" visible without inventing a
+ * zero band. It is a MEMBER of the axis, so this renderer reads it rather than
+ * inferring it from a test it did not find.
+ */
+private fun bandLine(
+  band: AutomaticAwardBand,
+  scoreIsMoney: Boolean,
+): String {
+  val pays = paysOf(band)
+  // [NO_SCORE_ROW_LABEL] ONLY WHERE A SCORE IS MONEY. At a school whose grid a
+  // score moves, a cell on the no-score row IS the published no-score tier and
+  // saying so is the point. At a school whose table a score does not move,
+  // EVERY cell is on that row, and labelling them all "no test score" would
+  // invent a test-optional tier out of a school that has no test axis at all.
+  val noScoreRow = band.score is BandScoreAxis.NoScore
+  val asks = listOfNotNull(scoreRangeOf(band) ?: NO_SCORE_ROW_LABEL.takeIf { noScoreRow && scoreIsMoney }, gpaRangeOf(band))
+  // A cell with no condition on it at all states none: the school published a
+  // name and an amount, and the page invents no qualification it did not print.
+  if (asks.isEmpty()) return "${band.awardName} — $pays"
+  return "${band.awardName} — ${asks.joinToString(", ")} — $pays"
+}
+
+/**
+ * What this cell pays, in the school's own terms.
+ *
+ * NEVER ABSENT. `college_automatic_award_bands_award_has_value_check` and
+ * [AutomaticAwardBand]'s own `require` both refuse a cell carrying neither an
+ * amount nor the school's words, so this states that guarantee rather than
+ * dropping a published cell out of a money table in silence.
+ */
+private fun paysOf(band: AutomaticAwardBand): String =
+  band.awardPerYearUsd?.let { "${WholeDollars.spoken(it)} a year" }
+    ?: checkNotNull(band.awardAsPublished) {
+      "band [${band.id.value}] of award [${band.awardId.value}] states neither an amount nor the school's own " +
+        "words (college_automatic_award_bands_award_has_value_check)"
+    }
+
+/** The band on the test's own published scale, or null for the published no-score row, which [bandLine] labels instead. */
+private fun scoreRangeOf(band: AutomaticAwardBand): String? =
+  when (val axis = band.score) {
+    is BandScoreAxis.NoScore -> null
+    is BandScoreAxis.Range -> "${axis.test.displayName} ${axis.low}–${axis.high}"
+  }
+
+/**
+ * The grade point average cell, at whichever end the school published one.
+ *
+ * Either bound may be absent, because a school may publish "3.50 and above" or
+ * no grade point average axis at all, and a missing bound is never filled in
+ * with a number the school did not print.
+ */
+private fun gpaRangeOf(band: AutomaticAwardBand): String? {
+  // THE ONE HOME FOR THE TYPOGRAPHY ([PublishedGpa]), because the coach's tool
+  // says the same published bound aloud and the rule is about a BigDecimal, not
+  // about a report.
+  val low = band.gpaLow?.let { PublishedGpa.of(it) }
+  val high = band.gpaHigh?.let { PublishedGpa.of(it) }
+  return when {
+    low != null && high != null -> "GPA $low–$high"
+    low != null -> "GPA $low and above"
+    high != null -> "GPA up to $high"
+    else -> null
+  }
+}
+
+/**
  * Debt context: TWO publishers with two vintages in one section (RFC 175, D9).
  *
  * The parent-facing artifact is where a federal-only debt figure misleads most,
@@ -1392,7 +1686,12 @@ private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
       figures = colleges.flatMap { proseFiguresOf(it) },
       spokenElsewhere = colleges.flatMap { blankFiguresOf(it) },
     )
-  if (groups.isEmpty()) return
+  // WHETHER ANY GRID IS PRINTED, asked of the one function that decides it
+  // ([printableGridOf]) rather than re-derived from the answer arms here: a
+  // second rule would be free to say the sentence on a page that shows no grid,
+  // or stay silent on one that does.
+  val printsAGrid = colleges.any { cost -> cost.automaticAwards.any { printableGridOf(it) != null } }
+  if (groups.isEmpty() && !printsAGrid) return
   section("report-kinds") {
     h2 { +KINDS_HEADING }
     groups.forEach { group ->
@@ -1405,6 +1704,11 @@ private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
         +group.statement
       }
     }
+    // ONCE FOR THE PAGE (RFC 191), here and never inside a school's block: a
+    // family reading ten schools is told once what kind of number a published
+    // grid is, in the one section that exists to say what kind of numbers these
+    // are.
+    if (printsAGrid) p("report-kind") { +AWARD_KIND_SENTENCE }
   }
 }
 

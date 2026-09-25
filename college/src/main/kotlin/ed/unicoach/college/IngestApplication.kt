@@ -17,6 +17,22 @@ private const val CDS_AID_POLICY_FLAG = "--cds-aid-policy"
 
 private val CDS_FLAGS = listOf(CDS_MERIT_FLAG, CDS_FACTORS_FLAG, CDS_DEADLINES_FLAG, CDS_AID_POLICY_FLAG)
 
+private const val AWARDS_FLAG = "--awards"
+private const val AWARD_BANDS_FLAG = "--award-bands"
+
+private val AWARDS_FLAGS = listOf(AWARDS_FLAG, AWARD_BANDS_FLAG)
+
+/**
+ * The flags whose value is the NEXT argv word rather than an `=`-joined
+ * suffix -- the CDS group and the automatic-award group.
+ *
+ * ONE list, so the two-token reading, the repeated-flag refusal and the
+ * empty-value refusal have exactly one implementation however many such groups
+ * this grammar grows. A second copy of that loop is how one group comes to
+ * accept what the other refuses.
+ */
+private val PAIRED_FLAGS = CDS_FLAGS + AWARDS_FLAGS
+
 private const val USAGE =
   "Usage: ingest-colleges <institution.csv> <fields.csv> <aliases.json> " +
     "[--institution-source=ARG] [--fields-source=ARG] [--aliases-source=ARG] " +
@@ -25,6 +41,7 @@ private const val USAGE =
     "[--money-vocabulary=money-vocabulary.json] [--money-vocabulary-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv> $CDS_AID_POLICY_FLAG <aid_policy.csv>] " +
+    "[$AWARDS_FLAG <awards.csv> $AWARD_BANDS_FLAG <bands.csv>] " +
     "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --ic-ay=ic_ay.csv " +
     "--survey-year=YYYY] " +
     "[--hd-source=ARG] [--ic-source=ARG] [--adm-source=ARG] [--completions-source=ARG] " +
@@ -101,6 +118,29 @@ internal data class CdsArgs(
 }
 
 /**
+ * The hand-typed automatic-award corpus (RFC 239), passed as NAMED flags for
+ * [CdsArgs]' reason: a mis-ordered argv cannot then load the bands file as the
+ * awards file.
+ *
+ * TWO FLAGS FOR THREE FILES. The corpus's committed link answers
+ * (`link-status.csv`) are read from BESIDE the awards file and are deliberately
+ * not a flag: they describe THAT corpus and travel with it, so a third flag
+ * could only ever pair one corpus's rows with another corpus's answers.
+ */
+internal data class AutomaticAwardArgs(
+  val awardsCsv: File,
+  val bandsCsv: File,
+) {
+  /** The provenance spelling of the two files, exactly as [CdsArgs.sources] builds the CDS four. */
+  val sources: AutomaticAwardSources
+    get() =
+      AutomaticAwardSources(
+        awards = SourceFile(awardsCsv, awardsCsv.path),
+        bands = SourceFile(bandsCsv, bandsCsv.path),
+      )
+}
+
+/**
  * The optional IPEDS file flags (RFC 144, gate-2 D19; extended by RFC 161 with
  * `ic-ay`). All five — plus [SURVEY_YEAR_FLAG] — are required together or not
  * at all: a partial group is a usage error, never a silent partial load.
@@ -168,6 +208,8 @@ internal sealed interface ArgvResult {
   data class Ok(
     val sources: List<SourceFile>,
     val cds: CdsArgs? = null,
+    /** The automatic-award corpus (RFC 239), null when neither of its flags was given. */
+    val automaticAwards: AutomaticAwardArgs? = null,
     val ipeds: IpedsSources? = null,
     /** The optional IPEDS SFA group (RFC 162), null when none of its flags were given. */
     val sfa: SfaSources? = null,
@@ -205,25 +247,32 @@ internal sealed interface ArgvResult {
 internal fun parseArgv(args: Array<String>): ArgvResult {
   val positional = mutableListOf<String>()
   val flags = mutableMapOf<String, String>()
-  val cdsArgs = mutableMapOf<String, String>()
+  val pairedArgs = mutableMapOf<String, String>()
   var i = 0
   while (i < args.size) {
     val arg = args[i]
-    if (arg in CDS_FLAGS) {
+    if (arg in PAIRED_FLAGS) {
       val value = args.getOrNull(i + 1) ?: return ArgvResult.Usage("Option [$arg] requires a value. $USAGE")
       if (value.isBlank()) {
         return ArgvResult.Usage("Option [$arg] must have a non-empty value. $USAGE")
       }
-      if (cdsArgs.put(arg, value) != null) {
+      // A VALUE AND NEVER ANOTHER OPTION. Every paired flag takes a path, and
+      // `--awards --award-bands x.csv` otherwise loads the partner FLAG as the
+      // awards file and then complains that the partner is missing -- naming a
+      // flag the operator did type.
+      if (value.startsWith("--")) {
+        return ArgvResult.Usage("Option [$arg] must be followed by a file path, not [$value]. $USAGE")
+      }
+      if (pairedArgs.put(arg, value) != null) {
         return ArgvResult.Usage("Option [$arg] was given more than once. $USAGE")
       }
       i += 2
       continue
     }
     i += 1
-    // Only `--` spellings are options here: the CDS group's single-dash flags
-    // are consumed by bin/ingest-colleges' getopts and never reach the JVM, so
-    // a leading `-` at this layer can only be part of a file path.
+    // Only `--` spellings are options here: the paired groups' single-dash
+    // partners are consumed by bin/ingest-colleges' getopts and never reach the
+    // JVM, so a leading `-` at this layer can only be part of a file path.
     if (!arg.startsWith("--")) {
       positional += arg
       continue
@@ -245,11 +294,21 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
   if (positional.size != SOURCE_FLAGS.size) {
     return ArgvResult.Usage(USAGE)
   }
-  if (cdsArgs.isNotEmpty() && cdsArgs.size != CDS_FLAGS.size) {
-    return ArgvResult.Usage(
-      "The CDS options are all-or-nothing: pass [${CDS_FLAGS.joinToString("] [")}] together, or none. $USAGE",
-    )
-  }
+  val cdsArgs =
+    when (val group = parsePairedGroup(pairedArgs, "CDS", CDS_FLAGS)) {
+      is FlagGroup.Invalid -> return ArgvResult.Usage(group.message)
+      is FlagGroup.Absent -> emptyMap()
+      is FlagGroup.Present -> group.sources
+    }
+  // The same rule, one group along -- and through the same reader, so it cannot
+  // be the same rule in a second wording: the awards file without its bands
+  // would load grids with no cells and report a complete load.
+  val awardArgs =
+    when (val group = parsePairedGroup(pairedArgs, "automatic-award", AWARDS_FLAGS)) {
+      is FlagGroup.Invalid -> return ArgvResult.Usage(group.message)
+      is FlagGroup.Absent -> emptyMap()
+      is FlagGroup.Present -> group.sources
+    }
   val ipeds =
     when (val group = parseIpedsGroup(flags)) {
       is FlagGroup.Invalid -> return ArgvResult.Usage(group.message)
@@ -304,6 +363,13 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
           admissionFactorsCsv = File(group.getValue(CDS_FACTORS_FLAG)),
           deadlinesCsv = File(group.getValue(CDS_DEADLINES_FLAG)),
           aidPolicyCsv = File(group.getValue(CDS_AID_POLICY_FLAG)),
+        )
+      },
+    automaticAwards =
+      awardArgs.takeIf { it.isNotEmpty() }?.let { group ->
+        AutomaticAwardArgs(
+          awardsCsv = File(group.getValue(AWARDS_FLAG)),
+          bandsCsv = File(group.getValue(AWARD_BANDS_FLAG)),
         )
       },
     ipeds = ipeds,
@@ -402,6 +468,30 @@ private fun <T> parseFlagGroup(
 }
 
 /**
+ * Reads one optional PAIRED flag group all-or-nothing: the members that were
+ * given, or the refusal naming the group.
+ *
+ * ONE arm for every such group, for [parseFlagGroup]'s reason one grammar along:
+ * the all-or-nothing rule belongs to the argv grammar and not to any one group,
+ * and a second copy is how one group comes to accept what the other refuses.
+ * [label] names the group in the refusal; nothing else varies.
+ */
+private fun parsePairedGroup(
+  pairedArgs: Map<String, String>,
+  label: String,
+  flags: List<String>,
+): FlagGroup<Map<String, String>> {
+  val given = pairedArgs.filterKeys { it in flags }
+  if (given.isEmpty()) return FlagGroup.Absent
+  if (given.size != flags.size) {
+    return FlagGroup.Invalid(
+      "The [$label] options are all-or-nothing: pass [${flags.joinToString("] [")}] together, or none. $USAGE",
+    )
+  }
+  return FlagGroup.Present(given)
+}
+
+/**
  * The IPEDS institutional-characteristics group (RFC 144): the four files and
  * the collection year they were published in.
  */
@@ -444,10 +534,15 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   // would have been dropped from the existence check with nothing failing --
   // the same silent-drop this commit removed from `logCdsRun`.
   val cds = parsed.cds?.sources?.namedFiles ?: emptyList()
+  // Pairing by NAME on [AutomaticAwardSources] for the same reason. The
+  // corpus's link-status.csv is NOT here: it has no flag, so it has no role
+  // name to report, and the loader's header assertion is what checks for it --
+  // before the first phase commits, like every other file.
+  val automaticAwards = parsed.automaticAwards?.sources?.namedFiles ?: emptyList()
   val codebooks = listOf(CODEBOOKS_FLAG to parsed.codebooks)
   val subjects = parsed.subjects?.let { listOf(SUBJECTS_FLAG to it) } ?: emptyList()
   val moneyVocabulary = parsed.moneyVocabulary?.let { listOf(MONEY_VOCABULARY_FLAG to it) } ?: emptyList()
-  return scorecard + ipeds + sfa + cds + codebooks + subjects + moneyVocabulary
+  return scorecard + ipeds + sfa + cds + automaticAwards + codebooks + subjects + moneyVocabulary
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
@@ -538,6 +633,7 @@ fun main(args: Array<String>) {
           ipeds = parsed.ipeds,
           sfa = parsed.sfa,
           cds = parsed.cds?.sources,
+          automaticAwards = parsed.automaticAwards?.sources,
           codebooks = parsed.codebooks,
           subjects = parsed.subjects,
           moneyVocabulary = parsed.moneyVocabulary,
@@ -558,6 +654,9 @@ fun main(args: Array<String>) {
     // (RFC 148 D10): this is the reporting half only, and it reads the result
     // the run recorded rather than performing a second, unrecorded load.
     report.cds?.let(::logCdsRun)
+    // Same shape, same reason: the corpus loaded INSIDE the run, and this reads
+    // back what that phase recorded.
+    report.automaticAwards?.let(::logAutomaticAwardRun)
   } catch (e: MissingSourceColumnsException) {
     logger.error(
       "Ingest aborted before any write: source [{}] (from [{}]) is missing required column(s) [{}]",
@@ -573,6 +672,14 @@ fun main(args: Array<String>) {
     // the PartialIngestException below. So this abort can state the write
     // state, exactly as its siblings do.
     logger.error("Ingest aborted before any write: CDS seed defect [{}]", e.defect, e)
+    kotlin.system.exitProcess(1)
+  } catch (e: AutomaticAwardSeedLoader.FormatException) {
+    // Its own arm rather than a shared one: the two loaders' defects are
+    // different closed sets, and a message that named neither corpus would send
+    // an operator to the wrong file. Reached from the up-front header
+    // assertion; a defect found once the phase HAS committed arrives as the
+    // PartialIngestException below.
+    logger.error("Ingest aborted before any write: automatic-award corpus defect [{}]", e.defect, e)
     kotlin.system.exitProcess(1)
   } catch (e: CodebookLoader.InvalidCodebookFileException) {
     logger.error(
@@ -831,6 +938,46 @@ private fun logCdsLinkCheck(summary: CdsSeedLoader.LinkCheckSummary) {
       summary.documents,
     )
   }
+}
+
+/**
+ * The automatic-award corpus's run numbers (RFC 239).
+ *
+ * `documents` is stated beside the two row counts because the three are
+ * independent: this corpus commits an answer for urls no award row cites -- the
+ * ACT composite-rounding page is one -- so a run reporting MORE documents than
+ * awards is a healthy run and not an arithmetic error.
+ *
+ * `bands_pruned` and `awards_pruned` are numbers worth reading on their own.
+ * They are what a RE-READ removed: cells, and whole schools, this corpus
+ * published on the last run and no longer publishes. Nonzero on a run that
+ * changed nothing else means the corpus was corrected -- a dropped school, or a
+ * mis-keyed unit id put right; nonzero every run would mean the loader and the
+ * corpus disagree about a natural key, which is the one way these figures are a
+ * defect.
+ */
+private fun logAutomaticAwardRun(result: AutomaticAwardSeedLoader.LoadResult) {
+  logger.info(
+    "Automatic-award corpus: [documents={}] [bands_pruned={}] [awards_pruned={}]",
+    result.documents,
+    result.bandsPruned,
+    result.awardsPruned,
+  )
+  logAutomaticAwardTable(AutomaticAwardSeedLoader.Table.AWARDS.logLabel, result.awards)
+  logAutomaticAwardTable(AutomaticAwardSeedLoader.Table.BANDS.logLabel, result.bands)
+}
+
+private fun logAutomaticAwardTable(
+  label: String,
+  summary: AutomaticAwardSeedLoader.TableSummary,
+) {
+  logger.info(
+    "Automatic-award corpus [{}]: [upserted={}] [changed={}] [unchanged={}]",
+    label,
+    summary.upserted,
+    summary.changed,
+    summary.unchanged,
+  )
 }
 
 /**

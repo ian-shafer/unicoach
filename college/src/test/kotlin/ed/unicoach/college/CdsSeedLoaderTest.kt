@@ -84,7 +84,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
         .flatMap { name -> sourceUrlsOf(File(committedSeedDir, name)).map { name to it } }
 
     assertEquals(
-      seedTableFiles + CdsSeedLoader.LINK_STATUS_FILE,
+      seedTableFiles + LINK_STATUS_FILE,
       committedSeedDir
         .listFiles { file -> file.extension == "csv" }
         .orEmpty()
@@ -920,7 +920,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // have acquired a `rows_ingested` key for rows it never writes. Asserted
     // all the same: a renamed `checked_on` would otherwise load every verdict
     // dateless, which is the ONE pair the schema refuses.
-    assertHeaderOf(CdsSeedLoader.LINK_STATUS_FILE, CdsSeedLoader.LINK_STATUS_COLUMNS)
+    assertHeaderOf(LINK_STATUS_FILE, CdsSeedLoader.LINK_STATUS_COLUMNS)
   }
 
   /**
@@ -1051,7 +1051,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
 
   /** The committed sidecar, read through the loader's own CSV reader, keyed by url. */
   private fun committedStatuses(): Map<String, Pair<String, String>> =
-    parseSeed(CdsSeedLoader.LINK_STATUS_FILE) { records ->
+    parseSeed(LINK_STATUS_FILE) { records ->
       records.associate {
         it.get("url").trim() to (it.get("url_status").trim() to it.get("checked_on").trim())
       }
@@ -1240,7 +1240,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
         runBlocking { loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv, dateless) }
       }
     val defect = assertIs<CdsSeedLoader.Defect.SidecarStatusWithoutDate>(error.defect)
-    assertEquals("not_found", defect.status)
+    assertEquals(SourceUrlStatus.NOT_FOUND, defect.status)
     assertEquals(1L, defect.line)
     assertEquals(dateless.path, defect.file)
     // Refused BEFORE any document was written, like every other header and cell

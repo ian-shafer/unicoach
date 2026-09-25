@@ -25,6 +25,7 @@ import ed.unicoach.coaching.costs.notReportedOf
 import ed.unicoach.coaching.costs.publishedPriceOf
 import ed.unicoach.coaching.costs.reportedOf
 import ed.unicoach.coaching.costs.tuitionLineOf
+import ed.unicoach.coaching.testing.AutomaticAwardAnswer
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
@@ -279,8 +280,24 @@ fun costFixture(
    * a unit suite is a guarantee the renderer never has to keep.
    */
   debtPublisher: PublishedCell.Survey? = null,
+  /**
+   * What this school PUBLISHES about its automatic scholarships (RFC 239) -- one
+   * answer per grid, exactly as `AutomaticAwardService`'s student-free door
+   * answers them.
+   *
+   * The fixture takes the ASSEMBLED answers rather than award rows because the
+   * five arms are that service's decision, not this file's: a fixture that
+   * classified `award_kind` itself could let the page's tests pass over an arm
+   * the read never produces.
+   */
+  automaticAwards: List<AutomaticAwardAnswer> = emptyList(),
+  /**
+   * This school's id, nameable so a caller can build the answers that are KEYED
+   * by it ([automaticAwards]) against the same school it is describing. A fresh
+   * one otherwise, which is what every caller that does not care wants.
+   */
+  collegeId: CollegeId = CollegeId(UUID.randomUUID()),
 ): CollegeCost {
-  val collegeId = CollegeId(UUID.randomUUID())
   val figures =
     CollegeFigures(
       collegeId = collegeId,
@@ -357,6 +374,10 @@ fun costFixture(
     // The cost REPORT does render borrowing (RFC 175, D9): the parent-facing
     // artifact is where a federal-only debt figure misleads most.
     borrowing = borrowing,
+    // The cost REPORT does render the school's published grid (RFC 239), and
+    // nothing about the student: the default is the ordinary school, which has
+    // no curated grid and no block.
+    automaticAwards = automaticAwards,
     chosen = ChosenLivingPlan.NotChosen,
   )
 }

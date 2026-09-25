@@ -38,6 +38,35 @@ class PartialDateColumnsTest {
     }
   }
 
+  /**
+   * THE PERIOD'S OTHER END, and it is a published bound rather than a column.
+   *
+   * "Through December 2026" admits every December sitting, so an end computed
+   * one caller at a time silently shortens somebody's window -- which is exactly
+   * what a caller that reached for `periodStart` would do. February is the case
+   * a hand-written `withDayOfMonth(30)` gets wrong, and 2028 is a leap year, so
+   * both are here.
+   */
+  @Test
+  fun `the period end is the last day the date admits, and never the first`() {
+    val cases =
+      listOf(
+        PartialDate.YearOnly(Year.of(2026)) to LocalDate.of(2026, 12, 31),
+        PartialDate.YearAndMonth(Year.of(2026), Month.DECEMBER) to LocalDate.of(2026, 12, 31),
+        PartialDate.YearAndMonth(Year.of(2026), Month.FEBRUARY) to LocalDate.of(2026, 2, 28),
+        PartialDate.YearAndMonth(Year.of(2028), Month.FEBRUARY) to LocalDate.of(2028, 2, 29),
+        PartialDate.FullDate(LocalDate.of(2026, 6, 15)) to LocalDate.of(2026, 6, 15),
+      )
+
+    for ((date, expected) in cases) {
+      assertEquals(expected, PartialDateColumns.periodEnd(date), "period end for $date")
+      assertTrue(
+        !PartialDateColumns.periodEnd(date).isBefore(PartialDateColumns.periodStart(date)),
+        "a period cannot end before it starts: $date",
+      )
+    }
+  }
+
   @Test
   fun `a year-precision row can never be read as a month or a day`() {
     val decoded = PartialDateColumns.decode(LocalDate.of(2026, 1, 1), "year")

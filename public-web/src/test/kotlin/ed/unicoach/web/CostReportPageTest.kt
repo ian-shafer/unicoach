@@ -17,10 +17,21 @@ import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.spokenLabel
+import ed.unicoach.coaching.testing.AutomaticAwardAnswer
+import ed.unicoach.coaching.testing.NextBand
+import ed.unicoach.coaching.testing.SittingScore
+import ed.unicoach.coaching.testing.StudentStanding
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.AssuranceTier
+import ed.unicoach.db.models.AutomaticAward
+import ed.unicoach.db.models.AutomaticAwardBand
+import ed.unicoach.db.models.AutomaticAwardBandId
+import ed.unicoach.db.models.AutomaticAwardId
+import ed.unicoach.db.models.AutomaticAwardKind
+import ed.unicoach.db.models.BandScoreAxis
 import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.CollegeBorrowing
 import ed.unicoach.db.models.CollegeId
@@ -28,8 +39,12 @@ import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PublishedCell
+import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ResidencyTierBasis
+import ed.unicoach.db.models.ScholarshipSuperscoreRule
+import ed.unicoach.db.models.ScoreRequirement
 import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.web.render.BLENDED_IN_STATE_CLAUSE
 import ed.unicoach.web.render.NOT_REPORTED
@@ -40,6 +55,10 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import java.io.File
+import java.math.BigDecimal
+import java.time.LocalDate
+import java.time.Month
+import java.time.Year
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -112,6 +131,47 @@ class CostReportPageTest {
   ): Int = body.split(needle).size - 1
 
   /**
+   * The PROSE a parent actually reads: the report section with its markup
+   * stripped and its entities restored.
+   *
+   * Extracted from [visibleWordsOf] so a test about the WORDS on the page can
+   * ask the same question the word count asks, over the same text, rather than
+   * matching a class name or an attribute and calling that a sentence.
+   */
+  private fun visibleProseOf(body: String): String {
+    // The marker is ASSERTED, not assumed: `substringAfter` returns the WHOLE
+    // document when it misses, so a renamed section would quietly start
+    // measuring the head and the site chrome and the ceiling would be a
+    // measurement of something else that still passed.
+    val opening = "<section class=\"report\""
+    assertTrue(body.contains(opening), "the report section must be on the page to be measured")
+    val report = body.substringAfter(opening).substringBeforeLast("</section>")
+    return report
+      .replace(Regex("<[^>]*>"), " ")
+      .replace("&#39;", "'")
+      .replace("&quot;", "\"")
+      .replace("&lt;", "<")
+      .replace("&gt;", ">")
+      // LAST, always: decoding it first would turn `&amp;lt;` into a `<` the
+      // page never printed.
+      .replace("&amp;", "&")
+  }
+
+  /** Every index [needle] occurs at in [text] -- the spans a "only inside a quotation" assertion needs. */
+  private fun occurrencesOf(
+    text: String,
+    needle: String,
+  ): List<Int> {
+    val found = mutableListOf<Int>()
+    var at = text.indexOf(needle)
+    while (at >= 0) {
+      found += at
+      at = text.indexOf(needle, at + 1)
+    }
+    return found
+  }
+
+  /**
    * The words a parent actually reads, counted the way RFC 188 measured them:
    * the report section with its markup stripped, entities restored, and
    * whitespace-separated tokens counted.
@@ -120,23 +180,7 @@ class CostReportPageTest {
    * the report's own copy, and a footer link is not a sentence about a school.
    */
   private fun visibleWordsOf(body: String): Int {
-    // The marker is ASSERTED, not assumed: `substringAfter` returns the WHOLE
-    // document when it misses, so a renamed section would quietly start
-    // measuring the head and the site chrome and the ceiling would be a
-    // measurement of something else that still passed.
-    val opening = "<section class=\"report\""
-    assertTrue(body.contains(opening), "the report section must be on the page to be measured")
-    val report = body.substringAfter(opening).substringBeforeLast("</section>")
-    val text =
-      report
-        .replace(Regex("<[^>]*>"), " ")
-        .replace("&#39;", "'")
-        .replace("&quot;", "\"")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        // LAST, always: decoding it first would turn `&amp;lt;` into a `<` the
-        // page never printed.
-        .replace("&amp;", "&")
+    val text = visibleProseOf(body)
     return text.split(Regex("\\s+")).count { it.isNotBlank() }
   }
 
@@ -2169,7 +2213,431 @@ class CostReportPageTest {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // RFC 239: the school's published automatic-scholarship grid
+  // ---------------------------------------------------------------------------
+
+  /** A band on the SAT's own published scale -- the axis most cases here are not about. */
+  private fun sat(
+    low: Int,
+    high: Int,
+  ): BandScoreAxis = BandScoreAxis.Range(test = AdmissionTest.SAT, low = low, high = high)
+
+  /**
+   * One published cell. The award id is a placeholder: [gridAward] re-keys every
+   * band to the row it hangs off, exactly as the read hands them out, so no test
+   * can build a grid whose cells belong to another school's row.
+   */
+  private fun gridBand(
+    awardName: String = "Presidential",
+    score: BandScoreAxis = sat(1200, 1250),
+    gpaLow: BigDecimal? = null,
+    gpaHigh: BigDecimal? = null,
+    awardPerYearUsd: Int? = 6000,
+    awardAsPublished: String? = null,
+  ): AutomaticAwardBand =
+    AutomaticAwardBand(
+      id = AutomaticAwardBandId(UUID.randomUUID()),
+      awardId = AutomaticAwardId(UUID.randomUUID()),
+      awardName = awardName,
+      score = score,
+      gpaLow = gpaLow,
+      gpaHigh = gpaHigh,
+      awardPerYearUsd = awardPerYearUsd,
+      awardAsPublished = awardAsPublished,
+    )
+
+  /** One school's published grid for one entry year and one residency basis, with its cells. */
+  private fun gridAward(
+    collegeId: CollegeId,
+    bands: List<AutomaticAwardBand> = listOf(gridBand()),
+    residencyBasis: ResidencyBasis = ResidencyBasis.NOT_APPLICABLE,
+    awardKind: AutomaticAwardKind = AutomaticAwardKind.SCORE_GRID,
+    scoreDeadline: LocalDate? = GRID_DEADLINE,
+    scoreDeadlineAsPublished: String? = "Official test scores must be received by December 4.",
+  ): AutomaticAward {
+    val id = AutomaticAwardId(UUID.randomUUID())
+    return AutomaticAward(
+      id = id,
+      collegeId = collegeId,
+      entryYear = AcademicYear(2027),
+      residencyBasis = residencyBasis,
+      awardKind = awardKind,
+      scoreRequirement = ScoreRequirement.REQUIRED,
+      scoreRequirementAsPublished = GRID_REQUIREMENT,
+      superscoreRule = ScholarshipSuperscoreRule.SINGLE_SITTING_ONLY,
+      superscoreAsPublished = "Scholarship awards are based on a single test administration.",
+      scoreDeadline = scoreDeadline,
+      scoreDeadlineAsPublished = scoreDeadlineAsPublished,
+      lastSittingConsidered = null,
+      publisher = GRID_PUBLISHER,
+      sourceUrl = "https://example.test/riverside-scholarships",
+      archiveUrl = null,
+      checkedOn = GRID_READ_ON,
+      expiresOn = LocalDate.of(2027, 6, 30),
+      bands = bands.map { it.copy(awardId = id) },
+    )
+  }
+
+  /**
+   * The answer the report actually receives: a score grid, which is what
+   * `AutomaticAwardService`'s student-free door returns.
+   *
+   * IT CANNOT BE HANDED A STANDING AT ALL. It used to take one, so that a test
+   * could prove the page printed nothing from a full one; the standing now lives
+   * on the student-scoped `StudentAwardAnswer` that only the chat door builds,
+   * so the privacy ruling is a property of the TYPE this page is handed rather
+   * than of this renderer's restraint.
+   */
+  private fun scoreBands(award: AutomaticAward): AutomaticAwardAnswer =
+    AutomaticAwardAnswer.ScoreBands(
+      collegeId = award.collegeId,
+      award = award,
+      lastUsableSitting = null,
+      boundBy = emptySet(),
+      closedSittings = emptyList(),
+      quotedCutOff = null,
+    )
+
+  /** A school on the report with one published grid, keyed to the same college the answer names. */
+  private fun gridSchool(
+    name: String = "Riverside State University",
+    collegeId: CollegeId = CollegeId(UUID.randomUUID()),
+    answers: List<AutomaticAwardAnswer>,
+  ): CollegeCost =
+    costFixture(
+      name = name,
+      collegeId = collegeId,
+      control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+      tuitionInState = 12000,
+      publishedPrice = 28000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 15000),
+      medianDebt = 21000,
+      meritAid = meritFixture(name),
+      automaticAwards = answers,
+    )
+
+  @Test
+  fun `a school where a score is money shows its published grid, its requirement and its deadline`() {
+    val id = CollegeId(UUID.randomUUID())
+    val award =
+      gridAward(
+        collegeId = id,
+        bands =
+          listOf(
+            gridBand(awardName = "Presidential", score = sat(1200, 1250), awardPerYearUsd = 6000),
+            gridBand(
+              awardName = "Presidential",
+              score = BandScoreAxis.Range(test = AdmissionTest.ACT, low = 30, high = 31),
+              awardPerYearUsd = 8000,
+            ),
+            gridBand(
+              awardName = "Achievement",
+              score = BandScoreAxis.NoScore,
+              gpaLow = BigDecimal("3.50"),
+              awardPerYearUsd = 2000,
+            ),
+          ),
+      )
+
+    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+
+    assertTrue(body.contains("report-award-grid"), "the block must be on the page: [$body]")
+    assertTrue(body.contains("Automatic scholarships this school publishes"), "the block must say whose grid it is: [$body]")
+    // The school's own cells, in the order the read served them, each with what
+    // it asks for and what it pays.
+    assertTrue(body.contains("Presidential \u2014 SAT 1200\u20131250 \u2014 \$6,000 a year"), "the SAT cell: [$body]")
+    assertTrue(body.contains("Presidential \u2014 ACT 30\u201331 \u2014 \$8,000 a year"), "the ACT cell: [$body]")
+    assertTrue(
+      body.contains("Achievement \u2014 no test score, GPA 3.50 and above \u2014 \$2,000 a year"),
+      "the published no-score tier says it asks for no score: [$body]",
+    )
+    assertTrue(body.contains(GRID_REQUIREMENT), "the submission requirement, in the school's own words: [$body]")
+    assertTrue(body.contains("Scores must be with this school by Dec 4, 2026."), "the score deadline, through the date seam: [$body]")
+    assertTrue(body.contains("Source: $GRID_PUBLISHER, read on Aug 1, 2026."), "cited once, at the head of the block: [$body]")
+  }
+
+  @Test
+  fun `the grid is a sibling of the merit block and never inside it`() {
+    val id = CollegeId(UUID.randomUUID())
+    val body =
+      render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(gridAward(collegeId = id))))), answeredMoney()))
+
+    // A second publisher UNDER the merit heading would be attributed to that
+    // school's Common Data Set filing (RFC 190), so the grid opens its own
+    // section between merit and debt.
+    assertTrue(
+      body.indexOf("report-merit") < body.indexOf("report-award-grid"),
+      "the grid follows the merit block: [$body]",
+    )
+    assertTrue(
+      body.indexOf("report-award-grid") < body.indexOf("report-debt"),
+      "and precedes the debt block: [$body]",
+    )
+  }
+
+  @Test
+  fun `a school whose automatic table a score does not move still shows the table, and says so`() {
+    val id = CollegeId(UUID.randomUUID())
+    val award =
+      gridAward(
+        collegeId = id,
+        awardKind = AutomaticAwardKind.GPA_ONLY_GRID,
+        bands =
+          listOf(
+            gridBand(
+              awardName = "Trustee",
+              score = BandScoreAxis.NoScore,
+              // `3.750` as the NUMERIC(4,3) column really holds it: the page
+              // prints the school's own two decimals and never a third.
+              gpaLow = BigDecimal("3.750"),
+              awardPerYearUsd = 4000,
+            ),
+          ),
+      )
+    val answer = AutomaticAwardAnswer.NoScoreEffect(collegeId = id, award = award)
+
+    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(answer))), answeredMoney()))
+
+    assertTrue(body.contains("report-award-grid"), "a table a score does not move is still published money: [$body]")
+    assertTrue(
+      body.contains("A test score does not change what this school's automatic scholarships pay."),
+      "\"we do not know\" would be false here, so the page says the true thing: [$body]",
+    )
+    assertTrue(body.contains("Trustee \u2014 GPA 3.75 and above \u2014 \$4,000 a year"), "and it still shows the table: [$body]")
+  }
+
+  @Test
+  fun `no grid is shown where we have not read the school, it publishes none, or our reading is stale`() {
+    val id = CollegeId(UUID.randomUUID())
+    val expiredAward = gridAward(collegeId = id)
+    val silences =
+      mapOf(
+        "we have not read this school" to AutomaticAwardAnswer.NotCurated(collegeId = id),
+        "the school publishes none" to
+          AutomaticAwardAnswer.NonePublished(
+            collegeId = id,
+            award =
+              gridAward(
+                collegeId = id,
+                bands = emptyList(),
+                awardKind = AutomaticAwardKind.NONE_PUBLISHED,
+                scoreDeadline = null,
+                scoreDeadlineAsPublished = null,
+              ),
+          ),
+        "our reading is stale" to
+          AutomaticAwardAnswer.Expired(collegeId = id, award = expiredAward, expiredOn = expiredAward.expiresOn),
+        // The ordinary school: no curated grid at all.
+      )
+
+    silences.forEach { (silence, answer) ->
+      val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(answer))), answeredMoney()))
+      assertFalse(body.contains("report-award-grid"), "[$silence] must open no section: [$body]")
+      assertFalse(body.contains(AWARD_KIND_SENTENCE), "[$silence] must not say what kind of number a grid is: [$body]")
+    }
+
+    val noAnswerAtAll = render(costProfile(listOf(gridSchool(collegeId = id, answers = emptyList())), answeredMoney()))
+    assertFalse(noAnswerAtAll.contains("report-award-grid"), "a school with no grid at all opens no section: [$noAnswerAtAll]")
+    assertFalse(noAnswerAtAll.contains(AWARD_KIND_SENTENCE), "and says nothing about grids: [$noAnswerAtAll]")
+  }
+
+  @Test
+  fun `the grid carries no student score, no band the student reaches and no point gap`() {
+    // THE PRIVACY RULING, ASSERTED (RFC 239 D-E). A logged-out parent reads this
+    // page and it holds no test score today, so "your student scored 1310, so
+    // this school pays $6,000" would be a NEW ruling under RFC 155 D-F rather
+    // than an inherited one -- and this RFC declines to make it.
+    //
+    // THE ANSWER THIS PAGE IS HANDED CAN NO LONGER CARRY A STUDENT AT ALL. This
+    // case used to build a standing -- a figure, a band reached, a point gap --
+    // and assert that none of it was rendered; `AutomaticAwardAnswer.ScoreBands`
+    // now has nowhere to put one, because a standing exists only inside the
+    // student-scoped `StudentAwardAnswer` the chat door returns. So the ruling
+    // is enforced at the SOURCE, and what is left to assert here is the other
+    // half of it: the school's own grid still prints in full, and no sentence on
+    // this page speaks about a student's score.
+    val id = CollegeId(UUID.randomUUID())
+    val reached = gridBand(awardName = "Presidential", score = sat(1200, 1250), awardPerYearUsd = 6000)
+    val next = gridBand(awardName = "Presidential Elite", score = sat(1300, 1600), awardPerYearUsd = 10321)
+    val award = gridAward(collegeId = id, bands = listOf(reached, next))
+
+    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+
+    assertTrue(body.contains("report-award-grid"), "the school's own grid is still printed: [$body]")
+    // The PAGE'S OWN HEADING is "Your student's college list", so the banned
+    // phrases are the ones that could only come from a standing: a score said,
+    // a gap measured, a band claimed as earned.
+    listOf("your student scored", "your score", "points away", "qualifies for", "would earn").forEach { studentWords ->
+      assertFalse(body.lowercase().contains(studentWords), "the page must say nothing about the student: [$studentWords]")
+    }
+    // And the school's own cells are unharmed by the silence.
+    assertTrue(body.contains("Presidential Elite \u2014 SAT 1300\u20131600 \u2014 \$10,321 a year"), "the top cell: [$body]")
+  }
+
+  @Test
+  fun `what kind of number a published grid is, is said once for the page and not once per school`() {
+    val first = CollegeId(UUID.randomUUID())
+    val second = CollegeId(UUID.randomUUID())
+    val body =
+      render(
+        costProfile(
+          listOf(
+            gridSchool(name = "Riverside State University", collegeId = first, answers = listOf(scoreBands(gridAward(collegeId = first)))),
+            gridSchool(name = "Ashford College", collegeId = second, answers = listOf(scoreBands(gridAward(collegeId = second)))),
+            stateSchool(),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    assertEquals(2, countOf(body, "report-award-grid"), "one block per school that publishes a grid: [$body]")
+    assertEquals(1, countOf(body, AWARD_KIND_SENTENCE), "and the standing sentence once for the whole page: [$body]")
+    assertTrue(body.indexOf("report-kinds") < body.indexOf(AWARD_KIND_SENTENCE), "in the block that says what kind of numbers these are")
+  }
+
+  @Test
+  fun `a cell the school publishes in words renders those words, never a blank and never a zero`() {
+    // Nineteen of the 571 committed cells pay "tuition and fees" rather than a
+    // figure, and they are the TOP bands: a blank there shows a school's best
+    // award as its worst.
+    val id = CollegeId(UUID.randomUUID())
+    val award =
+      gridAward(
+        collegeId = id,
+        bands =
+          listOf(
+            gridBand(awardName = "Presidential", score = sat(1200, 1250), awardPerYearUsd = 6000),
+            gridBand(
+              awardName = "Presidential Elite",
+              score = sat(1500, 1600),
+              awardPerYearUsd = null,
+              awardAsPublished = "tuition and fees",
+            ),
+          ),
+      )
+
+    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+
+    assertTrue(
+      body.contains("Presidential Elite \u2014 SAT 1500\u20131600 \u2014 tuition and fees"),
+      "the school's own words for what it pays: [$body]",
+    )
+    assertFalse(body.contains("\$0"), "a cell with no figure is never a zero: [$body]")
+  }
+
+  @Test
+  fun `a school that publishes one grid per residency shows both, each scoped to the students it is for`() {
+    // TWENTY of the forty curated colleges publish two grids, and which one a
+    // family falls under is a legal status the SCHOOL determines. Printing one
+    // of them would be picking that status for the family.
+    val id = CollegeId(UUID.randomUUID())
+    val inState =
+      scoreBands(
+        gridAward(
+          collegeId = id,
+          residencyBasis = ResidencyBasis.IN_STATE,
+          bands = listOf(gridBand(awardName = "Crimson", score = sat(1200, 1250), awardPerYearUsd = 6000)),
+        ),
+      )
+    val outOfState =
+      scoreBands(
+        gridAward(
+          collegeId = id,
+          residencyBasis = ResidencyBasis.OUT_OF_STATE,
+          bands = listOf(gridBand(awardName = "Crimson", score = sat(1200, 1250), awardPerYearUsd = 14000)),
+        ),
+      )
+
+    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(inState, outOfState))), answeredMoney()))
+
+    assertEquals(2, countOf(body, "report-award-grid"), "both published grids, and neither picked for the family: [$body]")
+    assertTrue(
+      body.contains("Automatic scholarships this school publishes for students it classes as in-state"),
+      "the in-state grid says who it is for: [$body]",
+    )
+    assertTrue(
+      body.contains("Automatic scholarships this school publishes for students it classes as out-of-state"),
+      "and so does the other one: [$body]",
+    )
+    assertTrue(body.contains("\$6,000 a year") && body.contains("\$14,000 a year"), "each grid keeps its own money: [$body]")
+  }
+
+  @Test
+  fun `a school's own words are quoted verbatim, and our own prose never says the word they use`() {
+    // THE EXEMPTION, WRITTEN DOWN AND EXECUTED. This page may not say "award"
+    // (RFC 141, and the vocabulary sweep above that executes it), because the
+    // word makes published money sound granted. But 14 of the corpus's 87
+    // distinct band names contain it -- "Academic Achievement Award", "1863
+    // Landmark Award" -- and so do two of the schools' own published amounts.
+    // Those are proper nouns and quotations: rewriting them would misquote a
+    // publisher, which is a worse fault than a banned word inside quotation
+    // marks. So the rule is not "the word never appears"; it is "the word never
+    // appears in OUR prose", and that is what this asserts.
+    val id = CollegeId(UUID.randomUUID())
+    val award =
+      gridAward(
+        collegeId = id,
+        bands =
+          listOf(
+            gridBand(
+              awardName = SCHOOL_BAND_NAME,
+              score = sat(1200, 1250),
+              awardPerYearUsd = null,
+              awardAsPublished = SCHOOL_BAND_WORDS,
+            ),
+          ),
+      )
+
+    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+
+    assertTrue(body.contains(SCHOOL_BAND_NAME), "the school's own name for its band, verbatim: [$body]")
+    assertTrue(body.contains(SCHOOL_BAND_WORDS), "and its own words for what it pays, verbatim: [$body]")
+
+    val prose = visibleProseOf(body)
+    val quotations = listOf(SCHOOL_BAND_NAME, SCHOOL_BAND_WORDS)
+    val quoted = quotations.flatMap { quotation -> occurrencesOf(prose, quotation).map { it until it + quotation.length } }
+    assertEquals(quotations.size, quoted.size, "each quotation must be on the page exactly once for this test to mean anything")
+
+    val saidAt = occurrencesOf(prose.lowercase(), "award")
+    assertTrue(saidAt.isNotEmpty(), "the word must be on the page at all, or this test asserts nothing: [$prose]")
+    saidAt.forEach { at ->
+      assertTrue(
+        quoted.any { at in it },
+        "\"award\" at [$at] is not inside a school's own quoted words, so it is OUR prose saying it: [$prose]",
+      )
+    }
+  }
+
   private companion object {
+    /** The day we read the school's scholarship page -- the read date every grid block cites. */
+    val GRID_READ_ON: LocalDate = LocalDate.of(2026, 8, 1)
+
+    /** The day official scores must be with the school, rendered through the one date seam as `Dec 4, 2026`. */
+    val GRID_DEADLINE: LocalDate = LocalDate.of(2026, 12, 4)
+
+    /** The school's OWN sentence about submitting a score; the page quotes it and composes none of its own. */
+    const val GRID_REQUIREMENT = "A test score is required for scholarship consideration."
+
+    /** Who published the grid, as a family would recognise them on the page. */
+    const val GRID_PUBLISHER = "Riverside State University Office of Admissions"
+
+    /**
+     * The standing sentence about what kind of number a published grid is (RFC
+     * 191), pinned HERE and not imported: it is copy a parent reads, so a
+     * reword must fail a test rather than pass one that moved with it.
+     */
+    const val AWARD_KIND_SENTENCE = "An automatic scholarship is published by the school and is not a financial aid offer."
+
+    /**
+     * A band name and a published amount from the corpus's own shape: 14 of the
+     * 87 distinct committed band names contain "Award", and two
+     * `award_as_published` strings do. They are the SCHOOL's proper nouns and
+     * the SCHOOL's sentences, and they are quoted, not reworded.
+     */
+    const val SCHOOL_BAND_NAME = "Academic Achievement Award"
+    const val SCHOOL_BAND_WORDS = "The award amount varies from \$8,000- \$12,000 annually"
+
     /** One school's own Common Data Set file, and a second one, so a link cannot pass on the other's url. */
     const val MERIT_URL = "https://example.test/ashford-merit-cds.pdf"
     const val BORROWING_URL = "https://example.test/ashford-borrowing-cds.pdf"

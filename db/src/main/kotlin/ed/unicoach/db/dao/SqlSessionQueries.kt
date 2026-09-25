@@ -70,12 +70,25 @@ internal fun <K, T> SqlSession.queryListWhereIn(
   keys: Collection<K>,
   bindKey: (PreparedStatement, Int, K) -> Unit,
   map: (ResultSet) -> T,
+  /**
+   * The SERVED order, so a renderer never re-sorts a row it was handed in the
+   * right order. A FIXED DAO IDENTIFIER LIST AND NEVER CALLER DATA, exactly as
+   * [table], [columns] and [keyColumn] are: it is spliced into the statement
+   * unquoted, so a fragment built from a request would be an injection point,
+   * and a caller that wants a different order asks for one in Kotlin.
+   *
+   * It lives here rather than in each DAO because a read that had to write its
+   * own `ORDER BY` had to write its own `IN` list too, and that is the 1-based
+   * index rule this function exists to state once.
+   */
+  orderBy: String? = null,
 ): Result<List<T>> {
   val distinct = keys.distinct()
   if (distinct.isEmpty()) return Result.success(emptyList())
   val placeholders = distinct.joinToString(", ") { "?" }
+  val order = orderBy?.let { "\nORDER BY $it" } ?: ""
   return queryList(
-    "SELECT $columns FROM $table WHERE $keyColumn IN ($placeholders)",
+    "SELECT $columns FROM $table WHERE $keyColumn IN ($placeholders)$order",
     bind = { stmt -> distinct.forEachIndexed { i, key -> bindKey(stmt, i + 1, key) } },
     map = map,
   )
@@ -270,6 +283,26 @@ enum class UpsertOutcome {
 }
 
 /**
+ * The `inserted` column of a change-detecting upsert, decoded: `xmax = 0` is a
+ * fresh INSERT, `false` is a real UPDATE, and the NULL row from the union's
+ * second arm is the write the `IS DISTINCT FROM` guard declined to make.
+ *
+ * Beside the enum because it is the enum's own wire contract: a hand-written
+ * statement that returns this column must decode it the same way the generated
+ * one does, and three copies of the `wasNull()` ordering is three chances to
+ * read the flag before the null check -- which would report every suppressed
+ * write as an insert.
+ */
+internal fun ResultSet.upsertOutcome(): UpsertOutcome {
+  val inserted = getBoolean("inserted")
+  return when {
+    wasNull() -> UpsertOutcome.UNCHANGED
+    inserted -> UpsertOutcome.INSERTED
+    else -> UpsertOutcome.CHANGED
+  }
+}
+
+/**
  * Generates `INSERT INTO $table (<keys>, <cols>) VALUES (?, …) ON CONFLICT
  * (<keys>) DO UPDATE SET <col> = EXCLUDED.<col>, … WHERE (<cols>) IS DISTINCT
  * FROM (EXCLUDED.<cols>)` and reports the per-row [UpsertOutcome], so a
@@ -311,14 +344,7 @@ internal fun SqlSession.upsertDetectingChange(
   return mutateReturning(
     sql,
     bind = { stmt -> binds.forEachIndexed { i, b -> b(stmt, i + 1) } },
-    map = { rs ->
-      val inserted = rs.getBoolean("inserted")
-      when {
-        rs.wasNull() -> UpsertOutcome.UNCHANGED
-        inserted -> UpsertOutcome.INSERTED
-        else -> UpsertOutcome.CHANGED
-      }
-    },
+    map = { rs -> rs.upsertOutcome() },
     mapError = mapError,
   )
 }

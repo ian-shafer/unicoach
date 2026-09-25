@@ -1,0 +1,194 @@
+{
+  "corpus": "college automatic merit award grids (RFC 239, slice test/07/a-score-is-money)",
+  "read_on": "2026-09-24",
+  "entry_year": 2027,
+  "expires_on": "2027-07-31",
+  "method": "Two curation passes fetched each institution's own scholarship page directly and quoted it; no aggregator, no blog, no model memory. Every unit_id was resolved against the loaded colleges table and confirmed by state and name. A third pass on 2026-09-24 re-fetched 19 pages to give every value-less band the publisher's own words, re-read the seven schools held back for naming the wrong entry year, added act.org's Composite-arithmetic page as a cited document, and re-verified every url with bin/check-link (two passes, HEAD then GET).",
+  "counts": {
+    "award_rows": 60,
+    "band_rows": 571,
+    "score_grid_rows": 27,
+    "gpa_only_grid_rows": 8,
+    "none_published_rows": 25,
+    "distinct_score_grid_colleges": 18,
+    "distinct_colleges": 40,
+    "source_urls": 53,
+    "link_status_urls": 53,
+    "bands_with_words_not_a_figure": 19,
+    "rows_with_receipt_deadline": 25,
+    "rows_with_last_sitting_date": 3,
+    "rows_with_last_sitting_words_only": 2
+  },
+  "entry_year_defaulted": [
+    {
+      "unit_id": "110662",
+      "college_name": "University of California-Los Angeles",
+      "residency_basis": "not_applicable",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "155317",
+      "college_name": "University of Kansas",
+      "residency_basis": "in_state",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "155317",
+      "college_name": "University of Kansas",
+      "residency_basis": "out_of_state",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "170976",
+      "college_name": "University of Michigan-Ann Arbor",
+      "residency_basis": "not_applicable",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "181464",
+      "college_name": "University of Nebraska-Lincoln",
+      "residency_basis": "in_state",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "181464",
+      "college_name": "University of Nebraska-Lincoln",
+      "residency_basis": "out_of_state",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "201885",
+      "college_name": "University of Cincinnati-Main Campus",
+      "residency_basis": "not_applicable",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "204796",
+      "college_name": "Ohio State University-Main Campus",
+      "residency_basis": "not_applicable",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "216339",
+      "college_name": "Temple University",
+      "residency_basis": "not_applicable",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "236948",
+      "college_name": "University of Washington-Seattle Campus",
+      "residency_basis": "not_applicable",
+      "why": "the page names no entry year; keyed to the cycle being applied for on the reading day"
+    }
+  ],
+  "owed_re_reads": [
+    {
+      "college": "University of Mississippi",
+      "residency_basis": "in_state",
+      "why": "re-read 2026-09-24: the page's only automatic grid is headed \"2025-2026 Mississippi Freshmen\". No Fall 2027 / 2027-28 grid is published, so nothing was added."
+    },
+    {
+      "college": "University of Virginia",
+      "residency_basis": "all",
+      "why": "page refused the fetch (HTTP 403)"
+    },
+    {
+      "college": "Mississippi State University",
+      "residency_basis": "all",
+      "why": "page publishes a grid but no figures yet (\"coming soon\")"
+    },
+    {
+      "college": "University of Oklahoma",
+      "residency_basis": "in_state",
+      "why": "re-read 2026-09-24: the page still says \"some of the general, university-centralized freshman scholarships for fall 2026\" and \"As a test-optional school for fall 2026\". No Fall 2027 grid, so nothing was added."
+    },
+    {
+      "college": "University of Oklahoma",
+      "residency_basis": "out_of_state",
+      "why": "re-read 2026-09-24: same page, same \"fall 2026\" wording. No Fall 2027 grid, so nothing was added."
+    },
+    {
+      "college": "University of Wyoming",
+      "residency_basis": "in_state",
+      "why": "re-read 2026-09-24: the Cowboy Commitment page states \"This information is for the Fall 2026/Spring 2027 academic year\", i.e. Fall 2026 entry. No Fall 2027 grid, so nothing was added."
+    },
+    {
+      "college": "University of Wyoming",
+      "residency_basis": "out_of_state",
+      "why": "re-read 2026-09-24: the Brown and Gold Commitment page states \"This information is for the Fall 2026/Spring 2027 academic year\", i.e. Fall 2026 entry. No Fall 2027 grid, so nothing was added."
+    },
+    {
+      "college": "University of Arizona",
+      "residency_basis": "all",
+      "why": "re-read 2026-09-24: the first-year merit page publishes NO grid at all -- the Wildcat and Arizona Tuition Awards are described as \"highly competitive\" and awarded by holistic review, with no amounts, no GPA axis and no score axis. Nothing to add for any entry year."
+    },
+    {
+      "college": "University of Utah",
+      "residency_basis": "all",
+      "why": "re-read 2026-09-24: the GPA grid is live but the page states \"The information provided here is for new, incoming freshman students applying for the summer or fall 2026 terms.\" No Fall 2027 grid, so nothing was added."
+    },
+    {
+      "college": "University of Idaho",
+      "residency_basis": "in_state",
+      "why": "re-read 2026-09-24: the Go Idaho! first-year GPA grid (Vandal Pride 3.9-4.0 $7,500; Vandal Summit 3.75-3.899 $5,000; Vandal Excellence 3.4-3.749 $4,000; Vandal Merit 3.0-3.39 $1,000) names NO entry year at all. Held back rather than defaulted to 2027, because the school was held back for an entry-year reason and the page gives no evidence this is the Fall 2027 cycle."
+    },
+    {
+      "college": "University of Idaho",
+      "residency_basis": "out_of_state",
+      "why": "re-read 2026-09-24: the non-resident page names no entry year and publishes two different programmes (WUE for 16 named states, Invitation to Idaho for the rest) whose values are given as approximations (\"nearly $16,000 per year\"), which one out_of_state key and an INTEGER per-year column cannot state honestly."
+    },
+    {
+      "college": "Montana State University",
+      "residency_basis": "in_state",
+      "why": "re-read 2026-09-24: the resident page states \"Fall 2027 scholarship information will be available later this fall\" and shows the Fall 2026 grid. No Fall 2027 grid, so nothing was added."
+    },
+    {
+      "college": "Montana State University",
+      "residency_basis": "out_of_state",
+      "why": "re-read 2026-09-24: the non-resident page states \"Fall 2027 scholarship information will be available later this fall\" and shows the Fall 2026 grid. No Fall 2027 grid, so nothing was added."
+    },
+    {
+      "college": "University of Idaho",
+      "residency_basis": "in_state",
+      "why": "Today's re-read found a clean GPA-only grid with NO cycle label on the page. Not seeded: the reading was held back for an entry-year doubt, and defaulting the year here would launder that doubt for a row where a score changes nothing anyway. Out-of-state is worse: two non-stacking programmes under one key, one of them a regional exchange, with values published as approximations."
+    }
+  ],
+  "open_gaps": [
+    "One band row was DELETED on 2026-09-24: Iowa State University, out_of_state, 'Academic Achievement Award', GPA 3.00-3.09. The school's own page prints '--' in that cell -- the award pays nothing at that GPA -- and the schema has no zero (college_automatic_award_bands_award_positive_check) and refuses a band with neither a figure nor words. A student at that GPA still receives Iowa State's separate $2,000/year Expedition Award, which this corpus does not hold for any GPA level; that is an unfilled gap, not a contradiction.",
+    "29 band rows carried an open-ended score bound ('29+ ACT', '<=20 ACT', 'SAT of 1300 or above') stored as an EMPTY score_low or score_high, which the landed CHECK college_automatic_award_bands_score_iff_test_check refuses. They were closed on 2026-09-24 at the test's own published scale -- PublishedScoreScale.ACT_COMPOSITE = 1..36 and PublishedScoreScale.SAT_COMPOSITE = 400..1600, the repo's own landed constants -- and the two open ends were confirmed against the publishers' pages the same day (Kansas State's '<=20 ACT, <=1030 SAT' column and Northern State's 'SAT of 1300 or above' row).",
+    "Three urls answered 403 to bin/check-link in BOTH passes and are committed as 'unknown' WITH the date we asked, which is the legal and honest state: finaid.umich.edu (Michigan) and the two go.okstate.edu freshman-scholarship pages. Their award rows are unchanged; the pages were read by the curation passes.",
+    "Two award rows are classified gpa_only_grid but carry score-bearing bands, and the classification is the thing to re-read, not the bands: University of Missouri-Columbia in_state (Perfect Score Scholarship, 36 ACT / 1570-1600 SAT) and University of Nebraska-Lincoln in_state (President's Scholarship at 36 ACT, Regents Scholar Tuition Commitment at 32 ACT). At both schools the bulk of the grid pays on GPA alone and the TOP award is score-gated, which is a shape award_kind cannot express with one value.",
+    "Two UAB rows publish a last-considered sitting that differs by test (February ACT / March SAT). They carry the school's words and no parsed date, by design: see the DDL's stated promotion trigger."
+  ],
+  "refresh_instruction": "Re-read each school's own page, edit db/seed/automatic-awards/awards.csv and bands.csv, and re-run the loader. Never edit a landed row's meaning without a new checked_on: a correction is a re-read. Re-verify the urls with `nix develop -c bin/check-link -f <url list>` twice (HEAD, then -g for GET) and map the pair the way bin/cds-link-sweep does: 2xx in either pass is found, 404/410 in BOTH is not_found, anything else is unknown WITH the date. The build fails 90 days before expires_on (HandTypedReferenceData.REFRESH_LEAD).",
+  "cited_documents_without_an_award_row": [
+    {
+      "url": "https://www.act.org/content/act/en/products-and-services/the-act/scores/understanding-your-scores.html",
+      "why": "ACT's own Composite-arithmetic rule, cited by the ACT combination (RFC 239, D-H). Fetched 2026-09-24, HTTP 200. It carries BOTH sentences the service needs: \"Your Composite score is the average of your English, math, and reading scores, rounded to the nearest whole number.\" and \"Fractions less than one-half are rounded down; fractions one-half or more are rounded up.\" ACT's higher-education page (\u2026/the-act-postsecondary-professionals/scores.html) still prints the pre-2025 four-subject rule and is deliberately NOT cited."
+    },
+    {
+      "url": "https://admissions.unl.edu/cost/scholarships/regents-scholar-tuition-commitment/",
+      "why": "the University of Nebraska-Lincoln page that states the Regents Scholar Tuition Commitment's award in the school's own words and its 32 ACT floor. The award row for unit_id 181464 in_state cites the President's Scholarship page, which does not describe this second award."
+    }
+  ],
+  "counts_checked_on": "2026-09-24",
+  "corrections": [
+    {
+      "on": "2026-09-24",
+      "what": "award_kind corrected from gpa_only_grid to score_grid",
+      "rows": [
+        {
+          "unit_id": "178396",
+          "college_name": "University of Missouri-Columbia",
+          "residency_basis": "in_state"
+        },
+        {
+          "unit_id": "181464",
+          "college_name": "University of Nebraska-Lincoln",
+          "residency_basis": "in_state"
+        }
+      ],
+      "why": "The first classification counted a band as score-gated only when it carried a per-year DOLLAR figure. Missouri's Perfect Score and Nebraska's President's and Regents awards are score-gated at the apex and publish a KIND of award rather than an amount, so they were mis-filed as GPA-only. Saying a score changes nothing at those schools would be false for their top band."
+    }
+  ]
+}

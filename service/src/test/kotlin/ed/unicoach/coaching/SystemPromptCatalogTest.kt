@@ -22,6 +22,7 @@ import ed.unicoach.coaching.report.ShareCostReportChatTool
 import ed.unicoach.coaching.report.StopCostReportOffersChatTool
 import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.coaching.testing.AdmissionTestTimelineChatTool
+import ed.unicoach.coaching.testing.AutomaticAwardChatTool
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.college.FindCollegeTool
 import ed.unicoach.college.SimilarCollegesTool
@@ -268,6 +269,24 @@ class SystemPromptCatalogTest {
      * a tool that no longer exists.
      */
     private val TEST_TIMELINE_TOOL_NAME = AdmissionTestTimelineChatTool.TOOL_NAME
+
+    /**
+     * The automatic-award tool the RFC 239 paragraphs name, read from the tool
+     * itself on the same precedent as [ADMISSIONS_TOOL_NAME]: the pairing under
+     * test is SEEDED COPY versus SHIPPING TOOL, and a literal here would keep
+     * passing after a rename, leaving the seeded prompt routing the coach to a
+     * tool that no longer exists.
+     */
+    private val AUTOMATIC_AWARDS_TOOL_NAME = AutomaticAwardChatTool.TOOL_NAME
+
+    /**
+     * A snake_case IDENTIFIER: a tool name or a wire field, never copy.
+     *
+     * One home, used by [proseOf], which is what lets a rule about the words a
+     * FAMILY hears be asked of the words a family hears. An underscore does not
+     * appear in this prompt's copy, so the pattern cannot reach a sentence.
+     */
+    private val SNAKE_CASE_IDENTIFIER = Regex("""\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b""")
 
     /**
      * The two search-side tools the v12 paragraph routes between (RFC 154), read
@@ -650,13 +669,24 @@ class SystemPromptCatalogTest {
    * `published price`) stay at the call sites: they differ per paragraph, which
    * is precisely what makes them not standing rules.
    */
+
   private fun assertParagraphKeepsTheStandingCopyRules(
     name: String,
     paragraph: String,
   ) {
     assertFalse(paragraph.contains("room and board"), "[$name] states the retired term, not even contrastively")
     assertFalse(paragraph.contains("sticker"), "[$name] says sticker price; it is the published price (RFC 141)")
-    assertFalse(paragraph.contains("award"), "[$name] says award; it is a financial aid offer (RFC 141)")
+    // RFC 141 RETIRES A WORD FROM COPY A FAMILY HEARS, NOT AN IDENTIFIER THE
+    // MODEL MUST TYPE. The paragraph is checked with its snake_case identifiers
+    // removed, because `college_automatic_awards` is a TOOL NAME -- the same
+    // category as `update_test_scores`, `data_availability` and `score_bands`,
+    // which this paragraph has always named -- and the model has to type it
+    // exactly or the tool is not called. Rewriting the identifier to dodge the
+    // sweep would leave the tool and the table with two names for one thing.
+    // [proseOf] is deliberately narrow: an underscore never appears in copy, so
+    // nothing a family hears can hide behind it, and the caller below asserts
+    // the strip did real work so this cannot pass vacuously.
+    assertFalse(proseOf(paragraph).contains("award"), "[$name] says award in its PROSE; it is a financial aid offer (RFC 141)")
     assertEquals(
       emptyList(),
       listSubtractionsNotForbidden(paragraph),
@@ -668,6 +698,26 @@ class SystemPromptCatalogTest {
     assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
     assertFalse(CODE_EQUALS_WORD.containsMatchIn(paragraph), "[$name] transcribes a source codebook")
   }
+
+  /**
+   * The paragraph with every snake_case IDENTIFIER removed, so a rule about
+   * COPY is asked only of copy.
+   *
+   * RFC 141 retires "award" from what a FAMILY hears. It does not retire it
+   * from a tool name the model must type exactly: this prompt has always named
+   * `update_test_scores`, `data_availability`, `score_bands` and
+   * `school_day_programme`, and since RFC 239 it names
+   * `college_automatic_awards`, whose table is `college_automatic_awards` too.
+   * Spelling the identifier differently in the prompt to dodge a substring
+   * sweep would give one thing two names and break the call.
+   *
+   * IT IS SAFE BECAUSE AN UNDERSCORE NEVER APPEARS IN COPY. Nothing a family
+   * hears can hide behind this strip, so it cannot be widened by accident into
+   * an exemption for prose. Every caller that relies on it also asserts that
+   * the identifier was present and is gone, so a strip that stopped working
+   * fails rather than passing quietly.
+   */
+  private fun proseOf(paragraph: String): String = SNAKE_CASE_IDENTIFIER.replace(paragraph, " ")
 
   /**
    * The central assertion of RFC 181 and RFC 185, and the one that replaced the
@@ -1095,7 +1145,22 @@ class SystemPromptCatalogTest {
     )
     // RFCs 141/142 money language, carried into the new paragraph.
     assertTrue(paragraph.contains("a financial aid offer"), "the glossary term survives: an offer, never an award")
-    assertFalse(paragraph.contains("award"), "'award' is retired copy (RFC 141) and this paragraph never states it contrastively")
+    // The PROSE, not the identifiers -- see [proseOf]. This paragraph now names
+    // `college_automatic_awards`, and the next two assertions are what stop the
+    // strip from being a silent exemption: the identifier IS there, and the
+    // prose that remains is still the paragraph.
+    assertFalse(
+      proseOf(paragraph).contains("award"),
+      "'award' is retired copy (RFC 141) and this paragraph never states it contrastively",
+    )
+    assertTrue(
+      paragraph.contains(AUTOMATIC_AWARDS_TOOL_NAME),
+      "the paragraph must name the tool that holds a school's scholarship score rule",
+    )
+    assertFalse(
+      proseOf(paragraph).contains(AUTOMATIC_AWARDS_TOOL_NAME),
+      "the identifier strip must actually remove the tool name, or the assertion above is vacuous",
+    )
     assertTrue(
       paragraph.contains("never subtract merit money from a published price"),
       "a share and an average are not an offer to this student; they never net out of a price",
@@ -1230,9 +1295,25 @@ class SystemPromptCatalogTest {
       paragraph.contains("we do not have it for that school rather than anything about the school itself"),
       "an absent section is OUR gap -- the rule TestPolicyCopy.POLICY_GAP_IS_OURS states for the policy",
     )
-    assertTrue(
+    // RFC 239 NARROWED THIS, and both halves are now asserted. The scholarship
+    // score rule IS something we hold -- for the schools the curated corpus has
+    // read -- so the old sentence went false the day that corpus landed. What
+    // survives is the part that is still true: every OTHER school, and athletics
+    // at every school, goes to the school's own page. A sentence that still said
+    // we hold no scholarship score rule would send a family away from an answer
+    // we have.
+    assertFalse(
       paragraph.contains("scholarship score rules and athletics rules are not things we hold"),
-      "the two things we genuinely do not hold stay in the sentence; only the score-range clause moved out",
+      "we hold the scholarship score rule now for the curated schools: the sentence that says we hold none is " +
+        "false the moment college_automatic_awards ships",
+    )
+    assertTrue(
+      paragraph.contains("the college_automatic_awards tool has read it holds the school's own published scholarship score rule"),
+      "the rule comes from THAT school's curated row, never from memory -- the test_policy rule, applied to money",
+    )
+    assertTrue(
+      paragraph.contains("for athletics rules at every school"),
+      "athletics stays a thing we genuinely do not hold, and an uncurated school still goes to its own page",
     )
   }
 
@@ -3504,18 +3585,38 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * D14, guardrail two, and the correction RFC 197 made to its own brief: we hold
-   * NO school's superscore policy, so the copy says to check that school's page
-   * rather than instructing a claim no tool in this repo can source -- and says it
-   * can differ for scholarship money at the same school.
+   * D14 guardrail two, NARROWED BY RFC 239 (D-F) and not retracted.
+   *
+   * RFC 197 wrote this copy when nothing in the repo held a superscore policy,
+   * so the only honest instruction was "check that school's page". A curated
+   * corpus now holds the SCHOLARSHIP rule for the schools it has read, and the
+   * old sentence -- "we hold it for no school" -- went false the day it landed.
+   *
+   * What the copy must still do is the thing the original guardrail was FOR:
+   * never instruct a claim nothing can source. So the paragraph now names the
+   * source for the half we hold, keeps every other school on its own page, and
+   * keeps the ADMISSION rule on its own page at every school -- because that one
+   * really is held nowhere, and it is the half a family would otherwise assume
+   * from the scholarship answer.
    */
   @Test
-  fun `the testing-timeline paragraph holds no superscore rule and says it can differ for scholarships`() {
+  fun `the testing-timeline paragraph sources the scholarship superscore rule and holds no admission one`() {
     val paragraph = testingTimelineParagraph()
+    assertFalse(
+      paragraph.contains("we hold it for no school"),
+      "we hold the scholarship superscore rule for the curated schools: a paragraph still saying we hold it for " +
+        "no school would send a family away from an answer we have",
+    )
     assertParagraphStates(
       paragraph,
-      "we hold it for no school",
-      "instructing a superscore policy from a record would instruct a claim nothing here can source",
+      "the college_automatic_awards tool has read we hold the SCHOLARSHIP rule and you state it from there",
+      "the half we DO hold is stated from its record and never from memory",
+    )
+    assertParagraphStates(
+      paragraph,
+      "for the admission rule at every school",
+      "the ADMISSION superscore rule is held nowhere, and it is the half a family would otherwise assume from " +
+        "the scholarship answer",
     )
     assertParagraphStates(
       paragraph,

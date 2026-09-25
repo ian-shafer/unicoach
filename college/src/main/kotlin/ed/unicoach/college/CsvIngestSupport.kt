@@ -1,12 +1,15 @@
 package ed.unicoach.college
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.DataSize
+import ed.unicoach.common.util.isWebUrl
 import ed.unicoach.db.dao.ConstraintDiagnostics
 import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UpsertOutcome
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.FigureReading
+import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
@@ -14,8 +17,10 @@ import ed.unicoach.error.errorCategory
 import org.apache.commons.csv.CSVRecord
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.math.BigDecimal
 import java.security.MessageDigest
 import java.sql.SQLException
+import java.time.LocalDate
 import java.util.HexFormat
 
 /**
@@ -1093,3 +1098,395 @@ internal fun <T> CsvIngestSupport.StatusfulCell<T>.reading(): FigureReading<T> =
     CsvIngestSupport.StatusfulCell.SuppressedByPublisher -> FigureReading.Absent(AbsenceStatus.SUPPRESSED_BY_PUBLISHER)
     CsvIngestSupport.StatusfulCell.NotReported -> FigureReading.Absent(AbsenceStatus.NOT_REPORTED_BY_INSTITUTION)
   }
+
+// -----------------------------------------------------------------------------
+// The HAND-TYPED seed corpora's half: located cell readers and the committed
+// link-status sidecar. One home, for the reason this file's own KDoc gives.
+// -----------------------------------------------------------------------------
+
+/**
+ * WHAT is wrong with one cell of a hand-typed seed corpus, WHERE it is, and
+ * what would have been accepted. WHOSE defect type it becomes is the corpus's
+ * own business -- see [SeedCells].
+ */
+internal data class SeedCellDefect(
+  val fault: SeedCellFault,
+  val line: Long,
+  val column: String,
+  /** The raw cell, trimmed. Empty for [SeedCellFault.EMPTY_REQUIRED], which is what is wrong with it. */
+  val value: String,
+  /** Every value that would have been accepted -- [SeedCellFault.UNKNOWN_CODE] only, empty otherwise. */
+  val allowed: List<String> = emptyList(),
+  /**
+   * The cell READ AS AN INTEGER, where the number itself is what is wrong with
+   * it -- [SeedCellFault.NOT_AN_ACADEMIC_YEAR] only, null otherwise.
+   *
+   * CARRIED AND NOT RE-PARSED. The reader holds an `Int` and the corpus's own
+   * defect wants an `Int`; stringifying it into [value] and calling `toInt()`
+   * at the other end turns a located defect into an unlocated
+   * `NumberFormatException` the day a fault sets a non-numeric [value].
+   */
+  val year: Int? = null,
+)
+
+/** The closed set of ways one seed cell can be unreadable. */
+internal enum class SeedCellFault {
+  EMPTY_REQUIRED,
+  NOT_AN_INTEGER,
+  NOT_A_DECIMAL,
+  NOT_A_DATE,
+  NOT_AN_ACADEMIC_YEAR,
+  UNKNOWN_CODE,
+}
+
+/**
+ * The located cell readers every HAND-TYPED seed corpus needs (RFC 139's "every
+ * malformed cell names its file, line and column"), written ONCE.
+ *
+ * [refuse] is the only corpus-specific part: it turns a stated fault at a
+ * stated (line, column, raw cell) into that corpus's own located defect and
+ * throws it, so each loader keeps its own operator-facing message while the
+ * READING itself cannot drift between corpora. Two hand-copied sets of these
+ * readers is how one corpus comes to trim a cell the other does not -- and the
+ * two that existed had already diverged.
+ *
+ * Everything here is a REFUSAL, never a coercion: a hand-typed corpus has no
+ * acceptable silent repair, which is the one way these differ from the
+ * Scorecard readers above.
+ */
+internal class SeedCells(
+  private val refuse: (defect: SeedCellDefect, cause: Throwable?) -> Nothing,
+) {
+  fun getString(
+    record: CSVRecord,
+    column: String,
+  ): String {
+    val raw = record.get(column).trim()
+    if (raw.isEmpty()) refuse(SeedCellDefect(SeedCellFault.EMPTY_REQUIRED, record.recordNumber, column, raw), null)
+    return raw
+  }
+
+  fun getInt(
+    record: CSVRecord,
+    column: String,
+  ): Int {
+    val raw = record.get(column).trim()
+    return raw.toIntOrNull() ?: refuse(SeedCellDefect(SeedCellFault.NOT_AN_INTEGER, record.recordNumber, column, raw), null)
+  }
+
+  fun getIntOrNull(
+    record: CSVRecord,
+    column: String,
+  ): Int? {
+    val raw = record.get(column).trim()
+    if (raw.isEmpty()) return null
+    return raw.toIntOrNull() ?: refuse(SeedCellDefect(SeedCellFault.NOT_AN_INTEGER, record.recordNumber, column, raw), null)
+  }
+
+  fun getDecimalOrNull(
+    record: CSVRecord,
+    column: String,
+  ): BigDecimal? {
+    val raw = record.get(column).trim()
+    if (raw.isEmpty()) return null
+    return raw.toBigDecimalOrNull()
+      ?: refuse(SeedCellDefect(SeedCellFault.NOT_A_DECIMAL, record.recordNumber, column, raw), null)
+  }
+
+  fun getDate(
+    record: CSVRecord,
+    column: String,
+  ): LocalDate {
+    val raw = getString(record, column)
+    return runCatching { LocalDate.parse(raw) }.getOrElse { cause ->
+      // CHAINED, not discarded: the located defect says which cell, and the
+      // parser's own reason underneath says why -- [2026-13-01] and
+      // [2026-02-30] read identically without it.
+      refuse(SeedCellDefect(SeedCellFault.NOT_A_DATE, record.recordNumber, column, raw), cause)
+    }
+  }
+
+  fun getDateOrNull(
+    record: CSVRecord,
+    column: String,
+  ): LocalDate? {
+    if (record.get(column).trim().isEmpty()) return null
+    return getDate(record, column)
+  }
+
+  /**
+   * A year cell as an [AcademicYear], with the range refusal LOCATED: the type
+   * carries the same range its SQL domain states, so building one from a raw
+   * cell would otherwise throw an unlocated `IllegalArgumentException`.
+   */
+  fun getAcademicYear(
+    record: CSVRecord,
+    column: String,
+  ): AcademicYear {
+    val year = getInt(record, column)
+    if (year !in AcademicYear.FIRST_YEAR..AcademicYear.LAST_YEAR) {
+      refuse(
+        SeedCellDefect(SeedCellFault.NOT_AN_ACADEMIC_YEAR, record.recordNumber, column, year.toString(), year = year),
+        null,
+      )
+    }
+    return AcademicYear(year)
+  }
+
+  /** A coded cell decoded through [allowed], or a located refusal naming every value that would have been accepted. */
+  fun <T> decode(
+    record: CSVRecord,
+    column: String,
+    raw: String,
+    allowed: Map<String, T>,
+  ): T =
+    allowed[raw] ?: refuse(
+      SeedCellDefect(SeedCellFault.UNKNOWN_CODE, record.recordNumber, column, raw, allowed.keys.toList()),
+      null,
+    )
+
+  /** [decode] over an enumeration's own values -- a seed's usual case. */
+  fun <T> getEnumCode(
+    record: CSVRecord,
+    column: String,
+    values: List<T>,
+    slugOf: (T) -> String,
+  ): T = decode(record, column, getString(record, column), values.associateBy(slugOf))
+}
+
+/**
+ * An optional cell: the trimmed value, or null for the blank a hand-typed seed
+ * corpus spells absence with.
+ *
+ * NO TABLE AND NO [SeedCells], deliberately. This read CANNOT refuse, so a
+ * loader that borrowed one of its per-table readers for it named a file the
+ * cell may not even have come from -- correct only as long as the borrowed
+ * refusal path stayed unreachable, which is a fact a reader had to carry in
+ * their head rather than see. Both corpora call this one.
+ */
+internal fun CSVRecord.optionalCell(column: String): String? = get(column).trim().ifEmpty { null }
+
+/**
+ * [source]'s header row when it is NOT exactly [expected] (same names, same
+ * order), or null when it is.
+ *
+ * The comparison is the one a hand-typed corpus needs -- a renamed or reordered
+ * column must fail loudly rather than load NULLs -- and it is here rather than
+ * in each loader because it was character-identical in both. What the caller
+ * does with the mismatch is its own: each corpus names its file and the
+ * operator's own argument in its own located defect.
+ */
+internal fun headerMismatchOf(
+  source: SourceFile,
+  expected: List<String>,
+): List<String>? {
+  val actual = parseCsv(source.file).use { parser -> parser.headerNames.toList() }
+  return actual.takeIf { it != expected }
+}
+
+/**
+ * One url's committed answer: the verdict, and the day it was reached.
+ *
+ * ONE value rather than two columns read apart, because the pair IS the
+ * vocabulary: `unknown` with no date is "we never asked" and `unknown` with one
+ * is "we asked and got no usable answer", and a reader holding only the status
+ * cannot tell a broken checker from a stale one.
+ */
+data class RecordedLinkStatus(
+  val status: SourceUrlStatus,
+  val checkedOn: LocalDate?,
+)
+
+/**
+ * The sidecar's filename, for EVERY corpus that commits one beside itself.
+ *
+ * Named once so a corpus, its checker and its loader cannot come to disagree
+ * about it -- and once for all corpora, because it is one filename and two
+ * copies of it is two things to change.
+ */
+const val LINK_STATUS_FILE = "link-status.csv"
+
+/**
+ * The sidecar that sits BESIDE the seed it describes, resolved from that
+ * file's ABSOLUTE parent.
+ *
+ * Absolute deliberately: `File("x.csv").parentFile` is NULL, so a bare relative
+ * seed path once fell back to the process's current directory and would have
+ * read whichever sidecar the launcher happened to be standing in -- a file that
+ * decides whether a family is shown a link, chosen by where somebody ran the
+ * command. `absoluteFile` always has a parent, so there is no fallback left to
+ * take.
+ */
+internal fun sidecarBeside(seedCsv: File): File = File(seedCsv.absoluteFile.parentFile, LINK_STATUS_FILE)
+
+/**
+ * WHY one `link-status.csv` row was refused. The coordinates (file and line)
+ * ride beside it, because they are the reader's and not the row's.
+ */
+internal sealed interface LinkStatusFault {
+  data class RowArity(
+    val cells: Int,
+    val expectedCells: Int,
+  ) : LinkStatusFault
+
+  data object EmptyUrl : LinkStatusFault
+
+  /**
+   * A `url` cell that is not an absolute http(s) page.
+   *
+   * REFUSED HERE, where the file and the line are still in hand: the write
+   * model's own [ed.unicoach.common.util.requireCitedPageUrl] refuses the same
+   * string later, by value alone, and a corpus whose whole discipline is
+   * telling the human WHICH ROW to fix would hand them a bare
+   * `IllegalArgumentException` and a file to grep.
+   */
+  data class UrlNotAWebPage(
+    val url: String,
+  ) : LinkStatusFault
+
+  data class UnknownStatus(
+    val url: String,
+    val value: String,
+    val allowed: List<String>,
+  ) : LinkStatusFault
+
+  data class NotADate(
+    val url: String,
+    val value: String,
+  ) : LinkStatusFault
+
+  /** A verdict with no day beside it. The DECODED verdict rides, not its slug: it was decoded one line above the refusal. */
+  data class MissingDate(
+    val url: String,
+    val status: SourceUrlStatus,
+  ) : LinkStatusFault
+
+  data class ConflictingStatus(
+    val firstLine: Long,
+    val url: String,
+    val first: RecordedLinkStatus,
+    val second: RecordedLinkStatus,
+  ) : LinkStatusFault
+}
+
+/**
+ * The committed `link-status.csv` reader every seed corpus shares.
+ *
+ * ONE home, because the file shape is a corpus-independent fact about
+ * `external_documents` and the two hand-typed corpora that carry one had
+ * already begun to spell it differently -- the same semantic cell was
+ * `checked_on` in one and `url_checked_on` in the other, in files with the same
+ * basename. EVERY column this reader reads is therefore a parameter --
+ * [urlColumn], [statusColumn], [dateColumn] -- and [columns] is the header the
+ * arity check is made against, which is a longer list for the corpus whose
+ * sidecar also commits the evidence for its verdict. [dayAlwaysRequired] is a
+ * parameter because one corpus admits a verdict with no day (the `unknown` that
+ * means "we never asked") while the other refuses every one.
+ *
+ * Everything else -- the arity, the empty url, a url that is not a web page,
+ * the unknown status, the unparseable day, two rows answering one url
+ * differently -- is the FILE's rule
+ * and is stated once. [refuse] turns a located fault into the calling corpus's
+ * own defect, so each keeps its own operator-facing message.
+ *
+ * Whether an ABSENT file is legal is the CALLER's question, not this reader's:
+ * a corpus swept by a script may legitimately run before its first sweep, and a
+ * corpus that commits its answers beside its rows may not.
+ */
+internal class LinkStatusSidecar(
+  private val columns: List<String>,
+  private val urlColumn: String,
+  private val statusColumn: String,
+  private val dateColumn: String,
+  private val dayAlwaysRequired: Boolean,
+  private val refuse: (file: File, line: Long, fault: LinkStatusFault, cause: Throwable?) -> Nothing,
+) {
+  init {
+    // EVERY COLUMN THIS BODY READS IS NAMED, and the header it is read from
+    // must carry all three. Two of the names used to be parameters and the
+    // other two literals, so a [columns] list of the right LENGTH spelling the
+    // url column anything else passed the arity check and then threw an
+    // unlocated `IllegalArgumentException` out of Commons CSV -- the failure
+    // this reader's whole error contract exists to prevent.
+    //
+    // [columns] is still the caller's, and is NOT derived from the three: one
+    // corpus's sidecar carries EVIDENCE columns it does not read (`pass_one`,
+    // `pass_two`), and a derived header would make its arity check refuse every
+    // row of a file that is exactly right.
+    val read = listOf(urlColumn, statusColumn, dateColumn)
+    require(columns.containsAll(read)) { "a link-status header must name $read; got $columns" }
+  }
+
+  /** One [RecordedLinkStatus] and the line it was read from, held only so a conflict can name BOTH rows. */
+  private data class LocatedStatus(
+    val line: Long,
+    val recorded: RecordedLinkStatus,
+  )
+
+  fun read(file: File): Map<String, RecordedLinkStatus> {
+    val byUrl = mutableMapOf<String, LocatedStatus>()
+    parseCsv(file).use { records ->
+      for (record in records) {
+        // The header assertion covers column NAMES only; a truncated row would
+        // otherwise throw an unlocated IllegalArgumentException out of Commons
+        // CSV, which is outside every seed loader's error contract.
+        if (!record.isConsistent || record.size() != columns.size) {
+          refuse(file, record.recordNumber, LinkStatusFault.RowArity(record.size(), columns.size), null)
+        }
+        val url = record.get(urlColumn).trim()
+        if (url.isEmpty()) refuse(file, record.recordNumber, LinkStatusFault.EmptyUrl, null)
+        // THE SHAPE, and not only the presence: `external_documents` refuses a
+        // url that is not an absolute http(s) page, and it refuses it by value
+        // with no idea which row produced it. Asked here, the answer names the
+        // file and the line.
+        if (!isWebUrl(url)) refuse(file, record.recordNumber, LinkStatusFault.UrlNotAWebPage(url), null)
+        val recorded = recordedStatusOf(file, record, url)
+        val first = byUrl[url]
+        if (first != null && first.recorded != recorded) {
+          refuse(
+            file,
+            record.recordNumber,
+            LinkStatusFault.ConflictingStatus(first.line, url, first.recorded, recorded),
+            null,
+          )
+        }
+        byUrl[url] = LocatedStatus(record.recordNumber, recorded)
+      }
+    }
+    return byUrl.mapValues { (_, located) -> located.recorded }
+  }
+
+  /** One sidecar row's answer, with every refusal located by file and line. */
+  private fun recordedStatusOf(
+    file: File,
+    record: CSVRecord,
+    url: String,
+  ): RecordedLinkStatus {
+    val rawStatus = record.get(statusColumn).trim()
+    val status =
+      SourceUrlStatus.fromValue(rawStatus) ?: refuse(
+        file,
+        record.recordNumber,
+        LinkStatusFault.UnknownStatus(url, rawStatus, SourceUrlStatus.entries.map { it.value }),
+        null,
+      )
+    val rawDate = record.get(dateColumn).trim()
+    if (rawDate.isEmpty()) {
+      // The Kotlin half of `source_documents_checked_when_known`, refused HERE
+      // so the operator gets the file and line: the write model would otherwise
+      // refuse the same pair with no idea which row produced it.
+      if (dayAlwaysRequired || status.requiresCheckedOn) {
+        refuse(file, record.recordNumber, LinkStatusFault.MissingDate(url, status), null)
+      }
+      return RecordedLinkStatus(status, null)
+    }
+    val checkedOn =
+      runCatching { LocalDate.parse(rawDate) }.getOrElse { cause ->
+        // CHAINED, not discarded: the located defect says which cell, and the
+        // parser's own reason underneath says why -- [2026-13-01] and
+        // [2026-02-30] read identically without it.
+        refuse(file, record.recordNumber, LinkStatusFault.NotADate(url, rawDate), cause)
+      }
+    return RecordedLinkStatus(status, checkedOn)
+  }
+}

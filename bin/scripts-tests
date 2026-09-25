@@ -2091,23 +2091,40 @@ test_ingest_colleges_missing_file() {
 }
 assert_failure "ingest-colleges fatals on a nonexistent local CSV path" test_ingest_colleges_missing_file
 
-# Provenance routing (RFC 139): the launcher must receive the caller's ORIGINAL
-# source args as explicit --*-source flags after the three resolved paths — no
-# environment side channel. Exercised end to end against a fake checkout whose
-# college launcher is a stub that captures its argv.
-test_ingest_colleges_source_flags() {
-  local root parent stub argv inst fields entry rc
-  parent="$(mktemp -d)"
-  root="$parent/unicoach-ingestflags"
+# A fake checkout whose `college` launcher is a stub that writes its argv, one
+# word per line, to the named file. bin/common derives PROJECT_ROOT from its own
+# path, so a directory of symlinks to the real bin/ is a complete checkout as far
+# as these scripts are concerned, and REPLACING the launcher with a stub is what
+# makes "what the operator named is what the binary is told" (RFC 139) assertable
+# with no JVM, no network and no database.
+#
+# Built in ONE place, the way make_external_stub_root is: every ingest-colleges
+# forwarding test below needs exactly this shape, the symlink set is one line to
+# edit when the .env set changes rather than twelve, and a copy that dropped the
+# `chmod +x` would fail as "launcher not found" -- reading like a broken wrapper
+# rather than a broken test.
+make_college_argv_stub_root() {
+  local root="$1" argv="$2" entry stub
   mkdir -p "$root"
   for entry in bin .env .env.dev .env.test .env.fuzz db; do
     ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
   done
   stub="$root/college/build/install/college/bin/college"
-  argv="$parent/launcher-argv"
   mkdir -p "$(dirname "$stub")"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
   chmod +x "$stub"
+}
+
+# Provenance routing (RFC 139): the launcher must receive the caller's ORIGINAL
+# source args as explicit --*-source flags after the three resolved paths — no
+# environment side channel. Exercised end to end against a fake checkout whose
+# college launcher is a stub that captures its argv.
+test_ingest_colleges_source_flags() {
+  local root parent argv inst fields rc
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-ingestflags"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   : > "$inst"; : > "$fields"
   # Keep the run's output and replay it on failure only: a green run stays
@@ -2141,17 +2158,10 @@ assert_success "ingest-colleges passes original source args to the launcher as -
 # the flags test above (the stub writes its argv to a file, not to stdout), so
 # any stdout byte observed here is the wrapper's own regression.
 test_ingest_colleges_stdout_stays_empty() {
-  local root parent stub inst fields entry rc stdout stderr
+  local root parent inst fields rc stdout stderr
   parent="$(mktemp -d)"
   root="$parent/unicoach-ingeststdout"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$parent/launcher-argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$parent/launcher-argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   : > "$inst"; : > "$fields"
   stdout="$parent/stdout"; stderr="$parent/stderr"
@@ -2199,6 +2209,105 @@ test_ingest_colleges_missing_cds_file() {
     -p "/no/such/$$-p.csv" bin/functions bin/functions >/dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent CDS seed path" test_ingest_colleges_missing_cds_file
+
+# ── RFC 239: the automatic-award corpus group on ingest-colleges ──────────────
+echo ""
+echo "==== Testing RFC 239 automatic-award corpus surfaces ===="
+
+# -w/-b are ONE all-or-nothing group, for the reason the CDS four are: the
+# awards file without its bands loads grids with no cells and exits 0, which is
+# a partial load reported as a complete one.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with only -w exits 21" \
+  bin/ingest-colleges -w awards.csv a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with only -b exits 21" \
+  bin/ingest-colleges -b bands.csv a.csv b.csv
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -w without a value exits 11" \
+  bin/ingest-colleges -w
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -b without a value exits 11" \
+  bin/ingest-colleges -b
+# An EMPTY value is a WRONG value, never an omitted option: `-w ""` counting as
+# "the group was not passed" is how a whole phase gets skipped in silence.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -w value (22)" \
+  bin/ingest-colleges -w "" -b bands.csv a.csv b.csv
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -b value (22)" \
+  bin/ingest-colleges -w awards.csv -b "" a.csv b.csv
+# A repeated flag names two files where one is loaded. Refused, not resolved
+# last-wins.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects a repeated -w (22)" \
+  bin/ingest-colleges -w one.csv -w two.csv -b bands.csv a.csv b.csv
+
+# The two paths reach the JVM as the two NAMED flags, resolved. Exercised end to
+# end against a fake checkout whose college launcher is a stub that captures its
+# argv -- the same fixture the RFC 139 provenance test uses, because what is
+# being asserted is the same thing: that what the operator named is what the
+# binary is told.
+test_ingest_colleges_award_flags() {
+  local root parent argv inst fields awards bands rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-awardflags"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  awards="$parent/awards.csv"; bands="$parent/bands.csv"
+  : > "$inst"; : > "$fields"; : > "$awards"; : > "$bands"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" -w "$awards" -b "$bands" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  # The launcher is handed RESOLVED paths -- resolve_file_arg realpaths every
+  # source, and on macOS /tmp is a symlink to /private/tmp -- so the expected
+  # spelling is realpath'd here rather than taken from the string passed in.
+  local resolved awards_resolved bands_resolved
+  resolved="$(cd "$parent" && pwd -P)"
+  awards_resolved="$resolved/awards.csv"
+  bands_resolved="$resolved/bands.csv"
+  # The VALUE must follow ITS OWN FLAG, which two independent line matches
+  # would not show: a wrapper that emitted both flags and then both paths in
+  # the other order would pass that and load the bands as the awards. `-x` on
+  # the pattern is what keeps `--awards` from also matching `--award-bands`.
+  rc=0
+  [ "$(grep -A1 -xF -- "--awards" "$argv" | tail -1)" = "$awards_resolved" ] || rc=1
+  [ "$(grep -A1 -xF -- "--award-bands" "$argv" | tail -1)" = "$bands_resolved" ] || rc=1
+  [ "$rc" -eq 0 ] || log-error "launcher argv was [$(cat "$argv")]"
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges forwards -w/-b to the launcher as --awards/--award-bands" \
+  test_ingest_colleges_award_flags
+
+# A run that passes NEITHER flag must still forward neither: the corpus group is
+# optional, and an empty bash array expanded wrongly under `set -u` would either
+# abort the run or send an empty argv word the JVM reads as a positional.
+test_ingest_colleges_without_award_flags_forwards_neither() {
+  local root parent argv inst fields rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-noawards"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  if grep -qxF -- "--awards" "$argv" || grep -qxF -- "--award-bands" "$argv"; then
+    log-error "a run with no -w/-b still forwarded an award flag; argv was [$(cat "$argv")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "ingest-colleges forwards no award flag when neither -w nor -b was given" \
+  test_ingest_colleges_without_award_flags_forwards_neither
 
 # Fetcher normalisation against recorded fixture JSON (-F: no network). Covers
 # the RFC 140 interpretation rules end to end: per-fact-group document
@@ -4950,18 +5059,11 @@ assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges keeps -Y and -y d
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges -a alone is a CDS group error, not an IPEDS one" \
   bin/ingest-colleges -a factors.csv a.csv b.csv
 test_ingest_colleges_ipeds_source_flags() {
-  local root parent stub argv inst fields hd ic adm ca icay entry rc log
+  local root parent argv inst fields hd ic adm ca icay rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-ipedsflags"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   hd="$parent/HD2023.csv"; ic="$parent/IC2023.csv"
   adm="$parent/adm2023.csv"; ca="$parent/C2023_a.csv"; icay="$parent/ic2023_ay.csv"
@@ -4993,18 +5095,11 @@ assert_success "ingest-colleges forwards each IPEDS file's original arg as its -
 # A Scorecard-only run must not grow IPEDS argv: the optional group is genuinely
 # absent, not present-and-empty.
 test_ingest_colleges_no_ipeds_argv() {
-  local root parent stub argv inst fields entry rc log
+  local root parent argv inst fields rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-noipeds"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
@@ -5114,18 +5209,11 @@ assert_success "ingest-colleges -h documents the derived-phase order" \
 # same contract the IPEDS five have: the provenance row records what the caller
 # named, not the scratch path an s3:// download landed in.
 test_ingest_colleges_sfa_source_flags() {
-  local root parent stub argv inst fields sfa entry rc log
+  local root parent argv inst fields sfa rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-sfaflags"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   sfa="$parent/sfa2223.csv"
   : > "$inst"; : > "$fields"; : > "$sfa"
@@ -5155,18 +5243,11 @@ assert_success "ingest-colleges forwards the SFA file, its original arg and the 
 # A run without the group must not grow SFA argv at all -- absent, not
 # present-and-empty, so every pre-RFC-162 invocation is byte-identical.
 test_ingest_colleges_no_sfa_argv() {
-  local root parent stub argv inst fields entry rc log
+  local root parent argv inst fields rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-nosfa"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
@@ -6377,18 +6458,11 @@ rm -rf "$IPEDS_OUT" "$IPEDS_ZIPS" "$IPEDS_ZIP_OUT"
 # positional. Those two are the ingest JAR's own flags; the SCRIPT takes -k.
 # Exercised against the same fake-checkout argv-capturing stub.
 test_ingest_colleges_codebooks_default() {
-  local root parent stub argv inst fields entry rc log
+  local root parent argv inst fields rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-codebooks"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
@@ -6414,18 +6488,11 @@ assert_success "ingest-colleges always passes the codebook path and its original
   test_ingest_colleges_codebooks_default
 
 test_ingest_colleges_codebooks_override() {
-  local root parent stub argv inst fields codebooks entry rc log
+  local root parent argv inst fields codebooks rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-codebooksoverride"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   codebooks="$parent/other-codebooks.json"
   : > "$inst"; : > "$fields"; : > "$codebooks"
@@ -6465,18 +6532,11 @@ assert_failure "ingest-colleges fatals on a nonexistent codebook path" test_inge
 # assertions, so a divergence between the two is visible here rather than in a
 # production run.
 test_ingest_colleges_subjects_default() {
-  local root parent stub argv inst fields entry rc log
+  local root parent argv inst fields rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-subjects"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
@@ -6499,18 +6559,11 @@ assert_success "ingest-colleges always passes the subject taxonomy path and its 
   test_ingest_colleges_subjects_default
 
 test_ingest_colleges_subjects_override() {
-  local root parent stub argv inst fields subjects entry rc log
+  local root parent argv inst fields subjects rc log
   parent="$(mktemp -d)"
   root="$parent/unicoach-subjectsoverride"
-  mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz db; do
-    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
-  done
-  stub="$root/college/build/install/college/bin/college"
   argv="$parent/launcher-argv"
-  mkdir -p "$(dirname "$stub")"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
-  chmod +x "$stub"
+  make_college_argv_stub_root "$root" "$argv"
   inst="$parent/institution.csv"; fields="$parent/fields.csv"
   subjects="$parent/other-subjects.json"
   : > "$inst"; : > "$fields"; : > "$subjects"
@@ -7214,6 +7267,12 @@ make_external_stub_root() {
   done
   ln -s "$PROJECT_ROOT/db/data" "$root/db/data"
   ln -s "$PROJECT_ROOT/db/seed/cds" "$root/db/seed/cds"
+  # The hand-typed automatic-award corpus (RFC 239): a committed directory like
+  # db/seed/cds, symlinked whole so the THIRD file in it -- link-status.csv,
+  # which the loader reads from beside awards.csv and no flag names -- is there
+  # too. A stub root carrying only the two flagged files would let a wrapper
+  # that forgot to check for the third look correct here.
+  ln -s "$PROJECT_ROOT/db/seed/automatic-awards" "$root/db/seed/automatic-awards"
   mkdir -p "$root/db/seed/ipeds"
 }
 
@@ -7381,6 +7440,8 @@ PY
     "-a $EXTERNAL_ROOT/db/seed/cds/admission-factors.csv" \
     "-d $EXTERNAL_ROOT/db/seed/cds/deadlines.csv" \
     "-p $EXTERNAL_ROOT/db/seed/cds/aid_policy.csv" \
+    "-w $EXTERNAL_ROOT/db/seed/automatic-awards/awards.csv" \
+    "-b $EXTERNAL_ROOT/db/seed/automatic-awards/bands.csv" \
     "-H $EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv" \
     "-I $EXTERNAL_ROOT/db/seed/ipeds/IC2026.csv" \
     "-A $EXTERNAL_ROOT/db/seed/ipeds/adm2026.csv" \
@@ -7415,6 +7476,101 @@ test_load_external_data_options_precede_positionals() {
 }
 assert_success "the -n command puts every option before the positionals" \
   test_load_external_data_options_precede_positionals
+
+# RFC 239: the automatic-award corpus is a REQUIRED input of the defaulted load,
+# and so is the one file no flag names. bin/load-external-data's whole contract
+# is that every missing input is reported together, by name, with the command
+# that produces it -- BEFORE the JVM starts, because the load is not
+# transactional across its phases.
+test_load_external_data_names_a_missing_award_corpus() {
+  local parent root stderr status=0 missing report
+  parent="$(mktemp -d)"
+  root="$parent/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_ipeds_fixture_manifest "$root/db/seed/ipeds" top
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  # The SYMLINK the stub root laid down, not the committed directory behind it:
+  # `rm` on a symlink removes the link.
+  rm "$root/db/seed/automatic-awards"
+  stderr="$parent/stderr"
+  "$root/bin/load-external-data" -n "$root/institution.csv" "$root/fields.csv" \
+    > /dev/null 2> "$stderr" || status=$?
+  if [ "$status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "expected exit [$EXIT_MISSING_REQUIRED_ARG] for a missing award corpus, got [$status]: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  missing=()
+  for report in awards.csv bands.csv link-status.csv; do
+    grep -qF "automatic-awards/$report" "$stderr" || missing+=("$report")
+  done
+  if [ "${#missing[@]}" -ne 0 ]; then
+    log-error "the refusal does not name ${missing[*]}: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "load-external-data refuses a missing automatic-award corpus, naming all three files" \
+  test_load_external_data_names_a_missing_award_corpus
+
+# The THIRD file specifically. awards.csv and bands.csv have flags and would be
+# caught by the JVM two processes later; link-status.csv has none -- the loader
+# reads it from beside awards.csv -- so this wrapper is the only thing that can
+# tell an operator it is missing before a phase has written rows. The phase
+# REFUSES a cited url with no committed answer, so an absent file is not a
+# degraded load, it is no load at all.
+test_load_external_data_names_a_missing_link_status() {
+  local parent root stderr status=0
+  parent="$(mktemp -d)"
+  root="$parent/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_ipeds_fixture_manifest "$root/db/seed/ipeds" top
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  # A corpus directory holding the two FLAGGED files and not the third.
+  rm "$root/db/seed/automatic-awards"
+  mkdir -p "$root/db/seed/automatic-awards"
+  : > "$root/db/seed/automatic-awards/awards.csv"
+  : > "$root/db/seed/automatic-awards/bands.csv"
+  stderr="$parent/stderr"
+  "$root/bin/load-external-data" -n "$root/institution.csv" "$root/fields.csv" \
+    > /dev/null 2> "$stderr" || status=$?
+  if [ "$status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "expected exit [$EXIT_MISSING_REQUIRED_ARG] for a missing link-status.csv, got [$status]: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  if ! grep -qF "automatic-awards/link-status.csv" "$stderr"; then
+    log-error "the refusal does not name link-status.csv: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "load-external-data refuses a corpus whose link-status.csv is absent, by name" \
+  test_load_external_data_names_a_missing_link_status
+
+# link-status.csv is CHECKED and never PASSED: a flag for it could only ever
+# pair one corpus's rows with another corpus's answers, and the loader resolves
+# it from beside the -w file.
+test_load_external_data_passes_no_link_status_flag() {
+  [ -n "$EXTERNAL_DRY_RUN" ] || { log-error "no -n command was captured to assert against"; return 1; }
+  case "$EXTERNAL_DRY_RUN" in
+  *"automatic-awards/link-status.csv"*)
+    log-error "the -n command passes the corpus's link-status.csv as an option: [$EXTERNAL_DRY_RUN]"
+    return 1
+    ;;
+  esac
+  return 0
+}
+assert_success "the -n command names the corpus's two files and never its link-status.csv" \
+  test_load_external_data_passes_no_link_status_flag
 
 # The two years are read from two different recorded fields and must stay two
 # different numbers: -y is the manifest's top-level collection year and -f is the

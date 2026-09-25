@@ -68,6 +68,10 @@ class CollegeScorecardLoader(
   // is then observable from a test that hands in a loader, instead of only from
   // three real CSVs and a hidden table.
   private val cdsSeedLoader: CdsSeedLoader = CdsSeedLoader(database),
+  // The hand-typed automatic-award corpus (RFC 239), injected beside the CDS
+  // loader and for its reason: the phase ordering D10 promises is then
+  // observable from a test rather than buried in an `ingest` local.
+  private val automaticAwardSeedLoader: AutomaticAwardSeedLoader = AutomaticAwardSeedLoader(database, ioDispatcher),
   // The IPEDS SFA staging half (RFC 162), injected like every other phase
   // loader rather than constructed mid-`ingest`: whether the phase RUNS is
   // decided by the nullable `sfa` group, never by whether a loader exists.
@@ -482,6 +486,11 @@ class CollegeScorecardLoader(
      */
     val cds: CdsSeedLoader.LoadResult? = null,
     /**
+     * The automatic-award corpus load (RFC 239), `null` when that group was not
+     * supplied -- the same omit-vs-zero distinction [cds] draws.
+     */
+    val automaticAwards: AutomaticAwardSeedLoader.LoadResult? = null,
+    /**
      * The published-codebook load (RFC 147) and D46's unknown-code report, both
      * `null` when no codebook source was supplied — the same omit-vs-zero
      * distinction [ipeds] and [cds] draw.
@@ -709,6 +718,7 @@ class CollegeScorecardLoader(
     ipeds: IpedsSources? = null,
     sfa: SfaSources? = null,
     cds: CdsSources? = null,
+    automaticAwards: AutomaticAwardSources? = null,
     codebooks: SourceFile? = null,
     subjects: SourceFile? = null,
     moneyVocabulary: SourceFile? = null,
@@ -748,12 +758,19 @@ class CollegeScorecardLoader(
     // seed file can never be discovered after institutions, fields, aliases and
     // the two IPEDS phases have already written rows (RFC 148 D10).
     cds?.let { sources -> withContext(ioDispatcher) { cdsSeedLoader.assertHeaders(sources) } }
+    // Beside the CDS assertion, and it asserts THREE headers for two files: the
+    // corpus's committed link answers are read from beside the awards CSV, so
+    // they are a file this run depends on and cannot be validated by a flag
+    // nobody passes. The loader owns its own IO hop -- [CollegeSfaLoader]'s
+    // shape one line up -- so this reads as a plain call.
+    automaticAwards?.let { sources -> automaticAwardSeedLoader.assertHeaders(sources) }
     val sources =
       withContext(ioDispatcher) {
         listOf(digest(institution), digest(fields), digest(aliasesFile)) +
           (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList()) +
           (sfa?.let { listOf(digest(it.survey)) } ?: emptyList()) +
           (cds?.files?.map { digest(it) } ?: emptyList()) +
+          (automaticAwards?.files?.map { digest(it) } ?: emptyList()) +
           (codebooks?.let { listOf(digest(it)) } ?: emptyList()) +
           (subjects?.let { listOf(digest(it)) } ?: emptyList()) +
           (moneyVocabulary?.let { listOf(digest(it)) } ?: emptyList())
@@ -880,6 +897,18 @@ class CollegeScorecardLoader(
           )
         }
       }
+    // The automatic-award corpus is a row phase beside the CDS one, and AFTER
+    // it for no ordering reason of its own -- the two corpora share no table.
+    // It is before `name-words` and `provenance` for the reason every row phase
+    // is: a count written after the row that should have carried it is not
+    // provenance. It brings its own single transaction, so a refusal rolls the
+    // whole corpus back rather than leaving a school's grid half-published.
+    val automaticAwardResult =
+      automaticAwards?.let { sources ->
+        phase("automatic-awards", committedPhases) {
+          automaticAwardSeedLoader.load(sources.awards.file, sources.bands.file)
+        }
+      }
     // Phase 2 of the two-phase ingest (RFC 146): rows first, derived state
     // second, never per-row triggers. It runs after EVERY row phase — the
     // aliases it splits words from, and the IPEDS phases beside them — and
@@ -975,6 +1004,7 @@ class CollegeScorecardLoader(
       ipeds = ipedsReport,
       sfa = sfaResult,
       cds = cdsResult,
+      automaticAwards = automaticAwardResult,
       codebooks = codebookResult,
       subjects = subjectResult,
       moneyVocabulary = moneyVocabularyResult,

@@ -60,3 +60,21 @@ data class NewExternalDocument(
     requireCitedPageUrl(url, "external document url")
   }
 }
+
+/**
+ * One `external_documents` row as READ: the url we cite, and whether it still
+ * resolved when we last looked (RFC 213/220/228).
+ *
+ * The read-shaped twin [NewExternalDocument]'s KDoc says "arrives with the first
+ * caller that needs it". This is that caller: `AutomaticAwardService` refuses to
+ * compute an ACT combination while ACT's own composite-rounding page is not a
+ * row here, so it has to ask about a document BY URL and see its status --
+ * which is a read, not a citation, and must not create the row it is asking
+ * about.
+ */
+data class ExternalDocument(
+  override val id: ExternalDocumentId,
+  val url: String,
+  val urlStatus: SourceUrlStatus,
+  val urlCheckedOn: LocalDate,
+) : Identifiable<ExternalDocumentId>

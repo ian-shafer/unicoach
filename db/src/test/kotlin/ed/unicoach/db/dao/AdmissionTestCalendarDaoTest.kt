@@ -79,15 +79,25 @@ class AdmissionTestCalendarDaoTest {
   @Test
   fun `a test code the enum does not name is row corruption, located`() {
     AdmissionTestCalendarFixture.seedCommitted(session)
-    // Written past the CHECK on purpose: the constraint is what makes this
+    // Written past the vocabulary on purpose: the schema is what makes this
     // unreachable in production, and the DAO's refusal is what stops a corrupt
     // row being silently skipped -- a skipped sitting is a date no family is
     // ever told about.
-    connection.createStatement().use { stmt ->
-      stmt.execute("ALTER TABLE admission_test_administrations DROP CONSTRAINT admission_test_administrations_test_check")
-      stmt.execute("UPDATE admission_test_administrations SET test = 'psat' WHERE test_date = DATE '2026-10-03'")
-    }
+    //
+    // THE LEVER IS THE COLUMN'S TYPE AND NO LONGER A CHECK. RFC 239 D-J promoted
+    // ('sat','act') to the `admission_test` DOMAIN and dropped
+    // `admission_test_administrations_test_check` with it, and a domain
+    // constraint is evaluated at COERCION -- before any table constraint -- so
+    // there is no constraint left to drop and 'psat' cannot be written while the
+    // column carries the domain. The type therefore moves to TEXT and moves back
+    // in the `finally`, unconditionally: a suite that left this column TEXT would
+    // take the vocabulary's guarantee away from every later suite in the same
+    // Gradle invocation.
     try {
+      connection.createStatement().use { stmt ->
+        stmt.execute("ALTER TABLE admission_test_administrations ALTER COLUMN test TYPE TEXT")
+        stmt.execute("UPDATE admission_test_administrations SET test = 'psat' WHERE test_date = DATE '2026-10-03'")
+      }
       val failure = assertFailsWith<CorruptPersistedValueException> { AdmissionTestCalendarDao.list(session).getOrThrow() }
       assertEquals("psat", failure.value)
       assertTrue(
@@ -96,11 +106,10 @@ class AdmissionTestCalendarDaoTest {
       )
     } finally {
       connection.createStatement().use { stmt ->
+        // In this order: the column cannot go back to the domain while the value
+        // the domain forbids is still sitting in it.
         stmt.execute("DELETE FROM admission_test_administrations WHERE test = 'psat'")
-        stmt.execute(
-          "ALTER TABLE admission_test_administrations ADD CONSTRAINT admission_test_administrations_test_check " +
-            "CHECK (test IN ('sat', 'act'))",
-        )
+        stmt.execute("ALTER TABLE admission_test_administrations ALTER COLUMN test TYPE admission_test")
       }
       AdmissionTestCalendarFixture.seedCommitted(session)
     }

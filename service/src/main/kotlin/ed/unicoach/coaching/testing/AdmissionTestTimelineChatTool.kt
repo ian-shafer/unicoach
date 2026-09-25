@@ -134,7 +134,7 @@ class AdmissionTestTimelineChatTool(
       // array is a statement and not a missing key.
       putJsonArray("anchor_rejections") { timeline.anchorRejections.forEach { add(rejectionObject(it)) } }
       putJsonArray("closed_deadlines") { timeline.closedDeadlines.forEach { add(deadlineObject(it)) } }
-      putJsonArray("sittings") { timeline.sittings.forEach { add(sittingObject(it)) } }
+      putJsonArray("sittings") { timeline.sittings.forEach { add(sittingJson(it)) } }
       putJsonArray("data_availability") { timeline.dataAvailability.forEach { add(unannouncedObject(it)) } }
       put("general_sequence", if (timeline.anchor == null) JsonPrimitive(GENERAL_SEQUENCE) else JsonNull)
       // LAST, and that is the order the RFC decided: the national calendar is
@@ -191,56 +191,6 @@ class AdmissionTestTimelineChatTool(
       put("test_name", unannounced.test.displayName)
       put("test_date", unannounced.testDate.toString())
     }
-
-  /**
-   * One sitting. The test's code and its spoken name ride together, and so do
-   * every deadline and the words that say what that deadline actually covers --
-   * the publisher's own hour, and what its later deadline admits -- because both
-   * differ between the two publishers and a bare date would be read as shared.
-   *
-   * `usable_for_anchor` is emitted as an explicit `null` for the two cases that
-   * are not verdicts, with `why` saying which. It is NEVER omitted: an absent key
-   * is a silence the model would fill.
-   */
-  private fun sittingObject(sitting: TestSitting): JsonObject =
-    buildJsonObject {
-      put("test", sitting.test.value)
-      put("test_name", sitting.test.displayName)
-      put("test_date", sitting.testDate.toString())
-      put("registration_deadline", sitting.registrationDeadline.toString())
-      put("registration_deadline_time", AdmissionTestCopy.deadlineTimeLabelOf(sitting.test))
-      // The fact the answer actually turns on: a sitting whose registration has
-      // closed is no longer a choice, whatever the scores would have done.
-      put("registration_open", sitting.registrationOpen)
-      putLateDeadline(sitting)
-      put("fee_waiver_by", sitting.feeWaiverBy.toString())
-      // Flagged at the same construct that emits it, so no renderer can put the
-      // date on the wire without the statement that it is ours.
-      put("fee_waiver_by_is_derived", true)
-      put(
-        "score_release_date",
-        sitting.scoreRelease
-          ?.date
-          ?.toString()
-          ?.let(::JsonPrimitive) ?: JsonNull,
-      )
-      put("usable_for_anchor", sitting.usableForAnchor?.let(::JsonPrimitive) ?: JsonNull)
-      put("why", whyOf(sitting.verdict))
-    }
-
-  /**
-   * The publisher's later deadline and what it covers.
-   *
-   * BOTH KEYS ALWAYS, and the date is an explicit `null` where the publisher
-   * publishes none -- this file says twice that an absent key is a silence the
-   * model would fill, and it used to omit these two anyway. Real rows have a null
-   * late deadline. The label stays even then, because it is what that publisher
-   * WOULD cover and is not a claim that a date exists.
-   */
-  private fun JsonObjectBuilder.putLateDeadline(sitting: TestSitting) {
-    put("late_or_changes_deadline", sitting.lateRegistrationDeadline?.toString()?.let(::JsonPrimitive) ?: JsonNull)
-    put("late_or_changes_deadline_label", AdmissionTestCopy.lateDeadlineLabelOf(sitting.test))
-  }
 
   /**
    * What this student's own STATE does about the school-day SAT or ACT (RFC 208
@@ -353,6 +303,51 @@ class AdmissionTestTimelineChatTool(
      * the guard is for.
      */
     val NUMBERS_BY_CONTRACT: Set<String> = emptySet()
+
+    /**
+     * ONE SITTING ON THE WIRE, for every tool that puts one there.
+     *
+     * Beside [whyOf] and for its reason: a second renderer of this value is a
+     * second set of keys the model has to be taught, and the copy that appeared
+     * first (in `AutomaticAwardChatTool`) dropped `registration_deadline_time`
+     * -- the key that stops one publisher's closing hour being read as the
+     * other's, which the standing coach instruction "the tool names whose"
+     * depends on. The test's code and its spoken name ride together, and so do
+     * every deadline and the words that say what that deadline actually covers.
+     *
+     * `usable_for_anchor` is emitted as an explicit `null` for the two cases
+     * that are not verdicts, with `why` saying which. It is NEVER omitted: an
+     * absent key is a silence the model would fill -- and the same rule is why
+     * the late-registration pair is always both keys, with the date null where
+     * the publisher publishes none and the label standing anyway, because the
+     * label is what that publisher WOULD cover and not a claim a date exists.
+     */
+    fun sittingJson(sitting: TestSitting): JsonObject =
+      buildJsonObject {
+        put("test", sitting.test.value)
+        put("test_name", sitting.test.displayName)
+        put("test_date", sitting.testDate.toString())
+        put("registration_deadline", sitting.registrationDeadline.toString())
+        put("registration_deadline_time", AdmissionTestCopy.deadlineTimeLabelOf(sitting.test))
+        // The fact the answer actually turns on: a sitting whose registration has
+        // closed is no longer a choice, whatever the scores would have done.
+        put("registration_open", sitting.registrationOpen)
+        put("late_or_changes_deadline", sitting.lateRegistrationDeadline?.toString()?.let(::JsonPrimitive) ?: JsonNull)
+        put("late_or_changes_deadline_label", AdmissionTestCopy.lateDeadlineLabelOf(sitting.test))
+        put("fee_waiver_by", sitting.feeWaiverBy.toString())
+        // Flagged at the same construct that emits it, so no renderer can put the
+        // date on the wire without the statement that it is ours.
+        put("fee_waiver_by_is_derived", true)
+        put(
+          "score_release_date",
+          sitting.scoreRelease
+            ?.date
+            ?.toString()
+            ?.let(::JsonPrimitive) ?: JsonNull,
+        )
+        put("usable_for_anchor", sitting.usableForAnchor?.let(::JsonPrimitive) ?: JsonNull)
+        put("why", whyOf(sitting.verdict))
+      }
 
     /**
      * The sentence that justifies one sitting's verdict, built HERE from the
@@ -592,7 +587,9 @@ class AdmissionTestTimelineChatTool(
         "they have no deadline, because a school that published a month with no day, or a deadline that has " +
         "already closed, is in one of those two arrays and not a school with nothing. You may still name real " +
         "dates from sittings, because the calendar is national. This tool holds no school's superscore rule and " +
-        "no scholarship score rule, so say they would have to check that school's own page. school_day_programme " +
+        "no scholarship score rule: ${AutomaticAwardChatTool.TOOL_NAME} holds both for the schools we have read, " +
+        "so use it for those, and for every other school say they would have to check that school's own page. " +
+        "school_day_programme " +
         "is what this student's own STATE does about an SAT or ACT sat inside the school day, and you read it " +
         "before you suggest registering for a Saturday sitting. Say the national calendar first and the state's " +
         "in-school sitting second, because the in-school sitting is an exception to that calendar and not the way " +

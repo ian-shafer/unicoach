@@ -39,7 +39,6 @@ import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.ValueBearingStatus
 import org.apache.commons.csv.CSVRecord
 import java.io.File
-import java.time.LocalDate
 
 /**
  * The three CDS seed files as one all-or-nothing provenance group (RFC 148),
@@ -272,7 +271,21 @@ class CdsSeedLoader(
       val file: String,
       val line: Long,
       val url: String,
-      val status: String,
+      val status: SourceUrlStatus,
+    ) : Defect
+
+    /**
+     * A sidecar `source_url` cell that is not an absolute http(s) page.
+     *
+     * Refused by line here rather than by value in [NewSourceDocument]: a
+     * verdict about something we cannot cite is a row somebody has to find and
+     * correct, and a message carrying only the offending string leaves them
+     * grepping the file.
+     */
+    data class SidecarUrlNotAWebPage(
+      val file: String,
+      val line: Long,
+      val url: String,
     ) : Defect
 
     /**
@@ -289,8 +302,8 @@ class CdsSeedLoader(
       /** The line that disagreed with it. */
       val line: Long,
       val url: String,
-      val first: RecordedStatus,
-      val second: RecordedStatus,
+      val first: RecordedLinkStatus,
+      val second: RecordedLinkStatus,
     ) : Defect
 
     /**
@@ -627,79 +640,59 @@ class CdsSeedLoader(
   private fun readLinkCheck(file: File): LinkCheck {
     if (!file.isFile) return LinkCheck()
     assertHeader(SourceFile(file, file.path), LINK_STATUS_COLUMNS)
-    // Located while reading, unwrapped at the end: the LINE a verdict came from
-    // is needed only to name both sides of a conflict, and [LinkCheck] has no
-    // business carrying it.
-    val byUrl = mutableMapOf<String, LocatedStatus>()
-    parseCsv(file).use { records ->
-      for (record in records) {
-        // The header assertion covers column NAMES only; a truncated row would
-        // otherwise throw an unlocated IllegalArgumentException out of Commons
-        // CSV, which is outside this loader's error contract.
-        if (!record.isConsistent || record.size() != LINK_STATUS_COLUMNS.size) {
-          throw FormatException(
-            Defect.SidecarRowArity(file.path, record.recordNumber, record.size(), LINK_STATUS_COLUMNS.size),
-          )
-        }
-        val url = record.get("url").trim()
-        if (url.isEmpty()) throw FormatException(Defect.SidecarEmptyUrl(file.path, record.recordNumber))
-        val recorded = recordedStatusOf(file, record, url)
-        val first = byUrl[url]
-        if (first != null && first.recorded != recorded) {
-          throw FormatException(
-            Defect.SidecarConflictingStatus(
-              file.path,
-              first.line,
-              record.recordNumber,
-              url,
-              first.recorded,
-              recorded,
-            ),
-          )
-        }
-        byUrl[url] = LocatedStatus(record.recordNumber, recorded)
-      }
-    }
-    return LinkCheck(byUrl.mapValues { (_, located) -> located.recorded })
+    return LinkCheck(sidecarReader.read(file))
   }
 
-  /** One sidecar row's verdict and day, with every refusal located by file and line. */
-  private fun recordedStatusOf(
-    file: File,
-    record: CSVRecord,
-    url: String,
-  ): RecordedStatus {
-    val rawStatus = record.get("url_status").trim()
-    val status =
-      SourceUrlStatus.fromValue(rawStatus) ?: throw FormatException(
-        Defect.SidecarUnknownStatus(
-          file.path,
-          record.recordNumber,
-          url,
-          rawStatus,
-          SourceUrlStatus.entries.map { it.value },
-        ),
-      )
-    val rawDate = record.get("checked_on").trim()
-    val checkedOn =
-      if (rawDate.isEmpty()) {
-        null
-      } else {
-        runCatching { LocalDate.parse(rawDate) }.getOrElse { cause ->
-          // CHAINED, not discarded: the located defect says which cell, and the
-          // parser's own reason underneath says why -- [2026-13-01] and
-          // [2026-02-30] read identically without it.
-          throw FormatException(Defect.SidecarNotADate(file.path, record.recordNumber, url, rawDate), cause)
-        }
-      }
-    // The Kotlin half of `source_documents_checked_when_known`, refused HERE so
-    // the operator gets the file and line: [NewSourceDocument] would otherwise
-    // refuse the same pair with no idea which row produced it.
-    if (status.requiresCheckedOn && checkedOn == null) {
-      throw FormatException(Defect.SidecarStatusWithoutDate(file.path, record.recordNumber, url, status.value))
+  /** This seed's sidecar rules, mapped onto this seed's own located defects. */
+  private val sidecarReader =
+    LinkStatusSidecar(
+      columns = LINK_STATUS_COLUMNS,
+      urlColumn = "url",
+      statusColumn = "url_status",
+      dateColumn = "checked_on",
+      // Only where `source_documents_checked_when_known` binds: an `unknown`
+      // with no day is this sweep's own "we never asked", which is a legal and
+      // load-bearing answer here.
+      dayAlwaysRequired = false,
+    ) { sidecar, line, fault, cause ->
+      throw FormatException(sidecarDefectOf(sidecar, line, fault), cause)
     }
-    return RecordedStatus(status, checkedOn)
-  }
+
+  /** One shared sidecar fault as THIS seed names it. */
+  private fun sidecarDefectOf(
+    file: File,
+    line: Long,
+    fault: LinkStatusFault,
+  ): Defect =
+    when (fault) {
+      is LinkStatusFault.RowArity -> {
+        Defect.SidecarRowArity(file.path, line, fault.cells, fault.expectedCells)
+      }
+
+      LinkStatusFault.EmptyUrl -> {
+        Defect.SidecarEmptyUrl(file.path, line)
+      }
+
+      is LinkStatusFault.UrlNotAWebPage -> {
+        Defect.SidecarUrlNotAWebPage(file.path, line, fault.url)
+      }
+
+      is LinkStatusFault.UnknownStatus -> {
+        Defect.SidecarUnknownStatus(file.path, line, fault.url, fault.value, fault.allowed)
+      }
+
+      is LinkStatusFault.NotADate -> {
+        Defect.SidecarNotADate(file.path, line, fault.url, fault.value)
+      }
+
+      is LinkStatusFault.MissingDate -> {
+        Defect.SidecarStatusWithoutDate(file.path, line, fault.url, fault.status)
+      }
+
+      is LinkStatusFault.ConflictingStatus -> {
+        Defect.SidecarConflictingStatus(file.path, fault.firstLine, line, fault.url, fault.first, fault.second)
+      }
+    }
 
   /**
    * Streams one seed file's MATCHED rows: arity check, `unit_id` parse, and the
@@ -1147,32 +1140,6 @@ class CdsSeedLoader(
   private inline fun <T, R> Result<T>.thenWrite(block: (T) -> Result<R>): Result<R> = fold(block) { Result.failure(it) }
 
   /**
-   * One url's recorded `url_status` (RFC 200): the verdict, and the
-   * day it was reached.
-   *
-   * ONE value rather than two columns read apart, because the pair IS the
-   * vocabulary: `unknown` with no date is "we never asked" and `unknown` with
-   * one is "we asked and got no usable answer", and a reader holding only the
-   * status cannot tell a broken checker from a stale one.
-   */
-  data class RecordedStatus(
-    val status: SourceUrlStatus,
-    val checkedOn: LocalDate?,
-  )
-
-  /**
-   * One [RecordedStatus] and the sidecar line it was read from.
-   *
-   * Held only while the file is being read, and only so a conflict can name
-   * BOTH rows: an operator told which line disagreed, but not which line it
-   * disagreed WITH, starts by grepping a 441-row file for the url.
-   */
-  private data class LocatedStatus(
-    val line: Long,
-    val recorded: RecordedStatus,
-  )
-
-  /**
    * `db/seed/cds/link-status.csv` as a lookup BY URL -- the product of
    * `bin/cds-link-sweep`, joined onto the document the four seed files already
    * write.
@@ -1189,10 +1156,10 @@ class CdsSeedLoader(
    */
   @JvmInline
   internal value class LinkCheck(
-    private val byUrl: Map<String, RecordedStatus> = emptyMap(),
+    private val byUrl: Map<String, RecordedLinkStatus> = emptyMap(),
   ) {
     /** The recorded verdict for [url], or "we never asked". */
-    fun of(url: String): RecordedStatus = byUrl[url] ?: NEVER_ASKED
+    fun of(url: String): RecordedLinkStatus = byUrl[url] ?: NEVER_ASKED
 
     /** How many urls this file carries; reported as `status_rows` so "441 documents, 0 status rows" is visible. */
     val size: Int get() = byUrl.size
@@ -1526,71 +1493,111 @@ class CdsSeedLoader(
     source: SourceFile,
     expected: List<String>,
   ) {
-    val actual =
-      parseCsv(source.file).use { parser ->
-        parser.headerNames.toList()
-      }
-    if (actual == expected) return
+    val actual = headerMismatchOf(source, expected) ?: return
     throw FormatException(Defect.HeaderMismatch(source.file.path, source.sourceArg, expected, actual))
   }
+
+  /**
+   * The shared located cell readers, one per table, so a refusal names the file
+   * it came from.
+   *
+   * THE READING IS [SeedCells]' AND THE MESSAGE IS THIS SEED'S. The bodies
+   * below are one line each because the rules are corpus-independent and were
+   * character-identical to [AutomaticAwardSeedLoader]'s; the wrappers stay so
+   * every call site keeps naming its own table, which is the one thing the
+   * shared reader cannot know.
+   */
+  private val cells: Map<Table, SeedCells> =
+    Table.entries.associateWith { table ->
+      // The CAUSE is threaded in, not only wrapped around: the arm below that
+      // RAISES rather than locates used to throw from inside this argument
+      // expression, so the reader's own `DateTimeParseException` reached no
+      // exception at all -- and `[2026-13-01]` and `[2026-02-30]` read
+      // identically without it, which is the reason [SeedCells] chains it.
+      SeedCells { defect, cause -> throw FormatException(cellDefectOf(table, defect, cause), cause) }
+    }
+
+  /** One shared cell fault as THIS seed names it. */
+  private fun cellDefectOf(
+    table: Table,
+    defect: SeedCellDefect,
+    /** The reader's own reason, carried to the one arm that raises rather than locates. */
+    cause: Throwable?,
+  ): Defect =
+    when (defect.fault) {
+      SeedCellFault.EMPTY_REQUIRED -> {
+        Defect.EmptyRequiredCell(table, defect.line, defect.column)
+      }
+
+      SeedCellFault.NOT_AN_INTEGER -> {
+        Defect.NotAnInteger(table, defect.line, defect.column, defect.value)
+      }
+
+      // UNREACHABLE, and refused rather than approximated: this seed reads no
+      // decimal and no ISO-day cell through the shared reader, so it has no
+      // located defect for one. An arm that handed back a NEARBY defect would
+      // report the wrong fault the day somebody adds such a column.
+      SeedCellFault.NOT_A_DECIMAL, SeedCellFault.NOT_A_DATE -> {
+        // THE CELL AND THE REASON, both: this arm exists for the day somebody
+        // adds such a column, and it is the message that will be read then.
+        throw IllegalStateException(
+          "[${table.label}] line [${defect.line}] column [${defect.column}] is [${defect.value}], which raised " +
+            "[${defect.fault}]: this seed has no located defect for that fault, so add one rather than " +
+            "reporting a nearby variant",
+          cause,
+        )
+      }
+
+      SeedCellFault.NOT_AN_ACADEMIC_YEAR -> {
+        Defect.NotAnAcademicYear(
+          table,
+          defect.line,
+          defect.column,
+          checkNotNull(defect.year) { "[${defect.column}] raised NOT_AN_ACADEMIC_YEAR with no parsed year" },
+        )
+      }
+
+      SeedCellFault.UNKNOWN_CODE -> {
+        Defect.UnknownCode(table, defect.line, defect.column, defect.value, defect.allowed)
+      }
+    }
+
+  private fun cellsOf(table: Table): SeedCells = cells.getValue(table)
 
   private fun getInt(
     record: CSVRecord,
     column: String,
     table: Table,
-  ): Int =
-    record.get(column).trim().toIntOrNull() ?: throw FormatException(
-      Defect.NotAnInteger(table, record.recordNumber, column, record.get(column)),
-    )
+  ): Int = cellsOf(table).getInt(record, column)
 
   private fun getIntOrNull(
     record: CSVRecord,
     column: String,
     table: Table,
-  ): Int? {
-    val raw = record.get(column).trim()
-    if (raw.isEmpty()) return null
-    return raw.toIntOrNull() ?: throw FormatException(
-      Defect.NotAnInteger(table, record.recordNumber, column, raw),
-    )
-  }
+  ): Int? = cellsOf(table).getIntOrNull(record, column)
 
   private fun getString(
     record: CSVRecord,
     column: String,
     table: Table,
-  ): String {
-    val raw = record.get(column).trim()
-    if (raw.isEmpty()) {
-      throw FormatException(Defect.EmptyRequiredCell(table, record.recordNumber, column))
-    }
-    return raw
-  }
+  ): String = cellsOf(table).getString(record, column)
 
+  /**
+   * An optional cell. It names no table because it CANNOT refuse -- a blank is
+   * the absence this seed spells -- and it now borrows no per-table reader
+   * either: [optionalCell] is the table-free home for the one read that has no
+   * refusal to locate.
+   */
   private fun getStringOrNull(
     record: CSVRecord,
     column: String,
-  ): String? = record.get(column).trim().ifEmpty { null }
+  ): String? = record.optionalCell(column)
 
-  /**
-   * A year cell as an [AcademicYear], with the range refusal LOCATED.
-   *
-   * The type carries the same range its SQL domain states, so constructing one
-   * from a raw cell would otherwise throw an unlocated
-   * `IllegalArgumentException` -- outside this loader's contract that every
-   * malformed cell names its file, line and column.
-   */
   private fun getAcademicYear(
     record: CSVRecord,
     column: String,
     table: Table,
-  ): AcademicYear {
-    val year = getInt(record, column, table)
-    if (year !in AcademicYear.FIRST_YEAR..AcademicYear.LAST_YEAR) {
-      throw FormatException(Defect.NotAnAcademicYear(table, record.recordNumber, column, year))
-    }
-    return AcademicYear(year)
-  }
+  ): AcademicYear = cellsOf(table).getAcademicYear(record, column)
 
   /**
    * A coded cell decoded through [allowed], or a located [Defect.UnknownCode]
@@ -1605,12 +1612,7 @@ class CdsSeedLoader(
     column: String,
     table: Table,
     allowed: Map<String, T>,
-  ): T {
-    val raw = getString(record, column, table)
-    return allowed[raw] ?: throw FormatException(
-      Defect.UnknownCode(table, record.recordNumber, column, raw, allowed.keys.toList()),
-    )
-  }
+  ): T = cellsOf(table).decode(record, column, getString(record, column, table), allowed)
 
   /** [getCode] over an enumeration's own values -- the seed's usual case. */
   private fun <T> getEnumCode(
@@ -1660,27 +1662,6 @@ class CdsSeedLoader(
       )
 
     /**
-     * The RFC 200 link-status sidecar's filename, written by
-     * `bin/cds-link-sweep` into the seed directory and read back from beside
-     * the seed. Named once, here, so the checker and the loader cannot come to
-     * disagree about it.
-     */
-    const val LINK_STATUS_FILE = "link-status.csv"
-
-    /**
-     * The sidecar that sits BESIDE the seed it describes, resolved from the
-     * aid-policy file's ABSOLUTE parent.
-     *
-     * Absolute deliberately: `File("x.csv").parentFile` is NULL, so a bare
-     * relative seed path once fell back to the process's current directory and
-     * would have read whichever sidecar the launcher happened to be standing
-     * in -- a file that decides whether a family is shown a link, chosen by
-     * where somebody ran the command. `absoluteFile` always has a parent, so
-     * there is no fallback left to take.
-     */
-    internal fun sidecarBeside(aidPolicyCsv: File): File = File(aidPolicyCsv.absoluteFile.parentFile, LINK_STATUS_FILE)
-
-    /**
      * The sidecar's header, asserted exactly as every other seed header is.
      *
      * `pass_one` and `pass_two` are read by no code and are required anyway:
@@ -1702,7 +1683,7 @@ class CdsSeedLoader(
      * The recorded status of a url nobody asked about: `unknown`, with NO
      * date. Keeps the link.
      */
-    internal val NEVER_ASKED = RecordedStatus(SourceUrlStatus.UNKNOWN, null)
+    internal val NEVER_ASKED = RecordedLinkStatus(SourceUrlStatus.UNKNOWN, null)
 
     val AID_POLICY_COLUMNS =
       listOf(
@@ -1973,8 +1954,13 @@ private fun renderDefect(defect: CdsSeedLoader.Defect): String =
     }
 
     is CdsSeedLoader.Defect.SidecarStatusWithoutDate -> {
-      "[${defect.file}] line [${defect.line}]: status [${defect.status}] must say when it was reached, but " +
+      "[${defect.file}] line [${defect.line}]: status [${defect.status.value}] must say when it was reached, but " +
         "[checked_on] is empty (url [${defect.url}])"
+    }
+
+    is CdsSeedLoader.Defect.SidecarUrlNotAWebPage -> {
+      "[${defect.file}] line [${defect.line}]: [source_url] value [${defect.url}] is not an absolute http(s) " +
+        "page url, so this verdict is about something we cannot cite"
     }
 
     is CdsSeedLoader.Defect.SidecarConflictingStatus -> {
