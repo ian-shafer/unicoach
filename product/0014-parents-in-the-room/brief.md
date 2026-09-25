@@ -121,12 +121,12 @@ Status:
     written at the line. Gate: full check, 1,135s, 0 failures, verified tree
     recorded. iOS 722 tests, 0 failures; 84 snapshots, 0 drift on the 74
     pre-existing scenes.
-  - `family/02.5/the-coach-asks-once` LANDED as RFC 240 (`main@4f337d78`,
-    2026-09-25) — the coach now has ONE sanctioned moment to offer connecting a
-    parent to an account of their own, ALONGSIDE the existing Family Cost Report
-    share offer (D20, the spec defect this slice closes). The mechanism is RFC
-    160's, copied rather than reinvented: the nightly synthesis sweep writes a
-    `commitments` row carrying the new `invite_supporter` lens,
+  - `family/02.5/the-coach-asks-once` LANDED as RFC 240 (`main@4f337d78` +
+    `f6eda807`, 2026-09-25) — the coach now has ONE sanctioned moment to offer
+    connecting a parent to an account of their own, ALONGSIDE the existing
+    Family Cost Report share offer (D20, the spec defect this slice closes). The
+    mechanism is RFC 160's, copied rather than reinvented: the nightly synthesis
+    sweep writes a `commitments` row carrying the new `invite_supporter` lens,
     `CoachingService.startConvo` renders it as a private reflection in the
     SYSTEM prompt of a NEW conversation only, and a successful first reply marks
     it fulfilled — so **"once" is that row's lifecycle, not a sentence asking
