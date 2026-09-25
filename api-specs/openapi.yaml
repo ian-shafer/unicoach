@@ -575,6 +575,101 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/supporters:
+    post:
+      summary: Make the current user's account supporter-shaped
+      description: >
+        Creates the caller's supporter row, or returns the one they already
+        have. Idempotent: 201 the first time, 200 afterwards, with the same body
+        either way. It takes no request body, and it does not refuse a caller
+        who also has a student profile. The one refusal is a supporter profile
+        that was closed: it cannot be reopened, and the call answers 409.
+      operationId: createSupporter
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The caller was already a supporter; the existing home
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupporterHomeResponse'
+        '201':
+          description: Supporter created; the home, with an empty student roster
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupporterHomeResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            The caller's supporter profile was closed and cannot be reopened
+            (supporter_closed). The one-per-user index is total, so a closed row
+            holds its user forever.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/supporters/me:
+    get:
+      summary: Get the current user's supporter home
+      description: >
+        The caller's supporter identity and the students they hold an active
+        link to. The roster carries the student's display name and nothing else
+        about the student: no date of birth, no graduation date.
+      operationId: getSupporterMe
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The authenticated user's supporter home
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupporterHomeResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The user has no supporter profile (supporter_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students/me/college-list:
     post:
       summary: Add a college to the current student's college list
@@ -1968,6 +2063,51 @@ components:
       properties:
         student:
           $ref: '#/components/schemas/PublicStudent'
+    PublicSupporter:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+    PublicLinkedStudent:
+      type: object
+      # CLOSED on purpose: the four properties below are everything a supporter
+      # may read about a linked student in this slice. A date of birth or an
+      # expected graduation date here would decide family/05's read policy, so
+      # adding any property is an edit a reviewer sees.
+      additionalProperties: false
+      required: [linkId, studentId, name, relationship]
+      properties:
+        linkId:
+          type: string
+          format: uuid
+        studentId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: The linked student's display name, from their own account.
+        relationship:
+          type: string
+          description: How the supporter is related to the student.
+          enum: [parent, guardian, grandparent, supporter]
+    SupporterHomeResponse:
+      type: object
+      # CLOSED, like both of the schemas it is built from: the envelope a client
+      # validates is the whole body, so leaving it open would stop the closure
+      # claim one level short of what a supporter actually receives.
+      additionalProperties: false
+      required: [supporter, students]
+      properties:
+        supporter:
+          $ref: '#/components/schemas/PublicSupporter'
+        students:
+          type: array
+          description: Active links only, oldest first. Empty for a supporter who has linked nobody.
+          items:
+            $ref: '#/components/schemas/PublicLinkedStudent'
     UpdateMoneyProfileRequest:
       type: object
       additionalProperties: false

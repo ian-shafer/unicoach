@@ -208,6 +208,10 @@ struct CollegeListView: View {
     }
 
     private var addCollege: some View {
-        AddCollegeView(client: client, onProfileRequired: onProfileRequired)
+        CollegeSearchView(
+            client: client,
+            tap: .addsToMyList,
+            onProfileRequired: onProfileRequired
+        )
     }
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import java.io.File
+import kotlin.reflect.KClass
 
 /**
  * The parsed `api-specs/openapi.yaml`, for the build guards that hold the
@@ -41,6 +42,22 @@ object OpenApiSpec {
       }
       child
     }
+
+  /**
+   * A model's own field names, read from the class rather than retyped in a
+   * guard. A SET, not a list: JVM field order is not part of the contract, and a
+   * guard that depended on it would fail for a reason the spec had nothing to do
+   * with.
+   *
+   * Here and not in one test file, because two guards ([OpenApiStudentTest] and
+   * [OpenApiSupporterTest]) read a model this way and a second copy of the
+   * reflection is the drift this object exists to prevent.
+   */
+  fun declaredFieldNames(model: KClass<*>): Set<String> =
+    model.java.declaredFields
+      .filterNot { it.isSynthetic }
+      .map { it.name }
+      .toSet()
 
   /**
    * The `components.schemas.[schema].properties.[property]` node, or throws

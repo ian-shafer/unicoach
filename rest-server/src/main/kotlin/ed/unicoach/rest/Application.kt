@@ -46,6 +46,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
+import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
@@ -318,7 +319,12 @@ fun Application.appModule(
 
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
-  val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, tokenGenerator)
+  // ONE SupporterService (RFC 241): accepting an invite and signing up as a
+  // parent both mint the `supporters` row, and they mint it through the same
+  // writer rather than through two copies of a get-or-create.
+  val supporterService = SupporterService(database)
+  val supporterInviteService =
+    SupporterInviteService(database, supporterInviteConfig, tokenGenerator, supporterService)
   val emailVerificationService =
     EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
@@ -500,5 +506,6 @@ fun Application.appModule(
     subjectVocabularyService,
     intendedSubjectsService,
     supporterInviteService,
+    supporterService,
   )
 }

@@ -23,6 +23,7 @@ import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
+import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
@@ -101,6 +102,7 @@ object WebAuthTestSupport {
       database,
       SupporterInviteConfig.from(config).getOrThrow(),
       TokenGenerator(),
+      SupporterService(database),
     )
 
   /** Truncates users (cascading to sessions) and the job queue, for an isolated test. */

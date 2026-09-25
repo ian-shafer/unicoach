@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct RegisterRequest: Codable {
     let email: String
@@ -21,11 +22,69 @@ struct RegisterResponse: Codable {
 ///
 /// A closed set, named once: a `String` seam accepted any word at all, so a typo
 /// compiled, shipped, and came back as something the caller never asked for.
-enum SupporterRelationship: String, Codable, Sendable {
+///
+/// The words are OWNED by `ed.unicoach.db.models.SupporterRelationship` and the
+/// `supporter_student_links.relationship` CHECK, and nothing in either build
+/// derives this copy — so the server may publish a fifth word before this app
+/// is rebuilt. Decoding is therefore LENIENT (see `init(from:)`): a word this
+/// client does not know decodes as [unrecognised], which carries it verbatim.
+enum SupporterRelationship: Codable, Equatable, Sendable {
     case parent
     case guardian
     case grandparent
     case supporter
+    /// A word the server published after this build shipped, KEPT VERBATIM.
+    ///
+    /// Not folded onto `supporter`: that is a word the server can genuinely
+    /// send, so folding makes "the server said supporter" and "the server said
+    /// something we have never heard of" the same value, and no caller can
+    /// separate them again. This type is also ENCODED
+    /// (`CreateSupporterInviteRequest`), so holding the raw word is what stops
+    /// the client putting a word on the wire that the server never used.
+    case unrecognised(String)
+
+    private static let logger = Logger.unicoach(category: "SupporterRelationship")
+
+    /// The word as the server states it — the value this decodes from and
+    /// encodes back to, for every case including [unrecognised].
+    var wireValue: String {
+        switch self {
+        case .parent: return "parent"
+        case .guardian: return "guardian"
+        case .grandparent: return "grandparent"
+        case .supporter: return "supporter"
+        case .unrecognised(let raw): return raw
+        }
+    }
+
+    /// An unknown word decodes as [unrecognised] rather than throwing.
+    ///
+    /// A `DecodingError` here is not a field-level failure: it fails the whole
+    /// `GET /api/v1/supporters/me` body, which is not an `ErrorResponse`, so
+    /// the root state machine falls into its catch-all and the parent has NO
+    /// HOME AT ALL — over a word no screen renders. The leniency is therefore
+    /// kept; what is not kept is the silence. The word is LOGGED, because a
+    /// lenient read nobody can see is a fifth relationship word that never gets
+    /// noticed — it is a wire vocabulary member, not PII, so `.public`.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "parent": self = .parent
+        case "guardian": self = .guardian
+        case "grandparent": self = .grandparent
+        case "supporter": self = .supporter
+        default:
+            Self.logger.error(
+                "Unknown supporter relationship word, kept verbatim as unrecognised: raw=[\(raw, privacy: .public)]"
+            )
+            self = .unrecognised(raw)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(wireValue)
+    }
 }
 
 /// Which side minted the invite (RFC 232).
@@ -52,6 +111,64 @@ struct SupporterInviteResponse: Codable {
     let inviterRole: InviterRole
     let relationship: SupporterRelationship
     let expiresAt: Date
+}
+
+// MARK: - The supporter home (RFC 241)
+
+/// Which side of a family link this app is in, as the ROOT STATE MACHINE
+/// resolved it — a student who holds a `students` row, or a supporter who holds
+/// a `supporters` row (RFC 241).
+///
+/// Not [InviterRole], which is the wire vocabulary for "who minted THIS invite"
+/// — a fact about one invite row that the server answers. This is a fact about
+/// the screen the app is currently showing, and it is what decides which
+/// SENTENCE a shared invite carries. The two cannot disagree: the client's role
+/// here is "does `GET /students/me` answer", and the server derives the
+/// inviter's role from the same row.
+enum ClientRole {
+    case student
+    case supporter
+}
+
+/// The caller's supporter identity, as both supporter doors return it
+/// (RFC 241). One field today; it is a struct rather than a bare `UUID`
+/// because the wire nests it and `family/04` has more to say about a supporter.
+struct PublicSupporter: Codable, Equatable, Sendable {
+    let id: UUID
+}
+
+/// One student on a supporter's roster (RFC 241).
+///
+/// FOUR fields, and the omission is the slice's boundary: no date of birth and
+/// no graduation date, because reading a linked student's profile is
+/// `family/05/the-subject-seam` and nothing here authorises it. The server's
+/// projection cannot supply either, so this type cannot grow them by accident.
+///
+/// `Identifiable` by the LINK, not by the student: the link is what a later
+/// slice unlinks and what a later read authorises against, and two links to one
+/// student would otherwise collide in a `ForEach`.
+struct LinkedStudent: Codable, Equatable, Identifiable, Sendable {
+    let linkId: UUID
+    let studentId: UUID
+    let name: String
+    let relationship: SupporterRelationship
+
+    var id: UUID { linkId }
+}
+
+/// The supporter home: who the caller is on the supporter side, and the
+/// students they hold an active link to (RFC 241).
+///
+/// ONE shape for both doors — `POST /api/v1/supporters` answers it with `201`
+/// the first time and `200` afterwards, `GET /api/v1/supporters/me` with `200`
+/// — so a client that has just made an account holds exactly what a client that
+/// re-read it holds.
+///
+/// `students` is EMPTY for a supporter who has linked nobody. That is the
+/// ordinary first state of a parent-first signup, not an error.
+struct SupporterHome: Codable, Equatable, Sendable {
+    let supporter: PublicSupporter
+    let students: [LinkedStudent]
 }
 
 struct FieldError: Codable, Equatable {

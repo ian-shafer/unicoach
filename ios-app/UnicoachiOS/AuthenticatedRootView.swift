@@ -368,9 +368,12 @@ struct AuthenticatedRootView: View {
         case .settings:
             SettingsView(
                 user: user,
+                // This root is the STUDENT app: `.authenticated` is reached
+                // only when `GET /students/me` answered a row, and the rail is
+                // the one this root already built.
+                caller: .student(rail: subscriptionViewModel),
                 authClient: authClient,
                 supporterInviteClient: supporterInviteClient,
-                subscriptionViewModel: subscriptionViewModel,
                 onEmailChanged: onEmailChanged,
                 onLogout: onLogout
             )

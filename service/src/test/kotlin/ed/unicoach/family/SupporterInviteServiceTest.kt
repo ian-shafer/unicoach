@@ -33,7 +33,8 @@ class SupporterInviteServiceTest {
       inviteUrlBase = "https://app.unicoach.test/invite",
       tokenTtl = Duration.ofDays(14),
     )
-  private val service = SupporterInviteService(database, config, tokenGenerator)
+  private val supporterService = SupporterService(database)
+  private val service = SupporterInviteService(database, config, tokenGenerator, supporterService)
 
   @BeforeEach
   fun reset() {
@@ -205,6 +206,7 @@ class SupporterInviteServiceTest {
           database,
           config.copy(tokenTtl = Duration.ofSeconds(-1)),
           tokenGenerator,
+          supporterService,
         )
 
       val invite = expiring.create(studentUser, SupporterRelationship.PARENT).getOrThrow()

@@ -29,7 +29,27 @@ struct UnicoachiOSApp: App {
                         studentClient: viewModel.studentClient,
                         moneyProfileClient: viewModel.moneyProfileClient,
                         userName: user.name,
-                        onComplete: { viewModel.onOnboardingComplete(user) }
+                        onComplete: { viewModel.onOnboardingComplete(user) },
+                        onBack: { viewModel.onRoleChoiceRequested(user) }
+                    )
+                case .roleChoice(let user):
+                    RoleChoiceView(
+                        userName: user.name,
+                        supporterClient: viewModel.supporterClient,
+                        onStudent: { viewModel.onStudentRoleChosen(user) },
+                        onSupporter: { home in viewModel.onSupporterHome(user, home) }
+                    )
+                case .supporterHome(let user, let home):
+                    SupporterHomeView(
+                        user: user,
+                        home: home,
+                        authClient: viewModel.authClient,
+                        supporterInviteClient: viewModel.supporterInviteClient,
+                        collegeListClient: viewModel.collegeListClient,
+                        subjectStore: viewModel.supporterSubjectStore,
+                        refreshHome: viewModel.refreshSupporterHome,
+                        onEmailChanged: viewModel.onEmailChanged,
+                        onLogout: viewModel.logout
                     )
                 case .authenticated(let user):
                     AuthenticatedRootView(
@@ -98,6 +118,14 @@ struct UnicoachiOSApp: App {
                 // transition silently re-checks while blocked; the outcome is ignored.
                 if newPhase == .active, case .verificationRequired = viewModel.authState {
                     Task { _ = await viewModel.recheckVerification() }
+                }
+                // The same hook, for the same reason, on a parent's home
+                // (RFC 241): the invite is shared through the system share
+                // sheet, so coming BACK is when a parent expects the student
+                // who accepted to be named. The home also reads on appearance;
+                // this covers the return that is not a fresh appearance.
+                if newPhase == .active, case .supporterHome = viewModel.authState {
+                    Task { await viewModel.refreshSupporterHome() }
                 }
             }
         }

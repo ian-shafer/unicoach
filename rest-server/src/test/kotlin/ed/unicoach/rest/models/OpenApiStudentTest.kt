@@ -1,7 +1,6 @@
 package ed.unicoach.rest.models
 
 import org.junit.jupiter.api.Test
-import kotlin.reflect.KClass
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -20,17 +19,6 @@ import kotlin.test.assertTrue
 class OpenApiStudentTest {
   private val fullDatePattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
-  /**
-   * The model's own field names, read from the class rather than retyped here.
-   * A SET, not a list: JVM field order is not part of the contract, and a guard
-   * that depended on it would fail for a reason the spec had nothing to do with.
-   */
-  private fun declaredFieldNames(model: KClass<*>): Set<String> =
-    model.java.declaredFields
-      .filterNot { it.isSynthetic }
-      .map { it.name }
-      .toSet()
-
   @Test
   fun `spec CreateStudentRequest requires exactly the fields the Kotlin model demands`() {
     // `dateOfBirth` is nullable in Kotlin for one reason only -- an older client
@@ -39,7 +27,7 @@ class OpenApiStudentTest {
     // field set from the model means a field added there fails here until the
     // spec publishes it.
     assertEquals(
-      declaredFieldNames(CreateStudentRequest::class),
+      OpenApiSpec.declaredFieldNames(CreateStudentRequest::class),
       OpenApiSpec.requiredProperties("CreateStudentRequest").toSet(),
       "CreateStudentRequest must publish exactly the fields the Kotlin model declares, all required",
     )
@@ -65,7 +53,7 @@ class OpenApiStudentTest {
     // optional field and the published required set is the whole model --
     // including the date of birth this slice adds.
     assertEquals(
-      declaredFieldNames(PublicStudent::class),
+      OpenApiSpec.declaredFieldNames(PublicStudent::class),
       OpenApiSpec.requiredProperties("PublicStudent").toSet(),
       "PublicStudent must publish exactly the fields the Kotlin model declares, all required",
     )

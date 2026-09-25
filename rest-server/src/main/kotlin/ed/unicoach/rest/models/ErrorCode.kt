@@ -34,6 +34,17 @@ enum class ErrorCode(
   // here (casing-only change); a future RFC unifies the two.
   VALIDATION_ERROR("validation_error"),
   STUDENT_NOT_FOUND("student_not_found"),
+
+  // The caller holds no `supporters` row (RFC 241) — the mirror of
+  // STUDENT_NOT_FOUND on `GET /api/v1/supporters/me`, and deliberately NOT
+  // STUDENT_PROFILE_REQUIRED, which instructs a caller to create the wrong row.
+  SUPPORTER_NOT_FOUND("supporter_not_found"),
+
+  // The caller's `supporters` row was CLOSED (RFC 241). 409, not the untyped
+  // 400 the DAO's own "already exists" violation would have produced: the row
+  // does NOT exist, and `supporters_user_id_unique_idx` is total, so no live
+  // one can be minted for that user. Re-opening is family/09.
+  SUPPORTER_CLOSED("supporter_closed"),
   STUDENT_ALREADY_EXISTS("student_already_exists"),
   VERSION_CONFLICT("version_conflict"),
 

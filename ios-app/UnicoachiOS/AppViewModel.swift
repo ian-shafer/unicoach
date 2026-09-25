@@ -21,6 +21,11 @@ class AppViewModel: ObservableObject {
     let cookieStorage: CookieStorageProtocol
     let coachingUsageClient: CoachingUsageClientProtocol
     let supporterInviteClient: SupporterInviteClientProtocol
+    let supporterClient: SupporterClientProtocol
+    /// The working-student selection (RFC 241). Held at the composition root
+    /// like every other dependency, so a test substitutes it by conforming to
+    /// the protocol rather than by reaching into `UserDefaults`.
+    let supporterSubjectStore: SupporterSubjectStore
 
     /// The StoreKit rail and the one `TransactionRecorder` over it.
     ///
@@ -97,6 +102,8 @@ class AppViewModel: ObservableObject {
         intendedSubjectsClient: IntendedSubjectsClientProtocol? = nil,
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
         supporterInviteClient: SupporterInviteClientProtocol? = nil,
+        supporterClient: SupporterClientProtocol? = nil,
+        supporterSubjectStore: SupporterSubjectStore? = nil,
         subscriptionClient: SubscriptionClientProtocol? = nil,
         subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = AppViewModel.defaultSubscriptionStore(),
         googleSignInProvider: SsoSignInProviding = GoogleSignInProvider(),
@@ -112,6 +119,8 @@ class AppViewModel: ObservableObject {
         self.intendedSubjectsClient = intendedSubjectsClient ?? IntendedSubjectsClient(apiClient: apiClient)
         self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)
         self.supporterInviteClient = supporterInviteClient ?? SupporterInviteClient(apiClient: apiClient)
+        self.supporterClient = supporterClient ?? SupporterClient(apiClient: apiClient)
+        self.supporterSubjectStore = supporterSubjectStore ?? UserDefaultsSupporterSubjectStore()
         self.googleSignInProvider = googleSignInProvider
         self.appleSignInProvider = appleSignInProvider
         self.cookieStorage = cookieStorage
@@ -157,6 +166,76 @@ class AppViewModel: ObservableObject {
         authState = .authenticated(user)
     }
 
+    /// "I'm the student" on the role choice (RFC 241): the existing onboarding
+    /// form, unchanged. No server call — creating the `students` row is what
+    /// that form does, and doing it here would write a row from a tap that has
+    /// not been asked its questions yet.
+    func onStudentRoleChosen(_ user: PublicUser) {
+        authState = .onboarding(user)
+    }
+
+    /// Back out of "I'm the student" (RFC 241).
+    ///
+    /// The tap is reversible because the question has two answers and neither
+    /// of them has written a row yet: the `students` row is written by the
+    /// FORM, and the `supporters` row by the `POST`. Without this, a parent who
+    /// mistaps is on a form asking for THEIR date of birth with no exit but
+    /// logging out — and once that form is submitted the supporter home is
+    /// unreachable, because `resolveProfileState` reads the student row first.
+    func onRoleChoiceRequested(_ user: PublicUser) {
+        authState = .roleChoice(user)
+    }
+
+    /// "I'm supporting a student" succeeded (RFC 241). The home comes from the
+    /// `POST`'s own response — one read, not a second confirming `GET`.
+    func onSupporterHome(_ user: PublicUser, _ home: SupporterHome) {
+        authState = .supporterHome(user, home)
+    }
+
+    /// Re-reads a supporter's roster and hands it back to the state machine
+    /// (RFC 241), from the home's own appearance and from every return to the
+    /// foreground.
+    ///
+    /// The home's headline action is the invite, it is shared through the
+    /// system share sheet — so the parent LEAVES the app to send it — and its
+    /// result is a name on this roster. Without this read the roster is frozen
+    /// at the resolve that built the screen, and a parent who watches their
+    /// student accept sees "No student linked yet" until the process is
+    /// relaunched. At one query per second a `GET /api/v1/supporters/me` per
+    /// appearance is not the load this app has to save.
+    ///
+    /// A failure leaves the resolved home standing and is logged, not shown:
+    /// nobody asked for this read, so it has no refusal to report — and it
+    /// refreshes a ROSTER, it does not re-decide what the account is.
+    func refreshSupporterHome() async {
+        guard case .supporterHome(let user, _) = authState else {
+            return
+        }
+        do {
+            // `nil` is the server reporting that this caller holds no
+            // `supporters` row — a 404, not a transport failure. The resolved
+            // home stays up, because this refreshes a ROSTER and does not
+            // re-decide what the account is, so this line is the only evidence
+            // that the row went away mid-session.
+            guard let home = try await supporterClient.fetchHome() else {
+                logger.error("Supporter home refresh found no supporter row; leaving the resolved home standing")
+                return
+            }
+            // Re-read AFTER the await, not assumed from before it. `@MainActor`
+            // rules out a data race, not an interleaving: a logout — or any
+            // re-resolution — that lands while `fetchHome()` is in flight has
+            // already decided what the screen is, and this read reports a
+            // ROSTER. Without this guard the resumed continuation puts the
+            // parent back on a home whose session cookie is already deleted.
+            guard case .supporterHome(let currentUser, _) = authState, currentUser.id == user.id else {
+                return
+            }
+            authState = .supporterHome(currentUser, home)
+        } catch {
+            logger.error("Supporter home refresh failed: [\(String(describing: error), privacy: .public)]")
+        }
+    }
+
     /// A successful change of email address, from either of `ChangeEmailView`'s
     /// call sites. The server clears verification when the address changes, so
     /// the returned user is unverified and the app must leave `.authenticated`
@@ -168,20 +247,64 @@ class AppViewModel: ObservableObject {
         await resolveProfileState(user)
     }
 
-    /// Re-onboarding entry point for the abnormal `409 student_profile_required`
-    /// edge: profile gating guarantees HomeView is reachable only with a profile,
-    /// so a `409` from the stream endpoint means the profile was deleted
-    /// server-side mid-session. The `409` itself proves no profile exists, so no
-    /// confirming `fetchProfile()` round-trip is made; the root state machine
-    /// simply re-enters `.onboarding`, tearing down HomeView's `NavigationStack`.
+    /// The in-flight re-resolution started by [onStudentProfileRequired].
+    ///
+    /// Exposed so a test can await the work a SYNCHRONOUS entry point starts.
+    /// `onProfileRequired` is a `() -> Void` threaded through nine call sites
+    /// and two view trees; widening it to an async closure to make one re-read
+    /// awaitable would change every one of them for no gain at any of them.
+    private(set) var profileRefreshTask: Task<Void, Never>?
+
+    /// Set for as long as a re-resolution is in flight.
+    ///
+    /// `authState` stays `.authenticated` across the round trip — deliberately,
+    /// see below — so it cannot do this job. Without it every concurrent `409`
+    /// starts its own pair of reads, and a profile deleted server-side refuses
+    /// every student-scoped call on the screen at once: the stream, the college
+    /// list and the usage meter would each start a re-resolution, only the last
+    /// handle would be kept, and whichever finished last would decide the
+    /// screen.
+    private var isResolvingProfile = false
+
+    /// Re-entry point for the abnormal `409 student_profile_required` edge:
+    /// profile gating guarantees the authenticated tree is reachable only with
+    /// a profile, so a `409` from a student-scoped endpoint means the profile
+    /// was deleted server-side mid-session.
+    ///
+    /// It now RE-RESOLVES rather than asserting `.onboarding` (RFC 241). The
+    /// `409` proves there is no `students` row, which used to be the whole
+    /// question; it does not prove there is no `supporters` row, and a caller
+    /// may legitimately hold both. Sending a supporter into the student
+    /// onboarding form is the exact defect this slice removes, so the answer
+    /// comes from the one function that knows all three states.
+    ///
+    /// The screen stays up for the round trip rather than blanking: it is
+    /// already showing a refusal, and `.loading` would re-enter `checkSession`
+    /// and read `auth/me` a second time.
     func onStudentProfileRequired() {
-        guard case .authenticated(let user) = authState else {
+        guard case .authenticated(let user) = authState, !isResolvingProfile else {
             return
         }
-        authState = .onboarding(user)
+        isResolvingProfile = true
+        profileRefreshTask = Task {
+            await resolveProfileState(user)
+            // Reached on every path `resolveProfileState` has today: it
+            // swallows its own failures into a state assignment and returns
+            // normally on cancellation, so it never throws past here. A
+            // `resolveProfileState` that gains a `throw` or an early `return`
+            // must clear this in a `defer` instead — a latch left set refuses
+            // every LATER 409 for the life of the session.
+            isResolvingProfile = false
+        }
     }
 
     func logout() async {
+        // A re-resolution started under THIS session must not assign a state
+        // under the next one. `onStudentProfileRequired` runs its reads in a
+        // detached `Task` that no view teardown cancels, so the teardown that
+        // invalidates its answer has to say so itself; `resolveProfileState`
+        // checks cancellation before every write.
+        profileRefreshTask?.cancel()
         do {
             try await authClient.logout()
         } catch {
@@ -233,10 +356,31 @@ class AppViewModel: ObservableObject {
             return
         }
         do {
+            // THREE answers, resolved in this order (RFC 241).
+            //
+            // The student read comes FIRST and is unchanged, so every student
+            // reaches the app on exactly the reads they did before — one — and
+            // the supporter read is paid only by an account that has no
+            // `students` row. An account holding both rows is a student here,
+            // which is what the student app being the richer surface means.
+            //
+            // Every arm re-checks cancellation before it writes. This function
+            // is reached from a detached `Task` (`onStudentProfileRequired`)
+            // that outlives the screen that started it, and `logout()` cancels
+            // that task: a resolve begun under the old session must not decide
+            // the state under the next one.
             if try await studentClient.fetchProfile() != nil {
+                guard !Task.isCancelled else { return }
                 authState = .authenticated(user)
+            } else if let home = try await supporterClient.fetchHome() {
+                guard !Task.isCancelled else { return }
+                authState = .supporterHome(user, home)
             } else {
-                authState = .onboarding(user)
+                guard !Task.isCancelled else { return }
+                // Neither row. Nothing yet says what this account is for, so
+                // the app asks rather than assuming "student who has not
+                // finished onboarding".
+                authState = .roleChoice(user)
             }
         } catch let error as ErrorResponse {
             logger.error("Profile resolve failed: code=[\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")

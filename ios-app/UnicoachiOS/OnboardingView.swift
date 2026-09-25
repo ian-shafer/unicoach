@@ -8,11 +8,21 @@ struct OnboardingView: View {
     /// a `PublicUser`, whose `name` is itself non-optional.
     private let userName: String
 
+    /// Back to the role choice (RFC 241), or `nil` on a screen not reached from
+    /// it.
+    ///
+    /// `.onboarding` has exactly ONE producer now — the "I'm the student" tap —
+    /// so a mistap needs the same single tap back. Without it a parent is on a
+    /// form asking for their own date of birth with no exit but logging out,
+    /// which is the exact form this slice exists to keep them off.
+    private let onBack: (() -> Void)?
+
     init(
         studentClient: StudentClientProtocol,
         moneyProfileClient: MoneyProfileClientProtocol,
         userName: String,
         onComplete: @escaping () -> Void,
+        onBack: (() -> Void)? = nil,
         year: Int = Calendar.current.component(.year, from: Date())
     ) {
         _viewModel = StateObject(wrappedValue: OnboardingViewModel(
@@ -22,15 +32,17 @@ struct OnboardingView: View {
             year: year
         ))
         self.userName = userName
+        self.onBack = onBack
     }
 
-    /// Snapshot seam: host a pre-seeded view model, the `AddCollegeView`
+    /// Snapshot seam: host a pre-seeded view model, the `CollegeSearchView`
     /// convention. Precision and the two optional answers are view-model state,
     /// so a scene that shows the full-date shape, or both answers given, can
     /// only be composed here.
-    init(viewModel: OnboardingViewModel, userName: String) {
+    init(viewModel: OnboardingViewModel, userName: String, onBack: (() -> Void)? = nil) {
         _viewModel = StateObject(wrappedValue: viewModel)
         self.userName = userName
+        self.onBack = onBack
     }
 
     var body: some View {
@@ -72,6 +84,16 @@ struct OnboardingView: View {
                         progressAccessibilityIdentifier: "loadingIndicator",
                         action: { Task { await viewModel.submit() } }
                     )
+
+                    if let onBack {
+                        DSTextButton(
+                            "I'm not the student",
+                            role: .secondary,
+                            accessibilityIdentifier: "onboardingBackButton",
+                            accessibilityLabel: "I'm not the student",
+                            action: onBack
+                        )
+                    }
                 }
                 .padding(DSSpacing.lg)
             }

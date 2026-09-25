@@ -146,7 +146,22 @@ final class APIClient: @unchecked Sendable {
     }
 
     func decode<T: Decodable>(data: Data, response: HTTPURLResponse, expectedStatus: Int) throws -> T {
-        if response.statusCode == expectedStatus {
+        try decode(data: data, response: response, expectedStatuses: [expectedStatus])
+    }
+
+    /// Decodes when the response carried ANY of [expectedStatuses], and throws
+    /// the server's own error otherwise.
+    ///
+    /// Plural because an idempotent write has more than one success:
+    /// `POST /api/v1/supporters` (RFC 241) answers `201` when it minted the row
+    /// and `200` when the row was already there, with the same body. WHICH
+    /// statuses are a success is a transport fact, and the transport owns it
+    /// here exactly as it owns `getIfPresent`'s benign `404` — a caller that
+    /// computed it would be writing status policy in a domain client. Opt-in
+    /// per call site: a caller with one success status uses the singular form
+    /// above and is unaffected.
+    func decode<T: Decodable>(data: Data, response: HTTPURLResponse, expectedStatuses: Set<Int>) throws -> T {
+        if expectedStatuses.contains(response.statusCode) {
             do {
                 return try jsonDecoder.decode(T.self, from: data)
             } catch {

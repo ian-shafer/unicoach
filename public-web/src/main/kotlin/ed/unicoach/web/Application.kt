@@ -15,6 +15,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
+import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
@@ -101,7 +102,10 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   // RFC 230 assigned this construction site to `fafsa/04`: the public page and
   // the coach read ONE service, so the two doors cannot disagree about a date.
   val fafsaDeadlines: FafsaDeadlineSource = ServiceFafsaDeadlineSource(FafsaDeadlineService(database))
-  val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator())
+  // The accept path mints the recipient's `supporters` row, through the one
+  // writer of it (RFC 241) -- this process serves no supporter surface of its own.
+  val supporterInviteService =
+    SupporterInviteService(database, supporterInviteConfig, TokenGenerator(), SupporterService(database))
 
   val authServices = WebAuthServices.build(emailVerificationConfig, database)
 

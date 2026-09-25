@@ -264,6 +264,66 @@ enum SnapshotSeed {
         emailVerified: true
     )
 
+    // MARK: - The supporter surfaces (RFC 241)
+
+    /// The parent this slice's scenes are photographed as. A second user rather
+    /// than `user` above, because the two screens are for two different people
+    /// and a capture that showed "Alex Student" on a parent's home would read
+    /// as a bug.
+    static let supporterUser = PublicUser(
+        id: UUID(uuidString: "22222222-3333-4444-5555-666666666666") ?? UUID(),
+        email: "parent@example.com",
+        name: "Robin Carter",
+        emailVerified: true
+    )
+
+    /// Pinned ids: nothing renders them, but a scene that minted a fresh UUID
+    /// per run would make the selection store answer differently each time.
+    static func linkedStudent(_ index: Int, name: String, relationship: SupporterRelationship = .parent) -> LinkedStudent {
+        LinkedStudent(
+            linkId: UUID(uuidString: "66660000-0000-0000-0000-00000000000\(index)") ?? UUID(),
+            studentId: UUID(uuidString: "55550000-0000-0000-0000-00000000000\(index)") ?? UUID(),
+            name: name,
+            relationship: relationship
+        )
+    }
+
+    static let oneLinkedStudent: [LinkedStudent] = [
+        linkedStudent(1, name: "Ava Carter"),
+    ]
+
+    static let threeLinkedStudents: [LinkedStudent] = [
+        linkedStudent(1, name: "Ava Carter"),
+        linkedStudent(2, name: "Noah Carter"),
+        linkedStudent(3, name: "Mia Okafor", relationship: .guardian),
+    ]
+
+    static func supporterHome(
+        students: [LinkedStudent],
+        switcherOpen: Bool = false
+    ) -> some View {
+        SupporterHomeView(
+            user: supporterUser,
+            home: SupporterHome(
+                supporter: PublicSupporter(id: UUID(uuidString: "44440000-0000-0000-0000-000000000001") ?? UUID()),
+                students: students
+            ),
+            authClient: MockAuthClient(),
+            supporterInviteClient: PreviewSupporterInviteClient(),
+            collegeListClient: MockCollegeListClient(),
+            // An in-memory store, so a scene never inherits a selection a
+            // previous run of the host app left in `UserDefaults` — the same
+            // hazard the appearance segment is pinned against below.
+            subjectStore: MockSupporterSubjectStore(),
+            switcherOpenOnAppear: switcherOpen,
+            // No read: a scene photographs the home it was handed, and the
+            // roster refresh is `AppViewModel`'s, tested there.
+            refreshHome: {},
+            onEmailChanged: { _ in },
+            onLogout: {}
+        )
+    }
+
     // MARK: - College-list fixtures (RFC 137)
 
     static let collegeEntries: [CollegeListEntry] = [
@@ -562,13 +622,68 @@ enum SnapshotCatalogue {
                     NavigationStack {
                         SettingsView(
                             user: SnapshotSeed.user,
+                            caller: .student(rail: rail),
                             authClient: MockAuthClient(),
-                            subscriptionViewModel: rail,
+                            supporterInviteClient: PreviewSupporterInviteClient(),
                             onEmailChanged: { _ in },
                             onLogout: {}
                         )
                     }
                 )
+            },
+            // The SAME screen for a supporter (RFC 241): a supporter-voiced
+            // invite control, and no subscription section at all — the meter
+            // behind it is student-scoped. Both differences are the point of
+            // the capture, and neither is visible in a `settings-populated`
+            // diff.
+            SnapshotScene(name: "settings-supporter", size: SnapshotScene.tallCanvas(height: 800)) {
+                UserDefaults.standard.set(
+                    AppearancePreference.system.rawValue,
+                    forKey: AppearancePreference.storageKey
+                )
+                return AnyView(
+                    NavigationStack {
+                        SettingsView(
+                            user: SnapshotSeed.supporterUser,
+                            caller: .supporter,
+                            authClient: MockAuthClient(),
+                            supporterInviteClient: PreviewSupporterInviteClient(),
+                            onEmailChanged: { _ in },
+                            onLogout: {}
+                        )
+                    }
+                )
+            },
+
+            // --- The parent account (RFC 241). Four screens the gate has never
+            // seen, because none of them existed: the question an account with
+            // neither row is asked, and the home it lands on at each of the
+            // three roster sizes that read differently.
+            SnapshotScene(name: "role-choice") {
+                AnyView(
+                    RoleChoiceView(
+                        userName: "Robin",
+                        supporterClient: PreviewSupporterClient(),
+                        onStudent: {},
+                        onSupporter: { _ in }
+                    )
+                )
+            },
+            SnapshotScene(name: "supporter-home-empty") {
+                AnyView(SnapshotSeed.supporterHome(students: []))
+            },
+            SnapshotScene(name: "supporter-home-one-student") {
+                AnyView(SnapshotSeed.supporterHome(students: SnapshotSeed.oneLinkedStudent))
+            },
+            // Open, because closed it is one line of chrome. The switcher is an
+            // in-view disclosure rather than a `Menu` precisely so this capture
+            // is possible: a system menu renders in its own window, which the
+            // rasterizer cannot reach.
+            SnapshotScene(name: "supporter-home-switcher-open") {
+                AnyView(SnapshotSeed.supporterHome(
+                    students: SnapshotSeed.threeLinkedStudents,
+                    switcherOpen: true
+                ))
             },
 
             // --- The one invented primitive, at its three interesting readings.
@@ -748,7 +863,11 @@ enum SnapshotCatalogue {
                 await viewModel.awaitPendingSearch()
                 return AnyView(
                     NavigationStack {
-                        AddCollegeView(viewModel: viewModel, focusesSearchOnAppear: false)
+                        CollegeSearchView(
+                            viewModel: viewModel,
+                            tap: .addsToMyList,
+                            focusesSearchOnAppear: false
+                        )
                     }
                 )
             },

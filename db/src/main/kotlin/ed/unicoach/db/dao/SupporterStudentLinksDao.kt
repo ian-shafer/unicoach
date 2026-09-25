@@ -1,6 +1,9 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.ValidationResult
+import ed.unicoach.db.models.LinkedStudent
 import ed.unicoach.db.models.NewSupporterStudentLink
+import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SupporterRelationship
@@ -194,6 +197,92 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
       bind = { it.setObject(1, side.id) },
       map = ::mapLink,
     )
+
+  /**
+   * This supporter's ACTIVE links with the display name of the student each one
+   * points at (RFC 241) — the roster a parent's home surface is built from.
+   *
+   * ONE statement, not [listForSupporter] plus a lookup per row: `StudentsDao`
+   * has no batch read, so the composed form is N+1 on a list rendered at every
+   * app launch. The leading column of
+   * `supporter_student_links_supporter_student_active_idx` serves the filter.
+   *
+   * The load-bearing reason it is its own read, though, is [LinkedStudent]: the
+   * projection cannot leak the student's `dateOfBirth` or expected graduation
+   * date, because it selects neither and the type holds neither. See that
+   * type's KDoc.
+   *
+   * `deleted_at IS NULL` is asserted on the LINK, on the STUDENT and on the
+   * USER. Closing an account soft-deletes the `students` row and the `users` row
+   * in one transaction (`StudentService.deleteStudentAndAccount`), so the third
+   * predicate is redundant today — and it is what keeps this read's answer
+   * correct if `family/09` ever closes a `users` row on its own. A boundary
+   * belongs in the statement that admits the rows, not in an argument about
+   * another module's transaction. The join to `users` is INNER because
+   * `students.user_id` is a foreign key — a student with no user row is not a
+   * state this read may invent a name for.
+   *
+   * The tie-break is [listActiveBy]'s: `created_at` alone is not a total order
+   * inside one transaction, where every row takes the same `NOW()`.
+   */
+  fun listActiveLinkedStudents(
+    session: SqlSession,
+    supporterId: SupporterId,
+  ): Result<List<LinkedStudent>> =
+    session.queryList(
+      """
+      SELECT l.id AS link_id, l.student_id, l.relationship, u.name AS student_name
+      FROM supporter_student_links l
+      JOIN students s ON s.id = l.student_id
+      JOIN users u ON u.id = s.user_id
+      WHERE l.supporter_id = ?
+        AND l.deleted_at IS NULL
+        AND s.deleted_at IS NULL
+        AND u.deleted_at IS NULL
+      ORDER BY l.created_at, l.id
+      """.trimIndent(),
+      bind = { it.setObject(1, supporterId.value) },
+      map = ::mapLinkedStudent,
+    )
+
+  /**
+   * The roster projection. The columns are ALIASED in the query above and read
+   * back by those aliases, because three tables are joined and `id` belongs to
+   * all three.
+   *
+   * A corrupt `relationship` throws here exactly as it does in [mapLink] — the
+   * CHECK admits only the four words, so an unknown one is corruption and not a
+   * row to soften — and a corrupt `users.name` throws for the same reason
+   * `UsersDao` lets its own reconstruction fail: `users_name_length_check`
+   * already refuses blank and over-long names.
+   */
+  private fun mapLinkedStudent(rs: ResultSet): LinkedStudent {
+    val linkId = SupporterStudentLinkId(UUID.fromString(rs.getString("link_id")))
+    val rawName = rs.getString("student_name")
+    return LinkedStudent(
+      linkId = linkId,
+      studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
+      relationship = parseRelationship(rs.getString("relationship"), linkId),
+      studentName =
+        when (val name = PersonName.create(rawName)) {
+          is ValidationResult.Valid -> {
+            name.value
+          }
+
+          // The validator already said WHY — blank, or over-long — so its own
+          // [ValidationError] travels out instead of the synthesised "a known
+          // value" sentence [corruptValue] is for: an operator reading the log
+          // can tell a blank stored name from a 300-character one.
+          is ValidationResult.Invalid -> {
+            throw CorruptPersistedValueException(
+              value = rawName,
+              error = name.error,
+              location = "users.name (student of link [${linkId.asString}])",
+            )
+          }
+        },
+    )
+  }
 
   /**
    * Compare-and-swap correction of the relationship word on a LIVE link at

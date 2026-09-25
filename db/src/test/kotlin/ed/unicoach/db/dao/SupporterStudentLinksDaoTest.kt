@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.LinkedStudent
 import ed.unicoach.db.models.NewSupporter
 import ed.unicoach.db.models.NewSupporterStudentLink
 import ed.unicoach.db.models.StudentId
@@ -74,13 +75,19 @@ class SupporterStudentLinksDaoTest {
       override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
     }
 
-  private fun createUser(): UserId {
+  /**
+   * [name] is a parameter because `users.name` is the ONLY student column the
+   * roster read ([SupporterStudentLinksDao.listActiveLinkedStudents]) returns,
+   * so a test that cannot vary it cannot tell one student's name from another's.
+   */
+  private fun createUser(name: String = "Link User"): UserId {
     val userId = UUID.randomUUID()
     connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Link User', 'ahash')")
+      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'ahash')")
       .use { stmt ->
         stmt.setObject(1, userId)
         stmt.setString(2, "link-$userId@test.com")
+        stmt.setString(3, name)
         stmt.executeUpdate()
       }
     return UserId(userId)
@@ -112,6 +119,19 @@ class SupporterStudentLinksDaoTest {
   private fun closeStudent(studentId: StudentId) {
     val current = StudentsDao.findById(session, studentId).getOrThrow()
     StudentsDao.delete(session, studentId, current.version).getOrThrow()
+  }
+
+  /**
+   * Closes a `users` row through the sanctioned writer, at the version the row
+   * actually holds — [closeStudent]'s reason, on the other table.
+   *
+   * The `students` row is left LIVE on purpose: this is the state the roster's
+   * `u.deleted_at IS NULL` predicate exists for, and closing both would prove
+   * the student predicate again instead.
+   */
+  private fun closeUser(userId: UserId) {
+    val current = UsersDao.findById(session, userId).getOrThrow()
+    UsersDao.delete(session, userId, current.version).getOrThrow()
   }
 
   private fun deletedAtOf(id: UUID): Instant? {
@@ -742,5 +762,144 @@ class SupporterStudentLinksDaoTest {
     val severed = SupporterStudentLinksDao.unlink(session, created.id, created.version).getOrThrow()
     assertNotNull(severed.deletedAt, "unlinking a link to a closed student must still stamp deleted_at")
     assertEquals(emptyList(), SupporterStudentLinksDao.listForSupporter(session, supporter.id).getOrThrow())
+  }
+  // --- The roster read (RFC 241) -------------------------------------------
+
+  /** A student whose own account carries [name], which is what the roster renders. */
+  private fun createStudentNamed(name: String): StudentId = createStudent(createUser(name))
+
+  private fun roster(supporterId: SupporterId): List<LinkedStudent> =
+    SupporterStudentLinksDao.listActiveLinkedStudents(session, supporterId).getOrThrow()
+
+  @Test
+  fun `a supporter with no links reads an empty roster`() {
+    val supporter = createSupporter()
+
+    assertEquals(
+      emptyList(),
+      roster(supporter.id),
+      "a parent who has linked nobody is an empty list, not a failed read",
+    )
+  }
+
+  /**
+   * The projection, whole: the link, the student, the relationship word and the
+   * name — which comes from `users.name`, because `students` has no name column
+   * at all.
+   */
+  @Test
+  fun `the roster names the student and carries the link and the relationship`() {
+    val supporter = createSupporter()
+    val student = createStudentNamed("Ava Okafor")
+    val created = link(supporter.id, student, SupporterRelationship.GRANDPARENT).getOrThrow()
+
+    val entry = roster(supporter.id).single()
+
+    assertEquals(created.id, entry.linkId)
+    assertEquals(student, entry.studentId)
+    assertEquals(SupporterRelationship.GRANDPARENT, entry.relationship)
+    assertEquals("Ava Okafor", entry.studentName.value, "the display name comes from the student's users row")
+  }
+
+  @Test
+  fun `a severed link is not on the roster`() {
+    val supporter = createSupporter()
+    val kept = createStudentNamed("Kept Student")
+    val severedStudent = createStudentNamed("Severed Student")
+    val keptLink = link(supporter.id, kept).getOrThrow()
+    val severed = link(supporter.id, severedStudent).getOrThrow()
+
+    SupporterStudentLinksDao.unlink(session, severed.id, severed.version).getOrThrow()
+
+    assertEquals(
+      listOf(keptLink.id),
+      roster(supporter.id).map { it.linkId },
+      "unlinking removes the student from the roster, and leaves the other one",
+    )
+  }
+
+  /**
+   * The link is still ACTIVE here — the liveness guard fires on INSERT only, so
+   * closing an account leaves its links standing. The roster has to filter the
+   * STUDENT itself, or a parent keeps reading the name of a deleted account.
+   */
+  @Test
+  fun `a link whose student is closed is not on the roster`() {
+    val supporter = createSupporter()
+    val student = createStudentNamed("Closed Student")
+    val created = link(supporter.id, student).getOrThrow()
+
+    closeStudent(student)
+
+    assertNull(deletedAtOf(created.id.value), "the link itself is still active — the student is what closed")
+    assertEquals(emptyList(), roster(supporter.id), "a closed student is off every supporter's roster")
+  }
+
+  /**
+   * The third predicate, held on its own. Production closes the `students` row
+   * and the `users` row in ONE transaction
+   * (`StudentService.deleteStudentAndAccount`), so this state does not occur
+   * today — which is exactly why the read has to be tested for it rather than
+   * trusted to another module's transaction. `family/09` adds a deletion path,
+   * and the day a `users` row closes alone, the name on it must not still be
+   * rendered on a parent's home.
+   */
+  @Test
+  fun `a soft-deleted users row keeps its student off the roster`() {
+    val supporter = createSupporter()
+    val userId = createUser("Closed Account")
+    val student = createStudent(userId)
+    val created = link(supporter.id, student).getOrThrow()
+    assertEquals(listOf(created.id), roster(supporter.id).map { it.linkId }, "the roster starts with the link on it")
+
+    closeUser(userId)
+
+    assertNull(deletedAtOf(created.id.value), "the link is still active — the user account is what closed")
+    assertNull(
+      StudentsDao.findById(session, student).getOrThrow().deletedAt,
+      "and the students row is still LIVE: the users predicate is what must answer here, not the student one",
+    )
+    assertEquals(emptyList(), roster(supporter.id), "a closed account's name is off every supporter's roster")
+  }
+
+  @Test
+  fun `another supporter's links are never on the roster`() {
+    val mine = createSupporter()
+    val theirs = createSupporter()
+    val myStudent = createStudentNamed("My Student")
+    val theirStudent = createStudentNamed("Their Student")
+    val myLink = link(mine.id, myStudent).getOrThrow()
+    link(theirs.id, theirStudent).getOrThrow()
+
+    assertEquals(listOf(myLink.id), roster(mine.id).map { it.linkId })
+    assertEquals(
+      listOf("My Student"),
+      roster(mine.id).map { it.studentName.value },
+      "the join must not widen past the supporter the read was asked about",
+    )
+  }
+
+  /**
+   * Oldest first, by the LINK's `created_at` — the order a switcher renders, so
+   * the student a parent linked first stays where they were when a second is
+   * added.
+   */
+  @Test
+  fun `the roster is ordered by the link's creation, oldest first`() {
+    val supporter = createSupporter()
+    val first = link(supporter.id, createStudentNamed("First Linked")).getOrThrow()
+    val second = link(supporter.id, createStudentNamed("Second Linked")).getOrThrow()
+    val third = link(supporter.id, createStudentNamed("Third Linked")).getOrThrow()
+
+    assertEquals(
+      listOf(first.id, second.id, third.id),
+      roster(supporter.id).map { it.linkId },
+      "the roster follows the links' creation order",
+    )
+    assertEquals(
+      listOf("First Linked", "Second Linked", "Third Linked"),
+      roster(supporter.id).map { it.studentName.value },
+      "each row's name belongs to its own link, not to the row beside it",
+    )
   }
 }

@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EF2410000000000000000B01 /* SupporterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F01 /* SupporterClient.swift */; };
+		EF2410000000000000000B02 /* SupporterSubjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F02 /* SupporterSubjectStore.swift */; };
+		EF2410000000000000000B03 /* SupporterInviteControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F03 /* SupporterInviteControl.swift */; };
+		EF2410000000000000000B04 /* RoleChoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F04 /* RoleChoiceView.swift */; };
+		EF2410000000000000000B05 /* SupporterHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F05 /* SupporterHomeView.swift */; };
+		EF2410000000000000000B08 /* SupporterSubjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F08 /* SupporterSubjectSwitcher.swift */; };
+		EF2410000000000000000B06 /* MockSupporterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F06 /* MockSupporterClient.swift */; };
+		EF2410000000000000000B07 /* SupporterSubjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */; };
+		EF2410000000000000000B09 /* SupporterClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F09 /* SupporterClientTests.swift */; };
 		CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000009F /* YourDetailsSubjectsTests.swift */; };
 		CC20500000000000000008B /* SubjectsClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000008F /* SubjectsClientTests.swift */; };
 		CC20500000000000000007B /* SubjectPickerViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000007F /* SubjectPickerViewModelTests.swift */; };
@@ -87,7 +96,7 @@
 		AB7100000000000000000B05 /* YourDetailsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F05 /* YourDetailsViewModelTests.swift */; };
 		AB7100000000000000000B06 /* IncomeBandLabelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F06 /* IncomeBandLabelTests.swift */; };
 		AB7100000000000000000B07 /* VocabularyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7100000000000000000F07 /* VocabularyClientTests.swift */; };
-		AB3700000000000000000B07 /* AddCollegeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F07 /* AddCollegeView.swift */; };
+		AB3700000000000000000B07 /* CollegeSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F07 /* CollegeSearchView.swift */; };
 		AB3700000000000000000B08 /* MockCollegeListClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F08 /* MockCollegeListClient.swift */; };
 		AB3700000000000000000B09 /* CollegeListClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F09 /* CollegeListClientTests.swift */; };
 		AB3700000000000000000B10 /* CollegeListViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000F10 /* CollegeListViewModelTests.swift */; };
@@ -157,6 +166,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		EF2410000000000000000F01 /* SupporterClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterClient.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F02 /* SupporterSubjectStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterSubjectStore.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F03 /* SupporterInviteControl.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterInviteControl.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F04 /* RoleChoiceView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RoleChoiceView.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F05 /* SupporterHomeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterHomeView.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F08 /* SupporterSubjectSwitcher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterSubjectSwitcher.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F06 /* MockSupporterClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockSupporterClient.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterSubjectStoreTests.swift; sourceTree = "<group>"; };
+		EF2410000000000000000F09 /* SupporterClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterClientTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000009F /* YourDetailsSubjectsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsSubjectsTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000008F /* SubjectsClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectsClientTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000007F /* SubjectPickerViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerViewModelTests.swift; sourceTree = "<group>"; };
@@ -240,7 +258,7 @@
 		AB7100000000000000000F05 /* YourDetailsViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsViewModelTests.swift; sourceTree = "<group>"; };
 		AB7100000000000000000F06 /* IncomeBandLabelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IncomeBandLabelTests.swift; sourceTree = "<group>"; };
 		AB7100000000000000000F07 /* VocabularyClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VocabularyClientTests.swift; sourceTree = "<group>"; };
-		AB3700000000000000000F07 /* AddCollegeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AddCollegeView.swift; sourceTree = "<group>"; };
+		AB3700000000000000000F07 /* CollegeSearchView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeSearchView.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F08 /* MockCollegeListClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockCollegeListClient.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F09 /* CollegeListClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListClientTests.swift; sourceTree = "<group>"; };
 		AB3700000000000000000F10 /* CollegeListViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CollegeListViewModelTests.swift; sourceTree = "<group>"; };
@@ -334,6 +352,12 @@
 		54DF8AA27E5BE9829E6B2A58 /* UnicoachiOS */ = {
 			isa = PBXGroup;
 			children = (
+				EF2410000000000000000F01 /* SupporterClient.swift */,
+				EF2410000000000000000F02 /* SupporterSubjectStore.swift */,
+				EF2410000000000000000F03 /* SupporterInviteControl.swift */,
+				EF2410000000000000000F04 /* RoleChoiceView.swift */,
+				EF2410000000000000000F05 /* SupporterHomeView.swift */,
+				EF2410000000000000000F08 /* SupporterSubjectSwitcher.swift */,
 				CC20500000000000000004F /* SubjectPickerSheet.swift */,
 				CC20500000000000000003F /* SubjectPickerViewModel.swift */,
 				CC20500000000000000002F /* IntendedSubjectsClient.swift */,
@@ -380,7 +404,7 @@
 				AB7100000000000000000F01 /* VocabularyClient.swift */,
 				AB7100000000000000000F02 /* YourDetailsViewModel.swift */,
 				AB7100000000000000000F03 /* YourDetailsView.swift */,
-				AB3700000000000000000F07 /* AddCollegeView.swift */,
+				AB3700000000000000000F07 /* CollegeSearchView.swift */,
 				BBBB00010000000000000F03 /* OnboardingViewModel.swift */,
 				BBBB00010000000000000F04 /* OnboardingView.swift */,
 				AAAA00020000000000000F01 /* SSEParser.swift */,
@@ -436,6 +460,9 @@
 		A7EFC6E8C2CFFB91407E525F /* UnicoachiOSTests */ = {
 			isa = PBXGroup;
 			children = (
+				EF2410000000000000000F06 /* MockSupporterClient.swift */,
+				EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */,
+				EF2410000000000000000F09 /* SupporterClientTests.swift */,
 				CC20500000000000000009F /* YourDetailsSubjectsTests.swift */,
 				CC20500000000000000008F /* SubjectsClientTests.swift */,
 				CC20500000000000000007F /* SubjectPickerViewModelTests.swift */,
@@ -630,6 +657,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EF2410000000000000000B01 /* SupporterClient.swift in Sources */,
+				EF2410000000000000000B02 /* SupporterSubjectStore.swift in Sources */,
+				EF2410000000000000000B03 /* SupporterInviteControl.swift in Sources */,
+				EF2410000000000000000B04 /* RoleChoiceView.swift in Sources */,
+				EF2410000000000000000B05 /* SupporterHomeView.swift in Sources */,
+				EF2410000000000000000B08 /* SupporterSubjectSwitcher.swift in Sources */,
 				CC20500000000000000004B /* SubjectPickerSheet.swift in Sources */,
 				CC20500000000000000003B /* SubjectPickerViewModel.swift in Sources */,
 				CC20500000000000000002B /* IntendedSubjectsClient.swift in Sources */,
@@ -675,7 +708,7 @@
 				AB7100000000000000000B01 /* VocabularyClient.swift in Sources */,
 				AB7100000000000000000B02 /* YourDetailsViewModel.swift in Sources */,
 				AB7100000000000000000B03 /* YourDetailsView.swift in Sources */,
-				AB3700000000000000000B07 /* AddCollegeView.swift in Sources */,
+				AB3700000000000000000B07 /* CollegeSearchView.swift in Sources */,
 				BBBB00010000000000000B03 /* OnboardingViewModel.swift in Sources */,
 				BBBB00010000000000000B04 /* OnboardingView.swift in Sources */,
 				AAAA00020000000000000B01 /* SSEParser.swift in Sources */,
@@ -717,6 +750,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EF2410000000000000000B06 /* MockSupporterClient.swift in Sources */,
+				EF2410000000000000000B07 /* SupporterSubjectStoreTests.swift in Sources */,
+				EF2410000000000000000B09 /* SupporterClientTests.swift in Sources */,
 				CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */,
 				CC20500000000000000008B /* SubjectsClientTests.swift in Sources */,
 				CC20500000000000000007B /* SubjectPickerViewModelTests.swift in Sources */,

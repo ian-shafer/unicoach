@@ -10,17 +10,15 @@ import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.SelfSupporterLinkException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
+import ed.unicoach.db.dao.SupporterAlreadyExistsException
 import ed.unicoach.db.dao.SupporterInvitesDao
 import ed.unicoach.db.dao.SupporterStudentLinksDao
-import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.InviterRole
-import ed.unicoach.db.models.NewSupporter
 import ed.unicoach.db.models.NewSupporterInvite
 import ed.unicoach.db.models.NewSupporterStudentLink
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
-import ed.unicoach.db.models.Supporter
 import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SupporterInvite
 import ed.unicoach.db.models.SupporterInviteId
@@ -175,6 +173,7 @@ class SupporterInviteService(
   private val database: Database,
   private val config: SupporterInviteConfig,
   private val tokenGenerator: TokenGenerator,
+  private val supporterService: SupporterService,
 ) {
   private val logger = LoggerFactory.getLogger(SupporterInviteService::class.java)
 
@@ -187,14 +186,6 @@ class SupporterInviteService(
     session: SqlSession,
     userId: UserId,
   ): Student? = StudentsDao.findByUserIdOrNull(session, userId).getOrThrow()
-
-  /** The supporter row owned by [userId], created on demand (brief 0014 D21). */
-  private fun getOrCreateSupporter(
-    session: SqlSession,
-    userId: UserId,
-  ): Supporter =
-    SupportersDao.findByUserId(session, userId).getOrThrow()
-      ?: SupportersDao.create(session, NewSupporter(userId)).getOrThrow()
 
   /**
    * The inviter's ACTIVE user row, or null when that account is closed.
@@ -216,7 +207,7 @@ class SupporterInviteService(
   ): InviterEndpoint =
     findStudentOrNull(session, inviterUserId)
       ?.let { InviterEndpoint.Student(it.id) }
-      ?: InviterEndpoint.Supporter(getOrCreateSupporter(session, inviterUserId).id)
+      ?: InviterEndpoint.Supporter(supporterService.getOrCreate(session, inviterUserId).id)
 
   /**
    * [relationship] has no default here. The product default is the REST door's
@@ -309,8 +300,9 @@ class SupporterInviteService(
   /**
    * Accept [rawToken] on behalf of [recipientUserId].
    *
-   * Three predictable states of the link write are answered as OUTCOMES rather
-   * than left in the error channel, and all three are answered OUTSIDE the
+   * Four predictable states of the write are answered as OUTCOMES rather than
+   * left in the error channel — a raced link, a raced or CLOSED supporter row, a
+   * closed endpoint, a self-link — and all of them are answered OUTSIDE the
    * transaction on purpose: the refusal arrives as an exception from the insert,
    * and only by letting it leave [Database.withConnection] does the CAS consume
    * roll back with it. Recovering inside would commit a burnt token.
@@ -340,6 +332,38 @@ class SupporterInviteService(
           // must not leave the race it lost unrecorded in the chain.
           attemptAccept(rawToken, recipientUserId).getOrElse { retryFailure ->
             throw retryFailure.also { it.addSuppressed(failure) }
+          }
+        }
+
+        // A CONCURRENT mint of the recipient's supporter row — two accepts by
+        // one recipient, or an accept racing `POST /api/v1/supporters`. The
+        // one-per-user index is TOTAL, so the loser takes the violation and its
+        // transaction rolls back with the invite still live: one retry reads the
+        // row that won and links against it, which is what this accept was
+        // asking for. Left unclassified this reached the client as an untyped
+        // `400 permanent_error "Supporter already exists for user"`, about a
+        // link that was never made.
+        failure is SupporterAlreadyExistsException -> {
+          logger.info(
+            "supporter invite accept lost a race minting the recipient's supporter row, retrying once: recipientUserId=[{}]",
+            recipientUserId.asString,
+            failure,
+          )
+          attemptAccept(rawToken, recipientUserId).getOrElse { retryFailure ->
+            // A SECOND refusal is not a race: the index holds this user's id on
+            // a CLOSED row, so no live supporter can be minted and this invite
+            // can never link anyone. That is the fact the closed-endpoint arm
+            // below answers, and it gets the same uniform refusal.
+            if (retryFailure is SupporterAlreadyExistsException) {
+              logger.info(
+                "supporter invite accept refused, the recipient's supporter row is CLOSED: recipientUserId=[{}]",
+                recipientUserId.asString,
+                retryFailure.also { it.addSuppressed(failure) },
+              )
+              AcceptInviteOutcome.InvalidToken(InviteMissReason.ENDPOINT_CLOSED)
+            } else {
+              throw retryFailure.also { it.addSuppressed(failure) }
+            }
           }
         }
 
@@ -389,7 +413,7 @@ class SupporterInviteService(
     when (invite.inviterRole) {
       InviterRole.STUDENT -> {
         LinkEndpoints.Resolved(
-          supporterId = getOrCreateSupporter(session, recipientUserId).id,
+          supporterId = supporterService.getOrCreate(session, recipientUserId).id,
           studentId = invite.requireStudentId(),
         )
       }

@@ -16,18 +16,28 @@ class AppViewModelTests: XCTestCase {
     var viewModel: AppViewModel!
     var mockClient: MockAuthClient!
     var mockStudentClient: MockStudentClient!
+    var mockSupporterClient: MockSupporterClient!
     var mockCookieStorage: MockCookieStorage!
 
     override func setUp() async throws {
         try await super.setUp()
         mockClient = MockAuthClient()
         mockStudentClient = MockStudentClient()
+        // Answers "no supporters row" by default, so every test written before
+        // RFC 241 keeps asking the question it was written to ask — and none of
+        // them reaches the network for the second read.
+        mockSupporterClient = MockSupporterClient()
         mockCookieStorage = MockCookieStorage()
         viewModel = AppViewModel(
             cookieStorage: mockCookieStorage,
             authClient: mockClient,
-            studentClient: mockStudentClient
+            studentClient: mockStudentClient,
+            supporterClient: mockSupporterClient
         )
+    }
+
+    private func makeSupporterHome(students: [LinkedStudent] = []) -> SupporterHome {
+        SupporterHome(supporter: PublicSupporter(id: UUID()), students: students)
     }
 
     private func makeStudent() -> PublicStudent {
@@ -51,14 +61,217 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.authState, .authenticated(user))
     }
 
-    func testCheckSessionOnboardingWhenNoProfile() async {
+    /// Neither row: the app asks rather than assuming "student who has not
+    /// finished onboarding" (RFC 241). This test read `.onboarding` before that
+    /// slice, and the change of answer IS the slice.
+    func testCheckSessionRoleChoiceWhenNeitherProfileExists() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.meResult = .success(MeResponse(user: user))
         mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(nil)
 
         await viewModel.checkSession()
 
+        XCTAssertEqual(viewModel.authState, .roleChoice(user))
+    }
+
+    func testCheckSessionSupporterHomeWhenOnlyASupporterRowExists() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let home = makeSupporterHome(students: [
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+        ])
+        mockClient.meResult = .success(MeResponse(user: user))
+        mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(home)
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .supporterHome(user, home))
+    }
+
+    /// Order, asserted rather than assumed: a student reaches the app on ONE
+    /// read, and the supporter door is never knocked on. An account holding
+    /// both rows is a student here for the same reason.
+    func testAStudentIsResolvedWithoutReadingTheSupporterDoor() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        mockClient.meResult = .success(MeResponse(user: user))
+        mockStudentClient.fetchProfileResult = .success(makeStudent())
+        mockSupporterClient.fetchHomeResult = .success(makeSupporterHome())
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .authenticated(user))
+        XCTAssertEqual(mockSupporterClient.fetchHomeCallCount, 0)
+    }
+
+    /// A failure on the SECOND read is routed by the same arms as the first:
+    /// the supporter door sits behind the same session and email gates.
+    func testSupporterFetchUnauthorizedRoutesToUnauthenticated() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        mockClient.meResult = .success(MeResponse(user: user))
+        mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .failure(
+            ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil)
+        )
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .unauthenticated)
+    }
+
+    func testSupporterFetchServerErrorRoutesToServerError() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        mockClient.meResult = .success(MeResponse(user: user))
+        mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .failure(
+            ErrorResponse(code: "SERVER_ERROR", message: "Server error", fieldErrors: nil, status: 500)
+        )
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .serverError)
+    }
+
+    func testOnStudentRoleChosenRoutesToOnboarding() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+
+        viewModel.onStudentRoleChosen(user)
+
         XCTAssertEqual(viewModel.authState, .onboarding(user))
+        // The row is created by the FORM, not by the choice.
+        XCTAssertEqual(mockStudentClient.createStudentCallCount, 0)
+    }
+
+    func testOnSupporterHomeRoutesToTheSupporterHome() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let home = makeSupporterHome()
+
+        viewModel.onSupporterHome(user, home)
+
+        XCTAssertEqual(viewModel.authState, .supporterHome(user, home))
+    }
+
+    /// "I'm the student" is reversible (RFC 241): the form writes the row, so
+    /// backing out of it has nothing to undo.
+    func testOnRoleChoiceRequestedReturnsToTheQuestion() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .onboarding(user)
+
+        viewModel.onRoleChoiceRequested(user)
+
+        XCTAssertEqual(viewModel.authState, .roleChoice(user))
+        XCTAssertEqual(mockStudentClient.createStudentCallCount, 0)
+    }
+
+    // MARK: - The roster refresh (RFC 241)
+
+    /// The result of the home's own headline action: the student accepted while
+    /// the parent sat on the screen, and the refresh is what names them.
+    func testRefreshSupporterHomeReplacesTheRoster() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let linked = makeSupporterHome(students: [
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+        ])
+        viewModel.authState = .supporterHome(user, makeSupporterHome())
+        mockSupporterClient.fetchHomeResult = .success(linked)
+
+        await viewModel.refreshSupporterHome()
+
+        XCTAssertEqual(viewModel.authState, .supporterHome(user, linked))
+    }
+
+    /// Nobody asked for this read, so a failure has no refusal to report: the
+    /// resolved home stays on screen rather than becoming an error state.
+    func testRefreshSupporterHomeLeavesTheHomeStandingOnFailure() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let home = makeSupporterHome()
+        viewModel.authState = .supporterHome(user, home)
+        mockSupporterClient.fetchHomeResult = .failure(
+            ErrorResponse(code: "SERVER_ERROR", message: "Server error", fieldErrors: nil, status: 500)
+        )
+
+        await viewModel.refreshSupporterHome()
+
+        XCTAssertEqual(viewModel.authState, .supporterHome(user, home))
+    }
+
+    /// It refreshes a ROSTER; it does not re-decide what the account is. A
+    /// `404` (no supporters row) leaves the screen alone rather than emptying
+    /// it.
+    func testRefreshSupporterHomeIgnoresAnAbsentSupporterRow() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let home = makeSupporterHome(students: [
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+        ])
+        viewModel.authState = .supporterHome(user, home)
+        mockSupporterClient.fetchHomeResult = .success(nil)
+
+        await viewModel.refreshSupporterHome()
+
+        XCTAssertEqual(viewModel.authState, .supporterHome(user, home))
+    }
+
+    /// Every other state ignores it, so a screen that is not a supporter home
+    /// cannot be replaced by one.
+    func testRefreshSupporterHomeIsANoOpElsewhere() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .authenticated(user)
+
+        await viewModel.refreshSupporterHome()
+
+        XCTAssertEqual(viewModel.authState, .authenticated(user))
+        XCTAssertEqual(mockSupporterClient.fetchHomeCallCount, 0)
+    }
+
+    /// The race the refresh's post-await re-read exists for: `@MainActor` stops
+    /// a data race, not an interleaving. The refresh is started by the home's
+    /// own `.task` AND by the scene-phase hook, and `Settings -> Log out` is two
+    /// taps from that screen — so a logout completing mid-read is ordinary, and
+    /// the resumed continuation must not put a signed-out parent back on a home
+    /// whose session cookie is already deleted.
+    func testALogoutDuringAnInFlightRefreshLeavesTheUserSignedOut() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .supporterHome(user, makeSupporterHome())
+        mockClient.logoutResult = .success(())
+        mockSupporterClient.fetchHomeResult = .success(makeSupporterHome(students: [
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+        ]))
+        let gate = InFlightGate()
+        mockSupporterClient.fetchHomeGate = { await gate.hold() }
+
+        let refresh = Task { await viewModel.refreshSupporterHome() }
+        await gate.waitUntilHeld()
+        await viewModel.logout()
+        await gate.release()
+        await refresh.value
+
+        XCTAssertEqual(
+            viewModel.authState,
+            .unauthenticated,
+            "a roster read that started before the logout must not decide the screen after it"
+        )
+    }
+
+    /// The same rule at the other async writer this slice added. The `409`
+    /// re-resolution runs in a detached `Task` that no view teardown cancels,
+    /// so the teardown that invalidates its answer — the logout — cancels it,
+    /// and every arm of the resolve re-checks before it writes.
+    func testALogoutDuringAnInFlightReResolutionLeavesTheUserSignedOut() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .authenticated(user)
+        mockClient.logoutResult = .success(())
+        mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(makeSupporterHome())
+        let gate = InFlightGate()
+        mockSupporterClient.fetchHomeGate = { await gate.hold() }
+
+        viewModel.onStudentProfileRequired()
+        await gate.waitUntilHeld()
+        await viewModel.logout()
+        await gate.release()
+        await viewModel.profileRefreshTask?.value
+
+        XCTAssertEqual(viewModel.authState, .unauthenticated)
     }
 
     func testCheckSessionProfileFetchUnauthorized() async {
@@ -141,13 +354,14 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.authState, .unexpectedError)
     }
 
-    func testOnLoginSuccessRoutesToOnboarding() async {
+    func testOnLoginSuccessRoutesToRoleChoice() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(nil)
 
         await viewModel.onLoginSuccess(user)
 
-        XCTAssertEqual(viewModel.authState, .onboarding(user))
+        XCTAssertEqual(viewModel.authState, .roleChoice(user))
     }
 
     func testOnLoginSuccessRoutesToAuthenticated() async {
@@ -159,13 +373,16 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.authState, .authenticated(user))
     }
 
-    func testOnRegisterSuccessRoutesToOnboarding() async {
+    /// A brand-new account holds neither row, so registration lands on the role
+    /// choice — the door a parent-first signup comes through (RFC 241).
+    func testOnRegisterSuccessRoutesToRoleChoice() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(nil)
 
         await viewModel.onRegisterSuccess(user)
 
-        XCTAssertEqual(viewModel.authState, .onboarding(user))
+        XCTAssertEqual(viewModel.authState, .roleChoice(user))
     }
 
     func testOnEmailChangedRoutesToVerificationRequired() async {
@@ -200,14 +417,34 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.authState, .authenticated(user))
     }
 
-    func testOnStudentProfileRequiredRoutesAuthenticatedToOnboarding() async {
+    /// The 409 edge RE-RESOLVES now (RFC 241): the refusal proves there is no
+    /// `students` row, which is no longer the whole question.
+    func testOnStudentProfileRequiredRoutesAStudentBackToOnboarding() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         viewModel.authState = .authenticated(user)
+        mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(nil)
 
         viewModel.onStudentProfileRequired()
+        await viewModel.profileRefreshTask?.value
 
-        XCTAssertEqual(viewModel.authState, .onboarding(user))
-        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 0)
+        XCTAssertEqual(viewModel.authState, .roleChoice(user))
+    }
+
+    /// The defect this slice removes, at the one place a supporter could still
+    /// have hit the student form: a caller who holds BOTH rows loses the
+    /// student one mid-session and lands on their supporter home.
+    func testOnStudentProfileRequiredRoutesASupporterHome() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let home = makeSupporterHome()
+        viewModel.authState = .authenticated(user)
+        mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(home)
+
+        viewModel.onStudentProfileRequired()
+        await viewModel.profileRefreshTask?.value
+
+        XCTAssertEqual(viewModel.authState, .supporterHome(user, home))
     }
 
     func testOnStudentProfileRequiredNoOpFromNonAuthenticated() async {
@@ -216,6 +453,42 @@ class AppViewModelTests: XCTestCase {
         viewModel.onStudentProfileRequired()
 
         XCTAssertEqual(viewModel.authState, .unauthenticated)
+    }
+
+    /// A profile deleted server-side refuses every student-scoped read on the
+    /// screen at once, and nine call sites can report it. One re-resolution
+    /// runs; the rest are refused while it is in flight, so the last to finish
+    /// cannot decide the screen.
+    func testConcurrentProfileRefusalsResolveOnce() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .authenticated(user)
+        mockStudentClient.fetchProfileResult = .success(nil)
+        mockSupporterClient.fetchHomeResult = .success(nil)
+
+        viewModel.onStudentProfileRequired()
+        viewModel.onStudentProfileRequired()
+        viewModel.onStudentProfileRequired()
+        await viewModel.profileRefreshTask?.value
+
+        XCTAssertEqual(viewModel.authState, .roleChoice(user))
+        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 1)
+        XCTAssertEqual(mockSupporterClient.fetchHomeCallCount, 1)
+    }
+
+    /// The guard is not a latch: a LATER refusal, after the first resolution
+    /// finished, still re-resolves.
+    func testAProfileRefusalAfterTheFirstResolutionStillResolves() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .authenticated(user)
+        mockStudentClient.fetchProfileResult = .success(makeStudent())
+
+        viewModel.onStudentProfileRequired()
+        await viewModel.profileRefreshTask?.value
+        viewModel.onStudentProfileRequired()
+        await viewModel.profileRefreshTask?.value
+
+        XCTAssertEqual(viewModel.authState, .authenticated(user))
+        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 2)
     }
 
     func testLogoutTransitionsToUnauthenticatedOnFailure() async {
@@ -460,5 +733,39 @@ class AppViewModelTests: XCTestCase {
         )
 
         XCTAssertTrue(store is StoreKitSubscriptionStore)
+    }
+}
+
+/// A read held open, so a test can act on the view model while the request is
+/// genuinely in flight rather than guessing at a sleep. The `WriteGate`
+/// precedent in `YourDetailsViewModelTests`.
+private actor InFlightGate {
+    private var isReleased = false
+    private var isHeld = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Called from inside the client double. Only the FIRST read is held; a
+    /// later one passes straight through, so a transition that makes its own
+    /// read cannot deadlock the test.
+    func hold() async {
+        guard !isHeld else { return }
+        isHeld = true
+        for waiter in heldWaiters { waiter.resume() }
+        heldWaiters = []
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    /// Returns once a read has actually reached the client.
+    func waitUntilHeld() async {
+        guard !isHeld else { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        for waiter in releaseWaiters { waiter.resume() }
+        releaseWaiters = []
     }
 }
