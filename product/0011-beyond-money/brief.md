@@ -762,3 +762,51 @@ Scorecard stamps wrong by two years.
    index, every tool payload, the report and the app. That is weeks, not days,
    and it gets scoped and measured like the money work was rather than smuggled
    into a slice.
+
+---
+
+### D48 — the "students like you" cut is Pell, not an income third (Ian, 2026-09-25, verbatim: "Option A")
+
+**Supersedes the income-tercile half of D28.** The rest of D28 stands.
+
+**What D28 assumed, and why it cannot be built.** D28 reads "income terciles as
+the publisher defines them, plus Pell", with the tercile boundaries spoken. The
+publisher defines no income cut OF THE HEADLINE COMPLETION MEASURE. Verified in
+the fetched institution file and across the tree at `main@e0b612cb`: there is no
+`C150_4_INC*` and no `OMAWDP*_INC*`; the `_INC1/_INC2/_INC3` suffix the phrase
+implies belongs to EARNINGS variables, never to a completion variable. The only
+income-subgroup completion family the publisher ships is
+`{LO,MD,HI}_INC_COMP_ORIG_YR{2,3,4,6,8}_RT` (15 members, e.g.
+`LO_INC_COMP_ORIG_YR6_RT`) — the share who completed **at the original
+institution** within N years. That is a THIRD measure with a different
+denominator, not a tercile cut of the headline, so it cannot be set beside the
+headline as the same statistic.
+
+**Decided.** `beyond/06` serves the **Pell** cut of the headline measure —
+`OMAWDP8_PELL_ALL` and `OMAWDP8_NOPELL_ALL` beside `OMAWDP8_ALL`. Same measure,
+same eight-year window, same publisher, so the two numbers are comparable in one
+breath and each costs one sentence. The income-third variables are **not served
+by this slice**.
+
+**Why not the income thirds, said as their own measure.** Completion at the
+original institution counts a student who transfers and graduates elsewhere as
+not finishing. It therefore reads low, and reads lowest for exactly the
+lower-income students this slice exists to serve — the slice would ship a number
+biased in the direction of its own thesis, which is the opposite of the honesty
+it is for. It also puts three different completion measures in one answer,
+against D23 (the caveat budget).
+
+**What this does not change.** `dependency` stays dropped. No publisher boundary
+is mapped onto our five net-price bands. A family's stored income band is
+**not** used to choose a Pell arm: Pell receipt is not income, and inferring one
+from the other is the false-label failure D28 exists to prevent — both arms are
+served, each labelled. D9 stands (the headline moves to `OMAWDP8_ALL`, and
+transfer-out becomes sayable). D7 and D47 stand without exception: a variable
+with no transcribed vintage in
+`db/seed/scorecard/dictionary-variable-sources.csv` is not served until it has
+one, transcribed from the publisher's own dictionary and never typed as a
+literal into Kotlin.
+
+**Returned to /chart, not decided here:** whether a later slice serves
+completion by income third as its own named measure, with its own definition
+sentence.
