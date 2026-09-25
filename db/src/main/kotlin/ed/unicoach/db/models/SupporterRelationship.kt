@@ -23,5 +23,16 @@ enum class SupporterRelationship(
 
   companion object {
     fun fromValue(value: String): SupporterRelationship? = entries.find { it.value == value }
+
+    /**
+     * The word an invite carries when NO door stated one (RFC 240): [SUPPORTER],
+     * the deliberate catch-all.
+     *
+     * Here, beside the vocabulary, and not at each door: the REST body and the
+     * coach tool both mint on the same absence, and `InvitePage` labels THIS
+     * value for a recipient who was never asked. A second literal in either door
+     * mints a word the recipient's page was not written for.
+     */
+    val UNSTATED: SupporterRelationship = SUPPORTER
   }
 }

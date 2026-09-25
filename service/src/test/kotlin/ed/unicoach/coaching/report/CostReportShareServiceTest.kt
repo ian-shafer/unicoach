@@ -436,6 +436,108 @@ class CostReportShareServiceTest {
       )
     }
 
+  /** An open invite_supporter commitment, as the RFC 240 nudge step writes it. */
+  private fun insertOpenInviteNudge(studentId: StudentId): Commitment =
+    CommitmentsDao
+      .create(
+        sqlSession,
+        NewCommitment(
+          studentId = studentId,
+          lens = CommitmentLens.INVITE_SUPPORTER,
+          disclosure = CommitmentDisclosure.EXPLICIT,
+          statement = "offer to connect that parent properly",
+        ),
+      ).getOrThrow()
+
+  private fun inviteNudges(studentId: StudentId): List<Commitment> =
+    CommitmentsDao
+      .listByStudent(sqlSession, studentId, limit = 100, offset = 0)
+      .getOrThrow()
+      .filter { it.lens == CommitmentLens.INVITE_SUPPORTER }
+
+  /**
+   * RFC 240, brief 0014 D20: one stop covers BOTH offers. The invite nudge is
+   * dropped under the SAME reason, so an operator reading `drop_reason` sees one
+   * fact and not two vocabularies for it — and the student who said "stop
+   * suggesting sharing" is not asked again through the second door.
+   */
+  @Test
+  fun `stopOffers drops an already-written open invite nudge under the same reason`() =
+    runBlocking {
+      val studentId = createStudent()
+      insertOpenShareNudge(studentId)
+      insertOpenInviteNudge(studentId)
+
+      assertIs<StopCostReportOffersOutcome.Recorded>(service.stopOffers(studentId).getOrThrow())
+
+      val invite = inviteNudges(studentId).single()
+      assertEquals(CommitmentStatus.DROPPED, invite.status, "the opt-out must resolve the standing invite nudge too")
+      assertEquals(CostReportShareService.SHARE_OFFERS_OPTED_OUT_DROP_REASON, invite.dropReason)
+      // BOTH, in one call: the share nudge's own drop is asserted above, and a
+      // widening that replaced one lens with the other would pass that test
+      // and this one's first half alone.
+      assertEquals(CommitmentStatus.DROPPED, shareNudges(studentId).single().status)
+      assertEquals(
+        emptyList(),
+        CommitmentsDao.listOpenExplicitByStudent(sqlSession, studentId).getOrThrow(),
+        "the opener reads open explicit commitments; neither offer must be among them",
+      )
+    }
+
+  @Test
+  fun `the AlreadyStopped path sweeps an invite nudge that raced in after a first opt-out`() =
+    runBlocking {
+      val studentId = createStudent()
+      assertIs<StopCostReportOffersOutcome.Recorded>(service.stopOffers(studentId).getOrThrow())
+      // A sweep whose eligibility read predated the opt-out commits its nudge late.
+      insertOpenInviteNudge(studentId)
+
+      assertEquals(StopCostReportOffersOutcome.AlreadyStopped, service.stopOffers(studentId).getOrThrow())
+
+      val raced = inviteNudges(studentId).single()
+      assertEquals(
+        CommitmentStatus.DROPPED,
+        raced.status,
+        "the second opt-out call must DROP the raced-in invite nudge, not merely stop it being open",
+      )
+      assertEquals(
+        CostReportShareService.SHARE_OFFERS_OPTED_OUT_DROP_REASON,
+        raced.dropReason,
+        "an operator reading drop_reason sees one vocabulary for one fact, on either path",
+      )
+    }
+
+  /**
+   * The lenses the opt-out does NOT touch. `OFFER_LENSES` is a filter over the
+   * whole enum, so a widening to `CommitmentLens.entries` would silence a
+   * student's gap and timing reflections — which they never opted out of — and
+   * every existing test here would stay green.
+   */
+  @Test
+  fun `stopOffers leaves a reflection commitment of any other lens open`() =
+    runBlocking {
+      val studentId = createStudent()
+      val untouched =
+        CommitmentLens.entries
+          .filterNot { it in CostReportShareService.OFFER_LENSES }
+          .map { lens ->
+            CommitmentsDao
+              .create(
+                sqlSession,
+                NewCommitment(studentId, lens, CommitmentDisclosure.EXPLICIT, "a ${lens.value} reflection"),
+              ).getOrThrow()
+          }
+
+      service.stopOffers(studentId).getOrThrow()
+
+      val stillOpen = CommitmentsDao.listOpenByStudent(sqlSession, studentId).getOrThrow().map { it.id }
+      assertEquals(
+        untouched.map { it.id },
+        stillOpen,
+        "the opt-out silences the OFFERS, not the student's reflections",
+      )
+    }
+
   private companion object {
     /** A second key, long enough to be one: [ShareTokenSecret] refuses a short value at construction. */
     const val ROTATED_SECRET = "a-rotated-share-token-secret-long-enough"

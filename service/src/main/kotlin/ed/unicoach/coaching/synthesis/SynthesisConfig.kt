@@ -22,6 +22,12 @@ import java.time.Duration
  *   commitment before a re-nudge may fire. The config key/env contract stays
  *   an integer day count (`synthesis.shareNudgeCooldownDays`); the unit is
  *   attached HERE, once, so domain logic never converts a raw Int.
+ * - [inviteNudgeEnabled] gates the deterministic invite-nudge step (RFC 240).
+ * - [inviteNudgeCooldown] is the same measure for the last `invite_supporter`
+ *   commitment, read from `synthesis.inviteNudgeCooldownDays` and given its unit
+ *   here for the same reason. A SECOND pair and not the share nudge's: the two
+ *   offers roll back independently, and one knob would make the rollback of
+ *   either the rollback of both.
  */
 class SynthesisConfig private constructor(
   val enabled: Boolean,
@@ -34,6 +40,8 @@ class SynthesisConfig private constructor(
   val maxNewCommitmentsPerRun: Int,
   val shareNudgeEnabled: Boolean,
   val shareNudgeCooldown: Duration,
+  val inviteNudgeEnabled: Boolean,
+  val inviteNudgeCooldown: Duration,
 ) {
   companion object {
     fun from(config: Config): Result<SynthesisConfig> =
@@ -49,6 +57,8 @@ class SynthesisConfig private constructor(
           maxNewCommitmentsPerRun = config.getInt("synthesis.maxNewCommitmentsPerRun"),
           shareNudgeEnabled = config.getBoolean("synthesis.shareNudgeEnabled"),
           shareNudgeCooldown = Duration.ofDays(config.getInt("synthesis.shareNudgeCooldownDays").toLong()),
+          inviteNudgeEnabled = config.getBoolean("synthesis.inviteNudgeEnabled"),
+          inviteNudgeCooldown = Duration.ofDays(config.getInt("synthesis.inviteNudgeCooldownDays").toLong()),
         )
       }
   }

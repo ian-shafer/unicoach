@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -43,6 +44,21 @@ class InviteRoutingTest {
     }
   }
 
+  /**
+   * A SUPPORTER-minted invite: the inviter has no `students` row, so
+   * `SupporterInviteService` resolves them to the supporter endpoint and the
+   * page renders the other half of [invitationSentence].
+   */
+  private fun mintSupporterInvite(relationship: SupporterRelationship = SupporterRelationship.PARENT): String {
+    val supporterUser = WebAuthTestSupport.seedUser("sup-${WebAuthTestSupport.uniqueEmail()}", name = "Jane Parent")
+    return runBlocking {
+      WebAuthTestSupport.supporterInviteService
+        .create(supporterUser.id, relationship)
+        .getOrThrow()
+        .rawToken
+    }
+  }
+
   @Test
   fun `a live invite renders the ceiling with no sign-in required`() =
     testApplication {
@@ -62,6 +78,69 @@ class InviteRoutingTest {
       assertTrue(body.contains("Create an account to accept"), "missing the signed-out register door")
       assertTrue(body.contains("Sign in to accept"), "missing the signed-out sign-in door")
       assertTrue(!body.contains("name=\"email\""), "a signed-out visitor must not be asked for credentials")
+    }
+
+  /**
+   * The word nobody stated (RFC 240 decision 4). Both doors mint `supporter`
+   * when no relationship was named, so the sentence that word renders has to be
+   * true of a parent and of anyone else. The named words are untouched, which is
+   * the half a single-label implementation would quietly break.
+   */
+  @Test
+  fun `an unstated relationship reads as parent or supporter and a named one keeps its own word`() =
+    testApplication {
+      application {
+        testPublicWebModule()
+      }
+      val unstated = mintStudentInvite(SupporterRelationship.SUPPORTER)
+      val named = mintStudentInvite(SupporterRelationship.GRANDPARENT)
+
+      val unstatedBody = client.get("/invite?token=$unstated").bodyAsText()
+      val namedBody = client.get("/invite?token=$named").bodyAsText()
+
+      assertTrue(
+        unstatedBody.contains("invited you to connect on unicoach as their parent or supporter."),
+        "an unstated relationship must read as parent or supporter: [$unstatedBody]",
+      )
+      assertTrue(
+        namedBody.contains("invited you to connect on unicoach as their grandparent."),
+        "a stated relationship keeps its own word: [$namedBody]",
+      )
+    }
+
+  /**
+   * The OTHER sentence the relationship word feeds — the supporter-minted
+   * invite, which no test asserted while one label served both (RFC 240).
+   *
+   * Here the inviter is NAMED one apposition away, so the unstated word must be
+   * a single word: "Jane — your parent or supporter —" offers the student two
+   * readings of somebody they already know. A stated word is unchanged, which
+   * is the half a one-word-fits-both edit would break.
+   */
+  @Test
+  fun `a supporter-minted invite names the inviter in one word`() =
+    testApplication {
+      application {
+        testPublicWebModule()
+      }
+      val unstated = mintSupporterInvite(SupporterRelationship.SUPPORTER)
+      val named = mintSupporterInvite(SupporterRelationship.GRANDPARENT)
+
+      val unstatedBody = client.get("/invite?token=$unstated").bodyAsText()
+      val namedBody = client.get("/invite?token=$named").bodyAsText()
+
+      assertTrue(
+        unstatedBody.contains("— your supporter — invited you to connect on unicoach."),
+        "an unstated relationship reads as ONE word in the apposition: [$unstatedBody]",
+      )
+      assertFalse(
+        unstatedBody.contains("your parent or supporter"),
+        "the recipient's own-label wording must not leak into the inviter apposition: [$unstatedBody]",
+      )
+      assertTrue(
+        namedBody.contains("— your grandparent — invited you to connect on unicoach."),
+        "a stated relationship keeps its own word on this sentence too: [$namedBody]",
+      )
     }
 
   /**

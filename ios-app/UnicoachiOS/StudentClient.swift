@@ -76,7 +76,7 @@ struct PreviewSupporterInviteClient: SupporterInviteClientProtocol {
     /// property rather than a literal inside the body: the product default is
     /// the server's, and a second copy of it in a function body is the client
     /// asserting a vocabulary it does not own.
-    var mintedRelationship: SupporterRelationship = .parent
+    var mintedRelationship: SupporterRelationship = .supporter
     var inviterRole: InviterRole = .student
     var expiresAt = Date(timeIntervalSince1970: 4_102_444_800)
 

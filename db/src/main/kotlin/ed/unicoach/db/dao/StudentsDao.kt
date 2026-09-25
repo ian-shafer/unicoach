@@ -117,6 +117,21 @@ object StudentsDao :
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
   ): Result<Student?> = findByUserId(session, userId, scope).orNullOnNotFound()
 
+  /**
+   * The student with [id] in [scope], or null when no such row exists.
+   *
+   * The [findById] answer as a VALUE, for [findByUserIdOrNull]'s reason: "there
+   * is no such student endpoint" — closed, deleted, or never there — is a state
+   * the caller has an answer for, and it should not have to type-test the error
+   * channel to read it. `orNullOnNotFound` is `internal` to this module, so the
+   * conversion belongs here and nowhere else.
+   */
+  fun findByIdOrNull(
+    session: SqlSession,
+    id: StudentId,
+    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+  ): Result<Student?> = findById(session, id, scope).orNullOnNotFound()
+
   fun findByIdForUpdate(
     session: SqlSession,
     id: StudentId,

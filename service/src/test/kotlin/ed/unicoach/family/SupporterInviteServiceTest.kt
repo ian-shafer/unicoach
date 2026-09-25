@@ -96,6 +96,31 @@ class SupporterInviteServiceTest {
       assertIs<AcceptInviteOutcome.InvalidToken>(secondAccept)
     }
 
+  /**
+   * The link row inherits the INVITE's own word (RFC 240 decision 4). The
+   * end-to-end test above mints `parent`, which is also what a hard-coded link
+   * relationship would record, so only a non-`parent` invite can tell the two
+   * apart — and `supporter` is now the word an unstated relationship mints.
+   */
+  @Test
+  fun `an accepted invite records its own relationship on the link row`(): Unit =
+    runBlocking {
+      val studentUser = createUser("Student Alex")
+      val studentId = createStudent(studentUser)
+      val supporterUser = createUser("Aunt Jane")
+
+      val invite = service.create(studentUser, SupporterRelationship.SUPPORTER).getOrThrow()
+      val accepted = service.accept(invite.rawToken, supporterUser).getOrThrow()
+
+      assertIs<AcceptInviteOutcome.Success>(accepted)
+      assertEquals(SupporterRelationship.SUPPORTER, accepted.link.relationship)
+      val supporter = SupportersDao.findByUserId(sqlSession, supporterUser).getOrThrow()
+      assertNotNull(supporter)
+      val activeLink = SupporterStudentLinksDao.findActive(sqlSession, supporter.id, studentId).getOrThrow()
+      assertNotNull(activeLink)
+      assertEquals(SupporterRelationship.SUPPORTER, activeLink.relationship)
+    }
+
   @Test
   fun `supporter invites student and student accepts`(): Unit =
     runBlocking {

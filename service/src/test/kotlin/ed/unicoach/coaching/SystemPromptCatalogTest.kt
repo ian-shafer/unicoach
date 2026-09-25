@@ -16,6 +16,7 @@ import ed.unicoach.coaching.costs.PrecisionOffer
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.coaching.family.InviteSupporterChatTool
 import ed.unicoach.coaching.fitlens.FitLensConfig
 import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
 import ed.unicoach.coaching.report.ShareCostReportChatTool
@@ -239,6 +240,7 @@ class SystemPromptCatalogTest {
       FAFSA_PROCESS("When a family asks who files the FAFSA, whose information"),
       FAFSA_DEADLINES("When a family asks when the FAFSA is due"),
       SHARE_NUDGE("When your opening reflections include one about sharing"),
+      INVITE_SUPPORTER("Connecting a parent to their own account is a different"),
       NEED_AND_FORMS("When a family asks whether a school meets full financial"),
       BORROWING("Borrowing is a different question from price, and you"),
       SEARCH_RULER("A college search now ranks on one of two prices, and which"),
@@ -348,6 +350,15 @@ class SystemPromptCatalogTest {
      * under test is SEEDED COPY versus SHIPPING TOOL.
      */
     private val STOP_OFFERS_TOOL_NAME = StopCostReportOffersChatTool.TOOL_NAME
+
+    /**
+     * The parent-invite tool the RFC 240 paragraph routes to, read from the tool
+     * itself for the reason [SHARE_REPORT_TOOL_NAME] states: the pairing under
+     * test is SEEDED COPY versus SHIPPING TOOL, and a literal here would keep
+     * passing after a rename, leaving the seeded prompt naming a tool the
+     * registry does not serve.
+     */
+    private val INVITE_SUPPORTER_TOOL_NAME = InviteSupporterChatTool.TOOL_NAME
 
     /**
      * The two interior rules RFC 166 added (the in-district tier, the at-home
@@ -2325,6 +2336,17 @@ class SystemPromptCatalogTest {
       paragraph.contains("they can still ask to share"),
       "opting out of the suggestion never disables the ability",
     )
+    // RFC 240's one appended sentence, in the paragraph that owns the opt-out:
+    // D20's guarantee is that ONE stop covers BOTH offers, and the coach has to
+    // be told so where it is told about the stop.
+    assertTrue(
+      paragraph.contains("That stop covers both offers"),
+      "RFC 240: the stop the coach records covers the parent invite too",
+    )
+    assertTrue(
+      paragraph.contains("is not asked about connecting a parent either"),
+      "and the paragraph says what the second offer is, not just that there is one",
+    )
     // The paragraph states no price and no price arithmetic; the standing money
     // guards still sweep the appended span so a relaxation is reported as v18's own.
     assertParagraphKeepsTheStandingCopyRules("the share-nudge paragraph", paragraph)
@@ -2845,6 +2867,106 @@ class SystemPromptCatalogTest {
   private fun borrowingParagraph(): String = paragraphAt(CoachParagraph.BORROWING)
 
   private fun shareNudgeParagraph(): String = paragraphAt(CoachParagraph.SHARE_NUDGE)
+
+  private fun inviteSupporterParagraph(): String = paragraphAt(CoachParagraph.INVITE_SUPPORTER)
+
+  /**
+   * The parent-invite paragraph (RFC 240), asserted in the body the runtime is
+   * actually SERVED — the row `service.conf` pins.
+   *
+   * The paragraph's whole job is to keep TWO offers apart: the read-only report
+   * page and an account with a workspace. So it must name its own tool, say what
+   * connecting gives that the report does not, say what it does NOT give, and
+   * carry the same never-open and no-residue rules the share offer carries — a
+   * paragraph that licensed the offer without them would read as a nudge.
+   */
+  @Test
+  fun `the served parent-invite paragraph offers an account, separately from the report, and only on a yes`() {
+    val paragraph = inviteSupporterParagraph()
+
+    assertTrue(paragraph.contains(INVITE_SUPPORTER_TOOL_NAME), "the paragraph must name the invite tool it routes to")
+    assertTrue(
+      paragraph.contains("a different thing from sharing the family cost report"),
+      "the two offers are distinguishable, or the coach will hand over the wrong one",
+    )
+    assertTrue(
+      paragraph.contains("that reflection is the sanctioned moment for it"),
+      "the licence is keyed on a reflection the RUN decided to surface, not on the model's judgement",
+    )
+    assertTrue(
+      paragraph.contains("only call $INVITE_SUPPORTER_TOOL_NAME if the student says yes"),
+      "never minted unasked",
+    )
+    assertTrue(
+      paragraph.contains("Never raise it in an opening about money"),
+      "RFC 202's rule reaches this offer too: the invite is not a way into the money topic",
+    )
+    assertTrue(
+      paragraph.contains("never make anything you do conditional on it"),
+      "guided, not gated (brief 0001 D11)",
+    )
+    assertTrue(
+      paragraph.contains("it works once, and it stops working after the date the result names"),
+      "a single-use link spread to two people fails silently for the second",
+    )
+    assertTrue(
+      paragraph.contains("their own account and their own coach workspace"),
+      "what connecting gives that the report link does not",
+    )
+    assertTrue(
+      paragraph.contains("end one supporter's access without ending anyone else's"),
+      "the student stays in charge of who is connected",
+    )
+    assertTrue(
+      paragraph.contains("never reads the student's coach conversations"),
+      "the ceiling's private half, in the same words the /invite page shows the recipient",
+    )
+    assertTrue(
+      paragraph.contains("cannot change the student's college list, profile or tasks"),
+      "parents support, students direct",
+    )
+    assertTrue(
+      paragraph.contains("the topic is closed for this conversation"),
+      "a decline or deferral ends the topic without residue",
+    )
+    assertTrue(
+      paragraph.contains("asking is never refused"),
+      "the offer discipline binds the COACH; a student who asks is always served",
+    )
+    // The paragraph states no price and no price arithmetic; the standing money
+    // guards still sweep the appended span so a relaxation is reported as this
+    // version's own.
+    assertParagraphKeepsTheStandingCopyRules("the parent-invite paragraph", paragraph)
+  }
+
+  /**
+   * The rollback this version documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION` set to the version immediately before the
+   * pin), and the generic pin-minus-one test above already proves that row is
+   * selectable. What is specific to RFC 240 is that the row is a real rollback of
+   * THIS paragraph: it must not already name the invite tool, or the pin buys
+   * nothing. Read from the pin at test time, never a literal, for the reason the
+   * pin test states.
+   */
+  @Test
+  fun `the version below the pin does not already name the parent-invite tool`() {
+    val previous = "v${versionNumberOf(coaching.systemPromptVersion) - 1}"
+    val row =
+      SystemPromptsDao
+        .findByNameAndVersion(session, coaching.systemPromptName, previous)
+        .getOrElse { cause ->
+          fail("the row below the pin [$previous] must remain selectable, or the rollback is not one", cause)
+        }
+
+    assertFalse(
+      row.body.contains(INVITE_SUPPORTER_TOOL_NAME),
+      "the rollback target must not already name the parent-invite tool, or rolling back removes nothing",
+    )
+    assertTrue(
+      row.body.contains(SHARE_REPORT_TOOL_NAME),
+      "and it must still carry the report offer this paragraph stands beside, or the rollback loses that too",
+    )
+  }
 
   /**
    * The rollback RFC 166 documents is one env var

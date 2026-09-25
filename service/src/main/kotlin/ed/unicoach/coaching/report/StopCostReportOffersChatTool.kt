@@ -59,7 +59,7 @@ class StopCostReportOffersChatTool(
       putJsonObject(RESULT_KEY) {
         put(STOPPED_KEY, true)
         put(ALREADY_STOPPED_KEY, outcome == StopCostReportOffersOutcome.AlreadyStopped)
-        put(ShareCostReportChatTool.STATEMENT_KEY, statement)
+        put(STATEMENT_KEY, statement)
       }
     }
   }

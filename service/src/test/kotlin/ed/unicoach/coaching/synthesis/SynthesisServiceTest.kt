@@ -20,6 +20,9 @@ import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
+import ed.unicoach.db.dao.SupporterInvitesDao
+import ed.unicoach.db.dao.SupporterStudentLinksDao
+import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.dao.newCollegeFixture
 import ed.unicoach.db.models.ClaimId
 import ed.unicoach.db.models.ClaimKind
@@ -38,6 +41,7 @@ import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewCostReportShare
 import ed.unicoach.db.models.ShareEventKind
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.db.models.TokenHash
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -101,6 +105,7 @@ class SynthesisServiceTest {
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, synthesis_runs, observations, claim_support, claims, extraction_runs, " +
           "college_list_entries, colleges, share_events, cost_report_shares, convos, convo_requests, " +
+          "supporter_invites, supporter_student_links, supporters, " +
           "llm_requests, llm_responses, llm_responses_raw, students, users CASCADE",
       )
     }
@@ -1204,6 +1209,251 @@ class SynthesisServiceTest {
           }
         }
       assertEquals(0, shareNudges(student).size, "the invented lens must never become a commitment")
+    }
+
+  // ---------------------------------------------------------------------------
+  // RFC 240: the invite-nudge step, beside the share nudge
+  // ---------------------------------------------------------------------------
+
+  private fun inviteNudges(studentId: StudentId): List<ed.unicoach.db.models.Commitment> =
+    CommitmentsDao
+      .listByStudent(sqlSession, studentId, limit = 100, offset = 0)
+      .getOrThrow()
+      .filter { it.lens == CommitmentLens.INVITE_SUPPORTER }
+
+  /** A user with no student profile — the person a supporter link or an invite is for. */
+  private fun createSupporterUser(): ed.unicoach.db.models.UserId {
+    val userId = UUID.randomUUID()
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        "INSERT INTO users (id, email, name, password_hash) VALUES " +
+          "('$userId', 'sup-$userId@test.com', 'Sup User', 'ahash')",
+      )
+    }
+    return ed.unicoach.db.models
+      .UserId(userId)
+  }
+
+  /** One ACTIVE supporter_student_links row for this student — condition 4. */
+  private fun linkSupporter(studentId: StudentId) {
+    val supporter =
+      SupportersDao
+        .create(
+          sqlSession,
+          ed.unicoach.db.models
+            .NewSupporter(createSupporterUser()),
+        ).getOrThrow()
+    SupporterStudentLinksDao
+      .create(
+        sqlSession,
+        ed.unicoach.db.models
+          .NewSupporterStudentLink(supporter.id, studentId, SupporterRelationship.SUPPORTER),
+      ).getOrThrow()
+  }
+
+  /** One LIVE student-minted supporter_invites row — condition 5. */
+  private fun insertLiveInvite(studentId: StudentId) {
+    val inviterUserId = studentUserId(studentId)
+    SupporterInvitesDao
+      .create(
+        sqlSession,
+        ed.unicoach.db.models.NewSupporterInvite(
+          tokenHash = TokenHash.fromRawToken("live-invite-${UUID.randomUUID()}"),
+          inviterUserId = inviterUserId,
+          inviterRole = ed.unicoach.db.models.InviterRole.STUDENT,
+          studentId = studentId,
+          supporterId = null,
+          relationship = SupporterRelationship.SUPPORTER,
+          expiresAt = Instant.now().plus(java.time.Duration.ofDays(14)),
+        ),
+      ).getOrThrow()
+  }
+
+  private fun studentUserId(studentId: StudentId): ed.unicoach.db.models.UserId =
+    ed.unicoach.db.dao.StudentsDao
+      .findById(sqlSession, studentId)
+      .getOrThrow()
+      .userId
+
+  /** A resolved (dropped) invite_supporter commitment whose created_at is [createdAt] — the re-offer anchor. */
+  private fun insertResolvedInviteNudge(
+    studentId: StudentId,
+    createdAt: Instant,
+  ) {
+    connection
+      .prepareStatement(
+        "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason, created_at) " +
+          "VALUES (?, 'invite_supporter', 'explicit', 'earlier invite nudge', 'dropped', NOW(), 'test', ?)",
+      ).use { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.setTimestamp(2, java.sql.Timestamp.from(createdAt))
+        stmt.executeUpdate()
+      }
+  }
+
+  /**
+   * THE criterion this slice exists for (brief 0014 D20): one opt-out silences
+   * BOTH offers. The student here is otherwise perfectly eligible for the invite
+   * nudge — they have a live share, no link, no live invite — so only the
+   * opt-out can be what stopped it, and the second door the opt-out was never
+   * told about is exactly the defect this asserts against.
+   */
+  @Test
+  fun `an opted_out student with a live share gets no invite nudge`() {
+    val student = createStudent()
+    insertLiveShare(student)
+    ShareEventsDao.recordOptOut(sqlSession, student).getOrThrow()
+
+    executeNudgeOnlyPass(student)
+
+    assertEquals(0, inviteNudges(student).size, "one stop covers both offers")
+    assertEquals(0, shareNudges(student).size, "and the first offer stays stopped too")
+  }
+
+  @Test
+  fun `an eligible student gets exactly one open explicit invite_supporter commitment with the fixed statement and no supports`() {
+    val student = createStudent()
+    insertLiveShare(student)
+
+    val result = executeNudgeOnlyPass(student)
+    assertTrue(result is SynthesisResult.Success, "got [$result]")
+
+    val nudge = inviteNudges(student).single()
+    assertEquals(CommitmentStatus.OPEN, nudge.status)
+    assertEquals(CommitmentDisclosure.EXPLICIT, nudge.disclosure)
+    assertEquals(SynthesisService.INVITE_NUDGE_STATEMENT, nudge.statement, "template text, never LLM text")
+    assertEquals(
+      emptyList(),
+      CommitmentSupportDao.listClaimsForCommitment(sqlSession, nudge.id).getOrThrow(),
+      "no claims were reasoned over, so no support rows",
+    )
+    assertEquals(0, runRows(student), "a nudge-only pass writes no synthesis_runs row: runs log LLM work")
+
+    // A second pass the same day is a no-op: the open nudge suppresses (OPEN_INVITE_NUDGE).
+    assertTrue(executeNudgeOnlyPass(student) is SynthesisResult.Success)
+    assertEquals(1, inviteNudges(student).size, "a second pass the same day must not double-nudge")
+  }
+
+  @Test
+  fun `no live share suppresses the invite nudge`() {
+    val student = createStudent()
+
+    executeNudgeOnlyPass(student)
+
+    assertEquals(0, inviteNudges(student).size, "the account invite is the SECOND step; the report link is the first")
+  }
+
+  @Test
+  fun `an active supporter link suppresses the invite nudge`() {
+    val student = createStudent()
+    insertLiveShare(student)
+    linkSupporter(student)
+
+    executeNudgeOnlyPass(student)
+
+    assertEquals(0, inviteNudges(student).size, "a student whose parent is already connected is not asked to connect them")
+  }
+
+  @Test
+  fun `a live invite suppresses the invite nudge`() {
+    val student = createStudent()
+    insertLiveShare(student)
+    insertLiveInvite(student)
+
+    executeNudgeOnlyPass(student)
+
+    assertEquals(0, inviteNudges(student).size, "a link is already out; the coach does not volunteer a second one")
+  }
+
+  @Test
+  fun `the open-set cap suppresses the invite nudge`() {
+    val student = createStudent()
+    insertLiveShare(student)
+    createCommitment(student, "one")
+    createCommitment(student, "two")
+
+    executeNudgeOnlyPass(student, configWith("synthesis.maxOpenCommitments = 2"))
+
+    assertEquals(0, inviteNudges(student).size, "a saturated open set takes no invite nudge either")
+  }
+
+  @Test
+  fun `inviteNudgeEnabled = false suppresses the invite nudge`() {
+    val student = createStudent()
+    insertLiveShare(student)
+
+    executeNudgeOnlyPass(student, configWith("synthesis.inviteNudgeEnabled = false"))
+
+    assertEquals(0, inviteNudges(student).size, "the rollback knob stops new invite nudges")
+  }
+
+  @Test
+  fun `inside the cooldown no invite re-offer fires`() {
+    val now = fixedClock.instant()
+    val student = createStudent()
+    insertLiveShare(student)
+    insertResolvedInviteNudge(student, now.minus(config.inviteNudgeCooldown.minusDays(1)))
+
+    executeNudgeOnlyPass(student)
+
+    // The seeded resolved nudge is itself an invite_supporter row; what must NOT appear is a new OPEN one.
+    assertEquals(0, inviteNudges(student).count { it.status == CommitmentStatus.OPEN }, "inside the cooldown no repeat fires")
+  }
+
+  /**
+   * The re-offer, and the deliberate DIFFERENCE from the share nudge: there is
+   * no list-change half. The student whose first invite lapsed untouched is the
+   * one who most needs asking again, and a list-change test would suppress
+   * exactly them.
+   */
+  @Test
+  fun `after the cooldown an invite re-offer fires with no list change at all`() {
+    val now = fixedClock.instant()
+    val student = createStudent()
+    insertLiveShare(student)
+    insertResolvedInviteNudge(student, now.minus(config.inviteNudgeCooldown.plusDays(6)))
+
+    executeNudgeOnlyPass(student)
+
+    assertEquals(1, inviteNudges(student).count { it.status == CommitmentStatus.OPEN }, "a lapsed invite IS the something new")
+  }
+
+  /**
+   * "Alongside, not instead of", proved as MUTUAL EXCLUSION rather than trusted
+   * to the model. The share nudge is suppressed BY a live share and this one
+   * REQUIRES one, so one pass can never write both — asserted in both
+   * directions, since a predicate that had dropped condition 2 would write both
+   * rows for the second student and read as a richer opening.
+   */
+  @Test
+  fun `one pass writes the share nudge or the invite nudge, never both`() {
+    val notShared = createStudent()
+    addListEntry(notShared)
+    addListEntry(notShared)
+    val shared = createStudent()
+    insertLiveShare(shared)
+
+    executeNudgeOnlyPass(notShared)
+    executeNudgeOnlyPass(shared)
+
+    assertEquals(1, shareNudges(notShared).size, "no live share: the report offer is the one that fires")
+    assertEquals(0, inviteNudges(notShared).size, "and the account invite does not")
+    assertEquals(1, inviteNudges(shared).size, "a live share: the account invite is the one that fires")
+    assertEquals(0, shareNudges(shared).size, "and the report offer does not")
+  }
+
+  @Test
+  fun `the LLM cannot propose the invite_supporter lens`() =
+    runBlocking {
+      val student = createStudent()
+      createClaim(student)
+      val doc = """{"commitments":[{"lens":"invite_supporter","disclosure":"explicit","statement":"x","supports":[]}]}"""
+      val provider = JsonProvider(jsonDoc = doc, usage = TokenUsage(9, 4, 0, 0))
+
+      val result = service(provider, configWith("synthesis.inviteNudgeEnabled = false")).synthesize(student)
+
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
+      assertEquals(0, inviteNudges(student).size, "the invented lens must never become a commitment")
     }
 
   private fun countAllLlmRequests(): Int =

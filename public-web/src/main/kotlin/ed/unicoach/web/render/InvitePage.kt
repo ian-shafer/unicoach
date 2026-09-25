@@ -70,15 +70,41 @@ private fun SECTION.inviteCeiling() {
 }
 
 /**
- * The word the RECIPIENT reads.
+ * The word the RECIPIENT reads about THEMSELVES, on an invite a STUDENT minted.
  *
  * Separate from [SupporterRelationship.value], which is the token stored in the
  * `relationship` column and constrained by that table's CHECK: CLAUDE.md's
  * schema convention puts the human-readable label at the boundary, so a rename
  * of a stored token must not rewrite the first sentence a parent reads.
  * Exhaustive, so a new member cannot ship with no label.
+ *
+ * `SUPPORTER` reads "parent or supporter" (RFC 240). It is
+ * [SupporterRelationship.UNSTATED], the word a door mints when nobody stated a
+ * relationship, so the sentence has to be true of a parent and of anyone else:
+ * the label is the one place that can say so without a nullable column or a
+ * second stored token. `PARENT`, `GUARDIAN` and `GRANDPARENT` keep their own
+ * labels for the day a door actually asks.
  */
 private fun SupporterRelationship.recipientLabel(): String =
+  when (this) {
+    SupporterRelationship.PARENT -> "parent"
+    SupporterRelationship.GUARDIAN -> "guardian"
+    SupporterRelationship.GRANDPARENT -> "grandparent"
+    SupporterRelationship.SUPPORTER -> "parent or supporter"
+  }
+
+/**
+ * The word a STUDENT reads about the PERSON who invited them, on an invite a
+ * supporter minted.
+ *
+ * A second label and not [recipientLabel]: the two sentences use the word for
+ * different jobs. Here the inviter is already NAMED in the same sentence, one
+ * apposition away, so an unstated relationship must not offer the reader a
+ * choice of two words for somebody they already know — "Jane — your parent or
+ * supporter —" reads as a page that does not know who Jane is. The stated words
+ * are identical; only the unstated arm differs.
+ */
+private fun SupporterRelationship.inviterLabel(): String =
   when (this) {
     SupporterRelationship.PARENT -> "parent"
     SupporterRelationship.GUARDIAN -> "guardian"
@@ -94,7 +120,7 @@ private fun invitationSentence(
 ): String =
   when (inviterRole) {
     InviterRole.STUDENT -> "$inviterName invited you to connect on unicoach as their ${relationship.recipientLabel()}."
-    InviterRole.SUPPORTER -> "$inviterName — your ${relationship.recipientLabel()} — invited you to connect on unicoach."
+    InviterRole.SUPPORTER -> "$inviterName — your ${relationship.inviterLabel()} — invited you to connect on unicoach."
   }
 
 /**

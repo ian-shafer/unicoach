@@ -52,7 +52,7 @@ class RevokeCostReportShareChatTool(
     return buildJsonObject {
       putJsonObject(RESULT_KEY) {
         put("revoked", wasLive)
-        put(ShareCostReportChatTool.STATEMENT_KEY, if (wasLive) REVOKED_STATEMENT else NOTHING_LIVE_STATEMENT)
+        put(STATEMENT_KEY, if (wasLive) REVOKED_STATEMENT else NOTHING_LIVE_STATEMENT)
       }
     }
   }

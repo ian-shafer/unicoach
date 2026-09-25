@@ -26,6 +26,8 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
+import ed.unicoach.db.dao.SupporterInvitesDao
+import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SynthesisRunsDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.Claim
@@ -145,21 +147,7 @@ class SynthesisService(
         BudgetVerdict.Entitled -> {}
       }
 
-      // The deterministic share-nudge step (RFC 160): boolean logic over DB
-      // state, no LLM. It runs HERE — after the student/budget gates, under the
-      // held advisory lock, inside this read/write transaction — and before
-      // every LLM-phase gate below, so a pass whose LLM phases no-op on
-      // freshness (or on an empty claim set, or at the open-set cap read
-      // against the post-insert state) still writes the nudge when eligible.
-      when (val verdict = computeShareNudgeVerdict(session, studentId)) {
-        ShareNudgeVerdict.Eligible -> {
-          insertShareNudge(session, studentId)
-        }
-
-        is ShareNudgeVerdict.Suppressed -> {
-          logger.debug("share-nudge suppressed for student=[{}]: [{}]", studentId.asString, verdict.reason)
-        }
-      }
+      writeDeterministicNudges(session, studentId)
 
       val lastAppliedAt = SynthesisRunsDao.lastAppliedAt(session, studentId).getOrThrow()
 
@@ -195,6 +183,49 @@ class SynthesisService(
         prompt = prompt,
       )
     }
+
+  // ---------------------------------------------------------------------------
+  // The deterministic nudge steps (RFC 160, RFC 240)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The deterministic OFFER nudges: the lens and the fixed template statement
+   * written under it, bound in ONE place. A caller names the OFFER, so it cannot
+   * hand one offer's lens the other offer's sentence — the two travelled as
+   * independent arguments, and a transposed pair was type-legal.
+   *
+   * Both statements are `const val`, so these entries read compile-time
+   * constants and no class-initialisation cycle is possible.
+   */
+  private enum class DeterministicNudge(
+    val lens: CommitmentLens,
+    val statement: String,
+  ) {
+    SHARE_REPORT(CommitmentLens.SHARE_REPORT, SHARE_NUDGE_STATEMENT),
+    INVITE_SUPPORTER(CommitmentLens.INVITE_SUPPORTER, INVITE_NUDGE_STATEMENT),
+  }
+
+  /**
+   * The deterministic nudge steps (RFC 160, RFC 240): boolean logic over DB
+   * state, no LLM. Called HERE — after the student/budget gates, under the held
+   * advisory lock, inside this read/write transaction — and before every
+   * LLM-phase gate, so a pass whose LLM phases no-op on freshness (or on an
+   * empty claim set, or at the open-set cap read against the post-insert state)
+   * still writes an eligible nudge.
+   *
+   * One line per offer, because the read phase is a sequence of named gates and
+   * each router belongs one level below it.
+   */
+  private fun writeDeterministicNudges(
+    session: SqlSession,
+    studentId: StudentId,
+  ) {
+    runShareNudgeStep(session, studentId)
+    // The invite predicate REQUIRES a live share where the share predicate is
+    // suppressed BY one, so no pass can write both and no opening can carry
+    // both bullets.
+    runInviteNudgeStep(session, studentId)
+  }
 
   // ---------------------------------------------------------------------------
   // The share-nudge step (RFC 160)
@@ -300,32 +331,193 @@ class SynthesisService(
     return null
   }
 
-  /**
-   * Inserts the student's `share_report` commitment — a fixed template
-   * statement, never LLM text, and no support links (no claims were reasoned
-   * over) — and returns the created row.
-   */
-  private fun insertShareNudge(
+  /** The share-nudge router: the verdict decides between the write and the logged skip. */
+  private fun runShareNudgeStep(
     session: SqlSession,
     studentId: StudentId,
+  ) {
+    when (val verdict = computeShareNudgeVerdict(session, studentId)) {
+      ShareNudgeVerdict.Eligible -> {
+        insertNudge(session, studentId, DeterministicNudge.SHARE_REPORT)
+      }
+
+      is ShareNudgeVerdict.Suppressed -> {
+        logger.debug("share-nudge suppressed for student=[{}]: [{}]", studentId.asString, verdict.reason)
+      }
+    }
+  }
+
+  /**
+   * Inserts ONE deterministic nudge commitment — [nudge]'s fixed template
+   * statement under [nudge]'s own lens, never LLM text, and no support links (no
+   * claims were reasoned over) — and returns the created row.
+   *
+   * One home for the write, because what distinguishes the offers is their
+   * PREDICATE, not how the row is stored: the share nudge (RFC 160) and the
+   * invite nudge (RFC 240) otherwise keep line-for-line copies of "a nudge is an
+   * open EXPLICIT commitment with template text and no supports", and a third
+   * offer lens keeps a third.
+   *
+   * The offer is ONE argument and the statement is not an argument at all: the
+   * pair that must agree is bound on [DeterministicNudge], where no caller can
+   * cross it.
+   */
+  private fun insertNudge(
+    session: SqlSession,
+    studentId: StudentId,
+    nudge: DeterministicNudge,
   ): Commitment {
-    val nudge =
+    val created =
       CommitmentsDao
         .create(
           session,
           NewCommitment(
             studentId = studentId,
-            lens = CommitmentLens.SHARE_REPORT,
+            lens = nudge.lens,
             disclosure = CommitmentDisclosure.EXPLICIT,
-            statement = SHARE_NUDGE_STATEMENT,
+            statement = nudge.statement,
           ),
         ).getOrThrow()
     logger.info(
-      "share-nudge commitment [{}] written for student=[{}]",
-      nudge.id.asString,
+      "nudge commitment [{}] lens=[{}] written for student=[{}]",
+      created.id.asString,
+      nudge.lens.value,
       studentId.asString,
     )
-    return nudge
+    return created
+  }
+
+  // ---------------------------------------------------------------------------
+  // The invite-nudge step (RFC 240)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Why the invite-nudge step did or did not fire for this student (RFC 240) —
+   * the [ShareNudgeVerdict] shape, for the same reason: a skip is a named
+   * outcome, so "why was my student never asked?" is answerable from the log.
+   *
+   * A SECOND pair of types and not a widened first pair: the two offers share no
+   * condition but the opt-out, and one enum over both would have members that are
+   * unreachable for one of them.
+   */
+  private sealed interface InviteNudgeVerdict {
+    data object Eligible : InviteNudgeVerdict
+
+    data class Suppressed(
+      val reason: InviteNudgeSuppression,
+    ) : InviteNudgeVerdict
+  }
+
+  /** The eight distinct reasons the invite-nudge step declines to fire. */
+  private enum class InviteNudgeSuppression {
+    DISABLED,
+    NO_LIVE_SHARE,
+    OPTED_OUT,
+    ALREADY_LINKED,
+    LIVE_INVITE,
+    OPEN_SET_AT_CAP,
+    OPEN_INVITE_NUDGE,
+    COOLDOWN_NOT_ELAPSED,
+  }
+
+  /**
+   * The invite-nudge eligibility decision (RFC 240 §2): config on; a LIVE
+   * cost-report share (this offer is the second step, and only a student who
+   * took the first is asked to take it); no `opted_out` share event — the SAME
+   * durable never as the share nudge's, which is what makes "the opt-out covers
+   * both offers" enforced where the offer is written rather than asked of the
+   * model; nobody already linked; no live invite already out; and the open set
+   * below the cap, holding no open `invite_supporter` row, and past the cooldown
+   * on the last one.
+   *
+   * Condition 2 is the load-bearing one. The share nudge is suppressed BECAUSE a
+   * live share exists; this one REQUIRES one, so the two predicates are mutually
+   * exclusive by construction: no pass can write both rows, and no opening can
+   * carry both bullets. "Alongside, not instead of" is enforced here, in code,
+   * and not asked of the model.
+   *
+   * There is deliberately no list-change half (the share nudge's re-fire rule).
+   * Condition 5 is this offer's "something new": a re-offer is only reachable
+   * once the previous invite lapsed unused, was revoked, or was consumed and then
+   * unlinked — each of which is itself the new fact. A list-change test would
+   * suppress the one student who most needs asking again, the one whose first
+   * invite expired untouched.
+   */
+  private fun computeInviteNudgeVerdict(
+    session: SqlSession,
+    studentId: StudentId,
+  ): InviteNudgeVerdict {
+    if (!config.inviteNudgeEnabled) return InviteNudgeVerdict.Suppressed(InviteNudgeSuppression.DISABLED)
+
+    if (CostReportSharesDao.findLiveByStudent(session, studentId).getOrThrow() == null) {
+      return InviteNudgeVerdict.Suppressed(InviteNudgeSuppression.NO_LIVE_SHARE)
+    }
+    if (ShareEventsDao.hasOptOut(session, studentId).getOrThrow()) {
+      return InviteNudgeVerdict.Suppressed(InviteNudgeSuppression.OPTED_OUT)
+    }
+
+    if (SupporterStudentLinksDao.listForStudent(session, studentId).getOrThrow().isNotEmpty()) {
+      return InviteNudgeVerdict.Suppressed(InviteNudgeSuppression.ALREADY_LINKED)
+    }
+    if (SupporterInvitesDao.findLiveByStudent(session, studentId).getOrThrow().isNotEmpty()) {
+      return InviteNudgeVerdict.Suppressed(InviteNudgeSuppression.LIVE_INVITE)
+    }
+
+    val openCommitments = CommitmentsDao.listOpenByStudent(session, studentId).getOrThrow()
+    if (openCommitments.size >= config.maxOpenCommitments) {
+      return InviteNudgeVerdict.Suppressed(InviteNudgeSuppression.OPEN_SET_AT_CAP)
+    }
+    if (openCommitments.any { it.lens == CommitmentLens.INVITE_SUPPORTER }) {
+      return InviteNudgeVerdict.Suppressed(InviteNudgeSuppression.OPEN_INVITE_NUDGE)
+    }
+
+    val latest =
+      CommitmentsDao
+        .findLatestByStudentAndLens(session, studentId, CommitmentLens.INVITE_SUPPORTER)
+        .getOrThrow()
+    if (latest != null) {
+      val suppression = computeInviteReNudgeSuppression(latest)
+      if (suppression != null) return InviteNudgeVerdict.Suppressed(suppression)
+    }
+    return InviteNudgeVerdict.Eligible
+  }
+
+  /**
+   * RFC 240's re-offer condition against the most recent `invite_supporter`
+   * commitment, as the suppression it hits — or null when a repeat may fire.
+   * The cooldown is anchored on when the nudge was WRITTEN, like the share
+   * nudge's, and there is no list-change half (see [computeInviteNudgeVerdict]).
+   */
+  private fun computeInviteReNudgeSuppression(latest: Commitment): InviteNudgeSuppression? {
+    // Exhaustive over the status, so a new CommitmentStatus member must decide
+    // here whether it suppresses like OPEN or anchors the cooldown like the
+    // resolved pair. Belt beside the caller's open-set check.
+    when (latest.status) {
+      CommitmentStatus.OPEN -> {
+        return InviteNudgeSuppression.OPEN_INVITE_NUDGE
+      }
+
+      CommitmentStatus.FULFILLED, CommitmentStatus.DROPPED -> {}
+    }
+    val cooldownOver = latest.createdAt.plus(config.inviteNudgeCooldown)
+    if (Instant.now(clock).isBefore(cooldownOver)) return InviteNudgeSuppression.COOLDOWN_NOT_ELAPSED
+    return null
+  }
+
+  /** The invite-nudge router: the verdict decides between the write and the logged skip. */
+  private fun runInviteNudgeStep(
+    session: SqlSession,
+    studentId: StudentId,
+  ) {
+    when (val verdict = computeInviteNudgeVerdict(session, studentId)) {
+      InviteNudgeVerdict.Eligible -> {
+        insertNudge(session, studentId, DeterministicNudge.INVITE_SUPPORTER)
+      }
+
+      is InviteNudgeVerdict.Suppressed -> {
+        logger.debug("invite-nudge suppressed for student=[{}]: [{}]", studentId.asString, verdict.reason)
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -771,12 +963,23 @@ class SynthesisService(
     const val SHARE_NUDGE_MIN_LIST_ENTRIES = 2
 
     /**
+     * The fixed invite-nudge statement (RFC 240): template text, never LLM
+     * output, in the same register as [SHARE_NUDGE_STATEMENT]. Delivery reads it
+     * into the opener like any other explicit commitment.
+     */
+    const val INVITE_NUDGE_STATEMENT =
+      "They have already sent a parent the family cost report. When the moment is right, " +
+        "offer to connect that parent properly — their own account and their own coach workspace, " +
+        "and the student can end one supporter's access without ending anyone else's."
+
+    /**
      * The lenses the synthesis LLM may propose through `record_synthesis`
      * (RFC 160): the tool schema enumerates exactly this set and parseOutput
      * rejects the rest. Built through an exhaustive when, so a new
      * [CommitmentLens] member does not compile until its proposability is
      * decided here — [CommitmentLens.SHARE_REPORT] is written by the
-     * deterministic share-nudge step only, so it is deliberately absent.
+     * deterministic share-nudge step only, and [CommitmentLens.INVITE_SUPPORTER]
+     * by the invite-nudge step only (RFC 240), so both are deliberately absent.
      */
     private val LLM_PROPOSABLE_LENSES: Set<CommitmentLens> =
       CommitmentLens.entries
@@ -787,16 +990,18 @@ class SynthesisService(
             CommitmentLens.CONTRADICTION,
             -> true
 
-            CommitmentLens.SHARE_REPORT -> false
+            CommitmentLens.SHARE_REPORT,
+            CommitmentLens.INVITE_SUPPORTER,
+            -> false
           }
         }.toSet()
 
     // Mirrors the fields parseOutput reads, enums enumerated from the domain
     // enums. Guidance, not a hard validator (tier A) — parseOutput enforces.
     // The lens set is the LLM-PROPOSABLE subset (LLM_PROPOSABLE_LENSES), not
-    // the whole enum: the share_report nudge lens is written by deterministic
-    // code only (RFC 160), so the schema never offers it and parseOutput
-    // rejects it.
+    // the whole enum: the share_report and invite_supporter nudge lenses are
+    // written by deterministic code only (RFC 160, RFC 240), so the schema never
+    // offers them and parseOutput rejects them.
     private val RECORD_SYNTHESIS_TOOL: JsonObject =
       ToolSchema.tool(
         name = RECORD_SYNTHESIS_TOOL_NAME,

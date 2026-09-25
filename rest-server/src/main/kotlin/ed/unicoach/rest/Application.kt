@@ -448,6 +448,13 @@ fun Application.appModule(
         // the opted_out share event, not a link — so it stands even when the
         // two doors above decline.
         StopCostReportOffersChatTool(costReportShareService),
+        // "Connect my mum properly" (RFC 240): the chat door over RFC 232's
+        // invite service, the SAME instance the two REST doors mint through, so
+        // a link the coach hands over and a link iOS hands over are one kind of
+        // credential. A different thing from the three tools above: an account
+        // and a workspace, not a read-only page.
+        ed.unicoach.coaching.family
+          .InviteSupporterChatTool(supporterInviteService),
         // "When do I need to take the SATs" (RFC 197): the national SAT/ACT
         // calendar worked back from the earliest deadline on the student's own
         // list. No clock argument, like every other site -- production reads the

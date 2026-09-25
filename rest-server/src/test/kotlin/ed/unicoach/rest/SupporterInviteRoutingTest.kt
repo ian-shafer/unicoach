@@ -3,6 +3,7 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.rest.models.AcceptSupporterInviteRequest
 import ed.unicoach.rest.models.AcceptSupporterInviteStatus
 import ed.unicoach.rest.models.CreateStudentRequest
@@ -185,6 +186,45 @@ class SupporterInviteRoutingTest {
     }
 
   /**
+   * The relationship NOBODY stated (RFC 240 decision 4). iOS sends no
+   * relationship at all, so this is the word almost every real invite carries:
+   * it must be the catch-all `supporter` and not `parent`, which claimed a
+   * family relationship nobody had named. Asserted on the STORED row as well as
+   * on the response, because the response word is what the page renders from.
+   */
+  @Test
+  fun `minting with no relationship field stores supporter`() =
+    runBlocking {
+      val (_, studentCookie) = registerStudent()
+
+      val mint =
+        client.post(buildUrl("/api/v1/supporter-invites")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, studentCookie)
+          setBody(mapper.writeValueAsString(CreateSupporterInviteRequest()))
+        }
+
+      assertEquals(HttpStatusCode.Created, mint.status)
+      val body = mint.bodyAsText()
+      val tree = jacksonObjectMapper().readTree(body)
+      assertEquals("supporter", tree.get("relationship").asText(), "an unstated relationship mints supporter: [$body]")
+      assertEquals(
+        "supporter",
+        storedRelationship(tree.get("id").asText()),
+        "the stored row carries the same word the response named",
+      )
+    }
+
+  private fun storedRelationship(inviteId: String): String? {
+    dbConnection.prepareStatement("SELECT relationship FROM supporter_invites WHERE id = ?").use { stmt ->
+      stmt.setObject(1, java.util.UUID.fromString(inviteId))
+      stmt.executeQuery().use { rs ->
+        return if (rs.next()) rs.getString(1) else null
+      }
+    }
+  }
+
+  /**
    * The word the caller sent is NOT in the vocabulary. This is the arm that was
    * dead code: `relationshipOrDefault` folded "absent" and "unreadable" into one
    * null, so `{"relationship":"stepdad"}` minted a `parent` invite with a 201
@@ -206,6 +246,18 @@ class SupporterInviteRoutingTest {
       assertEquals(HttpStatusCode.BadRequest, mint.status, "an unreadable relationship word is refused")
       val body = mint.bodyAsText()
       assertTrue(body.contains("grandparnt"), "the refusal names the word it rejected: [$body]")
+      // The legal set is read from the enum, never retyped, and compared WHOLE
+      // rather than by containment: "parent" is a substring of "grandparent", so
+      // a listing that had LOST a word would still satisfy a per-word
+      // `contains` and this guard would pass on the one defect it exists to
+      // catch. An absent "must be one of: " leaves an empty remainder, which is
+      // not the legal set either, so the malformed refusal fails here too.
+      val message = mapper.readTree(body).get("message").asText()
+      assertEquals(
+        SupporterRelationship.entries.map { it.value },
+        message.substringAfter("must be one of: ", "").split(", "),
+        "the refusal must name the whole legal set, exactly and in order: [$message]",
+      )
       assertEquals(invitesBefore, inviteCount(), "a refused mint writes no invite row")
     }
 

@@ -17,6 +17,7 @@ import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.InviterRole
 import ed.unicoach.db.models.NewSupporterInvite
 import ed.unicoach.db.models.NewSupporterStudentLink
+import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SupporterId
@@ -129,6 +130,41 @@ data class MintedInvite(
 )
 
 /**
+ * WHY a student has no endpoint to mint an invite from (RFC 240).
+ *
+ * The two states are told apart HERE, at the read that can still see the
+ * difference, because only one of them is a defect: a closed account is an
+ * expected account event, and a [StudentId] with no row at all arrived from an
+ * authenticated turn that resolved to nothing.
+ */
+enum class NoStudentEndpoint {
+  /** The student closed their account: an expected state the coach has a sentence for. */
+  CLOSED,
+
+  /** No `students` row at all — an authenticated turn's id that resolves to nothing. */
+  NO_SUCH_STUDENT,
+}
+
+/**
+ * What a mint on behalf of a STUDENT produced: the invite, or WHY there was
+ * none (RFC 240).
+ *
+ * A NAMED outcome and not a nullable, on [AcceptInviteOutcome]'s precedent: the
+ * coach still hears one sentence for every [NoEndpoint] reason, but the log and
+ * anything downstream can tell a closed account from a missing row without a
+ * second query.
+ */
+sealed interface StudentMintOutcome {
+  data class Minted(
+    val invite: MintedInvite,
+  ) : StudentMintOutcome
+
+  data class NoEndpoint(
+    val reason: NoStudentEndpoint,
+  ) : StudentMintOutcome
+}
+
+/**
  * WHICH side minted an invite, and the endpoint row it points at (brief 0014
  * D21). A VALUE, so the mint flow stays a sequence of named steps instead of
  * carrying a `Triple` that only exists because the decision had no name.
@@ -220,37 +256,116 @@ class SupporterInviteService(
   ): Result<MintedInvite> =
     runCatching {
       database.withConnection { session ->
-        val inviter = resolveInviterEndpoint(session, inviterUserId)
-
-        val rawToken = tokenGenerator.generateToken()
-        val tokenHash = TokenHash.fromRawToken(rawToken)
-        val expiresAt = Instant.now().plus(config.tokenTtl)
-
-        val created =
-          SupporterInvitesDao
-            .create(
-              session,
-              NewSupporterInvite(
-                tokenHash = tokenHash,
-                inviterUserId = inviterUserId,
-                inviterRole = inviter.role,
-                studentId = inviter.studentId,
-                supporterId = inviter.supporterId,
-                relationship = relationship,
-                expiresAt = expiresAt,
-              ),
-            ).getOrThrow()
-
-        MintedInvite(
-          id = created.id,
-          rawToken = rawToken,
-          inviteUrl = tokenLink(config.inviteUrlBase, rawToken),
-          inviterRole = inviter.role,
-          relationship = relationship,
-          expiresAt = expiresAt,
-        )
+        mint(session, inviterUserId, resolveInviterEndpoint(session, inviterUserId), relationship)
       }
     }
+
+  /**
+   * Mint on behalf of the STUDENT [studentId], or [StudentMintOutcome.NoEndpoint]
+   * carrying WHICH absence stopped it (RFC 240).
+   *
+   * The one id hop the coach tool needs: a `StudentScopedChatTool` is handed a
+   * [StudentId] and this class mints for a [UserId]. Resolved INSIDE the
+   * transaction [create] already opens, so no caller holds a `Database` and the
+   * user the invite names cannot be closed between the lookup and the insert.
+   *
+   * A VALUE and not a thrown absence: a closed or missing student endpoint is a
+   * state the caller has a sentence for, and the chat door must answer it with a
+   * refusal a coach can say, never with a fault. So the read itself is the
+   * VALUE-shaped `findByIdOrNull` and this class never type-tests the error
+   * channel for an expected state. [SupporterRelationship] is still the caller's
+   * to state, for the reason [create] gives.
+   *
+   * The scope is [SoftDeleteScope.ALL] and not `ACTIVE` because the scope is
+   * what decides whether the two absences are still distinguishable by the time
+   * anyone is told: `ACTIVE` answers one `null` for "closed" and "never there",
+   * and only the second is a plumbing defect. The liveness test is then this
+   * function's own, one line below.
+   *
+   * The endpoint is resolved ONCE, here, by the door that already knows it: the
+   * student's own [StudentId] is handed to [mint] rather than thrown away and
+   * rediscovered from `user_id`, where [resolveInviterEndpoint]'s supporter arm
+   * would have minted the student a `supporters` row of their own.
+   */
+  suspend fun createForStudent(
+    studentId: StudentId,
+    relationship: SupporterRelationship,
+  ): Result<StudentMintOutcome> =
+    runCatching {
+      database.withConnection { session ->
+        val student = StudentsDao.findByIdOrNull(session, studentId, SoftDeleteScope.ALL).getOrThrow()
+        when {
+          student == null -> {
+            noStudentEndpoint(studentId, NoStudentEndpoint.NO_SUCH_STUDENT)
+          }
+
+          student.deletedAt != null -> {
+            noStudentEndpoint(studentId, NoStudentEndpoint.CLOSED)
+          }
+
+          else -> {
+            StudentMintOutcome.Minted(
+              mint(session, student.userId, InviterEndpoint.Student(student.id), relationship),
+            )
+          }
+        }
+      }
+    }
+
+  /** The refused mint, logged with the reason that is now nameable, and returned as the outcome. */
+  private fun noStudentEndpoint(
+    studentId: StudentId,
+    reason: NoStudentEndpoint,
+  ): StudentMintOutcome.NoEndpoint {
+    logger.info(
+      "supporter invite mint found no student endpoint: studentId=[{}] reason=[{}]",
+      studentId.asString,
+      reason,
+    )
+    return StudentMintOutcome.NoEndpoint(reason)
+  }
+
+  /**
+   * The mint itself, on an OPEN session and over an ALREADY-resolved [inviter]:
+   * both doors write one row from one sequence of steps, so the token hygiene
+   * and the returned link cannot come to differ by which door asked — and the
+   * door that already knows WHICH endpoint is minting is not made to rediscover
+   * it, nor to trust a fallback that would WRITE.
+   */
+  private fun mint(
+    session: SqlSession,
+    inviterUserId: UserId,
+    inviter: InviterEndpoint,
+    relationship: SupporterRelationship,
+  ): MintedInvite {
+    val rawToken = tokenGenerator.generateToken()
+    val tokenHash = TokenHash.fromRawToken(rawToken)
+    val expiresAt = Instant.now().plus(config.tokenTtl)
+
+    val created =
+      SupporterInvitesDao
+        .create(
+          session,
+          NewSupporterInvite(
+            tokenHash = tokenHash,
+            inviterUserId = inviterUserId,
+            inviterRole = inviter.role,
+            studentId = inviter.studentId,
+            supporterId = inviter.supporterId,
+            relationship = relationship,
+            expiresAt = expiresAt,
+          ),
+        ).getOrThrow()
+
+    return MintedInvite(
+      id = created.id,
+      rawToken = rawToken,
+      inviteUrl = tokenLink(config.inviteUrlBase, rawToken),
+      inviterRole = inviter.role,
+      relationship = relationship,
+      expiresAt = expiresAt,
+    )
+  }
 
   /**
    * WHY no LIVE invite carries [tokenHash] — read for the LOG alone, on the

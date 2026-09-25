@@ -78,7 +78,7 @@ class ShareCostReportChatTool(
     return buildJsonObject {
       putJsonObject(RESULT_KEY) {
         put(LINK_CREATED_KEY, true)
-        put("url", link.url)
+        put(URL_KEY, link.url)
         put("newly_created", newlyCreated)
         put("live_report", LIVE_REPORT)
         put("who_can_see", WHO_CAN_SEE)
@@ -96,13 +96,7 @@ class ShareCostReportChatTool(
    * write, and the model could not tell the two apart — one is "try again", the
    * other is "there is nothing to try".
    */
-  private fun sharingUnavailable(): JsonObject =
-    buildJsonObject {
-      putJsonObject(RESULT_KEY) {
-        put(LINK_CREATED_KEY, false)
-        put(STATEMENT_KEY, UNAVAILABLE)
-      }
-    }
+  private fun sharingUnavailable(): JsonObject = noLinkCreated(RESULT_KEY, UNAVAILABLE)
 
   companion object {
     private val logger = LoggerFactory.getLogger(ShareCostReportChatTool::class.java)
@@ -110,15 +104,6 @@ class ShareCostReportChatTool(
     const val TOOL_NAME = "share_cost_report"
 
     const val RESULT_KEY = "cost_report_share"
-
-    /**
-     * Whether this call produced a link at all. Present in BOTH shapes, so the
-     * coach reads one key rather than inferring from a missing `url`.
-     */
-    const val LINK_CREATED_KEY = "link_created"
-
-    /** The sentence the coach may say when no link was created. */
-    const val STATEMENT_KEY = "statement"
 
     /** The honest description of the link's reach, spoken every time it is handed over. */
     const val WHO_CAN_SEE =

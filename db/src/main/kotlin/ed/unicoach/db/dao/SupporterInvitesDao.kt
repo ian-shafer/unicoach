@@ -122,6 +122,35 @@ object SupporterInvitesDao : Creatable<NewSupporterInvite, SupporterInvite> {
         onNoRow = { NotFoundException() },
       ).orNullOnNotFound()
 
+  /**
+   * The LIVE invites this STUDENT minted, oldest first (RFC 240).
+   *
+   * A LIST and not a row or a count: an inviter may hold several live invites at
+   * once by design (RFC 232 §2 — a student with two parents invites both), so
+   * there is nothing here for a singular read to return, and the caller that
+   * only asks "any?" reads `isEmpty()` while the surface that lists them later
+   * needs the rows themselves.
+   *
+   * Served by `supporter_invites_student_id_active_idx`, whose predicate is
+   * `consumed_at IS NULL AND revoked_at IS NULL` — one term short of [LIVE_PREDICATE],
+   * which is why the expiry clause must stay in the SQL and cannot be inherited
+   * from the index. This is the STUDENT endpoint only: a supporter-minted invite
+   * names `supporter_id` and is not this student's to hold.
+   */
+  fun findLiveByStudent(
+    session: SqlSession,
+    studentId: StudentId,
+  ): Result<List<SupporterInvite>> =
+    session.queryList(
+      """
+      SELECT * FROM supporter_invites
+      WHERE student_id = ? AND $LIVE_PREDICATE
+      ORDER BY created_at, id
+      """.trimIndent(),
+      bind = { it.setObject(1, studentId.value) },
+      map = ::mapInvite,
+    )
+
   fun consume(
     session: SqlSession,
     tokenHash: TokenHash,

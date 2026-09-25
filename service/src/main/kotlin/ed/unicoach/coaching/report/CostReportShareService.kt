@@ -219,8 +219,9 @@ class CostReportShareService(
 
   /**
    * Records the student's durable "never suggest sharing again" (RFC 160): one
-   * `opted_out` share event, read by the synthesis share-nudge step as a
-   * permanent suppression. Idempotent — a second call finds the event already
+   * `opted_out` share event, read by the synthesis share-nudge step AND by the
+   * parent-invite nudge step (RFC 240) as a permanent suppression of both
+   * offers. Idempotent — a second call finds the event already
    * on file and writes nothing. It touches NO share row: a live link stays
    * live, and `share_cost_report` keeps working — the student opted out of the
    * suggestion, not of the ability. Needs no secret (it is about the log, not
@@ -235,10 +236,16 @@ class CostReportShareService(
     }
 
   /**
-   * An already-written nudge must not outlive the opt-out: drops any open
-   * share_report commitment in the caller's transaction, so the next opener
-   * has nothing to surface. Runs on the AlreadyStopped path too, catching a
-   * nudge that raced in after a first opt-out.
+   * An already-written nudge must not outlive the opt-out: drops every open
+   * OFFER commitment in the caller's transaction, so the next opener has
+   * nothing to surface. Runs on the AlreadyStopped path too, catching a nudge
+   * that raced in after a first opt-out.
+   *
+   * BOTH offer lenses, under the one drop reason (RFC 240): the student's stop
+   * covers the report offer and the parent-invite offer alike (brief 0014 D20),
+   * and an invite nudge left open here would ask them again through the second
+   * door. The set is a named constant, so a third offer lens has one place to
+   * be added and a test that can see it.
    */
   private fun dropOpenShareNudges(
     session: SqlSession,
@@ -247,7 +254,7 @@ class CostReportShareService(
     CommitmentsDao
       .listOpenByStudent(session, studentId)
       .getOrThrow()
-      .filter { it.lens == CommitmentLens.SHARE_REPORT }
+      .filter { it.lens in OFFER_LENSES }
       .forEach { open ->
         CommitmentsDao.drop(session, open.id, SHARE_OFFERS_OPTED_OUT_DROP_REASON).getOrThrow()
       }
@@ -420,6 +427,31 @@ class CostReportShareService(
      * same machine-matchable vocabulary as SynthesisService's `stale_basis`.
      */
     const val SHARE_OFFERS_OPTED_OUT_DROP_REASON = "share_offers_opted_out"
+
+    /**
+     * The commitment lenses the opt-out silences: the deterministic OFFERS, and
+     * not the reflection lenses a student never opted out of (RFC 160, RFC 240).
+     *
+     * Built through an EXHAUSTIVE `when` over [CommitmentLens], as
+     * `SynthesisService.LLM_PROPOSABLE_LENSES` is: a hand-listed set lets a new
+     * offer lens compile and ship with nobody deciding whether one "stop
+     * suggesting" covers it, and the guard test reads this very set, so it would
+     * stay green. Now a new member does not compile until somebody answers here.
+     */
+    val OFFER_LENSES: Set<CommitmentLens> =
+      CommitmentLens.entries
+        .filter { lens ->
+          when (lens) {
+            CommitmentLens.SHARE_REPORT,
+            CommitmentLens.INVITE_SUPPORTER,
+            -> true
+
+            CommitmentLens.GAP,
+            CommitmentLens.TIMING,
+            CommitmentLens.CONTRADICTION,
+            -> false
+          }
+        }.toSet()
   }
 }
 

@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.report
 
+import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.report.ReportTestDb.SHARE_URL_BASE
 import ed.unicoach.coaching.report.ReportTestDb.serviceWith
 import ed.unicoach.db.models.StudentId
@@ -139,10 +140,10 @@ class CostReportChatToolsTest {
       // nothing to try" from "the write failed, try again".
       assertNull(errorOf(result), "an unconfigured secret is a result, never the error channel")
       val share = shareOf(result)
-      assertFalse(share.getValue(ShareCostReportChatTool.LINK_CREATED_KEY).jsonPrimitive.boolean, "no link was created")
+      assertFalse(share.getValue(StudentScopedChatTool.LINK_CREATED_KEY).jsonPrimitive.boolean, "no link was created")
       assertEquals(
         ShareCostReportChatTool.UNAVAILABLE,
-        share.getValue(ShareCostReportChatTool.STATEMENT_KEY).jsonPrimitive.content,
+        share.getValue(StudentScopedChatTool.STATEMENT_KEY).jsonPrimitive.content,
         "the decline is honest and speakable",
       )
       assertNull(share["url"], "no link is invented")

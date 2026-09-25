@@ -41,6 +41,27 @@ abstract class StudentScopedChatTool : ChatTool {
   /** The structured error object the [ChatTool] total contract requires — malformed input never throws. */
   protected fun errorObject(reason: String): JsonObject = buildJsonObject { put(ERROR_KEY, reason) }
 
+  /**
+   * The result a LINK door returns when it minted NO link: [LINK_CREATED_KEY]
+   * false under the door's own [resultKey], and the [statement] the coach may
+   * say instead of a url.
+   *
+   * Written here, where the envelope is written, so every link door answers "no
+   * link" the same way and a reader who has seen one has seen them all: the
+   * report door and the invite door were otherwise keeping byte-identical
+   * bodies and two unlinked spellings of the same two keys.
+   */
+  protected fun noLinkCreated(
+    resultKey: String,
+    statement: String,
+  ): JsonObject =
+    buildJsonObject {
+      putJsonObject(resultKey) {
+        put(LINK_CREATED_KEY, false)
+        put(STATEMENT_KEY, statement)
+      }
+    }
+
   /** The rejection reason for input keys outside [known], or null when the input is clean. */
   protected fun unknownFieldsReason(
     input: JsonObject,
@@ -204,6 +225,23 @@ abstract class StudentScopedChatTool : ChatTool {
      * of the error. Asked of the owner of the envelope, never re-derived.
      */
     fun isToolRefusal(result: JsonObject): Boolean = ERROR_KEY in result
+
+    /**
+     * Whether a LINK door's call produced a link at all. Present in BOTH of that
+     * door's shapes, so the coach reads one key rather than inferring from a
+     * missing `url`.
+     */
+    const val LINK_CREATED_KEY = "link_created"
+
+    /** The sentence the coach may say, beside the data or instead of it. */
+    const val STATEMENT_KEY = "statement"
+
+    /**
+     * The link itself, on the one shape that carries one. Named HERE because
+     * BOTH link doors emit it, so the key the coach reads has one spelling — the
+     * raw credential rides inside this value and nowhere else.
+     */
+    const val URL_KEY = "url"
 
     /** The subset filter's field name — read by the schema, the copy and the parser from one place. */
     const val COLLEGE_IDS_FIELD = "college_ids"

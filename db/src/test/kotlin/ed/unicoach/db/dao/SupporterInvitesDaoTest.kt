@@ -324,6 +324,92 @@ class SupporterInvitesDaoTest {
     assertNull(consumed)
   }
 
+  /** One student-minted invite, so the read under test has rows to discriminate between. */
+  private fun mintForStudent(
+    inviter: UserId,
+    studentId: StudentId,
+    label: String,
+    expiresAt: Instant = future(),
+  ) = SupporterInvitesDao
+    .create(
+      session,
+      NewSupporterInvite(
+        tokenHash = TokenHash.fromRawToken("live-by-student-$label-0123456789012345"),
+        inviterUserId = inviter,
+        inviterRole = InviterRole.STUDENT,
+        studentId = studentId,
+        supporterId = null,
+        relationship = SupporterRelationship.SUPPORTER,
+        expiresAt = expiresAt,
+      ),
+    ).getOrThrow()
+
+  /**
+   * RFC 240's read. All FOUR states are present at once, because each dead state
+   * dies by a DIFFERENT term of the live predicate and the index predicate
+   * carries only two of the three: a read that inherited the index's definition
+   * would return the expired row, and a read that dropped one clause would
+   * return the consumed or the revoked one. Two live rows, because several live
+   * invites at once are legal by design (RFC 232 §2).
+   */
+  @Test
+  fun `findLiveByStudent returns only this student's unconsumed unrevoked unexpired invites`() {
+    val studentUser = createUser()
+    val studentId = createStudent(studentUser)
+    val otherUser = createUser()
+    val otherStudent = createStudent(otherUser)
+
+    val firstLive = mintForStudent(studentUser, studentId, "first")
+    val secondLive = mintForStudent(studentUser, studentId, "second")
+    val consumed = mintForStudent(studentUser, studentId, "consumed")
+    SupporterInvitesDao.consume(session, consumed.tokenHash).getOrThrow()
+    val revoked = mintForStudent(studentUser, studentId, "revoked")
+    SupporterInvitesDao.revoke(session, revoked.id, studentUser).getOrThrow()
+    mintForStudent(studentUser, studentId, "expired", expiresAt = past())
+    mintForStudent(otherUser, otherStudent, "other-student")
+
+    val live = SupporterInvitesDao.findLiveByStudent(session, studentId).getOrThrow()
+
+    assertEquals(
+      listOf(firstLive.id, secondLive.id),
+      live.map { it.id },
+      "both live invites, oldest first, and nothing consumed, revoked, expired or another student's",
+    )
+  }
+
+  /**
+   * The read is the STUDENT endpoint's. A supporter-minted invite names
+   * `supporter_id` and leaves `student_id` NULL, so it can only be reached by a
+   * read that dropped the endpoint column — and the whole predicate would then
+   * answer "this student already has a live invite" for a link they never sent.
+   */
+  @Test
+  fun `findLiveByStudent ignores a supporter-minted invite`() {
+    val studentUser = createUser()
+    val studentId = createStudent(studentUser)
+    val supporterUser = createUser()
+    val supporterId = createSupporter(supporterUser)
+
+    SupporterInvitesDao
+      .create(
+        session,
+        NewSupporterInvite(
+          tokenHash = TokenHash.fromRawToken("supporter-minted-live-01234567890123456"),
+          inviterUserId = supporterUser,
+          inviterRole = InviterRole.SUPPORTER,
+          studentId = null,
+          supporterId = supporterId,
+          relationship = SupporterRelationship.SUPPORTER,
+          expiresAt = future(),
+        ),
+      ).getOrThrow()
+
+    assertTrue(
+      SupporterInvitesDao.findLiveByStudent(session, studentId).getOrThrow().isEmpty(),
+      "a supporter-minted invite is not this student's live invite",
+    )
+  }
+
   /**
    * The UNIQUE half of `supporter_invites_token_hash_idx`, which is what makes
    * an invite single-use at the storage layer. Without this, dropping `UNIQUE`

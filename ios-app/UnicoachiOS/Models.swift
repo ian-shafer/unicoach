@@ -94,7 +94,8 @@ enum InviterRole: String, Codable, Sendable {
 }
 
 /// `POST /api/v1/supporter-invites` body (RFC 232). `relationship` is optional
-/// and defaults to `parent` on the server.
+/// and defaults to `supporter` on the server (RFC 240): this app names none, and
+/// a word nobody stated must not read to a recipient as a claim about a family.
 struct CreateSupporterInviteRequest: Codable {
     let relationship: SupporterRelationship?
 }

@@ -11,6 +11,7 @@ import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.aid.FafsaDeadlineChatTool
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.coaching.family.InviteSupporterChatTool
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -476,6 +477,33 @@ class ConvoToolLoopRoutingTest {
       assertTrue(
         advertised.contains(FafsaDeadlineChatTool.TOOL_NAME),
         "the RFC 237 paragraph routes to a tool the appModule must actually offer, got [$advertised]",
+      )
+    }
+  }
+
+  /**
+   * RFC 240, the same claim for the invite door. A slice whose whole value is
+   * "the coach can now offer this" must not be able to ship unreachable, and
+   * `Application.kt`'s tool list is checked by nothing else: the tool class, its
+   * own test and the prompt paragraph all pass with the registry entry deleted.
+   */
+  @Test
+  fun `the wired registry advertises the supporter invite tool`() {
+    runBlocking {
+      resetLoop(SEARCH_COLLEGES_TOOL_USE)
+      val cookie = registerWithStudent()
+      val created =
+        client.post(url("/api/v1/conversations")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(CreateConversationRequest("can I connect my mum to this?", null)))
+        }
+      assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+
+      val advertised = requests[0].tools.map { it["name"]!!.jsonPrimitive.content }
+      assertTrue(
+        advertised.contains(InviteSupporterChatTool.TOOL_NAME),
+        "the appModule must advertise the invite tool, or the coach cannot reach it at all, got [$advertised]",
       )
     }
   }

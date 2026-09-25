@@ -326,6 +326,42 @@ class CommitmentsDaoTest {
     assertEquals(CommitmentLens.SHARE_REPORT, CommitmentsDao.findById(session, commitment.id).getOrThrow().lens)
   }
 
+  /**
+   * RFC 240's widening. Asserted BESIDE `share_report` and not instead of it: the
+   * migration drops and re-adds one CHECK over the whole vocabulary, so a
+   * re-added constraint that lost an older member would otherwise ship green.
+   */
+  @Test
+  fun `the widened lens CHECK accepts invite_supporter beside share_report`() {
+    val student = createStudent()
+    val commitment =
+      CommitmentsDao
+        .create(
+          session,
+          newCommitment(student, statement = "offer to connect a parent", lens = CommitmentLens.INVITE_SUPPORTER),
+        ).getOrThrow()
+    assertEquals(CommitmentLens.INVITE_SUPPORTER, commitment.lens)
+    assertEquals(CommitmentLens.INVITE_SUPPORTER, CommitmentsDao.findById(session, commitment.id).getOrThrow().lens)
+
+    // Every OTHER member still passes the re-added CHECK. Attempted best-effort
+    // over the WHOLE vocabulary, not halted at the first refusal: a re-add that
+    // lost TWO members must name both, and a fail-fast loop would leave the rest
+    // unattempted — the very case this sweep guards. This connection is
+    // autocommit, so a refused insert does not poison the next one.
+    val refused =
+      CommitmentLens.entries.filterNot { lens ->
+        CommitmentsDao
+          .create(session, newCommitment(student, lens = lens))
+          .map { it.lens == lens }
+          .getOrDefault(false)
+      }
+    assertEquals(
+      emptyList<String>(),
+      refused.map { it.value },
+      "the re-added lens CHECK refused these members",
+    )
+  }
+
   @Test
   fun `findLatestByStudentAndLens is null when the lens has never been used`() {
     val student = createStudent()
