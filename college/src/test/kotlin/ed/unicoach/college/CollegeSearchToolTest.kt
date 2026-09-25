@@ -9,6 +9,10 @@ import ed.unicoach.db.dao.CanonicalCohortFixture
 import ed.unicoach.db.dao.CodebooksDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_NON_PELL_SHARE
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_PELL_SHARE
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_SHARE
+import ed.unicoach.db.dao.FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
@@ -104,6 +108,16 @@ class CollegeSearchToolTest {
       actComposite25thPercentileScore = null,
       actComposite75thPercentileScore = null,
       completionRate150pct4yrShare = 0.7,
+      // RFC 242's four, all DISTINCT and all present, because the payload
+      // assertions below require every allowlisted numeric key to be RENDERED
+      // by this fixture -- an absent value would leave a key untested. The
+      // non-Pell arm is deliberately the LOWER of the two arms: measured, it is
+      // the higher one at only 65.8% of institutions, so a fixture that always
+      // ordered them the other way would let an ordering assumption look true.
+      completionRate8yrShare = FIXTURE_COMPLETION_8YR_SHARE,
+      completionRate8yrPellShare = FIXTURE_COMPLETION_8YR_PELL_SHARE,
+      completionRate8yrNonPellShare = FIXTURE_COMPLETION_8YR_NON_PELL_SHARE,
+      transferOutRate4yrShare = FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE,
       website = null,
     )
 
@@ -366,14 +380,15 @@ class CollegeSearchToolTest {
       assertNull(result["error"])
       val figureSources =
         assertNotNull(result["figure_sources"], "the answer carries no figure_sources block at all: $result").jsonObject
+      // DERIVED from the registry, not a typed copy of it: this fixture row
+      // reports every stamped figure, so the claim is "every stamped figure is
+      // stamped". A typed set would stay green when an eighth citation was
+      // declared and this fixture never set its field -- still claiming "all
+      // seven".
       assertEquals(
-        setOf(
-          "undergrad_enrollment_headcount",
-          "admission_rate_share",
-          "completion_rate_150pct_4yr_share",
-        ),
+        ScorecardOutcomeCitations.byWireKey.keys,
         figureSources.keys,
-        "every returned row carries all three stamped figures, so all three are stamped",
+        "this fixture row reports every stamped figure, so every one of them is stamped",
       )
       val completion =
         assertNotNull(
@@ -405,7 +420,14 @@ class CollegeSearchToolTest {
       )
       assertTrue(
         figureSources.containsKey("undergrad_enrollment_headcount"),
-        "the other two outcome columns are still stamped",
+        "the other six outcome columns are still stamped",
+      )
+      // The two completion measures are stamped INDEPENDENTLY: a row with no
+      // six-year figure still carries its eight-year one, and keeping them
+      // apart is the whole reason both ride the payload (RFC 242).
+      assertTrue(
+        figureSources.containsKey("completion_rate_8yr_share"),
+        "the eight-year figure is a DIFFERENT measure and is stamped on its own: $figureSources",
       )
       // The numeric keys are untouched by the stamp (the slice's acceptance).
       // ABSENCE is the PAGE-level contract only: `putFigureSources` drops a
@@ -1633,26 +1655,18 @@ class CollegeSearchToolTest {
  * never reach this check.
  */
 private val NUMBERS_BY_CONTRACT =
-  setOf(
-    "count",
-    // RFC 139: the honest, unclamped match total beside `count`'s returned
-    // slice. A count of colleges is a number by contract in exactly the way
-    // `count` is -- it is not, and can never become, a Scorecard code.
-    "total_matches",
-    "undergrad_enrollment_headcount",
-    "admission_rate_share",
-    // The price keys NAME THEIR BASIS since RFC 169: the after-federal-aid
-    // blend (in-state at a public school), and the residency-correct published
-    // on-campus total under each tuition tier. All three are numbers by
-    // contract; none of them is or can become a Scorecard code.
-    "in_state_net_price_per_year_usd",
-    "published_price_in_state_on_campus_per_year_usd",
-    "published_price_out_of_state_on_campus_per_year_usd",
-    "completion_rate_150pct_4yr_share",
-    "median_earnings_10y_after_entry_usd",
-    "median_debt_at_completion_usd",
-    "pell_share",
-  )
+  // The ROW's numbers, read from the renderer that writes them, plus this
+  // tool's own ENVELOPE keys. `similarObject` copies `matchObject` key for key,
+  // so the row half is one fact with one home ([MATCH_ROW_NUMBERS_BY_CONTRACT])
+  // and only the envelope below is this tool's.
+  MATCH_ROW_NUMBERS_BY_CONTRACT +
+    setOf(
+      "count",
+      // RFC 139: the honest, unclamped match total beside `count`'s returned
+      // slice. A count of colleges is a number by contract in exactly the way
+      // `count` is -- it is not, and can never become, a Scorecard code.
+      "total_matches",
+    )
 
 private val QUINTILE_CODE = BareSourceCodeGuard.QUINTILE_CODE
 

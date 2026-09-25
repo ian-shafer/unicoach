@@ -71,6 +71,18 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
       "act_composite_75th_percentile_score",
     )
 
+  /**
+   * The four completion columns RFC 242 added to the countable allowlist, named
+   * here for [scoreBandColumns]'s own reason.
+   */
+  private val eightYearCompletionColumns =
+    setOf(
+      "completion_rate_8yr_share",
+      "completion_rate_8yr_pell_share",
+      "completion_rate_8yr_non_pell_share",
+      "transfer_out_rate_4yr_share",
+    )
+
   private val loader = CollegeScorecardLoader(database)
   private val institutionCsv = fixture("scorecard-institutions-fixture.csv")
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
@@ -223,6 +235,48 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertEquals(listOf("ROOMBOARD_ON"), thrown.missing)
     assertTrue(thrown.message!!.contains("ROOMBOARD_ON"), "the fatal message must name the missing column")
     assertEquals(0, withSession { count(it, "colleges") })
+  }
+
+  @Test
+  fun `a snapshot missing one of the four completion columns is fatal and writes nothing`() {
+    // RFC 242, on the RFC 149 test above's own terms: the eight-year completion
+    // figure, its two Pell arms and the transfer-out share are REQUIRED, so a
+    // release that stopped publishing one must stop the ingest rather than load
+    // 6,273 colleges with a silently empty completion figure a family is then
+    // shown. Triggered rather than inferred -- a header assertion is silent on
+    // every run where the column IS present, and the shared missing-column
+    // fixture carries all four.
+    //
+    // Each of the four separately, not one representative: a required-column
+    // entry is four independent strings, and dropping any one of them would
+    // leave a test that only ever stripped a neighbour green.
+    for (
+    variable in
+    listOf(
+      ScorecardInstitutionColumns.OMAWDP8_ALL,
+      ScorecardInstitutionColumns.OMAWDP8_PELL_ALL,
+      ScorecardInstitutionColumns.OMAWDP8_NOPELL_ALL,
+      ScorecardInstitutionColumns.TRANS_4,
+    )
+    ) {
+      val header = CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS.filterNot { it == variable }
+      assertEquals(
+        CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS.size - 1,
+        header.size,
+        "[$variable] is not a REQUIRED_INSTITUTION_COLUMNS entry at all, so stripping it asserts nothing",
+      )
+      val stripped = File.createTempFile("scorecard-without-$variable", ".csv")
+      stripped.deleteOnExit()
+      stripped.writeText(header.joinToString(",") + "\n")
+
+      val thrown =
+        assertThrows<MissingSourceColumnsException> {
+          runBlocking { loader.ingest(source(stripped), source(fieldsCsv), source(aliasesJson)) }
+        }
+      assertEquals(listOf(variable), thrown.missing, "[$variable] must be the column the ingest refuses on")
+      assertTrue(thrown.message!!.contains(variable), "the fatal message must name [$variable]: ${thrown.message}")
+      assertEquals(0, withSession { count(it, "colleges") }, "[$variable] was missing and the ingest still wrote")
+    }
   }
 
   @Test
@@ -471,10 +525,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // 176 the drop of the publisher money columns — each is exactly the
     // derivation change method_version exists to record.
     assertEquals(
-      10,
+      11,
       row.methodVersion,
-      "RFC 195 took the method version to 10: the institution phase writes the six percentile score bands, so " +
-        "`non_null` carries [${CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.size}] keys, not 10 and not 28",
+      "RFC 242 took the method version to 11: the institution phase writes four more completion columns, so " +
+        "`non_null` carries [${CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.size}] keys, not 16, not 10 and not 28",
     )
     assertTrue(
       row.rowsIngested.contains("\"inserted\": 5"),
@@ -592,13 +646,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `the change summary carries sixteen non-money keys at method version 10, and an older row keeps its own`() {
+  fun `the change summary carries twenty non-money keys at method version 11, and an older row keeps its own`() {
     // RFC 176 D7. The `non_null` axis fell from 28 keys to 10 when money left
     // `colleges`. TEN, not the twelve an earlier draft of D7 claimed: all
     // EIGHTEEN of the dropped columns were in this list, median earnings and
     // Pell share among them, and 28 - 18 = 10. RFC 195 then took it to
     // SIXTEEN: the six percentile score bands are countable `colleges`
-    // columns like every other optional Scorecard metric. There is ONE list --
+    // columns like every other optional Scorecard metric, and RFC 242 to
+    // TWENTY with its four completion columns. There is ONE list --
     // the loader DERIVES its summary columns from
     // `CollegesDao.NON_NULL_COUNTABLE_COLUMNS`, which is the one that becomes
     // SQL -- so both changes were a single edit and no second copy can hold a
@@ -609,7 +664,11 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
       report.nonNullAfter.keys,
       "the summary counts exactly the allowlist",
     )
-    assertEquals(16, report.nonNullAfter.size, "sixteen keys: the ten non-money survivors plus RFC 195's six bands")
+    assertEquals(
+      20,
+      report.nonNullAfter.size,
+      "twenty keys: the ten non-money survivors, RFC 195's six bands and RFC 242's four completion columns",
+    )
     for (column in CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS) {
       assertTrue(
         column !in publisherMoneyColumns,
@@ -621,11 +680,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // build row written the old way keeps its 28 keys and is still readable,
     // because migration 0094 does nothing to `change_summary`.
     // The pre-0094 axis, rebuilt: the eighteen dropped money columns plus the
-    // ten that survived them -- which is this list MINUS the six bands, since
-    // no pre-0094 run had ever heard of them.
+    // ten that survived them -- which is this list MINUS the six bands and
+    // MINUS RFC 242's four completion columns, since no pre-0094 run had ever
+    // heard of either group.
     val legacyKeys =
       publisherMoneyColumns.toList() +
-        CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.filterNot { it in scoreBandColumns }
+        CollegeScorecardLoader.NON_NULL_SUMMARY_COLUMNS.filterNot {
+          it in scoreBandColumns || it in eightYearCompletionColumns
+        }
     assertEquals(28, legacyKeys.size, "the pre-0094 axis carried twenty-eight keys: the ten survivors plus the eighteen dropped")
     // Built with the same library `CollegeScorecardLoader.changeSummaryJson`
     // writes with, so the escaping is the platform's and the axis is a real

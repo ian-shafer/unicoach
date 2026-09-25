@@ -135,6 +135,13 @@ class CollegesDaoTest {
     undergradEnrollmentHeadcount: Int? = 5000,
     admissionRateShare: Double? = 0.5,
     completionRate150pct4yrShare: Double? = 0.7,
+    // RFC 242's four, DISTINCT from each other and from the six-year figure
+    // above, so a history writer or an upsert tuple that crossed two of them
+    // shows up as the wrong NUMBER rather than as a coincidence.
+    completionRate8yrShare: Double? = FIXTURE_COMPLETION_8YR_SHARE,
+    completionRate8yrPellShare: Double? = FIXTURE_COMPLETION_8YR_PELL_SHARE,
+    completionRate8yrNonPellShare: Double? = FIXTURE_COMPLETION_8YR_NON_PELL_SHARE,
+    transferOutRate4yrShare: Double? = FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE,
     locale: Int? = 13,
     region: Int? = 8,
   ) = NewCollege(
@@ -158,6 +165,10 @@ class CollegesDaoTest {
     actComposite25thPercentileScore = null,
     actComposite75thPercentileScore = null,
     completionRate150pct4yrShare = completionRate150pct4yrShare,
+    completionRate8yrShare = completionRate8yrShare,
+    completionRate8yrPellShare = completionRate8yrPellShare,
+    completionRate8yrNonPellShare = completionRate8yrNonPellShare,
+    transferOutRate4yrShare = transferOutRate4yrShare,
     website = "https://test$ipedsUnitId.edu",
   )
 
@@ -725,6 +736,14 @@ class CollegesDaoTest {
     assertEquals(1, latest.control)
     assertEquals(1200, latest.satAverageEquivalentScore)
     assertEquals(0.7, latest.completionRate150pct4yrShare)
+    // RFC 242's four, on the same terms: each is named on BOTH sides of the
+    // restated writer's VALUES, and the fixture gives each a different number,
+    // so a name dropped from one side, or two names crossed, is a wrong value
+    // here rather than a silent history gap.
+    assertEquals(FIXTURE_COMPLETION_8YR_SHARE, latest.completionRate8yrShare)
+    assertEquals(FIXTURE_COMPLETION_8YR_PELL_SHARE, latest.completionRate8yrPellShare)
+    assertEquals(FIXTURE_COMPLETION_8YR_NON_PELL_SHARE, latest.completionRate8yrNonPellShare)
+    assertEquals(FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE, latest.transferOutRate4yrShare)
 
     // And neither table carries a money column for it to have written.
     for (table in listOf("colleges", "colleges_versions")) {
@@ -743,6 +762,46 @@ class CollegesDaoTest {
       assertTrue("name" in columns, "[$table] must exist for this to mean anything")
       assertFalse("net_price_per_year_usd" in columns, "[$table] still carries net_price_per_year_usd")
       assertFalse("pell_share" in columns, "[$table] still carries pell_share")
+    }
+  }
+
+  /**
+   * The upsert's `IS DISTINCT FROM` tuple names every curated column on BOTH
+   * sides. A column in the INSERT list but missing from the tuple is written
+   * and then reads as unchanged: no version bump, no `colleges_versions` row,
+   * no failure -- a history gap only visible months later.
+   *
+   * One re-upsert per column, each changing THAT column and nothing else, so
+   * the assertion names the column that fell out of the tuple.
+   */
+  @Test
+  fun `a change to any one of the four completion columns alone bumps the version`() {
+    // A FRESH college per column, so the second upsert differs from the first
+    // in exactly ONE column. Re-using one row would make each case differ in
+    // two -- the new change and the previous one reverting -- and any column
+    // still in the tuple would then bump the version for a column that is not.
+    val cases: List<Pair<String, NewCollege>> =
+      listOf(
+        "completion_rate_8yr_share" to newCollege(800911, completionRate8yrShare = 0.42),
+        "completion_rate_8yr_pell_share" to newCollege(800912, completionRate8yrPellShare = 0.43),
+        "completion_rate_8yr_non_pell_share" to newCollege(800913, completionRate8yrNonPellShare = 0.44),
+        "transfer_out_rate_4yr_share" to newCollege(800914, transferOutRate4yrShare = 0.45),
+      )
+
+    for ((column, changed) in cases) {
+      CollegesDao.upsert(session, newCollege(changed.ipedsUnitId)).getOrThrow()
+      val after = CollegesDao.upsert(session, changed).getOrThrow()
+      assertEquals(
+        2,
+        after.version,
+        "[$column] changed alone and the version did not move: it is missing from the upsert's " +
+          "IS DISTINCT FROM tuple, so it writes without any history row",
+      )
+      assertEquals(
+        listOf(1, 2),
+        CollegesDao.listVersions(session, after.id).getOrThrow().map { it.version },
+        "[$column] wrote no history row",
+      )
     }
   }
 

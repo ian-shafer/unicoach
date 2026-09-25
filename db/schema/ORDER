@@ -142,3 +142,5 @@ seed-coach-system-prompt-v43.sql
 seed-coach-system-prompt-v44.sql
 create-college-automatic-awards.sql
 seed-coach-system-prompt-v45.sql
+add-eight-year-completion-and-transfer-out.sql
+seed-coach-system-prompt-v46.sql

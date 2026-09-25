@@ -271,14 +271,126 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // the same cells. So mechanism A is asserted here on what this phase
       // still parses.
       assertEquals(
-        setOf("admission_rate_share", "act_composite_25th_percentile_score", "act_composite_75th_percentile_score"),
+        setOf(
+          "admission_rate_share",
+          "act_composite_25th_percentile_score",
+          "act_composite_75th_percentile_score",
+          // RFC 242's four, EACH out of domain in its own direction and each
+          // asserted under its OWN key. A key SET cannot see two labels
+          // crossed, which is why `each coerced share is tallied under its own
+          // colleges column` below asserts counts over two rows as well.
+          "completion_rate_8yr_share",
+          "completion_rate_8yr_pell_share",
+          "completion_rate_8yr_non_pell_share",
+          "transfer_out_rate_4yr_share",
+        ),
         result.fieldsCoercedToNull.keys,
-        "and on the two score-band cells RFC 195 added, whose fixture values 0 and 41 are outside the ACT scale",
+        "and on the two score-band cells RFC 195 added, whose fixture values 0 and 41 are outside the ACT scale, " +
+          "and on RFC 242's four, whose fixture values 1.2, 1.3, -0.1 and 2.0 are each outside the 0-1 share domain",
       )
 
       val college = withSession { CollegesDao.findByIpedsUnitId(it, 600600).getOrThrow() }
       assertNotNull(college)
       assertNull(college.admissionRateShare)
+      assertNull(college.completionRate8yrShare, "an out-of-domain share is nulled, never stored")
+      assertNull(college.completionRate8yrPellShare)
+      assertNull(college.completionRate8yrNonPellShare)
+      assertNull(college.transferOutRate4yrShare)
+    }
+
+  /**
+   * RFC 242's four columns, loaded with the values the publisher states.
+   *
+   * ONE claim per test, over the four rows this fixture carries for them:
+   * the four claims below were one `@Test` with thirty assertions, so a red run
+   * named one test and the reader could not tell "the mapper crossed two
+   * columns" from "an NA arm was stored as zero" without reading which
+   * assertion fired. Each loads the same fixture for its own claim, which is
+   * this file's own pattern (`the six percentile score bands load as
+   * published`).
+   *
+   * The values are DISTINCT per column, so a read that took the wrong CSV field
+   * shows up as the wrong number.
+   */
+  @Test
+  fun `the four completion columns load with the values the publisher states`() =
+    runBlocking {
+      loader.load(institutionCsv, fieldsCsv)
+
+      val coastal = withSession { CollegesDao.findByIpedsUnitId(it, 110100).getOrThrow() }
+      assertNotNull(coastal)
+      assertEquals(0.71, coastal.completionRate8yrShare, "OMAWDP8_ALL")
+      assertEquals(0.63, coastal.completionRate8yrPellShare, "OMAWDP8_PELL_ALL")
+      assertEquals(0.75, coastal.completionRate8yrNonPellShare, "OMAWDP8_NOPELL_ALL")
+      assertEquals(0.14, coastal.transferOutRate4yrShare, "TRANS_4")
+      assertEquals(0.68, coastal.completionRate150pct4yrShare, "and C150_4 is untouched beside them")
+    }
+
+  /**
+   * One arm silent, the others reported: `NA` is school silence and reaches the
+   * column as NULL, with no pair machinery and no dropped row. Row 440400 is
+   * the 106-row case measured on the pinned snapshot, so the arms are proved
+   * INDEPENDENTLY nullable and no pairing rule can be inferred.
+   *
+   * The COERCION TALLY is what separates that claim from its opposite. A stored
+   * NULL has two causes -- the publisher's `NA`, and a cell this phase read and
+   * threw out of domain -- and every `assertNull` below is equally true of
+   * both, so the load report is read rather than dropped.
+   */
+  @Test
+  fun `an NA Pell arm is absent and silences neither of its neighbours`() =
+    runBlocking {
+      val result = loader.load(institutionCsv, fieldsCsv)
+
+      val plains = withSession { CollegesDao.findByIpedsUnitId(it, 440400).getOrThrow() }
+      assertNotNull(plains)
+      assertEquals(0.62, plains.completionRate8yrShare)
+      assertNull(plains.completionRate8yrPellShare, "an NA Pell arm is absent, never zero")
+      assertEquals(0.66, plains.completionRate8yrNonPellShare, "and the other arm is still loaded")
+      assertNull(plains.transferOutRate4yrShare, "NA transfer-out is absent too")
+      // Every cell this fixture states is in domain, so a tally of ANY kind is
+      // a cell rejected rather than a cell the school never reported -- and the
+      // two NULLs above would look identical either way.
+      assertEquals(
+        emptyMap(),
+        result.fieldsCoercedToNull,
+        "an NA cell is the school saying nothing, so this fixture coerces nothing: ${result.fieldsCoercedToNull}",
+      )
+    }
+
+  /**
+   * All four silent: the college still loads. A school that reports none of
+   * this is not a broken row.
+   */
+  @Test
+  fun `a college that reports none of the four still loads`() =
+    runBlocking {
+      loader.load(institutionCsv, fieldsCsv)
+
+      val bayfront = withSession { CollegesDao.findByIpedsUnitId(it, 550500).getOrThrow() }
+      assertNotNull(bayfront)
+      assertNull(bayfront.completionRate8yrShare)
+      assertNull(bayfront.completionRate8yrPellShare)
+      assertNull(bayfront.completionRate8yrNonPellShare)
+      assertNull(bayfront.transferOutRate4yrShare)
+    }
+
+  /**
+   * Row 330300 reports the PELL figure ABOVE the non-Pell one, which is the
+   * real 34.2% of institutions: any code or copy that assumed an ordering is
+   * wrong there, and the row loads exactly as the publisher states it.
+   */
+  @Test
+  fun `a row reporting the Pell arm above the non-Pell one loads unchanged`() =
+    runBlocking {
+      loader.load(institutionCsv, fieldsCsv)
+
+      val mountain = withSession { CollegesDao.findByIpedsUnitId(it, 330300).getOrThrow() }
+      assertNotNull(mountain)
+      assertTrue(
+        mountain.completionRate8yrPellShare!! > mountain.completionRate8yrNonPellShare!!,
+        "the publisher reports the Pell figure higher at about a third of schools, and the row loads unchanged",
+      )
     }
 
   @Test
@@ -534,21 +646,99 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
   private fun institutionCsv(
     name: String,
     vararg cells: Pair<String, String>,
+  ): File = institutionCsvRows(name, cells.toMap())
+
+  /**
+   * The same snapshot with MORE THAN ONE row, so a claim about per-column
+   * counts can be made.
+   *
+   * [institutionCsv] is this with one row: the single-row form is what almost
+   * every test wants, and a second copy of the header/defaults/printer chain
+   * is where the two would disagree about what a minimal row is.
+   */
+  private fun institutionCsvRows(
+    name: String,
+    vararg rows: Map<String, String>,
   ): File {
-    val row =
-      mapOf(
-        "CITY" to "Townsville",
-        "STABBR" to "CA",
-        "CONTROL" to "1",
-      ) + cells.toMap()
     val file = File.createTempFile("$name-institutions", ".csv")
     file.deleteOnExit()
     CSVFormat.DEFAULT.print(file, Charsets.UTF_8).use { printer ->
       printer.printRecord(CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS)
-      printer.printRecord(CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS.map { row[it] ?: "" })
+      for (cells in rows) {
+        val row =
+          mapOf(
+            "CITY" to "Townsville",
+            "STABBR" to "CA",
+            "CONTROL" to "1",
+          ) + cells
+        printer.printRecord(CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS.map { row[it] ?: "" })
+      }
     }
     return file
   }
+
+  /**
+   * A coercion is tallied under the `colleges` column of the CELL that was
+   * coerced -- provably, not by reading the call sites.
+   *
+   * The tally key IS the operator-facing identifier: it reaches the run summary
+   * and the per-cell DEBUG line as `[column=...]`, so a label paired with a
+   * neighbour's publisher column stores the right number and prints a Pell
+   * coercion under the all-student name. The suite could not see that. The
+   * existing assertion compares a key SET and every tally is `1`, so crossing
+   * two labels leaves the set byte-identical and every `assertNull` still true.
+   *
+   * Two rows, with DIFFERENT numbers of out-of-domain cells per column, make
+   * the crossing a wrong COUNT instead: the Pell arm is out of domain in both
+   * rows and its three neighbours in one, so a label that named a neighbour's
+   * column reports 2 where 1 is expected and 1 where 2 is.
+   */
+  @Test
+  fun `each coerced share is tallied under its own colleges column, by count and not merely by name`() =
+    runBlocking {
+      val institutions =
+        institutionCsvRows(
+          "crossed-share-labels",
+          mapOf(
+            "UNITID" to "940001",
+            "INSTNM" to "Four Bad Shares College",
+            "ADM_RATE" to "1.5",
+            "C150_4" to "1.4",
+            "OMAWDP8_ALL" to "1.2",
+            "OMAWDP8_PELL_ALL" to "1.3",
+            "OMAWDP8_NOPELL_ALL" to "-0.1",
+            "TRANS_4" to "2.0",
+          ),
+          mapOf(
+            "UNITID" to "940002",
+            "INSTNM" to "One Bad Pell Arm College",
+            "ADM_RATE" to "0.5",
+            "C150_4" to "0.6",
+            "OMAWDP8_ALL" to "0.7",
+            // The ONLY out-of-domain cell of this row.
+            "OMAWDP8_PELL_ALL" to "1.1",
+            "OMAWDP8_NOPELL_ALL" to "0.6",
+            "TRANS_4" to "0.1",
+          ),
+        )
+
+      val result = loader.load(institutions, fixture("scorecard-fields-empty-fixture.csv"))
+
+      assertEquals(2, result.collegesLoaded, "an out-of-domain share must never cost the whole college")
+      assertEquals(
+        mapOf(
+          "admission_rate_share" to 1,
+          "completion_rate_150pct_4yr_share" to 1,
+          "completion_rate_8yr_share" to 1,
+          "completion_rate_8yr_pell_share" to 2,
+          "completion_rate_8yr_non_pell_share" to 1,
+          "transfer_out_rate_4yr_share" to 1,
+        ),
+        result.fieldsCoercedToNull,
+        "every share this phase reads is tallied under its OWN `colleges` column: a crossed pair is a wrong " +
+          "count here, not an identical key set",
+      )
+    }
 
   @Test
   fun `the required institution columns name all six score-band variables`() {

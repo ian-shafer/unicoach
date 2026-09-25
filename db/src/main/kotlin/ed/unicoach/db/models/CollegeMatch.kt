@@ -79,6 +79,35 @@ data class CollegeMatch(
    */
   val netPriceUsdByBand: Map<IncomeBand, Int>,
   val completionRate150pct4yrShare: Double?,
+  /**
+   * RFC 242's four completion figures, returned context only -- never a filter
+   * and never a sort key (`college_search_index` carries none of them, on
+   * 0064's own rule).
+   *
+   * The three eight-year figures are Scorecard `OMAWDP8_ALL` /
+   * `OMAWDP8_PELL_ALL` / `OMAWDP8_NOPELL_ALL`: everyone who ENTERED in the
+   * publisher's `AY 2016-17` cohort -- full-time and part-time, new to college
+   * and transferring in -- awarded within eight years, split by federal Pell
+   * Grant receipt. That is a different measure over a different population and
+   * a different entering cohort from [completionRate150pct4yrShare], which
+   * stays the filter and sort key: the two order schools differently, so
+   * neither is a replacement for the other and the difference between them is
+   * never a school improving.
+   *
+   * The Pell arms are served to everyone, each labelled with the group it
+   * counts. A family's own Pell status is never inferred from anything they
+   * told us, and no ordering between the two arms may be stated -- measured,
+   * the Pell figure is the lower of the two at only 65.8% of institutions.
+   *
+   * [transferOutRate4yrShare] is Scorecard `TRANS_4`, the share of
+   * [completionRate150pct4yrShare]'s SIX-year cohort that left for another
+   * school instead of finishing there. Different denominator, so it is not
+   * subtractable from the eight-year figures.
+   */
+  val completionRate8yrShare: Double?,
+  val completionRate8yrPellShare: Double?,
+  val completionRate8yrNonPellShare: Double?,
+  val transferOutRate4yrShare: Double?,
   val medianEarnings10yAfterEntryUsd: Int?,
   val medianDebtAtCompletionUsd: Int?,
   val pellShare: Double?,

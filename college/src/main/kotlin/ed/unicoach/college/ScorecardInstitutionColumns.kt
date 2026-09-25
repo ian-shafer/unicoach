@@ -28,12 +28,25 @@ internal object ScorecardInstitutionColumns {
   const val GRAD_DEBT_MDN = "GRAD_DEBT_MDN"
   const val MD_EARN_WNE_P10 = "MD_EARN_WNE_P10"
 
-  // The three outcome columns the `colleges` fill writes (RFC 226): moved here
-  // off `CollegeScorecardLoader`'s private literals so the name is stated once
-  // and the citation object and the loader cannot spell it two ways.
+  // The seven outcome columns the `colleges` fill writes (RFC 226, widened by
+  // RFC 242): moved here off `CollegeScorecardLoader`'s private literals so the
+  // name is stated once and the citation object and the loader cannot spell it
+  // two ways.
   const val ADM_RATE = "ADM_RATE"
   const val C150_4 = "C150_4"
   const val UGDS = "UGDS"
+
+  // RFC 242's four. The three `OMAWDP8_*` are the publisher's Outcome Measures
+  // family -- everyone who ENTERED, full-time and part-time, new to college and
+  // transferring in, awarded within eight years -- split by federal Pell Grant
+  // receipt. They are a DIFFERENT measure over a DIFFERENT population and a
+  // DIFFERENT entering cohort from [C150_4], never a later version of it.
+  // `TRANS_4` is the [C150_4] cohort's transfer-out share and carries that
+  // cohort's own dictionary cell.
+  const val OMAWDP8_ALL = "OMAWDP8_ALL"
+  const val OMAWDP8_PELL_ALL = "OMAWDP8_PELL_ALL"
+  const val OMAWDP8_NOPELL_ALL = "OMAWDP8_NOPELL_ALL"
+  const val TRANS_4 = "TRANS_4"
 
   /** The control-keyed net-price column base: overall `NPT4` plus the five income bands. */
   const val NET_PRICE_BASE = "NPT4"
@@ -223,7 +236,8 @@ internal object ScorecardInstitutionColumns {
    * brief 0011 D47 dates every figure a family can see and not only the money
    * ones.
    */
-  val OUTCOME_VARIABLES: Set<String> = setOf(ADM_RATE, C150_4, UGDS)
+  val OUTCOME_VARIABLES: Set<String> =
+    setOf(ADM_RATE, C150_4, UGDS, OMAWDP8_ALL, OMAWDP8_PELL_ALL, OMAWDP8_NOPELL_ALL, TRANS_4)
 
   /**
    * Every Scorecard column whose date we cite: the money fill's registry plus

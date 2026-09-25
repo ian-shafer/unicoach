@@ -81,6 +81,130 @@ class ScorecardDictionaryPinTest {
     )
   }
 
+  /**
+   * RFC 242's four cells, pinned by SHAPE and by value against the committed
+   * file, exactly as the three above are.
+   *
+   * The three `OMAWDP8_*` cells are an entering ACADEMIC YEAR and not a term.
+   * That is the whole reason [Cohort.StatedEnteringAcademicYear] exists: the
+   * publisher's Outcome Measures cohort is everyone who arrived across a
+   * July-June year, so "autumn 2016" would name a term those students did not
+   * all enter in. `TRANS_4` carries `C150_4`'s cell byte for byte, because it
+   * counts that same six-year cohort -- and it is still transcribed as its own
+   * row, so a snapshot may re-date one without the other.
+   */
+  @Test
+  fun `the four completion cells carry the publisher's exact clause`() {
+    val enteringYear = Cohort.StatedEnteringAcademicYear("AY 2016-17 cohort", AcademicYear(2016))
+    for (
+    variable in
+    listOf(
+      ScorecardInstitutionColumns.OMAWDP8_ALL,
+      ScorecardInstitutionColumns.OMAWDP8_PELL_ALL,
+      ScorecardInstitutionColumns.OMAWDP8_NOPELL_ALL,
+    )
+    ) {
+      assertEquals(
+        enteringYear,
+        cohortByVariable[variable],
+        "[$variable] is the publisher's AY 2016-17 ENTERING cohort, carried verbatim with its year parsed",
+      )
+    }
+    assertEquals(
+      Cohort.StatedTerm("Fall 2018 or AcadYr 2018-19 cohort (differs by institutional calendar)", 2018),
+      cohortByVariable[ScorecardInstitutionColumns.TRANS_4],
+      "TRANS_4 counts C150_4's own cohort, so the publisher dates it with C150_4's own quoted cell",
+    )
+    assertEquals(
+      cohortByVariable[ScorecardInstitutionColumns.C150_4],
+      cohortByVariable[ScorecardInstitutionColumns.TRANS_4],
+      "the two six-year figures are dated alike BY THE PUBLISHER -- asserted, never assumed, and never folded " +
+        "into one transcribed row",
+    )
+  }
+
+  /**
+   * An entering-cohort cell is `AY <label> cohort` and nothing else.
+   *
+   * Three near-misses, each a plausible transcription slip: the publisher's own
+   * trailing clause left on, a four-digit second year, and the closing word
+   * dropped. What must break if this guard is absent: a cell nobody can read
+   * silently deciding the period a family is told a completion figure
+   * describes.
+   *
+   * Each case is asserted against the CAUSE it means, not against the one
+   * substring all three share. Two of them fail the cell SHAPE and the third
+   * fails inside the label reader for a completely different reason, so a
+   * reader who swapped the label check for the shape check would have kept a
+   * message-only assertion green.
+   */
+  @Test
+  fun `an entering-cohort cell that is not exactly AY label cohort is refused, naming the cell and the cause`() {
+    val nearMisses =
+      mapOf(
+        "AY 2016-17 cohort, reported in IPEDS DCY2024-25" to
+          ScorecardDictionaryTranscription.AcademicYearCell.Cause.WRONG_CELL_SHAPE,
+        "AY 2016-17" to ScorecardDictionaryTranscription.AcademicYearCell.Cause.WRONG_CELL_SHAPE,
+        "AY 2016-2017 cohort" to
+          ScorecardDictionaryTranscription.AcademicYearCell.Cause.LABEL_NOT_SPOKEN_THAT_WAY,
+      )
+    for ((cell, cause) in nearMisses) {
+      val refusal =
+        assertFailsWith<ScorecardDictionaryTranscription.UnreadableCohortCellException> {
+          ScorecardDictionaryTranscription.cohortOf(ScorecardInstitutionColumns.OMAWDP8_ALL, cell)
+        }
+      assertEquals(cell, refusal.cell, "the refusal carries the cell it refused")
+      assertEquals(ScorecardInstitutionColumns.OMAWDP8_ALL, refusal.variable, "and the variable it was transcribed for")
+      assertEquals(cause, refusal.read.cause, "[$cell] is refused for its OWN reason: [${refusal.read.reason}]")
+      val message = assertNotNull(refusal.message, "the refusal of [$cell] says something")
+      assertTrue(
+        message.contains("[most_recent_cohort=$cell]") && message.contains("[${ScorecardInstitutionColumns.OMAWDP8_ALL}]"),
+        "the refusal names the cell AND the variable it was transcribed for: [$message]",
+      )
+    }
+  }
+
+  /**
+   * The LAST router arm refuses like the other two: one exception type, one
+   * routable cause.
+   *
+   * A cell that is not empty, not `AY … cohort` and not `AcadYr …` must name an
+   * entering fall term or be refused. That arm used to throw `require`'s
+   * `IllegalArgumentException`, so a caller asking "is this cell unreadable?"
+   * had to catch two unrelated types and could route on a cause for two cell
+   * shapes of three. What must break if this guard is absent: a re-worded
+   * snapshot cell reaching a pin comparison as an unequal value rather than as
+   * a named refusal.
+   *
+   * The cause is the term arm's OWN, never the `AY` arm's
+   * [WRONG_CELL_SHAPE][ScorecardDictionaryTranscription.AcademicYearCell.Cause.WRONG_CELL_SHAPE]:
+   * shared, this assertion could not tell a cell the router sent to the wrong
+   * parser from a cell the right parser refused.
+   */
+  @Test
+  fun `a cell naming no shape this reader knows is refused the same way, with its own cause`() {
+    // Three plausible re-wordings: a term with a second year glued on, the
+    // publisher's word changed, and a two-digit year.
+    for (cell in listOf("Fall 2024-25", "Autumn 2024", "Fall 24")) {
+      val refusal =
+        assertFailsWith<ScorecardDictionaryTranscription.UnreadableCohortCellException> {
+          ScorecardDictionaryTranscription.cohortOf(ScorecardInstitutionColumns.ADM_RATE, cell)
+        }
+      assertEquals(cell, refusal.cell, "the refusal carries the cell it refused")
+      assertEquals(ScorecardInstitutionColumns.ADM_RATE, refusal.variable, "and the variable it was transcribed for")
+      assertEquals(
+        ScorecardDictionaryTranscription.AcademicYearCell.Cause.NOT_AN_ENTERING_TERM,
+        refusal.read.cause,
+        "[$cell] is refused as no shape this reader knows: [${refusal.read.reason}]",
+      )
+      val message = assertNotNull(refusal.message, "the refusal of [$cell] says something")
+      assertTrue(
+        message.contains("[most_recent_cohort=$cell]") && message.contains("[${ScorecardInstitutionColumns.ADM_RATE}]"),
+        "the refusal names the cell AND the variable it was transcribed for: [$message]",
+      )
+    }
+  }
+
   @Test
   fun `the published-charge year is the year the dictionary states for all eight charge columns`() {
     for (variable in ScorecardInstitutionColumns.PUBLISHED_CHARGE_VARIABLES) {

@@ -148,14 +148,88 @@ internal fun JsonObjectBuilder.putPriceRuler(ruler: PriceRuler) {
 }
 
 /**
- * The three outcome wire keys the row serializer writes that are also stamped
- * by `figure_sources` (RFC 226). Owned here, beside [matchObject], so the row
- * and [ScorecardOutcomeCitations] cannot spell a figure's wire key two ways: a
- * rename reaches both at compile time.
+ * The seven outcome wire keys the row serializer writes that are also stamped
+ * by `figure_sources` (RFC 226, widened by RFC 242). Owned here, beside
+ * [matchObject], so the row and [ScorecardOutcomeCitations] cannot spell a
+ * figure's wire key two ways: a rename reaches both at compile time.
  */
 internal const val WIRE_UNDERGRAD_ENROLLMENT_HEADCOUNT = "undergrad_enrollment_headcount"
 internal const val WIRE_ADMISSION_RATE_SHARE = "admission_rate_share"
 internal const val WIRE_COMPLETION_RATE_150PCT_4YR_SHARE = "completion_rate_150pct_4yr_share"
+
+// RFC 242's four. The eight-year figures and the six-year one above are two
+// measures of two populations over two entering cohorts, so BOTH stay on the
+// wire under their own keys and each carries its own `figure_sources` stamp --
+// there is no key here that replaces another.
+internal const val WIRE_COMPLETION_RATE_8YR_SHARE = "completion_rate_8yr_share"
+internal const val WIRE_COMPLETION_RATE_8YR_PELL_SHARE = "completion_rate_8yr_pell_share"
+internal const val WIRE_COMPLETION_RATE_8YR_NON_PELL_SHARE = "completion_rate_8yr_non_pell_share"
+internal const val WIRE_TRANSFER_OUT_RATE_4YR_SHARE = "transfer_out_rate_4yr_share"
+
+/**
+ * The three row numbers that carry NO `figure_sources` stamp, named once.
+ *
+ * Named for the same reason the seven stamped keys above are: [matchObject]
+ * wrote each of them as a literal, [MATCH_ROW_NUMBERS_BY_CONTRACT] named the
+ * same three again, and `CollegeSearchTool`'s description named them a third
+ * time -- so a renamed key moved one of the three and left the guard
+ * sanctioning a key no row carries and the advertisement naming one no model
+ * would ever see.
+ */
+internal const val WIRE_MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD = "median_earnings_10y_after_entry_usd"
+internal const val WIRE_MEDIAN_DEBT_AT_COMPLETION_USD = "median_debt_at_completion_usd"
+internal const val WIRE_PELL_SHARE = "pell_share"
+
+/**
+ * The row's PRICE keys, which `price_ruler` describes rather than any sentence
+ * about outcome figures.
+ *
+ * Read from [PriceRuler], which owns both spellings and BUILDS the published
+ * key out of the tier's own basis word: a renamed basis reaches this set
+ * instead of stranding it, and a fourth tier joins it without an edit.
+ */
+internal val MATCH_ROW_PRICE_WIRE_KEYS: Set<String> =
+  setOf(PriceRuler.NET_PRICE_RESULT_KEY) + PriceRuler.PublishedTier.entries.map { PriceRuler.resultKey(it) }
+
+/**
+ * Every numeric key [matchObject] writes: a number by CONTRACT, never a source
+ * code, for `BareSourceCodeGuard`.
+ *
+ * Here beside the renderer that writes them, and not in each suite that guards
+ * a payload, because `similarObject` copies this row key for key -- so the row
+ * half of the search guard's allowlist and of the peer guard's allowlist is ONE
+ * fact about this function, changing for one reason. It used to be typed out in
+ * both suites, and the two copies had already drifted in their comments; a key
+ * sanctioned in one and forgotten in the other is a guard that disagrees with
+ * itself about the same payload. Each tool's suite adds its own ENVELOPE keys
+ * to this set.
+ *
+ * EVERY member is a symbol -- no member is a literal. A guard that is
+ * compile-safe for half its members is compile-safe for none: the price keys
+ * are read from [PriceRuler], which writes them, and the three unstamped money
+ * keys have their own constants beside the stamped ones, so a renamed key
+ * reaches this set at compile time rather than silently dropping out of it.
+ */
+internal val MATCH_ROW_NUMBERS_BY_CONTRACT: Set<String> =
+  setOf(
+    WIRE_UNDERGRAD_ENROLLMENT_HEADCOUNT,
+    WIRE_ADMISSION_RATE_SHARE,
+    WIRE_COMPLETION_RATE_150PCT_4YR_SHARE,
+    // RFC 242's four. Each is a share or a rate by contract, named by its
+    // measure and its window; none is or can become a Scorecard code.
+    WIRE_COMPLETION_RATE_8YR_SHARE,
+    WIRE_COMPLETION_RATE_8YR_PELL_SHARE,
+    WIRE_COMPLETION_RATE_8YR_NON_PELL_SHARE,
+    WIRE_TRANSFER_OUT_RATE_4YR_SHARE,
+    WIRE_MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD,
+    WIRE_MEDIAN_DEBT_AT_COMPLETION_USD,
+    WIRE_PELL_SHARE,
+  ) +
+    // The price keys NAME THEIR BASIS since RFC 169: the after-federal-aid
+    // blend (in-state at a public school), and the residency-correct published
+    // on-campus total under each tuition tier. All three are numbers by
+    // contract; none of them is or can become a Scorecard code.
+    MATCH_ROW_PRICE_WIRE_KEYS
 
 /**
  * The ONE rendering of a [CollegeMatch] as a tool result row (RFC 153 D70).
@@ -193,8 +267,8 @@ internal fun matchObject(
     val locale = vocabulary.localeOf(match.locale)
     putOrNull("locale_type", locale?.type?.word)
     putOrNull("locale_detail", locale?.detail?.word)
-    putOrNull(WIRE_UNDERGRAD_ENROLLMENT_HEADCOUNT, match.undergradEnrollmentHeadcount)
-    putOrNull(WIRE_ADMISSION_RATE_SHARE, match.admissionRateShare)
+    putFigure(match, ScorecardOutcomeCitations.Citation.UNDERGRAD_ENROLLMENT)
+    putFigure(match, ScorecardOutcomeCitations.Citation.ADMISSION_RATE)
     putRulerPrice(match, ruler)
     // One self-describing array rather than five opaque per-quintile keys
     // (RFC 142): every amount arrives beside the band code AND the dollar
@@ -215,10 +289,25 @@ internal fun matchObject(
         }
       }
     }
-    putOrNull(WIRE_COMPLETION_RATE_150PCT_4YR_SHARE, match.completionRate150pct4yrShare)
-    putOrNull("median_earnings_10y_after_entry_usd", match.medianEarnings10yAfterEntryUsd)
-    putOrNull("median_debt_at_completion_usd", match.medianDebtAtCompletionUsd)
-    putOrNull("pell_share", match.pellShare)
+    putFigure(match, ScorecardOutcomeCitations.Citation.COMPLETION_RATE)
+    // The completion family reads together (RFC 242). A figure this ROW does
+    // not carry is written as a LABELLED NULL, like every other absent key
+    // here: the key is always present and its value says there is no figure,
+    // which is a different statement from zero -- and, deliberately, a weaker
+    // statement than "the school reported nothing", which this row cannot
+    // make. `colleges` stores ONE null for school silence, for a cell the
+    // publisher withheld and for a cell the loader coerced out of domain
+    // alike, so a surface that named a reason here would be inventing it.
+    // What stops the model narrating an absent figure is the page-level
+    // absence rule -- `putFigureSources` stamps only the figures some returned
+    // row carries.
+    putFigure(match, ScorecardOutcomeCitations.Citation.COMPLETION_RATE_8YR)
+    putFigure(match, ScorecardOutcomeCitations.Citation.COMPLETION_RATE_8YR_PELL)
+    putFigure(match, ScorecardOutcomeCitations.Citation.COMPLETION_RATE_8YR_NON_PELL)
+    putFigure(match, ScorecardOutcomeCitations.Citation.TRANSFER_OUT_RATE)
+    putOrNull(WIRE_MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, match.medianEarnings10yAfterEntryUsd)
+    putOrNull(WIRE_MEDIAN_DEBT_AT_COMPLETION_USD, match.medianDebtAtCompletionUsd)
+    putOrNull(WIRE_PELL_SHARE, match.pellShare)
     // Present only when a program filter was written: the key MEANS "what your
     // program filter matched", so on a search that asked nothing about
     // programs there is no answer to give. It used to print `programs: []` on
@@ -230,6 +319,30 @@ internal fun matchObject(
       }
     }
   }
+
+/**
+ * ONE stamped outcome figure, under the key its own
+ * [ScorecardOutcomeCitations.Citation] owns and from the field that citation
+ * reads ([ScorecardOutcomeCitations.Citation.figureIn]).
+ *
+ * Here rather than a hand-written `putOrNull(WIRE_X, match.x)` per figure,
+ * because that spelling pairs a wire key with a row field a SECOND time: the
+ * citation registry already owns that pairing for the stamp, and
+ * `putOrNull(WIRE_COMPLETION_RATE_8YR_PELL_SHARE, match.completionRate8yrNonPellShare)`
+ * compiles, ships a Pell-recipient sentence over a non-Pell number, and no
+ * test can see it. Reading the value THROUGH the citation leaves the pairing
+ * one fact with one spelling.
+ *
+ * An absent figure is a labelled null, BY `putOrNull` rather than merely like
+ * it: this used to spell that rule's body out a fourth time, so the KDoc's own
+ * claim to write "exactly as `putOrNull` writes one" was an equivalence nothing
+ * enforced -- and both branches of the `if` wrote the same key, so the key was
+ * spelled twice to decide a value.
+ */
+internal fun JsonObjectBuilder.putFigure(
+  match: CollegeMatch,
+  citation: ScorecardOutcomeCitations.Citation,
+) = putOrNull(citation.wireKey, citation.figureIn(match))
 
 /**
  * The price keys of ONE row: the net-price blend every row carries, the number

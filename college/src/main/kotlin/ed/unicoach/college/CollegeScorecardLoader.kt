@@ -1660,6 +1660,15 @@ class CollegeScorecardLoader(
     val satReading = bands.getValue(ScoreBandVariable.SAT_READING)
     val satMath = bands.getValue(ScoreBandVariable.SAT_MATH)
     val actComposite = bands.getValue(ScoreBandVariable.ACT_COMPOSITE)
+
+    // ONE name for the read this share family repeats. `record`, `coercions`
+    // and the `[0, 1]` share domain are this row's, stated once, so a call site
+    // carries only the fact that varies: WHICH share is being read. The pair
+    // behind that one name -- the publisher's column and the `colleges` column
+    // that keys the coercion tally -- is stated once, on [ShareRead], so it
+    // cannot be crossed here at all.
+    fun share(read: ShareRead): Double? =
+      doubleInDomainOrNull(record, read.scorecardVariable, RATE_MIN, RATE_MAX, read.collegesColumn, coercions)
     val college =
       NewCollege(
         ipedsUnitId = ipedsUnitId,
@@ -1676,7 +1685,7 @@ class CollegeScorecardLoader(
         control = control,
         undergradEnrollmentHeadcount =
           intInDomainOrNull(record, COL_UGDS, 0, Int.MAX_VALUE, "undergrad_enrollment_headcount", coercions),
-        admissionRateShare = doubleInDomainOrNull(record, COL_ADM_RATE, RATE_MIN, RATE_MAX, "admission_rate_share", coercions),
+        admissionRateShare = share(ShareRead.ADMISSION_RATE),
         satAverageEquivalentScore = intInDomainOrNull(record, COL_SAT_AVG, 0, Int.MAX_VALUE, "sat_average_equivalent_score", coercions),
         // The three percentile bands (RFC 195), each read as a PAIR in its
         // published scale -- see [CsvIngestSupport.intPairInDomainOrNull] for
@@ -1687,15 +1696,15 @@ class CollegeScorecardLoader(
         satMath75thPercentileScore = satMath.upper,
         actComposite25thPercentileScore = actComposite.lower,
         actComposite75thPercentileScore = actComposite.upper,
-        completionRate150pct4yrShare =
-          doubleInDomainOrNull(
-            record,
-            COL_C150_4,
-            RATE_MIN,
-            RATE_MAX,
-            "completion_rate_150pct_4yr_share",
-            coercions,
-          ),
+        completionRate150pct4yrShare = share(ShareRead.COMPLETION_RATE_150PCT_4YR),
+        // RFC 242's four, read exactly as the line above reads `C150_4`. Read
+        // INDEPENDENTLY, with no pair machinery -- measured on the pinned
+        // snapshot, 112 rows carry one Pell arm without the other, so they are
+        // not a pair.
+        completionRate8yrShare = share(ShareRead.COMPLETION_RATE_8YR),
+        completionRate8yrPellShare = share(ShareRead.COMPLETION_RATE_8YR_PELL),
+        completionRate8yrNonPellShare = share(ShareRead.COMPLETION_RATE_8YR_NON_PELL),
+        transferOutRate4yrShare = share(ShareRead.TRANSFER_OUT_RATE_4YR),
         website = stringOrNull(record, COL_INSTURL),
       )
     // `toMap()` on both: the accumulators are this function's own mutable
@@ -1832,8 +1841,16 @@ class CollegeScorecardLoader(
      * keys to 16, so a version-9 row is a different SHAPE rather than a run
      * that happened to find no bands -- which is exactly what a reader would
      * otherwise conclude from six absent keys.
+     *
+     * 11 = RFC 242's four completion columns on `colleges` (migration
+     * `add-eight-year-completion-and-transfer-out.sql`). The institution phase
+     * parses and writes four more columns and `change_summary`'s `non_null`
+     * axis rises from 16 keys to 20, for the same reason version 10 exists: a
+     * version-11 row is a different SHAPE, and a version-10 row's four absent
+     * keys mean that run never looked for an eight-year figure -- not that it
+     * looked and found none.
      */
-    const val METHOD_VERSION = 10
+    const val METHOD_VERSION = 11
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")
@@ -1916,6 +1933,15 @@ class CollegeScorecardLoader(
     private const val COL_TUITIONFEE_IN = ScorecardInstitutionColumns.TUITIONFEE_IN
     private const val COL_TUITIONFEE_OUT = ScorecardInstitutionColumns.TUITIONFEE_OUT
     private const val COL_C150_4 = ScorecardInstitutionColumns.C150_4
+
+    // RFC 242's four outcome columns, aliased like the three above. The
+    // `OMAWDP8_*` trio is a different measure over a different population and a
+    // different entering cohort from `C150_4`; `TRANS_4` shares `C150_4`'s
+    // cohort and is the share of it that left for another school.
+    private const val COL_OMAWDP8_ALL = ScorecardInstitutionColumns.OMAWDP8_ALL
+    private const val COL_OMAWDP8_PELL_ALL = ScorecardInstitutionColumns.OMAWDP8_PELL_ALL
+    private const val COL_OMAWDP8_NOPELL_ALL = ScorecardInstitutionColumns.OMAWDP8_NOPELL_ALL
+    private const val COL_TRANS_4 = ScorecardInstitutionColumns.TRANS_4
     private const val COL_MD_EARN_WNE_P10 = ScorecardInstitutionColumns.MD_EARN_WNE_P10
     private const val COL_GRAD_DEBT_MDN = ScorecardInstitutionColumns.GRAD_DEBT_MDN
     private const val COL_PCTPELL = ScorecardInstitutionColumns.PCTPELL
@@ -1983,6 +2009,10 @@ class CollegeScorecardLoader(
         COL_TUITIONFEE_IN,
         COL_TUITIONFEE_OUT,
         COL_C150_4,
+        COL_OMAWDP8_ALL,
+        COL_OMAWDP8_PELL_ALL,
+        COL_OMAWDP8_NOPELL_ALL,
+        COL_TRANS_4,
         COL_MD_EARN_WNE_P10,
         COL_GRAD_DEBT_MDN,
         COL_PCTPELL,
@@ -2022,17 +2052,17 @@ class CollegeScorecardLoader(
      * reject, and a countable column added to one side cannot be silently
      * uncounted by the other.
      *
-     * Sixteen keys, not twenty-eight: RFC 176 dropped the eighteen money
-     * names with the columns themselves (migration `0094`) and RFC 195 added
-     * the six percentile score bands, and deriving is what made each of those
-     * ONE edit. The money axis of the provenance is
+     * Twenty keys, not twenty-eight: RFC 176 dropped the eighteen money names
+     * with the columns themselves (migration `0094`), RFC 195 added the six
+     * percentile score bands and RFC 242 four completion columns, and deriving
+     * is what made each of those ONE edit. The money axis of the provenance is
      * `canonical_money_summary` instead, written by the canonical fill from
      * the same CSV.
      *
      * `college_index_build.change_summary` is append-only and no migration
      * touches it, so a build row written before either change keeps the key
      * set it was written with and stays readable. [METHOD_VERSION] is what
-     * tells the shapes apart: 28 keys at 8, 10 at 9, 16 at 10.
+     * tells the shapes apart: 28 keys at 8, 10 at 9, 16 at 10, 20 at 11.
      */
     internal val NON_NULL_SUMMARY_COLUMNS: List<String> = CollegesDao.NON_NULL_COUNTABLE_COLUMNS.toList()
 
@@ -2127,6 +2157,42 @@ class CollegeScorecardLoader(
     private const val CREDENTIAL_LEVEL_MIN = 1
     private const val CREDENTIAL_LEVEL_MAX = 8
   }
+}
+
+/**
+ * ONE Scorecard share the institution phase reads: the publisher's own column,
+ * and the `colleges` column the coercion tally keys on.
+ *
+ * A PAIR in one place, because the two are never useful apart and naming one
+ * without the other is what lets a Pell coercion be tallied under the
+ * all-student name. The tally key is not decoration: it is the identifier an
+ * operator reads in the run summary and beside every rejected cell
+ * (`[column=...]`), so a crossed pair is a diagnostic that accuses the wrong
+ * figure -- and, crossed, it stores the right number, keeps the tally key SET
+ * byte-identical and leaves every assertion green. Six call sites used to pair
+ * two bare `String`s by eye in a block where four of the names differ by one
+ * word; paired here, the crossing has no spelling left.
+ *
+ * The `colleges` column is spelled the same as the figure's wire key and is
+ * NOT it: this side of the pair names a database column, and the same text
+ * reaching the JSON payload is a fact about two vocabularies agreeing, not one
+ * of them being the other.
+ *
+ * Modelled on [ScoreBandVariable], which already carries a band's columns, its
+ * `colleges` names and its published scale as one value for the same reason.
+ */
+private enum class ShareRead(
+  val scorecardVariable: String,
+  val collegesColumn: String,
+) {
+  ADMISSION_RATE(ScorecardInstitutionColumns.ADM_RATE, "admission_rate_share"),
+  COMPLETION_RATE_150PCT_4YR(ScorecardInstitutionColumns.C150_4, "completion_rate_150pct_4yr_share"),
+
+  // RFC 242's four.
+  COMPLETION_RATE_8YR(ScorecardInstitutionColumns.OMAWDP8_ALL, "completion_rate_8yr_share"),
+  COMPLETION_RATE_8YR_PELL(ScorecardInstitutionColumns.OMAWDP8_PELL_ALL, "completion_rate_8yr_pell_share"),
+  COMPLETION_RATE_8YR_NON_PELL(ScorecardInstitutionColumns.OMAWDP8_NOPELL_ALL, "completion_rate_8yr_non_pell_share"),
+  TRANSFER_OUT_RATE_4YR(ScorecardInstitutionColumns.TRANS_4, "transfer_out_rate_4yr_share"),
 }
 
 /**

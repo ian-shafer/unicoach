@@ -155,6 +155,23 @@ class FitLensService(
     private const val NOT_REPORTED = "not reported"
 
     /**
+     * How an OUTCOME figure the row does not carry is written into the prompt.
+     *
+     * Absence with NO attribution, deliberately, and it is a different word
+     * from [NOT_REPORTED] for a reason the type makes plain: [CollegeMatch]
+     * carries a number or nothing, never a reason. A cell the publisher
+     * withheld, a cell the loader coerced out of domain and a row written
+     * before RFC 242's migration all reach this line looking exactly like the
+     * school's own silence, so a surface that says "not reported" is inventing
+     * an attribution -- and blaming a school for a gap that may be ours.
+     *
+     * [NOT_REPORTED] is UNCHANGED where the claim is true and tested: the
+     * canonical money seam carries a per-figure status (RFC 206), so the cost
+     * surfaces state whose silence it is because they know.
+     */
+    private const val NO_FIGURE_HELD = "absent (reason not carried)"
+
+    /**
      * How a figure the source dates no year is written (RFC 166 §9).
      *
      * `cohort_money_stats.vintage` stores the literal `'undated'` where the
@@ -965,10 +982,8 @@ class FitLensService(
         appendLine(
           "- collegeId=[${match.id.asString}] name=[${match.name}] city=[${match.city}] " +
             "state=[${match.state}] control=[${match.control}] " +
-            "${digestFieldOf(Citation.UNDERGRAD_ENROLLMENT)}=[${match.undergradEnrollmentHeadcount ?: NOT_REPORTED}] " +
-            "${digestFieldOf(Citation.ADMISSION_RATE)}=[${match.admissionRateShare ?: NOT_REPORTED}] " +
+            outcomeFigureSegment(match) +
             netPriceSegment(netPrices, match.id) +
-            "${digestFieldOf(Citation.COMPLETION_RATE)}=[${match.completionRate150pct4yrShare ?: NOT_REPORTED}] " +
             "medianEarnings10yAfterEntryUsd=[${match.medianEarnings10yAfterEntryUsd ?: NOT_REPORTED}] " +
             "programs=[${match.programTitles.orEmpty().joinToString("; ")}]",
         )
@@ -984,7 +999,8 @@ class FitLensService(
    * paragraph used to name all three citations and state all three stamps
    * unconditionally, so a fourth citation would have reached the wire and not
    * this paragraph, and a page whose rows carry no completion rate still got a
-   * completion sentence.
+   * completion sentence. RFC 242 added four citations and this function was
+   * not edited for them, which is the claim working.
    *
    * Nothing at all when no returned row carries a stamped figure: a paragraph
    * explaining stamps the model cannot see is the same defect the net-price
@@ -1018,20 +1034,45 @@ class FitLensService(
   }
 
   /**
+   * Every outcome figure this row carries, in the ONE wire order
+   * [ScorecardOutcomeCitations.inWireOrder] gives -- the same order the stamp
+   * paragraph above speaks them in.
+   *
+   * A TRAVERSAL of the closed [Citation] set, not a hand-written fragment per
+   * figure: the row LINE decides shape and this decides content, and an eighth
+   * figure reaches the row without an edit here. The hand-written form paired a
+   * citation's name with a row field by eye seven times, beside a paragraph
+   * that derived its own figure set from the enum -- so an eighth figure could
+   * be stamped with a sentence and printed with no number.
+   *
+   * Each figure's value is read through [Citation.figureIn], the same accessor
+   * the search payload writes from, so this surface cannot print one figure's
+   * number under another figure's name.
+   *
+   * An absent figure prints [NO_FIGURE_HELD] and NOT [NOT_REPORTED]: see that
+   * constant for why this surface is not entitled to name a reason.
+   */
+  private fun outcomeFigureSegment(match: CollegeMatch): String =
+    ScorecardOutcomeCitations
+      .inWireOrder(Citation.entries)
+      .joinToString(separator = " ", postfix = " ") { citation ->
+        "${digestFieldOf(citation)}=[${citation.figureIn(match) ?: NO_FIGURE_HELD}]"
+      }
+
+  /**
    * The name THIS surface calls an outcome figure by: the digest's own
    * camelCase field name, not the search payload's snake_case wire key.
    *
    * One home for each name, read by the stamp paragraph and by the row line
-   * that prints the number, so the two cannot name one figure two ways. A
-   * `when` over the closed [Citation] enum, so a fourth figure does not
-   * compile until this surface has decided what to call it.
+   * that prints the number, so the two cannot name one figure two ways -- and
+   * that home is the PROPERTY the citation already reads the figure through.
+   * This used to be a `when` re-typing all seven `CollegeMatch` field names in
+   * another module, so a renamed field left the digest naming a field the row
+   * no longer has, and RFC 242 added four more copies of the same pairing.
+   * `Citation.figureIn` is a property reference, which carries its own name,
+   * so the name and the value now come from ONE declaration.
    */
-  private fun digestFieldOf(citation: Citation): String =
-    when (citation) {
-      Citation.UNDERGRAD_ENROLLMENT -> "undergradEnrollmentHeadcount"
-      Citation.ADMISSION_RATE -> "admissionRateShare"
-      Citation.COMPLETION_RATE -> "completionRate150pct4yrShare"
-    }
+  private fun digestFieldOf(citation: Citation): String = citation.figureIn.name
 
   // ---------------------------------------------------------------------------
   // Output parsing (JSON element DSL — the service module has no serialization plugin)

@@ -121,6 +121,13 @@ The source it was read from:
 - <https://collegescorecard.ed.gov/files/CollegeScorecardDataDictionary.xlsx>,
   sheet `Institution_Data_Dictionary`, downloaded **2026-09-05**, **727,278**
   bytes.
+- The SAME artifact, downloaded again **2026-09-25** for RFC 242's four rows:
+  **727,278** bytes, sha256
+  `2f314d1d02d4ce7e8ca29feffaaa69860b18b2812cbb407adc014c6792fa1740`. A second
+  dated read, not a replacement for the line above it: the two reads are
+  byte-identical, which is a FACT this file can only record by keeping both
+  dates. The download is deliberately not committed and no script in `bin/`
+  fetches it (RFC 173/183/226, unreversed).
 - Corroborated against `InstitutionDataDocumentation.pdf` (531,031 bytes,
   "Version: September 2025"), whose cost section states that the cost elements
   are derived from data reported to the IPEDS Institutional Characteristics and
@@ -131,7 +138,7 @@ The committed transcription's own digest, so an undocumented edit of it fails a
 test rather than moving a tier quietly:
 
 - `dictionary-variable-sources.csv` — sha256
-  `2ccc060e06daa912eace96323c4faa54667542fa839c7251208537557675527a`
+  `4c605a01184c6d92fc248b1ebba8346f87c513a62184d6b2e00c6e96f11b6f36`
 
 `AssuranceTier.SCORECARD_TIERS` is asserted against this file column by column,
 and the digest above is typed beside that test. `PROVENANCE.json` deliberately
@@ -167,6 +174,25 @@ This RFC PARTLY SUPERSEDES the RFC 195 decision below: its two reasons for
 keeping non-money dates in Kotlin are now spent FOR THESE THREE, so they live in
 the CSV. The six score-band variables and `SAT_AVG` stay in Kotlin exactly as
 RFC 195 left them.
+
+## The four completion columns (RFC 242)
+
+`OMAWDP8_ALL`, `OMAWDP8_PELL_ALL`, `OMAWDP8_NOPELL_ALL` and `TRANS_4` joined the
+transcription in RFC 242, on the same terms as the three above: `SOURCE` from
+`Institution_Data_Dictionary`, and the leading `Cohort/Measure` clause from
+`Most_Recent_Inst_Cohort_Map`, hand-transcribed from the 2026-09-25 read
+recorded above. **What each is sourced to and dated to is NOT restated here**,
+for the same reason the three above are not: the CSV is that answer.
+
+One thing about them IS stated here, because it is a fact about the READER and
+not about a cell. The three `OMAWDP8_*` cells are a full **entering academic
+year**, not a term and not a money vintage — the publisher writes them
+`AY <label> cohort`, a third shape beside `AcadYr <label>` and `Fall <yyyy>`.
+`ScorecardDictionaryTranscription` therefore carries a third `Cohort` arm,
+`StatedEnteringAcademicYear`, and the citation that speaks one says the academic
+year rather than an autumn: a cohort that entered across a July-June year is not
+an autumn cohort, and saying so would misstate the population. `TRANS_4` needs
+no new arm — it carries `C150_4`'s own cell, because it counts that same cohort.
 
 ## The six percentile score-band variables (RFC 195)
 

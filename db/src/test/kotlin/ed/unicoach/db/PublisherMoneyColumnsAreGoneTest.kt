@@ -266,9 +266,13 @@ class PublisherMoneyColumnsAreGoneTest {
         PermittedOccurrences(1, "a KDoc saying the wire key is NOT the column name"),
       // Search's own wire vocabulary (RFC 133/142), fed from `cohort_money_stats`.
       "college/src/main/kotlin/ed/unicoach/college/CollegeMatchRow.kt" to
-        PermittedOccurrences(3, "search wire keys, fed from cohort_money_stats"),
-      "college/src/main/kotlin/ed/unicoach/college/CollegeSearchTool.kt" to
-        PermittedOccurrences(1, "the tool schema's description of a wire key"),
+        PermittedOccurrences(
+          3,
+          "search wire keys, fed from cohort_money_stats: the three `WIRE_*` CONSTANTS that now own these " +
+            "spellings. `matchObject`, MATCH_ROW_NUMBERS_BY_CONTRACT and `CollegeSearchTool`'s description " +
+            "read those constants, so the three keys are stated once in the module rather than six times " +
+            "here and three more there (RFC 242 tier 2)",
+        ),
       // The canonical vocabulary and the cost wire names (RFC 166): concept
       // names that merely LOOK like the old columns.
       "db/src/main/kotlin/ed/unicoach/db/models/MoneyMeasure.kt" to

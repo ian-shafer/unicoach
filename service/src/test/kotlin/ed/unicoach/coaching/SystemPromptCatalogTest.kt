@@ -24,6 +24,7 @@ import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.coaching.testing.AdmissionTestTimelineChatTool
 import ed.unicoach.coaching.testing.AutomaticAwardChatTool
 import ed.unicoach.college.CollegeSearchTool
+import ed.unicoach.college.FIGURE_COMPARISON_WORDS
 import ed.unicoach.college.FindCollegeTool
 import ed.unicoach.college.SimilarCollegesTool
 import ed.unicoach.db.DatabaseConfig
@@ -45,6 +46,7 @@ import java.sql.PreparedStatement
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -2511,14 +2513,27 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The outcome-figures paragraph (RFC 226), asserted in the body the runtime
-   * is actually SERVED: the three stamped search figures are now quotable,
-   * WITH the sentence the payload's `figure_sources` entry carries. The Pell
-   * share is the fourth search figure and is deliberately NOT licensed here
-   * (RFC 226 §5), so it is not among them.
+   * The outcome-figures paragraph (RFC 226, widened by RFC 242), asserted in
+   * the body the runtime is actually SERVED: the seven stamped search figures
+   * are quotable, WITH the sentence the payload's `figure_sources` entry
+   * carries.
+   *
+   * The paragraph is quantified over "each figure whose `figure_sources` entry
+   * is present", never over a list, so RFC 242's four needed no new licence.
+   * What it DID need is three sentences none of them can carry, because each
+   * states a relation BETWEEN figures rather than a fact about one: two
+   * completion measures are not one measure improving, the two Pell arms are
+   * two counted groups and not a prediction, and a transfer-out share is a move
+   * and not a failure.
+   *
+   * The institution's Pell SHARE (`PCTPELL`) is STILL deliberately not licensed
+   * here (RFC 226 §5): it is served from two sources at two vintages. That is a
+   * different figure from the Pell-recipient completion rate RFC 242 adds,
+   * which has one source and one dictionary cell, and nothing below reverses
+   * §5.
    */
   @Test
-  fun `the served outcome-figures paragraph licences the three stamped figures and demands their population`() {
+  fun `the served outcome-figures paragraph licences the stamped figures and demands their population`() {
     val paragraph = outcomeFiguresParagraph()
 
     assertTrue(
@@ -2541,6 +2556,71 @@ class SystemPromptCatalogTest {
       paragraph.contains("never a judgement about the school"),
       "an enrolment headcount is a size, not a quality",
     )
+    // RFC 242's three relations. Each is a sentence no single `cited_as` can
+    // carry, so each is asserted by its own marker.
+    assertTrue(
+      paragraph.contains("never one measure improving"),
+      "two completion figures over different students and windows are two measures, never one improving",
+    )
+    assertTrue(
+      paragraph.contains("never a prediction about this student"),
+      "the Pell and non-Pell figures are two groups the publisher counted",
+    )
+    assertTrue(
+      paragraph.contains("never decide which of them is theirs"),
+      "the coach never infers a family's Pell status, from a stored income band or from anything else",
+    )
+    assertTrue(
+      paragraph.contains("a move and not a failure"),
+      "a transfer-out share counts a move, and is never called dropping out",
+    )
+    // The gate's own decision: of the two completion figures, the eight-year
+    // one leads, and the six-year one is said on request or in its absence.
+    // Approved in imperative terms and unstated in the copy until now, so the
+    // coach was free to keep leading with the measure the slice exists to
+    // supersede.
+    assertTrue(
+      paragraph.contains("lead with the eight-year one"),
+      "the gate's own decision: the eight-year figure leads, because it counts every student who entered",
+    )
+    assertTrue(
+      paragraph.contains("when the family asks for the published graduation rate"),
+      "and the six-year figure is said on request",
+    )
+    assertTrue(
+      paragraph.contains("when the eight-year figure is absent"),
+      "or when the eight-year figure is absent for that school",
+    )
+    // And the paragraph does NOT narrate a gap between the two Pell arms, nor
+    // between the two completion windows: the Pell figure is the lower of the
+    // two at only 65.8% of schools, so any copy that said so would be wrong
+    // about one school in three. The scanned words are
+    // [FIGURE_COMPARISON_WORDS], the same list `:college`'s citation guard
+    // reads: ONE copy rule, one vocabulary, so a word added to protect one of
+    // the two surfaces protects both.
+    for (comparison in FIGURE_COMPARISON_WORDS) {
+      // WORD boundaries, not a bare substring: `lower` is inside `slower` and
+      // `follower`, and the scanned text is the WHOLE outcome-figures
+      // paragraph, so a bare match would fail an unrelated future line with a
+      // message about the Pell arms. The RULE is the same -- these words, as
+      // words, may not appear in this paragraph.
+      //
+      // The OFFENDING LINE travels with the refusal. The paragraph is many
+      // sentences long, so naming the word alone leaves a reader grepping the
+      // served body for it -- and the line is the one value that tells a
+      // genuine comparison apart from a word this guard should learn to allow.
+      // Its twin in `:college` prints the offending sentence; this copy
+      // located the match and then threw the position away.
+      val offending =
+        paragraph.lines().firstOrNull { line ->
+          Regex("""\b${Regex.escape(comparison)}\b""").containsMatchIn(line)
+        }
+      assertNull(
+        offending,
+        "the paragraph states a relation between two outcome figures with [$comparison]; between the Pell " +
+          "arms in particular that is false at a third of schools: line=[$offending]",
+      )
+    }
     assertParagraphKeepsTheStandingCopyRules("the outcome-figures paragraph", paragraph)
   }
 

@@ -101,6 +101,10 @@ class FitSuggestionsDaoTest {
           actComposite25thPercentileScore = null,
           actComposite75thPercentileScore = null,
           completionRate150pct4yrShare = 0.7,
+          completionRate8yrShare = null,
+          completionRate8yrPellShare = null,
+          completionRate8yrNonPellShare = null,
+          transferOutRate4yrShare = null,
           website = null,
         ),
       ).getOrThrow()

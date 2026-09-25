@@ -26,3 +26,7 @@ MD_EARN_WNE_P10,Treasury,
 ADM_RATE,IPEDS,Fall 2024
 C150_4,IPEDS,"Fall 2018 or AcadYr 2018-19 cohort (differs by institutional calendar)"
 UGDS,IPEDS,Fall 2024
+OMAWDP8_ALL,IPEDS,AY 2016-17 cohort
+OMAWDP8_PELL_ALL,IPEDS,AY 2016-17 cohort
+OMAWDP8_NOPELL_ALL,IPEDS,AY 2016-17 cohort
+TRANS_4,IPEDS,"Fall 2018 or AcadYr 2018-19 cohort (differs by institutional calendar)"

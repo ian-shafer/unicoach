@@ -39,9 +39,11 @@ class AssuranceTierClosureTest {
   private val scorecardVariables: Set<String> = ScorecardInstitutionColumns.LOADED_VARIABLES
 
   /**
-   * The three outcome columns RFC 226 dates, read off the same registry as the
-   * money strings: the transcription and the tier map now answer for the UNION
-   * of the two registries, never for the money fill alone.
+   * The outcome columns whose date we cite, read off the same registry as the
+   * money strings: the transcription and the tier map answer for the UNION of
+   * the two registries, never for the money fill alone. The registry owns the
+   * set's SIZE -- a count restated here was a count of another file's
+   * membership, and it said "three" of a seven-member set.
    */
   private val outcomeVariables: Set<String> = ScorecardInstitutionColumns.OUTCOME_VARIABLES
 
@@ -93,9 +95,17 @@ class AssuranceTierClosureTest {
   fun `every Scorecard string the loader writes resolves, and the two administrative records are the two`() {
     assertEquals(24, scorecardVariables.size, "eight prices and sixteen cohort cells, as the registry expands them")
     assertEquals(
-      setOf(ScorecardInstitutionColumns.ADM_RATE, ScorecardInstitutionColumns.C150_4, ScorecardInstitutionColumns.UGDS),
+      setOf(
+        ScorecardInstitutionColumns.ADM_RATE,
+        ScorecardInstitutionColumns.C150_4,
+        ScorecardInstitutionColumns.UGDS,
+        ScorecardInstitutionColumns.OMAWDP8_ALL,
+        ScorecardInstitutionColumns.OMAWDP8_PELL_ALL,
+        ScorecardInstitutionColumns.OMAWDP8_NOPELL_ALL,
+        ScorecardInstitutionColumns.TRANS_4,
+      ),
       outcomeVariables,
-      "the three outcome columns RFC 226 dates",
+      "the three outcome columns RFC 226 dates, plus the four RFC 242 adds",
     )
     assertEquals(
       datedScorecardVariables,
@@ -109,7 +119,7 @@ class AssuranceTierClosureTest {
       "the federal loan file and the tax file, and nothing else the Scorecard relays",
     )
     // The SET, not its size: a string that moves tier is then printed by the
-    // assertion that caught it, instead of leaving a reader to diff a 27-row
+    // assertion that caught it, instead of leaving a reader to diff a 31-row
     // registry against a count that went up by one.
     assertEquals(
       datedScorecardVariables - setOf(ScorecardInstitutionColumns.GRAD_DEBT_MDN, ScorecardInstitutionColumns.MD_EARN_WNE_P10),
@@ -140,14 +150,14 @@ class AssuranceTierClosureTest {
         }
       assertEquals(expected, AssuranceTier.of(MoneySource.SCORECARD, variable, ROW), "dictionary row [$variable]")
     }
-    // STRINGS, not cells, and the two are different numbers: the nineteen IPEDS
-    // cells `AssuranceTier` counts are the sixteen money cells (published as 22
-    // strings, because `NPT4` and its five bands are each published twice on
-    // `CONTROL`) plus the three outcome cells, which are one string each.
+    // STRINGS, not cells, and the two are different numbers: the twenty-three
+    // IPEDS cells `AssuranceTier` counts are the sixteen money cells (published
+    // as 22 strings, because `NPT4` and its five bands are each published twice
+    // on `CONTROL`) plus the seven outcome cells, which are one string each.
     assertEquals(
       datedScorecardVariables - setOf(ScorecardInstitutionColumns.GRAD_DEBT_MDN, ScorecardInstitutionColumns.MD_EARN_WNE_P10),
       dictionary.filterValues { it == "IPEDS" }.keys,
-      "22 money strings for sixteen money cells, plus 3 outcome cells: the nineteen IPEDS cells as strings",
+      "22 money strings for sixteen money cells, plus 7 outcome cells: the twenty-three IPEDS cells as strings",
     )
   }
 
@@ -176,6 +186,6 @@ class AssuranceTierClosureTest {
     const val ROW = "the assurance-tier closure walk (the loaders' key space)"
 
     /** The sha256 recorded in `db/seed/scorecard/FETCH-NOTES.md` for the committed transcription. */
-    const val DICTIONARY_SHA256 = "2ccc060e06daa912eace96323c4faa54667542fa839c7251208537557675527a"
+    const val DICTIONARY_SHA256 = "4c605a01184c6d92fc248b1ebba8346f87c513a62184d6b2e00c6e96f11b6f36"
   }
 }

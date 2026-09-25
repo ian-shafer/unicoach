@@ -39,5 +39,30 @@ data class NewCollege(
   val actComposite25thPercentileScore: Int?,
   val actComposite75thPercentileScore: Int?,
   val completionRate150pct4yrShare: Double?,
+  /**
+   * RFC 242's four completion figures: Scorecard `OMAWDP8_ALL`,
+   * `OMAWDP8_PELL_ALL`, `OMAWDP8_NOPELL_ALL` and `TRANS_4`, each a share in
+   * [0, 1].
+   *
+   * The three eight-year figures count everyone who ENTERED the school in the
+   * publisher's `AY 2016-17` cohort -- full-time and part-time, new to college
+   * and transferring in -- and had an award within eight years, split by
+   * federal Pell Grant receipt. They are a different measure over a different
+   * population and a different entering cohort from
+   * [completionRate150pct4yrShare], never a later version of it.
+   *
+   * INDEPENDENTLY nullable, all four. The two Pell arms are not a pair:
+   * measured on the pinned snapshot, 112 institutions carry one without the
+   * other. And nothing here or above may state an ordering between them -- the
+   * Pell figure is the lower of the two at only 65.8% of institutions.
+   *
+   * [transferOutRate4yrShare] belongs to [completionRate150pct4yrShare]'s
+   * cohort, not to the eight-year one, so it is not subtractable from the
+   * figures above it.
+   */
+  val completionRate8yrShare: Double?,
+  val completionRate8yrPellShare: Double?,
+  val completionRate8yrNonPellShare: Double?,
+  val transferOutRate4yrShare: Double?,
   val website: String?,
 )

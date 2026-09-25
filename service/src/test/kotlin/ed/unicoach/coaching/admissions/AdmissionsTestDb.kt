@@ -106,6 +106,10 @@ object AdmissionsTestDb {
           actComposite25thPercentileScore = actBand?.first,
           actComposite75thPercentileScore = actBand?.second,
           completionRate150pct4yrShare = 0.7,
+          completionRate8yrShare = null,
+          completionRate8yrPellShare = null,
+          completionRate8yrNonPellShare = null,
+          transferOutRate4yrShare = null,
           website = "https://test$ipedsUnitId.edu",
         ),
       ).getOrThrow()

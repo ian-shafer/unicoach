@@ -231,6 +231,38 @@ class CollegeSearchTool(
         }
       }
 
+    /**
+     * Every STAMPED outcome key the row writes, in the ONE wire order
+     * [ScorecardOutcomeCitations.inWireOrder] gives, spelled as this
+     * description spells a key.
+     *
+     * DERIVED from the citation registry, never a hand-written list. This
+     * sentence named three figures while the row carried seven, because
+     * nothing could make a typed list move: the row gained RFC 242's four and
+     * the advertisement did not. Named HERE, beside the registry it reads,
+     * rather than inside the description, so the sentence stays a sentence.
+     */
+    private val STAMPED_FIGURE_KEYS: String =
+      ScorecardOutcomeCitations
+        .inWireOrder(ScorecardOutcomeCitations.Citation.entries)
+        .joinToString(", ") { "`${it.wireKey}`" }
+
+    /**
+     * Their COMPLEMENT: every other number the row writes that no
+     * `figure_sources` entry covers.
+     *
+     * Derived too, and for the same reason. The hand-typed half of that one
+     * sentence named two of three -- the debt key rides the row and was
+     * advertised nowhere -- while reading as a closed enumeration,
+     * so the clause told a model, by omission, that the debt key is stamped.
+     * The price keys are subtracted rather than listed: `price_ruler`
+     * describes those, and this sentence does not.
+     */
+    private val UNSTAMPED_FIGURE_KEYS: String =
+      (MATCH_ROW_NUMBERS_BY_CONTRACT - ScorecardOutcomeCitations.byWireKey.keys - MATCH_ROW_PRICE_WIRE_KEYS)
+        .sorted()
+        .joinToString(", ") { "`$it`" }
+
     // Not `const`: the income-band ranges are rendered from IncomeBand.bracket,
     // the one home for that copy (RFC 142), so the description can never drift
     // from the labels the results themselves carry.
@@ -261,8 +293,10 @@ class CollegeSearchTool(
         "The response carries `count` (returned rows, capped at $MAX_LIMIT) and " +
         "`total_matches` (every college matching the filters, uncapped) — cite " +
         "`total_matches` when stating how many schools match. Returns matching real " +
-        "institutions with size, selectivity, net price, and outcome context " +
-        "(completion rate within 150% of normal time, median earnings, Pell share). " +
+        "institutions with size, selectivity, net price, and outcome context: " +
+        STAMPED_FIGURE_KEYS +
+        ", each of which carries a `figure_sources` entry on any page where a returned row reports it, plus " +
+        UNSTAMPED_FIGURE_KEYS + ", which never carry one. " +
         FIGURE_SOURCES_NOTE + " Each result carries " +
         "`college_id`, the college's stable identifier — exactly what the " +
         "`update_college_list` tool's `college_id` parameter takes, so copy it " +
@@ -273,7 +307,7 @@ class CollegeSearchTool(
         IncomeBand.entries.joinToString(" / ") { it.bracket } +
         " -- alongside the ${PriceRuler.NET_PRICE_RESULT_KEY} a family in that band pays. Name a band by that dollar " +
         "range when you say it aloud, never by a data source's own bucket name. Each result also " +
-        "carries median_debt_at_completion_usd, the median cumulative federal loan debt of graduates, so " +
+        "carries $WIRE_MEDIAN_DEBT_AT_COMPLETION_USD, the median cumulative federal loan debt of graduates, so " +
         "cost answers can cite the band matching the family's income. This tool filters on " +
         "structured fields only; it CANNOT reason about geographic distance, " +
         "proximity to the coastline, or how close two places are — to approximate " +

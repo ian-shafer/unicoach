@@ -9,6 +9,10 @@ import ed.unicoach.db.dao.CanonicalCohortFixture
 import ed.unicoach.db.dao.CodebooksDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_NON_PELL_SHARE
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_PELL_SHARE
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_SHARE
+import ed.unicoach.db.dao.FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeQuery
@@ -154,6 +158,16 @@ class SimilarCollegesToolTest {
     actComposite25thPercentileScore = null,
     actComposite75thPercentileScore = null,
     completionRate150pct4yrShare = completionRate150pct4yrShare,
+    // RFC 242's four, all DISTINCT and all present, because the payload
+    // assertions below require every allowlisted numeric key to be RENDERED by
+    // this fixture. The non-Pell arm is deliberately the LOWER of the two arms:
+    // measured, it is the higher one at only 65.8% of institutions, so a
+    // fixture that always ordered them the other way would let an ordering
+    // assumption look true.
+    completionRate8yrShare = FIXTURE_COMPLETION_8YR_SHARE,
+    completionRate8yrPellShare = FIXTURE_COMPLETION_8YR_PELL_SHARE,
+    completionRate8yrNonPellShare = FIXTURE_COMPLETION_8YR_NON_PELL_SHARE,
+    transferOutRate4yrShare = FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE,
     website = null,
   )
 
@@ -560,14 +574,15 @@ class SimilarCollegesToolTest {
       assertNull(result["error"], "$result")
       val figureSources =
         assertNotNull(result["figure_sources"], "the answer carries no figure_sources block at all: $result").jsonObject
+      // DERIVED from the registry, not a typed copy of it: this universe
+      // reports every stamped figure, so the claim is "every stamped figure is
+      // stamped". A typed set would stay green when an eighth citation was
+      // declared and this fixture never set its field -- still claiming "all
+      // seven".
       assertEquals(
-        setOf(
-          "undergrad_enrollment_headcount",
-          "admission_rate_share",
-          "completion_rate_150pct_4yr_share",
-        ),
+        ScorecardOutcomeCitations.byWireKey.keys,
         figureSources.keys,
-        "the peer list carries all three stamped figures, so all three are stamped",
+        "this universe reports every stamped figure, so every one of them is stamped",
       )
       val admission =
         assertNotNull(figureSources["admission_rate_share"], "the admission rate is not stamped: $figureSources").jsonObject
@@ -598,6 +613,20 @@ class SimilarCollegesToolTest {
           row.figureAt("completion_rate_150pct_4yr_share").doubleOrNull,
           "the completion rate survives the stamp: $row",
         )
+        // RFC 242's four ride `matchObject`, which `similarObject` copies key
+        // for key -- so a peer row carries them without this tool knowing
+        // anything about them. That is the claim, asserted.
+        for (
+        key in
+        listOf(
+          "completion_rate_8yr_share",
+          "completion_rate_8yr_pell_share",
+          "completion_rate_8yr_non_pell_share",
+          "transfer_out_rate_4yr_share",
+        )
+        ) {
+          assertNotNull(row.figureAt(key).doubleOrNull, "a peer row carries [$key]: $row")
+        }
       }
     }
 
@@ -618,10 +647,13 @@ class SimilarCollegesToolTest {
         figureSources.containsKey("completion_rate_150pct_4yr_share"),
         "no peer carries a completion rate, so none is stamped: $figureSources",
       )
+      // The registry MINUS the one figure this universe withholds, derived for
+      // the same reason as the whole-set assertion above.
       assertEquals(
-        setOf("undergrad_enrollment_headcount", "admission_rate_share"),
+        ScorecardOutcomeCitations.byWireKey.keys - WIRE_COMPLETION_RATE_150PCT_4YR_SHARE,
         figureSources.keys,
-        "the other two outcome columns are still stamped",
+        "every other stamped figure is still stamped -- the eight-year one in particular, because it " +
+          "is a different measure and not a version of the one that is missing",
       )
       // The ROW is unchanged by the omission: the figure it does not have is a
       // labelled null, never a missing key (`putOrNull`).
@@ -1704,27 +1736,20 @@ class SimilarCollegesToolTest {
  * can never become a source's own code.
  */
 private val NUMBERS_BY_CONTRACT =
-  setOf(
-    "distance",
-    "weight",
-    "total_candidates",
-    "undergrad_enrollment_headcount",
-    "admission_rate_share",
-    // The price keys NAME THEIR BASIS since RFC 169: the after-federal-aid
-    // blend (in-state at a public school), and the residency-correct published
-    // on-campus total under each tuition tier.
-    "in_state_net_price_per_year_usd",
-    "published_price_in_state_on_campus_per_year_usd",
-    "published_price_out_of_state_on_campus_per_year_usd",
-    "completion_rate_150pct_4yr_share",
-    "median_earnings_10y_after_entry_usd",
-    "median_debt_at_completion_usd",
-    "pell_share",
-    // `source_years`: an academic year is a fact about the figures, and the one
-    // number in the payload that is a YEAR rather than a measure.
-    "ipeds",
-    "programs_census",
-  ) + SimilarityAxis.entries.map { it.word }
+  // The ROW's numbers, read from the renderer that writes them
+  // ([MATCH_ROW_NUMBERS_BY_CONTRACT]), plus this tool's own ENVELOPE keys:
+  // `similarObject` copies `matchObject` key for key, so the row half is one
+  // fact and only the envelope below is this tool's.
+  MATCH_ROW_NUMBERS_BY_CONTRACT +
+    setOf(
+      "distance",
+      "weight",
+      "total_candidates",
+      // `source_years`: an academic year is a fact about the figures, and the one
+      // number in the payload that is a YEAR rather than a measure.
+      "ipeds",
+      "programs_census",
+    ) + SimilarityAxis.entries.map { it.word }
 
 private val QUINTILE_CODE = BareSourceCodeGuard.QUINTILE_CODE
 

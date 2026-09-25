@@ -94,6 +94,10 @@ class CollegeIpedsChargesDaoTest {
           actComposite25thPercentileScore = null,
           actComposite75thPercentileScore = null,
           completionRate150pct4yrShare = null,
+          completionRate8yrShare = null,
+          completionRate8yrPellShare = null,
+          completionRate8yrNonPellShare = null,
+          transferOutRate4yrShare = null,
           website = null,
         ),
       ).getOrThrow()

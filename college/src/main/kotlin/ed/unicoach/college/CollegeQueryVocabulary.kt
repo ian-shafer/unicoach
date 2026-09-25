@@ -868,6 +868,25 @@ internal fun JsonObjectBuilder.putOrNull(
   if (value != null) put(key, value) else put(key, JsonNull)
 }
 
+/**
+ * The same rule for a figure read through a citation
+ * (`ScorecardOutcomeCitations.Citation.figureIn`), whose static type is
+ * `Number?` and so matched none of the three overloads above.
+ *
+ * Here rather than re-spelled at the one call site: "an absent key is a
+ * LABELLED null, never a dropped key" is one rule, and `putFigure` had to write
+ * its body out a fourth time to obey it -- a claim its own KDoc made ("exactly
+ * as `putOrNull` writes one") and nothing enforced. The three overloads above
+ * stay: an `Int?`/`Double?`/`String?` argument still resolves to its own, more
+ * specific, overload.
+ */
+internal fun JsonObjectBuilder.putOrNull(
+  key: String,
+  value: Number?,
+) {
+  if (value != null) put(key, value) else put(key, JsonNull)
+}
+
 internal fun JsonObjectBuilder.putProperties(properties: Map<String, JsonObject>) {
   properties.forEach { (key, value) -> put(key, value) }
 }

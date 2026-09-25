@@ -196,6 +196,11 @@ object CollegesDao :
       actComposite25thPercentileScore = rs.intOrNull("act_composite_25th_percentile_score"),
       actComposite75thPercentileScore = rs.intOrNull("act_composite_75th_percentile_score"),
       completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
+      // RFC 242's four, on the same `SELECT *` terms as the bands above.
+      completionRate8yrShare = rs.doubleOrNull("completion_rate_8yr_share"),
+      completionRate8yrPellShare = rs.doubleOrNull("completion_rate_8yr_pell_share"),
+      completionRate8yrNonPellShare = rs.doubleOrNull("completion_rate_8yr_non_pell_share"),
+      transferOutRate4yrShare = rs.doubleOrNull("transfer_out_rate_4yr_share"),
       website = rs.getString("website"),
       aliases = rs.getStringList("aliases"),
       createdAt = rs.getInstant("created_at"),
@@ -308,6 +313,13 @@ object CollegesDao :
           .mapNotNull { band -> rs.intOrNull(netPriceColumn(band))?.let { band to it } }
           .toMap(),
       completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
+      // RFC 242's four, read off the `colleges c` payload join like the
+      // completion rate above them -- they are returned context, so they are
+      // deliberately NOT on `college_search_index`.
+      completionRate8yrShare = rs.doubleOrNull("completion_rate_8yr_share"),
+      completionRate8yrPellShare = rs.doubleOrNull("completion_rate_8yr_pell_share"),
+      completionRate8yrNonPellShare = rs.doubleOrNull("completion_rate_8yr_non_pell_share"),
+      transferOutRate4yrShare = rs.doubleOrNull("transfer_out_rate_4yr_share"),
       medianEarnings10yAfterEntryUsd = rs.intOrNull(MEDIAN_EARNINGS_COLUMN),
       medianDebtAtCompletionUsd = rs.intOrNull(MEDIAN_DEBT_COLUMN),
       pellShare = rs.doubleOrNull(PELL_SHARE_COLUMN),
@@ -354,9 +366,12 @@ object CollegesDao :
           sat_reading_25th_percentile_score, sat_reading_75th_percentile_score,
           sat_math_25th_percentile_score, sat_math_75th_percentile_score,
           act_composite_25th_percentile_score, act_composite_75th_percentile_score,
-          completion_rate_150pct_4yr_share, website
+          completion_rate_150pct_4yr_share,
+          completion_rate_8yr_share, completion_rate_8yr_pell_share,
+          completion_rate_8yr_non_pell_share, transfer_out_rate_4yr_share,
+          website
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (ipeds_unit_id) DO UPDATE SET
           opeid = EXCLUDED.opeid,
           name = EXCLUDED.name,
@@ -377,6 +392,10 @@ object CollegesDao :
           act_composite_25th_percentile_score = EXCLUDED.act_composite_25th_percentile_score,
           act_composite_75th_percentile_score = EXCLUDED.act_composite_75th_percentile_score,
           completion_rate_150pct_4yr_share = EXCLUDED.completion_rate_150pct_4yr_share,
+          completion_rate_8yr_share = EXCLUDED.completion_rate_8yr_share,
+          completion_rate_8yr_pell_share = EXCLUDED.completion_rate_8yr_pell_share,
+          completion_rate_8yr_non_pell_share = EXCLUDED.completion_rate_8yr_non_pell_share,
+          transfer_out_rate_4yr_share = EXCLUDED.transfer_out_rate_4yr_share,
           website = EXCLUDED.website,
           version = colleges.version + 1
         WHERE (
@@ -388,6 +407,8 @@ object CollegesDao :
           colleges.sat_math_25th_percentile_score, colleges.sat_math_75th_percentile_score,
           colleges.act_composite_25th_percentile_score, colleges.act_composite_75th_percentile_score,
           colleges.completion_rate_150pct_4yr_share,
+          colleges.completion_rate_8yr_share, colleges.completion_rate_8yr_pell_share,
+          colleges.completion_rate_8yr_non_pell_share, colleges.transfer_out_rate_4yr_share,
           colleges.website, colleges.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
@@ -398,6 +419,8 @@ object CollegesDao :
           EXCLUDED.sat_math_25th_percentile_score, EXCLUDED.sat_math_75th_percentile_score,
           EXCLUDED.act_composite_25th_percentile_score, EXCLUDED.act_composite_75th_percentile_score,
           EXCLUDED.completion_rate_150pct_4yr_share,
+          EXCLUDED.completion_rate_8yr_share, EXCLUDED.completion_rate_8yr_pell_share,
+          EXCLUDED.completion_rate_8yr_non_pell_share, EXCLUDED.transfer_out_rate_4yr_share,
           EXCLUDED.website, EXCLUDED.ipeds_unit_id
         )
         RETURNING *
@@ -438,6 +461,10 @@ object CollegesDao :
         stmt.setIntOrNull(next(), input.actComposite25thPercentileScore)
         stmt.setIntOrNull(next(), input.actComposite75thPercentileScore)
         stmt.setDoubleOrNull(next(), input.completionRate150pct4yrShare)
+        stmt.setDoubleOrNull(next(), input.completionRate8yrShare)
+        stmt.setDoubleOrNull(next(), input.completionRate8yrPellShare)
+        stmt.setDoubleOrNull(next(), input.completionRate8yrNonPellShare)
+        stmt.setDoubleOrNull(next(), input.transferOutRate4yrShare)
         stmt.setStringOrNull(next(), input.website)
         // The UNION ALL arm's own `WHERE ipeds_unit_id = ?` -- positionally last.
         stmt.setInt(next(), input.ipedsUnitId)
@@ -849,6 +876,7 @@ object CollegesDao :
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
         i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN,
         c.city, c.website,
+        $OUTCOME_COMPLETION_SELECT,
         ci.survey_year AS ipeds_survey_year,
         $PUBLISHED_TUITION_TIERS_SELECT,
         $CANONICAL_COHORT_SELECT,
@@ -1478,6 +1506,7 @@ object CollegesDao :
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
         i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN, i.distance$scoredColumns,
         c.city, c.website,
+        $OUTCOME_COMPLETION_SELECT,
         ci.survey_year AS ipeds_survey_year,
         $PUBLISHED_TUITION_TIERS_SELECT,
         $CANONICAL_COHORT_SELECT,
@@ -2755,6 +2784,22 @@ object CollegesDao :
     }
   }
 
+  /**
+   * The four completion columns the payload reads off `colleges` itself (RFC
+   * 242), for both payload select lists.
+   *
+   * Returned context only: nothing filters or sorts on them, so
+   * `college_search_index` carries none of them and they are read from the
+   * source of truth for the at-most-25 returned rows (D60). A constant beside
+   * its neighbours rather than raw SQL pasted into both statements, because the
+   * two statements feed ONE mapper -- a column added to one and not the other
+   * is a `SQLException` from the second tool alone, which is exactly what these
+   * constants exist to make impossible.
+   */
+  private const val OUTCOME_COMPLETION_SELECT =
+    "c.completion_rate_8yr_share, c.completion_rate_8yr_pell_share, " +
+      "c.completion_rate_8yr_non_pell_share, c.transfer_out_rate_4yr_share"
+
   /** The tier columns [PUBLISHED_TUITION_TIERS_LATERAL] contributes, for both payload select lists. */
   private const val PUBLISHED_TUITION_TIERS_SELECT =
     "tiers.in_district_tuition_usd, tiers.in_district_tuition_status, " +
@@ -3295,6 +3340,15 @@ object CollegesDao :
       "act_composite_25th_percentile_score",
       "act_composite_75th_percentile_score",
       "completion_rate_150pct_4yr_share",
+      // RFC 242's four, counted for the same reason: the eight-year figure is
+      // present on 3,542 of 6,273 pinned-snapshot rows against
+      // `completion_rate_150pct_4yr_share`'s 2,263, so the census is how an
+      // operator sees that 1,290 schools gained a completion figure and 11
+      // lost one.
+      "completion_rate_8yr_share",
+      "completion_rate_8yr_pell_share",
+      "completion_rate_8yr_non_pell_share",
+      "transfer_out_rate_4yr_share",
       "website",
     )
 

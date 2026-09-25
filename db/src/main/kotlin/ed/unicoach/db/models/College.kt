@@ -46,6 +46,23 @@ data class College(
   val actComposite25thPercentileScore: Int?,
   val actComposite75thPercentileScore: Int?,
   val completionRate150pct4yrShare: Double?,
+  // RFC 242's four completion figures: Scorecard `OMAWDP8_ALL`,
+  // `OMAWDP8_PELL_ALL`, `OMAWDP8_NOPELL_ALL` and `TRANS_4`, each a share in
+  // [0, 1]. The three eight-year figures count everyone who ENTERED in the
+  // publisher's `AY 2016-17` cohort -- full-time and part-time, new to college
+  // and transferring in -- and had an award within eight years, split by
+  // federal Pell Grant receipt: a different measure over a different
+  // population and a different entering cohort from
+  // [completionRate150pct4yrShare], never a later version of it. All four are
+  // INDEPENDENTLY nullable -- 112 snapshot institutions carry one Pell arm
+  // without the other -- and nothing may state an ordering between the two
+  // arms, which measured hold in only 65.8% of cases. `TRANS_4` belongs to
+  // [completionRate150pct4yrShare]'s six-year cohort, so it is not
+  // subtractable from the eight-year figures.
+  val completionRate8yrShare: Double?,
+  val completionRate8yrPellShare: Double?,
+  val completionRate8yrNonPellShare: Double?,
+  val transferOutRate4yrShare: Double?,
   val website: String?,
   // Curated nicknames ("Mizzou", "UMass Amherst") from db/data/college-aliases.json
   // (RFC 139): repo data, not Scorecard data, applied by ingest after the

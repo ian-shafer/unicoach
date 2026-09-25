@@ -269,6 +269,10 @@ class CoachingServiceTest {
           actComposite25thPercentileScore = null,
           actComposite75thPercentileScore = null,
           completionRate150pct4yrShare = 0.8,
+          completionRate8yrShare = null,
+          completionRate8yrPellShare = null,
+          completionRate8yrNonPellShare = null,
+          transferOutRate4yrShare = null,
           website = null,
         ),
       ).getOrThrow()

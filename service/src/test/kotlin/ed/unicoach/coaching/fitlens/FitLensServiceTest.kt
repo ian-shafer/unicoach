@@ -15,6 +15,7 @@ import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.DbCanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.college.CollegeSearchService
+import ed.unicoach.college.ScorecardOutcomeCitations // money-attribution-exempt: a type name for OUTCOME figures, not a money attribution
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -24,6 +25,10 @@ import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_NON_PELL_SHARE
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_PELL_SHARE
+import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_SHARE
+import ed.unicoach.db.dao.FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE
 import ed.unicoach.db.dao.FitLensRunsDao
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
@@ -78,6 +83,8 @@ import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -334,6 +341,10 @@ class FitLensServiceTest {
     // No canonical row at all -- the college the fill has never reached, and the
     // shape a DEGRADED read leaves every college in (RFC 166 §9).
     seedsNetPriceRow: Boolean = true,
+    // A parameter so one test can take the eight-year figure away WITHOUT
+    // taking the six-year one: the two are independent measures (RFC 242), and
+    // the digest's stamp paragraph has to prove it treats them that way.
+    completionRate8yrShare: Double? = FIXTURE_COMPLETION_8YR_SHARE,
   ): CollegeId {
     val collegeId =
       CollegesDao
@@ -360,6 +371,13 @@ class FitLensServiceTest {
             actComposite25thPercentileScore = null,
             actComposite75thPercentileScore = null,
             completionRate150pct4yrShare = 0.7,
+            // RFC 242's four, all DISTINCT and all present, so the digest's
+            // stamp paragraph and its row line can be asserted against real
+            // numbers rather than against `not reported`.
+            completionRate8yrShare = completionRate8yrShare,
+            completionRate8yrPellShare = FIXTURE_COMPLETION_8YR_PELL_SHARE,
+            completionRate8yrNonPellShare = FIXTURE_COMPLETION_8YR_NON_PELL_SHARE,
+            transferOutRate4yrShare = FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE,
             website = null,
           ),
         ).getOrThrow()
@@ -1222,6 +1240,94 @@ class FitLensServiceTest {
       assertTrue(
         call1Text.contains("Previously Suggested College"),
         "the prior fit-suggestion exclusion must appear by name in call #1, message was:\n$call1Text",
+      )
+    }
+
+  /**
+   * `appendOutcomeFigureNote` -- the digest's stamp paragraph -- had no test at
+   * all until RFC 242, which is how it earned one here: this run is the first
+   * to widen the citation set since it was written, and an untested paragraph
+   * that decides what a model is told about seven published figures is not a
+   * paragraph anyone can safely widen.
+   *
+   * Three claims, all of them the paragraph's own:
+   *
+   * 1. The stamp sentence for EVERY figure the rows carry is present -- the
+   *    paragraph is driven by `presentIn`, not by a hand-written list, so RFC
+   *    242's four arrive without this function being edited.
+   * 2. Each figure is named by the digest's OWN field name, the one the row
+   *    line below uses, so the model is not left matching `completion_rate_8yr_share`
+   *    against `completionRate8yrShare` by eye.
+   * 3. The row line PRINTS each of those fields. A stamp sentence about a
+   *    number no row shows is the defect the paragraph's own doc warns about.
+   */
+  @Test
+  fun `call 2 stamps every outcome figure the rows carry, and the row line shows each one`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "Stamped Outcomes U")
+
+      val call2Text = reasonContextOf(student, college)
+      val line = collegeLine(call2Text, college)
+
+      // The fixture college carries all seven figures, so all seven are stamped.
+      assertEquals(
+        7,
+        ScorecardOutcomeCitations.Citation.entries.size,
+        "seven stamped outcome figures: RFC 226's three and RFC 242's four",
+      )
+      val fieldNames: Map<ScorecardOutcomeCitations.Citation, String> =
+        mapOf(
+          ScorecardOutcomeCitations.Citation.UNDERGRAD_ENROLLMENT to "undergradEnrollmentHeadcount",
+          ScorecardOutcomeCitations.Citation.ADMISSION_RATE to "admissionRateShare",
+          ScorecardOutcomeCitations.Citation.COMPLETION_RATE to "completionRate150pct4yrShare",
+          ScorecardOutcomeCitations.Citation.COMPLETION_RATE_8YR to "completionRate8yrShare",
+          ScorecardOutcomeCitations.Citation.COMPLETION_RATE_8YR_PELL to "completionRate8yrPellShare",
+          ScorecardOutcomeCitations.Citation.COMPLETION_RATE_8YR_NON_PELL to "completionRate8yrNonPellShare",
+          ScorecardOutcomeCitations.Citation.TRANSFER_OUT_RATE to "transferOutRate4yrShare",
+        )
+      for (citation in ScorecardOutcomeCitations.Citation.entries) {
+        val field = assertNotNull(fieldNames[citation], "[$citation] has no digest field name in this test")
+        assertTrue(
+          call2Text.contains("$field is ${citation.citedAs}"),
+          "[${citation.wireKey}] is stamped under the digest's own field name [$field], message=[$call2Text]",
+        )
+      }
+      // The four values RFC 242 puts on the row line, each its fixture's own
+      // distinct number -- so a row line that crossed two fields is a wrong
+      // number here, not a coincidence.
+      assertTrue(line.contains("completionRate8yrShare=[$FIXTURE_COMPLETION_8YR_SHARE]"), "line=[$line]")
+      assertTrue(line.contains("completionRate8yrPellShare=[$FIXTURE_COMPLETION_8YR_PELL_SHARE]"), "line=[$line]")
+      assertTrue(line.contains("completionRate8yrNonPellShare=[$FIXTURE_COMPLETION_8YR_NON_PELL_SHARE]"), "line=[$line]")
+      assertTrue(line.contains("transferOutRate4yrShare=[$FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE]"), "line=[$line]")
+    }
+
+  /**
+   * The other half of the paragraph's contract: a figure NO returned row
+   * carries is not stamped, so the model is never handed a sentence about a
+   * number it cannot see.
+   *
+   * Asserted on the eight-year figure alone, with the six-year one still
+   * present, because that is the case RFC 242 creates: the two measures are
+   * INDEPENDENT and one being absent says nothing about the other.
+   */
+  @Test
+  fun `call 2 stamps no sentence for an outcome figure the rows do not carry`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "No Eight Year Figure U", completionRate8yrShare = null)
+
+      val call2Text = reasonContextOf(student, college)
+
+      assertFalse(
+        call2Text.contains(ScorecardOutcomeCitations.Citation.COMPLETION_RATE_8YR.citedAs),
+        "no row carries an eight-year figure, so its sentence is not stated, message=[$call2Text]",
+      )
+      assertTrue(
+        call2Text.contains(ScorecardOutcomeCitations.Citation.COMPLETION_RATE.citedAs),
+        "the six-year figure is a different measure and is still stamped, message=[$call2Text]",
       )
     }
 
