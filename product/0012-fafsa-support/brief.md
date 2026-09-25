@@ -303,6 +303,55 @@ THIS file, so the line lives here and the spec points at it):
   every row, where `CdsCitation` withholds one. No migration, no table, no
   prompt version. Suite on the landed tree, forced and whole: **3,934 tests
   executed, 0 failures, 0 errors, 0 skipped**.
+- `fafsa/05/the-coach-speaks-the-same-dates` LANDED as RFC 237 (main@a8c9b044,
+  2026-09-25) — the coach's DOOR onto `FafsaDeadlineService`, which had no
+  caller until now: a student in the first session, with no profile and no
+  college list, asks "when is my FAFSA due?" and gets the dates we hold, never a
+  date from the model's memory. `fafsa_deadlines` is registered in `rest-server`
+  Application.kt and a test asserts the WIRED registry advertises it, so the
+  door is the claim. The tool takes NO arguments: the family's state comes from
+  `money_profiles` and from nowhere else — Ian's call at the approval gate,
+  verbatim: "We either have it in the profile, or we can get and set it via chat
+  or via a profile edit. When we don't have it, we cannot say anything about the
+  state they live in. They must give a state to be able to enjoy the benefits of
+  unicoach knowing the state." So when we hold no state the coach serves the
+  FEDERAL dates FIRST, then asks which state they live in and RECORDS it with
+  `update_money_profile`, saying what that unlocks — value before ask, guided
+  not gated: a family that declines keeps the federal dates and a labelled gap
+  and is not asked again. Every row carries the filing cycle it belongs to,
+  whether that cycle is the one being filed (`award_year_status` plus a sentence
+  when it is not), the publisher's own words (`as_published`), the publisher,
+  that publisher's page, the archived address where the publisher blocks us, and
+  the day a human checked it. Any FEDERAL event we hold no live row for is NAMED
+  (`federal_events_absent`) and the coach says we do not hold that date and
+  sends the family to studentaid.gov, instead of answering short. Five typed
+  gaps — `not_asked`, `declined`, `unavailable` (the coach cannot SEE their
+  state right now, never that we do not hold it), `not_verified` (we hold no
+  deadline for that state that a human verified against its own agency's page,
+  never "the state publishes none"), `not_served` (not one of the 50 states and
+  DC, D13) — and `not_served` is decided POSITIVELY, so a codebook gap can never
+  tell a Californian their state is not one of the fifty. RFC 230's three
+  refusals get three distinct sentences (we hold none at all / every one we hold
+  is an earlier filing cycle / the ones we hold are out of date), each with no
+  date anywhere in the payload and each pointing at studentaid.gov and the
+  family's own state agency. Coach prompt **v44**; no new table and no migration
+  other than the generated prompt seed. ROLLBACK: remove the registration line
+  and the prompt paragraph (`COACHING_SYSTEM_PROMPT_VERSION=v43` is the partial
+  one — it unroutes the paragraph, the tool stays registered and goes uncalled).
+  HONEST LIMIT: on the committed corpus the only live FEDERAL row is the 2027-28
+  beta-testing sentence, because the live set is the newest VERIFIED cycle per
+  jurisdiction (D23) — so today the coach truthfully says we do not hold the
+  federal filing deadline or the corrections deadline and points at
+  studentaid.gov; typing the federal rows for the cycle being filed is this
+  brief's standing D24 gap. Also landed in this run: `Residency.forStudent` now
+  names its CALLER in the two fault logs, and two shared test guards
+  (`PayloadDateGuard`, `BareSourceCodeGuard.CDS_FIELD_ID`) hold patterns four
+  suites had hand-typed. One commit — the RFC prose landed inside the code
+  commit and passed the full gate, so this line carries ONE SHA. Final suite
+  **2,678 executed, 0 failures**; the pre-commit gate passed on the landed tree.
+  Review: 41 lenses over 4 tiers, 93 findings, 37 applied, 0 contradictions.
+  Note for the reader: `fafsa/04` landed hours later as RFC 238 and adapted this
+  tool where their change crossed it — see that line.
 
 ## LEARN — running notes (appended as slices land)
 
