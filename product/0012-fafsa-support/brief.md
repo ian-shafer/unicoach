@@ -2,10 +2,12 @@
 
 Status:
 
-- Phase: **SPEC & SLICE — gate 2 presented, amended once, awaiting Ian.**
-  `spec.md` holds six slices `fafsa/01`-`fafsa/06` and decisions D8-D16;
-  `slice-board` parses them clean and reports `fafsa/01` and `fafsa/06`
-  startable. Gate 1 was **APPROVED with one amendment, 2026-09-14** (D4 reversed
+- Phase: **COMPLETE — all six slices of `spec.md` have landed** (`fafsa/06` RFC
+  216, `fafsa/01` RFC 215, `fafsa/02` RFC 223, `fafsa/03` RFC 230, `fafsa/04`
+  RFC 238, `fafsa/05` RFC 237, the last two on 2026-09-25). Both doors are open:
+  a family can read every jurisdiction's deadline on `/fafsa` with no account,
+  and ask the coach the same question in chat, and the two answers come from one
+  service. Gate 1 was **APPROVED with one amendment, 2026-09-14** (D4 reversed
   by Ian: consolidate the state deadlines ourselves). Research in `research/`,
   DISCOVER in `discover/` (including the 51-jurisdiction deadline corpus).
 - Gate 1 (prioritisation): **APPROVED 2026-09-14, D4 amended** — seven decisions
@@ -14,8 +16,10 @@ Status:
   and could not) and D10 (`us_states` is not ours yet) amended by Ian, and D16
   added after he flagged the in-flight `external_documents` table.
 - Handle: `fafsa` (slice IDs `fafsa/NN/name`).
-- Ledger: at the end of this file (`fafsa/06` landed as RFC 216, `fafsa/01` as
-  RFC 215). `slice-board` reads the ledger from THIS file, never from `spec.md`.
+- Ledger: at the end of this file, one line per landed slice. `slice-board`
+  reads the ledger from THIS file, never from `spec.md`. **`fafsa/05`'s line is
+  still owed** — it landed as RFC 237 (main@a8c9b044, 2026-09-25) and its own
+  run has not closed its books yet.
 
 ## The question
 
@@ -257,6 +261,48 @@ THIS file, so the line lives here and the spec points at it):
   `fafsa/05` BLOCKS-depend on this one and are now unblocked. No migration, no
   table, no prompt version, no flag: not wiring the door IS the rollback. Phase
   5 1,951 executed, 0 failures; the gate ran the full check, 0 failures.
+- `fafsa/04/the-fafsa-page` LANDED as RFC 238 (main@b9b219e0, 2026-09-25) — the
+  door is open: `GET /fafsa`, reachable from a **"FAFSA" link in the site
+  header** with no account, no email wall and nothing to install. It says first
+  that the form is free (20 U.S.C. § 1090(d)) and that unicoach never fills it
+  in, submits it or asks for a login (D6); then what the form asks now — the
+  contributor model, the consent rule whose failure ends federal aid including
+  Pell, and the Student Aid Index; then the dates, federal rows first and one
+  table per region, every row carrying its programme, the agency's own words or
+  the published day, the filing year it belongs to, what kind of date it is, and
+  the agency's page with the day we read it. The four jurisdictions no source
+  could be read for — Arkansas, Delaware, North Carolina, New Hampshire — say we
+  tried, name the agency and link the page we tried (D9). The edge cases are the
+  thirty cited rules `fafsa/06` already serves the coach — divorced or separated
+  parents and the more-than-half-support rule, a contributor with no Social
+  Security number, dependency, what happens after you submit — so the page and
+  the coach cannot disagree; scope is stated plainly as the fifty states and DC,
+  with the territories named as not covered. Behind it: the deadline service now
+  names a missing jurisdiction with its region and the agency we tried, a
+  citation carries its link-check verdict so a dead address is printed as text
+  and never as a link, and the explainer model gains a fourth block — a table
+  whose every row cites itself. Gate answers from Ian: the extra-application
+  fact is carried by the agency's own sentence and the programme name rather
+  than by a new column; the four unreadable jurisdictions name their agency and
+  link the page we tried; the door is a header link. Review caught two defects
+  the suite could not see — **Tennessee was invisible**, because its four rows
+  cite over `http://` while the page required `https://` and every fixture used
+  https, so the state reached neither a table nor the gap list; and **a data fix
+  would have been an outage**, because the guard this slice asked for turned
+  "Arkansas gains a deadline" into a failed read for all fifty-one, and is an
+  operator warning now while the rows serve. `fafsa/05` LANDED as RFC 237
+  (main@a8c9b044) mid-review — the collision predicted at kickoff, because both
+  slices read the one service and this run changed its shape. The first land
+  attempt rebased onto it and the pre-commit gate refused the tree, so this run,
+  which owns the change, adapted their tool: the archived address still reaches
+  the coach exactly as RFC 237 decided, a recorded grave is withheld through the
+  one predicate, `it.uspsCode` became `it.jurisdiction.uspsCode`, one clause of
+  their archive legend and two KDoc claims this run falsified were corrected,
+  and one Postgres-backed test covers both halves of the archive rule. Named for
+  a later slice, not done here: the coach still serves a dead SOURCE url on
+  every row, where `CdsCitation` withholds one. No migration, no table, no
+  prompt version. Suite on the landed tree, forced and whole: **3,934 tests
+  executed, 0 failures, 0 errors, 0 skipped**.
 
 ## LEARN — running notes (appended as slices land)
 
