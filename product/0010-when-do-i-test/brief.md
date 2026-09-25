@@ -910,3 +910,19 @@ Two consequences, both binding:
   conversation, and the coach context block remembers them across sessions. No
   superscore stored or spoken; no source column; soft delete. Coach prompt v41
   (rollback v40). Executed: 3,742 tests, 0 failures.
+
+**D30 — the report half is a slice, not a memory. The National Merit package
+reaches the family cost report, and it does so as its own slice.** (Ian, at the
+RFC 243 approval gate, 2026-09-25: _"Fine with Option A. But I want to be sure
+we do this. Can you write this to an existing brief so we do it via /slice"_.)
+
+`test/08/the-psat-is-money` was scoped to the chat, because the chat is the door
+its acceptance criteria name and because a parent-facing block on a shareable
+page is a second decision with its own privacy surface. Option A was taken —
+chat only in that run. The report half is therefore written into `spec.md` as
+`test/09/the-report-says-it-too`, BLOCKED on `test/08`, so `slice-board` prints
+it and it is dispatched like any other slice. The rule this applies is the one
+0001 D12 already states: a product question surfacing mid-run goes back to the
+product layer as a numbered decision or a new slice, never as a note in a run's
+scratch — `.scratch/` is gitignored, and an unwritten commitment is how folklore
+starts.

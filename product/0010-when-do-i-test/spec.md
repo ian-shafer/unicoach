@@ -802,11 +802,60 @@ cut as the worked example of why `checked_on` exists.
 
 ---
 
+### `test/09/the-report-says-it-too`
+
+**Needs:**
+
+- BLOCKS test/08/the-psat-is-money — technical. The curated National Merit
+  corpus, its loader and the five per-school answers this block renders are all
+  created there; until they exist there is nothing for the report to print.
+
+**What and why.** `test/08` puts the National Merit money in the CHAT only, on
+Ian's call at the RFC 243 gate (2026-09-25, decision 4 — "Fine with Option A",
+with this slice asked for in the same breath so the report half is on the board
+and not in anybody's memory). The family cost report is the surface a PARENT
+reads, and it is where the four-figure and six-figure automatic packages matter
+most: a parent comparing schools cannot see that one of them pays a Finalist
+$153,450 and another publishes nothing.
+
+The precedent is exact. `test/07/a-score-is-money` put a school's published
+score grid in the chat AND added the `report-award-grid` block to the cost
+report, and Ian's rule there stands unchanged: **the report shows the school's
+published grid and never the student's own score.** A standing is not a score,
+so the same rule permits the package — but the student's own PSAT result, which
+this product does not store and must not start storing, stays out of a shareable
+page exactly as her SAT score does (RFC 155 is a privacy decision, not a layout
+one).
+
+**Decided here.** The block prints only what the school publishes: the standing
+it pays, the school's own words, its numbers where it publishes them, whether
+the award is automatic or merely competitive, its first-choice requirement, and
+the day we read the page. It **refuses** the same three states
+`report-award-grid` refuses — not curated, none published, expired — because a
+labelled blank on a shared page is worse than no section. The base rate rides
+with any large figure here as it does in the chat. No ranking, no "best award",
+no total we computed ourselves.
+
+**Acceptance criteria.**
+
+- A parent opening the shared cost report sees, for each school that publishes
+  one, what it pays a National Merit standing, in the school's own words with
+  the day we read them.
+- No student score, PSAT Selection Index or standing of hers appears anywhere on
+  the page.
+- Where we have not read a school, the page says nothing about it — never that
+  it pays nothing.
+- A row past its expiry prints no section at all.
+- **Door:** the family cost report page, the same link a student already shares
+  with a parent.
+
+---
+
 ## Waves
 
 Wave 1 (parallel): `test/01`, `test/02`. Wave 2 (parallel): `test/03` (CONFLICTS
 `test/02`), `test/04`. Wave 3 (parallel): `test/05`, `test/06`. Wave 4:
-`test/07`, then `test/08`.
+`test/07`, then `test/08`. Wave 5: `test/09`, added after gate 2 (D30).
 
 Ask `slice-board`, not this list, for what is startable.
 
