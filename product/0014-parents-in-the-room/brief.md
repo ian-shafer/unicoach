@@ -121,6 +121,84 @@ Status:
     written at the line. Gate: full check, 1,135s, 0 failures, verified tree
     recorded. iOS 722 tests, 0 failures; 84 snapshots, 0 drift on the 74
     pre-existing scenes.
+  - `family/02.5/the-coach-asks-once` LANDED as RFC 240 (`main@4f337d78`,
+    2026-09-25) — the coach now has ONE sanctioned moment to offer connecting a
+    parent to an account of their own, ALONGSIDE the existing Family Cost Report
+    share offer (D20, the spec defect this slice closes). The mechanism is RFC
+    160's, copied rather than reinvented: the nightly synthesis sweep writes a
+    `commitments` row carrying the new `invite_supporter` lens,
+    `CoachingService.startConvo` renders it as a private reflection in the
+    SYSTEM prompt of a NEW conversation only, and a successful first reply marks
+    it fulfilled — so **"once" is that row's lifecycle, not a sentence asking
+    the model to behave**. **"Alongside, not instead of" is likewise enforced in
+    code:** the report-share nudge is suppressed BECAUSE a live share exists and
+    this one REQUIRES one, so the two predicates are mutually exclusive by
+    construction, no synthesis pass can write both and no conversation can open
+    with both. Eight named suppression reasons, each logged at DEBUG and each
+    tested: DISABLED, NO_LIVE_SHARE, OPTED_OUT, ALREADY_LINKED, LIVE_INVITE,
+    OPEN_SET_AT_CAP, OPEN_INVITE_NUDGE, COOLDOWN_NOT_ELAPSED. New chat tool
+    `invite_supporter` mints a single-use link that expires in 14 days over RFC
+    232's service and returns the url, the expiry and the ceiling sentences the
+    recipient's page states; a closed or missing student endpoint is a typed
+    RESULT (`link_created: false`) with its cause named in the log, never a
+    throw, and the raw token is never returned separately. A repeat ask mints a
+    FRESH link, because the token is stored only as a SHA-256 hash and the old
+    link is unrecoverable by construction — unlike the report link, which the
+    coach can re-hand; multiple live invites are legal by design (two parents).
+    **One "stop asking me" covers BOTH offers**, with no new opt-out tool and no
+    rename: `stop_cost_report_offers` keeps its name and behaviour and the
+    prompt gains one sentence saying it covers both, `ShareEventsDao.hasOptOut`
+    suppresses the invite nudge in synthesis, and
+    `CostReportShareService.stopOffers` now drops open `invite_supporter`
+    commitments too under the same `share_offers_opted_out` reason — the
+    silenced set being derived through an EXHAUSTIVE `when` over
+    `CommitmentLens`, so a third kind of offer cannot compile until somebody
+    decides whether the stop covers it. The tool itself is NOT gated by the
+    opt-out, mirroring `share_cost_report`: the opt-out silences the OFFER, not
+    the capability, and a test proved non-vacuous holds that boundary. **Ian's
+    gate call fixed the relationship word** ("should be 'connect as their parent
+    or supporter'"): an invite for which NO door stated a relationship stores
+    the catch-all `supporter` — D22's deliberate catch-all, NOT a fifth
+    vocabulary word — and the recipient page reads "invited you to connect on
+    unicoach as their parent or supporter", which also fixes the landed iOS
+    button that has always sent no relationship and therefore always told a
+    recipient they were named a "parent"; the reverse direction (a supporter
+    inviting a student) keeps a single word in its apposition and now has the
+    test it never had. Blocks 1-3 of the gate took their recommended defaults:
+    the coach mints the link in chat, it may only offer after the student
+    already shared the report, and a repeat ask mints a fresh link. Migration
+    `widen-commitments-lens-invite-supporter.sql` (slug, no number, RFC 180)
+    widens `commitments_lens_check` to include `invite_supporter` — no new table
+    and no new column. 35 files changed, +2,634 / -100. Rollback:
+    `COACHING_SYSTEM_PROMPT_VERSION=v46` (v47 is what this slice minted),
+    PARTIAL — the pin removes the paragraph but the tool stays registered and
+    callable, so a student who ASKS is still served;
+    `SYNTHESIS_INVITE_NUDGE_ENABLED=false` stops any new invite offer being
+    written, and `SYNTHESIS_INVITE_NUDGE_COOLDOWN_DAYS` (default 14) tunes the
+    wait. **One open item is Ian's to decide, not engineering's:**
+    `SupporterRelationship.SUPPORTER` now carries TWO meanings — "nobody stated
+    a relationship" and "stated: supporter" — and the `code-review-no-sentinels`
+    dissent showed the remedy is a NULLABLE column (not a fifth vocabulary word,
+    so D22 stands untouched) and that the case IS reachable through the REST
+    door (`{"relationship":"supporter"}`), though no shipped client sends it; it
+    was escalated at the land gate, the default was taken — ship and record —
+    and it wants a follow-up slice or a D22 amendment. Three smaller open items
+    are written down rather than fixed: the ceiling copy has two hand-written
+    homes (the coach's spoken sentence and `InvitePage.inviteCeiling`) which
+    cannot be bound because the page's function is private in a module `service`
+    does not depend on; revocation still has no door (inherited from RFC 232,
+    `SupporterInviteService.revoke` has no production caller); and the invite
+    row still models its one endpoint as a role plus two nullable ids (RFC 232,
+    untouched). Gate: the full `bin/test check` passed on the landed tree — both
+    installDist builds, every shell harness, `bin/format -c` — with verified
+    tree `3f1671b7`; the phase-5 suite before it exited 0 at tests=3914
+    failures=0 and tests=2193 failures=0 under Gradle's own incremental scoping.
+    41 review lenses over four tiers, 21 fixes applied, 70 advisory items held
+    with written reasons, 0 contradictions and 0 halted items; **tier 3 was ALL
+    CLEAN, zero findings**, and two lens dissents were taken against the
+    coordinator's held list — one upheld and fixed (`OFFER_LENSES` became an
+    exhaustive `when`), one escalated to Ian. `family/02.5` unblocks NOTHING: no
+    slice in any brief has a `Needs:` edge on it.
 - **Renumbered 0012 -> 0014 on 2026-09-14, before landing.** Two sibling
   sessions took `0012-fafsa-support` and `0013-unicoach-on-the-web` while this
   brief was between its gates. Slice IDs are unaffected — they key off the
