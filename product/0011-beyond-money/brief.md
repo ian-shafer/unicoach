@@ -640,6 +640,39 @@ nudge, never a bare repeat.
       collapsing two different programmes with identical figures. 3,625 executed, 0
       failures; the gate ran the full check, Gradle 96/96 up-to-date.
 
+    beyond/06/finish-like-me LANDED as RFC 242 (main@609de137 + <DOC_SHA>,
+      2026-09-25) — a family can now see how many students actually finish at a
+      college, counted over eight years and counting part-time and transfer
+      students, with the figure for students on a federal Pell grant and the
+      figure for students without one said separately. Four new published
+      figures on `colleges`: eight-year completion (`OMAWDP8_ALL`), its Pell arm
+      (`OMAWDP8_PELL_ALL`) and its non-Pell arm (`OMAWDP8_NOPELL_ALL`), all
+      three describing students who entered in the 2016-17 academic year, and
+      the four-year transfer-out share (`TRANS_4`), describing the autumn 2018
+      group — the same group the existing six-year figure describes. Every
+      period is transcribed from the publisher's own data dictionary. No new
+      screen and no new question asked of a family: the figures ride the coach's
+      college search and "colleges like this one" answers under the page-level
+      `figure_sources` stamp `beyond/11` built, and the coach's own fit-lens
+      reflection carries them too. The eight-year figure covers 3,542 colleges
+      against the six-year figure's 2,263 — 1,290 colleges GAIN a completion
+      figure and 11 LOSE one, and the two measures differ in both directions —
+      so a college with no eight-year figure keeps the six-year one. The Pell
+      figure is lower than the non-Pell figure at only 65.8% of schools, so
+      nothing in the product narrates a gap: both are stated, both are labelled
+      with the group they count, and the coach never decides which group a
+      student is in. A figure that is absent is said as absent with NO reason
+      attached — a suppressed cell, an unreadable cell and a not-yet-loaded cell
+      are identical in this store — so the product never says the school did not
+      report it; the money surfaces, which DO carry a per-figure status, keep
+      their attributed sentence. The slice ran on D48 (Ian, "Option A"): the
+      subgroup cut is Pell, not income thirds, because the publisher publishes
+      no income cut of that measure. Coach prompt v46, rollback v45, PARTIAL —
+      the pin removes four sentences and the figures keep riding the payload
+      with their stamps. Full suite 4,070 executed, 0 failures; the gate's full
+      check passed in 11.6 minutes. 41 review lenses over four tiers, 39 fixes
+      applied, 0 halted, 0 contradictions.
+
 ### Spec defect found by `beyond/05`'s review (recorded 2026-09-23)
 
 The slice text DEFINED the "no matching programme" sentence by the PROGRAMME
