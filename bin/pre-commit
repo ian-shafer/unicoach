@@ -172,7 +172,7 @@ fi
 # Three shapes, and which one runs is gate-scope's answer, not this script's
 # judgement:
 #
-#   gradle=yes  -> bin/test check, narrowed with -n when the harness set is not
+#   gradle=yes  -> bin/check, narrowed with -n when the harness set is not
 #                  ALL. This is the unchanged full gate when scope=full.
 #   gradle=no + harnesses -> bin/shell-tests directly. No Gradle task graph, no
 #                  installDist, no db-reset: a diff that cannot move any of them
@@ -184,7 +184,7 @@ TEST_PID=""
 
 TEST_CMD=()
 if [ "$GRADLE" = "yes" ]; then
-  TEST_CMD=("$PROJECT_ROOT/bin/test" check)
+  TEST_CMD=("$PROJECT_ROOT/bin/check")
   if [ -n "$HARNESSES" ] && [ "$HARNESSES" != "ALL" ]; then
     for harness in $HARNESSES; do
       TEST_CMD+=(-n "$harness")
@@ -240,7 +240,7 @@ fi
 # api-specs/openapi.yaml — too heavy to run on every commit, so it is gated on
 # the spec being staged. It runs sequentially, after the concurrent checks pass,
 # so a commit already destined to fail does not pay the multi-minute fuzz cost
-# and so two gradle builds (bin/test check, build-rest-server) never contend.
+# and so two gradle builds (bin/check, build-rest-server) never contend.
 SPEC_REL_PATH="api-specs/openapi.yaml"
 if git -C "$PROJECT_ROOT" diff --cached --name-only --diff-filter=ACMR -- "$SPEC_REL_PATH" | grep -q .; then
   log-info "[$SPEC_REL_PATH] is staged; running bin/test-fuzz against the REST contract..."

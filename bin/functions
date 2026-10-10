@@ -93,7 +93,7 @@ strip_git_hook_env() {
 
 # Classify the STAGED set of <repo-root>: 0 when every staged path is under
 # product/ (the /chart product layer -- briefs, specs, research, STATUS.md), 1
-# otherwise. bin/pre-commit uses it to skip `bin/test check`, which cannot change
+# otherwise. bin/pre-commit uses it to skip `bin/check`, which cannot change
 # its answer for such a commit because nothing under product/ is a build input.
 #
 # Four properties, each load-bearing:

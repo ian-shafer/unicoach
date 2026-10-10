@@ -183,8 +183,8 @@ In manual mode, repeat until the operator chooses none:
      CLAUDE.md's rule that the gate protects what reaches `main`. The fixer
      already ran the tests; the commit records what it ran. **The branch tip
      still has to pass the full gate before it lands** — run
-     `nix develop -c bin/format -c` and `nix develop -c bin/test check` once,
-     after the operator declines a further pass (Phase 3 in manual mode, the
+     `nix develop -c bin/format -c` and `nix develop -c bin/check` once, after
+     the operator declines a further pass (Phase 3 in manual mode, the
      walkthrough's close in auto), and tell the operator the result.
    - _rollback_: `git reset --hard HEAD && git clean -fd`. Use `-fd`, never
      `-fdx`: the run's scratch is gitignored and must survive the rollback.
@@ -258,8 +258,8 @@ When the walkthrough is done, ask the Phase 3 question once — another full pas
 against the now-updated target? **Yes** re-enters Phase 1 in auto (pass
 `<p>+1`), and the next walkthrough covers only that pass's changes. **No**
 closes review: run the final gate — `nix develop -c bin/format -c`, plus
-`nix develop -c bin/test check` only if the run touched anything beyond Markdown
-(a Markdown-only target needs formatting, never a suite run, per CLAUDE.md) —
+`nix develop -c bin/check` only if the run touched anything beyond Markdown (a
+Markdown-only target needs formatting, never a suite run, per CLAUDE.md) —
 report the result, and proceed to Phase 4.
 
 ## Phase 4 — Skill update loop

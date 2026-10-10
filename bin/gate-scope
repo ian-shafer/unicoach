@@ -40,7 +40,7 @@ Writes exactly three key=value lines to stdout:
 
   scope=<name>              full | markdown-docs | product-docs | prime-scripts
                             | ios-app | module-source
-  gradle=yes|no             whether bin/test check's Gradle half must run
+  gradle=yes|no             whether bin/check's Gradle half must run
   harnesses=ALL|<names>|    which bin/shell-tests harnesses must run; ALL means
                             "whatever bin/shell-tests runs", so a newly added
                             harness is covered with no edit here; an empty value

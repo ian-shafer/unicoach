@@ -30,8 +30,8 @@ the dev shell was not active, not that the tool is missing. Re-run via
 
 **Committing also runs the toolchain.** `git commit` fires the `bin/pre-commit`
 hook, which runs `bin/format -c` (the single ktlint + `deno fmt` lint gate) and
-`bin/test check` (Gradle tests + Postgres) concurrently — all dev-shell tools.
-Commit from inside the shell, or wrap it:
+`bin/check` (Gradle tests + Postgres) concurrently — all dev-shell tools. Commit
+from inside the shell, or wrap it:
 
 ```sh
 nix develop -c git commit ...
@@ -84,11 +84,11 @@ commit that follows lands with `--no-verify` against an already-validated tree.
 **A `product/**`-only commit skips the test half automatically** (RFC 194). When
 **every staged path** is under `product/**` — the `/chart` layer's briefs,
 specs, research reports and `STATUS.md` — the hook runs `bin/format -c` and
-**not** `bin/test check`. Anything else runs the full gate: one code path in the
-set, a mixed set, an empty index, or a rename that crosses the `product/**`
-boundary. The hook logs which scope it chose, by name, so the two kinds of
-commit are distinguishable afterwards. You do not ask for this and cannot ask
-for it; it is not a flag.
+**not** `bin/check`. Anything else runs the full gate: one code path in the set,
+a mixed set, an empty index, or a rename that crosses the `product/**` boundary.
+The hook logs which scope it chose, by name, so the two kinds of commit are
+distinguishable afterwards. You do not ask for this and cannot ask for it; it is
+not a flag.
 
 **And the hook now runs only the harnesses a diff can break** (RFC 214).
 `bin/gate-scope` classifies the staged set as a whole and `bin/pre-commit` obeys
@@ -163,7 +163,7 @@ the test DB before invoking Gradle:
 ```sh
 nix develop -c bin/test                       # full suite
 nix develop -c bin/test rest-server           # one module
-nix develop -c bin/test rest-server --tests "ed.unicoach.rest.AuthRoutingTest"
+nix develop -c bin/test rest-server -t "ed.unicoach.rest.AuthRoutingTest"
 ```
 
 **Default to the full suite. Do not scope by module, and do not pass `-f`.**
@@ -188,29 +188,21 @@ test. They are not what you verify a change with.
 create → migrate)`) — expected, non-destructive to anything
 but the test DB.
 
-### `check` also runs the shell harnesses
+### `bin/check` runs the shell harnesses
 
-`bin/test check` — the form the pre-commit hook runs, i.e. the gate on what
-reaches `main` — additionally builds the `rest-server`/`queue-worker`
-`installDist` artifacts and runs `bin/shell-tests`, the aggregator over the
-shell script-test harnesses (RFC 115). **Do not look for the list of them
-here.** `bin/shell-tests -h` is the one place that knows; this file used to name
-four of the harnesses and "~280 shell assertions" and both went stale without
-anyone noticing, which is the whole reason RFC 214's map derives the set from
-the filesystem instead of from prose.
+`bin/check` — what the pre-commit hook runs, i.e. the gate on what reaches
+`main` — builds the `rest-server`/`queue-worker` `installDist` artifacts, runs
+`bin/shell-tests` (the aggregator over the shell script-test harnesses, RFC
+115), and then runs `bin/test`. **Do not look for the list of harnesses here.**
+`bin/shell-tests -h` is the one place that knows; this file used to name four of
+them and "~280 shell assertions" and both went stale without anyone noticing,
+which is the whole reason RFC 214's map derives the set from the filesystem
+instead of from prose. They are a large share of the hook's cost.
 
-Measured individually on 2026-09-14 at load 3.2–3.4, the harnesses took **639s
-in total and executed 1,541 assertions**, of which `db-scripts-tests` was 284s
-and `scripts-tests` 269s — 87% of the cost in two harnesses. `bin/shell-tests`'s
-help no longer publishes per-harness figures for the same reason this paragraph
-dates and load-stamps its own: the old published numbers were quiet-machine
-figures and `db-scripts-tests` ran ~19x its.
-
-Bare `bin/test` runs none of them and prints one line saying so, so the tight
-loop stays as fast as it was; the cost is that a `bin/` edit can look green
-locally and fail at the hook. Run `nix develop -c
-bin/shell-tests` directly
-while iterating on those, and `bin/shell-tests -n <name>` to run just one.
+`bin/test` runs none of them, so the tight loop stays fast; the cost is that a
+`bin/` edit can look green locally and fail at the hook. Run
+`nix develop -c bin/shell-tests` directly while iterating on those, and
+`bin/shell-tests -n <name>` to run just one.
 
 Be aware that `scripts-tests` **stops this checkout's `rest-server` and
 `queue-worker` daemons** on exit. Daemon identity is per-checkout (`var/run/`

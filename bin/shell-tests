@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Aggregator for the shell script-test harnesses (RFC 115).
 #
-# OWNS NO POSTGRES LIFECYCLE: like bin/db-tests, it assumes the caller (bin/test
-# check, or a developer who has run db-bootstrap) provides a live shared cluster.
+# OWNS NO POSTGRES LIFECYCLE: like bin/db-tests, it assumes the caller
+# (bin/check, or a developer who has run db-bootstrap) provides a live shared
+# cluster.
 # q-scripts-tests and scripts-tests self-provision their per-worktree test DB
 # against it (each runs db-reset, so this aggregator leaves the test DB dirty —
 # bin/test's existing db-reset is the cleanup); db-scripts-tests provisions and
@@ -11,7 +12,7 @@
 # scripts-tests additionally requires built rest-server/queue-worker installDist
 # artifacts, and stops THIS CHECKOUT's rest-server/queue-worker daemons via its
 # EXIT trap (daemon identity hangs off bin/common's PROJECT_ROOT, so no other
-# worktree is touched). bin/test check builds those artifacts before calling here.
+# worktree is touched). bin/check builds those artifacts before calling here.
 #
 # Each harness aborts on its first failure and this script runs them sequentially
 # under `set -e`, so it aborts non-zero on the first failing harness. Ordering is
@@ -62,8 +63,8 @@ the load average, or say nothing (RFC 214).
 
 Owns no Postgres lifecycle: the caller supplies a live shared cluster. Leaves
 this worktree's test DB dirty, and stops this checkout's rest-server and
-queue-worker daemons. bin/test check invokes this after installDist and before
-its db-reset.
+queue-worker daemons. bin/check invokes this after installDist and before
+bin/test's db-reset.
 
 Options:
   -n NAME  run only this harness; repeatable; order is always the one above,

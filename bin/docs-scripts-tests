@@ -58,7 +58,7 @@ DOCS_LAND="$CHART_SCRIPTS/docs-land"
 [ -x "$DOCS_LAND" ] || fail_test "docs-land is missing or not executable [$DOCS_LAND]"
 
 # This harness runs inside the pre-commit hook (git commit -> bin/pre-commit ->
-# bin/test check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
+# bin/check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
 # GIT_INDEX_FILE are exported and OUTRANK both `git -C` and a plain `cd`. Without
 # this strip every fixture below would operate on the REAL repository -- and the
 # subject of this file ends in `git merge --ff-only`. docs-land strips for

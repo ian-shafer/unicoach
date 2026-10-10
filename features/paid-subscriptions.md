@@ -473,7 +473,7 @@ Already landed (build on these): llm-cost-ledger; budget-gate;
 subscriptions-apple verify path (RFC 110) and Notifications-V2 webhook
 (RFC 112). This is the last node.
 Out of scope: nothing — every backend slice is landed.
-iOS/Swift: bin/test check does NOT compile Swift, so the pipeline gate is a false
+iOS/Swift: bin/check does NOT compile Swift, so the pipeline gate is a false
 green here — verify with xcodebuild (scheme UnicoachiOS) before landing.
 When done: return to features/paid-subscriptions.md — mark this node implemented
 in the living index (with its RFC number); this is the final node, so record the

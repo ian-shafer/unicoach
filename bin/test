@@ -14,36 +14,20 @@ MODULES=(common web-common db net auth queue queue-worker cron rest-server servi
 
 help() {
   cat << 'EOF'
-test [options] [check] [module ...]
+test [options] [module ...]
 
 Runs Gradle tests on the nix-provided host JVM. Resets this worktree's test
 database first (postgres-up -> db-reset -> db-tests), then runs the selected
 modules' test tasks. With no modules, runs every module.
 
-The optional leading `check` keyword runs each selected module's Gradle `check`
-task instead of bare `test`. The pre-commit hook invokes this form for the test
-gate. (Kotlin lint/format is not here — it lives in bin/format, the repo's single
-ktlint avenue; the hook runs `bin/format -c` alongside this.)
-
-`check` additionally builds the rest-server/queue-worker installDist artifacts
-and runs bin/shell-tests before the database reset. Those harnesses stop THIS
-checkout's rest-server and queue-worker daemons. Bare `bin/test` runs none of
-them and says so.
-
-There are NINE harnesses; they are listed by `bin/shell-tests -h` and not
-duplicated here. An earlier version of this help named four of them and a
-"~118s cold" figure, and both went stale without anyone noticing -- which is
-why this text now points at the one place that knows (RFC 214).
-
-`-n NAME` (repeatable) runs only the named harnesses, and is meaningful only
-with `check`. bin/pre-commit passes it the set bin/gate-scope says the staged
-diff can break.
+Runs no shell script-test harnesses. bin/check -- what the pre-commit hook
+runs -- runs them first and then calls this script; `bin/shell-tests -h` lists
+them.
 
 Modules:
-  common web-common db net auth queue queue-worker cron rest-server service email chat appstore admin-web public-web college
+  common web-common db net auth queue queue-worker cron rest-server service email chat appstore admin-web public-web college fixture
 
 Options:
-  -n NAME   run only this shell harness (repeatable; requires `check`)
   -t GLOB   Gradle test filter (requires exactly one module)
   -f        Force re-run, bypass the build cache (--rerun-tasks)
   -v        Verbose Gradle output (--info)
@@ -63,25 +47,21 @@ is-module() {
 }
 
 SELECTED=()
-TASK="test"
 TESTS_GLOB=""
 HAS_TESTS=false
-HARNESSES=()
 FORCE=false
 VERBOSE=false
 CONTINUE=false
 
-# Options and positionals (the `check` keyword and module names) may be
-# intermixed in any order. getopts alone stops at the first non-option, so wrap
-# it in an outer loop that consumes one non-option per round, resetting OPTIND=1
+# Options and module names may be intermixed in any order. getopts alone stops
+# at the first non-option, so wrap it in an outer loop that consumes one non-option per round, resetting OPTIND=1
 # before each inner getopts run (OPTIND is not auto-reset within one shell).
 while [ "$#" -gt 0 ]; do
   OPTIND=1
-  while getopts ":ht:n:fvc" opt; do
+  while getopts ":ht:fvc" opt; do
     case "$opt" in
     h) help ;;
     t) TESTS_GLOB="$OPTARG"; HAS_TESTS=true ;;
-    n) HARNESSES+=("$OPTARG") ;;
     f) FORCE=true ;;
     v) VERBOSE=true ;;
     c) CONTINUE=true ;;
@@ -91,45 +71,31 @@ while [ "$#" -gt 0 ]; do
   done
   shift $((OPTIND-1))
   if [ "$#" -gt 0 ]; then
-    case "$1" in
-    check) TASK="check" ;;
-    *)
-      if is-module "$1"; then
-        # De-duplicate repeated modules.
-        if ! printf '%s\n' "${SELECTED[@]}" | grep -qxF "$1"; then
-          SELECTED+=("$1")
-        fi
-      else
-        fatal -s "$EXIT_INVALID_ARG_VALUE" "unknown module [$1]"
+    if is-module "$1"; then
+      # De-duplicate repeated modules.
+      if ! printf '%s\n' "${SELECTED[@]}" | grep -qxF "$1"; then
+        SELECTED+=("$1")
       fi
-      ;;
-    esac
+    else
+      fatal -s "$EXIT_INVALID_ARG_VALUE" "unknown module [$1]"
+    fi
     shift
   fi
 done
-
-# -n names shell harnesses, and bare `bin/test` runs none of them. Without
-# `check` it would silently do nothing, so it is a usage error rather than a
-# no-op -- a caller that asked for a narrowed harness set and got no harnesses
-# at all has been told the opposite of the truth.
-if [ "${#HARNESSES[@]}" -gt 0 ] && [ "$TASK" != "check" ]; then
-  fatal -s "$EXIT_MISSING_REQUIRED_ARG" -- "-n names a shell harness and requires the \`check\` keyword; bare bin/test runs no harnesses"
-fi
 
 # --tests filters a single test task; it is meaningless across multiple tasks.
 if [ "$HAS_TESTS" = true ] && [ "${#SELECTED[@]}" -ne 1 ]; then
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" -- "--tests requires exactly one module"
 fi
 
-# Core invariant: emit at least one :module:<task> task (test, or check when the
-# `check` keyword is given). No modules named => all.
+# Core invariant: emit at least one :module:test task. No modules named => all.
 if [ "${#SELECTED[@]}" -eq 0 ]; then
   SELECTED=("${MODULES[@]}")
 fi
 
 GRADLE_ARGS=()
 for module in "${SELECTED[@]}"; do
-  GRADLE_ARGS+=(":$module:$TASK")
+  GRADLE_ARGS+=(":$module:test")
 done
 [ "$FORCE" = true ] && GRADLE_ARGS+=("--rerun-tasks")
 [ "$VERBOSE" = true ] && GRADLE_ARGS+=("--info")
@@ -140,26 +106,6 @@ done
 # Reset only this worktree's test DB to a clean, fully-migrated state; never
 # touch the shared cluster itself.
 "$PROJECT_ROOT/bin/postgres-up"
-
-# The shell script-test harnesses (bin/shell-tests, RFC 115) run under `check`
-# only — the form bin/pre-commit uses, so everything reaching main runs them,
-# while the bare-`bin/test` tight loop stays fast. They must run BEFORE the
-# db-reset below: q-scripts-tests and scripts-tests db-reset the same test DB the
-# Gradle suite then uses, so they cannot overlap it and must not follow the reset
-# that prepares it. The existing reset is therefore also the cleanup after them;
-# no new cleanup step is introduced. scripts-tests checks its rest-server /
-# queue-worker installDist artifacts for existence but never freshness, so build
-# them first (Gradle no-ops it warm) rather than let a month-old binary satisfy it.
-if [ "$TASK" = "check" ]; then
-  "$PROJECT_ROOT/gradlew" :rest-server:installDist :queue-worker:installDist
-  SHELL_TESTS_ARGS=()
-  for harness in ${HARNESSES[@]+"${HARNESSES[@]}"}; do
-    SHELL_TESTS_ARGS+=(-n "$harness")
-  done
-  "$PROJECT_ROOT/bin/shell-tests" ${SHELL_TESTS_ARGS[@]+"${SHELL_TESTS_ARGS[@]}"}
-else
-  log-info "Skipping the shell script-test harnesses (bin/shell-tests) — they run under \`bin/test check\`, which is what the pre-commit hook runs. \`bin/shell-tests -h\` lists them."
-fi
 
 "$PROJECT_ROOT/bin/db-reset"
 

@@ -55,7 +55,7 @@ GATE_SCOPE="$PROJECT_ROOT/bin/gate-scope"
 [ -x "$GATE_SCOPE" ] || fail_test "gate-scope is missing or not executable [$GATE_SCOPE]"
 
 # This harness runs inside the pre-commit hook (git commit -> bin/pre-commit ->
-# bin/test check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
+# bin/check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
 # GIT_INDEX_FILE are exported and OUTRANK `git -C`. Without this strip every
 # fixture below would stage into the REAL index being committed.
 strip_git_hook_env

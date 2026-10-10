@@ -3,7 +3,7 @@
 #
 # Checkpoints are throwaway: they exist so a stalled or rogue phase costs one
 # unit of work rather than the run, and they are squashed away before anything
-# lands. They commit with --no-verify deliberately (a full bin/test check per
+# lands. They commit with --no-verify deliberately (a full bin/check per
 # checkpoint would dominate the run's wall-clock and buys nothing for a commit
 # that will not survive). The flag lives HERE, not in an agent's command string.
 #

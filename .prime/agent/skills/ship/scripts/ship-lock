@@ -55,7 +55,7 @@ EXIT_MISSING_REQUIRED_ARG=21
 EXIT_INVALID_ARG_VALUE=22
 
 # How long the lock is HELD once taken, and how long `acquire` WAITS for it.
-# From a measurement: `nix develop -c bin/test check` in a fresh worktree took
+# From a measurement: `nix develop -c bin/check` in a fresh worktree took
 # 440s (7m20s) on 2026-09-06. The hold is double that, so a live gate is never
 # broken under it; the wait is two full gates, so a run can queue behind two
 # others instead of timing out into the collision it was avoiding. file-lock's

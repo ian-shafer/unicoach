@@ -9521,7 +9521,7 @@ rm -rf "$SCORECARD_OUT" "$SCORECARD_ZIPS" "$SCORECARD_ZIP_OUT" "$FETCHER_LOADER_
 # cluster, no Gradle, no daemons, well under a second for the lot.
 #
 # THIS HARNESS CAN ITSELF RUN INSIDE A GIT HOOK (git commit -> bin/pre-commit ->
-# bin/test check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
+# bin/check -> bin/shell-tests -> here), where GIT_DIR, GIT_WORK_TREE and
 # GIT_INDEX_FILE are exported and OUTRANK `git -C`. Without strip_git_hook_env
 # every case would silently classify THIS repo's index and "pass" for the wrong
 # reason. So the fixture strips, in a subshell, for both the setup git calls and

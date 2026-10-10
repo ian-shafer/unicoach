@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+# The same `.env -> .env.dev -> .env.test` layering as bin/test, so the harnesses
+# and the Gradle half below target this worktree's test DB and port block.
+export ENV_FILES=".env.dev:.env.test"
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+check [options]
+
+The pre-commit gate's test half: builds the rest-server/queue-worker
+installDist artifacts, runs the shell script-test harnesses (bin/shell-tests),
+then runs bin/test over every module.
+
+The harnesses stop THIS checkout's rest-server and queue-worker daemons and
+leave its test database dirty; bin/test's db-reset is the cleanup. They are
+listed by `bin/shell-tests -h` and not duplicated here.
+
+Options:
+  -n NAME   run only this shell harness (repeatable). bin/pre-commit passes
+            the set bin/gate-scope says the staged diff can break.
+  -h        Help
+EOF
+  exit 0
+}
+
+HARNESSES=()
+
+while getopts ":hn:" opt; do
+  case "$opt" in
+  h) help ;;
+  n) HARNESSES+=("$OPTARG") ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "check accepts no positional arguments: [$*]"
+fi
+
+"$PROJECT_ROOT/bin/postgres-up"
+
+# scripts-tests checks its rest-server / queue-worker installDist artifacts for
+# existence but never freshness, so build them first (Gradle no-ops it warm)
+# rather than let a month-old binary satisfy it.
+"$PROJECT_ROOT/gradlew" :rest-server:installDist :queue-worker:installDist
+
+# The harnesses run BEFORE bin/test: q-scripts-tests and scripts-tests db-reset
+# the same test DB the Gradle suite then uses, so they cannot overlap it and must
+# not follow the reset that prepares it. bin/test's own reset is therefore also
+# the cleanup after them.
+SHELL_TESTS_ARGS=()
+for harness in ${HARNESSES[@]+"${HARNESSES[@]}"}; do
+  SHELL_TESTS_ARGS+=(-n "$harness")
+done
+"$PROJECT_ROOT/bin/shell-tests" ${SHELL_TESTS_ARGS[@]+"${SHELL_TESTS_ARGS[@]}"}
+
+exec "$PROJECT_ROOT/bin/test"

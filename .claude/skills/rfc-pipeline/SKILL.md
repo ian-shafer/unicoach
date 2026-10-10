@@ -274,11 +274,11 @@ SHAs in its context. Run each with `-h` for its full contract.
 `--no-verify` lives in `rfc-pipeline-checkpoint` (fast WIP commits, and the flag
 stays out of the classifier-inspected Bash string) and in **one** of the two
 final commits: the **code** commit runs the full pre-commit hook — its
-`bin/test check` is the run's final independent gate, and the same hook run also
+`bin/check` is the run's final independent gate, and the same hook run also
 covers ktlint, `deno fmt --check` over the whole working tree (RFC markdown
 included), and the staged-spec fuzz — so the **RFC-doc** commit is made with
-`--no-verify` rather than paying for a second, identical `bin/test check` over a
-tree the hook already validated (see Phase 3a). Any bare `git …` below means
+`--no-verify` rather than paying for a second, identical `bin/check` over a tree
+the hook already validated (see Phase 3a). Any bare `git …` below means
 `git -C "<codebase-root>" …`.
 
 ### Phase 0 — pipeline worktree (before Phase 1)
@@ -410,7 +410,7 @@ executed counts, take it — these are our own tools reporting their own output.
 Re-running the suite to confirm a report it already gave costs minutes on every
 step and almost never changes the answer, and the run is gated twice downstream
 anyway: nothing reaches `main` without the code commit's pre-commit hook (Phase
-3a) running `bin/test check` on the exact committed tree.
+3a) running `bin/check` on the exact committed tree.
 
 **The exception is a stall or kill, and it is not about doubt.** An agent that
 died mid-write made no claim at all and may have left a half-applied tree.
@@ -425,11 +425,11 @@ review, which touches only Markdown, never does.
 
 **`/review-fix` (Phase 2) is exempt from this section's re-run policy
 entirely.** It gates its own integration tip at the end of every tier
-(`nix develop -c bin/format -c` + `bin/test check`, per its own Phase 3), so by
-the time its merge-back reaches the pipeline the tree has already been tested
-more times, and more granularly, than one suite run would add. The pipeline does
-not re-run the suite around the merge-back. The **final** gate is still the code
-commit's pre-commit hook (Phase 3a), which runs `bin/test check` on the exact
+(`nix develop -c bin/format -c` + `bin/check`, per its own Phase 3), so by the
+time its merge-back reaches the pipeline the tree has already been tested more
+times, and more granularly, than one suite run would add. The pipeline does not
+re-run the suite around the merge-back. The **final** gate is still the code
+commit's pre-commit hook (Phase 3a), which runs `bin/check` on the exact
 committed tree; that hook _is_ the last independent run, so no separate manual
 run precedes it.
 
@@ -813,14 +813,14 @@ where nothing reported them — a stall or kill — per **Verification** above.
   repository's commit guidelines: one for the new/updated RFC markdown document,
   and one for the actual code implementation.
 - **Commit protocol — one hook run, not two.** The whole change is on disk in
-  the working tree throughout both commits, so a single `bin/test check` (run by
-  the hook) validates the suite against the working tree. The orchestrator makes
+  the working tree throughout both commits, so a single `bin/check` (run by the
+  hook) validates the suite against the working tree. The orchestrator makes
   both commits itself, in `<codebase-root>`:
   1. Commit the **code** **through the full hook** via
      `nix develop -c git commit`. This stages the code — including
      `api-specs/openapi.yaml` if it changed, so the staged-spec fuzz gate fires
-     correctly — and its `bin/test check` **is** the run's final independent
-     test gate. If the hook fails on a formatting nit, re-run
+     correctly — and its `bin/check` **is** the run's final independent test
+     gate. If the hook fails on a formatting nit, re-run
      `nix develop -c bin/format` and retry once. If it fails on tests, **stop**:
      the tree is intact — report the failure output and the run's state to the
      Architect and wait. This is the one place after Phase 1 where the pipeline
@@ -828,9 +828,9 @@ where nothing reported them — a stall or kill — per **Verification** above.
   2. Commit the **RFC markdown doc** with `--no-verify`
      (`nix develop -c git commit --no-verify`). It is Markdown-only
      (documentation, not code) and already formatted by `bin/format` above, so
-     it needs no suite run — a second full `bin/test check` here would be pure
-     waste. Order of the two commits does not matter; only the code commit needs
-     the hook.
+     it needs no suite run — a second full `bin/check` here would be pure waste.
+     Order of the two commits does not matter; only the code commit needs the
+     hook.
 
 #### 3b. Land the branch, tear down the worktree, report
 

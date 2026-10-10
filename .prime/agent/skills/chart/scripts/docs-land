@@ -11,7 +11,7 @@
 # So this script asserts WHAT the branch lands (the net diff against the base
 # touches nothing outside product/) rather than asking ship-verified whether the
 # full gate ran on it. It could not ask even if it wanted to: RFC 194 makes
-# bin/pre-commit skip bin/test check for a product-docs-only commit and
+# bin/pre-commit skip bin/check for a product-docs-only commit and
 # DELIBERATELY record no verified marker for it, because a marker that can lie is
 # worse than no marker.
 #

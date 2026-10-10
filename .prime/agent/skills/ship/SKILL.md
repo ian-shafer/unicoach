@@ -196,7 +196,7 @@ one:
 
 **A runner is spawned cheap** (RFC 233). A child is a _runner_ when its whole
 job is to execute a command this session names and report the outcome under the
-contract below — the suite, `bin/test check`, the hook, the land sequence,
+contract below — the suite, `bin/check`, the hook, the land sequence,
 `installDist`, `bin/format`, `bin/shell-tests -n <name>`, a compile. Spawn it
 with `model='deepseek/deepseek-v4-pro'`, the model with a measured record of
 doing this job correctly — RFC 233 carries the figures, which are not repeated
@@ -561,21 +561,21 @@ move AFTER this decision — phase 6 runs `bin/prompt-seed`, `ship-order`,
 `bin/format` and a rebase — and that is fine. Phase 5's suite is not the
 authority; the hook runs after all of them, on the tree that lands.
 
-**Plain `bin/test`, and NOT `bin/test check`** (RFC 211). No module argument, no
+**Plain `bin/test`, and NOT `bin/check`** (RFC 211). No module argument, no
 `-f`: Gradle's own dependency graph picks the tasks the diff invalidated, which
 is what CLAUDE.md means by "let the cache do the scoping". Phase 5 is not the
 authoritative run and must not pretend to be — **the pre-commit hook is the
 single authoritative `check` run**, and it is minutes away. Running `check` here
 proves the same thing about the same tree twice: run rfc-208 spent 4m26s on
-`bin/test`, then ~15 min on `bin/test check` whose Gradle half was
+`bin/test`, then ~15 min on `bin/check` whose Gradle half was
 `96/96 up-to-date`, and then the hook ran `check` a third time. Report the exit
 code and the EXECUTED count from the JUnit XML `tests=` attribute — never
 `grep -c "@Test"`, which counts commented-out annotations.
 
 **Phase 5 runs NO shell harnesses at all.** That is a deliberate, temporary gap,
-not an oversight (RFC 211). `bin/test check` is the only thing that runs
-`bin/shell-tests`, and the hook is the only thing that runs `bin/test check`. So
-a diff that touches `bin/`, `infra/`, `.prime/agent/skills/`, `db/schema/`,
+not an oversight (RFC 211). `bin/check` is the only thing that runs
+`bin/shell-tests`, and the hook is the only thing that runs `bin/check`. So a
+diff that touches `bin/`, `infra/`, `.prime/agent/skills/`, `db/schema/`,
 `db/seed/`, `db/data/`, `prompts/` or `.env*` gets NO harness signal until the
 commit. When it fails there, follow the shell-harness procedure in phase 6.
 
@@ -596,8 +596,8 @@ exhaustive: the write fixes everything the later check would report, so a
 Markdown-only run learns nothing here. Kotlin is different. `ktlint --format`
 auto-corrects what it can and LEAVES what it cannot, so a non-correctable
 violation survives the write and fails `bin/format -c` at the hook — where it
-runs CONCURRENTLY with `bin/test check`, so it discards a 10-20 minute suite run
-with it, inside the land lock. Seven seconds here against that.
+runs CONCURRENTLY with `bin/check`, so it discards a 10-20 minute suite run with
+it, inside the land lock. Seven seconds here against that.
 
 Not because another session's file might be in your tree: RFC 201 gave every
 writer its own worktree, so there is none.
@@ -624,8 +624,8 @@ writer its own worktree, so there is none.
 mode — it runs `ktlint --format` and `deno fmt`, and it is what stops a stray
 Markdown file from costing a gate run) rewrites the WORKING TREE. Without the
 re-stage the commit carries the UNFORMATTED bytes, and nothing in the gate says
-so: the hook's `bin/format -c` checks the working tree and passes,
-`bin/test check` passes, and then `ship-verified record` declines with
+so: the hook's `bin/format -c` checks the working tree and passes, `bin/check`
+passes, and then `ship-verified record` declines with
 `working tree differs from index` — so `ship-land`'s `ship-verified assert`
 refuses AFTER the full gate has been spent. `-u` and not `-A`: a formatter
 cannot create a file, so staging tracked modifications is exactly enough.
@@ -718,7 +718,7 @@ reassurance, not the gate, and holding the lock through review would serialise
 the part of a run that has no reason to be serial. The hook does not RE-run the
 suite; it IS the run (RFC 211). What reaches `main` is hook-verified exactly as
 strongly as before: `bin/pre-commit` runs `bin/format -c` and the full
-`bin/test check` — Gradle, Postgres, both `installDist` builds, and every shell
+`bin/check` — Gradle, Postgres, both `installDist` builds, and every shell
 harness `bin/shell-tests` aggregates. Say it precisely: the hook validates the
 WORKING TREE, not the index (CLAUDE.md: "the hook validates the whole working
 TREE rather than the commit"). What ties that to the commit is

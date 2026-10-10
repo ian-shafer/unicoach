@@ -681,7 +681,7 @@ at the end of the run. Its output is the next tier's base.
    Step 3's gate is what checks the resolution: a composition that does not
    build fails there and unwinds like any other red gate.
 3. **Gate the tip**: `nix develop -c bin/format -c` and
-   `nix develop -c bin/test check`. Report the real counts.
+   `nix develop -c bin/check`. Report the real counts.
 
    Per-branch greens do not imply a green integration — two fixes can merge
    cleanly and still be jointly wrong (one extracts a helper, another edits code
