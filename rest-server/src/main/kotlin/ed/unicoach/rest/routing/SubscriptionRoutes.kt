@@ -9,7 +9,6 @@ import ed.unicoach.rest.models.SubscriptionVerifyRequest
 import ed.unicoach.rest.models.SubscriptionVerifyResponse
 import ed.unicoach.rest.models.SubscriptionView
 import ed.unicoach.rest.rejectUnsupportedMethods
-import ed.unicoach.student.StudentService
 import ed.unicoach.subscriptions.SubscriptionService
 import ed.unicoach.subscriptions.VerifyResult
 import io.ktor.http.HttpMethod
@@ -28,13 +27,19 @@ import org.slf4j.LoggerFactory
  * signed transaction; [SubscriptionService] owns the flow and this handler only
  * maps its arms. The email verification gate covers the route automatically
  * (403 `email_not_verified`).
+ *
+ * The delegated seam is [CallerAuthentication] and NOT [CallerResolution], since
+ * RFC 244: billing is per ACCOUNT, so `409 student_profile_required` is not an
+ * answer this route can give any more — a parent may pay for their own account,
+ * and telling them to go and make a student profile first was the blocker this
+ * slice removes. As on the supporter doors, the split keeps that refusal off the
+ * class rather than off a comment.
  */
 class SubscriptionRouteHandler(
   authService: AuthService,
-  studentService: StudentService,
   private val subscriptionService: SubscriptionService,
   sessionConfig: SessionConfig,
-) : CallerResolution by SessionCallerResolution(authService, studentService, sessionConfig) {
+) : CallerAuthentication by SessionCallerAuthentication(authService, sessionConfig) {
   private val logger = LoggerFactory.getLogger(SubscriptionRouteHandler::class.java)
 
   fun registerRoutes(route: Route) {
@@ -46,10 +51,9 @@ class SubscriptionRouteHandler(
 
   private suspend fun RoutingContext.handleVerify() {
     val user = resolveUser() ?: return respondUnauthorized()
-    val student = resolveStudent(user) ?: return respondStudentProfileRequired()
 
     val request = call.receive<SubscriptionVerifyRequest>()
-    val outcome = subscriptionService.verify(student.id, request.signedTransaction).getOrThrow()
+    val outcome = subscriptionService.verify(user.id, request.signedTransaction).getOrThrow()
     respondVerifyOutcome(outcome)
   }
 
@@ -101,6 +105,15 @@ class SubscriptionRouteHandler(
     )
   }
 
+  /**
+   * The shared-Apple-ID refusal, unchanged in code and status (RFC 244 §2): one
+   * Apple ID cannot buy the same subscription twice, so a second unicoach account
+   * signed in to it is handed the first account's transaction. Coverage between the
+   * two was deliberately not built; the way out is a different Apple ID, which the
+   * app now says. [SubscriptionService] counts each occurrence
+   * (`subscription_apple_id_already_bound`), and that count is what would justify
+   * building coverage later.
+   */
   private suspend fun RoutingContext.respondOwnedByOtherAccount() {
     call.respond(
       HttpStatusCode.Conflict,

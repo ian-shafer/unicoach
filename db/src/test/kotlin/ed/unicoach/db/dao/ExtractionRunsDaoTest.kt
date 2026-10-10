@@ -215,7 +215,7 @@ class ExtractionRunsDaoTest {
   @Test
   fun `dummy token-sum removed`() {
     // Token spend moved to llm_responses (RFC 106); the per-student cost ledger is
-    // the student_llm_cost spine, covered in StudentLlmCostDaoTest (RFC 108).
+    // the student_llm_cost spine, covered in StudentLlmCostViewTest (RFC 108).
     val student = createStudent()
     val convo = createConvo(student)
     val prompt = createSystemPrompt()

@@ -670,6 +670,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/supporters/me/coaching-usage:
+    get:
+      summary: Read the caller's supporter coaching usage
+      description: >
+        The abstract coaching meter for the caller's own ACCOUNT, on the parent
+        surface (RFC 244), plus which allowance it meters: the account's own
+        subscription, or the one-time free allowance every account gets. Every
+        account pays for itself — no account rides another's subscription — so
+        this is the parent's own spend and nobody else's. It reports no dollars,
+        token counts, or provider names by design.
+      operationId: getSupporterCoachingUsage
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The caller's supporter coaching usage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupporterCoachingUsageResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The user has no supporter profile (supporter_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students/me/college-list:
     post:
       summary: Add a college to the current student's college list
@@ -1380,9 +1425,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: >
-            The caller has no student profile (code student_profile_required),
-            or the subscription is bound to another account (code
-            subscription_owned_by_other_account)
+            The subscription is bound to another account (code
+            subscription_owned_by_other_account) — billing is per account, so a
+            caller needs no student profile here
           content:
             application/json:
               schema:
@@ -2530,6 +2575,32 @@ components:
           description: >
             When the meter resets — the subscription period's end. Null on the
             free tier, whose lifetime allowance never resets.
+    SupporterCoachingUsageResponse:
+      type: object
+      # CLOSED, like the supporter home's envelope: the body a client validates
+      # is the whole answer, so leaving it open would stop the closure claim one
+      # level short of what a parent receives.
+      additionalProperties: false
+      required: [usage, coverage]
+      properties:
+        usage:
+          $ref: '#/components/schemas/CoachingUsage'
+        coverage:
+          $ref: '#/components/schemas/CoachingCoverage'
+    CoachingCoverage:
+      type: object
+      # CLOSED: the kind IS the whole answer, so a second property here is a
+      # product decision (a period, a payer, a plan name), not an addition.
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [own_subscription, free_allowance]
+          description: >
+            Which allowance the meter is reading: the account's own subscription,
+            or the one-time free allowance. There is no third kind — no account
+            rides another account's subscription.
     SubscriptionVerifyRequest:
       type: object
       additionalProperties: false

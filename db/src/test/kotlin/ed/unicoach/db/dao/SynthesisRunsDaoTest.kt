@@ -173,7 +173,7 @@ class SynthesisRunsDaoTest {
   @Test
   fun `each appended run pins its own llm_request reference`() {
     // Token spend moved to llm_responses (RFC 106); the per-student cost ledger is
-    // the student_llm_cost spine, covered in StudentLlmCostDaoTest (RFC 108). Here we
+    // the student_llm_cost spine, covered in StudentLlmCostViewTest (RFC 108). Here we
     // only sanity-check that each run persists a distinct llm_request pin.
     val student = createStudent()
     val prompt = createSystemPrompt()

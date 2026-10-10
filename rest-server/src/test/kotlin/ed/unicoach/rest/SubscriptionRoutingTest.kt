@@ -3,30 +3,21 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreTestFixtures
-import ed.unicoach.appstore.AppStoreTransport
-import ed.unicoach.appstore.AppStoreTransportResponse
 import ed.unicoach.appstore.ScriptedAppStoreTransport
-import ed.unicoach.auth.AppleIdTokenVerifier
-import ed.unicoach.auth.GoogleIdTokenVerifier
-import ed.unicoach.auth.StubIdTokenVerifier
+import ed.unicoach.appstore.SwappableAppStoreTransport
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.TokenUsage
-import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.rest.auth.SessionConfig
-import ed.unicoach.rest.config.ClientKeyGateConfig
-import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.SubscriptionVerifyRequest
-import ed.unicoach.web.common.logging.RequestLoggingConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
@@ -39,10 +30,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.engine.EmbeddedServer
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
@@ -60,6 +48,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -84,17 +73,8 @@ class SubscriptionRoutingTest {
     /** Unique Apple keys across the suite, so bindings never collide. */
     private val OTID_COUNTER = AtomicLong(900_000_000_000L)
 
-    /** Per-test swap point for the Apple conversation, fixed at boot. */
-    private object SwappableTransport : AppStoreTransport {
-      @Volatile
-      var delegate: AppStoreTransport =
-        AppStoreTransport { path, _ -> throw IllegalStateException("No App Store script installed for [$path]") }
-
-      override suspend fun get(
-        path: String,
-        bearerToken: String,
-      ): AppStoreTransportResponse = delegate.get(path, bearerToken)
-    }
+    /** The swap point for the Apple conversation, fixed at boot — one per suite ([SwappableAppStoreTransport]). */
+    private val appStoreTransport = SwappableAppStoreTransport()
 
     /** A provider that always answers, so an admitted turn completes. */
     private val fakeProvider =
@@ -142,41 +122,8 @@ class SubscriptionRoutingTest {
       dbConnection = java.sql.DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
 
       testServer =
-        embeddedServer(Netty, port = 0, host = "127.0.0.1") {
-          environment.monitor.subscribe(ApplicationStopped) { database.close() }
-          appModule(
-            database,
-            SessionConfig.from(config).getOrThrow(),
-            RequestSizeConfig.from(config).getOrThrow(),
-            ed.unicoach.coaching.LlmCallLog(fakeProvider, database),
-            CoachingConfig.from(config).getOrThrow(),
-            ClientKeyGateConfig.from(config).getOrThrow(),
-            ed.unicoach.auth.EmailVerificationConfig
-              .from(config)
-              .getOrThrow(),
-            GoogleIdTokenVerifier(StubIdTokenVerifier()),
-            AppleIdTokenVerifier(StubIdTokenVerifier()),
-            ed.unicoach.queue.QueueService(database),
-            ed.unicoach.coaching.extraction.ExtractionConfig
-              .from(config)
-              .getOrThrow(),
-            RequestLoggingConfig.from(config).getOrThrow(),
-            BudgetConfig.from(config).getOrThrow(),
-            AppStoreServerApi(SwappableTransport, AppStoreTestFixtures.authTokens()),
-            subscriptionPlansFrom(config),
-            testAppleNotificationVerifier(),
-            costReportConfigFrom(config),
-            supporterInviteConfigFrom(config),
-          )
-        }
-      testServer.start(wait = false)
-      boundPort =
-        runBlocking {
-          testServer.engine
-            .resolvedConnectors()
-            .first()
-            .port
-        }
+        startAppModuleServer(config, database, BudgetConfig.from(config).getOrThrow(), appStoreTransport, fakeProvider)
+      boundPort = testServer.boundPort()
       client = HttpClient(CIO)
     }
 
@@ -227,12 +174,19 @@ class SubscriptionRoutingTest {
       header(HttpHeaders.Cookie, cookie)
       setBody(mapper.writeValueAsString(createStudentBody()))
     }
-    return Caller(cookie, studentIdOf(email))
+    return Caller(cookie, studentIdOf(email), userIdOf(email))
   }
 
+  /**
+   * A caller and BOTH its keys: the account that pays (RFC 244) and the student
+   * profile the spend fixtures still hang off. They are different ids on purpose
+   * — a test that read one where it meant the other would pass while the row
+   * moved to the wrong owner.
+   */
   private class Caller(
     val cookie: String,
     val studentId: UUID,
+    val userId: UUID,
   )
 
   private fun studentIdOf(email: String): UUID =
@@ -245,6 +199,26 @@ class SubscriptionRoutingTest {
           rs.getObject("id") as UUID
         }
       }
+
+  /** The ACCOUNT behind an address — the key `subscriptions` is now on (RFC 244). */
+  private fun userIdOf(email: String): UUID =
+    dbConnection.prepareStatement("SELECT id FROM users WHERE email = ?").use { stmt ->
+      stmt.setString(1, email)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getObject("id") as UUID
+      }
+    }
+
+  /** How many `students` rows this account holds — 0 is what "no student profile" MEANS. */
+  private fun studentRowsFor(userId: UUID): Int =
+    dbConnection.prepareStatement("SELECT count(*) FROM students WHERE user_id = ?").use { stmt ->
+      stmt.setObject(1, userId)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getInt(1)
+      }
+    }
 
   // ---------------------------------------------------------------------------
   // Apple scripting + verify requests
@@ -259,7 +233,7 @@ class SubscriptionRoutingTest {
     periodEnd: Instant,
     status: Int = 1,
   ) {
-    SwappableTransport.delegate =
+    appStoreTransport.delegate =
       ScriptedAppStoreTransport.of(
         200,
         AppStoreTestFixtures.statusResponseBody(
@@ -287,6 +261,64 @@ class SubscriptionRoutingTest {
     }
 
   private suspend fun HttpResponse.errorCode(): String = mapper.readTree(bodyAsText()).get("code").asText()
+
+  // ---------------------------------------------------------------------------
+  // The subscriptions row, read on its ACCOUNT key (RFC 244)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One `subscriptions` row's owner and its whole mutable state, plus the number
+   * of history rows behind it. Everything a "this request wrote nothing" claim
+   * has to compare: a rebind that silently succeeded would move [userId], a
+   * refresh that silently ran would move [version]/[updatedAt] and add a
+   * [versionRows] entry.
+   */
+  private data class SubscriptionRow(
+    val userId: UUID,
+    val status: String,
+    val productId: String,
+    val version: Int,
+    val updatedAt: Instant,
+    val versionRows: Int,
+  )
+
+  /** The row Apple's key names, or null when no account holds that transaction. */
+  private fun subscriptionRow(originalTransactionId: String): SubscriptionRow? =
+    dbConnection
+      .prepareStatement(
+        """
+        SELECT s.user_id, s.status, s.product_id, s.version, s.updated_at,
+               (SELECT count(*) FROM subscriptions_versions v WHERE v.id = s.id) AS version_rows
+          FROM subscriptions s
+         WHERE s.original_transaction_id = ?
+        """.trimIndent(),
+      ).use { stmt ->
+        stmt.setString(1, originalTransactionId)
+        stmt.executeQuery().use { rs ->
+          if (!rs.next()) {
+            null
+          } else {
+            SubscriptionRow(
+              userId = rs.getObject("user_id") as UUID,
+              status = rs.getString("status"),
+              productId = rs.getString("product_id"),
+              version = rs.getInt("version"),
+              updatedAt = rs.getTimestamp("updated_at").toInstant(),
+              versionRows = rs.getInt("version_rows"),
+            )
+          }
+        }
+      }
+
+  /** How many `subscriptions` rows this ACCOUNT holds. */
+  private fun subscriptionRowsFor(userId: UUID): Int =
+    dbConnection.prepareStatement("SELECT count(*) FROM subscriptions WHERE user_id = ?").use { stmt ->
+      stmt.setObject(1, userId)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getInt(1)
+      }
+    }
 
   // ---------------------------------------------------------------------------
   // Spend seeding (CoachingBudgetRoutingTest's helper, plus a created_at knob)
@@ -370,15 +402,57 @@ class SubscriptionRoutingTest {
       assertEquals("unauthorized", response.errorCode())
     }
 
+  /**
+   * RFC 244 §5, replacing this suite's `verify is 409 for a user with no student
+   * profile`. Billing is per ACCOUNT, so `student_profile_required` is not an
+   * answer this door can give any more: the parent who could not pay for their
+   * own account was the blocker the slice removed, and the caller here reaches
+   * the ordinary happy path with no `students` row anywhere.
+   */
   @Test
-  fun `verify is 409 for a user with no student profile`() =
+  fun `verify binds the subscription of a caller with NO student profile`() =
     runBlocking {
-      val (cookie, _) = registerUser()
+      val (cookie, email) = registerUser()
+      val userId = userIdOf(email)
+      val otid = uniqueOriginalTransactionId()
+      val periodEnd = Instant.now().plus(25, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS)
+      installActiveScript(otid, Instant.now().minus(5, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS), periodEnd)
 
       val response = postVerify(cookie)
 
-      assertEquals(HttpStatusCode.Conflict, response.status)
-      assertEquals("student_profile_required", response.errorCode())
+      assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+      assertEquals(
+        "active",
+        mapper
+          .readTree(response.bodyAsText())
+          .get("subscription")
+          .get("status")
+          .asText(),
+      )
+      assertEquals(
+        0,
+        studentRowsFor(userId),
+        "the premise: this account holds no student profile, so the old role refusal WOULD have fired",
+      )
+      assertEquals(userId, subscriptionRow(otid)?.userId, "the row is bound to the ACCOUNT that verified")
+    }
+
+  /**
+   * And the refusals are reached too, not just the happy path: a caller with no
+   * student profile gets the door's OWN answer about the transaction. The
+   * assertion that matters is the second one — whatever this route says, it is
+   * never `student_profile_required` again.
+   */
+  @Test
+  fun `a refusal reaches a caller with NO student profile on its own terms`() =
+    runBlocking {
+      val (cookie, _) = registerUser()
+      appStoreTransport.delegate = ScriptedAppStoreTransport.of(404, "{}")
+
+      val response = postVerify(cookie)
+
+      assertEquals(HttpStatusCode.NotFound, response.status)
+      assertEquals("subscription_not_found", response.errorCode())
     }
 
   @Test
@@ -421,17 +495,10 @@ class SubscriptionRoutingTest {
       assertTrue(subscription.get("currentPeriodEnd").isTextual, "currentPeriodEnd is ISO-8601 text on the wire")
       assertEquals(periodEnd, Instant.parse(subscription.get("currentPeriodEnd").asText()))
 
-      dbConnection
-        .prepareStatement("SELECT status, product_id FROM subscriptions WHERE student_id = ? AND original_transaction_id = ?")
-        .use { stmt ->
-          stmt.setObject(1, caller.studentId)
-          stmt.setString(2, otid)
-          stmt.executeQuery().use { rs ->
-            assertTrue(rs.next(), "the row is in the DB")
-            assertEquals("active", rs.getString("status"))
-            assertEquals(AppStoreTestFixtures.PRODUCT_ID, rs.getString("product_id"))
-          }
-        }
+      val row = assertNotNull(subscriptionRow(otid), "the row is in the DB")
+      assertEquals(caller.userId, row.userId, "and it is keyed on the caller's ACCOUNT (RFC 244)")
+      assertEquals("active", row.status)
+      assertEquals(AppStoreTestFixtures.PRODUCT_ID, row.productId)
     }
 
   @Test
@@ -458,7 +525,7 @@ class SubscriptionRoutingTest {
   fun `an Apple 404 answers 404 subscription_not_found`() =
     runBlocking {
       val caller = registerStudent()
-      SwappableTransport.delegate = ScriptedAppStoreTransport.of(404, "{}")
+      appStoreTransport.delegate = ScriptedAppStoreTransport.of(404, "{}")
 
       val response = postVerify(caller.cookie)
 
@@ -466,8 +533,16 @@ class SubscriptionRoutingTest {
       assertEquals("subscription_not_found", response.errorCode())
     }
 
+  /**
+   * The shared-Apple-ID refusal (RFC 244 §2), and the half of it that matters
+   * most: the refusal WRITES NOTHING. The owner's row is compared field by field
+   * either side of the interloper's attempt — a rebind that silently succeeded
+   * would move `user_id`, and a refresh that silently ran would move `version`,
+   * `updated_at` and the history — and the interloper is left holding no
+   * subscription at all.
+   */
   @Test
-  fun `a rebind attempt answers 409 subscription_owned_by_other_account`() =
+  fun `a rebind attempt answers 409 subscription_owned_by_other_account and writes nothing`() =
     runBlocking {
       val owner = registerStudent()
       val interloper = registerStudent()
@@ -477,19 +552,24 @@ class SubscriptionRoutingTest {
 
       installActiveScript(otid, periodStart, periodEnd)
       assertEquals(HttpStatusCode.OK, postVerify(owner.cookie).status)
+      val before = assertNotNull(subscriptionRow(otid))
+      assertEquals(owner.userId, before.userId)
 
       installActiveScript(otid, periodStart, periodEnd)
       val response = postVerify(interloper.cookie)
 
       assertEquals(HttpStatusCode.Conflict, response.status)
       assertEquals("subscription_owned_by_other_account", response.errorCode())
+
+      assertEquals(before, subscriptionRow(otid), "the other account's row is untouched, down to its version history")
+      assertEquals(0, subscriptionRowsFor(interloper.userId), "and the refused caller holds no subscription row")
     }
 
   @Test
   fun `an Apple outage answers 503 service_unavailable`() =
     runBlocking {
       val caller = registerStudent()
-      SwappableTransport.delegate = ScriptedAppStoreTransport.throwing(IOException("connection reset"))
+      appStoreTransport.delegate = ScriptedAppStoreTransport.throwing(IOException("connection reset"))
 
       val response = postVerify(caller.cookie)
 

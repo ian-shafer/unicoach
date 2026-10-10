@@ -3,8 +3,8 @@ package ed.unicoach.rest.routing
 import ed.unicoach.auth.AuthService
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.rest.auth.SessionConfig
-import ed.unicoach.rest.models.CoachingUsage
 import ed.unicoach.rest.models.CoachingUsageResponse
+import ed.unicoach.rest.models.toCoachingUsage
 import ed.unicoach.rest.rejectUnsupportedMethods
 import ed.unicoach.student.StudentService
 import io.ktor.http.HttpMethod
@@ -42,15 +42,6 @@ class CoachingUsageRouteHandler(
     val student = resolveStudent(user) ?: return respondStudentProfileRequired()
 
     val entitlement = budgetService.entitlement(student.id).getOrThrow()
-    call.respond(
-      HttpStatusCode.OK,
-      CoachingUsageResponse(
-        CoachingUsage(
-          usedPercent = entitlement.usedPercent,
-          exhausted = entitlement.exhausted,
-          resetsAt = entitlement.resetsAt,
-        ),
-      ),
-    )
+    call.respond(HttpStatusCode.OK, CoachingUsageResponse(entitlement.toCoachingUsage()))
   }
 }

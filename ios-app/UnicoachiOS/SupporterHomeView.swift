@@ -45,6 +45,14 @@ struct SupporterHomeView: View {
         case settings
     }
 
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// The billing rail for THIS account (RFC 244). A `@StateObject` built in
+    /// `init` from the client, the `AuthenticatedRootView` precedent: a view's
+    /// `init` runs again on every publish of the root state machine, so a view
+    /// model built in the body would be replaced mid-read.
+    @StateObject private var coachingViewModel: SupporterCoachingViewModel
+
     @State private var path: [Destination] = []
     /// The working student, as this screen currently has it. Seeded from the
     /// store in `init` rather than in a `.task`, so the header never renders
@@ -62,6 +70,7 @@ struct SupporterHomeView: View {
         authClient: AuthClientProtocol,
         supporterInviteClient: SupporterInviteClientProtocol,
         collegeListClient: CollegeListClientProtocol,
+        supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol,
         subjectStore: SupporterSubjectStore,
         switcherOpenOnAppear: Bool = false,
         refreshHome: @escaping () async -> Void,
@@ -75,6 +84,9 @@ struct SupporterHomeView: View {
         self.collegeListClient = collegeListClient
         self.subjectStore = subjectStore
         self.switcherOpenOnAppear = switcherOpenOnAppear
+        _coachingViewModel = StateObject(
+            wrappedValue: SupporterCoachingViewModel(client: supporterCoachingUsageClient)
+        )
         self.refreshHome = refreshHome
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
@@ -102,6 +114,18 @@ struct SupporterHomeView: View {
                 .navigationDestination(for: Destination.self, destination: destination)
         }
         .task { await refreshHome() }
+        // The coaching read, on the same two occasions as the roster: on
+        // appearance, and on every return to the foreground. It is hooked HERE
+        // rather than beside the roster's own foreground hook
+        // (`UnicoachiOSApp`), because that one re-resolves state this scene is
+        // handed from above while this reading is this scene's own —
+        // `AuthenticatedRootView` keeps its student meter's `scenePhase` hook
+        // for exactly that reason.
+        .task { await coachingViewModel.load() }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await coachingViewModel.load() }
+        }
     }
 
     private var root: some View {
@@ -117,6 +141,11 @@ struct SupporterHomeView: View {
                     whatLinkingAdds
                 }
                 actions
+
+                // Below the actions and outside the empty-roster branch: how
+                // coaching is paid for is true of this ACCOUNT, so it is said
+                // whether or not anybody is linked (RFC 244).
+                SupporterCoachingSection(viewModel: coachingViewModel)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -228,10 +257,12 @@ struct SupporterHomeView: View {
         case .settings:
             SettingsView(
                 user: user,
-                // A supporter, and there is no rail to pass: the meter behind
-                // it is student-scoped, and whose budget it would show is
-                // `family/03.5`'s question (D10), not one this screen may
-                // answer by guessing.
+                // A supporter, and there is still no rail to pass: the rail's
+                // meter is student-scoped, and `family/03.5` answered whose
+                // budget a parent sees by giving the parent their OWN account's
+                // meter on their OWN scene — `SupporterCoachingSection` above,
+                // reading a supporter-scoped route. Settings gains nothing, so
+                // the `Caller` enum's claim stays true (RFC 244).
                 caller: .supporter,
                 authClient: authClient,
                 supporterInviteClient: supporterInviteClient,
@@ -293,6 +324,7 @@ private struct SupporterHomePreviewSubjectStore: SupporterSubjectStore {
         authClient: SupporterHomePreviewAuthClient(),
         supporterInviteClient: PreviewSupporterInviteClient(),
         collegeListClient: SupporterHomePreviewCollegeListClient(),
+        supporterCoachingUsageClient: PreviewSupporterCoachingUsageClient(),
         subjectStore: SupporterHomePreviewSubjectStore(),
         refreshHome: {},
         onEmailChanged: { _ in },

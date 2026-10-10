@@ -11,8 +11,8 @@ import SwiftUI
 /// the paywall keeps its explanation — so that is what stays outside.
 ///
 /// Layout only, like `SubscriptionSection`: what the offer block has to show is
-/// `viewModel.offer` — a button, a spinner, a spoken unavailability, or
-/// nothing — and is never re-derived here.
+/// `viewModel.offer` — a button, a spinner, a spoken unavailability, a standing
+/// reason there is no button, or nothing — and is never re-derived here.
 struct SubscriptionOffer: View {
     @ObservedObject var viewModel: SubscriptionViewModel
 
@@ -80,6 +80,18 @@ struct SubscriptionOffer: View {
                     // `offersSubscribe`'s rule, read via `offer` rather than
                     // restated here. Restore stays below.
                     EmptyView()
+                case .appleIdBoundElsewhere:
+                    // The one withdrawn button that explains itself HERE. The
+                    // others are silent because something beside them stands in
+                    // for the explanation — `ManageSubscriptionLink` for
+                    // `.bound` — and nothing does for an account that holds no
+                    // subscription. The sentence is the view model's one
+                    // constant, the same words its banner uses (RFC 244).
+                    Text(SubscriptionViewModel.appleIdBoundElsewhereText)
+                        .font(.dsBody)
+                        .foregroundStyle(Color.dsTextSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("subscribeAppleIdBoundElsewhere")
                 }
 
                 // `DSTextButton`, not a hand-rolled `Button`: the colour rule

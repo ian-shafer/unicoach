@@ -43,9 +43,11 @@ log — `llm_requests` (carries `model_requested`), `llm_responses` (carries
 `cache_write_tokens` + `outcome`), both append-only — and a per-student
 token-attribution view across all four call owners (`convo_requests → convos`,
 `extraction_runs`, `synthesis_runs`, `fit_lens_runs`); RFC 108 has since lowered
-that view to the per-call `student_llm_cost` spine read by `StudentLlmCostDao`.
-A standing invariant already guarantees every token on a student is recorded at
-the call boundary, including failed/retried calls.
+that view to the per-call `student_llm_cost` spine; RFC 244 re-keyed the gate's
+read onto the ACCOUNT, so the spine is read through `account_llm_cost` by
+`AccountLlmCostDao` — the one cost read production makes. A standing invariant
+already guarantees every token on a student is recorded at the call boundary,
+including failed/retried calls.
 
 What is missing is **dollars** and **a time window**:
 
@@ -80,10 +82,10 @@ budget or subscription state.
   Apple-callable endpoint (no session cookie); its JWS signature is the
   authentication. Receipt enqueues onto the existing queue and the worker
   applies it, per `ASYNC_WORK.md` (enqueue inside the request transaction).
-- **State of record.** A `subscriptions` table keyed to the student (bound via
-  Apple's `originalTransactionId`) holds `product_id`, `status` (active / grace
-  / expired / revoked), and the current period window. This row, plus the cost
-  ledger, is the entire entitlement input.
+- **State of record.** A `subscriptions` table keyed to the ACCOUNT (RFC 244;
+  bound via Apple's `originalTransactionId`) holds `product_id`, `status`
+  (active / grace / expired / revoked), and the current period window. This row,
+  plus the cost ledger, is the entire entitlement input.
 
 ### Gate — one check, two behaviors
 
@@ -300,8 +302,9 @@ input/output/cache-read/cache-write); per-call cost computed and frozen at the
 LlmCallLog write boundary (price-at-time-of-call); a per-student cost read
 exposing both a lifetime total (free-tier meter) and a [period_start,
 period_end) windowed total (subscription meter). As landed: the lifetime token
-view was replaced by the per-call `student_llm_cost` spine, read by the new
-`StudentLlmCostDao` (lifetime + windowed).
+view was replaced by the per-call `student_llm_cost` spine, read at the time by
+a per-student DAO; RFC 244 moved that read onto the account spine
+(`AccountLlmCostDao`, lifetime + windowed) and deleted the per-role one.
 Already landed (build on these): none — first node. RFC 106 is in place.
 Out of scope: the budget gate/enforcement, subscriptions, StoreKit, iOS. Backend
 only.

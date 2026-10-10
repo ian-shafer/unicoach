@@ -1,7 +1,6 @@
 package ed.unicoach.db.dao
 
-import ed.unicoach.common.money.Nanodollars
-import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.UserId
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -9,23 +8,28 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
-import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Exercises [StudentLlmCostDao] over the `student_llm_cost` per-call attribution
- * spine (db/schema/0041, RFC 108): the per-student dollar total, lifetime and
- * `[start, end)`-windowed, plus the two counters that bound it — `uncostedCalls`
- * (NULL-cost calls) and `estimatedCalls` (default-priced calls).
+ * Exercises the `student_llm_cost` per-call attribution spine (db/schema/0041,
+ * RFC 108): the student-side dollar total, lifetime and `[start, end)`-windowed,
+ * plus the two counters that bound it — `uncostedCalls` (NULL-cost calls) and
+ * `estimatedCalls` (default-priced calls).
+ *
+ * Read through [AccountLlmCostDao], because since RFC 244 that is the only cost
+ * read production makes: `account_llm_cost` re-keys this view onto the account a
+ * `students` row hangs off, and its supporter arm is empty for every student
+ * below, so the account's total IS this view's total for that student. Every
+ * number here is therefore the number the budget gate acts on.
  *
  * The spine keeps RFC 106's attribution semantics unchanged (four-owner union,
  * soft-deleted-convo inclusion, orphan exclusion), so those are re-pinned here at
  * the lowered per-call grain.
  */
-class StudentLlmCostDaoTest {
+class StudentLlmCostViewTest {
   companion object {
     private lateinit var connection: Connection
 
@@ -94,51 +98,12 @@ class StudentLlmCostDaoTest {
     return id
   }
 
-  /**
-   * Inserts an llm_requests row + its 1:1 completed llm_responses row carrying the
-   * given frozen cost (and optional created_at, for windowing); returns the
-   * request id. [costNanodollars]/[costIsEstimated] are both null for an uncosted
-   * call, or both non-null otherwise (the 0041 pairing CHECK).
-   */
+  /** One completed call at a known frozen cost — [LlmCallRowFixture], the fixture every cost spine seeds through. */
   private fun appendCall(
     costNanodollars: Long?,
     costIsEstimated: Boolean?,
     createdAt: Instant? = null,
-  ): Long {
-    val requestId =
-      connection
-        .prepareStatement(
-          "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
-    val sql =
-      if (createdAt == null) {
-        """
-        INSERT INTO llm_responses
-          (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms)
-        VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, ?, 1, 1, 1)
-        """.trimIndent()
-      } else {
-        """
-        INSERT INTO llm_responses
-          (request_id, created_at, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms)
-        VALUES (?, ?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, ?, 1, 1, 1)
-        """.trimIndent()
-      }
-    connection.prepareStatement(sql).use { stmt ->
-      var i = 1
-      stmt.setLong(i++, requestId)
-      if (createdAt != null) stmt.setTimestamp(i++, Timestamp.from(createdAt))
-      if (costNanodollars != null) stmt.setLong(i++, costNanodollars) else stmt.setNull(i++, java.sql.Types.BIGINT)
-      if (costIsEstimated != null) stmt.setBoolean(i++, costIsEstimated) else stmt.setNull(i++, java.sql.Types.BOOLEAN)
-      stmt.executeUpdate()
-    }
-    return requestId
-  }
+  ): Long = LlmCallRowFixture.insert(connection, costNanodollars, costIsEstimated, createdAt)
 
   private fun createConvo(studentId: UUID): UUID {
     val convoId = UUID.randomUUID()
@@ -251,7 +216,25 @@ class StudentLlmCostDaoTest {
       }
   }
 
-  private fun lifetime(studentId: UUID) = StudentLlmCostDao.lifetimeCost(session, StudentId(studentId)).getOrThrow()
+  /** The one indexed hop from a student to the account that pays for them — the key the meter is read by. */
+  private fun accountOf(studentId: UUID): UserId =
+    connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
+      stmt.setObject(1, studentId)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        UserId(UUID.fromString(rs.getString("user_id")))
+      }
+    }
+
+  /** This student's lifetime spend as the gate reads it: through the account their profile hangs off. */
+  private fun lifetime(studentId: UUID) = AccountLlmCostDao.lifetimeCost(session, accountOf(studentId)).getOrThrow()
+
+  /** [lifetime] over `[start, end)`, the subscription meter's read. */
+  private fun windowed(
+    studentId: UUID,
+    start: Instant,
+    end: Instant,
+  ) = AccountLlmCostDao.windowedCost(session, accountOf(studentId), start, end)
 
   @Test
   fun `lifetimeCost sums a student's cost across all four owners, fit-lens pair included`() {
@@ -372,7 +355,7 @@ class StudentLlmCostDaoTest {
     val atEnd = appendCall(costNanodollars = 1000, costIsEstimated = false, createdAt = end)
     appendSynthesisRun(studentA, atEnd)
 
-    val windowed = StudentLlmCostDao.windowedCost(session, StudentId(studentA), start, end).getOrThrow()
+    val windowed = windowed(studentA, start, end).getOrThrow()
     assertEquals(
       10L + 100L,
       windowed.costNanodollars.value,
@@ -392,12 +375,12 @@ class StudentLlmCostDaoTest {
     val t = Instant.parse("2026-01-01T00:00:00Z")
 
     assertTrue(
-      runCatching { StudentLlmCostDao.windowedCost(session, StudentId(studentA), t, t) }
+      runCatching { windowed(studentA, t, t) }
         .exceptionOrNull() is IllegalArgumentException,
       "an empty window (start == end) must be rejected",
     )
     assertTrue(
-      runCatching { StudentLlmCostDao.windowedCost(session, StudentId(studentA), t.plusSeconds(1), t) }
+      runCatching { windowed(studentA, t.plusSeconds(1), t) }
         .exceptionOrNull() is IllegalArgumentException,
       "an inverted window (start > end) must be rejected",
     )

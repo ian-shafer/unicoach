@@ -22,16 +22,29 @@ struct CoachingUsageMeter: View {
         case .ready(let usage):
             UsageMeter(usedPercent: usage.usedPercent, exhausted: usage.exhausted, resetsAt: usage.resetsAt)
         case .unavailable:
-            // A finished load with no meter says so: a header with nothing
-            // under it reads as a rendering bug, not as a failed fetch.
-            Text("Coaching usage is unavailable right now.")
-                .font(.dsBody)
-                .foregroundStyle(Color.dsTextSecondary)
-                .accessibilityIdentifier("coachingUsageUnavailable")
+            CoachingUsageUnavailable()
         case .loading:
             ProgressView()
                 .progressViewStyle(.circular)
                 .accessibilityIdentifier("subscriptionLoading")
         }
+    }
+}
+
+/// What a finished load with no meter says: a heading with nothing under it
+/// reads as a rendering bug, not as a failed fetch.
+///
+/// Its own view because the parent's home renders the same sentence for the
+/// same reason (RFC 244) and holds no `SubscriptionViewModel` to reach the
+/// wrapper above with. One sentence, one accessibility identifier, one home —
+/// two copies would be two places for the words to drift, which is the defect
+/// `CoachingUsageMeter` itself exists to have fixed.
+struct CoachingUsageUnavailable: View {
+    var body: some View {
+        Text("Coaching usage is unavailable right now.")
+            .font(.dsBody)
+            .foregroundStyle(Color.dsTextSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("coachingUsageUnavailable")
     }
 }

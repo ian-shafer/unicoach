@@ -138,6 +138,33 @@ enum SnapshotSeed {
         )
     }
 
+    /// A rail that has met `409 subscription_owned_by_other_account` (RFC 244):
+    /// the Apple ID holds an entitlement for the plan, and `/verify` refuses it
+    /// because that subscription belongs to a DIFFERENT unicoach account.
+    /// Seeded through `load()`, which is the path a second account on a shared
+    /// Apple ID meets the refusal on — before it taps anything.
+    static func appleIdBoundElsewhereRail(usage: CoachingUsage) async -> SubscriptionViewModel {
+        let store = MockSubscriptionStore()
+        store.productResult = .success(StoreProduct(
+            id: SubscriptionProduct.monthlyIdentifier,
+            displayName: "Unicoach Monthly",
+            displayPrice: "$10.00"
+        ))
+        store.entitlements = [StoreTransaction(
+            id: 1,
+            productID: SubscriptionProduct.monthlyIdentifier,
+            jws: "snapshot-jws"
+        )]
+        let recorder = MockTransactionRecorder()
+        recorder.outcome = .rejected(.server(ErrorResponse(
+            code: ServerErrorCode.subscriptionOwnedByOtherAccount.rawValue,
+            message: "snapshot",
+            fieldErrors: nil,
+            status: 409
+        )))
+        return await rail(usage: usage, store: store, recorder: recorder)
+    }
+
     /// The state the answered onboarding scene shows. `ResidencyState` cannot
     /// be constructed outside its own file, so a scene names an offered one.
     static let california = ResidencyStates.offered.first { $0.code == "CA" }!
@@ -298,6 +325,29 @@ enum SnapshotSeed {
         linkedStudent(3, name: "Mia Okafor", relationship: .guardian),
     ]
 
+    /// A parent's billing rail whose read has landed (RFC 244), loaded here
+    /// rather than left to the section's own `.task`.
+    static func supporterCoaching(
+        kind: CoachingCoverageKind,
+        usage: CoachingUsage
+    ) async -> SupporterCoachingViewModel {
+        let viewModel = SupporterCoachingViewModel(client: PreviewSupporterCoachingUsageClient(
+            reading: SupporterCoachingUsage(usage: usage, coverage: CoachingCoverage(kind: kind))
+        ))
+        await viewModel.load()
+        return viewModel
+    }
+
+    /// The same rail after a read that produced nothing — the state the section
+    /// must say out loud instead of drawing a 0% bar.
+    static func supporterCoachingUnavailable() async -> SupporterCoachingViewModel {
+        let client = MockSupporterCoachingUsageClient()
+        client.results = [.failure(ErrorResponse.unexpected)]
+        let viewModel = SupporterCoachingViewModel(client: client)
+        await viewModel.load()
+        return viewModel
+    }
+
     static func supporterHome(
         students: [LinkedStudent],
         switcherOpen: Bool = false
@@ -311,6 +361,9 @@ enum SnapshotSeed {
             authClient: MockAuthClient(),
             supporterInviteClient: PreviewSupporterInviteClient(),
             collegeListClient: MockCollegeListClient(),
+            // The section reads on its own `.task`, which the harness's settle
+            // lets through — the `ConversationView` history-load precedent.
+            supporterCoachingUsageClient: PreviewSupporterCoachingUsageClient(),
             // An in-memory store, so a scene never inherits a selection a
             // previous run of the host app left in `UserDefaults` — the same
             // hazard the appearance segment is pinned against below.
@@ -566,6 +619,19 @@ enum SnapshotCatalogue {
                 return AnyView(PaywallView(viewModel: rail))
             },
 
+            // The Apple-ID collision (RFC 244), reached through the app-open
+            // path rather than a purchase. The only state where a withdrawn
+            // Subscribe explains ITSELF, so the capture is what shows the
+            // explanation standing without a banner: `load()` has cleared the
+            // notice, and `ManageSubscriptionLink` cannot stand in for it here
+            // because this account holds no subscription to manage.
+            SnapshotScene(name: "paywall-apple-id-bound-elsewhere") {
+                let rail = await SnapshotSeed.appleIdBoundElsewhereRail(
+                    usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil)
+                )
+                return AnyView(PaywallView(viewModel: rail))
+            },
+
             // --- The composer's budget control, at every state
             // `CoachingBudgetGlance` has (RFC 123). One strip rather than four
             // conversation scenes, following `usage-meter-strip`: the control
@@ -684,6 +750,38 @@ enum SnapshotCatalogue {
                     students: SnapshotSeed.threeLinkedStudents,
                     switcherOpen: true
                 ))
+            },
+            // How a parent's coaching is paid for (RFC 244), at all four of the
+            // section's states in one canvas. One scene rather than four homes:
+            // the three home scenes above photograph it IN PLACE, in its
+            // commonest state, and what no home capture can show is the three
+            // other sets of words — including the one that must never be a
+            // silent 0% bar.
+            SnapshotScene(name: "supporter-coaching-states", size: SnapshotScene.tallCanvas(height: 700)) {
+                let freeAllowance = await SnapshotSeed.supporterCoaching(
+                    kind: .freeAllowance,
+                    usage: CoachingUsage(usedPercent: 18, exhausted: false, resetsAt: nil)
+                )
+                let spent = await SnapshotSeed.supporterCoaching(
+                    kind: .freeAllowance,
+                    usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil)
+                )
+                let ownSubscription = await SnapshotSeed.supporterCoaching(
+                    kind: .ownSubscription,
+                    usage: CoachingUsage(usedPercent: 64, exhausted: false, resetsAt: SnapshotClock.pinned)
+                )
+                let unavailable = await SnapshotSeed.supporterCoachingUnavailable()
+                return AnyView(
+                    VStack(alignment: .leading, spacing: DSSpacing.xl) {
+                        SupporterCoachingSection(viewModel: freeAllowance)
+                        SupporterCoachingSection(viewModel: spent)
+                        SupporterCoachingSection(viewModel: ownSubscription)
+                        SupporterCoachingSection(viewModel: unavailable)
+                    }
+                    .padding(DSSpacing.lg)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(Color.dsBackground)
+                )
             },
 
             // --- The one invented primitive, at its three interesting readings.

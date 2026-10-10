@@ -1,5 +1,6 @@
 package ed.unicoach.rest.models
 
+import ed.unicoach.coaching.budget.Entitlement
 import java.time.Instant
 
 /**
@@ -26,3 +27,17 @@ data class CoachingUsage(
    */
   val resetsAt: Instant?,
 )
+
+/**
+ * The ONE projection of an [Entitlement] onto the meter both surfaces publish
+ * (RFC 109 for the student, RFC 244 for the parent), beside the type it produces
+ * — the `toResponse()` convention. Sharing the TYPE is not sharing the MAPPING,
+ * and it is the mapping that decides what a bar shows: with a copy per handler, a
+ * fourth field or a cap change reaches one meter and not the other.
+ */
+fun Entitlement.toCoachingUsage(): CoachingUsage =
+  CoachingUsage(
+    usedPercent = usedPercent,
+    exhausted = exhausted,
+    resetsAt = resetsAt,
+  )

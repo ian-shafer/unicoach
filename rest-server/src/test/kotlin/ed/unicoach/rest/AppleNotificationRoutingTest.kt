@@ -3,10 +3,9 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreTestFixtures
-import ed.unicoach.appstore.AppStoreTransport
-import ed.unicoach.appstore.AppStoreTransportResponse
 import ed.unicoach.appstore.AppleNotificationVerifier
 import ed.unicoach.appstore.ScriptedAppStoreTransport
+import ed.unicoach.appstore.SwappableAppStoreTransport
 import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.GoogleIdTokenVerifier
 import ed.unicoach.auth.StubIdTokenVerifier
@@ -120,17 +119,8 @@ class AppleNotificationRoutingTest {
     /** Unique Apple keys across the suite, so bindings never collide. */
     private val OTID_COUNTER = AtomicLong(940_000_000_000L)
 
-    /** Per-test swap point for the Apple conversation, fixed at boot. */
-    private object SwappableTransport : AppStoreTransport {
-      @Volatile
-      var delegate: AppStoreTransport =
-        AppStoreTransport { path, _ -> throw IllegalStateException("No App Store script installed for [$path]") }
-
-      override suspend fun get(
-        path: String,
-        bearerToken: String,
-      ): AppStoreTransportResponse = delegate.get(path, bearerToken)
-    }
+    /** The swap point for the Apple conversation, fixed at boot — one per suite ([SwappableAppStoreTransport]). */
+    private val appStoreTransport = SwappableAppStoreTransport()
 
     /**
      * A [JobsDao] whose inserts can be failed mid-suite, so the enqueue-failure
@@ -200,7 +190,7 @@ class AppleNotificationRoutingTest {
       database = Database(dbConfig)
       dbConnection = java.sql.DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
 
-      appStoreServerApi = AppStoreServerApi(SwappableTransport, AppStoreTestFixtures.authTokens())
+      appStoreServerApi = AppStoreServerApi(appStoreTransport, AppStoreTestFixtures.authTokens())
       notificationVerifier = testAppleNotificationVerifier(chain.root)
       subscriptionPlans = subscriptionPlansFrom(config)
 
@@ -592,7 +582,7 @@ class AppleNotificationRoutingTest {
     periodStart: Instant,
     periodEnd: Instant,
   ) {
-    SwappableTransport.delegate =
+    appStoreTransport.delegate =
       ScriptedAppStoreTransport.of(
         200,
         AppStoreTestFixtures.statusResponseBody(

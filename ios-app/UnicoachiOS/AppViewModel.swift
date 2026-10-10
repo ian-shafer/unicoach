@@ -22,6 +22,11 @@ class AppViewModel: ObservableObject {
     let coachingUsageClient: CoachingUsageClientProtocol
     let supporterInviteClient: SupporterInviteClientProtocol
     let supporterClient: SupporterClientProtocol
+    /// The parent's own coaching meter (RFC 244). A second client beside
+    /// `coachingUsageClient` and not a replacement for it: the two routes are
+    /// caller-scoped to the two roles, and a supporter reading the student one
+    /// could only be refused.
+    let supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol
     /// The working-student selection (RFC 241). Held at the composition root
     /// like every other dependency, so a test substitutes it by conforming to
     /// the protocol rather than by reaching into `UserDefaults`.
@@ -103,6 +108,7 @@ class AppViewModel: ObservableObject {
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
         supporterInviteClient: SupporterInviteClientProtocol? = nil,
         supporterClient: SupporterClientProtocol? = nil,
+        supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol? = nil,
         supporterSubjectStore: SupporterSubjectStore? = nil,
         subscriptionClient: SubscriptionClientProtocol? = nil,
         subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = AppViewModel.defaultSubscriptionStore(),
@@ -120,6 +126,8 @@ class AppViewModel: ObservableObject {
         self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)
         self.supporterInviteClient = supporterInviteClient ?? SupporterInviteClient(apiClient: apiClient)
         self.supporterClient = supporterClient ?? SupporterClient(apiClient: apiClient)
+        self.supporterCoachingUsageClient = supporterCoachingUsageClient
+            ?? SupporterCoachingUsageClient(apiClient: apiClient)
         self.supporterSubjectStore = supporterSubjectStore ?? UserDefaultsSupporterSubjectStore()
         self.googleSignInProvider = googleSignInProvider
         self.appleSignInProvider = appleSignInProvider

@@ -146,3 +146,6 @@ add-eight-year-completion-and-transfer-out.sql
 seed-coach-system-prompt-v46.sql
 widen-commitments-lens-invite-supporter.sql
 seed-coach-system-prompt-v47.sql
+subscriptions-key-on-account.sql
+supporter-llm-cost.sql
+account-llm-cost.sql

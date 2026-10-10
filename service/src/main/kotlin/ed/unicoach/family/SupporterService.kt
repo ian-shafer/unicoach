@@ -124,6 +124,22 @@ class SupporterService(
     }.recoverCatching { failure -> recoverLostMint(userId, failure) }
 
   /**
+   * [userId]'s supporter row, or `null` when they hold none — the identity read
+   * behind `GET /api/v1/supporters/me/coaching-usage` (RFC 244).
+   *
+   * [homeFor] without the roster, because the meter's subject is the supporter and
+   * not the students they support: coaching usage is a fact about the parent's own
+   * account, so loading a roster the answer never reads would be work spent to
+   * produce nothing. `null` is the same VALUE it is there — every student, and
+   * every user who has never been invited, is in that state — and the route
+   * answers it with the same `404`.
+   */
+  suspend fun find(userId: UserId): Result<Supporter?> =
+    runCatching {
+      database.withConnection { session -> SupportersDao.findByUserId(session, userId).getOrThrow() }
+    }
+
+  /**
    * [userId]'s home, or `null` when they hold no `supporters` row — the read
    * behind `GET /api/v1/supporters/me`.
    *

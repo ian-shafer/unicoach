@@ -2,11 +2,17 @@ package ed.unicoach.coaching.budget
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.LlmCallRowFixture
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.SubscriptionsDao
+import ed.unicoach.db.dao.SupportersDao
+import ed.unicoach.db.models.NewSupporter
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SubscriptionStatus
+import ed.unicoach.db.models.SupporterId
+import ed.unicoach.db.models.UserId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -24,15 +30,21 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * Exercises [BudgetService] against the real `student_llm_cost` spine (RFC 108):
- * the ledger total it reads, the allowance it pairs that total with, the
- * agreement of its two overloads, the [BudgetVerdict] its gate decides from
- * them, and its refusal to report an entitled verdict when the read itself
- * fails.
+ * Exercises [BudgetService] against the real cost spines: the ledger total it
+ * reads, the allowance it pairs that total with, the agreement of its overloads,
+ * the [BudgetVerdict] its gate decides from them, and its refusal to report an
+ * entitled verdict when the read itself fails.
  *
- * Spend is seeded with the same raw-SQL pattern as `StudentLlmCostDaoTest` — an
- * owner row plus its `llm_requests`/`llm_responses` pair carrying a known
- * `cost_nanodollars`.
+ * The subject is the ACCOUNT since RFC 244, so the student tests below are the
+ * REGRESSION: every one of them is the test it was before the key moved, and the
+ * numbers are the numbers it read then — the account's meter (`account_llm_cost`)
+ * re-keys `student_llm_cost` and unions a supporter arm that is empty for a
+ * student-only account. The supporter tests are the new half, on the same two
+ * branches with the same allowances: no supporter-specific allowance, and
+ * [EntitlementBasis] stays a sealed pair.
+ *
+ * Spend is seeded through [LlmCallRowFixture] — the one costed-call fixture every
+ * cost spine's suite uses — plus the owner row that attributes it.
  */
 class BudgetServiceTest {
   companion object {
@@ -70,7 +82,8 @@ class BudgetServiceTest {
       // partial for whoever ran next (RFC 129).
       stmt.execute(
         "TRUNCATE TABLE convos, convo_requests, extraction_runs, synthesis_runs, fit_lens_runs, fit_suggestions, " +
-          "llm_requests, llm_responses, llm_responses_raw, colleges, subscriptions, students, users CASCADE",
+          "supporter_llm_costs, supporters, llm_requests, llm_responses, llm_responses_raw, colleges, " +
+          "subscriptions, students, users CASCADE",
       )
     }
   }
@@ -108,45 +121,15 @@ class BudgetServiceTest {
   }
 
   /**
-   * An llm_requests row + its completed llm_responses row at [costNanodollars]
-   * (null = uncosted), attributed at [createdAt] (null = the DB clock's now) —
-   * the timestamp the subscription meter windows by.
+   * One completed call at [costNanodollars] (null = uncosted), timestamped
+   * [createdAt] (null = the DB clock's now) — the timestamp the subscription
+   * meter windows by. [LlmCallRowFixture] is the one fixture that writes this
+   * pair.
    */
   private fun appendCall(
     costNanodollars: Long?,
     createdAt: Instant? = null,
-  ): Long {
-    val requestId =
-      connection
-        .prepareStatement(
-          "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
-            "VALUES ('anthropic', 'claude-sonnet-4-6', '[]'::jsonb, 1024) RETURNING id",
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO llm_responses
-          (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms, created_at)
-        VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, ?, 1, 1, 1, COALESCE(?, NOW()))
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setLong(1, requestId)
-        if (costNanodollars != null) stmt.setLong(2, costNanodollars) else stmt.setNull(2, java.sql.Types.BIGINT)
-        if (costNanodollars != null) stmt.setBoolean(3, false) else stmt.setNull(3, java.sql.Types.BOOLEAN)
-        if (createdAt != null) {
-          stmt.setTimestamp(4, java.sql.Timestamp.from(createdAt))
-        } else {
-          stmt.setNull(4, java.sql.Types.TIMESTAMP_WITH_TIMEZONE)
-        }
-        stmt.executeUpdate()
-      }
-    return requestId
-  }
+  ): Long = LlmCallRowFixture.insert(connection, costNanodollars, createdAt = createdAt)
 
   /** Attributes [llmRequestId] to [studentId] through a synthesis run (the cheapest single-call owner). */
   private fun attributeToSynthesis(
@@ -195,7 +178,29 @@ class BudgetServiceTest {
     createdAt: Instant? = null,
   ) = attributeToSynthesis(studentId, appendCall(costNanodollars, createdAt))
 
-  /** Upserts a subscription row for [studentId] over `[periodStart, periodEnd)`. */
+  /**
+   * Upserts a subscription row for [userId]'s ACCOUNT over
+   * `[periodStart, periodEnd)` — who pays, since RFC 244.
+   */
+  private fun subscribeAccount(
+    userId: UserId,
+    status: SubscriptionStatus = SubscriptionStatus.ACTIVE,
+    periodStart: Instant = Instant.now().minus(10, ChronoUnit.DAYS),
+    periodEnd: Instant = Instant.now().plus(20, ChronoUnit.DAYS),
+    productId: String = "coach.uni.UnicoachiOS.monthly10",
+    originalTransactionId: String = "bs-${userId.value}",
+  ) {
+    SubscriptionsDao
+      .upsert(session, userId, originalTransactionId, productId, status, periodStart, periodEnd)
+      .getOrThrow()
+  }
+
+  /**
+   * [subscribeAccount] for a student fixture: the row lands on the account that
+   * student profile belongs to, which is the hop the gate itself makes. Every
+   * subscribed-branch test below reads unchanged through it, which is the point —
+   * the key moved and the answers did not.
+   */
   private fun subscribe(
     studentId: StudentId,
     status: SubscriptionStatus = SubscriptionStatus.ACTIVE,
@@ -203,11 +208,55 @@ class BudgetServiceTest {
     periodEnd: Instant = Instant.now().plus(20, ChronoUnit.DAYS),
     productId: String = "coach.uni.UnicoachiOS.monthly10",
     originalTransactionId: String = "bs-${studentId.value}",
-  ) {
-    SubscriptionsDao
-      .upsert(session, studentId, originalTransactionId, productId, status, periodStart, periodEnd)
-      .getOrThrow()
+  ) = subscribeAccount(accountOf(studentId), status, periodStart, periodEnd, productId, originalTransactionId)
+
+  /** The one indexed hop from a student to the account that pays for them. */
+  private fun accountOf(studentId: StudentId): UserId =
+    connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
+      stmt.setObject(1, studentId.value)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        UserId(UUID.fromString(rs.getString("user_id")))
+      }
+    }
+
+  /** An account with a `supporters` row and no student profile — a parent (RFC 241). */
+  private fun createSupporter(): SupporterId {
+    val userId = UUID.randomUUID()
+    connection.createStatement().use { stmt ->
+      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'bsp-$userId@test.com', 'Parent', 'ahash')")
+    }
+    return SupportersDao.create(session, NewSupporter(UserId(userId))).getOrThrow().id
   }
+
+  /** The account a `supporters` row belongs to — the payer on the adult side. */
+  private fun accountOfSupporter(supporterId: SupporterId): UserId =
+    connection.prepareStatement("SELECT user_id FROM supporters WHERE id = ?").use { stmt ->
+      stmt.setObject(1, supporterId.value)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        UserId(UUID.fromString(rs.getString("user_id")))
+      }
+    }
+
+  /** The row `family/06` will write per parent-coaching call, at a known cost. */
+  private fun supporterSpend(
+    supporterId: SupporterId,
+    costNanodollars: Long,
+    createdAt: Instant? = null,
+  ) = LlmCallRowFixture.attributeToSupporter(connection, supporterId.value, appendCall(costNanodollars, createdAt))
+
+  /**
+   * The parent surface's read, made exactly as `GET
+   * /api/v1/supporters/me/coaching-usage` makes it (RFC 244): the account the
+   * `supporters` row hangs off, through the account-keyed entry. There is no
+   * supporter-keyed entry to call — the account is the subject, and a supporter's
+   * spend reaches it through `account_llm_cost`.
+   */
+  private fun entitlementOfSupporter(
+    service: BudgetService,
+    supporterId: SupporterId,
+  ): Result<Entitlement> = runBlocking { service.entitlement(accountOfSupporter(supporterId)) }
 
   // ---------------------------------------------------------------------------
   // Tests
@@ -443,6 +492,170 @@ class BudgetServiceTest {
       ).also { it.close() }
 
     val result = runBlocking { testBudgetService(closedDatabase, "5.00").entitlement(studentId) }
+
+    assertTrue(result.isFailure, "an unreadable meter is coaching unavailability, not a free pass")
+  }
+
+  // ---------------------------------------------------------------------------
+  // The adult side (RFC 244): the same two branches, on the supporter's account
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a supporter with no subscription meters the free allowance`() {
+    val supporterId = createSupporter()
+    supporterSpend(supporterId, 2_500_000_000)
+
+    val entitlement = entitlementOfSupporter(testBudgetService(database, "5.00"), supporterId).getOrThrow()
+
+    assertEquals(EntitlementBasis.FreeAllowance, entitlement.basis, "the same basis every unsubscribed account gets")
+    assertEquals(2_500_000_000L, entitlement.spent.value, "a parent's spend is attributable — this slice's criterion")
+    assertEquals(5_000_000_000L, entitlement.allowance.value, "the same $5.00, with no supporter-specific key")
+    assertFalse(entitlement.exhausted)
+    assertEquals(50, entitlement.usedPercent)
+    assertEquals(null, entitlement.resetsAt, "a lifetime allowance never resets")
+  }
+
+  @Test
+  fun `a supporter exhausts at the free allowance`() {
+    val supporterId = createSupporter()
+    supporterSpend(supporterId, 5_000_000_000)
+
+    // The verdict itself is subject-agnostic ([verdictOf] reads `exhausted`) and
+    // is pinned on the student side; what the adult side has to prove is that the
+    // parent's own spend reaches the meter the gate decides from.
+    val entitlement = entitlementOfSupporter(testBudgetService(database, "5.00"), supporterId).getOrThrow()
+
+    assertEquals(5_000_000_000L, entitlement.spent.value)
+    assertEquals(5_000_000_000L, entitlement.allowance.value)
+    assertEquals(100, entitlement.usedPercent)
+    assertTrue(entitlement.exhausted, "at the allowance the meter is spent, which is what the gate refuses on")
+  }
+
+  @Test
+  fun `a supporter under the allowance is not exhausted`() {
+    val supporterId = createSupporter()
+    supporterSpend(supporterId, 1L)
+
+    assertFalse(entitlementOfSupporter(testBudgetService(database, "5.00"), supporterId).getOrThrow().exhausted)
+  }
+
+  @Test
+  fun `a supporter whose account holds a subscription meters over its period`() {
+    val supporterId = createSupporter()
+    val periodEnd = Instant.now().plus(20, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS)
+    subscribeAccount(accountOfSupporter(supporterId), periodEnd = periodEnd)
+    supporterSpend(supporterId, 1_000_000_000)
+    // Pre-period spend, well past the plan budget: the window must exclude it.
+    supporterSpend(supporterId, 100_000_000_000L, createdAt = Instant.now().minus(30, ChronoUnit.DAYS))
+
+    val entitlement = entitlementOfSupporter(testBudgetService(database, "0.00"), supporterId).getOrThrow()
+
+    assertEquals(EntitlementBasis.Subscription(periodEnd), entitlement.basis, "the account paid, so the period is the meter")
+    assertEquals(1_000_000_000L, entitlement.spent.value, "only spend inside [period_start, period_end)")
+    assertEquals(periodBudget, entitlement.allowance.value, "the same y × price budget a student's subscription buys")
+    assertFalse(entitlement.exhausted, "the zero FREE allowance is irrelevant on the subscribed branch")
+    assertEquals(periodEnd, entitlement.resetsAt)
+  }
+
+  @Test
+  fun `one account, one subscription — a dual-role account reads one meter from both surfaces`() {
+    // The account RFC 244 is keyed on: one human who is both a student and a
+    // supporter. Apple will not sell them two subscriptions, so their one
+    // subscription carries their spend on both sides, and the two surfaces must
+    // never quote different percentages.
+    val studentId = createStudent()
+    val userId = accountOf(studentId)
+    val supporterId = SupportersDao.create(session, NewSupporter(userId)).getOrThrow().id
+    val periodEnd = Instant.now().plus(20, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS)
+    subscribeAccount(userId, periodEnd = periodEnd)
+    spend(studentId, 1_000_000_000)
+    supporterSpend(supporterId, 500_000_000)
+
+    val service = testBudgetService(database, "5.00")
+    val asStudent = service.entitlement(session, studentId).getOrThrow()
+    val asSupporter = entitlementOfSupporter(service, supporterId).getOrThrow()
+
+    assertEquals(1_500_000_000L, asStudent.spent.value, "the account's two arms sum")
+    assertEquals(asStudent.spent.value, asSupporter.spent.value, "and both surfaces read the same total")
+    assertEquals(asStudent.allowance.value, asSupporter.allowance.value)
+    assertEquals(asStudent.usedPercent, asSupporter.usedPercent, "a blocked parent and a 30% student bar cannot coexist")
+    assertEquals(EntitlementBasis.Subscription(periodEnd), asSupporter.basis)
+  }
+
+  @Test
+  fun `another account's spend does not count against a supporter`() {
+    val supporterId = createSupporter()
+    val otherSupporter = createSupporter()
+    supporterSpend(otherSupporter, 9_000_000_000)
+    val studentId = createStudent()
+    spend(studentId, 9_000_000_000)
+
+    val entitlement = entitlementOfSupporter(testBudgetService(database, "5.00"), supporterId).getOrThrow()
+
+    assertEquals(0L, entitlement.spent.value, "nobody rides another account's meter, in either direction")
+    assertFalse(entitlement.exhausted)
+  }
+
+  @Test
+  fun `a lapsed subscription on a supporter's account falls back to the free branch`() {
+    val supporterId = createSupporter()
+    subscribeAccount(accountOfSupporter(supporterId), status = SubscriptionStatus.REVOKED)
+
+    val entitlement = entitlementOfSupporter(testBudgetService(database, "5.00"), supporterId).getOrThrow()
+
+    assertEquals(EntitlementBasis.FreeAllowance, entitlement.basis, "a revoked row is not current, on either side of the house")
+  }
+
+  @Test
+  fun `config drift on a supporter's subscription fails closed`() {
+    val supporterId = createSupporter()
+    subscribeAccount(accountOfSupporter(supporterId), productId = "coach.uni.UnicoachiOS.retired99")
+
+    val result = entitlementOfSupporter(testBudgetService(database, "5.00"), supporterId)
+
+    assertTrue(result.isFailure, "config drift never silently grants or denies")
+    val message = result.exceptionOrNull()!!.message!!
+    assertTrue(message.contains("coach.uni.UnicoachiOS.retired99"), "the failure names the product: $message")
+  }
+
+  @Test
+  fun `a student id that names no row fails CLOSED as config drift does, not as an absence`() {
+    val studentId = StudentId(UUID.randomUUID())
+
+    val result = testBudgetService(database, "5.00").entitlement(session, studentId)
+
+    assertTrue(result.isFailure, "an unknown subject is a broken reference, not a subject with a full allowance")
+    val cause = result.exceptionOrNull()!!
+    // WHICH failure decides what the client is told. `NotFoundException` is this
+    // corpus's word for an ordinary absence and `rest/plugins/StatusPages.kt`
+    // publishes it as `404 permanent_error` carrying the DAO's own message — so a
+    // corrupt subject reference would be announced as "no such student", with a
+    // status that tells the client to stop asking. It is a 500, like the config
+    // drift the gate's own doc equates it with, and that is this assertion.
+    assertFalse(cause is NotFoundException, "a dangling reference published as a 404 is the defect: $cause")
+    val failure = assertIs<UnknownBudgetSubjectException>(cause)
+    assertIs<IllegalStateException>(failure, "fails closed as config drift does, not as an absence")
+    assertEquals(
+      studentId,
+      failure.studentId,
+      "and the failure CARRIES the reference that dangles, as the typed id, not as prose in its message",
+    )
+  }
+
+  @Test
+  fun `a failed read for a supporter surfaces as a failure, never an entitled verdict`() {
+    val supporterId = createSupporter()
+    val closedDatabase =
+      Database(
+        DatabaseConfig
+          .from(
+            ed.unicoach.common.config.AppConfig
+              .load("common.conf", "db.conf")
+              .getOrThrow(),
+          ).getOrThrow(),
+      ).also { it.close() }
+
+    val result = entitlementOfSupporter(testBudgetService(closedDatabase, "5.00"), supporterId)
 
     assertTrue(result.isFailure, "an unreadable meter is coaching unavailability, not a free pass")
   }

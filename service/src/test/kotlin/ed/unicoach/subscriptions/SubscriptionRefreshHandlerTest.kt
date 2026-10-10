@@ -7,8 +7,7 @@ import ed.unicoach.coaching.budget.testSubscriptionPlans
 import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.db.dao.StudentRowFixture
-import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.UserId
 import ed.unicoach.queue.JobResult
 import ed.unicoach.queue.JobType
 import ed.unicoach.queue.SubscriptionRefreshPayload
@@ -72,14 +71,13 @@ class SubscriptionRefreshHandlerTest {
     }
   }
 
-  private fun createStudent(): StudentId {
+  /** The account a subscription is bound to (RFC 244) — a bare `users` row; no role is needed to pay. */
+  private fun createAccount(): UserId {
     val userId = UUID.randomUUID()
-    val studentId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
       stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'rh-$userId@test.com', 'Sub User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
     }
-    return StudentId(studentId)
+    return UserId(userId)
   }
 
   private fun service(transport: ScriptedAppStoreTransport): SubscriptionService =
@@ -101,12 +99,12 @@ class SubscriptionRefreshHandlerTest {
   ) =
     ScriptedAppStoreTransport.of(200, AppStoreTestFixtures.activeStatusResponseBody(purchaseDate = purchaseDate, expiresDate = expiresDate))
 
-  /** Binds the fixture subscription to a fresh student, so a refresh has a row to act on. */
-  private fun bindSubscription(): StudentId {
-    val studentId = createStudent()
-    val bound = runBlocking { service(activeTransport()).verify(studentId, AppStoreTestFixtures.signedTransaction()).getOrThrow() }
+  /** Binds the fixture subscription to a fresh account, so a refresh has a row to act on. */
+  private fun bindSubscription(): UserId {
+    val userId = createAccount()
+    val bound = runBlocking { service(activeTransport()).verify(userId, AppStoreTestFixtures.signedTransaction()).getOrThrow() }
     assertIs<VerifyResult.Verified>(bound)
-    return studentId
+    return userId
   }
 
   private fun execute(

@@ -10,9 +10,9 @@ import ed.unicoach.common.util.DataSize
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.SubscriptionUpsert
 import ed.unicoach.db.dao.SubscriptionsDao
-import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.Subscription
 import ed.unicoach.db.models.SubscriptionStatus
+import ed.unicoach.db.models.UserId
 import ed.unicoach.error.FieldError
 import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
@@ -24,14 +24,15 @@ import org.slf4j.LoggerFactory
  * [verify] (RFC 110) is the purchase-time call: bound + decode the posted
  * StoreKit 2 signed transaction (a lookup key only — the client JWS is never
  * trusted and never signature-verified), fetch the authoritative subscription
- * state from Apple over TLS, and upsert the row under the authenticated student.
- * It is the only path that BINDS a subscription to a student.
+ * state from Apple over TLS, and upsert the row under the authenticated ACCOUNT
+ * (RFC 244 — billing is per account, so a caller needs no student profile to
+ * subscribe). It is the only path that BINDS a subscription to an account.
  *
  * [refresh] (RFC 112) is the webhook's call: the same fetch and upsert, under
- * the student the existing row already names. It is how a renewal reaches the
+ * the account the existing row already names. It is how a renewal reaches the
  * server without the app posting anything.
  *
- * They differ only in where the student comes from — the session for one, the
+ * They differ only in where the account comes from — the session for one, the
  * existing row for the other — so the Apple lookup → plan check → upsert tail is
  * one private helper, keeping a single Apple→row mapping in the codebase.
  *
@@ -42,8 +43,11 @@ import org.slf4j.LoggerFactory
  * Ordering: validation (no Apple call for garbage) → Apple lookup → plan check
  * (before writing — a row the gate would immediately fail closed on is never
  * created) → upsert. The account binding is the authenticated session:
- * whichever student first verifies an `originalTransactionId` owns it, and
- * [VerifyResult.OwnedByOtherAccount] guards every later rebind attempt.
+ * whichever account first verifies an `originalTransactionId` owns it, and
+ * [VerifyResult.OwnedByOtherAccount] guards every later rebind attempt. That
+ * refusal is the shared-Apple-ID collision, and RFC 244 COUNTS it rather than
+ * covering it: nobody rides another account's subscription, so the second
+ * account's way out is a different Apple ID.
  */
 class SubscriptionService(
   private val database: Database,
@@ -54,7 +58,7 @@ class SubscriptionService(
   private val logger = LoggerFactory.getLogger(SubscriptionService::class.java)
 
   suspend fun verify(
-    studentId: StudentId,
+    userId: UserId,
     signedTransaction: String,
   ): Result<VerifyResult> =
     runCatching {
@@ -66,7 +70,7 @@ class SubscriptionService(
 
       // No expected key: this is the binding call, so whichever
       // originalTransactionId Apple answers with IS the key.
-      when (val recorded = lookupAndRecord(studentId, transactionId, expectedOriginalTransactionId = null)) {
+      when (val recorded = lookupAndRecord(userId, transactionId, expectedOriginalTransactionId = null)) {
         is Recorded.Applied -> {
           VerifyResult.Verified(recorded.subscription)
         }
@@ -83,7 +87,7 @@ class SubscriptionService(
           VerifyResult.AppStoreUnavailable(recorded.reason)
         }
 
-        is Recorded.OwnedByOtherStudent -> {
+        is Recorded.OwnedByOtherAccount -> {
           VerifyResult.OwnedByOtherAccount
         }
 
@@ -102,10 +106,10 @@ class SubscriptionService(
 
   /**
    * The webhook's flow (RFC 112): read the owning row, re-fetch authoritative
-   * state from Apple, and upsert it under the student that row already names.
+   * state from Apple, and upsert it under the account that row already names.
    *
-   * Refreshes but never BINDS — a subscription no student has verified is
-   * [RefreshResult.NotBound], because the notification carries no student
+   * Refreshes but never BINDS — a subscription no account has verified is
+   * [RefreshResult.NotBound], because the notification carries no account
    * identity and inventing one would let an Apple-authenticated endpoint mint an
    * entitlement.
    *
@@ -128,7 +132,7 @@ class SubscriptionService(
 
       when (
         val recorded =
-          lookupAndRecord(existing.studentId, originalTransactionId, expectedOriginalTransactionId = originalTransactionId)
+          lookupAndRecord(existing.userId, originalTransactionId, expectedOriginalTransactionId = originalTransactionId)
       ) {
         is Recorded.Applied -> {
           RefreshResult.Refreshed(recorded.subscription)
@@ -151,13 +155,13 @@ class SubscriptionService(
         }
 
         // Unreachable: the upsert is keyed by the transaction the read above
-        // matched, under that row's own student. Surfaced rather than folded
+        // matched, under that row's own account. Surfaced rather than folded
         // away, because reaching it means the read and the write disagreed about
         // who owns the row.
-        is Recorded.OwnedByOtherStudent -> {
+        is Recorded.OwnedByOtherAccount -> {
           throw IllegalStateException(
-            "Refresh of [$originalTransactionId] read student [${existing.studentId.asString}] but the upsert found " +
-              "student [${recorded.existing.studentId.asString}] owning it",
+            "Refresh of [$originalTransactionId] read account [${existing.userId.asString}] but the upsert found " +
+              "account [${recorded.existing.userId.asString}] owning it",
           )
         }
       }
@@ -165,7 +169,7 @@ class SubscriptionService(
 
   /**
    * The tail both flows share: fetch authoritative state for [transactionId],
-   * refuse a product no plan covers, and upsert under [studentId].
+   * refuse a product no plan covers, and upsert under [userId].
    *
    * [expectedOriginalTransactionId] is the key the caller already knows the row
    * is under, or null when the caller is binding for the first time. Holding
@@ -176,7 +180,7 @@ class SubscriptionService(
    * guaranteed to be the one asked about.
    */
   private suspend fun lookupAndRecord(
-    studentId: StudentId,
+    userId: UserId,
     transactionId: String,
     expectedOriginalTransactionId: String?,
   ): Recorded {
@@ -188,7 +192,7 @@ class SubscriptionService(
 
         is AppStoreSubscriptionLookup.Unavailable -> {
           logger.warn(
-            "App Store lookup unavailable for student [${studentId.asString}] " +
+            "App Store lookup unavailable for account [${userId.asString}] " +
               "transaction [$transactionId]: [${lookup.reason}]",
             lookup.cause,
           )
@@ -215,7 +219,7 @@ class SubscriptionService(
       return Recorded.UnknownProduct(subscription.productId)
     }
 
-    return record(studentId, subscription)
+    return record(userId, subscription)
   }
 
   /**
@@ -248,7 +252,7 @@ class SubscriptionService(
   }
 
   private suspend fun record(
-    studentId: StudentId,
+    userId: UserId,
     subscription: AppleSubscription,
   ): Recorded {
     val upsert =
@@ -256,7 +260,7 @@ class SubscriptionService(
         SubscriptionsDao
           .upsert(
             session,
-            studentId = studentId,
+            userId = userId,
             originalTransactionId = subscription.originalTransactionId,
             productId = subscription.productId,
             status = subscription.status.toRow(),
@@ -277,14 +281,29 @@ class SubscriptionService(
         Recorded.Applied(upsert.subscription)
       }
 
-      // The owning student is named for the operator only: the verify response
-      // says "another account" and never carries that id to the client.
-      is SubscriptionUpsert.OwnedByOtherStudent -> {
+      // THE COUNTER (RFC 244 §2). One Apple ID holds at most one active
+      // subscription inside a subscription group, so a second unicoach account
+      // signed in to the SAME Apple ID is handed the FIRST account's
+      // originalTransactionId and lands here. Coverage between the two was
+      // deliberately NOT built — the rate is unknown, there are no real users
+      // yet, and a second Apple ID is a free workaround — so this line IS the
+      // measurement that would justify building it, and no table is added for
+      // something that was deferred.
+      //
+      // The event name leads and is stable, so `grep
+      // subscription_apple_id_already_bound` counts the occurrences; both
+      // account ids are here because the question a coverage slice asks is how
+      // often TWO accounts collide, not how often one does. Operator-facing
+      // only: the verify response says "another account" and never carries the
+      // owner's id to the client.
+      is SubscriptionUpsert.OwnedByOtherAccount -> {
         logger.warn(
-          "Student [${studentId.asString}] attempted to record subscription " +
-            "[${upsert.existing.originalTransactionId}] already bound to student [${upsert.existing.studentId.asString}]",
+          "subscription_apple_id_already_bound original_transaction_id=[{}] owner_user_id=[{}] caller_user_id=[{}]",
+          upsert.existing.originalTransactionId,
+          upsert.existing.userId.asString,
+          userId.asString,
         )
-        Recorded.OwnedByOtherStudent(upsert.existing)
+        Recorded.OwnedByOtherAccount(upsert.existing)
       }
     }
   }
@@ -322,7 +341,8 @@ class SubscriptionService(
       val cause: Throwable? = null,
     ) : Recorded
 
-    data class OwnedByOtherStudent(
+    /** The shared-Apple-ID collision: the row belongs to another ACCOUNT, and is not rebound. */
+    data class OwnedByOtherAccount(
       val existing: Subscription,
     ) : Recorded
   }

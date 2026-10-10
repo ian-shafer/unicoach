@@ -46,6 +46,7 @@ struct UnicoachiOSApp: App {
                         authClient: viewModel.authClient,
                         supporterInviteClient: viewModel.supporterInviteClient,
                         collegeListClient: viewModel.collegeListClient,
+                        supporterCoachingUsageClient: viewModel.supporterCoachingUsageClient,
                         subjectStore: viewModel.supporterSubjectStore,
                         refreshHome: viewModel.refreshSupporterHome,
                         onEmailChanged: viewModel.onEmailChanged,

@@ -12,7 +12,7 @@ import java.time.Instant
  * inconsistent combination has no constructor to call and needs no runtime check.
  */
 sealed interface EntitlementBasis {
-  /** RFC 109's lifetime meter: one window over the student's whole history, so no reset point. */
+  /** RFC 109's lifetime meter: one window over the account's whole history, so no reset point. */
   data object FreeAllowance : EntitlementBasis
 
   /** RFC 110's period meter, windowed over `[period_start, period_end)`. */
@@ -23,12 +23,13 @@ sealed interface EntitlementBasis {
 }
 
 /**
- * One student's coaching entitlement (RFC 109; subscription basis RFC 110): the
- * two meters — [spent] off the `student_llm_cost` ledger (lifetime, or windowed
+ * One ACCOUNT's coaching entitlement (RFC 109; subscription basis RFC 110; the
+ * account subject RFC 244): the two meters — [spent] off the `account_llm_cost`
+ * ledger through [ed.unicoach.db.dao.AccountLlmCostDao] (lifetime, or windowed
  * over the subscription period per [basis]) and the [allowance] it is measured
- * against — and the two facts derived from them. Both consumers read the same
- * value (the gate takes [exhausted], the usage endpoint takes [usedPercent]),
- * so a blocked student and a 100%-used bar can never disagree.
+ * against — and the two facts derived from them. Every consumer reads the same
+ * value (the gate takes [exhausted], both usage endpoints take [usedPercent]),
+ * so a blocked turn and a 100%-used bar can never disagree, on either surface.
  *
  * Both derivations are integer arithmetic over [Nanodollars.value] — no floating
  * point, so no rounding can put the two facts on opposite sides of the boundary.

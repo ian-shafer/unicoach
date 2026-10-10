@@ -116,10 +116,24 @@ final class SubscriptionViewModel: ObservableObject {
     /// never restated here.
     enum Offer: Equatable {
         case bound
+        /// This Apple ID's subscription belongs to another unicoach account
+        /// (RFC 244). Its own state rather than another `bound`, because
+        /// `bound`'s silence rests on `ManageSubscriptionLink` standing in for
+        /// the explanation — and that link renders only for an account with a
+        /// subscription, which `offer` requires of this state rather than
+        /// assuming. So this one says the sentence itself, from state, and it
+        /// stays said for as long as the fact stands.
+        case appleIdBoundElsewhere
         case loading
         case subscribe(StoreProduct)
         case unavailable
     }
+
+    /// The words for the Apple-ID collision, authored ONCE: the refusal's
+    /// banner and the standing offer state say the same thing, because they are
+    /// the same fact arriving twice — once as news, then as the reason a button
+    /// is missing (RFC 244).
+    static let appleIdBoundElsewhereText = String(localized: "This Apple ID's Unicoach subscription belongs to another Unicoach account. Use a different Apple ID to subscribe on this account.")
 
     /// The meter, as a lifecycle rather than as a reading beside a flag: the
     /// three states `CoachingUsageMeter` renders — in flight, a reading, and a
@@ -134,6 +148,31 @@ final class SubscriptionViewModel: ObservableObject {
     @Published private(set) var productReading: ProductReading = .loading
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var notice: Notice?
+    /// Set once `/verify` has answered `409 subscription_owned_by_other_account`:
+    /// this Apple ID's subscription for the one plan we sell is bound to a
+    /// DIFFERENT unicoach account, and Apple will not sell the same
+    /// subscription twice within a group — so no purchase made from this device,
+    /// on this Apple ID, can ever bind to this account (RFC 244).
+    ///
+    /// Published rather than derived, because the fact it records is not on any
+    /// value this rail reads: `/verify` is the only thing that knows, and it
+    /// says so exactly once, in a refusal.
+    ///
+    /// **It is cleared when the premise it rests on goes**, and the two events
+    /// that take it away are the two that re-establish that premise. A record
+    /// that SUCCEEDS binds a subscription to THIS account, which is the one
+    /// thing the refusal said could not happen. And a `load()` that finds this
+    /// Apple ID holding no entitlement for the plan we sell is reading an Apple
+    /// ID that cannot be the one the refusal was about — switching Apple ID
+    /// happens in iOS Settings and does not restart the app, so nothing else
+    /// would notice. Keeping the flag through either leaves the parent who has
+    /// already done what the sentence asked with no Subscribe button at all:
+    /// the dead end this slice exists to remove, with the sign reversed.
+    ///
+    /// The cost of clearing is a button that may be refused once more, which
+    /// re-sets this and says so. That is recoverable; a button that never comes
+    /// back is not.
+    @Published private(set) var appleIdBoundToAnotherAccount = false
 
     private let usageClient: CoachingUsageClientProtocol
     private let store: SubscriptionStoreProtocol
@@ -162,6 +201,11 @@ final class SubscriptionViewModel: ObservableObject {
     /// | `grace`, `billingRetry` | **no**           | they already pay us; the *card* is what is broken                 |
     /// | `expired`, `revoked`    | **yes**          | there is no live subscription, so buying really is the way back   |
     /// | unrecognized status     | **yes**          | see below                                                         |
+    ///
+    /// Plus one row that is not about what this account holds at all: while
+    /// `appleIdBoundToAnotherAccount` stands the answer is **no**, because the
+    /// purchase cannot succeed on this Apple ID (RFC 244). It stands only as
+    /// long as its premise does — see the property.
     ///
     /// **The `grace` / `billingRetry` rows reverse RFC 119**, which offered the
     /// button in every non-`active` state and said so: hiding the purchase path
@@ -200,6 +244,14 @@ final class SubscriptionViewModel: ObservableObject {
     /// compiler guards the vocabulary this client knows; the `nil` arm guards
     /// the one it does not.
     var offersSubscribe: Bool {
+        // Before anything about what is bound HERE: a refusal has established
+        // that the Apple ID's subscription belongs to another account, so the
+        // button cannot succeed whatever this account holds. A control that can
+        // only ever answer with the same red banner is not an offer (RFC 244).
+        if appleIdBoundToAnotherAccount {
+            return false
+        }
+
         // Split rather than folded: optional chaining would flatten
         // `PublicSubscription?.knownStatus` into a single `SubscriptionStatus?`
         // and put "nothing bound" and "bound with a status this client cannot
@@ -271,16 +323,33 @@ final class SubscriptionViewModel: ObservableObject {
         }
     }
 
-    /// What the offer block can put on screen — **four answers, not a button
+    /// What the offer block can put on screen — **five answers, not a button
     /// and a silence**. A price that never arrived is its own state, said out
     /// loud with a retry, because on the paywall the Subscribe button is the
     /// only exit from a blocked composer and its absence would be both the
-    /// failure and the explanation (RFC 121).
+    /// failure and the explanation (RFC 121). An Apple ID bound to another
+    /// account is its own state for the same reason, and it outlives the banner
+    /// that first carried it rather than being momentary (RFC 244).
     ///
     /// It lives here rather than as a compound `if` in `SubscriptionOffer` so
     /// the rule is asserted by this suite, which has no view-test harness.
     var offer: Offer {
-        guard offersSubscribe else { return .bound }
+        guard offersSubscribe else {
+            // Two silences, kept apart. `bound` is silent because
+            // `ManageSubscriptionLink` stands in for the explanation, and that
+            // link renders only for an account that holds a subscription. So
+            // the Apple-ID collision gets its own state and says the sentence
+            // from STATE, rather than in a `notice` the next `load()` clears
+            // while the withdrawal it explains still stands (RFC 244).
+            //
+            // Read with the premise the sentence rests on — this account holds
+            // nothing — rather than from the flag alone. A refusal can arrive
+            // AFTER a success (`restore()` walks every entitlement, and only
+            // one of them need collide), and that account has the link: telling
+            // it to "use a different Apple ID to subscribe on this account"
+            // beside its own Manage row would be two answers to one question.
+            return appleIdBoundToAnotherAccount && subscription == nil ? .appleIdBoundElsewhere : .bound
+        }
         switch productReading {
         case .ready(let product):
             return .subscribe(product)
@@ -387,9 +456,11 @@ final class SubscriptionViewModel: ObservableObject {
     /// is not there. On the paywall that button is the blocked student's only
     /// exit, and a silent absence would be both the failure and the explanation.
     ///
-    /// A record failure here is silent — this is a background refresh of a
+    /// A record failure here says nothing — this is a background refresh of a
     /// display value, not an action the student took, and in dev `/verify`
-    /// answers 503 on every open.
+    /// answers 503 on every open. Saying nothing is not the same as learning
+    /// nothing: the outcome goes through `consume`, so the Apple-ID refusal
+    /// this path is the FIRST to meet withdraws the button here too (RFC 244).
     func load() async {
         phase = .loading
         notice = nil
@@ -405,9 +476,14 @@ final class SubscriptionViewModel: ObservableObject {
         _ = await (usageRead, productRead)
 
         if let newest = await newestEntitlement() {
-            if case .recorded(let subscription) = await recorder.record(newest) {
-                self.subscription = subscription
-            }
+            consume(await recorder.record(newest))
+        } else {
+            // Nothing for the plan we sell on THIS Apple ID, so the refusal
+            // that withdrew the button was about an Apple ID that is no longer
+            // signed in here. Its premise is gone and the fact goes with it —
+            // this is the read that notices, because an Apple ID is switched in
+            // iOS Settings without restarting the app (RFC 244).
+            appleIdBoundToAnotherAccount = false
         }
 
         phase = .idle
@@ -483,10 +559,7 @@ final class SubscriptionViewModel: ObservableObject {
         // restored account is never presented as a clean one.
         var failures: [RecordFailure] = []
         for entitlement in entitlements {
-            switch await recorder.record(entitlement) {
-            case .recorded(let subscription):
-                self.subscription = subscription
-            case .rejected(let failure), .deferred(let failure):
+            if let failure = consume(await recorder.record(entitlement)) {
                 failures.append(failure)
             }
         }
@@ -535,12 +608,12 @@ final class SubscriptionViewModel: ObservableObject {
 
     /// A transaction the session-long listener recorded — a renewal, an Ask to
     /// Buy approval, or a redelivery. This is the listener's landing point, so
-    /// what it records reaches the screen instead of being dropped. Silent on a
-    /// failed arm for the same reason `load()` is: no student action prompted
-    /// it, and in dev `/verify` answers 503.
+    /// what it records reaches the screen instead of being dropped. Says
+    /// nothing on a failed arm for the same reason `load()` does — no student
+    /// action prompted it, and in dev `/verify` answers 503 — while still
+    /// learning what the refusal established, through `consume`.
     func apply(_ outcome: RecordOutcome) async {
-        guard case .recorded(let subscription) = outcome else { return }
-        self.subscription = subscription
+        guard consume(outcome) == nil else { return }
         // Clearing a notice the student may be mid-read is deliberate: the only
         // banner this can replace is the deferred one, which promised the
         // purchase would "finish automatically" — this is that, so the promise
@@ -553,14 +626,48 @@ final class SubscriptionViewModel: ObservableObject {
     /// The three codes with their own words are the ones a student can act on
     /// (or must be told not to); everything else gets the generic message.
     private func apply(purchased outcome: RecordOutcome) {
-        switch outcome {
-        case .recorded(let subscription):
-            self.subscription = subscription
+        guard let failure = consume(outcome) else {
             // Same reason as the listener's arm above: the only standing notice
             // a success can replace promised exactly this completion.
             notice = nil
+            return
+        }
+        notice = message(for: failure).map(Notice.failure)
+    }
+
+    /// **The one place a `RecordOutcome` is read.** It publishes what recorded,
+    /// and it moves the one fact a refusal leaves behind beyond its words —
+    /// that this Apple ID's subscription is bound to another unicoach account
+    /// (RFC 244) — in BOTH directions: a refusal that names it establishes it,
+    /// and a record that succeeds disproves it. It returns the failure, for the
+    /// callers that have something to say about it.
+    ///
+    /// Every landing point goes through it, INCLUDING the two that say nothing:
+    /// `load()` re-posts the newest entitlement on every appearance of the
+    /// paywall, the subscription sheet and the Settings section, so for a
+    /// second account on a shared Apple ID that is where the refusal arrives
+    /// FIRST — before any purchase is attempted. A rule each consumer had to
+    /// remember is a rule two of them forgot.
+    ///
+    /// The fact is read from the refusal rather than from the sentence it
+    /// produces — the words are presentation, and a view model that re-read its
+    /// own copy to decide behaviour would break on the next rewording.
+    @discardableResult
+    private func consume(_ outcome: RecordOutcome) -> RecordFailure? {
+        switch outcome {
+        case .recorded(let subscription):
+            self.subscription = subscription
+            // A row bound to THIS account disproves the refusal: whatever this
+            // Apple ID once answered, the account now holds a subscription of
+            // its own, so the withdrawal that refusal caused is over.
+            appleIdBoundToAnotherAccount = false
+            return nil
         case .rejected(let failure), .deferred(let failure):
-            notice = message(for: failure).map(Notice.failure)
+            if case .server(let error) = failure,
+               error.knownCode == .subscriptionOwnedByOtherAccount {
+                appleIdBoundToAnotherAccount = true
+            }
+            return failure
         }
     }
 
@@ -585,7 +692,18 @@ final class SubscriptionViewModel: ObservableObject {
         case .serviceUnavailable, .serverError, .timeout, .networkError:
             return String(localized: "Your purchase is safe. We couldn't finish setting it up just now, and will finish automatically.")
         case .subscriptionOwnedByOtherAccount:
-            return String(localized: "This subscription is already linked to another Unicoach account.")
+            // Names the mechanism and the way out, because the old sentence
+            // ("already linked to another Unicoach account") named neither and
+            // sat beside a Subscribe button that could never succeed. One Apple
+            // ID holds at most one subscription in a group, so a second unicoach
+            // account signed in to the SAME Apple ID gets the first account's
+            // transaction back — the remedy is a different Apple ID, and
+            // `offersSubscribe` withdraws the button (RFC 244).
+            //
+            // The same sentence `Offer.appleIdBoundElsewhere` renders, read
+            // from the one constant: this banner is the fact as news, and that
+            // state is the same fact standing.
+            return Self.appleIdBoundElsewhereText
         case .subscriptionNotFound:
             return String(localized: "We couldn't confirm this purchase with the App Store.")
         case .validationFailed:

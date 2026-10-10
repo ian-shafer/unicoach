@@ -16,6 +16,11 @@
 		EF2410000000000000000B06 /* MockSupporterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F06 /* MockSupporterClient.swift */; };
 		EF2410000000000000000B07 /* SupporterSubjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */; };
 		EF2410000000000000000B09 /* SupporterClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F09 /* SupporterClientTests.swift */; };
+		EF2444000000000000000B01 /* SupporterCoachingUsageClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */; };
+		EF2444000000000000000B02 /* SupporterCoachingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F02 /* SupporterCoachingViewModel.swift */; };
+		EF2444000000000000000B03 /* SupporterCoachingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F03 /* SupporterCoachingSection.swift */; };
+		EF2444000000000000000B04 /* SupporterCoachingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F04 /* SupporterCoachingViewModelTests.swift */; };
+		EF2444000000000000000B05 /* SupporterCoachingUsageClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */; };
 		CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000009F /* YourDetailsSubjectsTests.swift */; };
 		CC20500000000000000008B /* SubjectsClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000008F /* SubjectsClientTests.swift */; };
 		CC20500000000000000007B /* SubjectPickerViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000007F /* SubjectPickerViewModelTests.swift */; };
@@ -175,6 +180,11 @@
 		EF2410000000000000000F06 /* MockSupporterClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockSupporterClient.swift; sourceTree = "<group>"; };
 		EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterSubjectStoreTests.swift; sourceTree = "<group>"; };
 		EF2410000000000000000F09 /* SupporterClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterClientTests.swift; sourceTree = "<group>"; };
+		EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingUsageClient.swift; sourceTree = "<group>"; };
+		EF2444000000000000000F02 /* SupporterCoachingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingViewModel.swift; sourceTree = "<group>"; };
+		EF2444000000000000000F03 /* SupporterCoachingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingSection.swift; sourceTree = "<group>"; };
+		EF2444000000000000000F04 /* SupporterCoachingViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingViewModelTests.swift; sourceTree = "<group>"; };
+		EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingUsageClientTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000009F /* YourDetailsSubjectsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsSubjectsTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000008F /* SubjectsClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectsClientTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000007F /* SubjectPickerViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerViewModelTests.swift; sourceTree = "<group>"; };
@@ -358,6 +368,9 @@
 				EF2410000000000000000F04 /* RoleChoiceView.swift */,
 				EF2410000000000000000F05 /* SupporterHomeView.swift */,
 				EF2410000000000000000F08 /* SupporterSubjectSwitcher.swift */,
+				EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */,
+				EF2444000000000000000F02 /* SupporterCoachingViewModel.swift */,
+				EF2444000000000000000F03 /* SupporterCoachingSection.swift */,
 				CC20500000000000000004F /* SubjectPickerSheet.swift */,
 				CC20500000000000000003F /* SubjectPickerViewModel.swift */,
 				CC20500000000000000002F /* IntendedSubjectsClient.swift */,
@@ -463,6 +476,8 @@
 				EF2410000000000000000F06 /* MockSupporterClient.swift */,
 				EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */,
 				EF2410000000000000000F09 /* SupporterClientTests.swift */,
+				EF2444000000000000000F04 /* SupporterCoachingViewModelTests.swift */,
+				EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */,
 				CC20500000000000000009F /* YourDetailsSubjectsTests.swift */,
 				CC20500000000000000008F /* SubjectsClientTests.swift */,
 				CC20500000000000000007F /* SubjectPickerViewModelTests.swift */,
@@ -658,6 +673,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				EF2410000000000000000B01 /* SupporterClient.swift in Sources */,
+				EF2444000000000000000B01 /* SupporterCoachingUsageClient.swift in Sources */,
+				EF2444000000000000000B02 /* SupporterCoachingViewModel.swift in Sources */,
+				EF2444000000000000000B03 /* SupporterCoachingSection.swift in Sources */,
 				EF2410000000000000000B02 /* SupporterSubjectStore.swift in Sources */,
 				EF2410000000000000000B03 /* SupporterInviteControl.swift in Sources */,
 				EF2410000000000000000B04 /* RoleChoiceView.swift in Sources */,
@@ -751,6 +769,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				EF2410000000000000000B06 /* MockSupporterClient.swift in Sources */,
+				EF2444000000000000000B04 /* SupporterCoachingViewModelTests.swift in Sources */,
+				EF2444000000000000000B05 /* SupporterCoachingUsageClientTests.swift in Sources */,
 				EF2410000000000000000B07 /* SupporterSubjectStoreTests.swift in Sources */,
 				EF2410000000000000000B09 /* SupporterClientTests.swift in Sources */,
 				CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */,

@@ -1,12 +1,18 @@
 package ed.unicoach.rest.routing
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.Entitlement
 import ed.unicoach.family.EnsureSupporterOutcome
 import ed.unicoach.family.SupporterHome
 import ed.unicoach.family.SupporterService
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.models.CoachingCoverage
+import ed.unicoach.rest.models.CoachingCoverageKind
 import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
+import ed.unicoach.rest.models.SupporterCoachingUsageResponse
+import ed.unicoach.rest.models.toCoachingUsage
 import ed.unicoach.rest.models.toResponse
 import ed.unicoach.rest.rejectUnsupportedMethods
 import io.ktor.http.HttpMethod
@@ -27,14 +33,20 @@ const val SUPPORTER_ME_SEGMENT = "/me"
 
 const val SUPPORTER_ME_PATH = "$SUPPORTERS_PATH$SUPPORTER_ME_SEGMENT"
 
+/** The coaching meter for the supporter's own account (RFC 244), under the home read. */
+const val SUPPORTER_COACHING_USAGE_SEGMENT = "/coaching-usage"
+
+const val SUPPORTER_COACHING_USAGE_PATH = "$SUPPORTER_ME_PATH$SUPPORTER_COACHING_USAGE_SEGMENT"
+
 /**
- * The two supporter doors (RFC 241): become a supporter
- * (`POST /api/v1/supporters`), and read the supporter home
- * (`GET /api/v1/supporters/me`).
+ * The three supporter doors: become a supporter (`POST /api/v1/supporters`), read
+ * the supporter home (`GET /api/v1/supporters/me`) — both RFC 241 — and read how
+ * the parent's own coaching is paid for
+ * (`GET /api/v1/supporters/me/coaching-usage`, RFC 244).
  *
- * Both sit behind the session check and, unlike RFC 232's accept path, behind
- * `EmailVerificationGate` — neither is on the path of an invite a stranger
- * followed, so neither needs the X8 exemption and a parent verifies their email
+ * All three sit behind the session check and, unlike RFC 232's accept path,
+ * behind `EmailVerificationGate` — none is on the path of an invite a stranger
+ * followed, so none needs the X8 exemption and a parent verifies their email
  * exactly as a student does.
  *
  * The delegated seam is [CallerAuthentication], NOT [CallerResolution]:
@@ -48,6 +60,7 @@ class SupporterRoutes(
   authService: AuthService,
   sessionConfig: SessionConfig,
   private val supporterService: SupporterService,
+  private val budgetService: BudgetService,
 ) : CallerAuthentication by SessionCallerAuthentication(authService, sessionConfig) {
   fun registerRoutes(route: Route) {
     route.route(SUPPORTERS_PATH) {
@@ -56,6 +69,10 @@ class SupporterRoutes(
       route(SUPPORTER_ME_SEGMENT) {
         get { handleGetMe() }
         rejectUnsupportedMethods(HttpMethod.Get)
+        route(SUPPORTER_COACHING_USAGE_SEGMENT) {
+          get { handleGetCoachingUsage() }
+          rejectUnsupportedMethods(HttpMethod.Get)
+        }
       }
     }
   }
@@ -90,6 +107,45 @@ class SupporterRoutes(
 
     val home = supporterService.homeFor(user.id).getOrThrow() ?: return respondSupporterNotFound()
     respondSupporterHome(home)
+  }
+
+  /**
+   * How the parent's OWN coaching is paid for (RFC 244): the same abstract meter
+   * the student route reports, plus which allowance it is metering.
+   *
+   * It meters the CALLER'S OWN ACCOUNT — the account that pays, since every
+   * account pays for itself, and the two branches the gate has are the two
+   * [CoachingCoverageKind] members. The `supporters` read above it is for the
+   * `404` and nothing else: the gate's subject is the account the session already
+   * names, so handing back a `SupporterId` would only buy a second read of the
+   * row this handler just read. A caller who holds both a `students` and a
+   * `supporters` row sees ONE subscription's meter on both surfaces, because both
+   * read that one account's ledger.
+   *
+   * `404` for a caller with no supporter row, the same answer
+   * `GET /api/v1/supporters/me` gives for the same absence, rather than a 200 with
+   * a zero bar for a parent surface this caller does not have.
+   *
+   * A failed read is a 500 and never a zero: [BudgetService] fails closed, and the
+   * app renders "unavailable" rather than 0% — a silent zero would tell a parent
+   * their allowance is untouched at the moment the meter cannot be read.
+   */
+  private suspend fun RoutingContext.handleGetCoachingUsage() {
+    val user = resolveUser() ?: return respondUnauthorized()
+
+    supporterService.find(user.id).getOrThrow() ?: return respondSupporterNotFound()
+    respondCoachingUsage(budgetService.entitlement(user.id).getOrThrow())
+  }
+
+  /** `200` — the account's own meter, and which of the two allowances it reads. */
+  private suspend fun RoutingContext.respondCoachingUsage(entitlement: Entitlement) {
+    call.respond(
+      HttpStatusCode.OK,
+      SupporterCoachingUsageResponse(
+        usage = entitlement.toCoachingUsage(),
+        coverage = CoachingCoverage(CoachingCoverageKind.from(entitlement.basis)),
+      ),
+    )
   }
 
   /** `201` — THIS call wrote the row. */

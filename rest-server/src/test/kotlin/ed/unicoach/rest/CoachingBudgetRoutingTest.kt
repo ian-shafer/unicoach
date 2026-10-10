@@ -60,7 +60,7 @@ import kotlin.test.assertTrue
  *
  * Exhaustion is seeded by raw SQL rather than by config override — one attributed
  * `llm_requests`/`llm_responses` pair costed far above any sane allowance —
- * mirroring `StudentLlmCostDaoTest`'s helper. That keeps the server on the real
+ * mirroring `StudentLlmCostViewTest`'s helper. That keeps the server on the real
  * configured allowance, so this suite exercises exactly the wiring production
  * runs.
  */

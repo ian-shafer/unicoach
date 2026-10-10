@@ -82,7 +82,7 @@ fun Application.configureRouting(
   val coachingUsageRouteHandler =
     CoachingUsageRouteHandler(authService, studentService, budgetService, sessionConfig)
   val subscriptionRouteHandler =
-    SubscriptionRouteHandler(authService, studentService, subscriptionService, sessionConfig)
+    SubscriptionRouteHandler(authService, subscriptionService, sessionConfig)
   val appleNotificationRouteHandler =
     AppleNotificationRouteHandler(appleNotificationVerifier, queueService)
   val vocabularyRouteHandler =
@@ -94,7 +94,7 @@ fun Application.configureRouting(
   val supporterInviteRouteHandler =
     SupporterInviteRoutes(authService, studentService, sessionConfig, supporterInviteService)
   val supporterRouteHandler =
-    SupporterRoutes(authService, sessionConfig, supporterService)
+    SupporterRoutes(authService, sessionConfig, supporterService, budgetService)
   routing {
     route("/healthz") {
       get {

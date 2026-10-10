@@ -196,7 +196,10 @@ final class SubscriptionViewModelTests: XCTestCase {
         )
     }
 
-    func testOwnedByOtherAccountSaysAnotherAccount() async {
+    /// The words name the mechanism and the way out (RFC 244): one Apple ID
+    /// holds at most one subscription in a group, so the remedy is a different
+    /// Apple ID — not a retry.
+    func testOwnedByOtherAccountNamesTheAppleIdAndTheWayOut() async {
         store.purchaseResult = .success(.purchased(transaction))
         recorder.outcome = .rejected(.server(error("subscription_owned_by_other_account", 409)))
 
@@ -204,8 +207,164 @@ final class SubscriptionViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.notice,
-            .failure("This subscription is already linked to another Unicoach account.")
+            .failure(
+                "This Apple ID's Unicoach subscription belongs to another Unicoach account. "
+                    + "Use a different Apple ID to subscribe on this account."
+            )
         )
+    }
+
+    /// And the button stays away for as long as that Apple ID is the one signed
+    /// in. It could never succeed — Apple will not sell this Apple ID the same
+    /// subscription twice — so leaving it on screen is a control whose only
+    /// possible outcome is the banner beside it (RFC 244).
+    func testOwnedByOtherAccountWithdrawsSubscribeWhileThatAppleIdIsStillSignedIn() async {
+        // The purchased transaction is an entitlement this Apple ID holds, so
+        // the later `load()` re-posts it and meets the same refusal — which is
+        // what keeps the withdrawal standing.
+        store.entitlements = [transaction]
+        store.purchaseResult = .success(.purchased(transaction))
+        recorder.outcome = .rejected(.server(error("subscription_owned_by_other_account", 409)))
+        XCTAssertTrue(viewModel.offersSubscribe, "precondition: nothing bound, so the button is offered")
+
+        await viewModel.subscribe()
+
+        XCTAssertFalse(viewModel.offersSubscribe)
+        XCTAssertEqual(
+            viewModel.offer,
+            .appleIdBoundElsewhere,
+            "no purchase is offered, and the state names which withdrawal this is"
+        )
+        // Nothing is bound to THIS account, so a later load — the meter, the
+        // price, the newest entitlement — must not hand the button back.
+        await viewModel.load()
+        XCTAssertNil(viewModel.subscription)
+        XCTAssertFalse(viewModel.offersSubscribe)
+        XCTAssertEqual(viewModel.offer, .appleIdBoundElsewhere)
+    }
+
+    /// **The path that actually runs.** A second account on a shared Apple ID
+    /// meets the refusal at app open rather than at a purchase: `load()`
+    /// re-posts the newest entitlement to `/verify` on every appearance of the
+    /// paywall, the subscription sheet and the Settings section, and for that
+    /// account the answer is the 409 every time. The button has to be gone
+    /// before anything is tapped (RFC 244).
+    func testTheAppOpenPathLearnsTheRefusalAndWithdrawsSubscribe() async {
+        store.entitlements = [transaction]
+        recorder.outcome = .rejected(.server(error("subscription_owned_by_other_account", 409)))
+        XCTAssertTrue(viewModel.offersSubscribe, "precondition: nothing bound, so the button is offered")
+
+        await viewModel.load()
+
+        XCTAssertNil(viewModel.subscription, "the refusal bound nothing to this account")
+        XCTAssertFalse(viewModel.offersSubscribe)
+        XCTAssertEqual(viewModel.offer, .appleIdBoundElsewhere)
+        XCTAssertNil(viewModel.notice, "a background refresh raises no banner; the offer state carries the words")
+    }
+
+    /// And the listener's landing point, the other arrival nobody taps: an Ask
+    /// to Buy approval or a redelivery recorded in the background reaches the
+    /// same refusal.
+    func testTheListenersLandingPointLearnsTheRefusalToo() async {
+        await viewModel.apply(.rejected(.server(error("subscription_owned_by_other_account", 409))))
+
+        XCTAssertFalse(viewModel.offersSubscribe)
+        XCTAssertEqual(viewModel.offer, .appleIdBoundElsewhere)
+    }
+
+    /// The withdrawal lasts the session and the banner does not — every
+    /// appearance clears `notice`. So the reason is rendered from STATE: one
+    /// appearance later the screen still says why there is no button, rather
+    /// than showing a meter, no Subscribe and no explanation (RFC 244).
+    func testTheExplanationOutlivesTheBannerThatFirstCarriedIt() async {
+        // As above: the Apple ID still holds the entitlement, so the refusal is
+        // still the answer when the next appearance re-posts it.
+        store.entitlements = [transaction]
+        store.purchaseResult = .success(.purchased(transaction))
+        recorder.outcome = .rejected(.server(error("subscription_owned_by_other_account", 409)))
+        await viewModel.subscribe()
+        XCTAssertEqual(
+            viewModel.notice,
+            .failure(SubscriptionViewModel.appleIdBoundElsewhereText),
+            "precondition: the refusal arrived as news"
+        )
+
+        await viewModel.load()
+
+        XCTAssertNil(viewModel.notice, "the banner is cleared, as every appearance clears it")
+        XCTAssertEqual(viewModel.offer, .appleIdBoundElsewhere, "and the sentence is still there, from state")
+    }
+
+    /// Only that refusal withdraws it. A purchase that failed for a reason a
+    /// retry can fix leaves the button exactly where it was.
+    func testAnotherRefusalLeavesSubscribeOnScreen() async {
+        store.purchaseResult = .success(.purchased(transaction))
+        recorder.outcome = .deferred(.server(error("service_unavailable", 503)))
+
+        await viewModel.subscribe()
+
+        XCTAssertTrue(viewModel.offersSubscribe)
+    }
+
+    /// The withdrawal lasts as long as its PREMISE, and the way out of it is
+    /// the one the sentence names: a different Apple ID. That switch is made in
+    /// iOS Settings and does not restart the app, so the next appearance is
+    /// what has to notice — this Apple ID now holds nothing for the plan we
+    /// sell, so the refusal was about an Apple ID that is no longer signed in.
+    /// Left standing, the flag is a parent who did exactly what they were told
+    /// and has no Subscribe button until relaunch (RFC 244).
+    func testAnAppleIdSwitchHandsTheButtonBack() async {
+        store.entitlements = [transaction]
+        recorder.outcome = .rejected(.server(error("subscription_owned_by_other_account", 409)))
+        await viewModel.load()
+        XCTAssertEqual(viewModel.offer, .appleIdBoundElsewhere, "precondition: the refusal withdrew the button")
+
+        // The Apple ID now signed in carries no entitlement for the plan.
+        store.entitlements = []
+        await viewModel.load()
+
+        XCTAssertFalse(viewModel.appleIdBoundToAnotherAccount)
+        XCTAssertTrue(viewModel.offersSubscribe)
+        XCTAssertEqual(viewModel.offer, .subscribe(product))
+        XCTAssertNil(viewModel.notice, "and no sentence is left standing for a fact that is gone")
+    }
+
+    /// A record that SUCCEEDS is the other thing that disproves the refusal:
+    /// this account now holds a subscription of its own, which is what the
+    /// refusal said could not happen. The silence that replaces the sentence is
+    /// `ManageSubscriptionLink`'s, which this account now has.
+    func testASuccessfulRecordEndsTheWithdrawal() async {
+        store.entitlements = [transaction]
+        recorder.outcomes = [
+            .rejected(.server(error("subscription_owned_by_other_account", 409))),
+            .recorded(subscription),
+        ]
+        await viewModel.load()
+        XCTAssertEqual(viewModel.offer, .appleIdBoundElsewhere, "precondition: the refusal withdrew the button")
+
+        await viewModel.load()
+
+        XCTAssertFalse(viewModel.appleIdBoundToAnotherAccount)
+        XCTAssertEqual(viewModel.subscription, subscription)
+        XCTAssertEqual(viewModel.offer, .bound, "bound to this account, with the Manage row to explain it")
+    }
+
+    /// And the sentence is never rendered beside the row that contradicts it. A
+    /// refusal can arrive AFTER a success — `restore()` walks every entitlement
+    /// and only one of them need collide — and an account that holds a
+    /// subscription already has `ManageSubscriptionLink`, so telling it to
+    /// subscribe on a different Apple ID would be two answers to one question.
+    func testARefusalAfterASuccessKeepsTheBoundSilenceRatherThanTheAppleIdSentence() async {
+        store.entitlements = [transaction]
+        recorder.outcome = .recorded(subscription)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.offer, .bound, "precondition: this account holds a subscription")
+
+        await viewModel.apply(.rejected(.server(error("subscription_owned_by_other_account", 409))))
+
+        XCTAssertTrue(viewModel.appleIdBoundToAnotherAccount, "the refusal is still learned")
+        XCTAssertFalse(viewModel.offersSubscribe)
+        XCTAssertEqual(viewModel.offer, .bound)
     }
 
     func testSubscriptionNotFoundSaysItCouldNotBeConfirmed() async {
@@ -328,7 +487,10 @@ final class SubscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.subscription, subscription, "what did record is still published")
         XCTAssertEqual(
             viewModel.notice,
-            .failure("This subscription is already linked to another Unicoach account."),
+            .failure(
+                "This Apple ID's Unicoach subscription belongs to another Unicoach account. "
+                    + "Use a different Apple ID to subscribe on this account."
+            ),
             "a refusal outlives a later success"
         )
     }

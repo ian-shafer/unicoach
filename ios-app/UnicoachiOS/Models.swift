@@ -806,6 +806,69 @@ struct CoachingUsage: Codable, Equatable, Sendable {
     let resetsAt: Date?
 }
 
+// MARK: - The parent's coaching coverage (RFC 244)
+
+/// `GET /api/v1/supporters/me/coaching-usage` 200 body (RFC 244): the same
+/// abstract meter the student route publishes, plus the one thing a parent's
+/// home has to say that a student's does not — WHICH allowance is being
+/// metered.
+///
+/// No envelope type beside it, unlike `CoachingUsageResponse`: that one exists
+/// because the student body nests a single field, and here the body IS this
+/// shape.
+///
+/// `Decodable` rather than `Codable`: this body is read and never sent, and an
+/// encode path nothing calls is one more thing that has to stay true.
+struct SupporterCoachingUsage: Decodable, Equatable, Sendable {
+    let usage: CoachingUsage
+    let coverage: CoachingCoverage
+}
+
+/// WHO is paying, as the server states it (RFC 244) — a struct rather than a
+/// bare field on the body, because the wire nests it.
+struct CoachingCoverage: Decodable, Equatable, Sendable {
+    let kind: CoachingCoverageKind
+}
+
+/// The closed wire vocabulary of `CoachingCoverage.kind`, owned by
+/// `ed.unicoach.rest.models.CoachingCoverageKind`: the account holds its own
+/// subscription, or it is on the one-time free allowance every account gets.
+/// There is deliberately no "covered by somebody else" member — no account
+/// rides another's subscription (RFC 244).
+///
+/// Decoding is LENIENT, the `SupporterRelationship` precedent: a word this
+/// build has never heard of decodes as [unrecognised] and is LOGGED, rather
+/// than throwing and failing a body whose meter is perfectly readable.
+///
+/// **What [unrecognised] must not do is pick a default.** It is not folded onto
+/// `freeAllowance`, the commoner answer: that would put "You have a free
+/// allowance to start with." on screen for an account the server said something
+/// else about. `SupporterCoachingViewModel` renders it as the unavailable line
+/// instead — absence and unreadability are decided separately and happen to be
+/// said the same way, rather than being the same value.
+enum CoachingCoverageKind: Decodable, Equatable, Sendable {
+    case ownSubscription
+    case freeAllowance
+    /// A kind the server published after this build shipped, kept verbatim so
+    /// the log line can name it.
+    case unrecognised(String)
+
+    private static let logger = Logger.unicoach(category: "CoachingCoverageKind")
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "own_subscription": self = .ownSubscription
+        case "free_allowance": self = .freeAllowance
+        default:
+            Self.logger.error(
+                "Unknown coaching coverage kind, kept verbatim as unrecognised: raw=[\(raw, privacy: .public)]"
+            )
+            self = .unrecognised(raw)
+        }
+    }
+}
+
 // MARK: - Conversation domain models
 
 enum MessageRole: String, Codable, Sendable {

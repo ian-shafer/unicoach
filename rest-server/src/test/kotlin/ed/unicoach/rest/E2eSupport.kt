@@ -1,17 +1,41 @@
 package ed.unicoach.rest
 
+import com.typesafe.config.Config
+import ed.unicoach.appstore.AppStoreServerApi
+import ed.unicoach.appstore.AppStoreTestFixtures
+import ed.unicoach.appstore.AppStoreTransport
+import ed.unicoach.auth.AppleIdTokenVerifier
+import ed.unicoach.auth.EmailVerificationConfig
+import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.auth.StubIdTokenVerifier
 import ed.unicoach.chat.AnthropicStreamTransport
 import ed.unicoach.chat.AnthropicTransportEvent
+import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ScriptedAnthropicTransport
+import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.budget.BudgetConfig
+import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.db.Database
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.queue.JobType
 import ed.unicoach.queue.NewJob
+import ed.unicoach.queue.QueueService
 import ed.unicoach.queue.dao.JobInsertResult
 import ed.unicoach.queue.dao.JobsDao
+import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.config.ClientKeyGateConfig
+import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateStudentRequest
+import ed.unicoach.web.common.logging.RequestLoggingConfig
+import io.ktor.server.application.ApplicationStopped
+import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import java.sql.Connection
 import kotlin.test.fail
@@ -150,3 +174,60 @@ fun latestJobAttemptError(
       stmt.setString(1, jobId)
       stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
     }
+
+/**
+ * Boots and starts `appModule` against [database] with [appStore] as the Apple
+ * transport and [provider] as the chat provider, on an ephemeral port — the
+ * harness every suite that must mint a REAL subscription shares, because the only
+ * way this system mints one is `POST /api/v1/subscriptions/verify` against a
+ * scripted App Store conversation.
+ *
+ * One copy, so an `appModule` signature change costs one edit and no two suites
+ * can drift in how they wire the server. A suite that needs a parameter this does
+ * not take (a configured client-key gate, a switchable `JobsDao`) boots its own:
+ * the point of sharing is the DEFAULT wiring, not a parameter list that grows a
+ * knob per caller.
+ */
+fun startAppModuleServer(
+  config: Config,
+  database: Database,
+  budgetConfig: BudgetConfig,
+  appStore: AppStoreTransport,
+  provider: ChatProvider,
+): EmbeddedServer<*, *> {
+  val server =
+    embeddedServer(Netty, port = 0, host = "127.0.0.1") {
+      environment.monitor.subscribe(ApplicationStopped) { database.close() }
+      appModule(
+        database,
+        SessionConfig.from(config).getOrThrow(),
+        RequestSizeConfig.from(config).getOrThrow(),
+        LlmCallLog(provider, database),
+        CoachingConfig.from(config).getOrThrow(),
+        ClientKeyGateConfig.from(config).getOrThrow(),
+        EmailVerificationConfig.from(config).getOrThrow(),
+        GoogleIdTokenVerifier(StubIdTokenVerifier()),
+        AppleIdTokenVerifier(StubIdTokenVerifier()),
+        QueueService(database),
+        ExtractionConfig.from(config).getOrThrow(),
+        RequestLoggingConfig.from(config).getOrThrow(),
+        budgetConfig,
+        AppStoreServerApi(appStore, AppStoreTestFixtures.authTokens()),
+        subscriptionPlansFrom(config),
+        testAppleNotificationVerifier(),
+        costReportConfigFrom(config),
+        supporterInviteConfigFrom(config),
+      )
+    }
+  server.start(wait = false)
+  return server
+}
+
+/** The port a `port = 0` server actually bound. */
+fun EmbeddedServer<*, *>.boundPort(): Int =
+  runBlocking {
+    engine
+      .resolvedConnectors()
+      .first()
+      .port
+  }
