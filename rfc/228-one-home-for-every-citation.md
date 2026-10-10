@@ -1,1003 +1,384 @@
-package ed.unicoach.college
-
-import ed.unicoach.common.util.isWebUrl import
-ed.unicoach.db.dao.CdsAdmissionsDao import ed.unicoach.db.dao.CollegesDao import
-ed.unicoach.db.models.ApplicationRound import ed.unicoach.db.models.CdsMonthDay
-import ed.unicoach.db.models.CohortPopulation import
-ed.unicoach.db.models.CollegeId import ed.unicoach.db.models.FactorRating import
-ed.unicoach.db.models.LoanType import ed.unicoach.db.models.SourceUrlStatus
-import kotlinx.coroutines.runBlocking import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.int import
-kotlinx.serialization.json.jsonArray import
-kotlinx.serialization.json.jsonObject import
-kotlinx.serialization.json.jsonPrimitive import org.apache.commons.csv.CSVFormat
-import org.apache.commons.csv.CSVParser import org.junit.jupiter.api.Test import
-java.io.File import java.security.MessageDigest import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith import kotlin.test.assertFalse import
-kotlin.test.assertIs import kotlin.test.assertNotNull import
-kotlin.test.assertNull import kotlin.test.assertTrue
-
-/**
-
-- CDS seed loader suite (RFC 140), on the scorecard test scaffolding: colleges
-- are seeded from the Scorecard institutions fixture (unit ids 110100/220200/…)
-- so UNITID resolution runs against real `colleges` rows, and the per-test
-- TRUNCATE of `colleges` cascades through the CDS tables' FKs. */ class
-  CdsSeedLoaderTest : CollegeScorecardTestBase() { private val scorecardLoader =
-  CollegeScorecardLoader(database) private val loader = CdsSeedLoader(database)
-  private val meritCsv = fixture("cds-merit-aid-fixture.csv") private val
-  factorsCsv = fixture("cds-admission-factors-fixture.csv") private val
-  deadlinesCsv = fixture("cds-deadlines-fixture.csv") private val aidPolicyCsv =
-  fixture("cds-aid-policy-fixture.csv")
-
-private fun seedColleges() = runBlocking { scorecardLoader.load(
-fixture("scorecard-institutions-fixture.csv"),
-fixture("scorecard-fields-empty-fixture.csv"), ) Unit }
-
-/**
-
-- The repo's committed CDS seed directory, resolved by walking up from the
-- test's working directory (the module dir under Gradle) rather than assuming
-- a fixed depth. */ private val committedSeedDir: File =
-  generateSequence(File(".").absoluteFile) { it.parentFile } .map { File(it,
-  "db/seed/cds") } .first { it.isDirectory }
-
-@Test fun `every committed source url is a url a browser will fetch`() { // THE
-ASSUMPTION RFC 196 FAILS CLOSED ON, made falsifiable here. // //
-`CdsCitation.linkTarget` refuses to render a `source_url` that is not //
-http(s), and the argument for refusing rather than degrading is that no // such
-row exists. Nothing enforced that. A single bad row would have // turned a
-family's cost report into a 503 with no build failure anywhere // before it -- a
-build-time problem discovered at read time. // // Over the COMMITTED corpus, not
-a fixture: the fixture is not what ships. // // Parsed by the SAME reader the
-loader uses, never `split(",")`. A hand-rolled // index walk shifts by one on
-the first quoted comma in an earlier field, and // `source_url` is
-second-to-last in all four files -- so the guard would // validate the wrong
-value and stay green over the corpus it exists to check. val urls =
-seedTableFiles .sorted() .flatMap { name -> sourceUrlsOf(File(committedSeedDir,
-name)).map { name to it } }
-
-    assertEquals(
-      seedTableFiles + CdsSeedLoader.LINK_STATUS_FILE,
-      committedSeedDir
-        .listFiles { file -> file.extension == "csv" }
-        .orEmpty()
-        .map { it.name }
-        .toSet(),
-      "the committed seed is these five files and no others",
-    )
-    // A FLOOR, not a measurement: the corpus grows, and the number is here only
-    // so a stubbed or half-written seed cannot make the sweep below vacuous.
-    assertTrue(urls.size >= 5000, "the committed seed must be the real corpus, not a stub: [${urls.size}] rows")
-    assertEquals(
-      emptyList(),
-      urls.filterNot { (_, url) -> isWebUrl(url) },
-      "a committed source_url cannot be rendered as a link, so the report would fault on it",
-    )
-
-}
-
-/** Every `source_url` in one committed seed file, read through the loader's own
-CSV reader. */ private fun sourceUrlsOf(file: File): List<String> = CSVParser
-.parse( file, Charsets.UTF_8, CSVFormat.DEFAULT .builder() .setHeader()
-.setSkipHeaderRecord(true) .build(), ).use { records -> // The column is
-ASSERTED, once per file, before any row is read: a // renamed column would
-otherwise make this walk find nothing and pass.
-assertTrue(records.headerMap.containsKey("source_url"), "[${file.name}] carries
-no source_url column") records.map { it.get("source_url").trim() } }
-
-private fun collegeId(ipedsUnitId: Int): CollegeId = withSession {
-requireNotNull(CollegesDao.findByIpedsUnitId(it, ipedsUnitId).getOrThrow()).id }
-
-@Test fun `loads the four seed files, skipping and counting unknown UNITIDs`() =
-runBlocking { seedColleges() val result = loader.load(meritCsv, factorsCsv,
-deadlinesCsv, aidPolicyCsv)
-
-      // merit-aid: 2 matched rows, the 999999 row has no college -> skipped.
-      assertEquals(2, result.meritAid.upserted)
-      assertEquals(0, result.meritAid.changed)
-      assertEquals(0, result.meritAid.unchanged)
-      assertEquals(1, result.meritAid.skipped)
-      assertEquals(2, result.admissionFactors.upserted)
-      assertEquals(0, result.admissionFactors.skipped)
-      assertEquals(3, result.deadlines.upserted)
-      assertEquals(1, result.deadlines.skipped)
-
-      // Spot values: the H2A row lands typed, incl. the null average.
-      val coastal = withSession { CdsAdmissionsDao.findMeritAid(it, collegeId(110100), 2024).getOrThrow() }
-      assertNotNull(coastal)
-      assertEquals(2760, coastal.firstTimeFullTimeFreshmenHeadcount)
-      assertEquals(358, coastal.noNeedMeritRecipientsHeadcount)
-      assertEquals(16112, coastal.noNeedMeritAverageUsd)
-      assertEquals("https://coastal.example.edu/cds-2024-25.pdf", coastal.sourceUrl)
-      assertEquals("https://www.collegedata.fyi/schools/coastal/2024-25", coastal.archiveUrl)
-      val lakeside = withSession { CdsAdmissionsDao.findMeritAid(it, collegeId(220200), 2025).getOrThrow() }
-      assertNotNull(lakeside)
-      assertNull(lakeside.noNeedMeritAverageUsd)
-
-      // Factor grid: rated cells land as enum codes, empty cells as NULL.
-      val factors = withSession { CdsAdmissionsDao.findAdmissionFactors(it, collegeId(220200), 2025).getOrThrow() }
-      assertNotNull(factors)
-      assertEquals(FactorRating.VERY_IMPORTANT, factors.rigor)
-      assertEquals(FactorRating.IMPORTANT, factors.testScores)
-      assertNull(factors.classRank)
-      assertNull(factors.applicantInterest)
-
-      // Deadlines: two rounds for 110100, the rolling flags-only row for 220200.
-      val rounds = withSession { CdsAdmissionsDao.listDeadlines(it, collegeId(110100), 2024).getOrThrow() }
-      assertEquals(2, rounds.size)
-      val ed1 = rounds.first { it.round == ApplicationRound.EARLY_DECISION_1 }
-      assertEquals(CdsMonthDay(11, 1), ed1.closing)
-      assertEquals(CdsMonthDay(12, 15), ed1.notification)
-      val rolling = withSession { CdsAdmissionsDao.listDeadlines(it, collegeId(220200), 2025).getOrThrow() }
-      assertEquals(listOf(ApplicationRound.ROLLING), rolling.map { it.round })
-      assertTrue(rolling.single().offered)
-      assertNull(rolling.single().closing)
-
-      // Coverage is computed from the DB over the matched schools only.
-      assertEquals(2, result.coverage.launchSetCount)
-      assertEquals(2, result.coverage.meritAidCount)
-      assertEquals(2, result.coverage.admissionFactorsCount)
-      assertEquals(2, result.coverage.deadlinesFlagsCount)
-      assertEquals(1, result.coverage.deadlinesWithDateCount)
-      assertEquals(emptyList(), result.coverage.studentListedMissing)
-    }
-
-## // --------------------------------------------------------------------------- // The aid-policy seed (RFC 170) //
-
-@Test fun
-`the need figures land as canonical cohort rows, with the published percent stored as a share`()
-= runBlocking { seedColleges() val result = loader.load(meritCsv, factorsCsv,
-deadlinesCsv, aidPolicyCsv)
-
-      // Two schools' figures; the 999999 row has no college and is skipped.
-      assertEquals(3, result.aidPolicy.cohortMoneyStats)
-      assertEquals(2, result.aidPolicy.cohortPopulationCounts)
-      assertEquals(listOf(999999), result.aidPolicy.unmatchedIpedsUnitIds)
-
-      // 94.3% of need met is stored as the 0-1 share every other share is
-      // stored as, under the population and aid scope that name its cohort.
-      val share =
-        query(
-          "SELECT cms.value, cms.population, cms.aid_scope, cms.vintage, cms.source, cms.source_variable " +
-            "FROM cohort_money_stats cms JOIN colleges c ON c.id = cms.college_id " +
-            "WHERE c.ipeds_unit_id = 110100 AND cms.measure = 'avg_need_met_share'",
-        ) { rs ->
-          listOf(
-            rs.getBigDecimal(1).toDouble().toString(),
-            rs.getString(2),
-            rs.getString(3),
-            rs.getInt(4).toString(),
-            rs.getString(5),
-            rs.getString(6),
-          )
-        }.single()
-      assertEquals(
-        listOf(
-          "0.943",
-          "first_time_full_time_freshmen_awarded_need_based_grant",
-          "need_based_aid_receiving",
-          "2024",
-          "common_data_set",
-          "H.209",
-        ),
-        share,
-      )
-
-      // The dollar average keeps its cents -- the whole reason get_decimal
-      // exists beside get_int.
-      assertEquals(
-        listOf("18006.5357"),
-        query(
-          "SELECT cms.value FROM cohort_money_stats cms JOIN colleges c ON c.id = cms.college_id " +
-            "WHERE c.ipeds_unit_id = 110100 AND cms.measure = 'avg_need_based_grant'",
-        ) { it.getBigDecimal(1).stripTrailingZeros().toPlainString() },
-      )
-
-      // The two headcounts are counts, not money: they land in the sibling
-      // table, on the explicit not_applicable axes.
-      assertEquals(
-        listOf(
-          listOf("first_time_full_time_freshmen_awarded_any_aid", "800", "not_applicable", "not_applicable"),
-          listOf("first_time_full_time_freshmen_need_fully_met", "300", "not_applicable", "not_applicable"),
-        ),
-        query(
-          "SELECT cpc.population, cpc.headcount, cpc.residency_basis, cpc.arrangement " +
-            "FROM cohort_population_counts cpc JOIN colleges c ON c.id = cpc.college_id " +
-            "WHERE c.ipeds_unit_id = 110100 ORDER BY cpc.population",
-        ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)) },
-      )
-    }
-
-@Test fun
-`every aid-policy measure is written against the CDS line it is reported over`()
-= runBlocking { seedColleges() loader.load(meritCsv, factorsCsv, deadlinesCsv,
-aidPolicyCsv)
-
-      // The CDS reports each H2 line against a NAMED earlier line, and the
-      // lines are not interchangeable:
-      //   line i (% of need met)     -- "of students who were awarded any need-based aid" = line e
-      //   line k (avg need grant)    -- "of those in line e"                              = line e
-      //   line h (need fully met)    -- "of students in line d"                           = line d
-      // Pointing a figure at the wrong one states an average over a population
-      // the school never measured, which no CHECK can catch: both slugs are
-      // legal in the column. This is the pin.
-      assertEquals(
-        listOf(
-          "avg_need_based_grant" to "first_time_full_time_freshmen_awarded_need_based_grant",
-          "avg_need_met_share" to "first_time_full_time_freshmen_awarded_need_based_grant",
-        ),
-        query(
-          "SELECT DISTINCT measure, population FROM cohort_money_stats WHERE source = 'common_data_set' " +
-            "ORDER BY measure",
-        ) { rs -> rs.getString(1) to rs.getString(2) },
-      )
-      assertEquals(
-        listOf(
-          "first_time_full_time_freshmen_awarded_any_aid",
-          "first_time_full_time_freshmen_need_fully_met",
-        ),
-        query(
-          "SELECT DISTINCT population FROM cohort_population_counts WHERE source = 'common_data_set' " +
-            "ORDER BY population",
-        ) { it.getString(1) },
-      )
-    }
-
-@Test fun
-`every borrowing average lands under its own loan type's denominator, and every count under its own cohort`()
-= runBlocking { seedColleges() loader.load(meritCsv, factorsCsv, deadlinesCsv,
-fixture("cds-aid-policy-borrowing-fixture.csv"))
-
-      // The pin, both columns at once. The aid scope follows the DENOMINATOR
-      // (RFC 175 D4): an average cumulative principal is an average over the
-      // borrowers OF THAT LOAN TYPE, while the population is the graduating
-      // class the school reports every H4/H5 figure against. Both slugs are
-      // legal in either column, so no CHECK can catch a swap -- this is the
-      // fourth guard against the defect RFC 148, 162 and 170 each hit.
-      assertEquals(
-        listOf(
-          Triple("any_loan_debt_average", "graduating_class", "loan_receiving"),
-          Triple("federal_loan_debt_average", "graduating_class", "federal_loan_borrowing"),
-          Triple("private_loan_debt_average", "graduating_class", "private_loan_borrowing"),
-        ),
-        query(
-          "SELECT measure, population, aid_scope FROM cohort_money_stats WHERE source = 'common_data_set' " +
-            "ORDER BY measure",
-        ) { rs -> Triple(rs.getString(1), rs.getString(2), rs.getString(3)) },
-      )
-      // The loan type rides in the POPULATION for a headcount, because
-      // cohort_population_counts' natural key carries no measure column: five
-      // borrower counts for one school-year would otherwise collide.
-      assertEquals(
-        listOf(
-          listOf("graduating_class", "1000", "reported"),
-          listOf("graduating_class_borrowers_any_loan", "600", "reported"),
-          listOf("graduating_class_borrowers_federal_loan", "550", "reported"),
-          listOf("graduating_class_borrowers_private_loan", "120", "reported"),
-          // D7: the corpus HAS the cell and we could not read it. OUR gap is a
-          // valueless ROW; a loan type no source carries gets no row at all.
-          listOf("graduating_class_borrowers_state_loan", null, "not_collected_by_us"),
-        ),
-        query(
-          "SELECT population, headcount, status FROM cohort_population_counts WHERE source = 'common_data_set' " +
-            "ORDER BY population",
-        ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3)) },
-      )
-      // Institutional loans are in no row at all: this filing does not report
-      // them, which is the school's silence and not a zero.
-      assertEquals(
-        emptyList(),
-        query(
-          "SELECT measure FROM cohort_money_stats WHERE measure = 'institutional_loan_debt_average'",
-        ) { it.getString(1) },
-      )
-    }
-
-@Test fun
-`a fractional average survives ingest, and no loan type is ever summed with another`()
-= runBlocking { seedColleges() loader.load(meritCsv, factorsCsv, deadlinesCsv,
-fixture("cds-aid-policy-borrowing-fixture.csv"))
-
-      // The decimal reader, end to end: '38217.2331' is what the corpus
-      // publishes and an integer reader would have dropped every one of them.
-      assertEquals(
-        listOf("38217.2331", "30000.5", "56129.9072"),
-        query(
-          "SELECT value FROM cohort_money_stats WHERE source = 'common_data_set' ORDER BY measure",
-        ) { it.getBigDecimal(1).stripTrailingZeros().toPlainString() },
-      )
-      // D3: the any-loan figures are the school's OWN H.501/H.511, never our
-      // addition of the others. The four typed sets overlap, so a sum would
-      // double-count every student who borrowed twice -- and here it would
-      // also exceed the graduating class.
-      assertEquals(
-        listOf("600"),
-        query(
-          "SELECT headcount FROM cohort_population_counts " +
-            "WHERE population = 'graduating_class_borrowers_any_loan'",
-        ) { it.getString(1) },
-      )
-      assertEquals(
-        emptyList(),
-        query(
-          // 550 + 120, and 38217.2331 + 30000.50 + 56129.9072: neither sum is
-          // anywhere in the store.
-          "SELECT headcount::text FROM cohort_population_counts WHERE headcount = 670 " +
-            "UNION ALL SELECT value::text FROM cohort_money_stats WHERE value = 124347.6403",
-        ) { it.getString(1) },
-      )
-    }
-
-@Test fun
-`a required form lands per applicant group, and OUR gap lands as a valueless row`()
-= runBlocking { seedColleges() val result = loader.load(meritCsv, factorsCsv,
-deadlinesCsv, aidPolicyCsv) assertEquals(4,
-result.aidPolicy.aidFormRequirements)
-
-      assertEquals(
-        listOf(
-          listOf("css_profile", "t", "reported", "domestic_first_year_aid_applicants", "H.803"),
-          listOf("fafsa", "t", "reported", "domestic_first_year_aid_applicants", "H.801"),
-          // D7: the corpus HAS the cell and could not extract it. That is our
-          // gap, and it is a row -- distinct from the school's silence, which
-          // is no row at all.
-          listOf("noncustodial_css_profile", null, "not_collected_by_us", "domestic_first_year_aid_applicants", "H.805"),
-        ),
-        query(
-          "SELECT a.aid_form, a.is_required, a.status, a.applicant_group, a.source_variable " +
-            "FROM aid_form_requirements a JOIN colleges c ON c.id = a.college_id " +
-            "WHERE c.ipeds_unit_id = 110100 ORDER BY a.aid_form",
-        ) { rs -> listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)) },
-      )
-
-      // A form this school's CDS does not list gets NO row -- never a stored
-      // "not required" (D5).
-      assertEquals(
-        emptyList(),
-        query(
-          "SELECT a.aid_form FROM aid_form_requirements a JOIN colleges c ON c.id = a.college_id " +
-            "WHERE c.ipeds_unit_id = 110100 AND a.aid_form = 'state_aid_form'",
-        ) { it.getString(1) },
-      )
-    }
-
-@Test fun
-`the loader refuses to write is_required FALSE, whatever the seed says`() =
-runBlocking { seedColleges() // D5, pinned at the loader rather than by a CHECK:
-the column can hold a // FALSE the day some source publishes one, but this
-seed's `false` means // the fetcher changed its mind about an unticked box, and
-storing it // would turn "not listed in this school's CDS" into a promise. val
-thrown = assertFailsWith<CdsSeedLoader.FormatException> { loader.load( meritCsv,
-factorsCsv, deadlinesCsv, fixture("cds-aid-policy-not-required-fixture.csv"), )
-} val defect = thrown.defect as CdsSeedLoader.Defect.UnknownCode
-assertEquals("value", defect.column) assertEquals("false", defect.value)
-assertEquals(listOf("true"), defect.allowed) assertEquals(0, withSession {
-count(it, "aid_form_requirements") }) }
-
-@Test fun
-`a fact the canonical store has no home for is a broken seed, not a dropped row`()
-= runBlocking { seedColleges() val thrown =
-assertFailsWith<CdsSeedLoader.FormatException> { loader.load(meritCsv,
-factorsCsv, deadlinesCsv, fixture("cds-aid-policy-unknown-fact-fixture.csv")) }
-val defect = thrown.defect as CdsSeedLoader.Defect.UnknownCode // Still the
-`fact` column, unchanged: the field-id check RFC 179 added // runs AFTER the
-fact lookup precisely so this row keeps failing on the // column an operator has
-to fix. This fixture carries `H.999` too, and a // check ordered the other way
-would report that instead. assertEquals("fact", defect.column)
-assertEquals("meets_full_need", defect.value) }
-
-@Test fun
-`a row published under another fact's field id is refused, so the CDS key set is closed at ingest`()
-= runBlocking { seedColleges() // `source_variable` is read verbatim out of the
-seed and has no CHECK on // any of the three tables it lands in, so this pair
-was the one // `source_variable` key set in the store that nothing closed. An //
-assurance tier is a function of that string (RFC 179), so a figure // filed
-under the wrong field id is a wrong claim about how hard a // number is --
-refused here rather than stored. val thrown =
-assertFailsWith<CdsSeedLoader.FormatException> { loader.load(meritCsv,
-factorsCsv, deadlinesCsv, fixture("cds-aid-policy-wrong-field-id-fixture.csv"))
-} val defect = thrown.defect as CdsSeedLoader.Defect.UnknownCode assertEquals(
-"source_variable (for fact [avg_need_met_percent])", defect.column, "the row's
-own fact is what decided the single accepted id, so the refusal names it", )
-assertEquals("H.211", defect.value, "the average GRANT's field id, on the
-average need MET row") assertEquals(listOf("H.209"), defect.allowed, "one
-allowed id, because the fact decides it") assertEquals(0, withSession {
-count(it, "cohort_money_stats") }) }
-
-@Test fun
-`every aid-policy fact names the field id it is published under, and the committed seed agrees`()
-{ // The pairing itself is no longer assertable: fact and field id are ONE //
-value ([CdsSeedLoader.AidPolicyCell]), so a fact without an id does not //
-compile. What is still worth walking is the committed seed, so the ids are //
-the ones the corpus actually carries rather than a plausible list. val pairs =
-CSVParser .parse( File(committedSeedDir, "aid_policy.csv"), Charsets.UTF_8,
-CSVFormat.DEFAULT .builder() .setHeader() .setSkipHeaderRecord(true) .build(),
-).use { records -> records.map { it.get("fact").trim() to
-it.get("source_variable").trim() }.toSet() } assertEquals(22, pairs.size, "22
-facts, each published under exactly one field id") assertEquals(
-CdsSeedLoader.AID_POLICY_CELLS.entries .map { it.key to it.value.fieldId }
-.toSet(), pairs, ) }
-
-@Test fun
-`the aid-policy rebuild is wholesale, so a re-run neither duplicates nor accumulates`()
-= runBlocking { seedColleges() val first = loader.load(meritCsv, factorsCsv,
-deadlinesCsv, aidPolicyCsv) val second = loader.load(meritCsv, factorsCsv,
-deadlinesCsv, aidPolicyCsv) assertEquals(first.aidPolicy, second.aidPolicy)
-assertEquals(3, withSession { count(it, "cohort_money_stats") }) assertEquals(2,
-withSession { count(it, "cohort_population_counts") }) assertEquals(4,
-withSession { count(it, "aid_form_requirements") }) }
-
-@Test fun `re-running the load is idempotent -- every row unchanged`() =
-runBlocking { seedColleges() loader.load(meritCsv, factorsCsv, deadlinesCsv,
-aidPolicyCsv) val second = loader.load(meritCsv, factorsCsv, deadlinesCsv,
-aidPolicyCsv)
-
-      assertEquals(0, second.meritAid.upserted)
-      assertEquals(0, second.meritAid.changed)
-      assertEquals(2, second.meritAid.unchanged)
-      assertEquals(2, second.admissionFactors.unchanged)
-      assertEquals(3, second.deadlines.unchanged)
-      assertEquals(2, withSession { count(it, "college_merit_aid") })
-      assertEquals(2, withSession { count(it, "college_admission_factors") })
-      assertEquals(3, withSession { count(it, "college_deadlines") })
-    }
-
-@Test fun `a changed value updates in place and advances updated_at`() =
-runBlocking { seedColleges() loader.load(meritCsv, factorsCsv, deadlinesCsv,
-aidPolicyCsv) val before = withSession { CdsAdmissionsDao.findMeritAid(it,
-collegeId(110100), 2024).getOrThrow() } assertNotNull(before)
-
-      Thread.sleep(5)
-      val result = loader.load(fixture("cds-merit-aid-changed-fixture.csv"), factorsCsv, deadlinesCsv, aidPolicyCsv)
-      assertEquals(1, result.meritAid.changed)
-      assertEquals(1, result.meritAid.unchanged)
-
-      val after = withSession { CdsAdmissionsDao.findMeritAid(it, collegeId(110100), 2024).getOrThrow() }
-      assertNotNull(after)
-      assertEquals(before.id, after.id)
-      assertEquals(17000, after.noNeedMeritAverageUsd)
-      assertTrue(after.updatedAt.isAfter(before.updatedAt))
-    }
-
-@Test fun `a missing or renamed header column is fatal and named`() {
-seedColleges() val error = assertFailsWith<CdsSeedLoader.FormatException> {
-runBlocking { loader.load(fixture("cds-merit-aid-bad-header-fixture.csv"),
-factorsCsv, deadlinesCsv, aidPolicyCsv) } } // Asserted on the structured
-defect, not the rendered sentence: the fields // are the payload, the message is
-one rendering of them. val defect = error.defect as
-CdsSeedLoader.Defect.HeaderMismatch // The RESOLVED path, not a basename:
-bin/ingest-colleges may hand the // loader a temp copy, and a basename cannot be
-resolved back to it.
-assertEquals(fixture("cds-merit-aid-bad-header-fixture.csv").path, defect.file)
-// `load` is handed bare Files, so the path IS the caller's argument here; //
-the ingest path below proves the operator's own spelling survives.
-assertEquals(defect.file, defect.sourceArg)
-assertEquals(listOf("freshmen_ft_total"), defect.missing)
-assertEquals(listOf("freshmen_ft"), defect.unexpected)
-assertEquals(CdsSeedLoader.MERIT_AID_COLUMNS, defect.expected) // Header
-assertion fires before any write: nothing landed from any file. assertEquals(0,
-withSession { count(it, "college_merit_aid") }) assertEquals(0, withSession {
-count(it, "college_admission_factors") }) }
-
-@Test fun `a rating outside the whitelist codes is fatal, not skipped`() {
-seedColleges() val error = assertFailsWith<CdsSeedLoader.FormatException> {
-runBlocking { loader.load(meritCsv,
-fixture("cds-admission-factors-junk-fixture.csv"), deadlinesCsv, aidPolicyCsv) }
-} val defect = error.defect as CdsSeedLoader.Defect.UnknownCode
-assertEquals(CdsSeedLoader.Table.ADMISSION_FACTORS, defect.table)
-assertEquals("rigor", defect.column) assertEquals("Very Important",
-defect.value) assertEquals(FactorRating.entries.map { it.value },
-defect.allowed) }
-
-@Test fun `a month with no day loads, and does not count as a concrete date`() =
-runBlocking { seedColleges() // Real CDS reporting: "applications close in
-March". Stored raw (never // interpolated to a day), but the launch-set gate
-counts only complete // month+day dates, so it must not inflate
-deadlinesWithDateCount. val result = loader.load(meritCsv, factorsCsv,
-fixture("cds-deadlines-half-date-fixture.csv"), aidPolicyCsv) assertEquals(1,
-result.deadlines.upserted)
-
-      val round = withSession { CdsAdmissionsDao.listDeadlines(it, collegeId(110100), 2024).getOrThrow() }.single()
-      assertEquals(CdsMonthDay(3, null), round.closing)
-      assertNull(round.notification)
-      assertEquals(1, result.coverage.deadlinesFlagsCount)
-      assertEquals(0, result.coverage.deadlinesWithDateCount)
-    }
-
-@Test fun `a day with no month is a broken seed, not a half-date`() {
-seedColleges() val error = assertFailsWith<CdsSeedLoader.FormatException> {
-runBlocking { loader.load(meritCsv, factorsCsv,
-fixture("cds-deadlines-day-only-fixture.csv"), aidPolicyCsv) } } val defect =
-error.defect as CdsSeedLoader.Defect.DayWithoutMonth
-assertEquals(CdsSeedLoader.Table.DEADLINES, defect.table)
-assertEquals("closing_day", defect.dayColumn) assertEquals("closing_month",
-defect.monthColumn) assertEquals(15, defect.day) }
-
-@Test fun
-`an impossible calendar date is named by file and line, not left to the DB`() {
-seedColleges() val error = assertFailsWith<CdsSeedLoader.FormatException> {
-runBlocking { loader.load(meritCsv, factorsCsv,
-fixture("cds-deadlines-impossible-date-fixture.csv"), aidPolicyCsv) } } // Feb
-30 is what a mangled extraction produces. Rejected HERE, with the // line and
-columns, rather than as an anonymous constraint violation. val defect =
-error.defect as CdsSeedLoader.Defect.NotACalendarDate
-assertEquals(CdsSeedLoader.Table.DEADLINES, defect.table) assertEquals(1L,
-defect.line) assertEquals("closing_month", defect.monthColumn)
-assertEquals("closing_day", defect.dayColumn) assertEquals(2, defect.month)
-assertEquals(30, defect.day) assertEquals(0, withSession { count(it,
-"college_deadlines") }) }
-
-@Test fun
-`a ragged row fails as a located seed defect, not a raw parser error`() {
-seedColleges() val error = assertFailsWith<CdsSeedLoader.FormatException> {
-runBlocking { loader.load(fixture("cds-merit-aid-short-row-fixture.csv"),
-factorsCsv, deadlinesCsv, aidPolicyCsv) } } // The header assertion proves the
-column NAMES; a truncated row would // otherwise escape as Commons CSV's
-unlocated IllegalArgumentException. val defect = error.defect as
-CdsSeedLoader.Defect.RowArity assertEquals(CdsSeedLoader.Table.MERIT_AID,
-defect.table) assertEquals(1L, defect.line)
-assertEquals(CdsSeedLoader.MERIT_AID_COLUMNS.size, defect.expectedCells)
-assertEquals(3, defect.cells) }
-
-@Test fun
-`a source_year outside the academic years the store admits is a located seed defect`()
-= runBlocking { seedColleges() // The type carries the SQL domain's range, so a
-bad year is refused // before any write -- and it is refused HERE, with the
-file, line and // column, rather than as an unlocated IllegalArgumentException
-from a // value class three frames down. val thrown =
-assertFailsWith<CdsSeedLoader.FormatException> {
-loader.load(fixture("cds-merit-aid-impossible-year-fixture.csv"), factorsCsv,
-deadlinesCsv, aidPolicyCsv) } val defect = thrown.defect as
-CdsSeedLoader.Defect.NotAnAcademicYear assertEquals("source_year",
-defect.column) assertEquals(1999, defect.value) assertEquals(1L, defect.line) }
-
-@Test fun `a DB fault mid-load names the seed row that provoked it`() {
-seedColleges() val error = assertFailsWith<CdsSeedLoader.LoadException> {
-runBlocking { loader.load(fixture("cds-merit-aid-bad-year-fixture.csv"),
-factorsCsv, deadlinesCsv, aidPolicyCsv) } } // A source_year inside the
-academic_year range but outside cds_source_year // (2015..2100) is refused by
-the DB, not by the loader's own cell checks -- // so this is the DB-fault path,
-and it must still carry the row's seed // coordinates rather than a bare
-"Database constraint violation". assertEquals(CdsSeedLoader.Table.MERIT_AID,
-error.table) assertEquals(1L, error.line) assertEquals(110100,
-error.ipedsUnitId) assertTrue(error.cause is
-ed.unicoach.db.dao.ConstraintViolationException, "${error.cause}") }
-
-## // --------------------------------------------------------------------------- // Provenance: the CDS load INSIDE the ingest run (RFC 148, D10) //
-
-private val cdsSources = CdsSources(source(meritCsv), source(factorsCsv),
-source(deadlinesCsv), source(aidPolicyCsv))
-
-/** One full ingest run over the Scorecard fixtures, with the CDS group
-
-- supplied or omitted — the only two shapes `bin/ingest-colleges` can produce.
-  */ private fun ingest(cds: CdsSources? = cdsSources):
-  CollegeScorecardLoader.IngestReport = runBlocking { scorecardLoader.ingest(
-  institution = source(fixture("scorecard-institutions-fixture.csv")), fields =
-  source(fixture("scorecard-fields-empty-fixture.csv")), aliasesFile =
-  source(fixture("college-aliases-fixture.json")), cds = cds, ) }
-
-@Test fun `the build row records the CDS sources and row counts`() { val report
-= ingest() val load = assertNotNull(report.cds, "the run carries the CDS result
-it loaded")
-
-    assertEquals(7, report.sources.size, "three Scorecard sources plus the four CDS seed files")
-    // Digested the way every other source is: the recorded sha256 is the file's,
-    // recomputed here independently rather than read back from the loader.
-    val recorded = report.sources.first { it.fileName == meritCsv.name }
-    val expectedDigest =
-      MessageDigest
-        .getInstance("SHA-256")
-        .digest(meritCsv.readBytes())
-        .joinToString("") { "%02x".format(it) }
-    assertEquals(expectedDigest, recorded.sha256)
-    assertEquals(meritCsv.length(), recorded.bytes)
-
-    val row = assertNotNull(withSession { buildRow(it, report.buildId) })
-    // 5: RFC 146 took 3 for the derived name-word rebuild, RFC 148's CDS bump
-    // was therefore 4, RFC 150's derived search index is the next number in
-    // the sequence, RFC 158's canonical money fill is 6, 7 is RFC 161's second
-    // canonical money source together with RFC 162's third, and RFC 169's
-    // published-price columns (with the phase reorder that feeds them) are 8.
-    assertEquals(
-      10,
-      row.methodVersion,
-      "RFC 195 took the method version to 10: the institution phase writes six percentile score bands, so " +
-        "`non_null` carries 16 keys, not 10 and not 28",
-    )
-    for (file in listOf(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv)) {
-      assertTrue(row.sources.contains(file.name), "sources names ${file.name}: ${row.sources}")
-    }
-    assertTrue(row.sources.contains(expectedDigest), "sources carries the CDS digest, not just the name: ${row.sources}")
-
-    // The counts in the row ARE the counts the load reported.
-    val rowsIngested = Json.parseToJsonElement(row.rowsIngested).jsonObject
-    val cds = rowsIngested.getValue("cds").jsonObject
-
-    fun upserted(table: String): Int =
-      cds
-        .getValue(table)
-        .jsonObject
-        .getValue("upserted")
-        .jsonPrimitive.int
-    // A SET, not a list: `sources`/`rows_ingested` are `jsonb`, which stores
-    // object keys in its own normalised order, so key order is not a property
-    // this row can carry and asserting it would only pin Postgres's ordering.
-    assertEquals(
-      setOf("merit_aid", "admission_factors", "deadlines", "aid_policy"),
-      cds.keys,
-      "one block per CDS seed file",
-    )
-    // The aid-policy block reports per DESTINATION table, because that seed
-    // has no table of its own: its rows are canonical money facts (RFC 170).
-    val aidPolicy = cds.getValue("aid_policy").jsonObject
-    assertEquals(load.aidPolicy.cohortMoneyStats, aidPolicy.getValue("cohort_money_stat_rows").jsonPrimitive.int)
-    assertEquals(
-      load.aidPolicy.cohortPopulationCounts,
-      aidPolicy.getValue("cohort_population_count_rows").jsonPrimitive.int,
-    )
-    assertEquals(load.aidPolicy.aidFormRequirements, aidPolicy.getValue("aid_form_requirement_rows").jsonPrimitive.int)
-    assertEquals(1, aidPolicy.getValue("skipped").jsonPrimitive.int)
-    val meritAid = cds.getValue("merit_aid").jsonObject
-    assertEquals(load.meritAid.upserted, upserted("merit_aid"))
-    assertEquals(2, upserted("merit_aid"))
-    assertEquals(1, meritAid.getValue("skipped").jsonPrimitive.int)
-    assertEquals(
-      listOf(999999),
-      meritAid.getValue("unmatched_ipeds_unit_ids").jsonArray.map { it.jsonPrimitive.int },
-      "the seed schools our snapshot lacks are named, not merely counted",
-    )
-    assertEquals(2, upserted("admission_factors"))
-    assertEquals(3, upserted("deadlines"))
-    // The rows really landed: the build row describes a load that committed.
-    assertEquals(2, withSession { count(it, "college_merit_aid") })
-    assertEquals(3, withSession { count(it, "college_deadlines") })
-
-}
-
-@Test fun `a Scorecard-only run still writes a build row`() { val report =
-ingest(cds = null) assertNull(report.cds, "the whole CDS half is one absent
-value") assertEquals(3, report.sources.size)
-
-    val row = assertNotNull(withSession { buildRow(it, report.buildId) })
-    // Absent, never zero: a run that never read a seed file must not report
-    // counts nobody measured.
-    assertFalse(row.rowsIngested.contains("\"cds\""), "absent means absent: ${row.rowsIngested}")
-    assertFalse(row.rowsIngested.contains("merit_aid"), row.rowsIngested)
-    assertEquals(0, withSession { count(it, "college_merit_aid") })
-
-}
-
-@Test fun `the CDS phase commits before name-words and provenance`() { // The
-one way to observe phase ORDER from outside: hide the provenance // table so the
-last phase fails, and read what had committed. Restored in // the finally; the
-suite is sequential and bin/test recreates the test // database per run.
-renameBuildTable("college_index_build", "college_index_build_hidden") try { val
-thrown = assertFailsWith<PartialIngestException> { ingest() } assertEquals(
-listOf("institutions", "fields", "aliases", "cds", "name-words",
-"canonical-money", "search-index"), thrown.committedPhases, )
-assertEquals("provenance", thrown.failedPhase) assertEquals(2, withSession {
-count(it, "college_merit_aid") }, "the cds phase committed before provenance
-ran") } finally { renameBuildTable("college_index_build_hidden",
-"college_index_build") } }
-
-/** The one DDL this suite issues, in one place: hiding `college_index_build`
-
-- is how phase ORDER is observed from outside the run. */ private fun
-  renameBuildTable( from: String, to: String, ) = withSession { session ->
-  session.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.execute()
-  } }
-
-@Test fun `a failed CDS load writes no build row at all`() { val buildRowsBefore
-= withSession { count(it, "college_index_build") } // A defect inside a ROW, not
-in a header: headers are asserted up front (see // below), so this is the
-failure that can only be found mid-load, and it is // the one that has to roll
-all three tables back as a unit. val thrown =
-assertFailsWith<PartialIngestException> {
-ingest(cdsSources.copy(admissionFactors =
-source(fixture("cds-admission-factors-junk-fixture.csv")))) }
-assertEquals("cds", thrown.failedPhase) assertTrue(thrown.cause is
-CdsSeedLoader.FormatException, "${thrown.cause}") // The CDS load is one
-transaction, so nothing from any of its three files // survives -- and, running
-before provenance, it left no build row to // describe a run that failed.
-assertEquals(0, withSession { count(it, "college_merit_aid") }) assertEquals(0,
-withSession { count(it, "college_admission_factors") }) assertEquals(0,
-withSession { count(it, "college_deadlines") }) assertEquals(buildRowsBefore,
-withSession { count(it, "college_index_build") }, "no build row describes a
-failed run") }
-
-@Test fun `a bad CDS header aborts the run before any phase commits`() { // The
-point of an up-front assertion: the CDS files are the last three of // ten, so
-if their headers were checked only when the cds phase ran, a // renamed column
-would be found AFTER institutions, fields, aliases and the // IPEDS phases had
-each committed their own transaction -- the half-written // snapshot the check
-exists to prevent. It must fail before phase one. val buildRowsBefore =
-withSession { count(it, "college_index_build") } val error =
-assertFailsWith<CdsSeedLoader.FormatException> { ingest( cdsSources.copy(
-meritAid = SourceFile(fixture("cds-merit-aid-bad-header-fixture.csv"),
-"s3://seed/merit-aid.csv"), ), ) } val defect = error.defect as
-CdsSeedLoader.Defect.HeaderMismatch // The defect carries (path, sourceArg,
-missing) like the other seven files // of the same up-front check: an s3://
-argument downloaded to a temp path // is only nameable through `sourceArg`.
-assertEquals(fixture("cds-merit-aid-bad-header-fixture.csv").path, defect.file)
-assertEquals("s3://seed/merit-aid.csv", defect.sourceArg)
-assertEquals(listOf("freshmen_ft_total"), defect.missing) // Not a
-PartialIngestException at all: nothing had committed to report. assertEquals(0,
-withSession { count(it, "colleges") }, "the institutions phase must not have
-run") assertEquals(0, withSession { count(it, "college_merit_aid") })
-assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") })
-}
-
-private data class BuildRow( val methodVersion: Int, val sources: String, val
-rowsIngested: String, )
-
-private fun buildRow( session: ed.unicoach.db.dao.SqlSession, id:
-java.util.UUID, ): BuildRow? = session .prepareStatement("SELECT method_version,
-sources::text, rows_ingested::text FROM college_index_build WHERE id = ?") .use
-{ stmt -> stmt.setObject(1, id) stmt.executeQuery().use { rs -> if (!rs.next())
-return null BuildRow(rs.getInt(1), rs.getString(2), rs.getString(3)) } }
-
-@Test fun `the committed seed's headers are the headers this loader expects`() {
-// The generator (bin/fetch-cds-seed) owns the header, this loader restates //
-it, and until now the pairing that matters -- committed seed versus loader //
-constants -- was never exercised: a renamed column stayed green in CI and //
-fatalled only at operator ingest. Content-agnostic: whatever is committed // is
-read and compared. // Driven off Table.entries with an exhaustive `when`: a seed
-file added to // the loader and forgotten here is a COMPILE error, which is what
-a fourth // file left out of a three-entry map cost -- aid_policy.csv's header
-// contract went unchecked until this was rewritten. for (table in
-CdsSeedLoader.Table.entries) { val (name, expected) = committedSeed(table)
-assertHeaderOf(name, expected) } // The source-url-status sidecar (RFC 200) is
-the fifth committed file and gets the // same treatment. It is NOT a
-[CdsSeedLoader.Table] -- it loads no table of // its own, it is a column on the
-document the other four already write -- // so it is named here rather than
-smuggled into that enum, where it would // have acquired a `rows_ingested` key
-for rows it never writes. Asserted // all the same: a renamed `checked_on` would
-otherwise load every verdict // dateless, which is the ONE pair the schema
-refuses. assertHeaderOf(CdsSeedLoader.LINK_STATUS_FILE,
-CdsSeedLoader.LINK_STATUS_COLUMNS) }
-
-/**
-
-- One committed seed table's filename and the header [CdsSeedLoader] expects
-- of it.
--
-- An exhaustive `when`, so a seed file added to the loader and forgotten here
-- is a COMPILE error -- which is what a fourth file left out of a three-entry
-- map cost: aid_policy.csv's header contract went unchecked until this was
-- rewritten. */ private fun committedSeed(table: CdsSeedLoader.Table):
-  Pair<String, List<String>> = when (table) { CdsSeedLoader.Table.MERIT_AID -> {
-  "merit-aid.csv" to CdsSeedLoader.MERIT_AID_COLUMNS }
-
-  CdsSeedLoader.Table.ADMISSION_FACTORS -> { "admission-factors.csv" to
-  CdsSeedLoader.ADMISSION_FACTORS_COLUMNS }
-
-  CdsSeedLoader.Table.DEADLINES -> { "deadlines.csv" to
-  CdsSeedLoader.DEADLINES_COLUMNS }
-
-  CdsSeedLoader.Table.AID_POLICY -> { "aid_policy.csv" to
-  CdsSeedLoader.AID_POLICY_COLUMNS } }
-
-/** The four seed TABLES' committed filenames, derived from the one `when`
-above. */ private val seedTableFiles: Set<String> get() =
-CdsSeedLoader.Table.entries .map { committedSeed(it).first } .toSet()
-
-private fun assertHeaderOf( name: String, expected: List<String>, ) { val header
-= File(committedSeedDir, name).useLines { it.first() }.split(",")
-assertEquals(expected, header, "db/seed/cds/$name header drifted from
-CdsSeedLoader") }
-
-@Test fun
-`every loan type's seed columns route to that loan type's own address, all five of them`()
-{ // The routing table is DERIVED from LoanType, so a swapped constant cannot //
-be written -- and this pins the derivation itself over all five members, // not
-the three a CSV fixture happens to carry. An institutional/state // swap was
-green locally and a production corrupt-value fault at read time.
-LoanType.entries.forEach { loanType -> assertEquals(
-CdsSeedLoader.AidPolicyFact.Count(loanType.borrowers),
-CdsSeedLoader.AID_POLICY_CELLS["${loanType.slug}_borrower_count"]?.fact,
-        "the borrower headcount of [${loanType.slug}] is filed under another
-cohort", ) assertEquals( CdsSeedLoader.AidPolicyFact.Stat( loanType.debtAverage,
-CohortPopulation.GRADUATING_CLASS, loanType.aidScope, ),
-CdsSeedLoader.AID_POLICY_CELLS["${loanType.slug}_debt_avg_usd"]?.fact,
-        "the average of [${loanType.slug}] is stored at a denominator that is
-not its own", ) } }
-
-@Test fun `the committed seed writes exactly the facts this loader routes`() {
-// The fetcher's fact vocabulary and the loader's routing table are two // lists
-of the same names in two languages. A fact the seed writes and the // loader
-does not route is a fatal ingest for the operator; a fact the // loader routes
-and the seed never writes is a destination nothing fills. // Parsed, not split
-on commas: a source_url carrying a comma would shift // every column and this
-test would compare the WRONG field -- a wrong // answer rather than an error.
-The module's own CSV reader is on the test // classpath for exactly this reason.
-val facts = CSVParser .parse( File(committedSeedDir, "aid_policy.csv"),
-Charsets.UTF_8, CSVFormat.DEFAULT .builder() .setHeader()
-.setSkipHeaderRecord(true) .build(), ).use { records -> records.map {
-it.get("fact").trim() }.toSet() }
-assertEquals(CdsSeedLoader.AID_POLICY_CELLS.keys, facts) }
-
-@Test fun `the committed seed matches its PROVENANCE manifest`() { //
-PROVENANCE.json exists so the seed is trustworthy and regenerable; its // hashes
-and row counts are a copy of what the CSVs own, so they are // recomputed and
-compared here. A hand edit or a half-regeneration fails. val manifest =
-Json.parseToJsonElement(File(committedSeedDir,
-"PROVENANCE.json").readText()).jsonObject val digests =
-manifest.getValue("sha256").jsonObject val rows =
-manifest.getValue("rows").jsonObject assertTrue(digests.isNotEmpty(),
-"PROVENANCE.json lists no sha256 entries") for ((name, digest) in digests) { val
-file = File(committedSeedDir, name) val actualDigest = MessageDigest
-.getInstance("SHA-256") .digest(file.readBytes()) .joinToString("") {
-"%02x".format(it) } assertEquals(digest.jsonPrimitive.content, actualDigest,
-"$name: sha256 differs from PROVENANCE.json")
-      // Data rows = every non-blank line but the header (the seed is CRLF, so
-      // count lines rather than newline bytes).
-      val dataRows = file.readLines().count { it.isNotBlank() } - 1
-      assertEquals(rows.getValue(name).jsonPrimitive.int, dataRows, "$name: row
-count differs from PROVENANCE.json") } }
-
-## // --------------------------------------------------------------------------- // RFC 200: the source-url-status sidecar, joined onto the document by url. //
-
-/** Every `(url, url_status, url_checked_on)` the load wrote, joined through the
-document. */ private fun writtenStatuses(): Map<String, Pair<String, String?>> =
-query( "SELECT d.url, d.url_status, d.url_checked_on::text FROM source_documents
-sd JOIN external_documents d ON d.id = sd.external_document_id", ) { rs ->
-rs.getString(1) to (rs.getString(2) to rs.getString(3)) }.toMap()
-
-/** The committed sidecar, read through the loader's own CSV reader, keyed by
-url. */ private fun committedStatuses(): Map<String, Pair<String, String>> =
-parseSeed(CdsSeedLoader.LINK_STATUS_FILE) { records -> records.associate {
-it.get("url").trim() to (it.get("url_status").trim() to
-it.get("checked_on").trim()) } }
-
-/** One committed seed file, read with the loader's reader. Never `split(",")`:
-a
-
-- quoted comma in an earlier field shifts every column after it. */ private fun
-  <T> parseSeed( name: String, read: (CSVParser) -> T, ): T = CSVParser .parse(
-  File(committedSeedDir, name), Charsets.UTF_8, CSVFormat.DEFAULT .builder()
-  .setHeader() .setSkipHeaderRecord(true) .build(), ).use(read)
-
-@Test fun
-`the committed sidecar answers for every url the committed seed cites, and for nothing else`()
-{ // THE JOIN KEY, made falsifiable. The sidecar is joined onto a document BY //
-URL, so a url the file does not mention silently loads as "we never // asked" --
-correct behaviour, and invisible. This is what stops a // half-swept corpus from
-shipping as one: the two sets must be EQUAL. // // The COUNT is not frozen: an
-operator re-runs bin/cds-link-sweep and the // verdicts change. What cannot
-change without a seed regeneration is that // the sidecar answers for exactly
-the corpus, which is asserted as a set // difference against the file rather
-than against a number. // // RFC 228 widened the sweep to BOTH url columns: the
-page AND its archive // mirror are documents, so the committed set is the union
-of the two // columns, not the source column alone. The one number that is a
-fact about // the CORPUS rather than about a checker run is 887 -- 441 pages
-plus 446 // mirrors, and every mirror is on www.collegedata.fyi. val pageUrls =
-seedTableFiles.sorted().flatMap { name -> parseSeed(name) { it.map { r ->
-r.get("source_url").trim() } } } val archiveUrls =
-seedTableFiles.sorted().flatMap { name -> parseSeed(name) { it.map { r ->
-r.get("archive_url").trim().ifEmpty { null } }.filterNotNull() } } val distinct
-= (pageUrls + archiveUrls).toSet() val sidecar = committedStatuses()
-
-    assertEquals(887, distinct.size, "the committed seed cites 887 distinct urls across both columns")
-    assertEquals(emptySet(), distinct - sidecar.keys, "committed urls the sidecar never swept")
-    assertEquals(emptySet(), sidecar.keys - distinct, "sidecar rows for urls the committed seed does not cite")
-    assertEquals(distinct.size, sidecar.size, "one sidecar row per distinct url")
-
-}
-
-@Test fun
-`every committed verdict is one of the three states, and every one of them says when it was reached`()
-{ // The pair the schema constrains (`source_documents_checked_when_known`), //
-checked over the file BEFORE an operator's ingest meets it: a verdict // with no
-day cannot be stored at all, so a sidecar that carried one would // fatal the
-whole CDS phase. // // Stronger than the schema on purpose: the checker writes a
-date on EVERY // row it produces, `unknown` included -- that is what makes an
-undated // unknown mean "we never asked" and a dated one mean "we asked and got
-no // usable answer" (RFC 182). A dateless row in this file would collapse the
-// two. val sidecar = committedStatuses() assertEquals( emptyList(),
-sidecar.entries.filter { (_, verdict) ->
-SourceUrlStatus.fromValue(verdict.first) == null }.map { it.key }, "a committed
-verdict no enum reads would fatal the ingest", ) assertEquals( emptyList(),
-sidecar.entries.filter { (_, verdict) -> verdict.second.isEmpty() }.map { it.key
-}, "a check that RAN always says when; an undated row would read as one that
-never ran", ) }
-
-@Test fun
-`a not_found url lands on its document with the day we looked, and an absent url is never-asked`()
-= runBlocking { seedColleges() // The fixture sidecar names ONE of the two
-matched filings and leaves the // other out, so both halves of the join are
-exercised by one load: the // verdict that drops an anchor, and the silence that
-keeps one. val result = loader.load( meritCsv, factorsCsv, deadlinesCsv,
-aidPolicyCsv, fixture("cds-source-url-status-fixture.csv"), )
-
-      assertEquals(
-        mapOf(
-          // Named in the sidecar: the verdict AND the day, because a verdict
-          // without a day is refused by the schema and by the row type.
-          "https://coastal.example.edu/cds-2024-25.pdf" to ("not_found" to "2026-09-13"),
-          // ABSENT from the sidecar: "we never asked" -- unknown, NO day, link
-          // kept. A default of `found` here would be us vouching for a file we
-          // never looked at.
-          "https://lakeside.example.edu/cds-2025-26.pdf" to ("unknown" to null),
-        ),
-        writtenStatuses(),
-      )
-
-      assertEquals(
-        CdsSeedLoader.LinkCheckSummary(
-          documents = 2,
-          found = 0,
-          notFound = 1,
-          unknownNeverAsked = 1,
-          unknownNoAnswer = 0,
-          statusRows = 1,
-          // The sidecar this run resolved, and that it WAS there: the ingest
-          // warning says which of "absent" and "present but empty" it met, so
-          // the summary has to carry the difference.
-          sidecarPath = fixture("cds-source-url-status-fixture.csv").path,
-          sidecarPresent = true,
-        ),
-        result.linkCheck,
-      )
-    }
-
-@Test fun `an unknown WITH a day is counted apart from an unknown with none`() =
-runBlocking { seedColleges() // THE DISTINCTION RFC 182 TURNS ON. Both rows
-below keep their link and // both say `unknown`; one is a checker that RAN and
-got no usable answer // (a 403), the other is a url nobody asked about. Summed
-into one // "unknown" count, a BROKEN checker -- an expired proxy, blocked
-egress -- // looks exactly like a stale sidecar, and the operator has no way to
-see // which run they are in. val result = loader.load( meritCsv, factorsCsv,
-deadlinesCsv, aidPolicyCsv,
-fixture("cds-source-url-status-dated-unknown-fixture.csv"), )
-
-      assertEquals(
-        mapOf(
-          "https://coastal.example.edu/cds-2024-25.pdf" to ("found" to "2026-09-13"),
-          "https://lakeside.example.edu/cds-2025-26.pdf" to ("unknown" to "2026-09-14"),
-        ),
-        writtenStatuses(),
-      )
-      assertEquals(1, result.linkCheck.unknownNoAnswer, "we asked, and got no usable answer")
-      assertEquals(0, result.linkCheck.unknownNeverAsked, "every document this run wrote was asked about")
-      assertEquals(1, result.linkCheck.found)
-      assertEquals(0, result.linkCheck.notFound)
-    }
-
-@Test fun `a run with no sidecar at all asks nobody, and says so`() =
-runBlocking { seedColleges() // The sidecar is the ONE seed file that may be
-missing, because an // absent check is a real state and the honest reading of it
-keeps every // link. It is not silently tolerated: every document is counted as
-// never-asked, which is the number an operator reads to discover that //
-bin/cds-link-check was never run. val absent =
-File(File.createTempFile("cds-no-sidecar", ".dir").also { it.delete() }.path,
-"absent.csv") val result = loader.load(meritCsv, factorsCsv, deadlinesCsv,
-aidPolicyCsv, absent) assertFalse(absent.exists(), "this run has no sidecar at
-all")
-
-      assertEquals(0, result.linkCheck.statusRows)
-      assertEquals(2, result.linkCheck.unknownNeverAsked)
-      assertEquals(0, result.linkCheck.unknownNoAnswer)
-      assertEquals(0, result.linkCheck.found)
-      assertEquals(0, result.linkCheck.notFound)
-      assertEquals(
-        listOf("unknown" to null, "unknown" to null),
-        writtenStatuses().values.toList(),
-        "no verdict means no day, and no day means we never asked",
-      )
-    }
-
-@Test fun `a sidecar verdict with no day is refused, by file and line`() {
-seedColleges() val dateless = File.createTempFile("cds-dateless-status", ".csv")
-dateless.writeText(
-"source_url,source_url_status,checked_on,pass_one,pass_two\n" +
-"https://coastal.example.edu/cds-2024-25.pdf,not_found,,404,404\n", ) val error
-= assertFailsWith<CdsSeedLoader.FormatException> { runBlocking {
-loader.load(meritCsv, factorsCsv, deadlinesCsv, aidPolicyCsv, dateless) } } val
-defect = assertIs<CdsSeedLoader.Defect.SidecarStatusWithoutDate>(error.defect)
-assertEquals("not_found", defect.status) assertEquals(1L, defect.line)
-assertEquals(dateless.path, defect.file) // Refused BEFORE any document was
-written, like every other header and cell // defect: a half-loaded seed is the
-thing this loader exists to prevent. assertEquals(0, withSession { count(it,
-"source_documents") }) } }
+# RFC 228 — One home for every citation
+
+> **Reconstruction note.** The document originally committed here was lost. The
+> commit that landed it — `646525d2`, "rfc: 228 — one home for every citation",
+> 2026-09-16 — recorded a `deno fmt`-mangled copy of
+> `college/src/test/kotlin/ed/unicoach/college/CdsSeedLoaderTest.kt` instead of
+> the RFC text; its first line was `package ed.unicoach.college`. No other copy
+> of the original exists anywhere in git, so there was nothing to restore. This
+> text was **reconstructed on 2026-09-25** from the code that landed as RFC 228
+> (`main@adc49582`) and the brief 0010 ledger line for the slice. It is
+> therefore a faithful description of **what shipped**, not the document the
+> author wrote at the time. Where the author's reasoning is not recoverable from
+> the committed tree, this document says nothing rather than guessing: it
+> records no alternatives considered, no rejected options, and no decision
+> attributed to anyone that the tree does not itself state.
+
+**Slice:** `test/05.2/one-home-for-every-citation` (brief 0010, D26) **Lane:** A
+(rfc) — three migrations, one script renamed and refolded, one new schema guard.
+**Base:** `main@a63e3f9a`. **Landed:** `main@adc49582`, 2026-09-16.
+
+## Problem
+
+Brief 0010 D26 settled where a cited url lives: _"We have the need to store
+links to external documents... Let's model this correctly in a separate table:
+external_documents... We'll need to do a cleanup slice to move all schema that
+points to external documents to use this new table."_ `test/05.1` built the
+table (RFC 213, `db/schema/create-external-documents.sql`) and RFC 220 made it
+strict — `url_checked_on` is NOT NULL, so a citation carries its evidence or it
+cannot be stored. This slice is the cleanup D26 named.
+
+Three owners still declared their own url columns at the base:
+
+- `source_documents` — `source_url`, `archive_url`, plus RFC 200's link-rot pair
+  `source_url_status` / `source_url_checked_on`. It was itself the first attempt
+  to de-duplicate a url (RFC 170 D13): three CDS fact tables carried their own
+  `(source_url, archive_url)` pair and `0087` moved them onto one college-keyed
+  row.
+- `policy_parameters` — a bare `source_url TEXT NOT NULL` from `0077`, with **no
+  reading date at all**.
+- `admission_test_administrations` — `dates_source_url TEXT NOT NULL` and
+  `score_release_source_url TEXT NULL` (RFC 197), with two https-only CHECKs.
+
+And the sweep that establishes whether a link still resolves had a defect that
+the column names made invisible: `bin/cds-link-check` (RFC 200) harvested a
+column **literally named `source_url`**, so the CDS corpus's **446 mirror
+addresses had never been asked about once**. It also carried its own copy of the
+fetching code beside `bin/check-link`, which exists to do exactly that fetching.
+
+## Detailed Design
+
+### 1. `source_documents` adopts `external_documents`
+
+`db/schema/adopt-external-documents-for-source-documents.sql`. Two nullable
+foreign keys are added, the rows are linked, the keys are tightened, and the old
+columns go:
+
+- `external_document_id UUID NOT NULL REFERENCES external_documents(id)` — the
+  college's own Common Data Set filing.
+- `archive_external_document_id UUID NULL REFERENCES external_documents(id)` —
+  the tidy third-party mirror (`www.collegedata.fyi`) where one exists.
+- `source_documents_archive_is_not_the_source_check` — a mirror may not be the
+  page.
+- `source_url`, `archive_url`, `source_url_status`, `source_url_checked_on` and
+  the `source_documents_checked_when_known` CHECK are dropped. There is one home
+  for "is this url still served", and it is not here.
+
+Dropping `source_url` takes `source_documents_source_url_nonempty_check` with
+it. The empty-url refusal does not disappear, it moves earlier: it is now
+`NewExternalDocument`'s own row type, which says "external document url is
+empty" before a statement is ever sent — `CanonicalMoneyDaoTest` follows the
+message to its new wording.
+
+**It refuses; it does not invent.** The migration's own words, and the rule RFC
+220 set: every document it creates carries the evidence the row it came from
+already holds.
+
+- A page with no recorded check cannot become a document, because
+  `url_checked_on` is NOT NULL. The migration counts
+  `source_url_checked_on IS NULL` first and raises `P0001` naming the count and
+  the tool that produces the missing answer, rather than writing a date nobody
+  established. The committed corpus has none — the committed sweep covers all
+  441 pages.
+- The page insert is
+  `SELECT DISTINCT ON (source_url) ... ORDER BY source_url,
+  source_url_checked_on DESC`,
+  because one filing backs several colleges (one University of Washington filing
+  backs three campuses) and the newest check of a url is the one that is true
+  about it.
+- **The mirror is re-linked only where somebody has already asked about it.**
+  Mirrors are linked to a document that already EXISTS; for the rest the
+  nullable column is left NULL and a `RAISE NOTICE` says how many, naming
+  `db/seed/cds/link-status.csv` as what returns them at the next ingest.
+
+### 2. `policy_parameters` adopts it, on five hand-swept verdicts
+
+`db/schema/adopt-external-documents-for-policy-parameters.sql`.
+`source_document_id UUID NOT NULL REFERENCES external_documents(id)` replaces
+`source_url`.
+
+`0077` stored no reading date, so the evidence had to be **established** rather
+than carried across. Five literal `external_documents` rows are inserted,
+`found` on `DATE '2026-09-17'` — one sweep run by hand with
+`bin/check-link -f <the five urls>` and the same again with `-g`, both passes
+answering 200 for all five. The migration records the commands in its own
+header. They are literals rather than a generated seed because five hand-typed
+rows in a migration are reviewable in exactly the diff a CSV would be, and a
+generator for five rows is a mechanism for its own sake (D28).
+
+Any row the five literals do not cover is **refused**, by count, with `P0001`
+and the instruction to sweep it and re-run: a date is established by a sweep,
+never by this migration.
+
+### 3. The testing calendar adopts it
+
+`db/schema/adopt-external-documents-for-test-calendar.sql`. `dates_document_id`
+(NOT NULL) and `score_release_document_id` (NULL) replace the two url columns.
+
+**The evidence is the row's own reading date**, on the rule RFC 220 settled for
+every cited corpus: a person opened that page on `checked_on` and typed the row
+from what it served, so the page was FOUND on that day. The migration says, in
+as many words, that this is the same statement
+`ExternalDocumentsDao.citationIds` already makes for
+`admission_test_state_programmes` (RFC 213) and `fafsa_filing_deadlines` (RFC
+215), and that a second rule here would be a second answer to a settled
+question. No network, no sweep, no invention.
+
+The paired rule RFC 197 wrote is carried over unchanged, as
+`admission_test_administrations_score_release_document_check`: a score-release
+date and the page it was read from arrive together or not at all.
+
+The two https-only CHECKs are **not** replaced. `external_documents` refuses a
+url with no scheme and accepts `http://` as well as `https://`, on Ian's call at
+the RFC 208 gate ("prefer https, but not block insecure"). So the calendar stops
+being the one corpus that refuses an insecure publisher page; the general rule
+arrives and no guarantee is lost.
+
+`db/schema/ORDER` gains the three files in dependency order: source documents,
+policy parameters, test calendar.
+
+### 4. `bin/cds-link-check` becomes `bin/cds-link-sweep`, and fetches through `bin/check-link`
+
+The old 524-line script is deleted and replaced by 349 lines that **judge and do
+not fetch**. `bin/check-link` prints one HTTP status per url and refuses to read
+the codes; this script is the reader.
+
+- It harvests **both** `source_url` and `archive_url` from every seed CSV in the
+  directory — the defect this slice exists to fix — over the DISTINCT urls: the
+  four committed seed files hold 5,048 rows but 887 documents.
+- RFC 200's two-pass judgement is kept, and the two passes now differ in the two
+  dimensions that actually moved a verdict when RFC 200 measured them (Michigan
+  State 404 → 206, Saint Joseph 403 → 404): pass one is HEAD with a generic
+  agent, pass two is GET with a browser agent.
+- The vocabulary is unchanged: `found` is 2xx in either pass, `not_found` is 404
+  or 410 in BOTH, everything else is `unknown` **with the date we asked**. A url
+  the file does not mention is "we never asked".
+- The plausibility bar stays here rather than in the fetcher, because
+  `check-link` exits 0 on a machine with no egress having printed `000` for
+  everything. Nothing found at all, or more than `DEAD_SHARE_CEILING` (20%)
+  gone, and **nothing is written** — writing nothing keeps every link.
+- `checked_on` is today in `America/New_York`, so a sweep run at 21:00 Pacific
+  is not dated tomorrow. (This is why §2's verdicts are dated 2026-09-17 while
+  the commit's own timestamp is 2026-09-16 23:43 Pacific.)
+- It is stdlib-only python3, parses options with stdlib `getopt` in the
+  short-only `bin/` grammar, and writes **nothing to stdout** on a normal run:
+  its product is a file, so even the closing summary is a diagnostic on stderr.
+
+`pass_one` and `pass_two` stay in the output and no verdict is derived from
+them. They are the evidence for the verdict beside them, for a human re-reading
+the committed file without re-fetching 887 addresses.
+
+### 5. `bin/check-link -g`: GET and never HEAD
+
+One new flag, and the only change to the fetcher's own judgement-free contract:
+with `-g` it sends GET outright instead of HEAD-with-fallback, because a second
+pass that changes the METHOD is the difference between a host refusing us and a
+document that is gone. `GETOPT_SPEC` becomes `hgf:u:c:t:`; the help documents
+it; `force_get` is threaded through `check` and `statuses_for`.
+
+### 6. The sidecar is renamed, and the loader sweeps both urls
+
+`db/seed/cds/source-url-status.csv` becomes `db/seed/cds/link-status.csv`, and
+its header becomes `url,url_status,checked_on,pass_one,pass_two` — the file is
+no longer about one column of one table.
+
+`CdsSeedLoader` follows, name for name: `SOURCE_URL_STATUS_FILE` →
+`LINK_STATUS_FILE`, `SOURCE_URL_STATUS_COLUMNS` → `LINK_STATUS_COLUMNS`,
+`sourceUrlStatusCsv` → `linkStatusCsv`, and the sidecar is still defaulted from
+the aid-policy file's own directory rather than made a fifth required argument.
+The defect vocabulary moves with it (`Defect.SidecarUnknownStatus` now reports
+`[url_status]`).
+
+The join is still **by url**, and now for both addresses: `readFiling` looks the
+mirror up in the same sidecar and passes its verdict down. A url the sidecar
+does not mention is `unknown` with no date — and under RFC 220's strict table is
+simply **not stored**: the fact row is refused rather than a citation being
+invented.
+
+`NewSourceDocument` therefore gains `archiveUrlStatus` and
+`archiveUrlCheckedOn`, stated rather than defaulted for the same reason
+`sourceUrlStatus` is (a verdict nobody reached must never look like one that
+passed, RFC 182), with the paired `require` the page's pair already had.
+
+### 7. The write paths resolve the citation first
+
+- `SourceDocumentsDao.upsert` upserts the page and, where there is one, the
+  mirror through `ExternalDocumentsDao`, inside the caller's transaction, then
+  writes the two ids. It is wrapped in `runCatching` so an unevidenced citation
+  is a `Result` failure and the loader's row-location wrapper still sees it. A
+  private `checkedDate` refuses the one case RFC 220 made unrepresentable — a
+  verdict with no date — with `IllegalStateException` naming the url: a defect
+  surfaced, never a date backfilled.
+- `AdmissionTestCalendarDao.upsert` resolves through
+  `ExternalDocumentsDao.citationIds`, which **cites and never sweeps**, so this
+  path cannot overwrite a known link status with "we never asked" (RFC 182).
+
+### 8. The read paths keep their shape, so nothing above the DAOs learns that storage moved
+
+Every reader re-projects the urls under the names its mapper already used:
+
+- `SourceDocumentJoin.CITATION_COLUMNS` becomes
+  `src.url AS source_url, arc.url AS archive_url, src.url_status AS
+  source_url_status`,
+  and `withDocumentById` adds the inner join on the page and a LEFT join on the
+  mirror, aliased `src` and `arc`.
+- `BorrowingDao` adds the same two joins to its own CTE query.
+- `AdmissionTestCalendarDao.list` joins `external_documents` twice — inner for
+  the NOT NULL dates page, LEFT for the score-release page — and aliases
+  `dates_source_url` / `score_release_source_url`; the `RETURNING` clause of the
+  upsert does the same with two scalar subqueries.
+- `PolicyParametersDao.listAll` / `listForAwardYear` select
+  `(SELECT e.url FROM external_documents e WHERE e.id = p.source_document_id)
+  AS source_url`.
+- `CdsRead.decodeSourceUrlStatus`'s corrupt-value message now names
+  `external_documents.url_status`, and `SourceUrlStatus`'s own doc comment says
+  it backs that column.
+
+### 9. `bin/test-calendar-seed` writes the shape the cycle belongs to
+
+The committed seed for cycle `2026-27` applies BEFORE
+`adopt-external-documents-for-test-calendar.sql` drops the two url columns, so
+it must go on being generated exactly as it landed. The generator names the
+boundary once, as `LEGACY_URL_COLUMN_SEED_THROUGH_CYCLE='2026-27'`, and emits
+the old two-url INSERT for a cycle at or below it and the post-RFC 228 shape for
+every later cycle: an `external_documents` upsert of the cited urls (`found`, on
+the row's own `checked_on`) followed by a fact INSERT citing them by id. Both
+shapes are built in the same single awk pass and chosen in the `END` block, so
+the boundary is a decision and not a fork in the reading. Moving the constant
+would rewrite a landed migration.
+
+### 10. The guard: only `external_documents` declares a url column
+
+`NoUrlColumnOutsideExternalDocumentsTest` asks `information_schema.columns` for
+every public column whose name matches `%url%` or `%link%` and compares the set
+against a three-entry allowlist, each entry carrying its reason
+(`external_documents.url`, `.url_status`, `.url_checked_on`). A table that
+declares its own url column fails the build by name, with the instruction to
+replace it with a foreign key or justify it in the list.
+
+It is held in both directions, and its ability to fail is **proven, not
+asserted**:
+
+- the allowlist is checked against the schema too, so a permit for a column that
+  went away must be deleted rather than left behind;
+- `external_documents.url` must be in the set, so a typo in the pattern cannot
+  pass by seeing nothing;
+- and a probe table with a `source_url` column is created and shown to be named
+  inside an always-rolled-back transaction.
+
+## Files Modified
+
+| Path                                                                | Change                                                                                            |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `db/schema/adopt-external-documents-for-source-documents.sql`       | NEW. Two keys, the refusal, the DISTINCT ON page insert, the mirror notice, four dropped columns. |
+| `db/schema/adopt-external-documents-for-policy-parameters.sql`      | NEW. One key, five hand-swept literals, the unlinked-row refusal.                                 |
+| `db/schema/adopt-external-documents-for-test-calendar.sql`          | NEW. Two keys, the carried-over paired CHECK, three dropped CHECKs.                               |
+| `db/schema/ORDER`                                                   | Three appended lines, in dependency order.                                                        |
+| `bin/cds-link-check`                                                | DELETED (524 lines).                                                                              |
+| `bin/cds-link-sweep`                                                | NEW (349 lines). Sweeps both url columns, fetches through `bin/check-link`, keeps the two passes. |
+| `bin/check-link`                                                    | `-g`: GET and never HEAD.                                                                         |
+| `bin/test-calendar-seed`                                            | `LEGACY_URL_COLUMN_SEED_THROUGH_CYCLE`; the post-RFC 228 seed shape for later cycles.             |
+| `db/seed/cds/source-url-status.csv`                                 | DELETED (441 pages).                                                                              |
+| `db/seed/cds/link-status.csv`                                       | NEW, COMMITTED SWEEP. 887 documents: 861 found, 13 not_found, 13 unknown, every row dated.        |
+| `college/src/main/kotlin/ed/unicoach/college/CdsSeedLoader.kt`      | The sidecar's new name and header; the mirror's verdict read and passed down.                     |
+| `db/src/main/kotlin/ed/unicoach/db/models/SourceDocument.kt`        | `archiveUrlStatus`, `archiveUrlCheckedOn`, and the paired `require`.                              |
+| `db/src/main/kotlin/ed/unicoach/db/models/SourceUrlStatus.kt`       | Doc: it backs `external_documents.url_status`.                                                    |
+| `db/src/main/kotlin/ed/unicoach/db/dao/SourceDocumentsDao.kt`       | Upserts page and mirror through `ExternalDocumentsDao`; `checkedDate` refuses a dateless verdict. |
+| `db/src/main/kotlin/ed/unicoach/db/dao/AdmissionTestCalendarDao.kt` | `citationIds` on the write path; the two joins and aliases on the read path.                      |
+| `db/src/main/kotlin/ed/unicoach/db/dao/PolicyParametersDao.kt`      | `source_url` re-projected from `external_documents`.                                              |
+| `db/src/main/kotlin/ed/unicoach/db/dao/SourceDocumentJoin.kt`       | `CITATION_COLUMNS` aliases `src`/`arc`; `withDocumentById` adds both joins.                       |
+| `db/src/main/kotlin/ed/unicoach/db/dao/BorrowingDao.kt`             | The same two joins.                                                                               |
+| `db/src/main/kotlin/ed/unicoach/db/dao/CdsRead.kt`                  | The corrupt-value message names the new column.                                                   |
+| `bin/scripts-tests`                                                 | The sweep section renamed; the archive-column assertion; the `-g` method counters.                |
+| tests and fixtures                                                  | below                                                                                             |
+
+No coach copy changed, so no prompt version was cut.
+
+## Tests
+
+- **`SourceDocumentsAdoptionTest`** (NEW, 3 tests) — the adoption, run against
+  the real database. **The refusals are staged backwards**, inside one
+  always-rolled-back transaction: the migration cannot be reached forwards any
+  more, so the table is returned to its pre-migration shape, given the row the
+  migration exists to refuse, and then the **committed migration file is
+  executed verbatim** — a copy of the SQL in the test would prove only that the
+  copy refuses. The three: a page with no recorded check refuses the migration
+  _by name and count_; a mirror nobody asked about is left unlinked and never
+  dated, and is not stored at all; the migrated table enforces its new shape
+  (NOT NULL on `external_document_id`, and
+  `source_documents_archive_is_not_the_source_check`).
+- **`CitationAdoptionSchemaTest`** (NEW, 3 tests) — the other two adoptions, as
+  the database now sees them: the calendar refuses a score release with no page
+  and a page with no release; a calendar row citing no dates page is refused by
+  NOT NULL (`23502`); a federal parameter with no `source_document_id` cannot be
+  written, and one with a real citation can.
+- **`NoUrlColumnOutsideExternalDocumentsTest`** (NEW, 2 tests) — §10: the guard,
+  and the proof that the guard can fail.
+- **`CdsLinkCheckSidecarPinTest`** — the script and the loader are one fact in
+  two languages, so the pin follows the rename: `OUTPUT_NAME` against
+  `CdsSeedLoader.LINK_STATUS_FILE`, `OUTPUT_HEADER` against
+  `LINK_STATUS_COLUMNS` _in order_, and the sidecar's absolute resolution beside
+  the seed.
+- **`CdsSeedLoaderTest`** — two names change to say what RFC 220 made true: a
+  `not_found` url still lands on its document with the day we looked, and a run
+  with no sidecar at all now _refuses to store a citation_ rather than asking
+  nobody and carrying on. Both resource fixtures move to the new header and gain
+  the mirror row; `college/src/test/resources/link-status.csv` is added.
+- **`bin/scripts-tests`** — the sweep's section is renamed and its fixture seeds
+  now carry an `archive_url` column; the new assertion is that **the sweep
+  harvests `archive_url` too, not only `source_url`**. The three refusals (dead
+  share, all-404, nothing listening), the empty stdout, the exact header, the
+  url-ordered rows and the `-h` text are all kept against the local fixture
+  server. For `-g`, the fixture server counts methods: a `-g` run sends one GET
+  and no HEAD, and without `-g` HEAD is still tried first.
+- **Fixture updates** — `MoneyVocabularyLoaderTest`, `PolicyParametersDaoTest`,
+  `FederalAidPolicyServiceTest`, `CoachingTestDb`, `BorrowingDaoTest`,
+  `CanonicalMoneyDaoTest`, `CdsAdmissionsDaoTest`: every fixture that wrote a
+  url now writes an `external_documents` row and cites it. `CoachingTestDb`
+  states `FOUND` with a date for both urls, because a fixture is not exempt from
+  RFC 220.
+
+Executed on the landing run, as recorded in the brief 0010 ledger: **3,591
+tests, 0 failures; 1,142 shell assertions; 45 calendar-seed assertions.**
+
+## The operator step
+
+One, and it is committed rather than described: a sweep of all 887 cited urls,
+dated 2026-09-17 — **861 found, 13 not_found, 13 unknown**, every row carrying
+its date and its two raw pass codes, in `db/seed/cds/link-status.csv`. Of those
+887, **446 are mirror addresses that had never been checked once** before this
+slice.
+
+## What this slice does not do
+
+- It does not touch the other tables D26 counted. The three CDS fact tables
+  (`0054`) and the canonical money tables (`0083`) already cite
+  `source_documents` by `source_document_id` rather than carrying urls, and
+  `admission_test_state_programmes` landed on `external_documents` with RFC 213
+  (`db/schema/adopt-external-documents-for-state-programmes.sql`). After this
+  slice the guard in §10 proves the set is closed.
+- It adds no `document_captures` table and no per-owner join table. D26 named
+  both; this slice is the url migration only.
+- It changes no coach copy and cuts no prompt version.
+
+## Where the code has moved since
+
+`CdsSeedLoader.kt` was substantially reworked by RFC 239 (`main@a53b7be3`, "a
+score is money"), which also edited `CdsSeedLoaderTest` and
+`AdmissionTestCalendarDaoTest`. The sidecar contract this RFC landed survived
+that rework unchanged — `LINK_STATUS_FILE`, `LINK_STATUS_COLUMNS` and the
+five-column header are still what the loader asserts and what
+`CdsLinkCheckSidecarPinTest` pins. Nothing else this RFC touched has been
+changed since.
+
+## What this document cannot say
+
+Recoverable from the tree: every shape above, every refusal, every test, and the
+reasoning the migrations and doc comments state in their own words. **Not**
+recoverable, and therefore absent: which alternatives the author weighed (a
+polymorphic owner column, a generated seed for §2's five rows, and keeping the
+mirror unlinked permanently are all _mentioned_ in committed comments, but
+whether they were ever live options is not something the code can tell us); what
+the approval gate asked for beyond the RFC 208 https call the test-calendar
+migration cites; and the implementation plan the original document would have
+carried.
