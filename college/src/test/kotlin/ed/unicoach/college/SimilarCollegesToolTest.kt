@@ -1018,8 +1018,11 @@ class SimilarCollegesToolTest {
           .map { it.jsonObject }
           .single { it["name"]!!.jsonPrimitive.content == "Bates College" }
       val searched =
-        ((CollegeSearchTool(CollegeSearchService(database), codebook).execute(buildJsonObject { }, "ME"))["colleges"] as JsonArray)
-          .map { it.jsonObject }
+        (
+          (CollegeSearchTool(CollegeSearchService(database), codebook).execute(buildJsonObject { }, "ME", emptySet()))[
+            "colleges",
+          ] as JsonArray
+        ).map { it.jsonObject }
           .single { it["name"]!!.jsonPrimitive.content == "Bates College" }
 
       assertEquals(
@@ -1490,6 +1493,167 @@ class SimilarCollegesToolTest {
     }
 
   // ---------------------------------------------------------------------------
+  // The student's own field of study (RFC 245)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The acceptance universe plus a taxonomy and three peers in three DIFFERENT
+   * census states: one that teaches the subject this student stored, one whose
+   * census names only another subject, and one that reports no census at all.
+   *
+   * The three states are the premise of both cases below. A fixture where every
+   * peer looked alike on the stored subject would let a ranking that read it
+   * still return the same order, and the first test would pass for no reason.
+   */
+  private fun seedFieldUniverse(): Pair<College, SimilarCollegesTool> {
+    val anchor = seedUniverse()
+    seedSubject()
+    seedProgram(ANCHOR, "230101")
+    seedProgram(PEER_A, "230101")
+    seedProgram(LARGE_PRIVATE, "260101")
+    // A tool of its OWN, on a codebook loaded AFTER the taxonomy rows exist, as
+    // `CollegeSearchToolTest` does for the same reason: the label can only judge
+    // a stored subject the ACTIVE taxonomy still carries, and this suite's
+    // shared `tool` holds a codebook snapshot taken before `seedSubject`.
+    return anchor to
+      SimilarCollegesTool(
+        CollegeSearchService(database),
+        runBlocking { Codebook.load(database).getOrThrow() },
+      )
+  }
+
+  private fun idsOf(result: JsonObject): List<String> =
+    (result["colleges"] as JsonArray).map { it.jsonObject["college_id"]!!.jsonPrimitive.content }
+
+  private fun distancesOf(result: JsonObject): List<Double?> =
+    (result["colleges"] as JsonArray).map { it.jsonObject["distance"]!!.jsonPrimitive.doubleOrNull }
+
+  private fun labelsByName(result: JsonObject): Map<String, String?> =
+    (result["colleges"] as JsonArray).associate { row ->
+      row.jsonObject["name"]!!.jsonPrimitive.content to
+        row.jsonObject[TeachesYourField.WIRE_KEY]?.jsonPrimitive?.content
+    }
+
+  /**
+   * THE SLICE'S SECOND ACCEPTANCE CRITERION: a stored field does not re-rank a
+   * peer list.
+   *
+   * Same anchor, same axes, run twice -- once for a student with no stored
+   * subject and once for a student whose stored subject OVERLAPS some of the
+   * candidates and not others. The ordered `college_id` list, every `distance`
+   * and `axes_used` are equal, because the stored subject reaches this answer
+   * after the ranking is decided and labels it.
+   *
+   * IT IS NOT VACUOUS: the label distribution is asserted first, so the fixture
+   * cannot rot into one where every peer looks the same on the stored subject.
+   * An implementation that fed the subject into the distance, or that filtered
+   * the candidate set by it, returns a different list here.
+   */
+  @Test
+  fun `a stored field re-ranks no peer, moves no distance and adds no axis`() =
+    runBlocking {
+      val (anchor, fieldTool) = seedFieldUniverse()
+
+      val unlabelled = fieldTool.execute(anchorInput(anchor), null, emptySet())
+      val labelled = fieldTool.execute(anchorInput(anchor), null, setOf("literature"))
+      assertNull(unlabelled["error"], "$unlabelled")
+      assertNull(labelled["error"], "$labelled")
+
+      // The PREMISE: the three peers are in three different states on this
+      // student's own subject, so there is something a ranking could reorder.
+      assertEquals(
+        mapOf(
+          "Bates College" to TeachesYourField.YES,
+          "Colby College" to TeachesYourField.UNKNOWN,
+          "Metro University" to TeachesYourField.NO,
+        ),
+        labelsByName(labelled),
+        "one yes, one unjudgeable and one judged no: $labelled",
+      )
+
+      // The claim.
+      assertEquals(idsOf(unlabelled), idsOf(labelled), "the same peers, in the same order")
+      assertEquals(distancesOf(unlabelled), distancesOf(labelled), "every distance is the same number")
+      assertEquals(axesUsed(unlabelled), axesUsed(labelled), "the same axes, in the same order")
+
+      // The standing assertion, said here as well because this is the test that
+      // would otherwise pass while `subjects` had quietly joined the bare ask:
+      // adding the axis to the defaults reweights every distance above.
+      assertEquals(
+        listOf(SimilarityAxis.SIZE, SimilarityAxis.SELECTIVITY, SimilarityAxis.SETTING),
+        SimilarityAxis.DEFAULTS,
+        "the SUBJECTS axis stays out of the bare ask (D22/C15)",
+      )
+      assertEquals(SimilarityAxis.DEFAULTS.map { it.word }, axesUsed(labelled), "$labelled")
+    }
+
+  @Test
+  fun `a peer row carries the label, and neither key for a student who stored nothing`() =
+    runBlocking {
+      val (anchor, fieldTool) = seedFieldUniverse()
+
+      val labelled = fieldTool.execute(anchorInput(anchor), null, setOf("literature"))
+      val peer =
+        (labelled["colleges"] as JsonArray)
+          .map { it.jsonObject }
+          .single { it["name"]!!.jsonPrimitive.content == "Bates College" }
+      assertEquals(TeachesYourField.YES, peer[TeachesYourField.WIRE_KEY]!!.jsonPrimitive.content)
+      assertEquals(
+        listOf("literature"),
+        (peer[TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY] as JsonArray).map { it.jsonPrimitive.content },
+        "the student's own subject word, named rather than left to be guessed at: $peer",
+      )
+
+      // D20: a peer list for a student who has stored nothing renders exactly as
+      // it did before this RFC -- no key, no null, no placeholder.
+      val unlabelled = fieldTool.execute(anchorInput(anchor), null, emptySet())
+      for (row in (unlabelled["colleges"] as JsonArray).map { it.jsonObject }) {
+        assertFalse(row.containsKey(TeachesYourField.WIRE_KEY), "$row")
+        assertFalse(row.containsKey(TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY), "$row")
+      }
+    }
+
+  /**
+   * The peer door takes the same `subject` filter through the same shared
+   * vocabulary, so it can SHORTEN a peer list — and brief 0011 D21 is written
+   * for an explicit typed filter, not for one door.
+   *
+   * The cut is measured over THIS door's candidates: every other constraint of
+   * the call applies, the shared-axis requirement included, and only the subject
+   * filter does not. Of the three peers, one teaches literature, one teaches
+   * only another subject and one reports no census at all — so the filter
+   * removes two, including the one it removed BECAUSE it could not be judged.
+   */
+  @Test
+  fun `a subject filter on a peer list says how many peers it removed`() =
+    runBlocking {
+      val (anchor, fieldTool) = seedFieldUniverse()
+
+      val result =
+        fieldTool.execute(
+          buildJsonObject {
+            put("college_id", anchor.id.value.toString())
+            put(CollegeQueryVocabulary.SUBJECT_FIELD, "literature")
+          },
+          null,
+          emptySet(),
+        )
+
+      assertNull(result["error"], "$result")
+      assertEquals(1, result["total_candidates"]!!.jsonPrimitive.intOrNull, "one peer teaches it: $result")
+      assertEquals(
+        buildJsonObject { put(CollegeQueryVocabulary.SUBJECT_FIELD, 2) },
+        result[REMOVED_BY_FILTER_WIRE_KEY],
+        "the cut is measured against this call's OTHER constraints, never the bare universe: $result",
+      )
+
+      // The `programs` rule, at this door too: a key meaning "what your filter
+      // removed" has no answer to give when no such filter ran.
+      val unfiltered = fieldTool.execute(anchorInput(anchor), null, emptySet())
+      assertNull(unfiltered[REMOVED_BY_FILTER_WIRE_KEY], "$unfiltered")
+    }
+
+  // ---------------------------------------------------------------------------
   // Tier 2: the states a wrong answer used to be given for
   // ---------------------------------------------------------------------------
 
@@ -1763,4 +1927,16 @@ private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSou
  * residency, so they call this one-argument form; the ruler cases pass a state
  * explicitly.
  */
-private suspend fun SimilarCollegesTool.execute(input: kotlinx.serialization.json.JsonObject) = execute(input, null)
+private suspend fun SimilarCollegesTool.execute(input: kotlinx.serialization.json.JsonObject) = execute(input, null, emptySet())
+
+/**
+ * NO STORED FIELD, stated once for this suite, on the same terms as the one
+ * above: `SimilarCollegesTool.execute` takes the student's stored subject slugs
+ * with no default (RFC 245), and every case here but the labelling ones means
+ * the empty set — the state in which a peer list renders exactly as it did
+ * before that RFC.
+ */
+private suspend fun SimilarCollegesTool.execute(
+  input: kotlinx.serialization.json.JsonObject,
+  familyResidencyState: String?,
+) = execute(input, familyResidencyState, emptySet())

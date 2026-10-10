@@ -113,6 +113,44 @@ data class CollegeMatch(
   val pellShare: Double?,
   val website: String?,
   val programTitles: List<String>?,
+  /**
+   * What `college_search_index.subject_slugs` says about this school's programme
+   * census (RFC 245), in the same subject vocabulary a student picks their
+   * intended subjects from.
+   *
+   * A TYPE and not a `List<String>?`, because the whole label rule turns on
+   * `NULL` not being `{}` and one `orEmpty()` anywhere would merge them: see
+   * [ProgrammeCensus].
+   *
+   * It is returned context only: nothing filters, sorts or ranks on it here.
+   */
+  val programmeCensus: ProgrammeCensus,
   val ipedsSurveyYear: Int? = null,
   val programsCensusSurveyYear: Int? = null,
 )
+
+/**
+ * What `college_search_index.subject_slugs` holds for ONE school: the TAXONOMY
+ * expansion of its programme census, or the fact that it filed none (RFC 245).
+ *
+ * The column's `NULL` and its EMPTY array are two different facts (schema
+ * `0064`, `:178-179` and the column comment at `:227-230`), and the label this
+ * census feeds exists to keep them apart — "we hold no census for that school"
+ * must never be spoken as "its census names none of your subjects". A nullable
+ * list carries that distinction only by convention, and the same DAO keeps the
+ * OPPOSITE convention one function away (`getStringList` maps NULL to an empty
+ * list), so the two states are MEMBERS here and no `orEmpty()` can merge them.
+ */
+sealed interface ProgrammeCensus {
+  /** No programme census at all — nothing to judge, and never a judged no. It is absent exactly when `cip_codes` is. */
+  data object NotReported : ProgrammeCensus
+
+  /**
+   * The census IS on file. [subjectSlugs] is every ACTIVE taxonomy subject it
+   * names, which may be NONE — a judged no, not a silence — and which is why a
+   * student holding a subject the taxonomy has retired matches nothing here.
+   */
+  data class OnFile(
+    val subjectSlugs: List<String>,
+  ) : ProgrammeCensus
+}

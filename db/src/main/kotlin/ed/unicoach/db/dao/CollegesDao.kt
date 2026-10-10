@@ -27,6 +27,7 @@ import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.PriceRuler
+import ed.unicoach.db.models.ProgrammeCensus
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.SimilarityAnchor
@@ -325,6 +326,16 @@ object CollegesDao :
       pellShare = rs.doubleOrNull(PELL_SHARE_COLUMN),
       website = rs.getString("website"),
       programTitles = titles,
+      // The TAXONOMY expansion of this school's census (RFC 245), read as a
+      // `text[]` so a SQL NULL stays a null -- and then NAMED, because NULL is
+      // "no census at all" while the empty array is "the census names no
+      // taxonomy subject", and a label that could not tell them apart would
+      // speak our silence as the school's no.
+      programmeCensus =
+        rs
+          .getStringListOrNull(SUBJECT_SLUGS_COLUMN)
+          ?.let(ProgrammeCensus::OnFile)
+          ?: ProgrammeCensus.NotReported,
       ipedsSurveyYear = rs.intOrNull("ipeds_survey_year"),
       programsCensusSurveyYear = rs.intOrNull("programs_census_survey_year"),
     )
@@ -655,7 +666,7 @@ object CollegesDao :
     val matches =
       listMatches(session, query, plan, programCodes.matchedCodes).getOrElse { return Result.failure(it) }
 
-    return countPage(session, plan, matches, query.priceRuler)
+    return countPage(session, plan, matches, query.priceRuler, subjectFiltered = query.subject != null)
   }
 
   /**
@@ -698,8 +709,9 @@ object CollegesDao :
 
     query.states?.let { states ->
       if (states.isNotEmpty()) {
-        // NOT NULL on the index, so there is no unknown to exclude or report.
-        filters += IndexFilter("state = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(states)))
+        // NOT NULL on the index, so there is no unknown to exclude or report --
+        // but the column is still STATED, so an arm about it drops this filter.
+        filters += IndexFilter("state = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(states)), columns = setOf("state"))
       }
     }
     query.region?.let { region ->
@@ -717,7 +729,11 @@ object CollegesDao :
         // column stores [InstitutionControl]'s own label under a CHECK, so the
         // label is the bind and no unvalidated string can reach it.
         filters +=
-          IndexFilter("control = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(control.map { it.label })))
+          IndexFilter(
+            "control = ANY ($TEXT_ARRAY_PARAM)",
+            listOf(jsonbArrayBinder(control.map { it.label })),
+            columns = setOf("control"),
+          )
       }
     }
     query.minUndergradEnrollmentHeadcount?.let { min ->
@@ -803,11 +819,16 @@ object CollegesDao :
       // `cip_codes` is a judged NO — the programs are known and none of them is
       // this subject — and counting it as unknown would overstate the number a
       // coach reads aloud on the one axis this slice was built for.
+      // Reported under the FILTER FIELD the model itself wrote, not under the
+      // Postgres column: `subject_slugs` is a column name the coach prompt
+      // forbids the coach to say and a word the model cannot write back, and
+      // this slice's own prompt line asks the coach to read this number aloud
+      // beside `removed_by_filter`, which is keyed by the field.
       filters +=
         IndexFilter(
-          "subject_slugs @> ARRAY[?]::slug[]",
+          "$SUBJECT_SLUGS_COLUMN @> ARRAY[?]::slug[]",
           listOf(stringBinder(slug)),
-          UnknownAxis.ofColumn("subject_slugs"),
+          UnknownAxis.ofColumn(SUBJECT_SLUGS_COLUMN, key = SUBJECT_FILTER_FIELD),
         )
     }
     if (programCodes.cipPrefixCodes != null) {
@@ -874,7 +895,7 @@ object CollegesDao :
       SELECT
         i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
-        i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN,
+        i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN, i.$SUBJECT_SLUGS_COLUMN,
         c.city, c.website,
         $OUTCOME_COMPLETION_SELECT,
         ci.survey_year AS ipeds_survey_year,
@@ -887,6 +908,12 @@ object CollegesDao :
           college_id, ipeds_unit_id, name, state, control, region, locale,
           undergrad_enrollment_headcount, admission_rate_share, net_price_per_year_usd,
           completion_rate_150pct_4yr_share,
+          -- The taxonomy expansion this school's row already carries (RFC 245),
+          -- cast to `text[]` so the driver hands back a plain array of strings
+          -- rather than the `slug` domain it is declared as. It is PROJECTED,
+          -- never predicated on: no clause here reads it, so no stored subject
+          -- can remove a school from this page.
+          $SUBJECT_SLUGS_COLUMN::text[] AS $SUBJECT_SLUGS_COLUMN,
           -- The price THIS query is on, per row (RFC 169): the sort key, and the
           -- number the result reports under a key naming the tier applied to
           -- this row. It is an expression over index columns, so this subquery
@@ -923,19 +950,94 @@ object CollegesDao :
   }
 
   /**
+   * The `subject` cut arm (RFC 245 A4): THIS call's clause with the filters over
+   * the subject column dropped, counted under the name the read quotes back.
+   *
+   * Every other constraint of the call applies and only the subject filter does
+   * not — the machinery `excluded_unknown` already uses, never a second counting
+   * rule. Measured against the bare universe it would answer about schools the
+   * caller's own filters had already excluded, and the difference would not be a
+   * cut anybody made.
+   *
+   * The call's `subject` filter is the only one over that column, which is what
+   * lets the whole cut be reported under that filter's name: a second filter
+   * reading it would be dropped by this clause too and counted inside a number
+   * attributed to `subject` alone.
+   *
+   * [extraClause] is the peer door's shared-axis requirement, which belongs
+   * inside the arm rather than beside it.
+   */
+  private fun subjectCutArm(
+    plan: SearchPlan,
+    extraClause: String? = null,
+  ): String =
+    "count(*) FILTER (WHERE " +
+      listOfNotNull(plan.createMatchClauseExcluding(SUBJECT_CUT), extraClause).joinToString(" AND ") +
+      ") AS $WITHOUT_SUBJECT_COUNT_COLUMN"
+
+  /**
+   * The binds a count statement's first two arms carry, in select-list order:
+   * the predicate, then the `subject` cut arm's own when one was written.
+   */
+  private fun bindCountArms(
+    stmt: PreparedStatement,
+    plan: SearchPlan,
+    subjectFiltered: Boolean,
+  ): Int {
+    val next = plan.bindPredicate(stmt)
+    return if (subjectFiltered) plan.bindPredicateExcluding(stmt, SUBJECT_CUT, next) else next
+  }
+
+  /** The counts ONE statement returns, read under the names its own arms wrote. */
+  private fun readCounts(
+    rs: ResultSet,
+    unknownAxes: List<UnknownAxis>,
+    subjectFiltered: Boolean,
+  ): SearchCounts {
+    val total = rs.getInt("total")
+    return SearchCounts(
+      total = total,
+      excludedUnknown = unknownAxes.associate { axis -> axis.key to rs.getInt(axis.countColumn) },
+      // The rows the other filters admit, MINUS the ones that survived this one:
+      // the size of the cut, never a population.
+      removedBySubjectFilter = if (subjectFiltered) rs.getInt(WITHOUT_SUBJECT_COUNT_COLUMN) - total else null,
+    )
+  }
+
+  /**
+   * One count statement's three facts, named — the honest population total, the
+   * per-axis unjudgeable counts, and the `subject` cut (RFC 245 A4), which is
+   * `null` when the call wrote no such filter.
+   */
+  private data class SearchCounts(
+    val total: Int,
+    val excludedUnknown: Map<String, Int>,
+    val removedBySubjectFilter: Int?,
+  )
+
+  /**
    * The counts, and the finished page. ONE statement (D55): the honest
    * population total plus one `excluded_unknown` arm per supplied filter whose
    * column can be unknown. The arms read the UNIVERSE, not the other filters.
+   *
+   * [subjectFiltered] is the `subject` cut report's whole route (RFC 245 A4):
+   * whether the MODEL wrote that filter, asked of the query that carries it and
+   * never re-derived from the shape of the plan. The filter the report is about
+   * is named by the caller, so no construct here has to work out which filter it
+   * is, and deleting the filter's `excluded_unknown` axis cannot silently delete
+   * the cut.
    */
   private fun countPage(
     session: SqlSession,
     plan: SearchPlan,
     matches: List<CollegeMatch>,
     ruler: PriceRuler,
+    subjectFiltered: Boolean,
   ): Result<CollegeSearchOutcome> {
     val countSelects =
       buildList {
         add("count(*) FILTER (WHERE ${plan.matchClause}) AS total")
+        if (subjectFiltered) add(subjectCutArm(plan))
         plan.unknownAxes.forEach { axis ->
           add("count(*) FILTER (WHERE ${plan.universeClause} AND ${axis.condition}) AS ${axis.countColumn}")
         }
@@ -946,21 +1048,18 @@ object CollegesDao :
       .queryOne(
         countSql,
         // The unknown arms restate the universe, which [SearchPlan] guarantees
-        // binds nothing, so the predicate binds are the whole statement's binds
-        // — the same call, in the same order, as the page query above.
-        bind = { stmt -> plan.bindPredicate(stmt) },
-        map = { rs ->
-          val total = rs.getInt("total")
-          val excluded = plan.unknownAxes.associate { axis -> axis.key to rs.getInt(axis.countColumn) }
-          total to excluded
-        },
-      ).map { (total, excluded) ->
+        // binds nothing, so the only binds are the predicate's and — when there
+        // is one — the subject arm's, in select-list order.
+        bind = { stmt -> bindCountArms(stmt, plan, subjectFiltered) },
+        map = { rs -> readCounts(rs, plan.unknownAxes, subjectFiltered) },
+      ).map { counts ->
         CollegeSearchOutcome.Page(
           CollegeSearchPage(
             matches = matches,
-            totalMatches = total,
-            excludedUnknown = excluded,
+            totalMatches = counts.total,
+            excludedUnknown = counts.excludedUnknown,
             sourceYears = sourceYears(matches),
+            removedBySubjectFilter = counts.removedBySubjectFilter,
             priceRuler = ruler,
           ),
         )
@@ -1004,9 +1103,8 @@ object CollegesDao :
     val unknownAxes: List<UnknownAxis> = filters.mapNotNull { it.unknown }.distinctBy { it.key }
 
     /**
-     * [matchClause] WITHOUT the filters over the very columns [unknown] reads —
-     * the population an `excluded_unknown` arm for that subject is honestly
-     * measured over (RFC 153 D67 as amended).
+     * [matchClause] WITHOUT the filters over [columns] — the population an arm
+     * about those columns is honestly measured over (RFC 153 D67 as amended).
      *
      * A filter over a nullable column is exactly what silently removes the rows
      * that cannot be judged on it, so counting those rows inside its own clause
@@ -1014,38 +1112,54 @@ object CollegesDao :
      * about colleges the caller's other constraints already excluded. Every
      * other constraint applies, and only the filters the count is about do not.
      *
+     * Keyed by the SUBJECT the arm is about, which is the type that owns
+     * [UnknownSubject.columns]. Two kinds of arm call it: the PEER door's
+     * `excluded_unknown` arms, which pass their own axis's subject, and the
+     * `subject` cut report (RFC 245 A4), which passes [SUBJECT_CUT].
+     * (A search page's `excluded_unknown` arms restate [universeClause] and do
+     * not come through here at all.) Neither asks this seam which FILTER it is
+     * about, so nothing here answers a second question. A bare `Set<String>`
+     * was the shape this seam's own KDoc records as the defect `UnknownSubject`
+     * was introduced to close: any set of arbitrary strings compiled, and one
+     * naming no real column dropped nothing and reported a cut of zero.
+     *
      * The correspondence is STATED by [UnknownSubject.columns] rather than
      * inferred from string equality: a ranked axis's key is a WORD (`price`)
      * and the filter it must drop is over a COLUMN (`net_price_per_year_usd`),
      * so matching the two by name dropped nothing and every axis arm answered
      * zero by construction.
      */
-    fun createMatchClauseExcluding(unknown: UnknownAxis): String =
-      (universe + listRetainedFilters(unknown).map { it.clause })
+    fun createMatchClauseExcluding(subject: UnknownSubject): String =
+      (universe + listRetainedFilters(subject).map { it.clause })
         .let { if (it.isEmpty()) "TRUE" else it.joinToString(" AND ") }
 
     /**
-     * Binds every parameter [createMatchClauseExcluding] carries for [unknown],
+     * Binds every parameter [createMatchClauseExcluding] carries for [subject],
      * starting at [from], and returns the NEXT free index — the same list that
      * wrote the text, so an arm's clause and its binds cannot drift.
      */
     fun bindPredicateExcluding(
       stmt: PreparedStatement,
-      unknown: UnknownAxis,
+      subject: UnknownSubject,
       from: Int = 1,
     ): Int {
       var idx = from
-      listRetainedFilters(unknown).forEach { filter -> filter.binders.forEach { bind -> bind(stmt, idx++) } }
+      listRetainedFilters(subject).forEach { filter -> filter.binders.forEach { bind -> bind(stmt, idx++) } }
       return idx
     }
 
-    /** The filters an arm about [unknown] keeps: every one that is not over a column [unknown] itself reads. */
-    private fun listRetainedFilters(unknown: UnknownAxis): List<IndexFilter> =
-      filters.filter { filter ->
-        filter.unknown == null ||
-          filter.unknown.subject.columns
-            .none { it in unknown.subject.columns }
-      }
+    /**
+     * The filters an arm about [subject] keeps: every one that is not over a
+     * column that subject reads.
+     *
+     * Matched on the filter's OWN [IndexFilter.columns] — the columns its clause
+     * reads — and not on whether it declares an unknown axis naming one of them.
+     * `IndexFilter.unknown` is nullable and several live filters leave it null,
+     * so "declares nothing" was silently read as "not over this column", which
+     * is a filter this seam could not classify and answered about anyway.
+     */
+    private fun listRetainedFilters(subject: UnknownSubject): List<IndexFilter> =
+      filters.filter { filter -> filter.columns.none { it in subject.columns } }
 
     /**
      * Binds every parameter [matchClause] and [whereClause] carry, starting at
@@ -1062,11 +1176,22 @@ object CollegesDao :
     }
   }
 
-  /** One index filter: its clause, its binds, and how it can be unjudgeable. */
+  /** One index filter: its clause, its binds, the columns it READS, and how it can be unjudgeable. */
   private data class IndexFilter(
     val clause: String,
     val binders: List<Bind>,
     val unknown: UnknownAxis? = null,
+    /**
+     * The index columns [clause] reads: what an arm excluding a column matches
+     * this filter on.
+     *
+     * Defaulted FROM the axis, which already states exactly that
+     * ([UnknownSubject.columns]), so a filter that can be unjudgeable names its
+     * columns once. A filter with NO axis must state them itself, because
+     * "declares no axis" was silently read as "not over this column" — and a
+     * filter nothing can classify is one an arm keeps whatever column it reads.
+     */
+    val columns: Set<String> = unknown?.subject?.columns ?: emptySet(),
   )
 
   /**
@@ -1150,8 +1275,25 @@ object CollegesDao :
     val countColumn: String = "unknown_${subject.sqlAlias}"
 
     companion object {
-      /** A filter's column, whose unjudgeable rows are exactly the NULLs in it. */
-      fun ofColumn(column: String): UnknownAxis = UnknownAxis(UnknownSubject.FilterColumn(column), "$column IS NULL")
+      /**
+       * A filter's column, whose unjudgeable rows are exactly the NULLs in it.
+       *
+       * [key] is what the count is REPORTED under and defaults to the column, so
+       * every existing key stays byte-identical. A filter whose column name is
+       * not a word the coach may say passes its own — the ruler axis below
+       * already shows the seam supports it ([PriceRuler.excludedUnknownKey]), so
+       * the column is exported by DECISION rather than by default.
+       */
+      fun ofColumn(
+        column: String,
+        key: String = column,
+      ): UnknownAxis =
+        UnknownAxis(
+          // The REPORTED key, which is the filter field when one was passed —
+          // `column` is this property's name, not a promise that it is SQL text.
+          UnknownSubject.FilterColumn(column = key, columns = setOf(column)),
+          "$column IS NULL",
+        )
 
       /**
        * A bound on the ACTIVE price ruler (RFC 169 D11). The subject is the
@@ -1237,7 +1379,7 @@ object CollegesDao :
           -- `slug[]` is a DOMAIN over text, which JDBC hands back as Object[];
           -- the cast is what makes it readable as the text[] every other array
           -- read in this file expects.
-          subject_slugs::text[] AS subject_slugs,
+          $SUBJECT_SLUGS_COLUMN::text[] AS $SUBJECT_SLUGS_COLUMN,
           ${ruler.valueSql()} AS $RULER_PRICE_COLUMN,
           admission_rate_share,
           undergrad_enrollment_percentile_share,
@@ -1294,7 +1436,13 @@ object CollegesDao :
     val matches =
       listSimilarMatches(session, query, plan, programCodes.matchedCodes).getOrElse { return Result.failure(it) }
 
-    return countSimilarPage(session, plan, matches, query.filters.priceRuler)
+    return countSimilarPage(
+      session,
+      plan,
+      matches,
+      query.filters.priceRuler,
+      subjectFiltered = query.filters.subject != null,
+    )
   }
 
   /**
@@ -1313,7 +1461,13 @@ object CollegesDao :
   private fun createFilters(query: SimilarityQuery): List<IndexFilter> =
     buildList {
       // The anchor is never similar to itself in a way worth printing.
-      add(IndexFilter("college_id <> ?", listOf<Bind>({ stmt, i -> stmt.setObject(i, query.anchor.id.value) })))
+      add(
+        IndexFilter(
+          "college_id <> ?",
+          listOf<Bind>({ stmt, i -> stmt.setObject(i, query.anchor.id.value) }),
+          columns = setOf("college_id"),
+        ),
+      )
       // The FIGURE, not a flag: the query carries the anchor's own number when
       // the constraint was asked for, so there is nothing to re-check here.
       query.cheaperThanUsd?.let { price ->
@@ -1441,16 +1595,20 @@ object CollegesDao :
           // subject" (schema 0064) -- a real state, and not one a Jaccard
           // distance can describe, so the candidate is unjudgeable here for
           // exactly the reason an anchor in the same state is (D67).
-          scored = "(subject_slugs IS NOT NULL AND cardinality(subject_slugs) > 0)",
+          scored = "($SUBJECT_SLUGS_COLUMN IS NOT NULL AND cardinality($SUBJECT_SLUGS_COLUMN) > 0)",
           // 1 - |A n B| / |A u B|, over the slug arrays. Both sides bind the
           // anchor's set as ONE jsonb parameter, never as interpolated text.
           difference =
-            "(1 - cardinality(ARRAY(SELECT unnest(subject_slugs::text[]) " +
+            "(1 - cardinality(ARRAY(SELECT unnest($SUBJECT_SLUGS_COLUMN::text[]) " +
               "INTERSECT SELECT unnest($TEXT_ARRAY_PARAM)))::double precision " +
-              "/ nullif(cardinality(ARRAY(SELECT unnest(subject_slugs::text[]) " +
+              "/ nullif(cardinality(ARRAY(SELECT unnest($SUBJECT_SLUGS_COLUMN::text[]) " +
               "UNION SELECT unnest($TEXT_ARRAY_PARAM))), 0))",
           binders = listOf(jsonbArrayBinder(anchorSubjects), jsonbArrayBinder(anchorSubjects)),
-          columns = setOf("subject_slugs"),
+          // The SAME spelling the subject filter and the cut report read: this
+          // set is what makes an arm about the SUBJECTS axis drop that filter,
+          // and a rename that left a literal here would count over a population
+          // the filter had already thinned.
+          columns = setOf(SUBJECT_SLUGS_COLUMN),
         )
       }
     }
@@ -1504,7 +1662,7 @@ object CollegesDao :
       SELECT
         i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
         i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
-        i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN, i.distance$scoredColumns,
+        i.completion_rate_150pct_4yr_share, i.$RULER_PRICE_COLUMN, i.$SUBJECT_SLUGS_COLUMN, i.distance$scoredColumns,
         c.city, c.website,
         $OUTCOME_COMPLETION_SELECT,
         ci.survey_year AS ipeds_survey_year,
@@ -1517,6 +1675,11 @@ object CollegesDao :
           college_id, ipeds_unit_id, name, state, control, region, locale,
           undergrad_enrollment_headcount, admission_rate_share, net_price_per_year_usd,
           completion_rate_150pct_4yr_share,
+          -- The same projection the ordinary page carries (RFC 245): both doors
+          -- render through one row serializer, so both must read the column it
+          -- labels from. Projected only -- the Jaccard SUBJECTS axis is a
+          -- separate expression, and this changes no distance.
+          $SUBJECT_SLUGS_COLUMN::text[] AS $SUBJECT_SLUGS_COLUMN,
           -- The price this query is on, per row (RFC 169) -- the same expression
           -- the ordinary page statement carries, so a peer list and a search
           -- print one college's price the same way.
@@ -1616,13 +1779,20 @@ object CollegesDao :
     plan: SimilarityPlan,
     matches: List<SimilarityMatch>,
     ruler: PriceRuler,
+    subjectFiltered: Boolean,
   ): Result<CollegeSimilarityOutcome> {
     val countSelects =
       buildList {
         add("count(*) FILTER (WHERE ${plan.search.matchClause} AND ${plan.sharedAxisClause}) AS total")
+        // The shared-axis requirement stays INSIDE the cut arm: a candidate that
+        // shares no axis with the anchor was never a peer this filter could have
+        // removed, so including it would inflate the cut with schools the
+        // ranking had already set aside.
+        if (subjectFiltered) add(subjectCutArm(plan.search, plan.sharedAxisClause))
         plan.unknownAxes.forEach { axis ->
           add(
-            "count(*) FILTER (WHERE ${plan.search.createMatchClauseExcluding(axis)} AND ${axis.condition}) " +
+            "count(*) FILTER (WHERE ${plan.search.createMatchClauseExcluding(axis.subject)} AND " +
+              "${axis.condition}) " +
               "AS ${axis.countColumn}",
           )
         }
@@ -1633,25 +1803,23 @@ object CollegesDao :
       .queryOne(
         countSql,
         // Every arm states a predicate of its own now, so every arm binds:
-        // total first, then one arm per unknown axis, in select-list order —
-        // the same list that wrote the text, so the two cannot drift.
+        // total first, then — when there is one — the subject arm, then one arm
+        // per unknown axis, in select-list order — the same list that wrote the
+        // text, so the two cannot drift.
         bind = { stmt ->
-          var idx = plan.search.bindPredicate(stmt)
-          plan.unknownAxes.forEach { axis -> idx = plan.search.bindPredicateExcluding(stmt, axis, idx) }
+          var idx = bindCountArms(stmt, plan.search, subjectFiltered)
+          plan.unknownAxes.forEach { axis -> idx = plan.search.bindPredicateExcluding(stmt, axis.subject, idx) }
           idx
         },
-        map = { rs ->
-          val total = rs.getInt("total")
-          val excluded = plan.unknownAxes.associate { axis -> axis.key to rs.getInt(axis.countColumn) }
-          total to excluded
-        },
-      ).map { (total, excluded) ->
+        map = { rs -> readCounts(rs, plan.unknownAxes, subjectFiltered) },
+      ).map { counts ->
         CollegeSimilarityOutcome.Page(
           CollegeSimilarityPage(
             matches = matches,
-            totalCandidates = total,
-            excludedUnknown = excluded,
+            totalCandidates = counts.total,
+            excludedUnknown = counts.excludedUnknown,
             sourceYears = sourceYears(matches.map { it.match }),
+            removedBySubjectFilter = counts.removedBySubjectFilter,
             priceRuler = ruler,
           ),
         )
@@ -1734,7 +1902,7 @@ object CollegesDao :
       control = InstitutionControl.fromLabel(controlLabel),
       controlLabel = controlLabel,
       locale = rs.getString("locale"),
-      subjectSlugs = rs.getStringListOrNull("subject_slugs"),
+      subjectSlugs = rs.getStringListOrNull(SUBJECT_SLUGS_COLUMN),
       rulerPriceUsd = rs.intOrNull(RULER_PRICE_COLUMN),
       // Stamped at the READ, from the ruler this statement was built with: the
       // two figures above are ruler-dependent and neither says so alone.
@@ -2377,6 +2545,58 @@ object CollegesDao :
 
   /** The anchor's position on the active ruler's ladder, named for the same reason. */
   private const val RULER_SHARE_COLUMN = "ruler_price_share"
+
+  /**
+   * The index column the `subject` filter reads, the page statements project and
+   * [mapMatch] reads back (RFC 245 A4).
+   *
+   * Every site that names the column names this constant rather than the
+   * string, because the filter's clause, its unknown axis, the SUBJECTS
+   * similarity axis's columns and the cut report's own excluding clause are
+   * compared by string equality: one literal left behind makes an arm count
+   * over a population another filter has already thinned, and nothing fails.
+   */
+  private const val SUBJECT_SLUGS_COLUMN = "subject_slugs"
+
+  /**
+   * The `subject` FILTER's field name — what this filter's `excluded_unknown`
+   * count is reported under, which is NOT [SUBJECT_SLUGS_COLUMN].
+   *
+   * One `private const` cannot be both SQL text and a key the coach is told to
+   * read out loud: the prompt forbids naming a data source's column names, and
+   * the model can only undo a filter it can write. `:college` owns the wire
+   * word (`CollegeQueryVocabulary.SUBJECT_FIELD`) and cannot be read from here —
+   * `:college` depends on `:db` — so the word is spelled once per module and the
+   * two are bound by `CollegeSearchToolTest`'s `excluded_unknown` assertion,
+   * which reads `:college`'s constant against this statement's output.
+   */
+  private const val SUBJECT_FILTER_FIELD = "subject"
+
+  /**
+   * The SUBJECT the `subject` cut report's arm drops the filters of: the column
+   * that filter is over (RFC 245 A4).
+   *
+   * A value of its own rather than the subject filter's `excluded_unknown` axis,
+   * so the two facts stay separate — what a SILENCE on this column is reported
+   * as, and what population the CUT is measured against. The arm asked the axis
+   * for its columns until tier 1, which made dropping the axis delete the cut
+   * report with nothing failing.
+   *
+   * Only [UnknownSubject.columns] is read of it: the cut is published under the
+   * FILTER FIELD by the emitter in `:college`, so this value's own key names
+   * nothing on the wire.
+   */
+  private val SUBJECT_CUT: UnknownSubject = UnknownSubject.FilterColumn(SUBJECT_SLUGS_COLUMN)
+
+  /**
+   * The count column the `subject` cut report is read back under: how many
+   * colleges every OTHER filter of this call admits.
+   *
+   * Named like [UnknownAxis.countColumn] and for the same reason -- the select
+   * list that writes the arm and the read that consumes it quote one string,
+   * so they cannot be reordered apart.
+   */
+  private const val WITHOUT_SUBJECT_COUNT_COLUMN = "total_without_subject"
 
   /**
    * The three published tuition tiers of ONE returned row, read live from

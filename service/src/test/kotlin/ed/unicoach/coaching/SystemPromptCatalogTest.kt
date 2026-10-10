@@ -27,7 +27,9 @@ import ed.unicoach.coaching.testing.AutomaticAwardChatTool
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.college.FIGURE_COMPARISON_WORDS
 import ed.unicoach.college.FindCollegeTool
+import ed.unicoach.college.REMOVED_BY_FILTER_WIRE_KEY
 import ed.unicoach.college.SimilarCollegesTool
+import ed.unicoach.college.TeachesYourField
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SystemPromptsDao
@@ -3185,6 +3187,56 @@ class SystemPromptCatalogTest {
   }
 
   private fun searchParagraph(): String = paragraphAt(CoachParagraph.SEARCH)
+
+  private fun intendedSubjectsParagraph(): String = paragraphAt(CoachParagraph.INTENDED_SUBJECTS)
+
+  /**
+   * The five sentences RFC 245 added to the intended-subjects paragraph,
+   * asserted in the body the runtime is actually SERVED -- the row
+   * `service.conf` pins.
+   *
+   * Scoped to the paragraph, because the body-equality pin at the top of this
+   * file is prompt-vs-SEED drift and not prompt-vs-CODE drift: an edit that
+   * deleted these five lines and regenerated the seed would leave both sides
+   * equal and this suite green, with the coach no longer told to lead with
+   * `yes`, no longer told that `unknown` is OUR silence, and no longer told to
+   * say the cut out loud.
+   *
+   * All THREE wire keys are read from the code that writes them -- the two row
+   * keys from [TeachesYourField] and the cut report's from
+   * [REMOVED_BY_FILTER_WIRE_KEY] -- on this file's standing SEEDED COPY versus
+   * SHIPPING CODE precedent: a literal here would keep passing after a rename,
+   * leaving the prompt telling the coach to read a key no result carries.
+   */
+  @Test
+  fun `the served intended-subjects paragraph states the field label, its unknown and the cut report`() {
+    val paragraph = intendedSubjectsParagraph()
+    assertParagraphStates(
+      paragraph,
+      "When a search result carries ${TeachesYourField.WIRE_KEY}",
+      "the coach cannot read a label the prompt never names",
+    )
+    assertParagraphStates(
+      paragraph,
+      "name the subject that matched by reading ${TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY}",
+      "A3: which of their subjects matched is read from the row, never from memory",
+    )
+    assertParagraphStates(
+      paragraph,
+      "we hold no programme census for that school at all",
+      "unknown is OUR silence, and must never be read as the school not teaching the subject",
+    )
+    assertParagraphStates(
+      paragraph,
+      "A stored subject never shortens a result",
+      "D21: a stored field never cuts, and the prompt is where the coach is told so",
+    )
+    assertParagraphStates(
+      paragraph,
+      "When the tool reports $REMOVED_BY_FILTER_WIRE_KEY",
+      "A4: the one cut a result can report is the one the coach has to say out loud",
+    )
+  }
 
   /**
    * The six figure statuses (RFC 166), asserted in the body the runtime is

@@ -128,6 +128,7 @@ class SimilarCollegesTool(
   suspend fun execute(
     input: JsonObject,
     familyResidencyState: String?,
+    storedSubjectSlugs: Set<String>,
   ): JsonObject {
     val unknown = input.keys - KNOWN_FIELDS
     if (unknown.isNotEmpty()) {
@@ -172,7 +173,12 @@ class SimilarCollegesTool(
         is CollegeSimilarityOutcome.Page -> outcome.page
       }
 
-    return resultObject(planned.query, planned.dropped, page)
+    // OUR gap, recorded once for this call, as the other door does: a stored
+    // subject this process's taxonomy cannot judge is a label this peer list
+    // did not give, and the page cannot be told apart from one where it did.
+    logUnjudgeableSubjects(TOOL_NAME, storedSubjectSlugs, vocabulary.subjectTaxonomy)
+
+    return resultObject(planned.query, planned.dropped, page, storedSubjectSlugs)
   }
 
   // ---------------------------------------------------------------------------
@@ -739,6 +745,7 @@ class SimilarCollegesTool(
     query: SimilarityQuery,
     dropped: List<DroppedAxis>,
     page: CollegeSimilarityPage,
+    storedSubjectSlugs: Set<String>,
   ): JsonObject =
     buildJsonObject {
       putJsonObject("anchor") {
@@ -768,10 +775,18 @@ class SimilarCollegesTool(
         listConstraintSentences(query).forEach { add(it) }
       }
       putJsonArray("colleges") {
-        page.matches.forEach { add(similarObject(it, page.priceRuler)) }
+        // The label only (RFC 245 A2): the ranking above it was decided before
+        // these slugs were in the room, so the ordered list, every `distance`
+        // and `axes_used` are what an unlabelled call returns.
+        page.matches.forEach { add(similarObject(it, page.priceRuler, storedSubjectSlugs)) }
       }
       put("total_candidates", page.totalCandidates)
       putExcludedUnknown(page.excludedUnknown)
+      // ...and, when the model wrote a `subject` filter, how many peers that
+      // filter removed (RFC 245 A4). This door takes `subject` through the same
+      // shared vocabulary, so it can shorten a peer list -- and a filter that
+      // cuts says how many it removed at whichever door wrote it.
+      putRemovedBySubjectFilter(page.removedBySubjectFilter)
       // WHICH price ranked this peer list, and what is in it (RFC 169 D1) --
       // the same object `search_colleges` carries, because two tools that
       // return "a college" must describe it the same way.
@@ -915,9 +930,10 @@ class SimilarCollegesTool(
   private fun similarObject(
     match: SimilarityMatch,
     ruler: PriceRuler,
+    storedSubjectSlugs: Set<String>,
   ): JsonObject =
     buildJsonObject {
-      matchObject(match.match, vocabulary, ruler).forEach { (key, value) -> put(key, value) }
+      matchObject(match.match, vocabulary, ruler, storedSubjectSlugs).forEach { (key, value) -> put(key, value) }
       put("distance", (match.distance * DISTANCE_SCALE).roundToInt() / DISTANCE_SCALE)
       putJsonArray(AXES_SCORED_KEY) {
         match.axesScored.forEach { add(it.word) }
@@ -1121,6 +1137,7 @@ class SimilarCollegesTool(
         "active four-year institutions; the anchor never appears among its own peers. Cite " +
         "`total_candidates` when saying how many schools were considered, and say " +
         "`excluded_unknown` in plain words -- those schools could not be judged on that axis, which " +
-        "is not the same as failing it. " + FIGURE_SOURCES_NOTE + " " + NET_PRICE_BASIS_NOTE
+        "is not the same as failing it. " + FIGURE_SOURCES_NOTE + " " + YOUR_FIELD_NOTE + " " +
+        REMOVED_BY_SUBJECT_FILTER_NOTE + " " + NET_PRICE_BASIS_NOTE
   }
 }

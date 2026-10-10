@@ -127,7 +127,7 @@ class FafsaDeadlineChatTool(
    */
   private val readDeadlines: suspend (ZoneId) -> Result<FafsaDeadlines> = { zone -> service.get(zone) },
   /**
-   * The profile read, as the SEAM [ed.unicoach.coaching.ResidencyScopedChatTool]
+   * The profile read, as the SEAM [ed.unicoach.coaching.SearchScopedChatTool]
    * already uses it: the one branch a Postgres-backed test cannot ask for on
    * demand is a read that FAULTS, and that branch decides whether a database
    * fault turns a working answer into an error or serves the federal dates with
@@ -142,7 +142,7 @@ class FafsaDeadlineChatTool(
   /**
    * IT TAKES NO ARGUMENT, and a `state` is the key that matters: the family's
    * state comes from `money_profiles` and must not be something the model can
-   * contradict ([ed.unicoach.coaching.ResidencyScopedChatTool]'s standing rule).
+   * contradict ([ed.unicoach.coaching.SearchScopedChatTool]'s standing rule).
    * There are exactly two ways a state gets into unicoach -- the family tells
    * the coach and the coach RECORDS it, or the family edits their own details --
    * and a state held only in a tool argument is a fact unicoach never learns.

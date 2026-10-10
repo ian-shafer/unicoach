@@ -36,12 +36,20 @@ sealed interface CollegeSimilarityOutcome {
  * [matches], exactly as `total_matches` is for search. [excludedUnknown] is the
  * per-axis, per-filter count of colleges that could not be judged, so a coach
  * can say how many schools the silence cost.
+ *
+ * [removedBySubjectFilter] is the same cut `CollegeSearchPage` reports (RFC 245
+ * A4), measured over THIS door's candidates: this list takes the `subject`
+ * filter through the same shared vocabulary, so it can shorten a peer list, and
+ * a filter that may cut must say how many it removed whichever door wrote it. It
+ * is `null` when the call wrote no `subject` filter, because a cut nobody asked
+ * for has no size.
  */
 data class CollegeSimilarityPage(
   val matches: List<SimilarityMatch>,
   val totalCandidates: Int,
   val excludedUnknown: Map<String, Int>,
   val sourceYears: Map<String, IntRange>,
+  val removedBySubjectFilter: Int? = null,
   /**
    * WHICH price this peer list was ranked and constrained on (RFC 169) — the
    * same [PriceRuler] the anchor was read with, so `cheaper_than_anchor`

@@ -386,10 +386,18 @@ fun Application.appModule(
   val toolRegistry =
     ToolRegistry(
       listOf(
-        // Student-scoped since RFC 169: the same money-profile service the
-        // profile tool writes through, so the residency a search ranks on is
-        // the one the family stated and never a second copy of it.
-        CollegeChatTool(CollegeSearchTool(collegeSearchService, codebook), moneyProfileService),
+        // Student-scoped since RFC 169, and doubly so since RFC 245: the same
+        // money-profile service the profile tool writes through, so the
+        // residency a search ranks on is the one the family stated, and the same
+        // intended-subjects service the subject tool writes through, so the
+        // field a result labels against is the one the student chose — never a
+        // second copy of either. The two READS are what a search door takes, so
+        // this is where the real services are named.
+        CollegeChatTool(
+          CollegeSearchTool(collegeSearchService, codebook),
+          moneyProfileService::getForStudent,
+          intendedSubjectsService::getForStudent,
+        ),
         // The name door beside the filter door (RFC 154): the same
         // collegeSearchService instance, so a school the student NAMED resolves
         // over the very path the iOS picker uses.
@@ -402,7 +410,8 @@ fun Application.appModule(
           .SimilarCollegesChatTool(
             ed.unicoach.college
               .SimilarCollegesTool(collegeSearchService, codebook),
-            moneyProfileService,
+            moneyProfileService::getForStudent,
+            intendedSubjectsService::getForStudent,
           ),
         ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
         ed.unicoach.coaching.costs

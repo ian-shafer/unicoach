@@ -52,6 +52,7 @@ class IncomeBandTest {
       pellShare = null,
       website = null,
       programTitles = null,
+      programmeCensus = ProgrammeCensus.NotReported,
     )
 
   @Test

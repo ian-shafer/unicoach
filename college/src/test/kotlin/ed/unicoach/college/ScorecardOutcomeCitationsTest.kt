@@ -9,6 +9,7 @@ import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_SHARE
 import ed.unicoach.db.dao.FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
+import ed.unicoach.db.models.ProgrammeCensus
 import ed.unicoach.db.models.ResidencyTierBasis
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -73,6 +74,7 @@ class ScorecardOutcomeCitationsTest {
       pellShare = null,
       website = null,
       programTitles = null,
+      programmeCensus = ProgrammeCensus.NotReported,
     )
 
   /**

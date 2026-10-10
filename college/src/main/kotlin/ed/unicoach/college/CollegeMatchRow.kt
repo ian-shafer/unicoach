@@ -15,6 +15,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.slf4j.LoggerFactory
 import java.util.Locale
 
 /**
@@ -83,6 +84,43 @@ internal val FIGURE_SOURCES_NOTE =
     "figures it lists. An outcome figure it does not list carries no stated period or population, so " +
     "never date that figure and never say whom it counts; the page's own `source_years` still dates " +
     "every other figure here."
+
+/**
+ * The two keys a result carries about THIS student's own field of study (RFC
+ * 245), said ONCE for both tools that return "a college" (RFC 153 D70).
+ *
+ * It lives here for the reason [FIGURE_SOURCES_NOTE] does, and for one more:
+ * neither key is a stamped figure and neither is a number, so nothing DERIVES a
+ * sentence for them the way `CollegeSearchTool`'s two figure-key lists derive
+ * theirs. A key nothing advertises is a key the model must guess at, and
+ * `similar_colleges` renders the same row key for key -- so a sentence written
+ * into one description only would leave the peer list carrying two silent keys.
+ *
+ * The census false-negative earns exactly ONE sentence, here and nowhere else
+ * (D23): a programme a school started recently has no graduates in the
+ * completions census yet, so it reads as "no". It is rare, it is real, and
+ * repeating it per row or in the prompt would spend the caveat budget on it.
+ *
+ * It ADVERTISES and does not INSTRUCT (brief 0009 D8). What the keys are, what
+ * each word means and when they are absent is this tool's contract and nothing
+ * else can state it. What the coach should DO about them -- lead with the
+ * yeses, read the matched subject from the row rather than from memory, never
+ * read our silence as the school's answer, never imply the label shortened the
+ * list -- is said once, in `prompts/coach-system-prompt.md`'s
+ * intended-subjects paragraph, which is the voice that gives the coach
+ * instructions. Saying either half twice is what lets the two drift.
+ */
+internal val YOUR_FIELD_NOTE =
+  "When this student has stored what they want to study, every result also carries " +
+    "`${TeachesYourField.WIRE_KEY}`: \"${TeachesYourField.YES}\" when this school's programme " +
+    "census records one of THEIR subjects, \"${TeachesYourField.NO}\" when its census is on file " +
+    "and names none of them, and \"${TeachesYourField.UNKNOWN}\" when the question could not be " +
+    "judged -- we hold no programme census for that school at all, or one of their stored subjects " +
+    "is one our loaded taxonomy does not carry and no census can name. A " +
+    "\"${TeachesYourField.YES}\" row also carries `${TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY}`, " +
+    "the student's own subject words that matched. A programme a school started recently has no " +
+    "graduates in the completions census yet, so it reads as \"${TeachesYourField.NO}\". Both keys " +
+    "are ABSENT when this student has stored no subject at all."
 
 /**
  * The one sentence naming the ruler a result was produced on — the thing D14(a)
@@ -248,6 +286,7 @@ internal fun matchObject(
   match: CollegeMatch,
   vocabulary: CollegeQueryVocabulary,
   ruler: PriceRuler,
+  storedSubjectSlugs: Set<String>,
 ): JsonObject =
   buildJsonObject {
     // First key by design: the id the model must copy into
@@ -318,7 +357,90 @@ internal fun matchObject(
         titles.forEach { add(it) }
       }
     }
+    putYourField(match, storedSubjectSlugs, vocabulary.subjectTaxonomy)
   }
+
+/**
+ * Says ONCE per call which of this student's stored subjects the loaded taxonomy
+ * could not judge (RFC 245), so OUR gap is recorded rather than only rendered.
+ *
+ * Every such subject is a row label this call did not give, and the two causes
+ * an operator can act on are indistinguishable from the page: a slug the
+ * taxonomy retired is the student's own history, while an EMPTY taxonomy is a
+ * codebook that never loaded — `Codebook.loadOrEmpty` degrades a read fault to
+ * `EMPTY` on purpose — and that one silences the label for every student at
+ * once. The taxonomy's SIZE is in the line for exactly that reason.
+ *
+ * At the door and not per row: the answer is about the student and the snapshot,
+ * so a page of two hundred schools would otherwise say it two hundred times.
+ * WARN, not ERROR: the search is correct and complete, and the label withheld
+ * itself rather than inventing an answer.
+ */
+internal fun logUnjudgeableSubjects(
+  caller: String,
+  storedSubjectSlugs: Set<String>,
+  taxonomy: SubjectTaxonomy,
+) {
+  val unjudgeable = storedSubjectSlugs - taxonomy.slugs
+  if (unjudgeable.isEmpty()) return
+  yourFieldLogger.warn(
+    "stored subjects the loaded taxonomy cannot judge: caller=[{}] unjudgeable=[{}] stored=[{}] " +
+      "taxonomy_subject_count=[{}] -- those rows read unknown, never a census no",
+    caller,
+    unjudgeable.sorted().joinToString(", "),
+    storedSubjectSlugs.sorted().joinToString(", "),
+    taxonomy.slugs.size,
+  )
+}
+
+private val yourFieldLogger = LoggerFactory.getLogger("ed.unicoach.college.YourField")
+
+/**
+ * What this school's programme census says about the subjects THIS student
+ * stored (RFC 245), appended after `programs` — or nothing at all when this
+ * student has stored no subject.
+ *
+ * That absence writes NO key, no null and no placeholder, so a page for a
+ * student who has not answered is byte-identical to the one that shipped before
+ * this RFC (D20). `programs` sets the precedent and gives the reason: a key
+ * meaning "what matched" has nothing to say when nothing was asked, and a
+ * placeholder reads as a claim about the school. It is the ONE absence:
+ * [TeachesYourField.of] owns the rule, and a student whose stored subjects this
+ * taxonomy cannot judge is labelled `unknown` rather than left unlabelled,
+ * because that is OUR silence and not theirs.
+ *
+ * Both values are STRINGS. `BareSourceCodeGuard` reports a bare NUMBER under a
+ * field name, so a numeric label would either fail that guard or have to join
+ * the row's number contract — which would then advertise a word as an unstamped
+ * FIGURE. The label is a word, and it says so on the wire.
+ */
+private fun JsonObjectBuilder.putYourField(
+  match: CollegeMatch,
+  storedSubjectSlugs: Set<String>,
+  taxonomy: SubjectTaxonomy,
+) {
+  val label = TeachesYourField.of(match.programmeCensus, storedSubjectSlugs, taxonomy) ?: return
+  put(TeachesYourField.WIRE_KEY, label.value)
+  when (label) {
+    // Only a yes has subjects to name, and it CARRIES them -- the overlap is not
+    // recomputed here, so the list and the label cannot disagree.
+    is TeachesYourField.Yes -> {
+      putJsonArray(TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY) {
+        label.subjectsTaught.forEach { add(it) }
+      }
+    }
+
+    // A judged no and either of our two silences name no subject. An empty
+    // array beside any of them would read as a claim about this school's
+    // programs rather than about this student's question, which is the
+    // misreading `programs: []` already cost us. A `when` and not a negated
+    // `is`: a fourth state must stop this build rather than take the no-list
+    // path with nobody having decided it should.
+    TeachesYourField.No, is TeachesYourField.Unknown -> {
+      Unit
+    }
+  }
+}
 
 /**
  * ONE stamped outcome figure, under the key its own
@@ -399,6 +521,77 @@ private fun JsonObjectBuilder.putRulerPrice(
 internal fun JsonObjectBuilder.putExcludedUnknown(excludedUnknown: Map<String, Int>) {
   putJsonObject("excluded_unknown") {
     excludedUnknown.toSortedMap().forEach { (axis, count) -> put(axis, count) }
+  }
+}
+
+/**
+ * The wire key of the one cut a search reports (RFC 245 A4), spelled ONCE.
+ *
+ * PUBLIC for the reason [TeachesYourField.WIRE_KEY] is: three surfaces quote
+ * this key and two of them live outside this module's `internal` -- the emitter
+ * below, `search_colleges`'s description through [REMOVED_BY_SUBJECT_FILTER_NOTE],
+ * and the `:service` assertion that the coach prompt tells the coach to read it.
+ * A rename that left a literal behind would leave the prompt naming a key no
+ * result carries, with nothing failing.
+ *
+ * The key is the APPROVED map shape and stays one (RFC 245 A4): a second cutting
+ * filter joins it as an entry rather than as a wire break. What is singular is
+ * everything BEHIND it -- this slice measures the `subject` filter and no other,
+ * and the names below say so.
+ */
+const val REMOVED_BY_FILTER_WIRE_KEY: String = "removed_by_filter"
+
+/**
+ * How to SAY the subject filter's cut, beside the emitter that writes it, for
+ * the reason [FIGURE_SOURCES_NOTE] and [YOUR_FIELD_NOTE] are notes: the key's
+ * wording and the key's writer move together, and neither re-types the other's
+ * two names.
+ *
+ * BOTH search doors splice it, because both take the `subject` filter through
+ * one shared vocabulary and both therefore measure a cut (RFC 245 A4). The
+ * sentence says "this search" of either one: the number is about the call the
+ * model just made.
+ *
+ * It ADVERTISES, as [YOUR_FIELD_NOTE] does: the key, and the one thing only
+ * this layer knows -- that the cut and `excluded_unknown` are keyed by the same
+ * filter word, are different numbers, and overlap. HOW to say the number is the
+ * coach prompt's line, said once there.
+ */
+internal val REMOVED_BY_SUBJECT_FILTER_NOTE =
+  "When this search wrote a `${CollegeQueryVocabulary.SUBJECT_FIELD}` filter the response also carries " +
+    "`$REMOVED_BY_FILTER_WIRE_KEY`, naming that filter and how many schools it removed. It is a " +
+    "DIFFERENT number from the `excluded_unknown` entry under the same filter word, and the two must " +
+    "never be added together: a school with no programme census is removed by this filter AND counted " +
+    "among the ones that could not be judged, so it sits inside both."
+
+/**
+ * How many schools the `subject` filter REMOVED (RFC 245 A4) — a question
+ * `excluded_unknown` cannot answer.
+ *
+ * The two are different facts and the difference matters to what a coach says
+ * out loud: `excluded_unknown` counts the schools that could NOT BE JUDGED on
+ * an axis, over the whole universe, while this counts every school this call's
+ * OTHER filters admitted that the subject filter then removed -- including the
+ * ones it removed BECAUSE they could not be judged, so a school with no
+ * programme census can sit inside both numbers and the two must never be added
+ * up. Keyed by the FILTER FIELD the model itself wrote, so the sentence it
+ * licences ("your subject filter removed 40 schools") names something the model
+ * can undo.
+ *
+ * ABSENT when the call wrote no such filter, on the `programs` rule: a key
+ * meaning "what your filter removed" has no answer to give when no filter ran,
+ * and a zero would read as "it removed none".
+ *
+ * Named for the ONE filter it measures, not for the general report the wire
+ * shape leaves room for: the parameter is one count and the inner key is one
+ * field, and a name promising a report over filters would describe a function
+ * that cannot produce one. Both search doors emit it, over their own candidate
+ * population: a peer list's cut is about the peers this call considered.
+ */
+internal fun JsonObjectBuilder.putRemovedBySubjectFilter(removedBySubjectFilter: Int?) {
+  removedBySubjectFilter ?: return
+  putJsonObject(REMOVED_BY_FILTER_WIRE_KEY) {
+    put(CollegeQueryVocabulary.SUBJECT_FIELD, removedBySubjectFilter)
   }
 }
 

@@ -16,6 +16,21 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
+ * The ACTIVE subject taxonomy a stored subject is judged against (RFC 245): the
+ * slugs `college_search_index.subject_slugs` is materialised through, and so the
+ * only slugs any school's census can name.
+ *
+ * It is a TYPE whose whole job is to not be the student's own set of slugs.
+ * `TeachesYourField.of` takes both, `intersect` is symmetric, and a transposed
+ * call survives into the comparison that decides whether we may say `no` — so
+ * the two sets are different types and the swap does not compile.
+ */
+@JvmInline
+value class SubjectTaxonomy(
+  val slugs: Set<String>,
+)
+
+/**
  * The ONE description of the [CollegeQuery] filter vocabulary a model may write:
  * the JSON-Schema properties it is offered, and the parse that turns what it
  * writes back into a query (RFC 147 D45).
@@ -62,6 +77,29 @@ class CollegeQueryVocabulary(
   val fieldNames: Set<String> = FIELD_NAMES
 
   /**
+   * The ACTIVE subject taxonomy (RFC 245): the slugs a `subject` filter may
+   * name, and the only slugs a STORED subject can be judged against.
+   *
+   * A TYPE and not a bare `Set<String>`, because the rule that reads it takes
+   * the student's own stored slugs beside it: two sets of the same primitive
+   * type, adjacent and positional, and a transposition compiles and turns every
+   * judged `no` into `unknown` — the one answer this surface exists to get
+   * right.
+   *
+   * `college_search_index.subject_slugs` is the expansion of this same
+   * vocabulary and `CodebooksDao.subjects` excludes deprecated rows, so a
+   * subject the taxonomy has retired appears in no school's census. A student
+   * who still holds one — deprecation keeps their choice on purpose — cannot be
+   * answered on it: that is nothing to judge with, and never a judged no.
+   *
+   * It is this process's LOADED snapshot, the same one the `subject` filter is
+   * offered and parsed from, so a subject the taxonomy gained since boot is not
+   * judged here either. That withholds a label until the next load rather than
+   * inventing an answer, which is the direction this surface errs in.
+   */
+  val subjectTaxonomy: SubjectTaxonomy = SubjectTaxonomy(codebook.subjectSlugs.toSet())
+
+  /**
    * The JSON-Schema `properties` entries for [fieldNames], in the order a model
    * reads them. Every word enum is the loaded codebook's own list, so a codebook
    * the publisher extends widens the schema with no code change.
@@ -82,7 +120,7 @@ class CollegeQueryVocabulary(
             "\"26.0702\" mean the same as \"2613\" and \"260702\" -- but the canonical " +
             "form is digits only.",
         ),
-      "subject" to
+      SUBJECT_FIELD to
         wordProperty(
           codebook.subjectSlugs,
           "A field of study, as one word from the published subject taxonomy " +
@@ -258,7 +296,7 @@ class CollegeQueryVocabulary(
 
     val normalizedStates = parseStates(input).getOrElse { return Result.failure(it) }
 
-    val subject = parseSlug(input, "subject", codebook.subjectSlugs).getOrElse { return Result.failure(it) }
+    val subject = parseSlug(input, SUBJECT_FIELD, codebook.subjectSlugs).getOrElse { return Result.failure(it) }
 
     // The slug the model wrote IS the value the index stores and the SQL binds
     // (RFC 150 D61): there is no code lookup left on this path.
@@ -586,11 +624,23 @@ class CollegeQueryVocabulary(
   }
 
   companion object {
+    /**
+     * The `subject` filter's field name, named once for every surface that
+     * quotes it: the schema property, the parse, [FIELD_NAMES], and the
+     * `removed_by_filter` report that says how many schools this filter removed
+     * (RFC 245 A4). A report keyed by a word the tool does not accept would name
+     * a filter the model cannot write.
+     *
+     * No count of those surfaces is written here, because the count is the part
+     * that goes stale.
+     */
+    const val SUBJECT_FIELD: String = "subject"
+
     /** The shared filter fields, in schema order. */
     val FIELD_NAMES: Set<String> =
       linkedSetOf(
         "cipPrefix",
-        "subject",
+        SUBJECT_FIELD,
         "states",
         "region",
         "locale_type",

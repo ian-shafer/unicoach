@@ -7,10 +7,8 @@ import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.UsStateCodes
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -134,8 +132,26 @@ sealed interface Residency {
     ): Residency =
       readProfile(studentId).fold(
         onSuccess = { outcome -> forProfile(outcome, caller) },
-        onFailure = { error -> onReadFailure(studentId, caller, error) },
+        onFailure = { error -> afterFailedRead(studentId, caller, error) },
       )
+
+    /**
+     * A money-profile read that FAULTED — one altitude, like the arm beside it.
+     *
+     * The caller is NAMED but is not assumed to be the search: this helper has a
+     * second consumer (`fafsa_deadlines`, RFC 237), which serves the federal rows
+     * with a labelled gap and has no net-price ruler at all. An operator chasing
+     * "the coach did not know my state" must be able to tell which door degraded,
+     * and a sentence about search would answer the wrong one.
+     */
+    private fun afterFailedRead(
+      studentId: StudentId,
+      caller: String,
+      error: Throwable,
+    ): Residency {
+      logDegradedRead(studentId, caller, READ_NAME, error)
+      return Unavailable(Cause.READ_FAILED)
+    }
 
     /** The residency a profile read ANSWERS with — one altitude, no fault handling. */
     private fun forProfile(
@@ -221,26 +237,8 @@ sealed interface Residency {
       return OnFile(state)
     }
 
-    /** A money-profile read that FAULTED: logged with the throwable and with the caller that will run degraded. */
-    private fun onReadFailure(
-      studentId: StudentId,
-      caller: String,
-      error: Throwable,
-    ): Residency {
-      // The caller is NAMED but is not assumed to be the search: this helper has
-      // a second consumer (`fafsa_deadlines`, RFC 237), which serves the federal
-      // rows with a labelled gap and has no net-price ruler at all. An operator
-      // chasing "the coach did not know my state" must be able to tell which
-      // door degraded, and a sentence about search would answer the wrong one.
-      logger.warn(
-        "a residency read failed: caller=[{}] student=[{}] -- the caller runs on its no-residency " +
-          "behaviour, which is what it did before a residency-correct one existed",
-        caller,
-        studentId.asString,
-        error,
-      )
-      return Unavailable(Cause.READ_FAILED)
-    }
+    /** WHICH answer a degraded-read log line is about. */
+    private const val READ_NAME = "residency"
   }
 }
 
@@ -338,29 +336,5 @@ internal fun JsonObjectBuilder.putOffer(residency: Residency) {
   }
   (residency as? Residency.Unavailable)?.let { unavailable ->
     ResidencyOffer.noteFor(unavailable.cause)?.let { put(ResidencyOffer.UNAVAILABLE_KEY, it) }
-  }
-}
-
-/**
- * Merges [ResidencyOffer] into a tool result object without the tool having to
- * rebuild it — the two search tools return whole objects built in `:college`,
- * which knows nothing about a money profile (RFC 67 keeps `:college` free of
- * `:chat` and of the profile).
- *
- * An error object is passed through untouched: an invitation attached to a
- * refusal is an invitation the model would read as part of the failure.
- */
-internal fun addResidencyOffer(
-  result: JsonObject,
-  residency: Residency,
-): JsonObject {
-  // Asked of the owner of the refusal envelope, never re-derived from a literal
-  // key here: an invitation attached to a failure reads as part of the failure,
-  // and a second unlinked copy of that test is how a change to the envelope
-  // quietly stops being recognised.
-  if (StudentScopedChatTool.isToolRefusal(result)) return result
-  return buildJsonObject {
-    result.forEach { (key, value) -> put(key, value) }
-    putOffer(residency)
   }
 }

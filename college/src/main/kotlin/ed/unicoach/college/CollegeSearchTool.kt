@@ -83,6 +83,7 @@ class CollegeSearchTool(
   suspend fun execute(
     input: JsonObject,
     familyResidencyState: String?,
+    storedSubjectSlugs: Set<String>,
   ): JsonObject {
     // Resolved ONCE, here, and carried on the query from now on. No default:
     // "the caller forgot" and "this family has no state on file" are different
@@ -113,9 +114,17 @@ class CollegeSearchTool(
         is CollegeSearchOutcome.Page -> outcome.page
       }
 
+    // OUR gap, recorded once for this call: a stored subject this process's
+    // taxonomy cannot judge is a label this page did not give, and the page
+    // cannot be told apart from one where every subject was judged.
+    logUnjudgeableSubjects(TOOL_NAME, storedSubjectSlugs, vocabulary.subjectTaxonomy)
+
     return buildJsonObject {
       putJsonArray("colleges") {
-        page.matches.forEach { add(matchObject(it, vocabulary, page.priceRuler)) }
+        // The student's stored subjects LABEL a row and nothing more (RFC 245
+        // A1): they reached this point past the query, the sort and the LIMIT,
+        // so the page this loop renders is the page an unlabelled call returns.
+        page.matches.forEach { add(matchObject(it, vocabulary, page.priceRuler, storedSubjectSlugs)) }
       }
       put("count", page.matches.size)
       // The honest population count (RFC 139): unclamped, so the model can say
@@ -125,6 +134,11 @@ class CollegeSearchTool(
       // a column a college may not report says how many colleges it could not
       // judge. `{}` when no supplied filter can exclude an unknown.
       putExcludedUnknown(page.excludedUnknown)
+      // ...and, when the model wrote a `subject` filter, how many schools that
+      // filter itself removed (RFC 245 A4) — the cut `excluded_unknown` never
+      // reported. A different question, and not a disjoint one: a school with no
+      // programme census is removed by this filter and counted there too.
+      putRemovedBySubjectFilter(page.removedBySubjectFilter)
       // WHICH price this page was ranked on, and what is in it (RFC 169 D1):
       // never left for a reader to infer, because a published ranking has no
       // financial aid in it at all.
@@ -297,7 +311,8 @@ class CollegeSearchTool(
         STAMPED_FIGURE_KEYS +
         ", each of which carries a `figure_sources` entry on any page where a returned row reports it, plus " +
         UNSTAMPED_FIGURE_KEYS + ", which never carry one. " +
-        FIGURE_SOURCES_NOTE + " Each result carries " +
+        FIGURE_SOURCES_NOTE + " " + YOUR_FIELD_NOTE + " " + REMOVED_BY_SUBJECT_FILTER_NOTE +
+        " Each result carries " +
         "`college_id`, the college's stable identifier — exactly what the " +
         "`update_college_list` tool's `college_id` parameter takes, so copy it " +
         "verbatim from a result and never construct or guess one. Each result also carries " +

@@ -30,12 +30,22 @@ package ed.unicoach.db.models
  * know about it. A single-year range is the ordinary case; a wider one says the
  * page mixes vintages, which is the truth. A key is ABSENT only when no returned
  * row carries that vintage at all — an empty page reports no years.
+ *
+ * [removedBySubjectFilter] answers a question [excludedUnknown] cannot (RFC 245
+ * A4): how many colleges matched every OTHER filter of this same call and were
+ * removed by the `subject` one. `excluded_unknown` says "could not be judged",
+ * over the whole universe, which is a different fact but NOT a disjoint one:
+ * the `subject` filter also removes the colleges with no programme census at
+ * all, so such a college sits inside both numbers and a reader adding the two
+ * together would count it twice. It is `null` when the call wrote no `subject`
+ * filter, because a cut nobody asked for has no size.
  */
 data class CollegeSearchPage(
   val matches: List<CollegeMatch>,
   val totalMatches: Int,
   val excludedUnknown: Map<String, Int> = emptyMap(),
   val sourceYears: Map<String, IntRange> = emptyMap(),
+  val removedBySubjectFilter: Int? = null,
   /**
    * WHICH price this page was filtered, sorted and reported on (RFC 169) — the
    * query's own [PriceRuler], riding on the result rather than re-derived by the

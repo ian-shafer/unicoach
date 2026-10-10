@@ -43,7 +43,13 @@ class CollegeChatToolTest {
   // honest snapshot of a database whose `codebooks` ingest phase never ran.
   private val wrapped = CollegeSearchTool(CollegeSearchService(database), ed.unicoach.college.Codebook.EMPTY)
   private val moneyProfiles = MoneyProfileService(database)
-  private val adapter = CollegeChatTool(wrapped, moneyProfiles)
+
+  // The REAL intended-subjects service (RFC 245): the adapter reads the same
+  // store `update_intended_subjects` writes, so a test that stores a subject and
+  // then searches is asserting the shipping path and not a stub of it.
+  private val intendedSubjects = IntendedSubjectsService(database, SubjectVocabularyService(database))
+  private val adapter =
+    CollegeChatTool(wrapped, moneyProfiles::getForStudent, intendedSubjects::getForStudent)
 
   /**
    * A built index with one college in it. `search_colleges` refuses an UNBUILT
@@ -97,7 +103,7 @@ class CollegeChatToolTest {
     runBlocking {
       val student = CoachingTestDb.createStudent("search-bad-input")
       val badInput = buildJsonObject { put("not_a_field", "x") }
-      assertEquals(wrapped.execute(badInput, null), adapter.execute(student, badInput))
+      assertEquals(wrapped.execute(badInput, null, emptySet()), adapter.execute(student, badInput))
     }
 
   @Test
@@ -199,7 +205,11 @@ class CollegeChatToolTest {
       // gets the ranking search had before a residency-correct one existed.
       val student = CoachingTestDb.createStudent("search-read-failed")
       val faulting =
-        CollegeChatTool(wrapped, moneyProfiles) { Result.failure(IllegalStateException("the profile read failed")) }
+        CollegeChatTool(
+          wrapped,
+          { Result.failure(IllegalStateException("the profile read failed")) },
+          intendedSubjects::getForStudent,
+        )
 
       val result = faulting.execute(student, buildJsonObject { })
       assertNull(result["error"], "a side read that failed is not a failed search: $result")
@@ -225,7 +235,11 @@ class CollegeChatToolTest {
     runBlocking {
       val student = CoachingTestDb.createStudent("search-read-failed-copy")
       val faulting =
-        CollegeChatTool(wrapped, moneyProfiles) { Result.failure(IllegalStateException("the profile read failed")) }
+        CollegeChatTool(
+          wrapped,
+          { Result.failure(IllegalStateException("the profile read failed")) },
+          intendedSubjects::getForStudent,
+        )
 
       val result = faulting.execute(student, buildJsonObject { })
       val note = result[ResidencyOffer.UNAVAILABLE_KEY]!!.jsonPrimitive.content
@@ -251,13 +265,17 @@ class CollegeChatToolTest {
     runBlocking {
       val student = CoachingTestDb.createStudent("search-corrupt-state")
       val corrupt =
-        CollegeChatTool(wrapped, moneyProfiles) {
-          Result.success(
-            GetMoneyProfileResult.Found(
-              moneyProfileWith(residencyState = "ZZ", residencyStatus = AnswerStatus.ANSWERED),
-            ),
-          )
-        }
+        CollegeChatTool(
+          wrapped,
+          {
+            Result.success(
+              GetMoneyProfileResult.Found(
+                moneyProfileWith(residencyState = "ZZ", residencyStatus = AnswerStatus.ANSWERED),
+              ),
+            )
+          },
+          intendedSubjects::getForStudent,
+        )
 
       val result = corrupt.execute(student, buildJsonObject { })
       assertNull(result["error"], "corruption on a side read is not a failed search: $result")

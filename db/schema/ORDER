@@ -154,3 +154,4 @@ create-college-national-merit-awards.sql
 widen-commitments-lens-psat-window.sql
 seed-national-merit-cycles-2026-09-25.sql
 seed-coach-system-prompt-v48.sql
+seed-coach-system-prompt-v49.sql

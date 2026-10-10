@@ -63,7 +63,13 @@ class SimilarCollegesChatToolTest {
   private val service = CollegeSearchService(database)
   private val wrapped = SimilarCollegesTool(service, ed.unicoach.college.Codebook.EMPTY)
   private val moneyProfiles = MoneyProfileService(database)
-  private val adapter = SimilarCollegesChatTool(wrapped, moneyProfiles)
+
+  // The REAL intended-subjects service (RFC 245), for the reason its twin in
+  // `CollegeChatToolTest` carries: the peer list reads the same store the
+  // subject tool writes.
+  private val intendedSubjects = IntendedSubjectsService(database, SubjectVocabularyService(database))
+  private val adapter =
+    SimilarCollegesChatTool(wrapped, moneyProfiles::getForStudent, intendedSubjects::getForStudent)
 
   /**
    * Two colleges and a built index. `similar_colleges` refuses an unbuilt index
@@ -96,7 +102,7 @@ class SimilarCollegesChatToolTest {
       // so the adapter returning the identical structured error proves delegation.
       val student = CoachingTestDb.createStudent("similar-bad-input")
       val badInput = buildJsonObject { put("not_a_field", "x") }
-      assertEquals(wrapped.execute(badInput, null), adapter.execute(student, badInput))
+      assertEquals(wrapped.execute(badInput, null, emptySet()), adapter.execute(student, badInput))
     }
 
   @Test
@@ -229,7 +235,12 @@ class SimilarCollegesChatToolTest {
 
   @Test
   fun `it registers beside the search tool under a name of its own`() {
-    val search = CollegeChatTool(CollegeSearchTool(service, ed.unicoach.college.Codebook.EMPTY), MoneyProfileService(database))
+    val search =
+      CollegeChatTool(
+        CollegeSearchTool(service, ed.unicoach.college.Codebook.EMPTY),
+        MoneyProfileService(database)::getForStudent,
+        intendedSubjects::getForStudent,
+      )
     // A duplicate name is a construction-time `require` failure, so a registry
     // that CONSTRUCTS is the assertion that the two names are distinct.
     val registry = ToolRegistry(listOf(search, adapter))

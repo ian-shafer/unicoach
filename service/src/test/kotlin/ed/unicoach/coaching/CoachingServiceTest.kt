@@ -2069,7 +2069,8 @@ class CoachingServiceTest {
             ed.unicoach.college.Codebook.EMPTY,
           ),
           ed.unicoach.coaching.moneyprofile
-            .MoneyProfileService(database),
+            .MoneyProfileService(database)::getForStudent,
+          IntendedSubjectsService(database, SubjectVocabularyService(database))::getForStudent,
         )
       var continuation: ChatRequest? = null
       val provider =

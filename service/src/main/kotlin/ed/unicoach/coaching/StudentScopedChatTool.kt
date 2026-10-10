@@ -220,7 +220,7 @@ abstract class StudentScopedChatTool : ChatTool {
     /**
      * TRUE when [result] is a refusal rather than an answer.
      *
-     * It exists for [ed.unicoach.coaching.addResidencyOffer], which must not
+     * It exists for [ed.unicoach.coaching.addSearchOffers], which must not
      * attach an invitation to a failure: an offer beside an error reads as part
      * of the error. Asked of the owner of the envelope, never re-derived.
      */
@@ -279,6 +279,37 @@ internal fun noArgumentToolDefinition(
       put("additionalProperties", false)
     }
   }
+
+/**
+ * ONE log line for a student-scoped SIDE read that faulted (RFC 245 tier 1).
+ *
+ * [caller] is the door that will run degraded and [what] is the answer we failed
+ * to read — an operator chasing "the coach did not know my state" or "the coach
+ * stopped saying my subject" needs both, and the second of those two had to be
+ * tellable from the first. The throwable rides as the last argument, so the
+ * cause is in the log and not just its shape.
+ *
+ * It lives beside the student-scoped base rather than in either offer, because
+ * every consumer is one of these tools and a sentence per answer is how two
+ * degraded reads become two different claims about the same disposition.
+ */
+internal fun logDegradedRead(
+  studentId: StudentId,
+  caller: String,
+  what: String,
+  error: Throwable,
+) {
+  degradedReadLogger.warn(
+    "a {} read failed: caller=[{}] student=[{}] -- the caller runs on its no-answer behaviour, " +
+      "which is what it did before that answer existed",
+    what,
+    caller,
+    studentId.asString,
+    error,
+  )
+}
+
+private val degradedReadLogger = LoggerFactory.getLogger("ed.unicoach.coaching.DegradedRead")
 
 /**
  * The `input_schema` both `college_ids` tools advertise, written once so the

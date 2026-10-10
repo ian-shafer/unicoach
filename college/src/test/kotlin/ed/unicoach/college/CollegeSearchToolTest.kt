@@ -1632,6 +1632,334 @@ class CollegeSearchToolTest {
       assertNull(result["count"], "a refusal must not fall through to a search")
     }
 
+  // ---------------------------------------------------------------------------
+  // The student's own field of study (RFC 245)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The subject `marine-biology` is published under, and the ONE six-digit
+   * programme code inside it.
+   *
+   * Deliberately NARROW -- one code -- because the acceptance test below is only
+   * worth running if an implementation that FILTERED on the stored subject would
+   * have returned a shorter list. The taxonomy prefix and the census code are
+   * the same string here, which is the narrowness said once.
+   */
+  private val marineBiologyCip = "260702"
+
+  /** The subject `literature` is published under, and a programme code INSIDE that prefix. */
+  private val literatureCipPrefix = "2301"
+
+  private val literatureProgramCip = "230101"
+
+  /** A subject NO seeded college teaches, so a student storing two is shown only the one that matched. */
+  private val nursingCipPrefix = "5138"
+
+  /** The taxonomy this suite labels against, and the three census states it has to tell apart. */
+  private fun seedFieldUniverse(): CollegeSearchTool {
+    seedSubjectTaxonomy()
+    // Teaches it; teaches something else (a JUDGED no); reports no census at all
+    // (unjudgeable). The three states, one college each.
+    seedWithProgram(9701, marineBiologyCip)
+    seedWithProgram(9702, literatureProgramCip)
+    insert(newCollege(9703))
+    return CollegeSearchTool(
+      CollegeSearchService(database),
+      runBlocking { Codebook.load(database).getOrThrow() },
+    )
+  }
+
+  /** The three subjects, as `SimilarCollegesToolTest.seedSubject` names the same step next door. */
+  private fun seedSubjectTaxonomy() =
+    runBlocking {
+      database.withConnection { session ->
+        CodebooksDao
+          .upsertSubject(session, NewSubject("marine-biology", "Marine Biology", listOf(marineBiologyCip)))
+          .getOrThrow()
+        CodebooksDao
+          .upsertSubject(session, NewSubject("literature", "Literature", listOf(literatureCipPrefix)))
+          .getOrThrow()
+        CodebooksDao.upsertSubject(session, NewSubject("nursing", "Nursing", listOf(nursingCipPrefix))).getOrThrow()
+        Unit
+      }
+    }
+
+  private fun rowsOf(result: JsonObject): List<JsonObject> = (result["colleges"] as JsonArray).map { it.jsonObject }
+
+  private fun collegeIdsOf(result: JsonObject): List<String> = rowsOf(result).map { it["college_id"]!!.jsonPrimitive.content }
+
+  private fun labelsByName(result: JsonObject): Map<String, String?> =
+    rowsOf(result).associate { row ->
+      row["name"]!!.jsonPrimitive.content to row[TeachesYourField.WIRE_KEY]?.jsonPrimitive?.content
+    }
+
+  /**
+   * THE SLICE'S FIRST ACCEPTANCE CRITERION: a stored field removes no school.
+   *
+   * One search, run twice against one fixture -- once for a student with a
+   * stored field and once for a student with none -- and the two pages carry the
+   * same colleges, in the same order, with the same total. The only difference
+   * permitted is the two new keys, and that is asserted by STRIPPING them and
+   * comparing the whole payload byte for byte, so a label that quietly changed a
+   * price or a count fails here too.
+   *
+   * IT IS NOT VACUOUS. The stored subject is one narrow six-digit CIP code that
+   * exactly ONE of the three seeded colleges carries, so an implementation that
+   * pushed the stored field into the `WHERE` -- or into the `ORDER BY`, where the
+   * `LIMIT` would then do the removing -- returns one row where this asserts
+   * three. The label distribution is asserted first, as the premise, so the
+   * narrowness cannot rot into "all three teach it" without saying so.
+   */
+  @Test
+  fun `a stored field removes no school and changes no count`() =
+    runBlocking {
+      val fieldTool = seedFieldUniverse()
+
+      val unlabelled = fieldTool.execute(buildJsonObject { }, null, emptySet())
+      val labelled = fieldTool.execute(buildJsonObject { }, null, setOf("marine-biology"))
+
+      // The PREMISE: three schools, and the stored subject is narrow enough that
+      // only one of them teaches it.
+      assertEquals(3, collegeIdsOf(unlabelled).size, "the fixture must hold more than the one matching school")
+      assertEquals(
+        mapOf(
+          "Coastal College 9701" to TeachesYourField.YES,
+          "Coastal College 9702" to TeachesYourField.NO,
+          "Coastal College 9703" to TeachesYourField.UNKNOWN,
+        ),
+        labelsByName(labelled),
+        "one yes out of three: a filtering implementation would have returned one row",
+      )
+
+      // The claim.
+      assertEquals(collegeIdsOf(unlabelled), collegeIdsOf(labelled), "the same schools, in the same order")
+      assertEquals(
+        unlabelled["total_matches"],
+        labelled["total_matches"],
+        "the honest population count is the same population",
+      )
+      assertEquals(
+        unlabelled,
+        stripFieldKeys(labelled),
+        "the two new keys are the WHOLE difference a stored field makes to a search payload",
+      )
+    }
+
+  /** [labelled] with RFC 245's two row keys removed, so what is left must equal the unlabelled payload. */
+  private fun stripFieldKeys(labelled: JsonObject): JsonObject =
+    JsonObject(
+      labelled.toMutableMap().also { envelope ->
+        envelope["colleges"] =
+          JsonArray(
+            rowsOf(labelled).map { row ->
+              JsonObject(row - TeachesYourField.WIRE_KEY - TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY)
+            },
+          )
+      },
+    )
+
+  @Test
+  fun `a student with no stored field gets neither key, on any row`() =
+    runBlocking {
+      val fieldTool = seedFieldUniverse()
+
+      val result = fieldTool.execute(buildJsonObject { }, null, emptySet())
+
+      // D20: no key, no null, no placeholder. A labelled null would be a claim
+      // about every school in the database made on behalf of a student who has
+      // told us nothing.
+      for (row in rowsOf(result)) {
+        assertFalse(row.containsKey(TeachesYourField.WIRE_KEY), "$row")
+        assertFalse(row.containsKey(TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY), "$row")
+      }
+    }
+
+  /**
+   * The state a RETIRED subject leaves a student in, through the real tool and
+   * the real loaded codebook: the slug is not in the active taxonomy this tool
+   * offers, so no school's `subject_slugs` can carry it.
+   *
+   * Two different claims, and both are this RFC's whole point. A school whose
+   * census IS on file must not report our silence as its own no; and a student
+   * with nothing comparable left is TOLD we could not judge -- `unknown` on
+   * every row -- rather than handed the page of a student who stored nothing or
+   * a page of noes about a subject nobody could have matched.
+   */
+  @Test
+  fun `a stored subject outside the active taxonomy is never answered with a census no`() =
+    runBlocking {
+      val fieldTool = seedFieldUniverse()
+
+      // One judgeable subject beside one the taxonomy does not carry. 9702's
+      // census is ON FILE and names neither, which used to read as a flat `no`.
+      val mixed = fieldTool.execute(buildJsonObject { }, null, setOf("marine-biology", "retired-subject-slug"))
+      assertEquals(
+        mapOf(
+          "Coastal College 9701" to TeachesYourField.YES,
+          "Coastal College 9702" to TeachesYourField.UNKNOWN,
+          "Coastal College 9703" to TeachesYourField.UNKNOWN,
+        ),
+        labelsByName(mixed),
+        "a census that could not be compared against one of their subjects cannot say it names none",
+      )
+
+      // Nothing judgeable at all: every row reads `unknown`, and NO row is left
+      // unlabelled. An absent key means one thing -- this student stored nothing
+      // -- so using it here would report a gap of ours as their silence.
+      val none = fieldTool.execute(buildJsonObject { }, null, setOf("retired-subject-slug"))
+      assertEquals(
+        mapOf(
+          "Coastal College 9701" to TeachesYourField.UNKNOWN,
+          "Coastal College 9702" to TeachesYourField.UNKNOWN,
+          "Coastal College 9703" to TeachesYourField.UNKNOWN,
+        ),
+        labelsByName(none),
+        "we could not judge is not we hold nothing of yours",
+      )
+      for (row in rowsOf(none)) {
+        assertFalse(row.containsKey(TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY), "$row")
+      }
+    }
+
+  @Test
+  fun `only a yes row names the subjects that matched`() =
+    runBlocking {
+      val fieldTool = seedFieldUniverse()
+
+      val result = fieldTool.execute(buildJsonObject { }, null, setOf("marine-biology", "nursing"))
+      val rows = rowsOf(result).associateBy { it["name"]!!.jsonPrimitive.content }
+
+      val yes = rows.getValue("Coastal College 9701")
+      assertEquals(TeachesYourField.YES, yes[TeachesYourField.WIRE_KEY]!!.jsonPrimitive.content)
+      assertEquals(
+        listOf("marine-biology"),
+        (yes[TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY] as JsonArray).map { it.jsonPrimitive.content },
+        "only the stored subject this school actually teaches, not both of them",
+      )
+
+      // The judged no and the unjudgeable school both carry the label and
+      // NEITHER carries a list: an empty array there reads as a claim about the
+      // school's programs rather than about this student's question.
+      val no = rows.getValue("Coastal College 9702")
+      assertEquals(TeachesYourField.NO, no[TeachesYourField.WIRE_KEY]!!.jsonPrimitive.content)
+      assertFalse(no.containsKey(TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY), "$no")
+
+      val unknown = rows.getValue("Coastal College 9703")
+      assertEquals(TeachesYourField.UNKNOWN, unknown[TeachesYourField.WIRE_KEY]!!.jsonPrimitive.content)
+      assertFalse(unknown.containsKey(TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY), "$unknown")
+    }
+
+  @Test
+  fun `the label is a word, never a number`() =
+    runBlocking {
+      val fieldTool = seedFieldUniverse()
+
+      val result = fieldTool.execute(buildJsonObject { }, null, setOf("marine-biology"))
+
+      // A numeric label would either be reported by the bare-source-code guard
+      // or have to join the row's number contract -- which would then advertise
+      // a WORD as an unstamped figure in the tool description.
+      assertEquals(
+        emptyList(),
+        BareSourceCodeGuard.listNumericFields(result).filter { it == TeachesYourField.WIRE_KEY },
+        "the label must not be a bare number: $result",
+      )
+      assertTrue(
+        rowsOf(result).all { it[TeachesYourField.WIRE_KEY]!!.jsonPrimitive.isString },
+        "$result",
+      )
+    }
+
+  @Test
+  fun `both tool descriptions state the two keys and the new-programme limit, in one wording`() {
+    val search = tool.definition["description"]!!.jsonPrimitive.content
+    val peers =
+      SimilarCollegesTool(CollegeSearchService(database), codebook)
+        .definition["description"]!!
+        .jsonPrimitive.content
+
+    // `similar_colleges` renders the same row key for key, so a key advertised
+    // on one door and silent on the other is a key the model has to guess at
+    // exactly where it was not told about it.
+    for (description in listOf(search, peers)) {
+      assertTrue(description.contains(TeachesYourField.WIRE_KEY), "[$description]")
+      assertTrue(description.contains(TeachesYourField.SUBJECTS_TAUGHT_WIRE_KEY), "[$description]")
+      // Both doors cut on `subject` and both report the cut, so both must say
+      // so: a key advertised on one door and silent on the other is a key the
+      // model has to guess at exactly where it was not told about it.
+      assertTrue(description.contains(REMOVED_BY_FILTER_WIRE_KEY), "[$description]")
+      // The WHOLE note, read from the constant both doors splice: a substring
+      // match would pass for two doors carrying two different notes that happen
+      // to share four words, which is what "in one wording" claims they do not.
+      assertTrue(description.contains(YOUR_FIELD_NOTE), "unknown is OUR silence, in ONE wording: [$description]")
+      assertTrue(description.contains(REMOVED_BY_SUBJECT_FILTER_NOTE), "[$description]")
+      // D23's one sentence, said once and in one place.
+      assertTrue(description.contains("no graduates in the completions census yet"), "[$description]")
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The cut report (RFC 245 A4)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a search that wrote no subject filter reports no cut`() =
+    runBlocking {
+      val fieldTool = seedFieldUniverse()
+
+      val result = fieldTool.execute(buildJsonObject { }, null, emptySet())
+
+      // The `programs` rule: a key meaning "what your filter removed" has no
+      // answer to give when no filter ran, and a zero would read as "it removed
+      // none of them".
+      assertNull(result[REMOVED_BY_FILTER_WIRE_KEY], "$result")
+    }
+
+  @Test
+  fun `a subject filter says how many schools it removed, counting only the ones the other filters admit`() =
+    runBlocking {
+      val fieldTool = seedFieldUniverse()
+      // Two more schools with no census, in ANOTHER state. They are unjudgeable
+      // on this axis, so `excluded_unknown` counts them -- and the CUT must not,
+      // because the state filter had already removed them.
+      insert(newCollege(9704).copy(state = "NV"))
+      insert(newCollege(9705).copy(state = "NV"))
+
+      val result =
+        fieldTool.execute(
+          buildJsonObject {
+            put(CollegeQueryVocabulary.SUBJECT_FIELD, "marine-biology")
+            put("states", buildJsonArray { add(JsonPrimitive("CA")) })
+          },
+          null,
+          emptySet(),
+        )
+
+      assertNull(result["error"], "$result")
+      assertEquals(1, result["total_matches"]!!.jsonPrimitive.intOrNull, "one CA school teaches it")
+
+      // THREE CA schools matched every other filter; one survived this one.
+      assertEquals(
+        buildJsonObject { put(CollegeQueryVocabulary.SUBJECT_FIELD, 2) },
+        result[REMOVED_BY_FILTER_WIRE_KEY],
+        "the cut is measured against this call's OTHER filters, never the bare universe: $result",
+      )
+
+      // And the two numbers stay different facts -- different, not disjoint.
+      // `excluded_unknown` counts the schools that could not be JUDGED, over the
+      // whole universe: three of them, including the two in Nevada the cut above
+      // correctly ignores, and including 9703, which this filter also removed
+      // and which therefore sits inside BOTH numbers.
+      // Both numbers are keyed by the FILTER FIELD the model wrote -- which is
+      // also what binds `:db`'s own spelling of that word to this one, because
+      // `:college` cannot be read from `:db`.
+      assertEquals(
+        buildJsonObject { put(CollegeQueryVocabulary.SUBJECT_FIELD, 3) },
+        result["excluded_unknown"],
+        "the cut is this call's, the unknown count is the universe's: $result",
+      )
+    }
+
   private fun seedNamed(
     ipedsUnitId: Int,
     name: String,
@@ -1680,4 +2008,20 @@ private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSou
  * residency, so they call this one-argument form; the ruler cases pass a state
  * explicitly.
  */
-private suspend fun CollegeSearchTool.execute(input: kotlinx.serialization.json.JsonObject) = execute(input, null)
+private suspend fun CollegeSearchTool.execute(input: kotlinx.serialization.json.JsonObject) = execute(input, null, emptySet())
+
+/**
+ * NO STORED FIELD, stated once for this suite: `CollegeSearchTool.execute` takes
+ * the student's stored subject slugs with NO default either (RFC 245), because
+ * "the caller forgot" and "this student has stored nothing" must never be the
+ * same thing in production.
+ *
+ * An EMPTY set is what every case here means, and it is the case D20 pins: a
+ * payload for a student with no stored field is byte-identical to the one that
+ * shipped before RFC 245, which is exactly why these fifty-odd assertions are
+ * unchanged. The cases that ARE about the label pass a set of their own.
+ */
+private suspend fun CollegeSearchTool.execute(
+  input: kotlinx.serialization.json.JsonObject,
+  familyResidencyState: String?,
+) = execute(input, familyResidencyState, emptySet())

@@ -22,6 +22,7 @@ import ed.unicoach.db.models.NewNcesLocale
 import ed.unicoach.db.models.NewReligiousAffiliation
 import ed.unicoach.db.models.NewSubject
 import ed.unicoach.db.models.PriceRuler
+import ed.unicoach.db.models.ProgrammeCensus
 import ed.unicoach.db.models.SimilarityAnchorOutcome
 import ed.unicoach.db.models.SimilarityAxis
 import ed.unicoach.db.models.SimilarityQuery
@@ -50,6 +51,19 @@ import kotlin.test.assertTrue
 
 class CollegesDaoTest {
   companion object {
+    /**
+     * The taxonomy prefix `literature` is published under, and a six-digit
+     * programme code INSIDE it (RFC 245).
+     *
+     * The containment is the whole premise of the two cases that use them -- the
+     * index materialises `subject_slugs` by expanding the prefix over the
+     * census code -- and as two bare literals several lines apart it was
+     * invisible, so an edit to either changed what the test proved.
+     */
+    private const val LITERATURE_CIP_PREFIX = "2301"
+
+    private const val LITERATURE_PROGRAM_CIP = "${LITERATURE_CIP_PREFIX}01"
+
     private lateinit var connection: Connection
 
     @JvmStatic
@@ -1973,10 +1987,10 @@ class CollegesDaoTest {
   @Test
   fun `a subject filter counts as unjudgeable only a college whose programs are unknown`() {
     CodebooksDao
-      .upsertSubject(session, NewSubject("literature", "Literature", listOf("2301")))
+      .upsertSubject(session, NewSubject("literature", "Literature", listOf(LITERATURE_CIP_PREFIX)))
       .getOrThrow()
     val lit = seed(newCollege(904101, name = "Letters College"))
-    seedCensusProgram(lit, "230101")
+    seedCensusProgram(lit, LITERATURE_PROGRAM_CIP)
     // Programs KNOWN, none of them this subject: a judged NO, not an unknown.
     val bio = seed(newCollege(904102, name = "Science College"))
     seedCensusProgram(bio, "260101")
@@ -1985,7 +1999,51 @@ class CollegesDaoTest {
 
     val page = CollegesDao.search(session, CollegeQuery(subject = "literature", limit = 25)).page()
     assertEquals(listOf(904101), page.matches.map { it.ipedsUnitId })
-    assertEquals(mapOf("subject_slugs" to 1), page.excludedUnknown)
+    // Reported under the FILTER FIELD the caller wrote, never under the index
+    // column: the coach is told to say this number out loud, and the prompt
+    // forbids naming a data source's own column names.
+    assertEquals(mapOf("subject" to 1), page.excludedUnknown)
+  }
+
+  /**
+   * The projection, not the count: `subject_slugs` has to come back off the
+   * REAL index in all three of its states, because the label RFC 245 puts on a
+   * row is read from this list alone.
+   *
+   * The state that matters is the judged `{}`. A census IS on file for that
+   * college and none of its programs belongs to a taxonomy subject, so the
+   * column holds the EMPTY array -- a fact, not an absence. Reading it back as
+   * the `null` that means "no census at all" would relabel every judged-no
+   * school `unknown`, which is the one value the coach prompt forbids reading
+   * as a no. Only the round trip through Postgres and the array mapper can say
+   * which of the two arrives, so no hand-built list can stand in for this.
+   */
+  @Test
+  fun `a search page reads subject_slugs back in all three of its states`() {
+    CodebooksDao
+      .upsertSubject(session, NewSubject("literature", "Literature", listOf(LITERATURE_CIP_PREFIX)))
+      .getOrThrow()
+    val lit = seed(newCollege(904401, name = "Letters College", state = "VT"))
+    seedCensusProgram(lit, LITERATURE_PROGRAM_CIP)
+    // Programs KNOWN, none of them a taxonomy subject: the EMPTY array.
+    val judgedNo = seed(newCollege(904402, name = "Science College", state = "VT"))
+    seedCensusProgram(judgedNo, "260101")
+    // No census row at all: the only one of the three we cannot judge.
+    seed(newCollege(904403, name = "Silent College", state = "VT"))
+
+    // No `subject` filter: the judged no and the unjudgeable must both be ON
+    // the page, or the state that matters never reaches the mapper.
+    val page = CollegesDao.search(session, CollegeQuery(states = listOf("VT"), limit = 25)).page()
+
+    assertEquals(
+      mapOf(
+        904401 to ProgrammeCensus.OnFile(listOf("literature")),
+        904402 to ProgrammeCensus.OnFile(emptyList()),
+        904403 to ProgrammeCensus.NotReported,
+      ),
+      page.matches.associate { it.ipedsUnitId to it.programmeCensus },
+      "a census naming no taxonomy subject is ON FILE with no subjects, never the one that was not reported",
+    )
   }
 
   @Test
