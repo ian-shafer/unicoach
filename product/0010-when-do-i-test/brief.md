@@ -180,7 +180,7 @@ prompt file — had landed. A deletion rebased across additions can silently dro
 a sentence that landed minutes earlier and no test catches it; an add/add rebase
 cannot. Only the deletion needed a window.
 
-    test/08/the-psat-is-money LANDED as RFC 243 (main@f084bbda + <DOCSHA>,
+    test/08/the-psat-is-money LANDED as RFC 243 (main@f084bbda + feb1ba3a,
        2026-10-10) — the PSAT/NMSQT is a MONEY event and the coach now treats it
        as one: no college ever sees the score, only the junior-year sitting
        qualifies, and Finalist standing is what a named school pays for. Two
