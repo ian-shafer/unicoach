@@ -673,6 +673,29 @@ nudge, never a bare repeat.
       check passed in 11.6 minutes. 41 review lenses over four tiers, 39 fixes
       applied, 0 halted, 0 contradictions.
 
+    beyond/08/your-field-in-search LANDED as RFC 245 (main@80e695fc,
+      2026-10-10) — a student who has said what they want to study now sees, for
+      every school a search returns, whether it teaches that subject: `yes`, `no`
+      or `unknown`, and a `yes` names which of their subjects matched so the coach
+      never guesses. The "colleges like this one" list says the same. A stored
+      subject NEVER removes a school — it labels, and the coach leads with the
+      schools whose label is `yes`; the only thing that removes schools is an
+      explicit subject filter the coach writes, and both doors now report how many
+      schools it removed (`removed_by_filter`). A student nobody has asked gets one
+      invitation that says what the answer would change and can be skipped, reusing
+      RFC 169's residency-offer mechanism verbatim; "I do not know yet" is an answer
+      and is not asked again. A subject the taxonomy has RETIRED reads `unknown`,
+      never a census `no` — our own silence is never spoken as the school's answer —
+      and an ABSENT label means only "this student stored nothing". No schema change
+      and no new screen: the answer store landed with RFC 205 and the index column
+      with 0064. Coach prompt v49. Two proofs by deletion: a filtering
+      implementation fails the no-school-removed test, and a re-ranking one fails
+      the peer-order test. Full suite 4,228 executed, 0 failures; the gate's full
+      check passed. 41 review lenses over four tiers, 0 blocking findings, 53
+      should-fix applied or recorded, 0 contradictions. Landed over an advanced base:
+      RFC 243 had minted coach prompt v48, so the generator cut v49, and RFC 243's
+      catalog-walking rollback test replaced this run's literal-version fix.
+
 ### Spec defect found by `beyond/05`'s review (recorded 2026-09-23)
 
 The slice text DEFINED the "no matching programme" sentence by the PROGRAMME
