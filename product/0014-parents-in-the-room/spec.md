@@ -692,6 +692,76 @@ also create the `supporters` row for an adult who has never supported anybody
 before. `family/03`, `family/04`, `family/06` and `family/09` read or sever
 those rows.
 
+## Appended decisions (post-/ship, 2026-10-10)
+
+_Decided by Ian at RFC 244's approval gate, while `family/03.5/who-pays` was
+being built. D10 stands as committed and is SUPERSEDED, not edited._
+
+- **D23 — every account pays for itself. SUPERSEDES D10.** D10 chose option (a),
+  "parent coaching rides the linked student's subscription". Ian rejected the
+  framing when he saw the sentence it produced: _"Do we have a guarantee that a
+  user can only be a student or a supporter? … Is this worth it? How often will
+  this case come up?"_ and, on the pricing itself, _"I thought that we'd have
+  two subscriptions always."_ So: **billing is keyed to the ACCOUNT**
+  (`subscriptions.user_id`, never a role column — one user may hold BOTH a
+  `students` and a `supporters` row, which RFC 241 chose deliberately, so a
+  role-keyed subscription has no answer for that person and would make one human
+  need two subscriptions Apple will not sell on one Apple ID). Two Apple IDs pay
+  twice, at the same price. No account rides another's subscription, there is no
+  family plan, and a parent with no subscription gets the same free allowance
+  every account gets.
+
+- **D24 — the shared-Apple-ID collision is COUNTED before it is covered.** Apple
+  will not sell the same subscription twice to one Apple ID, so two unicoach
+  accounts signed in to ONE Apple ID cannot both subscribe. The run designed
+  coverage for that case (a linked pair sharing one payment) and Ian cut it
+  before it was built: the rate is unknown — unicoach has no real users yet —
+  the workaround is free (a second Apple ID), and the refusal is exactly where a
+  coverage branch would hook in later. **What ships instead:** the refusal keeps
+  its code and status, says what to do, withdraws the button that cannot work,
+  and logs one searchable `subscription_apple_id_already_bound` line carrying
+  both account ids. A coverage slice is a later decision with a number behind
+  it. Note for whoever writes it: **proper Family Sharing never reaches this
+  case** — unicoach is `familyShareable: false`, so each member buys their own —
+  and correction **X1 misnames the mechanism** ("a Family-Sharing Apple ID");
+  the trigger is two accounts on ONE Apple ID, usually a shared device.
+
+**Drift this creates, for whoever runs the next slices.** Three slices below
+were written against student-keyed billing and a cost spine with no adult arm.
+What landed is `subscriptions.user_id`, one account-keyed cost view
+(`account_llm_cost`, a union over the student and supporter spines), and a new
+owner table `supporter_llm_costs` that nothing writes yet.
+
+- **`family/05/the-subject-seam` is unaffected, and that was checked rather than
+  assumed.** This slice added no subject to any read: every student-keyed entry
+  point kept its signature and resolves the account one indexed hop away
+  (`students.user_id`), so `resolveStudent(user)` is still the only way a
+  student is named and the seam `family/05` must build is exactly the seam its
+  text describes. The one thing to inherit: a role id that names NO row now
+  fails CLOSED (an `IllegalStateException`, a 500 — deliberately not the DAO's
+  `NotFoundException`, which the REST boundary publishes as a `404`), so the
+  authorisation helper must not borrow 404 for a dangling reference.
+- **`family/09/the-deletion-partition` has real drift, and it is a decision that
+  slice must take.** Its text predates account-keyed billing. A subscription is
+  now `subscriptions.user_id` with NO `ON DELETE` action — deliberately, because
+  `users` carries the physical-delete guard, exactly as `students.user_id` and
+  `supporters.user_id` take none — and `supporter_llm_costs.supporter_id`
+  references `supporters(id)` on an append-only log row that has no `deleted_at`
+  and no soft delete. So deletion must say, in writing, what becomes of an
+  account's subscription row and of a supporter's attributed-cost rows: D9's
+  author-partitioned deletion answers neither today, and a soft-delete sweep
+  that walks link rows will walk past both.
+- **`family/06/the-parent-coach` is the FIRST production writer of
+  `supporter_llm_costs`, and the Kotlin it might have expected is not there.**
+  This run's review deleted three uncalled entry points as dead code:
+  `StudentLlmCostDao`, a per-supporter cost DAO, and the supporter-keyed
+  `BudgetService` overloads. What exists is `AccountLlmCostDao` — the one cost
+  read production makes — and a suspend `entitlement(userId)` for a caller that
+  already holds the account. The two owner-side views are still proved, through
+  the account spine. `family/06` writes the owner row per call and adds a
+  role-keyed gate together with the call it gates, which is also where that
+  gate's refusal shape is decided.
+
 # Gate 2 decisions (APPROVED 2026-09-14)
 
 _Approved by Ian 2026-09-14, all on their defaults. Verbatim: "approve but no

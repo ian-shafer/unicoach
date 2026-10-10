@@ -121,6 +121,41 @@ Status:
     written at the line. Gate: full check, 1,135s, 0 failures, verified tree
     recorded. iOS 722 tests, 0 failures; 84 snapshots, 0 drift on the 74
     pre-existing scenes.
+  - `family/03.5/who-pays` LANDED as RFC 244 (`main@04260df0` + `6a96f1e6`,
+    2026-10-10) — a parent's account can now be paid for. Billing and metering
+    moved from the STUDENT to the ACCOUNT: `subscriptions.user_id` replaces
+    `student_id` on the live table and on `subscriptions_versions`, the gate
+    reads ONE account-keyed cost view (`account_llm_cost`, a union over the
+    student and supporter spines) and a parent's LLM spend finally has a home
+    (`supporter_llm_costs` + `supporter_llm_cost`), so an allowance can be
+    enforced rather than asserted. `POST /api/v1/subscriptions/verify` no longer
+    refuses a caller for having no student profile; new door
+    `GET /api/v1/supporters/me/coaching-usage` (404 when the caller holds no
+    `supporters` row, no dollars and no tokens on the wire, `coverage.kind` =
+    `own_subscription` | `free_allowance`); and the parent home gained a
+    "Coaching" block that says how their coaching is paid for. On the student
+    side the shared-Apple-ID wall stops lying: it names the situation, says to
+    use a different Apple ID, withdraws a Subscribe button that cannot succeed —
+    and gives that fact its own rendered state, so it does not vanish with the
+    next refresh — while every refusal logs one searchable
+    `subscription_apple_id_already_bound` line with both account ids. **D10 is
+    SUPERSEDED by D23** (below): Ian rejected "the parent rides the student's
+    subscription" at the approval gate — "I thought that we'd have two
+    subscriptions always" — so every account pays for itself, and the
+    shared-Apple-ID coverage path was deliberately NOT built but IS counted.
+    Three migrations, no new configuration key, and no new entitlement basis.
+    Review: 41 lenses over four tiers, 4 fix passes; it caught a corrupt
+    `db/schema/ORDER` (the rebase re-introduced the cut design's lines through
+    union merge, so the corpus could not migrate and every earlier green run was
+    meaningless), a raw `java.sql.SQLException` crossing out of `:db` on a
+    billing write, a test that could not fail, a dangling role reference
+    published as `404` instead of failing closed, "which statuses entitle"
+    written in four places and declared in none, and BOTH iOS dead ends — the
+    refusal dropped on the app-open path, and its mirror image, a withdrawal
+    that outlived its premise so a parent who switched Apple ID or subscribed
+    could not buy until relaunch. Gate: full scope, verified tree recorded.
+    Final suite 4,203 executed, 0 failures; iOS 748 executed, 0 failures, 44
+    snapshot scenes, 0 pixels moved.
   - `family/02.5/the-coach-asks-once` LANDED as RFC 240 (`main@4f337d78` +
     `f6eda807`, 2026-09-25) — the coach now has ONE sanctioned moment to offer
     connecting a parent to an account of their own, ALONGSIDE the existing
