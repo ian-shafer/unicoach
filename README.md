@@ -399,13 +399,15 @@ rest-server/          Ktor HTTP API server
 queue-worker/         background job processor
 ios-app/              Swift/SwiftUI iOS client
 specs/                feature design documents
-var/log/              service log files (gitignored)
-var/run/              PID and lock files (gitignored)
+var/log/              service log files (gitignored; $WORKTREE_VAR_DIR/log)
+var/run/              PID and lock files (gitignored; $WORKTREE_VAR_DIR/run)
 ```
 
-The PostgreSQL data directory lives **outside** any checkout at
-`$HOME/var/unicoach/postgres` (`POSTGRES_DATA_DIR`), so a single cluster is
-shared by every worktree.
+Each checkout's `var/` is `WORKTREE_VAR_DIR`, derived by `bin/common`. State
+shared by every worktree lives **outside** any checkout, under `VAR_DIR`
+(`$HOME/opt/unicoach/var`, a `.env.dev` key): the PostgreSQL cluster at
+`$VAR_DIR/postgres` (`POSTGRES_DATA_DIR`), so a single cluster serves every
+worktree, and database dumps at `$VAR_DIR/dumps` (`POSTGRES_DUMP_DIR`).
 
 ## Environment Variables
 
@@ -415,7 +417,8 @@ Copy `.env.template` to `.env`. Key variables:
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
 | `PORT`               | REST server listen port (dev derives it per worktree)                                                                                     | block base `+10`              |
 | `SERVER_PORT`        | Derived from `PORT` (used by rest-server.conf)                                                                                            | `$PORT`                       |
-| `POSTGRES_DATA_DIR`  | PostgreSQL cluster directory (shared by all worktrees)                                                                                    | `$HOME/var/unicoach/postgres` |
+| `VAR_DIR`            | Shared state directory, outside every checkout (dev-only)                                                                                 | `$HOME/opt/unicoach/var`      |
+| `POSTGRES_DATA_DIR`  | PostgreSQL cluster directory (shared by all worktrees)                                                                                    | `$VAR_DIR/postgres`           |
 | `POSTGRES_PORT`      | PostgreSQL listen port (required; no in-code default)                                                                                     | `5432`                        |
 | `POSTGRES_DB`        | Application database name (derived per worktree in dev)                                                                                   | `unicoach-dev-<checkout-dir>` |
 | `POSTGRES_SUPERUSER` | Cluster admin; `initdb` and the role/ownership bootstrap only. Dev-only: unset in every cloud env, where it falls back to `POSTGRES_USER` | `postgres`                    |

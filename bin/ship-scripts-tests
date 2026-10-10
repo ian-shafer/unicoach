@@ -14,12 +14,11 @@
 # exists.
 #
 # NO WORKTREE, NO GRADLE, NO POSTGRES. Every assertion runs against a throwaway
-# `git init` repo plus a fabricated run-scratch state file. That is not merely
-# cheap: ship-lock derives its lock path from `git rev-parse --git-common-dir` of
-# the repo named by the run state, so pointing the state at a temp repo is what
-# keeps this harness off the REAL var/run/ship-land.lock — a test that acquired
-# that one would silently gate every live /ship run on this machine for 15
-# minutes. There is deliberately no test-only override flag: git is the override.
+# `git init` repo plus a fabricated run-scratch state file. ship-lock keeps its
+# lock in $VAR_DIR/run/ship-land.lock and an inherited VAR_DIR wins, so this
+# harness exports a temp VAR_DIR before the first ship-* call. That export is what
+# keeps it off the REAL lock — a test that acquired that one would silently gate
+# every live /ship run on this machine for 15 minutes.
 export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
@@ -60,8 +59,8 @@ SHIP_LAND="$SHIP_SCRIPTS/ship-land"
 [ -x "$SHIP_LOCK" ] || fail_test "ship-lock is missing or not executable [$SHIP_LOCK]"
 
 # The hook that runs this harness exports GIT_DIR and GIT_INDEX_FILE, and both
-# outrank `git -C`. Stripped here for this file's own `git init`; ship-lock strips
-# them for itself, and the assertion at the end of the acquire section proves it.
+# outrank `git -C`. Stripped here for this file's own `git init`; ship-order
+# strips them for itself, and its escape assertion (9) proves it.
 strip_git_hook_env
 
 FIXTURE_DIR="$(mktemp -d)"
@@ -69,7 +68,11 @@ trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
 
 REPO="$FIXTURE_DIR/repo"
 git init -q "$REPO"
-LOCK_DIR="$REPO/var/run/ship-land.lock"
+# bin/common exported the real VAR_DIR above. Kept for the one read-only
+# assertion about the default path, then replaced for every ship-* child.
+REAL_VAR_DIR="$VAR_DIR"
+export VAR_DIR="$FIXTURE_DIR/var"
+LOCK_DIR="$VAR_DIR/run/ship-land.lock"
 
 # Two runs of the same repo, exactly as two live /ship worktrees would be. Only
 # RUN_ID differs, which is the whole point: the operation name IS the run id, so
@@ -129,15 +132,13 @@ assert_failure "a second, different RUN_ID is BLOCKED (file-lock 3 is never succ
 [ "$(holder)" = "run-a" ] || fail_test "the blocked run overwrote op with [$(holder)]"
 pass_test "the blocked run left the holder untouched"
 
-# 2c. `git -C` loses to GIT_DIR, and a git hook exports GIT_DIR. Without the
-# strip in ship-lock, this harness — which the pre-commit hook runs — walks out
-# of its fixture and takes the REAL var/run/ship-land.lock, blocking every live
-# /ship run on the machine for 15 minutes. That is not hypothetical: it is how
-# this assertion came to exist. The lock stays held by run-a for 2b below;
-# `status` is read-only, which is what makes that safe.
-GIT_DIR="$PROJECT_ROOT/.git" "$SHIP_LOCK" -s "$RS_A" status | grep -q "held by \[run-a\].*$LOCK_DIR" ||
-  fail_test "GIT_DIR overrode the run's own repo: ship-lock resolved a lock outside the fixture"
-pass_test "GIT_DIR from a hook cannot move the lock off the run's own repo"
+# 2c. With no VAR_DIR in the environment, ship-lock reads it from its own
+# checkout's .env.dev, so the lock is the real shared one. `status` is read-only,
+# which is what makes checking the REAL path safe; run-a's fixture lock stays
+# held for 2b below.
+env -u VAR_DIR "$SHIP_LOCK" status | grep -qF "[$REAL_VAR_DIR/run/ship-land.lock]" ||
+  fail_test "ship-lock without VAR_DIR did not resolve the lock to [$REAL_VAR_DIR/run/ship-land.lock]"
+pass_test "ship-lock without VAR_DIR resolves the lock from .env.dev's VAR_DIR"
 
 # 2b. The SAME run re-acquiring is a success, and the hold is refreshed. A
 # compacted session is told to re-read PHASE and re-enter it, so a resumed run

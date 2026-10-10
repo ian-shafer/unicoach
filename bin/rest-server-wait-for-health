@@ -31,6 +31,6 @@ fi
 TIMEOUT=4s
 log-info "Waiting for rest-server health check on port ${PORT:-8080}..."
 if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/rest-server-check"; then
-  fatal "rest-server did not become healthy within $TIMEOUT. Check var/log/rest-server.log."
+  fatal "rest-server did not become healthy within $TIMEOUT. Check $WORKTREE_VAR_DIR/log/rest-server.log."
 fi
 log-info "rest-server is healthy"

@@ -31,6 +31,6 @@ fi
 TIMEOUT=4s
 log-info "Waiting for public-web health check on port ${PUBLIC_WEB_PORT:-8082}..."
 if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/public-web-check"; then
-  fatal "public-web did not become healthy within $TIMEOUT. Check var/log/public-web.log."
+  fatal "public-web did not become healthy within $TIMEOUT. Check $WORKTREE_VAR_DIR/log/public-web.log."
 fi
 log-info "public-web is healthy"

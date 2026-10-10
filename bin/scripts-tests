@@ -152,8 +152,8 @@ trap 'reap_harness_resources; exit 143' TERM
 echo "Harness up"
 echo ""
 
-TEST_LOCK="$PROJECT_ROOT/var/run/test.lock"
-mkdir -p "$PROJECT_ROOT/var/run"
+TEST_LOCK="$WORKTREE_VAR_DIR/run/test.lock"
+mkdir -p "$WORKTREE_VAR_DIR/run"
 
 echo "==== Testing file-lock ===="
 rm -rf "$TEST_LOCK" || true
@@ -305,14 +305,14 @@ test_daemon_wrapper() {
   pass_test "$WRAPPER Restart Lifecycle"
 
   # Assert PID file exists and contains a running process after up
-  PID_FILE="$PROJECT_ROOT/var/run/${WRAPPER}.pid"
+  PID_FILE="$WORKTREE_VAR_DIR/run/${WRAPPER}.pid"
   if [ ! -f "$PID_FILE" ]; then echo "Fail: PID file not found for $WRAPPER after up."; exit 1; fi
   running_pid="$(cat "$PID_FILE")"
   if ! bin/check-pid "$running_pid" >/dev/null 2>&1; then echo "Fail: PID in PID file is not alive for $WRAPPER."; exit 1; fi
   pass_test "$WRAPPER PID file created and process is alive"
 
   # Assert log file exists after up
-  LOG_FILE="$PROJECT_ROOT/var/log/${WRAPPER}.log"
+  LOG_FILE="$WORKTREE_VAR_DIR/log/${WRAPPER}.log"
   if [ ! -f "$LOG_FILE" ]; then echo "Fail: Log file not found for $WRAPPER."; exit 1; fi
   pass_test "$WRAPPER log file created"
 
@@ -416,10 +416,10 @@ pass_test "check-pid exits 1 when PID does not exist"
 
 echo ""
 echo "==== Testing SIGKILL escalation ===="
-mkdir -p "$PROJECT_ROOT/var/run" "$PROJECT_ROOT/var/log"
+mkdir -p "$WORKTREE_VAR_DIR/run" "$WORKTREE_VAR_DIR/log"
 ( trap '' TERM; while true; do sleep 1; done ) >/dev/null 2>&1 &
 STUBBORN_PID=$!
-echo "$STUBBORN_PID" > "$PROJECT_ROOT/var/run/sigkill-test.pid"
+echo "$STUBBORN_PID" > "$WORKTREE_VAR_DIR/run/sigkill-test.pid"
 if ! bin/daemon-down sigkill-test >/dev/null; then echo "Fail: daemon-down failed on SIGKILL escalation test"; exit 1; fi
 if bin/check-pid "$STUBBORN_PID" 2>/dev/null; then echo "Fail: Stubborn process still alive after SIGKILL"; exit 1; fi
 pass_test "daemon-down escalates to SIGKILL when process ignores SIGTERM"
@@ -918,15 +918,18 @@ assert_success "sourcing .env.dev yields SERVER_PORT == PORT == checkout_block_b
 # four assertions per key: POSTGRES_SUPERUSER got the template copy and NOT the
 # test, which is exactly the omission this shape removes.
 #
+#   VAR_DIR            -- the machine's shared state directory, outside every
+#                         checkout; POSTGRES_DATA_DIR and POSTGRES_DUMP_DIR derive
+#                         from it.
 #   POSTGRES_DUMP_DIR  -- bin/db-dump's artifact directory and bin/db-restore's
-#                         no-argument default; a shared absolute $HOME path, like
-#                         POSTGRES_DATA_DIR beside it.
+#                         no-argument default; shared, like POSTGRES_DATA_DIR
+#                         beside it.
 #   POSTGRES_SUPERUSER -- the cluster admin (RFC 174). Every reader spells it
 #                         ${POSTGRES_SUPERUSER:-$POSTGRES_USER} (bin/functions'
 #                         cluster_superuser), so a base-.env copy would stop a
 #                         cloud env collapsing onto its RDS master — and the
 #                         instance would grow an owner-<release-dir> role.
-DEV_ONLY_KEYS=(POSTGRES_DUMP_DIR POSTGRES_SUPERUSER)
+DEV_ONLY_KEYS=(VAR_DIR POSTGRES_DUMP_DIR POSTGRES_SUPERUSER)
 # The two files a dev-only key MAY live in, named positively, with every OTHER
 # dotenv in the repo root swept. Checking only the base `.env` left `.env.prod`
 # and `.env.deploy.prod` -- the exact files that would stop a cloud environment
@@ -973,6 +976,16 @@ if [ "$child_port" != "$BASE_TEST_PORT" ]; then
 fi
 pass_test "a child sourcing bin/common resolves PORT to the harness BASE_TEST_PORT"
 
+# WORKTREE_VAR_DIR is derived from the checkout, never inherited: a parent in
+# another checkout exports its own, and a child that kept it would write its pid
+# files and logs into that checkout's var/.
+child_var_dir="$(WORKTREE_VAR_DIR=/elsewhere/var bash -c 'source bin/common; echo $WORKTREE_VAR_DIR')"
+if [ "$child_var_dir" != "$PROJECT_ROOT/var" ]; then
+  echo "Fail: a child sourcing bin/common kept an inherited WORKTREE_VAR_DIR [$child_var_dir], not its own [$PROJECT_ROOT/var]"
+  exit 1
+fi
+pass_test "a child sourcing bin/common derives WORKTREE_VAR_DIR from its own checkout, ignoring an inherited one"
+
 # Every port-binding service lands in the block, and the test and fuzz halves
 # never share one (RFC 132 defect 2): before this, .env.test and .env.fuzz
 # overrode only PORT, so admin-web and public-web bound the DEV 8081/8082 under
@@ -1013,8 +1026,8 @@ echo ""
 echo "==== Testing daemon-up port preflight ===="
 # Cross-process collision regression (the reported bug; also covers the
 # PID-file-lost / orphaned-alive edge case — indistinguishable from here).
-rm -f "$PROJECT_ROOT/var/run/collision-test.pid"
-rm -rf "$PROJECT_ROOT/var/run/collision-test.daemon.lock"
+rm -f "$WORKTREE_VAR_DIR/run/collision-test.pid"
+rm -rf "$WORKTREE_VAR_DIR/run/collision-test.daemon.lock"
 start_foreign_listener "$PORT_FREE" || { echo "Fail: could not bind foreign listener on $PORT_FREE"; exit 1; }
 coll_listener="$FOREIGN_LISTENER_PID"
 up_status=0
@@ -1022,8 +1035,8 @@ up_status=0
 # other `sleep 60` daemons elsewhere in the suite.
 bin/daemon-up -p "$PORT_FREE" collision-test -- sleep "$SLEEP_SENTINEL_COLLISION" >/dev/null 2>&1 || up_status=$?
 if [ "$up_status" -ne 3 ]; then echo "Fail: daemon-up on a held port did not exit 3 (got $up_status)"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
-if [ -f "$PROJECT_ROOT/var/run/collision-test.pid" ]; then echo "Fail: daemon-up wrote a PID file despite the collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
-if [ -d "$PROJECT_ROOT/var/run/collision-test.daemon.lock" ]; then echo "Fail: daemon-up left the lock directory after a collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if [ -f "$WORKTREE_VAR_DIR/run/collision-test.pid" ]; then echo "Fail: daemon-up wrote a PID file despite the collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if [ -d "$WORKTREE_VAR_DIR/run/collision-test.daemon.lock" ]; then echo "Fail: daemon-up left the lock directory after a collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
 if pgrep -f "sleep $SLEEP_SENTINEL_COLLISION" >/dev/null 2>&1; then echo "Fail: daemon-up spawned a child despite the collision"; pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
 # Defensive reap: if a future regression DID spawn, do not leak it.
 pkill -f "sleep $SLEEP_SENTINEL_COLLISION" 2>/dev/null || true
@@ -1031,27 +1044,27 @@ stop_foreign_listener "$coll_listener"
 pass_test "daemon-up fatals (exit 3) on cross-process port collision without spawning or writing a PID"
 
 # Idempotency preserved with -p (free port).
-rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
-rm -rf "$PROJECT_ROOT/var/run/idem-test.daemon.lock"
+rm -f "$WORKTREE_VAR_DIR/run/idem-test.pid"
+rm -rf "$WORKTREE_VAR_DIR/run/idem-test.daemon.lock"
 bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
-if [ ! -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up did not write a PID on a free port"; exit 1; fi
-idem_first="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
+if [ ! -f "$WORKTREE_VAR_DIR/run/idem-test.pid" ]; then echo "Fail: daemon-up did not write a PID on a free port"; exit 1; fi
+idem_first="$(cat "$WORKTREE_VAR_DIR/run/idem-test.pid")"
 if ! bin/check-pid "$idem_first" >/dev/null 2>&1; then echo "Fail: idem-test PID is not alive after up"; exit 1; fi
 bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
-idem_second="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
+idem_second="$(cat "$WORKTREE_VAR_DIR/run/idem-test.pid")"
 if [ "$idem_first" != "$idem_second" ]; then echo "Fail: idempotent up spawned a duplicate (PIDs $idem_first vs $idem_second)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
 pass_test "daemon-up -p idempotent: second up reuses the same live PID"
 
 # Concurrent-up exit-0 contract with -p: two racers, exactly one process.
 bin/daemon-down idem-test >/dev/null 2>&1 || true
-rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
-rm -rf "$PROJECT_ROOT/var/run/idem-test.daemon.lock"
+rm -f "$WORKTREE_VAR_DIR/run/idem-test.pid"
+rm -rf "$WORKTREE_VAR_DIR/run/idem-test.daemon.lock"
 bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu1=$!
 bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu2=$!
 cu1_status=0; wait $cu1 || cu1_status=$?
 cu2_status=0; wait $cu2 || cu2_status=$?
 if [ "$cu1_status" -ne 0 ] || [ "$cu2_status" -ne 0 ]; then echo "Fail: concurrent -p up did not both exit 0 ($cu1_status / $cu2_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
-conc_pid="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
+conc_pid="$(cat "$WORKTREE_VAR_DIR/run/idem-test.pid")"
 if ! bin/check-pid "$conc_pid" >/dev/null 2>&1; then echo "Fail: concurrent -p up did not leave a live process"; exit 1; fi
 pass_test "daemon-up -p concurrent up: both exit 0, exactly one process"
 
@@ -1063,7 +1076,7 @@ if [ "$dc_status" -ne 0 ]; then echo "Fail: daemon-check on a running service di
 pass_test "daemon-check -p exits 0 when our PID is alive"
 
 bin/daemon-down idem-test >/dev/null 2>&1 || true
-rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
+rm -f "$WORKTREE_VAR_DIR/run/idem-test.pid"
 # Stopped + port free ⇒ 1.
 if bin/check-port "$PORT_IDEM" >/dev/null 2>&1; then echo "Fail: precondition — $PORT_IDEM must be free after down"; exit 1; fi
 dc_status=0; bin/daemon-check -p "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
@@ -1096,14 +1109,14 @@ pass_test "daemon-check rejects an empty -p value"
 
 du_status=0; bin/daemon-up -p "" idem-test -- sleep 60 >/dev/null 2>&1 || du_status=$?
 if [ "$du_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: daemon-up -p '' did not reject empty value with $EXIT_INVALID_ARG_VALUE (got $du_status)"; exit 1; fi
-if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up -p '' wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+if [ -f "$WORKTREE_VAR_DIR/run/idem-test.pid" ]; then echo "Fail: daemon-up -p '' wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
 pass_test "daemon-up rejects an empty -p value without spawning"
 
 # -k requires -p: reclaim modifies the port preflight, which never runs portless,
 # so -k without -p is a usage error (21) rejected before any spawn.
 duk_status=0; bin/daemon-up -k idem-test -- sleep 60 >/dev/null 2>&1 || duk_status=$?
 if [ "$duk_status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then echo "Fail: daemon-up -k without -p did not reject with $EXIT_MISSING_REQUIRED_ARG (got $duk_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
-if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up -k without -p wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+if [ -f "$WORKTREE_VAR_DIR/run/idem-test.pid" ]; then echo "Fail: daemon-up -k without -p wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
 pass_test "daemon-up -k without -p is rejected without spawning"
 
 # -9 goes through the same require-a-port guard as -k.
@@ -1135,15 +1148,15 @@ echo ""
 echo "==== Testing daemon-up -k port reclaim ===="
 # -k reclaims the port: SIGTERM to the listener frees it, the boot proceeds, and
 # the old listener is gone while the new daemon is recorded and alive.
-rm -f "$PROJECT_ROOT/var/run/reclaim-test.pid"
-rm -rf "$PROJECT_ROOT/var/run/reclaim-test.daemon.lock"
+rm -f "$WORKTREE_VAR_DIR/run/reclaim-test.pid"
+rm -rf "$WORKTREE_VAR_DIR/run/reclaim-test.daemon.lock"
 start_foreign_listener "$PORT_KILL" || { echo "Fail: could not bind foreign listener on $PORT_KILL"; exit 1; }
 rk_listener="$FOREIGN_LISTENER_PID"
 up_status=0
 bin/daemon-up -k -p "$PORT_KILL" reclaim-test -- sleep "$SLEEP_SENTINEL_RECLAIM" >/dev/null 2>&1 || up_status=$?
 if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -k did not reclaim the port and boot (exit $up_status)"; pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
 if bin/check-pid "$rk_listener" >/dev/null 2>&1; then echo "Fail: daemon-up -k left the listener (PID $rk_listener) alive"; pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$rk_listener"; exit 1; fi
-rk_pid="$(cat "$PROJECT_ROOT/var/run/reclaim-test.pid" 2>/dev/null || true)"
+rk_pid="$(cat "$WORKTREE_VAR_DIR/run/reclaim-test.pid" 2>/dev/null || true)"
 if [ -z "$rk_pid" ] || ! bin/check-pid "$rk_pid" >/dev/null 2>&1; then echo "Fail: daemon-up -k did not spawn/record a live daemon (pid=[$rk_pid])"; pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
 bin/daemon-down reclaim-test >/dev/null 2>&1 || true
 pkill -f "sleep $SLEEP_SENTINEL_RECLAIM" 2>/dev/null || true
@@ -1154,8 +1167,8 @@ pass_test "daemon-up -k reclaims the port listener (SIGTERM) and boots"
 # but reclaimed by -9 (SIGKILL cannot be trapped), so the boot proceeds.
 start_term_ignoring_listener "$PORT_KILL" || { echo "Fail: could not bind SIGTERM-ignoring listener on $PORT_KILL"; exit 1; }
 k9_listener="$FOREIGN_LISTENER_PID"
-rm -f "$PROJECT_ROOT/var/run/reclaim-test.pid"
-rm -rf "$PROJECT_ROOT/var/run/reclaim-test.daemon.lock"
+rm -f "$WORKTREE_VAR_DIR/run/reclaim-test.pid"
+rm -rf "$WORKTREE_VAR_DIR/run/reclaim-test.daemon.lock"
 up_status=0
 bin/daemon-up -9 -p "$PORT_KILL" reclaim-test -- sleep "$SLEEP_SENTINEL_KILL9" >/dev/null 2>&1 || up_status=$?
 if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -9 did not reclaim a SIGTERM-ignoring listener (exit $up_status)"; pkill -f "sleep $SLEEP_SENTINEL_KILL9" 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$k9_listener"; exit 1; fi
@@ -1233,7 +1246,7 @@ echo ""
 echo "==== Testing rest-server-check failure-path hardening ===="
 # Precondition: rest-server is down (PID file absent).
 bin/rest-server-down >/dev/null 2>&1 || true
-if [ -f "$PROJECT_ROOT/var/run/rest-server.pid" ]; then echo "Fail: precondition — rest-server PID file must be absent"; exit 1; fi
+if [ -f "$WORKTREE_VAR_DIR/run/rest-server.pid" ]; then echo "Fail: precondition — rest-server PID file must be absent"; exit 1; fi
 REST_PORT="${PORT:-8080}"
 # Nothing on the port ⇒ exit 1.
 if ! wait_for_port_free "$REST_PORT"; then echo "Fail: precondition — rest-server port $REST_PORT must be free"; exit 1; fi
@@ -1321,7 +1334,7 @@ test_daemon_up_passthrough() {
   bin/daemon-down passthru-test >/dev/null 2>&1 || true
   bin/daemon-up passthru-test -- bash -c 'sleep 60' >/dev/null 2>&1 || return 1
   local pid
-  pid="$(cat "$PROJECT_ROOT/var/run/passthru-test.pid" 2>/dev/null || true)"
+  pid="$(cat "$WORKTREE_VAR_DIR/run/passthru-test.pid" 2>/dev/null || true)"
   [ -n "$pid" ] || return 1
   bin/check-pid "$pid" >/dev/null 2>&1 || return 1
   bin/daemon-down passthru-test >/dev/null 2>&1

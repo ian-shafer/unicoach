@@ -30,6 +30,6 @@ fi
 TIMEOUT=4s
 log-info "Waiting for postgres health check..."
 if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/postgres-check"; then
-  fatal "postgres did not become healthy within $TIMEOUT. Check var/log/postgres.log."
+  fatal "postgres did not become healthy within $TIMEOUT. Check $WORKTREE_VAR_DIR/log/postgres.log."
 fi
 log-info "postgres is healthy"

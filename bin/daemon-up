@@ -6,8 +6,9 @@ help() {
 daemon-up [options] <service-name> -- <command...>
 
 Boots a native background daemon for <service-name>, routing stdout and
-stderr to var/log/<service-name>.log and tracking the PID in
-var/run/<service-name>.pid.
+stderr to $WORKTREE_VAR_DIR/log/<service-name>.log and tracking the PID in
+$WORKTREE_VAR_DIR/run/<service-name>.pid. WORKTREE_VAR_DIR is this checkout's
+var/, derived by bin/common.
 
 Uses bin/file-lock to serialize concurrent invocations. A second concurrent
 "up" call exits 0 immediately. The service is NOT re-spawned if the existing
@@ -128,9 +129,9 @@ reclaim_port() {
   fi
 }
 
-PID_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.pid"
-LOG_FILE="$PROJECT_ROOT/var/log/${SERVICE_NAME}.log"
-LOCK_DIR="$PROJECT_ROOT/var/run/${SERVICE_NAME}.daemon.lock"
+PID_FILE="$WORKTREE_VAR_DIR/run/${SERVICE_NAME}.pid"
+LOG_FILE="$WORKTREE_VAR_DIR/log/${SERVICE_NAME}.log"
+LOCK_DIR="$WORKTREE_VAR_DIR/run/${SERVICE_NAME}.daemon.lock"
 
 LOCK_STATUS=0
 "$PROJECT_ROOT/bin/file-lock" -o up -t 16 "$LOCK_DIR" 60 || LOCK_STATUS=$?
@@ -172,8 +173,8 @@ if [ -n "$PORT" ] && "$PROJECT_ROOT/bin/check-port" "$PORT"; then
   fi
 fi
 
-mkdir -p "$PROJECT_ROOT/var/run"
-mkdir -p "$PROJECT_ROOT/var/log"
+mkdir -p "$WORKTREE_VAR_DIR/run"
+mkdir -p "$WORKTREE_VAR_DIR/log"
 
 log-info "Starting [$SERVICE_NAME]..."
 nohup "${COMMAND[@]}" >> "$LOG_FILE" 2>&1 &

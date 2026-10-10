@@ -90,9 +90,17 @@ load_env_layers() {
 # POSTGRES_PORT is required (set in a delta). Under `set -u` an unset value aborts
 # here rather than silently defaulting. Exporting PGPORT makes every libpq client
 # (psql via db-run, pg_isready) target the configured port with no per-call flags.
+#
+# WORKTREE_VAR_DIR is this checkout's own state directory (pid files, daemon
+# logs, fuzz output); VAR_DIR (.env.dev) is the one shared by every worktree. It
+# is derived here rather than in a dotenv because it holds in every environment
+# and a cloud host's base .env is empty. Assigned UNCONDITIONALLY, unlike
+# DB_SCHEMA_DIR: a value inherited from a parent in another checkout must never
+# point this one at that checkout's var/.
 export_derived_env() {
   export PGPORT="$POSTGRES_PORT"
   export DB_SCHEMA_DIR="${DB_SCHEMA_DIR:-$PROJECT_ROOT/db/schema}"
+  export WORKTREE_VAR_DIR="$PROJECT_ROOT/var"
 }
 
 resolve_env_deltas

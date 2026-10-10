@@ -68,7 +68,7 @@ if [ "$#" -gt 0 ]; then
   help "test-fuzz does not accept positional arguments: $*"
 fi
 
-FUZZ_DIR="$PROJECT_ROOT/var/fuzz"
+FUZZ_DIR="$WORKTREE_VAR_DIR/fuzz"
 VENV_DIR="$FUZZ_DIR/venv"
 SCHEMATHESIS_BIN="$VENV_DIR/bin/schemathesis"
 REPORT_PATH="$FUZZ_DIR/report.xml"
@@ -165,7 +165,7 @@ curl -s -o /dev/null -c "$COOKIE_JAR" \
 
 TOKEN="$(awk '$6 == "UNICOACH_SESSION" { print $7 }' "$COOKIE_JAR" 2>/dev/null)"
 if [ -z "$TOKEN" ]; then
-  fatal "Registration did not yield a UNICOACH_SESSION cookie. Check var/log/rest-server.log."
+  fatal "Registration did not yield a UNICOACH_SESSION cookie. Check $WORKTREE_VAR_DIR/log/rest-server.log."
 fi
 log-info "Captured session for [$FUZZ_EMAIL]."
 

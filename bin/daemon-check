@@ -57,7 +57,7 @@ fi
 SERVICE_NAME="$1"
 shift
 
-PID_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.pid"
+PID_FILE="$WORKTREE_VAR_DIR/run/${SERVICE_NAME}.pid"
 
 # Decide running/stopped from our own tracking file first. Only once we conclude
 # we are not running do we consult the port (when -p is given) to distinguish

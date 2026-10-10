@@ -6,8 +6,8 @@ help() {
 daemon-down [options] <service-name>
 
 Gracefully terminates the daemon for <service-name>. Reads the PID from
-var/run/<service-name>.pid, sends SIGTERM, and polls for exit using
-bin/wait-for. Escalates to SIGKILL if the process does not terminate within
+$WORKTREE_VAR_DIR/run/<service-name>.pid, sends SIGTERM, and polls for exit
+using bin/wait-for. Escalates to SIGKILL if the process does not terminate within
 the grace period. Removes the PID file on success.
 
 Arguments:
@@ -39,8 +39,8 @@ fi
 SERVICE_NAME="$1"
 shift
 
-PID_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.pid"
-LOCK_DIR="$PROJECT_ROOT/var/run/${SERVICE_NAME}.daemon.lock"
+PID_FILE="$WORKTREE_VAR_DIR/run/${SERVICE_NAME}.pid"
+LOCK_DIR="$WORKTREE_VAR_DIR/run/${SERVICE_NAME}.daemon.lock"
 
 LOCK_STATUS=0
 "$PROJECT_ROOT/bin/file-lock" -o down -t "${LOCK_TIMEOUT}" "$LOCK_DIR" 60 || LOCK_STATUS=$?

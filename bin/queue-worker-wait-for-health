@@ -33,6 +33,6 @@ fi
 TIMEOUT=4s
 log-info "Waiting for queue-worker health check..."
 if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/queue-worker-check"; then
-  fatal "queue-worker did not become healthy within $TIMEOUT. Check var/log/queue-worker.log."
+  fatal "queue-worker did not become healthy within $TIMEOUT. Check $WORKTREE_VAR_DIR/log/queue-worker.log."
 fi
 log-info "queue-worker is healthy"

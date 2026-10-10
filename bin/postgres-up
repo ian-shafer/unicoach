@@ -37,7 +37,7 @@ fi
 
 DATA_DIR="$POSTGRES_DATA_DIR"
 
-LOG_FILE="$PROJECT_ROOT/var/log/postgres.log"
+LOG_FILE="$WORKTREE_VAR_DIR/log/postgres.log"
 
 # Idempotency: only skip startup if OUR postmaster is already running.
 # Do not use postgres-check here — it would match Docker or any other

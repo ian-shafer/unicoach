@@ -31,6 +31,6 @@ fi
 TIMEOUT=4s
 log-info "Waiting for admin-web health check on port [${ADMIN_WEB_PORT:-8081}]..."
 if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/admin-web-check"; then
-  fatal "admin-web did not become healthy within [$TIMEOUT]. Check var/log/admin-web.log."
+  fatal "admin-web did not become healthy within [$TIMEOUT]. Check $WORKTREE_VAR_DIR/log/admin-web.log."
 fi
 log-info "admin-web is healthy"

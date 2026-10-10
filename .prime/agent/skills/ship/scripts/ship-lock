@@ -9,11 +9,10 @@
 # inside its gate. So the critical section is the whole of phase 6 — rebase,
 # squash, format, commit (the hook), fast-forward — and this script brackets it.
 #
-# ONE LOCK PER REPO, DERIVED FROM GIT. Every run works in its own worktree and
-# `var/run/` is per-checkout, so `$PROJECT_ROOT/var/run/ship-land.lock` would be
-# a DIFFERENT lock per run and would gate nothing. `--git-common-dir` resolves
-# to the main checkout's `.git` from any worktree, so its parent is the main
-# checkout and every run computes the same path without being told it.
+# ONE LOCK FOR EVERY WORKTREE, IN VAR_DIR. Every run works in its own worktree,
+# and a worktree's own var/ (WORKTREE_VAR_DIR) would be a DIFFERENT lock per run
+# and gate nothing. VAR_DIR is the state directory every worktree shares, so
+# `$VAR_DIR/run/ship-land.lock` is one path for all of them.
 #
 # THE OPERATION NAME IS THE RUN_ID, AND THAT IS LOAD-BEARING. `bin/file-lock`
 # exit 3 means "already held by an operation matching -o", which bin/daemon-up
@@ -85,7 +84,8 @@ ship-lock [-s <run-scratch>] [-t <timeout>] [-f] acquire|release|status
 ship-lock acquire|release|status [-s <run-scratch>] [-t <timeout>] [-f]
 
 The repo-wide /ship land gate. One lock for every worktree of this repo, at
-<main-checkout>/var/run/ship-land.lock, held under this run's RUN_ID.
+$VAR_DIR/run/ship-land.lock, held under this run's RUN_ID. VAR_DIR is read from
+this script's own checkout (.env.dev) unless the environment already sets it.
 
   acquire   Wait for the lock, then hold it for at most 15m. Silent on stdout.
             Idempotent: a lock this run already holds is refreshed, not refused.
@@ -147,10 +147,9 @@ case "$COMMAND" in
   *) fatal -s "$EXIT_INVALID_ARG_VALUE" "unknown subcommand [$COMMAND]: expected acquire|release|status" ;;
 esac
 
-# The run, when one was named. status without -s answers for this checkout's
-# repo, which is what a human and ship-status ask for.
+# The run, when one was named. status without -s needs none: the lock is the
+# same for every worktree, which is what a human and ship-status ask for.
 RUN_ID=""
-ANCHOR="$SCRIPT_DIR"
 if [ -n "$RUN_SCRATCH" ]; then
   [ -f "$RUN_SCRATCH/state" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "no state file at [$RUN_SCRATCH/state]"
   # Sourced AFTER the options are parsed, as ship-land and ship-status do — so
@@ -166,32 +165,23 @@ if [ -n "$RUN_SCRATCH" ]; then
   . "$RUN_SCRATCH/state"
   TIMEOUT="$_timeout" FORCE="$_force" MAX_HOLD="$_max_hold" POLL_PERIOD="$_poll"
   [ -n "${RUN_ID:-}" ] || fatal "state at [$RUN_SCRATCH/state] has no RUN_ID"
-  # The run's own worktree first, its original checkout second: both are
-  # worktrees of the same repo and git answers identically for either, but the
-  # worktree is gone once ship-land has removed it.
-  if [ -n "${CODEBASE_ROOT:-}" ] && [ -d "$CODEBASE_ROOT" ]; then
-    ANCHOR="$CODEBASE_ROOT"
-  elif [ -n "${ORIGINAL_CHECKOUT:-}" ] && [ -d "$ORIGINAL_CHECKOUT" ]; then
-    ANCHOR="$ORIGINAL_CHECKOUT"
-  fi
 elif [ "$COMMAND" != "status" ]; then
   # NOT "-s <run-scratch> is required…": fatal parses its own options, so a
   # message beginning with -s is eaten as one.
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a run-scratch (-s) is required by [$COMMAND]"
 fi
 
-# `git -C <dir>` is NOT authoritative while GIT_DIR is set: the environment wins,
-# and -C is silently ignored. Git hooks export GIT_DIR (and GIT_INDEX_FILE), so
-# any ship-lock reached from inside bin/pre-commit — which is exactly where
-# bin/ship-scripts-tests runs — resolves to the HOOK's repository rather than
-# the one it was pointed at. The harness caught this the hard way: it escaped
-# its throwaway `git init` fixture and took the real
-# /Users/ian/Work/unicoach/var/run/ship-land.lock. Strip the three variables so
-# the argument is the answer.
-common_dir="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-  git -C "$ANCHOR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
-  fatal "not inside a git repository [$ANCHOR]"
-LOCK_DIR="$(dirname "$common_dir")/var/run/ship-land.lock"
+# VAR_DIR is a .env.dev key, and ship scripts do not source bin/common themselves
+# (see the exit codes above), so it is asked of this script's own checkout in a
+# subshell, with the default `.env -> .env.dev` layering. An inherited VAR_DIR
+# wins: that is how bin/ship-scripts-tests keeps every assertion off the real
+# lock.
+if [ -z "${VAR_DIR:-}" ]; then
+  VAR_DIR="$(env -u ENV_FILE -u ENV_FILES bash -c 'source "$1/bin/common" > /dev/null && printf %s "${VAR_DIR:-}"' _ "$OWN_CHECKOUT")" ||
+    fatal "could not load [$OWN_CHECKOUT/bin/common] to read VAR_DIR"
+  [ -n "$VAR_DIR" ] || fatal "VAR_DIR is not set in [$OWN_CHECKOUT/.env.dev]"
+fi
+LOCK_DIR="$VAR_DIR/run/ship-land.lock"
 
 # The durations are written in the bin/ duration grammar ("15m") because that is
 # what file-lock and wait-for take; the refresh and the poll clamp below need
