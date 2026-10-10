@@ -180,6 +180,54 @@ prompt file — had landed. A deletion rebased across additions can silently dro
 a sentence that landed minutes earlier and no test catches it; an add/add rebase
 cannot. Only the deletion needed a window.
 
+    test/08/the-psat-is-money LANDED as RFC 243 (main@f084bbda + <DOCSHA>,
+       2026-10-10) — the PSAT/NMSQT is a MONEY event and the coach now treats it
+       as one: no college ever sees the score, only the junior-year sitting
+       qualifies, and Finalist standing is what a named school pays for. Two
+       corpora by the two routes the key rule picks — national_merit_cycles
+       seeded BY MIGRATION (keyed by competition year, which is the class's
+       graduation year, so "what this test is and when it is" is in every
+       database by construction) and college_national_merit_awards loaded by the
+       INGEST (keyed by colleges(id)). 2 cycle rows, each with TWO citations
+       because no page publishes a whole cycle: NMSC sponsors the competition,
+       College Board administers it and is the only publisher of the window
+       DATES, the Selection Index scale and the sentence that no college receives
+       the score. 26 award rows over 17 colleges, 19 automatic, 6 competitive, 1
+       verified absence (UNC in its own words); 16 schools publish a real award
+       and EIGHT of those publish only words, so the words are the required cell
+       and nothing ranks or totals. NO score column and NO cutoff column
+       anywhere — NMSC publishes no qualifying score in advance, so what is
+       stored is HOW the bar is set plus its own sentence saying it is not
+       published. NEW TOOL psat_national_merit: seven timing arms off her own
+       stored graduation year, five per-school answers, and a base rate that
+       cannot be omitted beside a figure. The ONE proactive moment of this brief
+       is a psat_window commitment the sweep writes in code for a junior inside
+       her 30-day lead, once in her life, with nine named suppression reasons the
+       model cannot propose; a share opt-out does NOT silence it (a dated
+       qualification is not an offer). Coach prompt v48 (rollback = the version
+       below the pin, PARTIAL — the tool stays registered and the corpora stay in
+       the database, so every reactive answer survives). **THE CURATION PASS
+       REWROTE THE HEADLINE:** Oklahoma's $153,450 — the number in this brief, in
+       the spec and in RFC 243's first draft — is published against FALL 2026
+       entry, as are Texas Tech's (2022 deadline still on the page), UT Dallas's,
+       Maine's and Ole Miss's. Four of the five schools that made this slice look
+       impressive in September could not be seeded on 2026-09-25, which is what
+       checked_on exists for. What the coach says instead, each read that day:
+       Oklahoma State $154,500 non-resident for 2027-28, ASU $17,500/yr
+       out-of-state, USC $20,000/yr, Mississippi State $48,000, Auburn $11,000/yr
+       Alabama residents ONLY. Review earned its cost twice on money the tests
+       did not catch: the base rate was guaranteed inside each school's price but
+       DERIVED at the head, so a junior with an EMPTY COLLEGE LIST — exactly who
+       the nudge fires for — got none while the payload still stated the
+       sponsor's own $2,500; and a FAILED money-profile read was rendered as "we
+       hold no state of residency for this family" in a payload whose own top
+       line said "do not tell them it is not on file — we do not know whether it
+       is". Executed: 4,199 tests, 0 failures (whole tree on disk 4,298); 83 new
+       shell assertions for bin/national-merit-seed. 41 review lenses over four
+       tiers, every ledger check exit 0. Door: the chat, both asked and raised.
+       **BRIEF 0010 IS COMPLETE** — test/09/the-report-says-it-too (D30) is the
+       report half and is a new slice, not part of this one.
+
 ## The question
 
 Ian's daughter asked him, in plain words, **"when do I need to take the SATs?"**

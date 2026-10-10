@@ -832,9 +832,22 @@ it pays, the school's own words, its numbers where it publishes them, whether
 the award is automatic or merely competitive, its first-choice requirement, and
 the day we read the page. It **refuses** the same three states
 `report-award-grid` refuses — not curated, none published, expired — because a
-labelled blank on a shared page is worse than no section. The base rate rides
-with any large figure here as it does in the chat. No ranking, no "best award",
-no total we computed ourselves.
+labelled blank on a shared page is worse than no section.
+
+**Re-checked against what `test/08` actually landed (2026-10-10, RFC 243).** Two
+corrections to this slice's own text, because the code wins: (1) the tool
+answers **five** per-school states, not three — `automatic`, `competitive`,
+`none_published`, `not_curated`, `expired` — and `competitive` ("the standing is
+considered, not paid") is a real answer this block must render as such rather
+than fold into a payment; calling UCF or Tulsa automatic is the costly error
+that column exists to prevent. (2) The timing arms are the STUDENT's, not a
+school's, so none of them belongs on a shareable page: `cycle_expired` and
+`alternate_entry_undated` are answers about her, and this block prints school
+facts only. The published-words-first rule holds exactly as written: half the
+paying schools publish no figure at all, so the block prints the school's own
+sentence and never a number we composed. The base rate rides with any large
+figure here as it does in the chat. No ranking, no "best award", no total we
+computed ourselves.
 
 **Acceptance criteria.**
 
