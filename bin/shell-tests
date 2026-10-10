@@ -44,6 +44,8 @@ the first failure. With -n, runs only the named ones, still in this order:
                             the state school-day programme seed generator
   fafsa-deadline-seed-scripts-tests
                             the FAFSA filing-deadline seed generator, no cluster
+  national-merit-seed-scripts-tests
+                            the National Merit cycle seed generator, no cluster
   gate-scope-scripts-tests  the commit gate's path-to-harness map, no cluster
   web-assets-scripts-tests  the client-side TypeScript rail, deno only, no
                             cluster
@@ -113,14 +115,18 @@ fi
 #    variable is cleared for that child only -- its private cluster is
 #    deliberately unrelated to the shared one this stack points at.
 #
-# The cheap six above q-scripts-tests are all cheap for the same reason: they
+# The cheap ones above q-scripts-tests are all cheap for the same reason: they
 # drive a script that reads files and a git tree, so a temp directory is the
 # whole environment they need. ship (the /ship land lock), prompt-seed (the coach
 # prompt generator, RFC 181), docs (the /chart land path, RFC 201, which also
-# gates bin/pre-commit's refusal to commit in the root checkout), test-calendar
-# (RFC 197), test-state-programme (RFC 208) and fafsa-deadline (RFC 223) -- the
-# last three reach refusals that are reachable ONLY from a bad CSV, so they are
-# executed here and nowhere else.
+# gates bin/pre-commit's refusal to commit in the root checkout) and the seed
+# generators -- codebook (RFC 189), test-calendar (RFC 197), test-state-programme
+# (RFC 208), fafsa-deadline (RFC 223) and national-merit (RFC 243), each of which
+# reaches refusals that are reachable ONLY from a bad CSV, so each is executed
+# here and nowhere else. The property is attached to the harnesses by NAME rather
+# than to a position and a count: the sentence this replaced counted the entries
+# of the array below it, and had already drifted -- it said "the last four" over
+# five generators and omitted codebook-seed entirely.
 HARNESSES=(
   bin/ship-scripts-tests
   bin/prompt-seed-scripts-tests
@@ -129,6 +135,7 @@ HARNESSES=(
   bin/test-calendar-seed-scripts-tests
   bin/test-state-programme-seed-scripts-tests
   bin/fafsa-deadline-seed-scripts-tests
+  bin/national-merit-seed-scripts-tests
   bin/gate-scope-scripts-tests
   bin/web-assets-scripts-tests
   bin/q-scripts-tests

@@ -1,0 +1,296 @@
+{
+  "corpus": "what a NAMED university pays a National Merit standing (RFC 243, slice test/08/the-psat-is-money, brief 0010)",
+  "read_on": "2026-09-25",
+  "entry_year": 2027,
+  "expires_on": "2027-07-31",
+  "method": "One curation pass on 2026-09-25 fetched each institution's OWN scholarship page directly over HTTPS with a browser User-Agent and redirects followed, and quoted it. No aggregator, no blog, no model memory: a third-party list was used only to FIND a candidate page, never to source a figure. Every unit_id is either reused verbatim from db/seed/automatic-awards/awards.csv (where the school already appears there) or resolved against that school's own NCES College Navigator entry and confirmed by name. Every source_url returned HTTP 200 to this run's own fetch. link-status.csv was produced with `nix develop -c bin/check-link` from the worktree and mapped to RFC 200's vocabulary (2xx/3xx found, 404/410 not_found, anything else unknown).",
+  "counts": {
+    "award_rows": 26,
+    "distinct_colleges": 17,
+    "colleges_publishing_an_award": 16,
+    "colleges_publishing_at_least_one_exact_dollar_figure": 8,
+    "automatic_rows": 19,
+    "competitive_rows": 6,
+    "none_published_rows": 1,
+    "finalist_rows": 20,
+    "semifinalist_rows": 5,
+    "rows_with_words_but_no_figure": 14,
+    "rows_with_first_choice_required": 20,
+    "rows_with_a_first_choice_date": 1,
+    "source_urls": 19,
+    "link_status_urls": 19,
+    "read_but_not_seeded_schools": 12,
+    "note_on_exact_figures": "8 of the 16 paying schools print a figure this corpus could parse into award_per_year_usd or award_total_usd. The other 8 price the award in WORDS (full tuition, cost of attendance, a component list, a ceiling or a range) and are stored that way, per the RFC's rule that the words are required and the numbers optional."
+  },
+  "quoting_rules": [
+    "Every *_as_published cell is the publisher's own words from the page fetched on 2026-09-25, trimmed.",
+    "Where the award is published as a BULLET LIST or a TABLE, the items are joined with '; ' (or ', ' inside one table row) and nothing else is changed: no word is added, removed or reordered.",
+    "Footnote markers ('*', '**') are dropped from a quote only where the marker is DECORATION. A marker that BINDS a footnote to a value is KEPT, on both the value and the footnote, because dropping it silently re-scopes the publisher's caveat from one component to the whole award - a different claim from the one they made. Florida State's out_of_state row is the case: \"a $16,000*, Vires scholarship\" and \"*Admitted first-year students starting Fall 2024.\" are both quoted with their marker, exactly as the page prints them.",
+    "No figure, date or sentence in this file was written from memory or inferred. Where the page publishes no figure, the numeric columns are empty and the words carry the award."
+  ],
+  "date_rule": {
+    "rule": "A deadline DATE is filled only where the page prints the YEAR. A deadline the page states without a year (`by May 1`, `no later than Nov. 1`) is recorded in its *_as_published column with the date column left empty.",
+    "why": "The year is derivable from the cycle, but deriving it would put a date in the row that is not on the page. One row (The University of Alabama) prints its year and is the only row with first_choice_deadline filled."
+  },
+  "entry_year_rule": {
+    "rule": "entry_year is the entry cycle THE PAGE DESCRIBES, named by its first calendar year. A page still describing Fall 2026 entry on 2026-09-25 is a STALE cycle and is NOT a row; it is listed under read_but_not_seeded.",
+    "named_by_the_page": [
+      {
+        "college_name": "Mississippi State University",
+        "words": "Filters: 2027 Fall"
+      },
+      {
+        "college_name": "Oklahoma State University-Main Campus",
+        "words": "guaranteed the following package of cash and tuition scholarships for the 2027-2028 academic year"
+      },
+      {
+        "college_name": "University of Tulsa",
+        "words": "National Merit Semifinalists Package recipients entering UTulsa in Fall 2027"
+      },
+      {
+        "college_name": "University of Houston",
+        "words": "incoming fall 2027 freshman students"
+      },
+      {
+        "college_name": "The University of Alabama",
+        "words": "List The University of Alabama as college of choice with the National Merit Scholarship Corporation before May 1, 2027"
+      }
+    ]
+  },
+  "entry_year_defaulted": [
+    {
+      "unit_id": "100706",
+      "college_name": "University of Alabama in Huntsville",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "100858",
+      "college_name": "Auburn University",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "104151",
+      "college_name": "Arizona State University Campus Immersion",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "106397",
+      "college_name": "University of Arkansas",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "123961",
+      "college_name": "University of Southern California",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "132903",
+      "college_name": "University of Central Florida",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "134097",
+      "college_name": "Florida State University",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "142285",
+      "college_name": "University of Idaho",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "155317",
+      "college_name": "University of Kansas",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "181464",
+      "college_name": "University of Nebraska-Lincoln",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "199120",
+      "college_name": "University of North Carolina at Chapel Hill",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    },
+    {
+      "unit_id": "228723",
+      "college_name": "Texas A&M University-College Station",
+      "why": "the page names no entry cycle for the National Merit award; keyed to the cycle being applied for on the reading day"
+    }
+  ],
+  "award_kind_judgements": [
+    {
+      "college_name": "Auburn University",
+      "kind": "automatic",
+      "why": "the page hedges with \"may qualify\" but uses no consideration, competition or committee language for the National Merit award; the hedge survives verbatim in award_as_published. A reviewer who reads \"may qualify\" as consideration should flip this to competitive."
+    },
+    {
+      "college_name": "Arizona State University Campus Immersion",
+      "kind": "automatic (out_of_state)",
+      "why": "the award is stated as an entitlement, but it is conditional on being admitted to and enrolling in Barrett, The Honors College - a separate application. The condition is inside the quoted sentence rather than lost in the kind column."
+    },
+    {
+      "college_name": "University of Nebraska-Lincoln",
+      "kind": "competitive",
+      "why": "the page's own Review Basis says selection is by \"a holistic review\", so the standing is considered and not paid."
+    },
+    {
+      "college_name": "University of Central Florida",
+      "kind": "competitive for the out-of-state Finalist and the Semifinalist rows",
+      "why": "the page says \"competitive National Merit Scholarship package\" and \"You will be considered for a scholarship\". The Florida-resident Finalist row is automatic because the page says \"will be awarded the Benacquisto Scholarship\"."
+    },
+    {
+      "college_name": "University of Tulsa",
+      "kind": "competitive",
+      "why": "\"selected National Merit Semifinalists\", plus a required 4.0 weighted GPA, a required campus visit, a required in-person interview and two letters of recommendation."
+    },
+    {
+      "college_name": "University of Arkansas",
+      "kind": "competitive for the Semifinalist row, automatic for the Finalist row",
+      "why": "\"Semifinalists will be considered for\" versus \"Finalists who list the University as their first choice are advanced to\"."
+    }
+  ],
+  "figures_deliberately_not_parsed": [
+    {
+      "college_name": "University of Idaho",
+      "why": "the page's only dollar figures (\"approximately $22,000 for Idaho residents\", \"over $85,000\") are keyed to \"the 2026-27 academic year\", a cycle earlier than this row's. The undated guarantee sentence is quoted instead and every numeric column is empty."
+    },
+    {
+      "college_name": "University of Central Florida",
+      "why": "\"more than $25,000 per year\" is a floor, not a figure; writing 25000 would understate it and read as exact."
+    },
+    {
+      "college_name": "University of Nebraska-Lincoln",
+      "why": "\"up to $8,000\" and \"full non-resident portion of tuition plus $4,000 per year\" are a ceiling and a component, not the award's value."
+    },
+    {
+      "college_name": "Florida State University (in_state)",
+      "why": "\"can range between $16,000 - $25,000 per year\" is a range."
+    },
+    {
+      "college_name": "Texas A&M University-College Station",
+      "why": "the page publishes each component's annual and total amount but no package total; summing them would be our arithmetic, not theirs."
+    },
+    {
+      "college_name": "The University of Alabama",
+      "why": "the package is tuition, housing and two cash components with no published total."
+    },
+    {
+      "college_name": "Florida State University (out_of_state) - NOTE, this one IS parsed",
+      "why": "award_total_usd carries FSU's own 91808 and award_as_published keeps the word \"approximately\". The page's footnote on the $16,000 Vires component is appended verbatim WITH its marker, and the marker is kept on the component too, so the caveat stays bound to the value it qualifies instead of living only in this file."
+    }
+  ],
+  "link_status_notes": [
+    {
+      "url": "https://go.okstate.edu/scholarships-financial-aid/types-of-aid/scholarships-and-grants/freshman-scholarships/in-state-scholarships",
+      "note": "bin/check-link returns 403 on both HEAD and GET, with curl's default UA and with this run's Chrome UA, so it is recorded `unknown` and never `not_found`. The same url returned HTTP 200 with full content to this run's own httpx fetch on 2026-09-25, which is where the quoted words come from. go.okstate.edu filters on more than the User-Agent string."
+    },
+    {
+      "url": "https://go.okstate.edu/scholarships-financial-aid/types-of-aid/scholarships-and-grants/freshman-scholarships/out-of-state-scholarships/out-of-state-national-merit-scholars",
+      "note": "bin/check-link returns 403 on both HEAD and GET, with curl's default UA and with this run's Chrome UA, so it is recorded `unknown` and never `not_found`. The same url returned HTTP 200 with full content to this run's own httpx fetch on 2026-09-25, which is where the quoted words come from. go.okstate.edu filters on more than the User-Agent string."
+    }
+  ],
+  "read_but_not_seeded": [
+    {
+      "college_name": "University of Oklahoma",
+      "url": "https://www.ou.edu/admissions/honors/scholarships/national-merit-finalist-scholarship/non-resident.html",
+      "http_status": 200,
+      "reason": "stale cycle",
+      "publisher_words": "National Merit Finalist Package for Non-Resident Students Entering Fall 2026. Scholarship consideration is guaranteed to students who apply to OU by December 15, 2025; this package is available to admitted Finalists who name OU by April 30, 2026, the NMSC deadline.",
+      "note": "The resident page is keyed the same way. This is the $153,450 headline the RFC opens with; on 2026-09-25 OU publishes it against Fall 2026 entry, so it is not a Fall 2027 row. Re-read when OU re-keys the two pages."
+    },
+    {
+      "college_name": "Texas Tech University",
+      "url": "https://www.depts.ttu.edu/scholarships/NationalMerit.php",
+      "http_status": 200,
+      "reason": "stale cycle",
+      "publisher_words": "Qualifying students should make their designation no later than May 31, 2022 to the National Merit Corporation to maximize eligibility.",
+      "note": "The page still prints a 2022 first-choice deadline beside its cost-of-attendance table, so its \"guarantees 100% of the approved cost of attendance\" cannot be attached to a 2027 entrant."
+    },
+    {
+      "college_name": "The University of Texas at Dallas",
+      "url": "https://honors.utdallas.edu/national-merit-scholars-program/scholarship-package-benefits/",
+      "http_status": 200,
+      "reason": "stale cycle",
+      "publisher_words": "National Merit Scholarship Program & Package – Fall 2026"
+    },
+    {
+      "college_name": "University of Maine",
+      "url": "https://umaine.edu/admissions/cost-aid/merit-scholarships/",
+      "http_status": 200,
+      "reason": "stale cycle",
+      "publisher_words": "Fall 2026-Spring 2027 Scholarships",
+      "note": "The hub's newest first-year scholarship pages are the 26-27 set (26-27fyinstatemerit, 26-27fyosmerit). No Fall 2027 page is published on 2026-09-25. Maine is the RFC's one school that does NOT require naming it first choice, so it is worth re-reading in the summer."
+    },
+    {
+      "college_name": "University of Mississippi",
+      "url": "https://olemiss.edu/finaid/types-of-aid/scholarships/non-resident/entering-freshman/awards-automatic-consideration/nr-freshman-merit/",
+      "http_status": 200,
+      "reason": "stale cycle",
+      "publisher_words": "2026-2027 Non-Resident Freshmen",
+      "note": "The Mississippi-resident page is worse: \"2025-2026 Mississippi Freshmen\". The National Merit blocks sit under those cycle headings on the same pages."
+    },
+    {
+      "college_name": "University of Arizona",
+      "url": "https://frankehonors.arizona.edu/why-honors/national-merit-scholars",
+      "http_status": 200,
+      "reason": "no award published on the page we could read",
+      "publisher_words": "National Merit and Recognition Scholars who apply to the University of Arizona are encouraged to complete the W.A Franke Honors College portion of the application and upload their National Merit documentation in the supplemental materials field.",
+      "note": "No money on this page and no sentence denying one. The only page with a figure is financialaid.arizona.edu/2026-2027-terms-and-conditions, a 2026-27 document. Not an award row and not an absence row."
+    },
+    {
+      "college_name": "Baylor University",
+      "url": "https://admissions.web.baylor.edu/costs-aid/scholarships-aid/merit-based-scholarships",
+      "http_status": 200,
+      "reason": "no National Merit award and no quotable sentence proving the absence",
+      "publisher_words": "",
+      "note": "The merit-scholarship page says \"National Merit\" zero times. Silence is not a citation, so this is not a none_published row. www.baylor.edu/sfs/index.php?id=964191 now redirects to onestop.web.baylor.edu. Unchanged from the research report's finding; still unproven whether Baylor cut the award or never had one."
+    },
+    {
+      "college_name": "University of Kentucky",
+      "url": "https://studentsuccess.uky.edu/financial-aid-and-scholarships/academic-scholarships/incoming-freshmen-scholarships",
+      "http_status": 200,
+      "reason": "no National Merit award and no quotable sentence proving the absence",
+      "publisher_words": "",
+      "note": "The incoming-freshmen scholarship page says \"National Merit\" zero times. www.uky.edu/academicscholarships/incoming-freshmen redirects here."
+    },
+    {
+      "college_name": "Fordham University",
+      "url": "https://www.fordham.edu/admissions-and-aid/financial-aid/undergraduate-financial-aid/scholarships-and-grants/",
+      "http_status": 404,
+      "reason": "page could not be read",
+      "publisher_words": "",
+      "note": "Both scholarship paths the research report and a site search offered return 404 today. No page read, so no row of either kind."
+    },
+    {
+      "college_name": "Louisiana State University",
+      "url": "https://www.lsu.edu/financialaid/scholarships/incoming-students.php",
+      "http_status": 200,
+      "reason": "no National Merit award and no quotable sentence proving the absence",
+      "publisher_words": "",
+      "note": "The incoming-student scholarship page says \"National Merit\" zero times."
+    },
+    {
+      "college_name": "University of Nebraska-Lincoln (Chancellor's pages only)",
+      "url": "https://admissions.unl.edu/cost/scholarships/",
+      "http_status": 404,
+      "reason": "hub page 404s; the two Chancellor's Tuition Scholarship pages were reached instead and ARE seeded",
+      "publisher_words": ""
+    },
+    {
+      "college_name": "University of Minnesota-Twin Cities",
+      "url": "https://admissions.tc.umn.edu/global-excellence-scholarships",
+      "http_status": null,
+      "reason": "not fetched",
+      "publisher_words": "",
+      "note": "Surfaced by a search only; no page of its own was read, so it is neither an award row nor an absence row. A candidate for the next pass."
+    }
+  ],
+  "known_gaps": [
+    "Four schools that the research report priced in dollars are absent because their own pages still describe Fall 2026 or earlier entry on 2026-09-25: Oklahoma, Texas Tech, UT Dallas and Maine. That is the currency risk the RFC's correction 5 names, measured.",
+    "Only one none_published row (UNC) exists, because a verified absence needs a quotable sentence and three schools that publish nothing simply say nothing. Silence was not converted into a citation.",
+    "No archive_url is set on any row. Nothing was mirrored this pass.",
+    "No row carries an apply_deadline DATE: no school printed the year beside its National Merit application deadline."
+  ]
+}

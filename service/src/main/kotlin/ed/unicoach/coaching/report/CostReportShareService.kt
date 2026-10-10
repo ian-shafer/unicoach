@@ -446,6 +446,18 @@ class CostReportShareService(
             CommitmentLens.INVITE_SUPPORTER,
             -> true
 
+            // NOT AN OFFER, and this arm is the answer the exhaustive `when`
+            // demanded of RFC 243 rather than a default it fell into.
+            // `share_offers_opted_out` is recorded from the SHARE flow and its
+            // sentence to the family is "stop suggesting sharing" -- one stop
+            // covering the report link and the parent invite, which are two ways
+            // to ask for the same thing. The PSAT/NMSQT window is not a request
+            // of the student at all: it is a dated qualification that happens
+            // once in her life and closes. Reading a share opt-out as consent to
+            // stay silent about it would let one unrelated preference cost real
+            // money, and the window nudge already has its own stop
+            // (SYNTHESIS_PSAT_WINDOW_NUDGE_ENABLED) and can only ever fire once.
+            CommitmentLens.PSAT_WINDOW,
             CommitmentLens.GAP,
             CommitmentLens.TIMING,
             CommitmentLens.CONTRADICTION,

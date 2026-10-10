@@ -5,6 +5,7 @@ import java.time.LocalDate
 import java.time.Month
 import java.time.MonthDay
 import java.time.Period
+import java.time.ZoneId
 
 /**
  * The rules that govern HAND-TYPED reference data -- the corpora a human reads
@@ -74,4 +75,16 @@ object HandTypedReferenceData {
 
   /** [CYCLE_EXPIRY] on the calendar of one entry year. */
   fun cycleExpiryFor(entryYear: AcademicYear): LocalDate = CYCLE_EXPIRY.atYear(entryYear.firstCalendarYear)
+
+  /**
+   * The zone every hand-typed corpus's staleness guard reads "today" in.
+   *
+   * `LocalDate.now()` would read `ZoneId.systemDefault()` -- itself set from the
+   * process `TZ` -- so the refresh bar would fire a day apart on a developer's
+   * machine and on CI, which is RFC 186's own lesson one layer along. `:db` and
+   * `:college` cannot see `COACH_ZONE` in `:service`, so the zone is named HERE,
+   * one home, for the same reason [REFRESH_LEAD] has one: it was a literal
+   * `ZoneId.of("America/New_York")` retyped in every guard that needed it.
+   */
+  val GUARD_ZONE: ZoneId = ZoneId.of("America/New_York")
 }

@@ -17,6 +17,8 @@ import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.CommitmentSupportDao
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.NationalMeritCyclesDao
+import ed.unicoach.db.dao.NationalMeritFixture
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
@@ -39,6 +41,7 @@ import ed.unicoach.db.models.CommitmentStatus
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewCostReportShare
+import ed.unicoach.db.models.NewNationalMeritCycle
 import ed.unicoach.db.models.ShareEventKind
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SupporterRelationship
@@ -61,6 +64,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.time.Clock
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
@@ -990,10 +994,11 @@ class SynthesisServiceTest {
   private fun executeNudgeOnlyPass(
     student: StudentId,
     cfg: SynthesisConfig = config,
+    clock: Clock = fixedClock,
   ): SynthesisResult =
     runBlocking {
       val provider = TerminalProvider(terminal = ChatEvent.TransientFailure("LLM must not be called", null, null))
-      val result = service(provider, cfg).synthesize(student)
+      val result = service(provider, cfg, clock).synthesize(student)
       assertEquals(0, provider.calls, "the nudge step must not need the LLM")
       assertIs<SynthesisResult.Success>(result, "a suppression must be a completed pass declining to insert, not a fault")
       result
@@ -1454,6 +1459,509 @@ class SynthesisServiceTest {
 
       assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
       assertEquals(0, inviteNudges(student).size, "the invented lens must never become a commitment")
+    }
+
+  // ---------------------------------------------------------------------------
+  // The PSAT/NMSQT window nudge (RFC 243)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * THE CYCLES ARE THE COMMITTED CORPUS, AND THE CLOCKS ARE DERIVED FROM THEM.
+   *
+   * `national_merit_cycles` is Route A -- seeded by migration, so `bin/test`'s
+   * `db-reset` puts it in every test database -- and `:db`'s own
+   * `NationalMeritCycleSeedTest` asserts those rows FROM THE DATABASE. So this
+   * suite writes no cycle of its own (an upsert here would overwrite a committed
+   * row and fail another module's test) and instead reads the corpus and moves
+   * the CLOCK, which is the input the nudge actually turns on.
+   *
+   * The dated cycle and the described one are both required to exist, because the
+   * PAIR is the design: "the competition in progress" and "the competition
+   * described and not dated" (brief 0010 D22).
+   */
+  private val cycles = NationalMeritCyclesDao.list(sqlSession).getOrThrow()
+
+  private val datedCycle =
+    cycles.firstOrNull { it.window is ed.unicoach.db.models.CycleWindow.Dated }
+      ?: error("the committed national_merit_cycles corpus holds no DATED cycle; db/seed/national-merit/cycles.csv")
+
+  private val describedCycle =
+    cycles.firstOrNull { it.window is ed.unicoach.db.models.CycleWindow.Described }
+      ?: error("the committed national_merit_cycles corpus holds no DESCRIBED cycle; db/seed/national-merit/cycles.csv")
+
+  private val datedWindow = datedCycle.window as ed.unicoach.db.models.CycleWindow.Dated
+
+  /** A competition year no cycle row exists for, read off the corpus rather than typed. */
+  private val uncuratedClass = cycles.maxOf { it.competitionYear } + 7
+
+  /**
+   * Two more years no cycle row exists for, for the two cases below that must
+   * SEED THEIR OWN -- see [withSeededCycle] for why they cannot borrow a
+   * committed one. Read off the corpus for [uncuratedClass]'s reason, and
+   * distinct from it and from each other so the three never collide.
+   */
+  private val undatedCycleYear = cycles.maxOf { it.competitionYear } + 5
+  private val expiringCycleYear = cycles.maxOf { it.competitionYear } + 6
+
+  /**
+   * Seeds one cycle of this suite's own for the duration of [body] and deletes
+   * it after, BY YEAR.
+   *
+   * TWO GUARDS CANNOT BE REACHED WITH A COMMITTED ROW, and that is a property of
+   * the corpus rather than a defect in it: the described 2029 cycle is believed
+   * through 2027-07-31, one month into the junior year of the class it belongs
+   * to (RFC 186's 1 July turnover), so by the time that class could be nudged at
+   * all the row must already have been re-read -- which is exactly what the
+   * 90-day refresh guard exists to make true. A case about an undated window, or
+   * about expiry and its boundary day, therefore brings its own competition year
+   * with dates it chooses, and each guard is isolated from the others.
+   *
+   * THE YEAR MUST BE ONE NO CORPUS HOLDS, and that is checked here rather than
+   * trusted, because the committed corpus can grow: the DAO's write is an
+   * UPSERT, so a seed on a committed year would overwrite a committed row (and
+   * the deletion afterwards would take it away outright), failing `:db`'s own
+   * seed test rather than this one.
+   */
+  private fun <T> withSeededCycle(
+    row: NewNationalMeritCycle,
+    body: () -> T,
+  ): T {
+    require(cycles.none { it.competitionYear == row.competitionYear }) {
+      "competition year ${row.competitionYear} is in the committed corpus (db/seed/national-merit/cycles.csv), " +
+        "and a suite that seeds it would overwrite the row another module asserts"
+    }
+    return try {
+      NationalMeritFixture.seedCycle(sqlSession, row)
+      body()
+    } finally {
+      connection.prepareStatement("DELETE FROM national_merit_cycles WHERE competition_year = ?").use { stmt ->
+        stmt.setInt(1, row.competitionYear)
+        stmt.executeUpdate()
+      }
+    }
+  }
+
+  /** Noon UTC on [day] -- an INSTANT, because the step applies `COACH_ZONE` itself. */
+  private fun clockOn(day: LocalDate): Clock = Clock.fixed(day.atTime(12, 0).toInstant(java.time.ZoneOffset.UTC), ZoneOffset.UTC)
+
+  /** Inside the lead window and before the sitting: the one moment this nudge exists for. */
+  private val windowNearClock: Clock = clockOn(datedWindow.opensOn.minusDays(5))
+
+  private fun psatNudges(studentId: StudentId): List<ed.unicoach.db.models.Commitment> =
+    CommitmentsDao
+      .listByStudent(sqlSession, studentId, limit = 100, offset = 0)
+      .getOrThrow()
+      .filter { it.lens == CommitmentLens.PSAT_WINDOW }
+
+  /** A student whose stored class is [graduationYear] -- the year of school IS the subject of every test below. */
+  private fun createStudentInClass(graduationYear: Int): StudentId =
+    createStudent().also { student ->
+      StudentRowFixture.updateGraduation(connection, student.value, StudentRowFixture.graduationYear(graduationYear))
+    }
+
+  /** A dropped `psat_window` commitment -- the ALREADY_RAISED predicate's own input, in a status that is not open. */
+  private fun insertDroppedPsatNudge(studentId: StudentId) {
+    connection
+      .prepareStatement(
+        "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason) " +
+          "VALUES (?, 'psat_window', 'explicit', 'raised once already', 'dropped', NOW(), 'test')",
+      ).use { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.executeUpdate()
+      }
+  }
+
+  /**
+   * THE VERDICT ITSELF, which is what "one test per suppression reason, BY NAME"
+   * asks for.
+   *
+   * Every suppression writes nothing, so a row count cannot tell one reason from
+   * another -- and three of these cases were SHADOWED: the guard could be
+   * deleted and the suite stayed green. No clock or fixture can un-shadow
+   * NOT_QUALIFYING_YEAR, because the year of school is DERIVED from her class
+   * and today, so for the committed corpus the student who isolates it does not
+   * exist. The verdict is `internal` for exactly this: Kotlin associates `test`
+   * with `main`, so the suite reads the decision the step actually made.
+   */
+  private fun verdictFor(
+    studentId: StudentId,
+    clock: Clock,
+    cfg: SynthesisConfig = config,
+  ): SynthesisService.PsatWindowNudgeVerdict {
+    val student =
+      ed.unicoach.db.dao.StudentsDao
+        .findById(sqlSession, studentId, ed.unicoach.db.models.SoftDeleteScope.ACTIVE)
+        .getOrThrow()
+    return service(TerminalProvider(terminal = ChatEvent.TransientFailure("LLM must not be called", null, null)), cfg, clock)
+      .computePsatWindowNudgeVerdict(sqlSession, student)
+  }
+
+  /** The suppression this student's pass decided on, by name. */
+  private fun suppressionFor(
+    studentId: StudentId,
+    clock: Clock,
+    cfg: SynthesisConfig = config,
+  ): SynthesisService.PsatWindowNudgeSuppression =
+    assertIs<SynthesisService.PsatWindowNudgeVerdict.Suppressed>(verdictFor(studentId, clock, cfg)).reason
+
+  /**
+   * THE MOMENT THE SLICE'S ONE PROACTIVE STEP EXISTS FOR: a junior whose one
+   * qualifying sitting is days away gets one open explicit commitment carrying the
+   * FIXED statement, and the next day's sweep adds nothing.
+   *
+   * It runs through [executeNudgeOnlyPass], which asserts the provider is never
+   * called -- so this also proves the step runs BEFORE every LLM-phase gate: these
+   * students have no active claims at all, and the read phase no-ops on that.
+   */
+  @Test
+  fun `a junior inside the lead window gets exactly one open explicit psat_window commitment, and the next day adds nothing`() {
+    val student = createStudentInClass(datedCycle.competitionYear)
+
+    // ASKED BEFORE THE PASS, because the pass WRITES the row this verdict is
+    // about: put to the step a second time afterwards, the honest answer is
+    // ALREADY_RAISED, which is the repeat rule below and not this assertion.
+    assertEquals(
+      SynthesisService.PsatWindowNudgeVerdict.Eligible,
+      verdictFor(student, windowNearClock),
+      "the step says so by name: this is the one moment it fires for",
+    )
+
+    executeNudgeOnlyPass(student, clock = windowNearClock)
+
+    val nudge = psatNudges(student).single()
+    assertEquals(CommitmentStatus.OPEN, nudge.status)
+    assertEquals(CommitmentDisclosure.EXPLICIT, nudge.disclosure)
+    assertEquals(SynthesisService.PSAT_WINDOW_NUDGE_STATEMENT, nudge.statement, "template text, never LLM text")
+    assertEquals(
+      emptyList(),
+      CommitmentSupportDao.listClaimsForCommitment(sqlSession, nudge.id).getOrThrow(),
+      "no claims were reasoned over, so no support rows",
+    )
+    assertEquals(0, runRows(student), "a nudge-only pass writes no synthesis_runs row: runs log LLM work")
+
+    executeNudgeOnlyPass(student, clock = clockOn(datedWindow.opensOn.minusDays(4)))
+    assertEquals(1, psatNudges(student).size, "the next day's sweep must not raise the one sitting of her life twice")
+  }
+
+  /** DISABLED: the rollback knob stops new nudges, and every reactive answer about the PSAT still comes from the tool. */
+  @Test
+  fun `psatWindowNudgeEnabled = false suppresses the nudge`() {
+    val student = createStudentInClass(datedCycle.competitionYear)
+
+    val cfg = configWith("synthesis.psatWindowNudgeEnabled = false")
+    executeNudgeOnlyPass(student, cfg, windowNearClock)
+
+    assertEquals(0, psatNudges(student).size, "the rollback knob stops new nudges")
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.DISABLED,
+      suppressionFor(student, windowNearClock, cfg),
+      "and the knob is the reason, reached before any read",
+    )
+  }
+
+  /**
+   * NOT_QUALIFYING_YEAR: a sophomore on the same clock, whose own cycle row
+   * EXISTS -- so the only reason left is the year of school. Only the one
+   * qualifying sitting counts, and hers is a year away.
+   *
+   * THE REASON IS ASSERTED, not the absence of a row. Her own cycle is the
+   * DESCRIBED one, which carries no dates, so with this guard deleted the pass
+   * falls through to CYCLE_UNDATED and writes nothing either -- the row count is
+   * identical and the guard is invisible to it.
+   */
+  @Test
+  fun `a student who is not in the qualifying year of school gets no nudge, and the year of school is the reason`() {
+    val sophomore = createStudentInClass(describedCycle.competitionYear)
+
+    executeNudgeOnlyPass(sophomore, clock = windowNearClock)
+
+    assertEquals(0, psatNudges(sophomore).size, "a sitting in any other year does not enter the competition at all")
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.NOT_QUALIFYING_YEAR,
+      suppressionFor(sophomore, windowNearClock),
+      "the year of school is the reason, and not the undated window behind it",
+    )
+  }
+
+  /**
+   * NOT_QUALIFYING_YEAR FROM THE OTHER SIDE, and the half a sophomore cannot
+   * prove: a SENIOR of the dated cycle's own class, a year after the window she
+   * was a junior for. Her cycle row exists and IS dated, and the window is behind
+   * her -- so both NOT_QUALIFYING_YEAR and WINDOW_PASSED are true of her, and the
+   * step must reach the year of school FIRST. Her one qualifying sitting was last
+   * autumn; a "the window is open" nudge now would be about a competition she can
+   * no longer enter by sitting the test.
+   */
+  @Test
+  fun `a senior past her own cycle gets no nudge, and the year of school is the reason reached first`() {
+    val senior = createStudentInClass(datedCycle.competitionYear)
+
+    // A year on from the sitting: the class of [competitionYear] is grade 12 in the
+    // academic year that ENDS in that year (RFC 186's 1 July turnover).
+    val aYearOn = clockOn(datedWindow.closesOn.plusYears(1))
+    executeNudgeOnlyPass(senior, clock = aYearOn)
+
+    assertEquals(0, psatNudges(senior).size, "the one sitting that counted is behind her, so this window is not hers")
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.NOT_QUALIFYING_YEAR,
+      suppressionFor(senior, aYearOn),
+      "the year of school is the reason REACHED FIRST, which is what this case's name claims and nothing " +
+        "asserted until now: WINDOW_PASSED is equally true of her",
+    )
+  }
+
+  /**
+   * NO_CYCLE_ROW: we hold no cycle for her class, so there is no window to call
+   * near and no date to name.
+   *
+   * AND IT IS THE REASON REACHED FIRST, which is the order claim RFC 243 amended
+   * and nothing asserted: she is also not in the qualifying year of school on
+   * this clock, so the step must name the missing ROW rather than her year.
+   */
+  @Test
+  fun `a student whose class has no cycle row gets no nudge, and the missing row is the reason reached first`() {
+    val student = createStudentInClass(uncuratedClass)
+
+    executeNudgeOnlyPass(student, clock = windowNearClock)
+
+    assertEquals(0, psatNudges(student).size, "no row, no dates, nothing to raise")
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.NO_CYCLE_ROW,
+      suppressionFor(student, windowNearClock),
+      "the row we do not hold is the reason, and the qualifying grade is the ROW's -- so there is no grade to " +
+        "judge her against until it is read",
+    )
+  }
+
+  /**
+   * CYCLE_EXPIRED: she IS in the qualifying year and we have stopped believing
+   * our reading of her cycle (`expires_on`), so no window from it may drive an
+   * unprompted message about a date.
+   *
+   * REACHED AFTER THE YEAR OF SCHOOL AND BEFORE THE WINDOW, which the two clocks
+   * here are chosen to show: one day apart, with her year of school identical on
+   * both, so the only thing that moves is whether the row is still believed. A
+   * reading we no longer believe is no better than a row we never had, and the
+   * reactive side refuses the same row the same way
+   * ([ed.unicoach.coaching.testing.CycleTiming.CycleExpired]).
+   *
+   * ITS OWN CYCLE, for [withSeededCycle]'s reason: this needs a row whose expiry
+   * falls INSIDE the junior year of the class it belongs to, and no committed row
+   * is shaped that way -- a corpus whose rows outlived their students' sittings
+   * would be a corpus nobody re-read in time.
+   */
+  @Test
+  fun `a cycle past its own expires_on raises nothing, and the stale reading is the reason`() {
+    val cycle =
+      NationalMeritFixture.cycle(
+        competitionYear = expiringCycleYear,
+        window =
+          ed.unicoach.db.models.CycleWindow
+            .Dated(
+              opensOn = LocalDate.of(expiringCycleYear - 2, 10, 1),
+              closesOn = LocalDate.of(expiringCycleYear - 2, 10, 30),
+              asPublished = "The test is given in school in October of the junior year.",
+            ),
+        alternateEntry = null,
+        checkedOn = LocalDate.of(expiringCycleYear - 2, 9, 1),
+        // The December of her junior year: her sitting has been and gone and she
+        // is still in grade 11, so the clock crosses the expiry and nothing else.
+        expiresOn = LocalDate.of(expiringCycleYear - 2, 12, 1),
+      )
+    val student = createStudentInClass(cycle.competitionYear)
+    val onExpiry = clockOn(cycle.expiresOn)
+    val pastExpiry = clockOn(cycle.expiresOn.plusDays(1))
+
+    withSeededCycle(cycle) {
+      executeNudgeOnlyPass(student, clock = pastExpiry)
+
+      assertEquals(0, psatNudges(student).size, "a dated window out of a dead reading is not a date to raise")
+      assertEquals(
+        SynthesisService.PsatWindowNudgeSuppression.CYCLE_EXPIRED,
+        suppressionFor(student, pastExpiry),
+        "and the stale reading is the reason, reached before every date on the row",
+      )
+      assertEquals(
+        SynthesisService.PsatWindowNudgeSuppression.WINDOW_PASSED,
+        suppressionFor(student, onExpiry),
+        "ON expires_on the reading still stands, so the ordinary window reason is the one reached",
+      )
+    }
+  }
+
+  /**
+   * CYCLE_UNDATED: she IS in the qualifying year of her own cycle, we still
+   * believe our reading of it, and it has no dates at all -- so "near" has no
+   * meaning and a nudge would be raising a deadline nobody has published.
+   *
+   * ITS OWN CYCLE, for [withSeededCycle]'s reason: the committed described row
+   * stops being believed a month into its class's junior year, so no clock exists
+   * on which a student of that class reaches this guard.
+   */
+  @Test
+  fun `a junior whose own cycle is described and not dated gets no nudge`() {
+    val cycle =
+      NationalMeritFixture.cycle(
+        competitionYear = undatedCycleYear,
+        window =
+          ed.unicoach.db.models.CycleWindow
+            .Described(asPublished = "The test is given in school in October of the junior year."),
+        alternateEntry = null,
+        checkedOn = LocalDate.of(undatedCycleYear - 2, 9, 1),
+        // Believed through the June her junior year ends in, so the undated
+        // window is the only thing left that can stop the step.
+        expiresOn = LocalDate.of(undatedCycleYear - 1, 6, 30),
+      )
+    val junior = createStudentInClass(cycle.competitionYear)
+    val herJuniorAutumn = clockOn(LocalDate.of(cycle.competitionYear - 2, 10, 15))
+
+    withSeededCycle(cycle) {
+      executeNudgeOnlyPass(junior, clock = herJuniorAutumn)
+
+      assertEquals(0, psatNudges(junior).size, "an undated window cannot be near, and no date may be invented for it")
+      assertEquals(
+        SynthesisService.PsatWindowNudgeSuppression.CYCLE_UNDATED,
+        suppressionFor(junior, herJuniorAutumn),
+        "the undated window is the reason: she IS in the qualifying year of it and the row is still believed",
+      )
+    }
+  }
+
+  /** WINDOW_NOT_NEAR: the same junior, a month and a half earlier. The window is hers and it is not yet the moment. */
+  @Test
+  fun `a junior further out than the lead days gets no nudge yet`() {
+    val student = createStudentInClass(datedCycle.competitionYear)
+
+    val tooEarly = clockOn(datedWindow.opensOn.minus(config.psatWindowNudgeLead).minusDays(5))
+    executeNudgeOnlyPass(student, clock = tooEarly)
+
+    assertEquals(0, psatNudges(student).size, "before the lead window it is a reminder she would forget")
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.WINDOW_NOT_NEAR,
+      suppressionFor(student, tooEarly),
+      "and it is the lead that has not been reached, not her year of school",
+    )
+  }
+
+  /**
+   * WINDOW_PASSED IS A DELIBERATE REFUSAL, NOT AN OMISSION. Nothing in the product
+   * stores whether she sat the test, so an unprompted "you may have missed it" is a
+   * guess about her life -- and the alternate-entry answer is fully available the
+   * moment she asks, through the tool's own arm.
+   */
+  @Test
+  fun `a junior past the window gets no nudge, because nothing here knows whether she sat it`() {
+    val student = createStudentInClass(datedCycle.competitionYear)
+
+    val dayAfter = clockOn(datedWindow.closesOn.plusDays(1))
+    executeNudgeOnlyPass(student, clock = dayAfter)
+
+    assertEquals(0, psatNudges(student).size, "the letter route is an answer to a question, never an unprompted guess")
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.WINDOW_PASSED,
+      suppressionFor(student, dayAfter),
+      "the closed window is the reason, and she is still in the qualifying year of school",
+    )
+  }
+
+  /**
+   * ALREADY_RAISED, IN ANY STATUS -- which is the whole repeat rule, because the
+   * qualifying sitting happens once in a student's life. A DROPPED row is a student
+   * who did not want it, and that answer stands: there is no cooldown here and no
+   * day count to configure.
+   */
+  @Test
+  fun `a student who already has a dropped psat_window row is never nudged again`() {
+    val student = createStudentInClass(datedCycle.competitionYear)
+    insertDroppedPsatNudge(student)
+
+    executeNudgeOnlyPass(student, clock = windowNearClock)
+
+    assertEquals(
+      0,
+      psatNudges(student).count { it.status == CommitmentStatus.OPEN },
+      "one row in any status is the whole repeat rule",
+    )
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.ALREADY_RAISED,
+      suppressionFor(student, windowNearClock),
+      "and the row she already has is the reason, on the clock this nudge otherwise fires on",
+    )
+  }
+
+  /** OPEN_SET_AT_CAP: a saturated open set takes no nudge either. */
+  @Test
+  fun `the open-set cap suppresses the psat nudge`() {
+    val student = createStudentInClass(datedCycle.competitionYear)
+    createCommitment(student, "one")
+    createCommitment(student, "two")
+
+    val cfg = configWith("synthesis.maxOpenCommitments = 2")
+    executeNudgeOnlyPass(student, cfg, windowNearClock)
+
+    assertEquals(0, psatNudges(student).size, "a student at the cap no-ops until some resolve")
+    assertEquals(
+      SynthesisService.PsatWindowNudgeSuppression.OPEN_SET_AT_CAP,
+      suppressionFor(student, windowNearClock, cfg),
+      "and the saturated open set is the reason, which is the last gate the step reaches",
+    )
+  }
+
+  /**
+   * THE MODEL CANNOT PROPOSE THIS LENS. The exhaustive `when` behind
+   * `LLM_PROPOSABLE_LENSES` keeps it out of the advertised schema, and a model
+   * that invents it anyway is rejected as an unknown field -- exactly as the
+   * share-report nudge already proves for itself.
+   */
+  @Test
+  fun `the LLM cannot propose the psat_window lens - the schema omits it and the validator rejects it`() =
+    runBlocking {
+      val student = createStudentInClass(datedCycle.competitionYear)
+      createClaim(student)
+      val doc = """{"commitments":[{"lens":"psat_window","disclosure":"explicit","statement":"x","supports":[]}]}"""
+      val provider = JsonProvider(jsonDoc = doc, usage = TokenUsage(9, 4, 0, 0))
+
+      val result =
+        service(provider, configWith("synthesis.psatWindowNudgeEnabled = false"), windowNearClock).synthesize(student)
+
+      val advertisedLenses =
+        provider.lastRequest!!
+          .tools
+          .single()
+          .getValue("input_schema")
+          .jsonObject
+          .getValue("properties")
+          .jsonObject
+          .getValue("commitments")
+          .jsonObject
+          .getValue("items")
+          .jsonObject
+          .getValue("properties")
+          .jsonObject
+          .getValue("lens")
+          .jsonObject
+          .getValue("enum")
+          .jsonArray
+          .map { it.jsonPrimitive.content }
+          .toSet()
+      assertTrue(
+        CommitmentLens.PSAT_WINDOW.value !in advertisedLenses,
+        "the schema offers exactly the LLM-proposable lenses, never the code-only psat_window: [$advertisedLenses]",
+      )
+
+      assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
+      connection
+        .prepareStatement("SELECT outcome, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?")
+        .use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals("invalid_field", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").contains("lens"), rs.getString("failure_reason"))
+          }
+        }
+      assertEquals(0, psatNudges(student).size, "the invented lens must never become a commitment")
     }
 
   private fun countAllLlmRequests(): Int =

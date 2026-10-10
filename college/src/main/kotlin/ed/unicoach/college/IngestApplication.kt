@@ -39,6 +39,7 @@ private const val USAGE =
     "--codebooks=codebooks.json [--codebooks-source=ARG] " +
     "[--subjects=subjects.json] [--subjects-source=ARG] " +
     "[--money-vocabulary=money-vocabulary.json] [--money-vocabulary-source=ARG] " +
+    "[--national-merit-awards=awards.csv] [--national-merit-awards-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv> $CDS_AID_POLICY_FLAG <aid_policy.csv>] " +
     "[$AWARDS_FLAG <awards.csv> $AWARD_BANDS_FLAG <bands.csv>] " +
@@ -89,6 +90,18 @@ private const val SUBJECTS_FLAG = "subjects"
  * vocabulary TABLES, which are its real precondition (P2).
  */
 private const val MONEY_VOCABULARY_FLAG = "money-vocabulary"
+
+/**
+ * The hand-typed National Merit award corpus (RFC 243). Optional and
+ * `=`-joined, unlike the two-flag automatic-award group above, because it is
+ * ONE file: the corpus's committed link answers (`link-status.csv`) are read
+ * from BESIDE it and are deliberately not a flag, so a second flag could only
+ * ever pair one corpus's rows with another corpus's answers.
+ *
+ * Omitted, the run loads no National Merit awards at all -- the omit-vs-zero
+ * rule every other optional group follows.
+ */
+private const val NATIONAL_MERIT_AWARDS_FLAG = "national-merit-awards"
 
 /**
  * The three CDS admissions seed files (RFC 140), passed as NAMED flags rather
@@ -190,7 +203,8 @@ private val SFA_FLAGS = listOf(SFA_FILE_FLAG, SFA_AID_YEAR_FLAG)
 private val KNOWN_FLAGS =
   SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG +
     CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + SUBJECTS_FLAG + "$SUBJECTS_FLAG-source" +
-    MONEY_VOCABULARY_FLAG + "$MONEY_VOCABULARY_FLAG-source" + SFA_FLAGS + SFA_SOURCE_FLAG
+    MONEY_VOCABULARY_FLAG + "$MONEY_VOCABULARY_FLAG-source" +
+    NATIONAL_MERIT_AWARDS_FLAG + "$NATIONAL_MERIT_AWARDS_FLAG-source" + SFA_FLAGS + SFA_SOURCE_FLAG
 
 /**
  * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140
@@ -219,6 +233,8 @@ internal sealed interface ArgvResult {
     val subjects: SourceFile? = null,
     /** The authored money vocabulary (RFC 158), null when `--money-vocabulary` was omitted. */
     val moneyVocabulary: SourceFile? = null,
+    /** The National Merit award corpus (RFC 243), null when `--national-merit-awards` was omitted. */
+    val nationalMeritAwards: SourceFile? = null,
   ) : ArgvResult
 
   /** A grammar violation: [message] is logged and the process exits 2. */
@@ -350,6 +366,16 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
         "that was not supplied. $USAGE",
     )
   }
+  // Same refusal for the National Merit award corpus (RFC 243), and for the
+  // same reason: a provenance source naming a file nobody supplied is a caller
+  // mistake, never a defaulted load.
+  val nationalMeritAwardsSourceFlag = "$NATIONAL_MERIT_AWARDS_FLAG-source"
+  if (nationalMeritAwardsSourceFlag in flags && NATIONAL_MERIT_AWARDS_FLAG !in flags) {
+    return ArgvResult.Usage(
+      "Option [--$nationalMeritAwardsSourceFlag] names a provenance source for a National Merit award " +
+        "corpus that was not supplied. $USAGE",
+    )
+  }
   return ArgvResult.Ok(
     sources =
       positional.mapIndexed { i, path ->
@@ -387,6 +413,11 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       flags[MONEY_VOCABULARY_FLAG]?.let { path ->
         val file = File(path)
         SourceFile(file = file, sourceArg = flags[moneyVocabularySourceFlag] ?: file.path)
+      },
+    nationalMeritAwards =
+      flags[NATIONAL_MERIT_AWARDS_FLAG]?.let { path ->
+        val file = File(path)
+        SourceFile(file = file, sourceArg = flags[nationalMeritAwardsSourceFlag] ?: file.path)
       },
   )
 }
@@ -542,7 +573,14 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   val codebooks = listOf(CODEBOOKS_FLAG to parsed.codebooks)
   val subjects = parsed.subjects?.let { listOf(SUBJECTS_FLAG to it) } ?: emptyList()
   val moneyVocabulary = parsed.moneyVocabulary?.let { listOf(MONEY_VOCABULARY_FLAG to it) } ?: emptyList()
-  return scorecard + ipeds + sfa + cds + automaticAwards + codebooks + subjects + moneyVocabulary
+  // The National Merit corpus's link-status.csv is NOT here, for the reason the
+  // automatic-award one is not: it has no flag, so it has no role name to
+  // report, and the loader's header assertion is what checks for it -- before
+  // the first phase commits, like every other file.
+  val nationalMeritAwards =
+    parsed.nationalMeritAwards?.let { listOf(NATIONAL_MERIT_AWARDS_FLAG to it) } ?: emptyList()
+  return scorecard + ipeds + sfa + cds + automaticAwards + codebooks + subjects + moneyVocabulary +
+    nationalMeritAwards
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
@@ -634,6 +672,7 @@ fun main(args: Array<String>) {
           sfa = parsed.sfa,
           cds = parsed.cds?.sources,
           automaticAwards = parsed.automaticAwards?.sources,
+          nationalMeritAwards = parsed.nationalMeritAwards,
           codebooks = parsed.codebooks,
           subjects = parsed.subjects,
           moneyVocabulary = parsed.moneyVocabulary,
@@ -657,6 +696,8 @@ fun main(args: Array<String>) {
     // Same shape, same reason: the corpus loaded INSIDE the run, and this reads
     // back what that phase recorded.
     report.automaticAwards?.let(::logAutomaticAwardRun)
+    // And the corpus beside it (RFC 243), read back the same way.
+    report.nationalMeritAwards?.let(::logNationalMeritAwardRun)
   } catch (e: MissingSourceColumnsException) {
     logger.error(
       "Ingest aborted before any write: source [{}] (from [{}]) is missing required column(s) [{}]",
@@ -680,6 +721,15 @@ fun main(args: Array<String>) {
     // assertion; a defect found once the phase HAS committed arrives as the
     // PartialIngestException below.
     logger.error("Ingest aborted before any write: automatic-award corpus defect [{}]", e.defect, e)
+    kotlin.system.exitProcess(1)
+  } catch (e: NationalMeritAwardSeedLoader.FormatException) {
+    // Its own arm, for the automatic-award arm's reason one case up: the three
+    // corpora's defects are different closed sets, and a message that named no
+    // corpus would send an operator to the wrong file. Reached from the up-front
+    // header assertion; a defect found once the phase HAS committed arrives as
+    // the PartialIngestException below. Without this arm the loader's thirty-odd
+    // located refusals exist to be read by an operator and never reach a log.
+    logger.error("Ingest aborted before any write: national-merit award corpus defect [{}]", e.defect, e)
     kotlin.system.exitProcess(1)
   } catch (e: CodebookLoader.InvalidCodebookFileException) {
     logger.error(
@@ -965,6 +1015,25 @@ private fun logAutomaticAwardRun(result: AutomaticAwardSeedLoader.LoadResult) {
   )
   logAutomaticAwardTable(AutomaticAwardSeedLoader.Table.AWARDS.logLabel, result.awards)
   logAutomaticAwardTable(AutomaticAwardSeedLoader.Table.BANDS.logLabel, result.bands)
+}
+
+/**
+ * The National Merit corpus's run numbers (RFC 243), read back from the phase
+ * that loaded them inside the ingest.
+ *
+ * `awards_pruned` IS EXPECTED TO BE ZERO on a settled corpus, and nonzero only
+ * where a re-read dropped a school or put a mis-keyed unit id right --
+ * [logAutomaticAwardRun]'s own reading one corpus along.
+ */
+private fun logNationalMeritAwardRun(result: NationalMeritAwardSeedLoader.LoadResult) {
+  logger.info(
+    "National Merit award corpus: [documents={}] [awards_pruned={}] [upserted={}] [changed={}] [unchanged={}]",
+    result.documents,
+    result.awardsPruned,
+    result.awards.upserted,
+    result.awards.changed,
+    result.awards.unchanged,
+  )
 }
 
 private fun logAutomaticAwardTable(

@@ -1,0 +1,225 @@
+{
+  "corpus": "National Merit competition cycles (RFC 243, slice test/08/the-psat-is-money)",
+  "read_on": "2026-09-25",
+  "method": "Every page was fetched on 2026-09-25 with httpx, follow_redirects=True and a browser User-Agent, and every quoted cell was asserted programmatically to be a substring of that day's fetched page text before the CSV was written. No figure, date or sentence comes from the 2026-09-10 research pass, from an aggregator, or from model memory. NO CUTOFF SCORE IS STORED, by design (RFC 243, D9): NMSC publishes none in advance and says the Semifinalist qualifying score varies by state and by year, so what is stored is how the bar is set plus NMSC's own sentence saying it is not published. Third-party estimated-cutoff tables were not consulted and none is recorded. Link statuses were produced with `nix develop -c bin/check-link` (HEAD pass and a second -g GET pass) and mapped to the RFC 200 vocabulary by this curation run.",
+  "counts": {
+    "cycle_rows": 2,
+    "dated_cycle_rows": 1,
+    "described_but_undated_cycle_rows": 1,
+    "quoted_cells": 11,
+    "parsed_value_cells": 36,
+    "empty_cells": 19,
+    "pages_fetched_200": 11,
+    "pages_quoted": 8,
+    "source_urls_in_cycles_csv": 4,
+    "link_status_urls": 4,
+    "total_cells": 66,
+    "sponsor_source_urls": 2,
+    "administrator_source_urls": 2
+  },
+  "rows": [
+    {
+      "competition_year": 2028,
+      "sitting": "October 2026",
+      "class_of": 2028,
+      "status": "dated by the publishers today",
+      "expires_on": "2027-07-31",
+      "why_expiry": "July 31 after the cycle's last actionable day: the alternate-entry deadline of 2027-04-01."
+    },
+    {
+      "competition_year": 2029,
+      "sitting": "October 2027 (month named by NMSC, no dates published)",
+      "class_of": 2029,
+      "status": "described by NMSC, not dated by anyone today",
+      "expires_on": "2027-07-31",
+      "why_expiry": "deliberately the same day as the 2028 row rather than 2028-07-31. This row is a DESCRIPTION pending dates; its last actionable day is the day NMSC and College Board publish the fall 2027 window, which is a 2027 summer event. An expiry of 2028-07-31 would let the guard fire after the 2029 window had already closed. FLAG FOR THE IMPLEMENTOR: the RFC's liveness rule ('a cycle whose window or alternate-entry deadline is still ahead') does not select this row at all, because both are NULL."
+    }
+  ],
+  "sources": [
+    {
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1745",
+      "publisher": "National Merit Scholarship Corporation",
+      "page": "Steps in the 2028 National Merit Scholarship Competition",
+      "http_status_check_link": "302 (HEAD and GET); a browser-UA GET with redirects followed returns 200 and the 2028 content, so the status recorded in link-status.csv is `found`",
+      "cells": [
+        "2028.source_url",
+        "2028.funnel_as_published (all stages after the first sentence)",
+        "2028.met_entry_requirements",
+        "2028.high_scorers_screened",
+        "2028.commended",
+        "2028.semifinalists",
+        "2028.finalists",
+        "2028.winners",
+        "2028.competition_year",
+        "2028.source_url (sponsor citation)"
+      ]
+    },
+    {
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1878",
+      "publisher": "National Merit Scholarship Corporation",
+      "page": "When to Take the Test",
+      "http_status_check_link": "302 (HEAD and GET); browser-UA GET with redirects followed returns 200",
+      "cells": [
+        "2029.source_url",
+        "2029.window_as_published",
+        "2028.qualifying_grade",
+        "2029.qualifying_grade",
+        "2029.source_url (sponsor citation)"
+      ]
+    },
+    {
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1876",
+      "publisher": "National Merit Scholarship Corporation",
+      "page": "Entry Requirements / The 2028 Competition Begins in 2026",
+      "http_status_check_link": "302 (HEAD and GET); browser-UA GET with redirects followed returns 200",
+      "cells": [
+        "2028.test_takers",
+        "2028.funnel_as_published (first sentence)"
+      ]
+    },
+    {
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1881",
+      "publisher": "National Merit Scholarship Corporation",
+      "page": "Program Recognition",
+      "http_status_check_link": "302 (HEAD and GET); browser-UA GET with redirects followed returns 200",
+      "cells": [
+        "2028.cutoff_as_published",
+        "2029.cutoff_as_published",
+        "2028.semifinalist_cutoff_basis",
+        "2029.semifinalist_cutoff_basis",
+        "2028.commended_cutoff_basis",
+        "2029.commended_cutoff_basis"
+      ]
+    },
+    {
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1882",
+      "publisher": "National Merit Scholarship Corporation",
+      "page": "Types of Scholarships",
+      "http_status_check_link": "302 (HEAD and GET); browser-UA GET with redirects followed returns 200",
+      "cells": [
+        "2028.nmsc_award_usd",
+        "2028.nmsc_award_as_published",
+        "2028.sponsor_cap_as_published"
+      ]
+    },
+    {
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1895",
+      "publisher": "National Merit Scholarship Corporation",
+      "page": "Unable to Take the PSAT/NMSQT?",
+      "http_status_check_link": "302 (HEAD and GET); browser-UA GET with redirects followed returns 200",
+      "cells": [
+        "2028.alternate_entry_deadline",
+        "2028.alternate_entry_contact",
+        "2028.alternate_entry_as_published"
+      ]
+    },
+    {
+      "url": "https://www.nationalmerit.org/s/1758/interior.aspx?sid=1758&gid=2&pgid=1879",
+      "publisher": "National Merit Scholarship Corporation",
+      "page": "National Merit Scholarship Program (overview)",
+      "http_status_check_link": "302 (HEAD and GET); browser-UA GET with redirects followed returns 200",
+      "cells": [
+        "2029.funnel_as_published"
+      ]
+    },
+    {
+      "url": "https://satsuite.collegeboard.org/scores/score-release-dates",
+      "publisher": "College Board",
+      "page": "Score Release Dates for Students and Educators",
+      "http_status_check_link": "200 (HEAD), 206 (GET)",
+      "cells": [
+        "2028.window_opens_on",
+        "2028.window_closes_on",
+        "2028.window_as_published",
+        "2028.administrator_source_url (administrator citation)"
+      ]
+    },
+    {
+      "url": "https://satsuite.collegeboard.org/help-center/if-my-child-takes-psatnmsqt-will-colleges-get-their-scores",
+      "publisher": "College Board",
+      "page": "FAQ: If my child takes the PSAT/NMSQT, will colleges get their scores?",
+      "http_status_check_link": "200 (HEAD), 206 (GET)",
+      "cells": [
+        "2028.score_visibility_as_published",
+        "2029.score_visibility_as_published"
+      ]
+    },
+    {
+      "url": "https://satsuite.collegeboard.org/psat-nmsqt/scores/understanding-scores",
+      "publisher": "College Board",
+      "page": "What Do My Scores Mean? (PSAT/NMSQT)",
+      "http_status_check_link": "200 (HEAD), 206 (GET)",
+      "cells": [
+        "2028.selection_index_low",
+        "2028.selection_index_high",
+        "2029.selection_index_low",
+        "2029.selection_index_high",
+        "2029.administrator_source_url (administrator citation)"
+      ]
+    },
+    {
+      "url": "https://satsuite.collegeboard.org/sat/dates-deadlines",
+      "publisher": "College Board",
+      "page": "SAT Suite Test Dates and Deadlines",
+      "http_status_check_link": "200 (HEAD), 206 (GET)",
+      "cells": [
+        "corroborates 2028.window_opens_on / window_closes_on (table row: 'For Fall 2026: SAT School Day, PSAT/NMSQT, and PSAT 8/9' | 'October 1-30, 2026'); quoted in no cell, because the dates are two table cells there and a sentence on the score-release page"
+      ]
+    }
+  ],
+  "verbatim_transforms": [
+    "Whitespace was normalised: the pages' line breaks inside a sentence become single spaces.",
+    "Inline markup artefacts were closed up. The extractor puts a space where an element boundary falls inside a sentence, so the page's own text yields 'closed , write', 'National Merit ® $2500' and '1,200,000 Entrants .'; the cells read 'closed, write', 'National Merit® $2500' and '1,200,000 Entrants.', which is what the page renders to a reader. Every quoted fragment was re-asserted against the fetched page under that normalisation after the CSV was written.",
+    "An ellipsis character (U+2026) marks every elision inside a quote. Elided passages are always from the same page and the quoted fragments are in page order.",
+    "NMSC's postal address is four lines on the page; it is comma-joined on one line inside 2028.alternate_entry_as_published."
+  ],
+  "read_but_not_seeded": [
+    {
+      "what": "any competition year after 2029",
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1878",
+      "why": "NMSC's own pages name no competition after 2029 today. The 2030 cycle is not described, dated or funnelled anywhere on nationalmerit.org, so there is nothing to quote and no row was written."
+    },
+    {
+      "what": "window DATES for the 2029 competition (the fall 2027 sitting)",
+      "url": "https://satsuite.collegeboard.org/sat/dates-deadlines",
+      "why": "College Board's dates page publishes in-school testing windows only for 2026-27 ('For Fall 2026 ... October 1-30, 2026' and 'For Spring 2027 ... March 1-April 30, 2027'). Its only 2027-28 block is 'Anticipated SAT Weekend 2027-28 Test Dates', which lists SAT Weekend Saturdays and names no PSAT/NMSQT window. So window_opens_on/window_closes_on are empty on the 2029 row and the description stands alone."
+    },
+    {
+      "what": "alternate-entry deadline, contact and words for the 2029 competition",
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1895",
+      "why": "NMSC's 'Unable to Take the PSAT/NMSQT?' page is written for the 2028 competition only: it names the 2026 test, the 2028 program and the April 1, 2027 deadline. It publishes no 2029 equivalent, so the three alternate-entry cells on the 2029 row are empty rather than carrying a date inferred by adding a year."
+    },
+    {
+      "what": "funnel counts for the 2029 competition",
+      "url": "https://www.nationalmerit.org/s/1758/interior.aspx?sid=1758&gid=2&pgid=1879",
+      "why": "NMSC publishes a funnel only for the cycle in progress. The only cycle-independent scale sentence is the overview's 'an initial screen of over 1.2 million entrants each year', which is quoted in 2029.funnel_as_published because that column is NOT NULL; the seven count cells are left empty because no count is published FOR 2029. CONSEQUENCE FOR THE TOOL: a sophomore's arm has no stored base rate, so any base rate spoken for the 2029 cycle must either come from the 2028 row and be labelled as that cycle's, or not be spoken."
+    },
+    {
+      "what": "NMSC's own award and the sponsor cap on the 2029 row",
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1882",
+      "why": "The Types of Scholarships page prices the 2028 competition ('Some 6,700 National Merit Scholarships ... will be awarded in 2028', 'In the 2028 competition ...'). Carrying $2,500 and the $500-$2,000 cap into a 2029 row would be an assumption that the terms hold, so those three cells are empty."
+    },
+    {
+      "what": "any Semifinalist or Commended cutoff score, for any year",
+      "url": "https://www.nationalmerit.org/s/1758/start.aspx?sid=1758&gid=2&pgid=1881",
+      "why": "Deliberate and permanent (RFC 243, D9). NMSC: 'Semifinalist qualifying scores vary from state to state and from year to year'. NMSC publishes no number in advance; every table on the internet that does is a third party's estimate. There is no column for one and none was looked for."
+    },
+    {
+      "what": "the PSAT/NMSQT Student Guide PDF (nationalmerit.org/.../student_guide.pdf)",
+      "url": "https://www.nationalmerit.org/s/1758/images/gid2/editor_documents/student_guide.pdf",
+      "why": "Linked from NMSC's pages and referenced by them ('see Special Considerations on page 5'), but not fetched or quoted by this pass: nothing in the corpus depends on it, and the September research pass recorded that this link serves HTML rather than a PDF."
+    },
+    {
+      "what": "College Board's 'Who Will See My Score?' page",
+      "url": "https://satsuite.collegeboard.org/scores/what-scores-mean/who-will-see-score",
+      "why": "Fetched (200) and read, but it describes SAT score sending and says nothing directly about PSAT/NMSQT scores reaching colleges. The help-center FAQ that answers the question outright was quoted instead."
+    }
+  ],
+  "citations": "TWO CITATIONS PER ROW (amended 2026-09-25 after this pass reported that one source_document_id mis-attributes College Board's cells to NMSC). publisher/source_url are the SPONSOR's: NMSC, who owns the entry rule, the alternate entry route, the funnel and the cutoff sentence. administrator_publisher/administrator_source_url are the ADMINISTRATOR's: College Board, who administers the test and is the only publisher of the window DATES, the Selection Index scale and the score-visibility sentence. NMSC publishes only the month ('Take the PSAT/NMSQT in October 2026'). The 2028 row's administrator page is the one carrying the window sentence; the 2029 row has no published window, so its administrator page is the one carrying the Selection Index scale. Neither row has an archive; both archive columns are empty.",
+  "liveness_and_expiry": "Liveness is keyed on the COMPETITION YEAR, not on stored dates, so an undated future cycle is still guarded: the 2029 row has a NULL window and a NULL alternate-entry deadline and would never be selected by a date-based liveness rule. Both rows therefore expire on 2027-07-31 — the dated sibling's own expiry, being July 31 after the 2028 cycle's last actionable day (the 2027-04-01 alternate-entry deadline). The undated row expires WITH its dated sibling on purpose: the two are re-read in one pass in the summer of 2027, which is when NMSC and College Board date the 2029 cycle. The literal per-cycle rule would give the 2029 row 2028-07-31, and the 90-day guard would then fire after the 2029 window had already closed.",
+  "funnel_2029_stays_empty": "The 2029 row's seven funnel counts are empty and MUST STAY EMPTY. NMSC publishes a funnel only for the cycle in progress. Copying the 2028 counts into the 2029 row would make a figure NMSC has not published for that class look published; the tool instead speaks the most recent published funnel and names the year it belongs to.",
+  "link_status_notes": [
+    "All seven nationalmerit.org urls answer 302 to bin/check-link on both the HEAD pass and the -g GET pass, because the site bounces the request through its membership host (securelb.imodules.com/controls/login/sts.ashx) and back with a session id; a browser-UA GET with redirects followed returns 200 and the expected cycle content, which is why this curation mapped those urls to `found` rather than `unknown` — a re-check that does not follow redirects will wrongly read them as not_found.",
+    "The College Board help-center FAQ carries JSON-LD with dateCreated equal to the day it was fetched (2026-09-25 on this pass), so that stamp is generated at render time and proves nothing about when the answer was written or last reviewed; the only date this corpus trusts for it is checked_on."
+  ]
+}

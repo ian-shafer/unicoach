@@ -1108,8 +1108,14 @@ internal fun <T> CsvIngestSupport.StatusfulCell<T>.reading(): FigureReading<T> =
  * WHAT is wrong with one cell of a hand-typed seed corpus, WHERE it is, and
  * what would have been accepted. WHOSE defect type it becomes is the corpus's
  * own business -- see [SeedCells].
+ *
+ * A PUBLIC VALUE, the [SkipReason] and [RecordedLinkStatus] precedent in this
+ * file: a corpus's own defect type carries one of these as its payload
+ * ([NationalMeritAwardSeedLoader.Defect.Cell]) rather than re-flattening the
+ * four coordinates, and that defect type is what an operator-facing boundary
+ * reads. The READERS stay internal.
  */
-internal data class SeedCellDefect(
+data class SeedCellDefect(
   val fault: SeedCellFault,
   val line: Long,
   val column: String,
@@ -1130,7 +1136,7 @@ internal data class SeedCellDefect(
 )
 
 /** The closed set of ways one seed cell can be unreadable. */
-internal enum class SeedCellFault {
+enum class SeedCellFault {
   EMPTY_REQUIRED,
   NOT_AN_INTEGER,
   NOT_A_DECIMAL,
@@ -1322,8 +1328,11 @@ internal fun sidecarBeside(seedCsv: File): File = File(seedCsv.absoluteFile.pare
 /**
  * WHY one `link-status.csv` row was refused. The coordinates (file and line)
  * ride beside it, because they are the reader's and not the row's.
+ *
+ * A PUBLIC VALUE for [SeedCellDefect]'s reason: a corpus's own defect carries
+ * one as its payload ([NationalMeritAwardSeedLoader.Defect.Sidecar]).
  */
-internal sealed interface LinkStatusFault {
+sealed interface LinkStatusFault {
   data class RowArity(
     val cells: Int,
     val expectedCells: Int,
@@ -1368,6 +1377,107 @@ internal sealed interface LinkStatusFault {
     val second: RecordedLinkStatus,
   ) : LinkStatusFault
 }
+
+/**
+ * One located cell fault as an OPERATOR reads it.
+ *
+ * HERE, WITH THE READER THAT RAISES IT. [SeedCells] was shared and its
+ * SENTENCES were not: each corpus restated the same six-arm mapping and the same
+ * six sentences, and the two copies had already drifted -- one `NOT_AN_INTEGER`
+ * printed "is not an integer" and the other "is not a whole number", so a reader
+ * of two refusals could not tell whether the loaders disagreed about the rule or
+ * only about wording.
+ *
+ * [label] is what the corpus calls the file this cell is in -- a path for a
+ * one-file corpus, a table name for a corpus that reads several -- and it is the
+ * only part a corpus still chooses.
+ */
+internal fun renderSeedCellDefect(
+  label: String,
+  defect: SeedCellDefect,
+): String =
+  when (defect.fault) {
+    SeedCellFault.EMPTY_REQUIRED -> {
+      "[$label] line [${defect.line}] column [${defect.column}] is empty and is required"
+    }
+
+    SeedCellFault.NOT_AN_INTEGER -> {
+      "[$label] line [${defect.line}] column [${defect.column}] is not an integer: [${defect.value}]"
+    }
+
+    SeedCellFault.NOT_A_DECIMAL -> {
+      "[$label] line [${defect.line}] column [${defect.column}] is not a decimal: [${defect.value}]"
+    }
+
+    SeedCellFault.NOT_A_DATE -> {
+      "[$label] line [${defect.line}] column [${defect.column}] is not an ISO date: [${defect.value}]"
+    }
+
+    SeedCellFault.NOT_AN_ACADEMIC_YEAR -> {
+      // THE PARSED YEAR IS WHAT THIS FAULT IS ABOUT, so a defect without one is
+      // refused here rather than rendered: the `?:` this replaced printed
+      // `is []` for it, and a located error whose value is blank tells an
+      // operator nothing. The sibling readers in both loaders already refuse
+      // the combination in these words.
+      val year = checkNotNull(defect.year) { "[${defect.column}] raised NOT_AN_ACADEMIC_YEAR with no parsed year" }
+      "[$label] line [${defect.line}] column [${defect.column}] is [$year], " +
+        "outside the academic years this store admits"
+    }
+
+    SeedCellFault.UNKNOWN_CODE -> {
+      "[$label] line [${defect.line}] column [${defect.column}] is [${defect.value}], " +
+        "which is not one of ${defect.allowed}"
+    }
+  }
+
+/**
+ * One located `link-status.csv` fault as an OPERATOR reads it.
+ *
+ * HERE, WITH THE READER THAT RAISES IT, for [renderSeedCellDefect]'s reason and
+ * with stronger evidence: these sentences are facts about the FILE's shape, and
+ * the two corpora that each spelled them for themselves spelled all seven
+ * IDENTICALLY -- so the per-corpus freedom [LinkStatusSidecar] grants bought
+ * nothing and cost a second place to edit.
+ */
+internal fun renderLinkStatusFault(
+  file: String,
+  line: Long,
+  fault: LinkStatusFault,
+): String =
+  when (fault) {
+    is LinkStatusFault.RowArity -> {
+      "[$file] line [$line] has [${fault.cells}] cells, expected [${fault.expectedCells}]"
+    }
+
+    LinkStatusFault.EmptyUrl -> {
+      "[$file] line [$line] has an empty url: a verdict about nothing"
+    }
+
+    is LinkStatusFault.UrlNotAWebPage -> {
+      "[$file] line [$line] gives an answer for [${fault.url}], which is not an absolute " +
+        "http(s) page url: a verdict about something we cannot cite"
+    }
+
+    is LinkStatusFault.UnknownStatus -> {
+      "[$file] line [$line] gives [${fault.url}] the status [${fault.value}], " +
+        "which is not one of ${fault.allowed}"
+    }
+
+    is LinkStatusFault.NotADate -> {
+      "[$file] line [$line] gives [${fault.url}] the check date [${fault.value}], " +
+        "which is not an ISO yyyy-mm-dd day"
+    }
+
+    is LinkStatusFault.MissingDate -> {
+      "[$file] line [$line] gives [${fault.url}] the status [${fault.status.value}] with " +
+        "no url_checked_on: you cannot claim an answer without saying when you looked"
+    }
+
+    is LinkStatusFault.ConflictingStatus -> {
+      "[$file] gives [${fault.url}] two different answers: [${fault.first}] at line " +
+        "[${fault.firstLine}] and [${fault.second}] at line [$line]"
+    }
+  }
 
 /**
  * The committed `link-status.csv` reader every seed corpus shares.

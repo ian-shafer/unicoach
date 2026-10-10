@@ -1226,6 +1226,42 @@ class CoachingServiceTest {
     }
 
   @Test
+  fun `a psat_window commitment rides the opener and is fulfilled like any other`() =
+    runBlocking {
+      // RFC 243, on RFC 160's own standard: delivery is untouched -- the nudge
+      // lens gets no special-casing. The statement is the FIXED one the synthesis
+      // step writes, not a marker of this test's own, so a reworded const fails
+      // here as well as in the step that writes it.
+      val student = createStudent()
+      val nudgeId =
+        CommitmentsDao
+          .create(
+            sqlSession,
+            NewCommitment(
+              student,
+              CommitmentLens.PSAT_WINDOW,
+              CommitmentDisclosure.EXPLICIT,
+              ed.unicoach.coaching.synthesis.SynthesisService.PSAT_WINDOW_NUDGE_STATEMENT,
+            ),
+          ).getOrThrow()
+          .id
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      val systemText = captured!!.system!!
+      assertTrue(
+        systemText.contains(ed.unicoach.coaching.synthesis.SynthesisService.PSAT_WINDOW_NUDGE_STATEMENT),
+        "the PSAT window nudge rides the same opener as every other explicit commitment",
+      )
+      assertEquals(CommitmentStatus.FULFILLED, commitmentStatus(nudgeId))
+      assertEquals(started.convo.id, commitmentConvo(nudgeId))
+    }
+
+  @Test
   fun `a failed first turn leaves the commitment open`() =
     runBlocking {
       val student = createStudent()

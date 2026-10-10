@@ -36,6 +36,8 @@ import ed.unicoach.coaching.report.StopCostReportOffersChatTool
 import ed.unicoach.coaching.testing.AdmissionTestTimelineChatTool
 import ed.unicoach.coaching.testing.AutomaticAwardChatTool
 import ed.unicoach.coaching.testing.AutomaticAwardService
+import ed.unicoach.coaching.testing.NationalMeritChatTool
+import ed.unicoach.coaching.testing.NationalMeritService
 import ed.unicoach.coaching.testing.TestScoreService
 import ed.unicoach.coaching.testing.TestTimelineService
 import ed.unicoach.coaching.testing.UpdateTestScoresChatTool
@@ -468,6 +470,18 @@ fun Application.appModule(
         // grid is a curated per-school corpus and the timeline is a national
         // calendar, and a family asks for them separately.
         AutomaticAwardChatTool(AutomaticAwardService(database)),
+        // "What is the PSAT actually worth?" (RFC 243): the PSAT/NMSQT is the one
+        // gate to National Merit and no college ever sees the score, so it is a
+        // MONEY tool -- this student's own place in her one qualifying cycle, the
+        // published base rate, and what each school on her list publishes for a
+        // National Merit standing. A SIBLING of the tool above and not more
+        // payload on it, because a STANDING is not a score: it is a second
+        // curated corpus with its own table, and a family asks for it separately.
+        // The money profile rides for the reason `fafsa_deadlines` takes it --
+        // Auburn publishes its package to Alabama residents only, so whose award
+        // a row is has to come from the family's own profile and never from the
+        // model. No clock argument, like every other site.
+        NationalMeritChatTool(NationalMeritService(database), moneyProfileService),
         // "I got 1340 in March" (RFC 207): the student's own scores, so a later
         // conversation still has the number she gave us in this one. No clock
         // argument, like every other site -- production reads the real one

@@ -373,9 +373,15 @@ class OfflineCoachingE2eTest {
         "SELECT lr.provider FROM synthesis_runs sr JOIN llm_requests lr ON sr.llm_request_id = lr.id WHERE sr.student_id = '$studentId'",
       ),
     )
+    // THE PROPOSED COMMITMENT, BY ITS OWN LENS, and not "one commitment row"
+    // (RFC 243). The read phase also runs two DETERMINISTIC nudge steps, and
+    // whether either fires depends on state this test does not set: the PSAT
+    // window nudge fires for a junior whose committed cycle window is near, so
+    // this pass legitimately writes a second row on the days that student is one.
+    // Counting every row made this assertion a statement about the calendar.
     assertEquals(
       1,
-      count("SELECT COUNT(*) FROM commitments WHERE student_id = '$studentId'"),
+      count("SELECT COUNT(*) FROM commitments WHERE student_id = '$studentId' AND lens = 'gap'"),
       "synthesis must persist the proposed commitment",
     )
   }

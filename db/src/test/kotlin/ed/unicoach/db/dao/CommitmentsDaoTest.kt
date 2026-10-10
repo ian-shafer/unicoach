@@ -385,4 +385,51 @@ class CommitmentsDaoTest {
 
     assertEquals(second.id, latest.id, "the newest share_report row, not the dropped older one and not another lens or student")
   }
+
+  // ---------------------------------------------------------------------------
+  // RFC 243: the psat_window lens and the nudge step's suppression read
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the widened lens CHECK accepts psat_window`() {
+    // The RFC 243 widening, the same two statements 0080 used for share_report:
+    // the code-written PSAT/NMSQT nudge lens round-trips through the CHECK and
+    // the enum like any other member.
+    val student = createStudent()
+    val commitment =
+      CommitmentsDao
+        .create(session, newCommitment(student, statement = "raise the PSAT window", lens = CommitmentLens.PSAT_WINDOW))
+        .getOrThrow()
+    assertEquals(CommitmentLens.PSAT_WINDOW, commitment.lens)
+    assertEquals(CommitmentLens.PSAT_WINDOW, CommitmentsDao.findById(session, commitment.id).getOrThrow().lens)
+  }
+
+  @Test
+  fun `findLatestByStudentAndLens is null when psat_window has never been used`() {
+    val student = createStudent()
+    CommitmentsDao.create(session, newCommitment(student, lens = CommitmentLens.SHARE_REPORT)).getOrThrow()
+
+    assertNull(CommitmentsDao.findLatestByStudentAndLens(session, student, CommitmentLens.PSAT_WINDOW).getOrThrow())
+  }
+
+  /**
+   * IN ANY STATUS is the whole repeat rule for this lens, and it is why the
+   * PSAT nudge needs no cooldown and no config day count (RFC 243): the
+   * qualifying sitting happens once in a student's life, so one row -- open,
+   * fulfilled or DROPPED -- is the answer. A dropped nudge is a student who did
+   * not want it, and that answer stands.
+   */
+  @Test
+  fun `findLatestByStudentAndLens sees a dropped psat_window row, which is what raises it once`() {
+    val student = createStudent()
+    val other = createStudent()
+    val dropped = CommitmentsDao.create(session, newCommitment(student, lens = CommitmentLens.PSAT_WINDOW)).getOrThrow()
+    CommitmentsDao.drop(session, dropped.id, "test").getOrThrow()
+    CommitmentsDao.create(session, newCommitment(student, lens = CommitmentLens.SHARE_REPORT)).getOrThrow()
+    CommitmentsDao.create(session, newCommitment(other, lens = CommitmentLens.PSAT_WINDOW)).getOrThrow()
+
+    val latest = assertNotNull(CommitmentsDao.findLatestByStudentAndLens(session, student, CommitmentLens.PSAT_WINDOW).getOrThrow())
+
+    assertEquals(dropped.id, latest.id, "the dropped psat_window row, not another lens and not another student")
+  }
 }

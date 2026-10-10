@@ -1721,6 +1721,17 @@ class AutomaticAwardSeedLoader(
  * One rendering of a [AutomaticAwardSeedLoader.Defect], at the boundary rather
  * than at each throw site -- so every variant's coordinates are stated once and
  * a new variant cannot ship with a message somebody forgot to write.
+ *
+ * THE SHARED FAULTS' SENTENCES ARE NOT WRITTEN HERE. A cell fault and a
+ * `link-status.csv` fault are facts about the FILE's shape rather than about
+ * this corpus, and the second hand-typed corpus to carry them spelled all seven
+ * sidecar sentences identically and one cell sentence differently -- so they are
+ * stated once, beside the readers that raise them
+ * ([renderSeedCellDefect], [renderLinkStatusFault]), and these arms hand their
+ * own coordinates to those. Each arm rebuilds the located fault it was made
+ * from, which is the price of keeping THIS loader's defect variants exactly as
+ * they are: an operator reads the same sentences as before, and nothing
+ * matching on these types had to change.
  */
 private fun renderAutomaticAwardDefect(defect: AutomaticAwardSeedLoader.Defect): String =
   when (defect) {
@@ -1734,29 +1745,42 @@ private fun renderAutomaticAwardDefect(defect: AutomaticAwardSeedLoader.Defect):
     }
 
     is AutomaticAwardSeedLoader.Defect.NotAnInteger -> {
-      "[${defect.table.label}] line [${defect.line}] column [${defect.column}] is not an integer: [${defect.value}]"
+      renderSeedCellDefect(
+        defect.table.label,
+        SeedCellDefect(SeedCellFault.NOT_AN_INTEGER, defect.line, defect.column, defect.value),
+      )
     }
 
     is AutomaticAwardSeedLoader.Defect.NotADecimal -> {
-      "[${defect.table.label}] line [${defect.line}] column [${defect.column}] is not a decimal: [${defect.value}]"
+      renderSeedCellDefect(
+        defect.table.label,
+        SeedCellDefect(SeedCellFault.NOT_A_DECIMAL, defect.line, defect.column, defect.value),
+      )
     }
 
     is AutomaticAwardSeedLoader.Defect.NotADate -> {
-      "[${defect.table.label}] line [${defect.line}] column [${defect.column}] is not an ISO date: [${defect.value}]"
+      renderSeedCellDefect(
+        defect.table.label,
+        SeedCellDefect(SeedCellFault.NOT_A_DATE, defect.line, defect.column, defect.value),
+      )
     }
 
     is AutomaticAwardSeedLoader.Defect.EmptyRequiredCell -> {
-      "[${defect.table.label}] line [${defect.line}] column [${defect.column}] is empty and is required"
+      renderSeedCellDefect(defect.table.label, SeedCellDefect(SeedCellFault.EMPTY_REQUIRED, defect.line, defect.column, ""))
     }
 
     is AutomaticAwardSeedLoader.Defect.UnknownCode -> {
-      "[${defect.table.label}] line [${defect.line}] column [${defect.column}] is [${defect.value}], " +
-        "which is not one of ${defect.allowed}"
+      renderSeedCellDefect(
+        defect.table.label,
+        SeedCellDefect(SeedCellFault.UNKNOWN_CODE, defect.line, defect.column, defect.value, defect.allowed),
+      )
     }
 
     is AutomaticAwardSeedLoader.Defect.NotAnAcademicYear -> {
-      "[${defect.table.label}] line [${defect.line}] column [${defect.column}] is [${defect.value}], " +
-        "outside the academic years this store admits"
+      renderSeedCellDefect(
+        defect.table.label,
+        SeedCellDefect(SeedCellFault.NOT_AN_ACADEMIC_YEAR, defect.line, defect.column, "", year = defect.value),
+      )
     }
 
     is AutomaticAwardSeedLoader.Defect.UnknownCollege -> {
@@ -1861,36 +1885,39 @@ private fun renderAutomaticAwardDefect(defect: AutomaticAwardSeedLoader.Defect):
     }
 
     is AutomaticAwardSeedLoader.Defect.SidecarRowArity -> {
-      "[${defect.file}] line [${defect.line}] has [${defect.cells}] cells, expected [${defect.expectedCells}]"
+      renderLinkStatusFault(defect.file, defect.line, LinkStatusFault.RowArity(defect.cells, defect.expectedCells))
     }
 
     is AutomaticAwardSeedLoader.Defect.SidecarEmptyUrl -> {
-      "[${defect.file}] line [${defect.line}] has an empty url: a verdict about nothing"
+      renderLinkStatusFault(defect.file, defect.line, LinkStatusFault.EmptyUrl)
     }
 
     is AutomaticAwardSeedLoader.Defect.SidecarUnknownStatus -> {
-      "[${defect.file}] line [${defect.line}] gives [${defect.url}] the status [${defect.value}], " +
-        "which is not one of ${defect.allowed}"
+      renderLinkStatusFault(
+        defect.file,
+        defect.line,
+        LinkStatusFault.UnknownStatus(defect.url, defect.value, defect.allowed),
+      )
     }
 
     is AutomaticAwardSeedLoader.Defect.SidecarNotADate -> {
-      "[${defect.file}] line [${defect.line}] gives [${defect.url}] the check date [${defect.value}], " +
-        "which is not an ISO yyyy-mm-dd day"
+      renderLinkStatusFault(defect.file, defect.line, LinkStatusFault.NotADate(defect.url, defect.value))
     }
 
     is AutomaticAwardSeedLoader.Defect.SidecarMissingDate -> {
-      "[${defect.file}] line [${defect.line}] gives [${defect.url}] the status [${defect.status.value}] with " +
-        "no url_checked_on: you cannot claim an answer without saying when you looked"
+      renderLinkStatusFault(defect.file, defect.line, LinkStatusFault.MissingDate(defect.url, defect.status))
     }
 
     is AutomaticAwardSeedLoader.Defect.SidecarUrlNotAWebPage -> {
-      "[${defect.file}] line [${defect.line}] gives an answer for [${defect.url}], which is not an absolute " +
-        "http(s) page url: a verdict about something we cannot cite"
+      renderLinkStatusFault(defect.file, defect.line, LinkStatusFault.UrlNotAWebPage(defect.url))
     }
 
     is AutomaticAwardSeedLoader.Defect.SidecarConflictingStatus -> {
-      "[${defect.file}] gives [${defect.url}] two different answers: [${defect.first}] at line [${defect.firstLine}] " +
-        "and [${defect.second}] at line [${defect.line}]"
+      renderLinkStatusFault(
+        defect.file,
+        defect.line,
+        LinkStatusFault.ConflictingStatus(defect.firstLine, defect.url, defect.first, defect.second),
+      )
     }
 
     is AutomaticAwardSeedLoader.Defect.LastSittingPairBroken -> {

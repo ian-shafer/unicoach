@@ -94,6 +94,35 @@ internal fun <K, T> SqlSession.queryListWhereIn(
   )
 }
 
+/**
+ * The `?, ?, …` of one `IN` list and the binder that fills it, generated
+ * TOGETHER from one de-duplicated list of ids.
+ *
+ * [queryListWhereIn] is the home for every read that is a plain
+ * `SELECT … WHERE key IN (…)`; this is for the statements it cannot serve -- a
+ * read that JOINs its citations, and a DELETE -- so the 1-based index rule, and
+ * the OFFSET a leading bound parameter forces, are stated once in [bindFrom]
+ * rather than per statement. It was private to [AutomaticAwardsDao] and the
+ * second corpus to need it restated the expansion twice, which is where a
+ * one-off index slip hides.
+ */
+internal class IdList(
+  ids: Collection<UUID>,
+) {
+  val values: List<UUID> = ids.distinct()
+
+  /** `IN ()` is not valid SQL, so every caller must decide what "no keys" means before it builds a statement. */
+  val isEmpty: Boolean get() = values.isEmpty()
+
+  val placeholders: String get() = values.joinToString(", ") { "?" }
+
+  /** Binds every id, starting at [firstIndex] -- which is 1 for a statement that binds nothing before its list. */
+  fun bindFrom(
+    stmt: PreparedStatement,
+    firstIndex: Int,
+  ) = values.forEachIndexed { i, value -> stmt.setObject(firstIndex + i, value) }
+}
+
 /** SELECT yielding N rows mapped into a list. */
 internal fun <T> SqlSession.queryList(
   sql: String,

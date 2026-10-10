@@ -2309,6 +2309,129 @@ test_ingest_colleges_without_award_flags_forwards_neither() {
 assert_success "ingest-colleges forwards no award flag when neither -w nor -b was given" \
   test_ingest_colleges_without_award_flags_forwards_neither
 
+# ── RFC 243: the National Merit award corpus option on ingest-colleges ────────
+echo ""
+echo "==== Testing RFC 243 National Merit award corpus surfaces ===="
+
+# -N is ONE option and not a group: the corpus is one file, and its
+# link-status.csv is read from beside that file. So there is no partner to be
+# missing -- but the other two refusals the JVM makes for this flag are made
+# here too, before any download and before the JVM starts.
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -N without a value exits 11" \
+  bin/ingest-colleges -N
+# An EMPTY value is a WRONG value, never an omitted option: `-N ""` counting as
+# "the corpus was not passed" is how a whole phase gets skipped in silence.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -N value (22)" \
+  bin/ingest-colleges -N "" a.csv b.csv
+# A repeated flag names two corpora where one is loaded. Refused, not resolved
+# last-wins -- the JVM calls the repeat a usage error, so accepting it here
+# would only move the failure two processes later.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects a repeated -N (22)" \
+  bin/ingest-colleges -N one.csv -N two.csv a.csv b.csv
+
+# The corpus reaches the JVM as the `=`-joined flag that layer accepts, RESOLVED,
+# with its --*-source partner carrying the caller's OWN argument. Both halves
+# matter and neither implies the other: the value flag is what the loader opens,
+# and the source flag is what the provenance row records -- and because
+# resolve_file_arg may replace an s3:// argument with a scratch path, a run that
+# forwarded only the resolved path would record a temporary file as the source.
+test_ingest_colleges_national_merit_award_flag() {
+  local root parent argv inst fields awards rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-nmflag"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  awards="$parent/nm-awards.csv"
+  : > "$inst"; : > "$fields"; : > "$awards"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" -N "$awards" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  # The launcher is handed a RESOLVED path -- resolve_file_arg realpaths every
+  # source, and on macOS /tmp is a symlink to /private/tmp -- so the expected
+  # spelling is realpath'd here. The SOURCE partner must carry the OTHER
+  # spelling, the one the caller typed: asserting both against one string would
+  # pass on a wrapper that forwarded the resolved path twice.
+  local resolved awards_resolved
+  resolved="$(cd "$parent" && pwd -P)"
+  awards_resolved="$resolved/nm-awards.csv"
+  rc=0
+  grep -qxF -- "--national-merit-awards=$awards_resolved" "$argv" || rc=1
+  grep -qxF -- "--national-merit-awards-source=$awards" "$argv" || rc=1
+  [ "$rc" -eq 0 ] || log-error "launcher argv was [$(cat "$argv")]"
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges forwards -N to the launcher as --national-merit-awards plus its -source partner" \
+  test_ingest_colleges_national_merit_award_flag
+
+# link-status.csv has NO flag here either, and must not acquire one by accident:
+# the loader resolves it from beside the -N file, so a flag could only ever pair
+# one corpus's rows with another corpus's answers.
+test_ingest_colleges_forwards_no_national_merit_sidecar_flag() {
+  local root parent argv inst fields awards rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-nmsidecar"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  awards="$parent/nm-awards.csv"
+  : > "$inst"; : > "$fields"; : > "$awards"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" -N "$awards" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  if grep -qF -- "link-status" "$argv"; then
+    log-error "a -N run forwarded the corpus's sidecar; argv was [$(cat "$argv")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "ingest-colleges forwards no link-status flag for the National Merit corpus" \
+  test_ingest_colleges_forwards_no_national_merit_sidecar_flag
+
+# A run that passes NO -N must forward NEITHER the value flag nor its source
+# partner: the corpus is optional, and a source flag with no corpus is a usage
+# refusal at the JVM -- so a wrapper that emitted the partner unconditionally
+# would break every existing Scorecard-only run.
+test_ingest_colleges_without_national_merit_flag_forwards_neither() {
+  local root parent argv inst fields rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-nonm"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  if grep -qF -- "--national-merit-awards" "$argv"; then
+    log-error "a run with no -N still forwarded a National Merit flag; argv was [$(cat "$argv")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "ingest-colleges forwards no National Merit flag when -N was not given" \
+  test_ingest_colleges_without_national_merit_flag_forwards_neither
+
 # Fetcher normalisation against recorded fixture JSON (-F: no network). Covers
 # the RFC 140 interpretation rules end to end: per-fact-group document
 # selection (newest doc that reports the group, with the fallback counted), the
@@ -7273,6 +7396,11 @@ make_external_stub_root() {
   # too. A stub root carrying only the two flagged files would let a wrapper
   # that forgot to check for the third look correct here.
   ln -s "$PROJECT_ROOT/db/seed/automatic-awards" "$root/db/seed/automatic-awards"
+  # The hand-typed National Merit award corpus (RFC 243), symlinked whole for
+  # exactly the reason above: its link-status.csv has no flag either, and a stub
+  # root carrying only awards.csv would let a wrapper that forgot to check for
+  # the sidecar look correct here.
+  ln -s "$PROJECT_ROOT/db/seed/national-merit-awards" "$root/db/seed/national-merit-awards"
   mkdir -p "$root/db/seed/ipeds"
 }
 
@@ -7442,6 +7570,7 @@ PY
     "-p $EXTERNAL_ROOT/db/seed/cds/aid_policy.csv" \
     "-w $EXTERNAL_ROOT/db/seed/automatic-awards/awards.csv" \
     "-b $EXTERNAL_ROOT/db/seed/automatic-awards/bands.csv" \
+    "-N $EXTERNAL_ROOT/db/seed/national-merit-awards/awards.csv" \
     "-H $EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv" \
     "-I $EXTERNAL_ROOT/db/seed/ipeds/IC2026.csv" \
     "-A $EXTERNAL_ROOT/db/seed/ipeds/adm2026.csv" \
@@ -7571,6 +7700,101 @@ test_load_external_data_passes_no_link_status_flag() {
 }
 assert_success "the -n command names the corpus's two files and never its link-status.csv" \
   test_load_external_data_passes_no_link_status_flag
+
+# RFC 243: the National Merit award corpus is a REQUIRED input of the defaulted
+# load on the same terms, and so is ITS sidecar. Both are named, because the
+# operator's next command differs: awards.csv missing is a checkout problem and
+# link-status.csv missing is a corpus that cannot be loaded at all -- the phase
+# refuses a cited url with no committed answer, so an absent sidecar is no load
+# rather than a degraded one.
+test_load_external_data_names_a_missing_national_merit_corpus() {
+  local parent root stderr status=0 missing report
+  parent="$(mktemp -d)"
+  root="$parent/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_ipeds_fixture_manifest "$root/db/seed/ipeds" top
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  # The SYMLINK the stub root laid down, not the committed directory behind it:
+  # `rm` on a symlink removes the link.
+  rm "$root/db/seed/national-merit-awards"
+  stderr="$parent/stderr"
+  "$root/bin/load-external-data" -n "$root/institution.csv" "$root/fields.csv" \
+    > /dev/null 2> "$stderr" || status=$?
+  if [ "$status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "expected exit [$EXIT_MISSING_REQUIRED_ARG] for a missing National Merit corpus, got [$status]: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  missing=()
+  for report in awards.csv link-status.csv; do
+    grep -qF "national-merit-awards/$report" "$stderr" || missing+=("$report")
+  done
+  if [ "${#missing[@]}" -ne 0 ]; then
+    log-error "the refusal does not name [${missing[*]}]: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "load-external-data refuses a missing National Merit award corpus, naming both files" \
+  test_load_external_data_names_a_missing_national_merit_corpus
+
+# The SIDECAR specifically, and named against ITS OWN directory. awards.csv has
+# a flag and would be caught by the JVM two processes later; link-status.csv has
+# none -- the loader reads it from beside awards.csv -- so this wrapper is the
+# only thing that can say so before a phase has written rows. The directory name
+# is part of the assertion: two corpora now ship a file called link-status.csv,
+# and a message that named only the basename would send the operator to the
+# wrong one.
+test_load_external_data_names_a_missing_national_merit_link_status() {
+  local parent root stderr status=0
+  parent="$(mktemp -d)"
+  root="$parent/checkout"
+  mkdir -p "$root"
+  make_external_stub_root "$root"
+  write_ipeds_fixture_manifest "$root/db/seed/ipeds" top
+  : > "$root/institution.csv"
+  : > "$root/fields.csv"
+  # A corpus directory holding the FLAGGED file and not the sidecar.
+  rm "$root/db/seed/national-merit-awards"
+  mkdir -p "$root/db/seed/national-merit-awards"
+  : > "$root/db/seed/national-merit-awards/awards.csv"
+  stderr="$parent/stderr"
+  "$root/bin/load-external-data" -n "$root/institution.csv" "$root/fields.csv" \
+    > /dev/null 2> "$stderr" || status=$?
+  if [ "$status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then
+    log-error "expected exit [$EXIT_MISSING_REQUIRED_ARG] for a missing National Merit link-status.csv, got [$status]: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  if ! grep -qF "national-merit-awards/link-status.csv" "$stderr"; then
+    log-error "the refusal does not name the National Merit link-status.csv: [$(cat "$stderr")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "load-external-data refuses a National Merit corpus whose link-status.csv is absent, by name" \
+  test_load_external_data_names_a_missing_national_merit_link_status
+
+# CHECKED and never PASSED, one corpus along: -N names awards.csv and nothing
+# names the sidecar, because the loader resolves it from beside that file.
+test_load_external_data_passes_no_national_merit_link_status_flag() {
+  [ -n "$EXTERNAL_DRY_RUN" ] || { log-error "no -n command was captured to assert against"; return 1; }
+  case "$EXTERNAL_DRY_RUN" in
+  *"national-merit-awards/link-status.csv"*)
+    log-error "the -n command passes the National Merit corpus's link-status.csv as an option: [$EXTERNAL_DRY_RUN]"
+    return 1
+    ;;
+  esac
+  return 0
+}
+assert_success "the -n command names the National Merit corpus's awards.csv and never its link-status.csv" \
+  test_load_external_data_passes_no_national_merit_link_status_flag
 
 # The two years are read from two different recorded fields and must stay two
 # different numbers: -y is the manifest's top-level collection year and -f is the

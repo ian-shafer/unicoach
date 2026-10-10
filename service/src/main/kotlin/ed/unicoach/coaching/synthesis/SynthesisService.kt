@@ -5,6 +5,7 @@ import ed.unicoach.chat.ChatMessage
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatRole
 import ed.unicoach.coaching.ForcedToolInput
+import ed.unicoach.coaching.HighSchoolYear
 import ed.unicoach.coaching.JsonParseFailure
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
@@ -12,6 +13,7 @@ import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
 import ed.unicoach.coaching.budget.Entitlement
 import ed.unicoach.coaching.category
+import ed.unicoach.coaching.coachToday
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.coaching.toDisplay
@@ -22,6 +24,7 @@ import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CommitmentSupportDao
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.NationalMeritCyclesDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
@@ -37,6 +40,7 @@ import ed.unicoach.db.models.Commitment
 import ed.unicoach.db.models.CommitmentDisclosure
 import ed.unicoach.db.models.CommitmentLens
 import ed.unicoach.db.models.CommitmentStatus
+import ed.unicoach.db.models.CycleWindow
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewSynthesisRun
@@ -147,7 +151,7 @@ class SynthesisService(
         BudgetVerdict.Entitled -> {}
       }
 
-      writeDeterministicNudges(session, studentId)
+      writeDeterministicNudges(session, student)
 
       val lastAppliedAt = SynthesisRunsDao.lastAppliedAt(session, studentId).getOrThrow()
 
@@ -203,6 +207,7 @@ class SynthesisService(
   ) {
     SHARE_REPORT(CommitmentLens.SHARE_REPORT, SHARE_NUDGE_STATEMENT),
     INVITE_SUPPORTER(CommitmentLens.INVITE_SUPPORTER, INVITE_NUDGE_STATEMENT),
+    PSAT_WINDOW(CommitmentLens.PSAT_WINDOW, PSAT_WINDOW_NUDGE_STATEMENT),
   }
 
   /**
@@ -215,16 +220,32 @@ class SynthesisService(
    *
    * One line per offer, because the read phase is a sequence of named gates and
    * each router belongs one level below it.
+   *
+   * It takes the [Student] ROW and not the id because one step needs a column of
+   * it: the PSAT-window step (RFC 243) joins on her stored expected graduation
+   * year, which is the competition's own name. Re-reading the row inside that
+   * step would be a second read of a fact this pass already holds.
    */
   private fun writeDeterministicNudges(
     session: SqlSession,
-    studentId: StudentId,
+    student: Student,
   ) {
+    val studentId = student.id
     runShareNudgeStep(session, studentId)
     // The invite predicate REQUIRES a live share where the share predicate is
     // suppressed BY one, so no pass can write both and no opening can carry
     // both bullets.
     runInviteNudgeStep(session, studentId)
+    // The PSAT-window step (RFC 243) is INDEPENDENT of both, deliberately. The
+    // two offers above are the same KIND of thing -- share the report, invite the
+    // parent -- so raising both at once reads as one muddled ask, which is why
+    // their predicates exclude each other. A closing test window is a different
+    // subject with a date on it, and a student inside her 30-day lead who also
+    // becomes share-eligible may carry both bullets: the opener's instruction is
+    // to raise what is relevant, naturally, and deferring a dated sitting to keep
+    // an opener tidy is the wrong trade. Cross-suppression would also change when
+    // RFC 240's landed nudge fires, which this run did not ask Ian for.
+    runPsatWindowNudgeStep(session, student)
   }
 
   // ---------------------------------------------------------------------------
@@ -516,6 +537,180 @@ class SynthesisService(
 
       is InviteNudgeVerdict.Suppressed -> {
         logger.debug("invite-nudge suppressed for student=[{}]: [{}]", studentId.asString, verdict.reason)
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The PSAT/NMSQT window nudge (RFC 243)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Why the PSAT-window step did or did not fire for this student (RFC 243) --
+   * the [ShareNudgeVerdict] shape one step along, for the same reason: a skip is
+   * a named outcome, so "why did my student never hear about the window?" is
+   * answerable from the log.
+   */
+  internal sealed interface PsatWindowNudgeVerdict {
+    data object Eligible : PsatWindowNudgeVerdict
+
+    data class Suppressed(
+      val reason: PsatWindowNudgeSuppression,
+    ) : PsatWindowNudgeVerdict
+  }
+
+  /**
+   * The nine distinct reasons the PSAT-window step declines to fire, in the
+   * order the step reaches them.
+   *
+   * INTERNAL, AND READ BY NAME IN THE SUITE. Every one of these is a guard that
+   * writes nothing, so "no row was written" is the same observation for all
+   * nine -- and three of them were SHADOWED by a later guard, which means the
+   * guard could be deleted and the suite stayed green. The committed corpus
+   * cannot isolate [NOT_QUALIFYING_YEAR] with data at all: it needs a dated
+   * cycle whose window is near AND a student of that class who is not in the
+   * qualifying grade, and the year of school is DERIVED from her class and
+   * today. A guard no test can fail is indistinguishable from an absent one.
+   *
+   * THERE IS NO COOLDOWN MEMBER, and that is the design rather than an omission.
+   * The qualifying sitting happens once in a student's life, so
+   * [PsatWindowNudgeSuppression.ALREADY_RAISED] -- one `psat_window` row in ANY
+   * status -- is the whole repeat rule: a dropped nudge is a student who did not
+   * want it, and that answer stands.
+   */
+  internal enum class PsatWindowNudgeSuppression {
+    DISABLED,
+    NO_CYCLE_ROW,
+    NOT_QUALIFYING_YEAR,
+    CYCLE_EXPIRED,
+    CYCLE_UNDATED,
+    WINDOW_NOT_NEAR,
+    WINDOW_PASSED,
+    ALREADY_RAISED,
+    OPEN_SET_AT_CAP,
+  }
+
+  /**
+   * The PSAT-window eligibility decision (RFC 243): config on; a cycle row for
+   * her own class; that row in the year of school whose sitting qualifies; that
+   * row still BELIEVED today (`expires_on`); the row DATED; today inside
+   * [SynthesisConfig.psatWindowNudgeLead] of the window opening and not past its
+   * close; no `psat_window` row for her in any status; and the open set below
+   * the cap. Every negative answer is a named
+   * [PsatWindowNudgeVerdict.Suppressed] reason, never an anonymous false.
+   *
+   * THE CYCLE ROW IS READ BEFORE THE YEAR OF SCHOOL IS JUDGED, because the
+   * qualifying grade is the ROW's -- a published rule of the programme, stored
+   * so nothing speaks it from memory -- and an 11 typed here would be a second
+   * opinion about it. Both reasons are true of a student who has neither, so
+   * the difference is which one the log names, and the row we do not hold is
+   * the one that stopped the step.
+   *
+   * OUR OWN FACTS ARE DECIDED BEFORE THE CORPUS'S FRESHNESS. Her year of school
+   * is derived from HER STORED GRADUATION DATE (RFC 186) and is true whether or
+   * not we still believe two publishers' pages, so a student whose qualifying
+   * sitting is not this year hears that as the reason. Expiry is a statement
+   * about trusting the ROW'S DATES, so it sits immediately before the first
+   * check that reads one.
+   *
+   * IT COSTS NOTHING FOR A STUDENT THE CONFIG EXCLUDES, and at most three
+   * statements for anyone else: her cycle row, her latest `psat_window`
+   * commitment, and her open set -- each read only once the cheaper answers have
+   * not settled it.
+   *
+   * [ed.unicoach.coaching.coachToday] AND NEVER `LocalDate.now(clock)`: the zone
+   * is ours, not the injected clock's, and a sweep reading UTC-today would move
+   * every boundary here by a day for an East Coast family between 20:00 and
+   * midnight.
+   */
+  internal fun computePsatWindowNudgeVerdict(
+    session: SqlSession,
+    student: Student,
+  ): PsatWindowNudgeVerdict {
+    if (!config.psatWindowNudgeEnabled) return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.DISABLED)
+
+    val today = clock.coachToday()
+    val studentId = student.id
+    // HER OWN STORED GRADUATION YEAR IS THE COMPETITION'S NAME: NMSC names the
+    // 2028 competition for the class of 2028, so the join is her own stored year
+    // and nothing inferred.
+    val graduationYear = student.expectedHighSchoolGraduationDate.year.value
+    val cycle =
+      NationalMeritCyclesDao.findByCompetitionYear(session, graduationYear).getOrThrow()
+        ?: return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.NO_CYCLE_ROW)
+
+    val yearOfSchool = HighSchoolYear.of(today, student.expectedHighSchoolGraduationDate)
+    if (yearOfSchool.grade != cycle.qualifyingGrade) {
+      return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.NOT_QUALIFYING_YEAR)
+    }
+
+    // A READING WE NO LONGER BELIEVE IS NOT A WINDOW: `expires_on` is the day we
+    // stop believing the two publishers' pages, so a nudge fired past it would
+    // be raising a dated sitting out of a stale reading -- the refusal RFC 197's
+    // calendar makes for itself, and the one [NationalMeritService] makes for
+    // the same row on the reactive side.
+    //
+    // IT IS ANSWERED AFTER HER YEAR OF SCHOOL AND BEFORE EVERY DATE BELOW. The
+    // year of school comes from her own stored graduation date, so it is ours
+    // and it is settled; from here down every check reads one of this row's
+    // dates, and this is the gate that says they may be read at all.
+    if (today > cycle.expiresOn) {
+      return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.CYCLE_EXPIRED)
+    }
+
+    // AN UNDATED CYCLE CANNOT BE "NEAR". The publisher describes the window in
+    // words long before it dates it (measured: no cycle after 2028 is dated), and
+    // a nudge that fired on a description would be raising a deadline we cannot
+    // name -- which is the one thing this corpus refuses to do.
+    val window =
+      cycle.window as? CycleWindow.Dated
+        ?: return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.CYCLE_UNDATED)
+
+    if (today < window.opensOn.minus(config.psatWindowNudgeLead)) {
+      return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.WINDOW_NOT_NEAR)
+    }
+    // A DELIBERATE REFUSAL AND NOT AN OMISSION. Nothing in the product stores
+    // whether she sat the test, so an unprompted "you may have missed it, and
+    // there is a route" would be a guess about her life. The alternate-entry
+    // answer is fully available the moment she asks, through the tool's
+    // `alternate_entry_open` arm; raising it unasked is not.
+    if (today > window.closesOn) {
+      return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.WINDOW_PASSED)
+    }
+
+    // IN ANY STATUS, which is exactly what `findLatestByStudentAndLens`
+    // guarantees (RFC 160) -- so this needs no new DAO method and no second
+    // definition of "already raised". Open, fulfilled or dropped, one row is the
+    // whole repeat rule.
+    if (CommitmentsDao.findLatestByStudentAndLens(session, studentId, CommitmentLens.PSAT_WINDOW).getOrThrow() != null) {
+      return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.ALREADY_RAISED)
+    }
+    if (CommitmentsDao.listOpenByStudent(session, studentId).getOrThrow().size >= config.maxOpenCommitments) {
+      return PsatWindowNudgeVerdict.Suppressed(PsatWindowNudgeSuppression.OPEN_SET_AT_CAP)
+    }
+    return PsatWindowNudgeVerdict.Eligible
+  }
+
+  /**
+   * The PSAT-window step (RFC 243): decide, then either write the one nudge or
+   * log the named reason. The WRITE is [insertNudge] with this step's own
+   * [DeterministicNudge] entry, not a third copy of "a nudge is an open EXPLICIT
+   * commitment with template text and no supports" -- RFC 240 bound each lens to
+   * its own statement in one place precisely because the pair travelling as two
+   * arguments made a transposed pair type-legal.
+   */
+  private fun runPsatWindowNudgeStep(
+    session: SqlSession,
+    student: Student,
+  ) {
+    val studentId = student.id
+    when (val verdict = computePsatWindowNudgeVerdict(session, student)) {
+      PsatWindowNudgeVerdict.Eligible -> {
+        insertNudge(session, studentId, DeterministicNudge.PSAT_WINDOW)
+      }
+
+      is PsatWindowNudgeVerdict.Suppressed -> {
+        logger.debug("psat-window-nudge suppressed for student=[{}]: [{}]", studentId.asString, verdict.reason)
       }
     }
   }
@@ -973,13 +1168,32 @@ class SynthesisService(
         "and the student can end one supporter's access without ending anyone else's."
 
     /**
+     * The fixed PSAT/NMSQT window statement (RFC 243): template text, never LLM
+     * output. Delivery reads it into the opener like any other explicit
+     * commitment.
+     *
+     * IT SAYS WHAT THE MOMENT IS AND NOT WHAT THE MONEY IS. Every figure -- the
+     * window's own dates, the base rate, what any school pays -- comes from the
+     * `psat_national_merit` tool when the coach raises this, because a statement
+     * frozen in code cannot go stale beside a corpus that expires.
+     */
+    const val PSAT_WINDOW_NUDGE_STATEMENT =
+      "The PSAT/NMSQT window is close, and they are in the one year of school whose sitting counts for National " +
+        "Merit. When the moment is right, raise it once: what the test is worth, that their school decides the day " +
+        "and they do not register themselves, and that no college ever sees the score."
+
+    /**
      * The lenses the synthesis LLM may propose through `record_synthesis`
      * (RFC 160): the tool schema enumerates exactly this set and parseOutput
      * rejects the rest. Built through an exhaustive when, so a new
      * [CommitmentLens] member does not compile until its proposability is
      * decided here — [CommitmentLens.SHARE_REPORT] is written by the
-     * deterministic share-nudge step only, and [CommitmentLens.INVITE_SUPPORTER]
-     * by the invite-nudge step only (RFC 240), so both are deliberately absent.
+     * deterministic share-nudge step only, [CommitmentLens.INVITE_SUPPORTER] by
+     * the invite-nudge step only (RFC 240), and [CommitmentLens.PSAT_WINDOW] by
+     * the PSAT-window step only (RFC 243) -- a model that could propose that one
+     * could raise it for anyone, where the deterministic step raises it for a
+     * junior whose single qualifying sitting is near. All three are deliberately
+     * absent.
      */
     private val LLM_PROPOSABLE_LENSES: Set<CommitmentLens> =
       CommitmentLens.entries
@@ -992,6 +1206,7 @@ class SynthesisService(
 
             CommitmentLens.SHARE_REPORT,
             CommitmentLens.INVITE_SUPPORTER,
+            CommitmentLens.PSAT_WINDOW,
             -> false
           }
         }.toSet()

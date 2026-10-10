@@ -33,8 +33,14 @@ import org.slf4j.LoggerFactory
  * it is unavailable, because "the family declined" and "we could not read the
  * profile" are different facts and the second one is not something to tell a
  * family we know.
+ *
+ * IT IS PUBLIC because a door's read SEAM carries it: `psat_national_merit`
+ * passes this value to its corpus read rather than the nullable code, so the
+ * four states reach the comparison that decides whose award a row is
+ * ([ed.unicoach.coaching.testing.ResidencyScope]), and a public constructor
+ * cannot name an internal type.
  */
-internal sealed interface Residency {
+sealed interface Residency {
   /**
    * The USPS code when it is on file, and null in every other case — what selects
    * the ruler.

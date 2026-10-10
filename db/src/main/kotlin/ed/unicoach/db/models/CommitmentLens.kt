@@ -17,10 +17,18 @@ enum class CommitmentLens(
   /**
    * The deterministic parent-invite commitment (RFC 240): code-written, never
    * LLM-proposed, and written only for a student who has ALREADY shared the
-   * family cost report — so it and [SHARE_REPORT] are mutually exclusive by the
+   * family cost report -- so it and [SHARE_REPORT] are mutually exclusive by the
    * synthesis predicate, never by anything this enum can say.
    */
   INVITE_SUPPORTER("invite_supporter"),
+
+  /**
+   * The deterministic PSAT/NMSQT nudge (RFC 243): raised for a junior when the
+   * one qualifying October window is near. Code-written, never LLM-proposed,
+   * and raised ONCE -- the qualifying sitting happens once in a student's life,
+   * so a row of this lens in ANY status is the whole repeat rule.
+   */
+  PSAT_WINDOW("psat_window"),
   ;
 
   companion object {

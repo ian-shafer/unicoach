@@ -149,3 +149,8 @@ seed-coach-system-prompt-v47.sql
 subscriptions-key-on-account.sql
 supporter-llm-cost.sql
 account-llm-cost.sql
+create-national-merit-cycles.sql
+create-college-national-merit-awards.sql
+widen-commitments-lens-psat-window.sql
+seed-national-merit-cycles-2026-09-25.sql
+seed-coach-system-prompt-v48.sql

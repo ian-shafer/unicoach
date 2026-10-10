@@ -1,0 +1,1365 @@
+#!/usr/bin/env bash
+# national-merit-seed-scripts-tests -- shell assertions over
+# bin/national-merit-seed (RFC 243, slice test/08/the-psat-is-money).
+#
+# The `-scripts-tests` suffix is load-bearing, not decoration. bin/scripts-tests
+# sweeps `bin/*scripts-tests` and asserts each one is named in bin/shell-tests,
+# and bin/gate-scope FAILS THE COMMIT GATE BY NAME for one its table does not
+# know (RFC 214) -- because an orphaned harness looks exactly like a passing one.
+#
+# THE SUBJECT IS A VALIDATOR NOTHING ELSE EVER FEEDS A BAD ROW. The generator
+# turns db/seed/national-merit/cycles.csv into one seed migration per READING
+# DAY, and its whole safety argument is that a typed row which cannot be true is
+# a REVIEW error naming its line number rather than a migration that fails at
+# apply time in somebody else's db-reset. Every one of those refusals is
+# reachable ONLY from a bad CSV, so this file is the only place they are ever
+# executed.
+#
+# Seven properties cannot be eyeballed and are the reason each has its own case:
+#
+#   1. A NORMAL RUN WRITES NOTHING TO STDOUT. That is the repo's bin/ rule, and
+#      this script's product is files on disk: every diagnostic, including the
+#      closing summary, belongs on stderr. It is asserted on the happy path AND
+#      on every refusal, because a refusal that printed its faults to stdout
+#      would pass a harness that greps a merged stream.
+#   2. IT REPORTS EVERY FAULT IN ONE PASS. A validator that stops at the first
+#      offender turns a five-line fix into five runs. That is a claim about a run
+#      with several faults in it, and only such a run can check it.
+#   3. A REFUSAL WRITES NOTHING. Every refusal case asserts the schema directory
+#      and ORDER are exactly as they were.
+#   4. A GENERATED SEED ALREADY IN THE SCHEMA DIRECTORY MAY NOT CHANGE. A landed
+#      migration is replayed from the top on every db-reset, so the generator
+#      refuses rather than rewriting one -- and a re-read, which carries a new
+#      checked_on, lands as a NEW file beside it with the old one untouched. Both
+#      halves need a schema directory with a seed already in it, so only a
+#      two-run case can make the claim.
+#   5. THE CYCLE WINDOW'S OFFSET IS competition_year - 2, NOT - 1. It is probed
+#      with the NEIGHBOURING cycle's October -- the date a year-shift typo
+#      actually produces -- because a window probed with a date in the wrong
+#      DECADE passes a generator whose offset is wrong by a year.
+#   6. THE CSV IS RFC 4180 AND ITS CELLS ARE NOT ASCII. NMSC's sentences carry
+#      commas, apostrophes and an ellipsis character, so a fixture row carries
+#      all three and the generated literal is asserted character for character.
+#      A backslash and a control character ARE refused, by line and column, and
+#      that pair is what the escaper's correctness rests on.
+#   7. EVERY DDL CHECK IS MIRRORED, BY NAME AND BY CONTENT. The constraints exist
+#      twice -- once in create-national-merit-cycles.sql, once in the generator --
+#      and nothing but a comment tag ties them.
+#
+# NO POSTGRES, NO GRADLE, NO NETWORK AND NO WORKTREE. Every run that can WRITE is
+# routed by the EXPLICIT -c and -d options into a throwaway temp tree, so this
+# harness cannot half-move itself onto the real corpus: bin/national-merit-seed
+# defaults both paths to $PROJECT_ROOT, and an assertion that forgot one would
+# rewrite the operator's own seed and ORDER file with nothing printed to say so.
+#
+# ONE case is deliberately aimed at the real tree, and it is the last one: `-n`
+# with NEITHER path option, which reads the committed CSV and the committed
+# db/schema because those are the script's own defaults. Every other assertion
+# feeds a temp fixture, so a stale or hand-edited
+# db/schema/seed-national-merit-cycles-*.sql would pass the whole harness -- and
+# "the CSV is the source, the SQL is an artifact" is a claim about the COMMITTED
+# files or it is not a claim at all. It is safe because `-n` writes nothing, which
+# two cases above assert, and it names no path of its own, so a corpus that MOVED
+# is the generator's refusal rather than a case that quietly stopped asserting.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+help() {
+  cat << 'EOF'
+national-merit-seed-scripts-tests [options]
+
+Runs the shell assertions over bin/national-merit-seed: the usage band, the
+header refusal, every CHECK mirror by line number, the cycle window probed with
+the NEIGHBOURING cycle's October, the per-reading-day primary key, the multi-fault
+pass, the write-nothing-on-refusal rule, the refusal to change a generated seed
+already in the schema directory, the ORDER contract and its exit 9, the
+quoted-CSV, non-ASCII and SQL-escaping claims, the external_documents-first emit
+with four subselected ids, the undated cycle's NULLs, the two-reading-day path,
+the DDL-to-generator sweeps -- constraint NAMES, the two cutoff-basis
+VOCABULARIES member for member, external_documents' link_status words and url
+shape, the funnel's narrowing pairs, the nullable prose columns, the numeric
+bounds and the window arithmetic --
+the -n exit-3 contract, the idempotent happy path, and -n against the COMMITTED
+tree.
+
+Needs no database, no daemon, no network and no worktree: every run that can
+write is routed into a throwaway temp tree by -c and -d.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: national-merit-seed-scripts-tests accepts no positional arguments."
+fi
+
+MERIT_SEED="$PROJECT_ROOT/bin/national-merit-seed"
+[ -x "$MERIT_SEED" ] || fail_test "national-merit-seed is missing or not executable [$MERIT_SEED]"
+MERIT_DDL="$PROJECT_ROOT/db/schema/create-national-merit-cycles.sql"
+[ -f "$MERIT_DDL" ] || fail_test "the National Merit cycle DDL is missing [$MERIT_DDL]"
+# The OTHER table this generator writes rows into, and whose two rules it re-checks.
+EXTERNAL_DOCUMENTS_DDL="$PROJECT_ROOT/db/schema/create-external-documents.sql"
+[ -f "$EXTERNAL_DOCUMENTS_DDL" ] ||
+  fail_test "the external_documents DDL is missing [$EXTERNAL_DOCUMENTS_DDL]"
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT INT TERM
+
+SCHEMA="$FIXTURE_DIR/schema"
+CSV="$FIXTURE_DIR/cycles.csv"
+LINK_CSV="$FIXTURE_DIR/link-status.csv"
+seed_out="$FIXTURE_DIR/seed.out"
+seed_err="$FIXTURE_DIR/seed.err"
+seed_status=0
+
+# The reading day every fixture row below carries, and the file it therefore
+# generates. The READING DAY names the file -- not the competition year -- so the
+# name is DERIVED here from the script's own template exactly once: a harness that
+# retyped it would still pass if that derivation broke.
+readonly FIXTURE_CHECKED="2026-09-25"
+readonly FIXTURE_EXPIRES="2027-07-31"
+
+SEED_NAME_TEMPLATE="$(sed -nE 's/^SEED_NAME_TEMPLATE = "(.*)"$/\1/p' "$MERIT_SEED")"
+[ -n "$SEED_NAME_TEMPLATE" ] ||
+  fail_test "the harness could not read SEED_NAME_TEMPLATE out of [$MERIT_SEED]"
+SEED_NAME="${SEED_NAME_TEMPLATE/\%s/$FIXTURE_CHECKED}"
+[ "$SEED_NAME" != "$SEED_NAME_TEMPLATE" ] ||
+  fail_test "the harness could not fill the reading day into [$SEED_NAME_TEMPLATE]"
+SEED_BODY="$SCHEMA/$SEED_NAME"
+
+# The header READ OUT OF THE SCRIPT, never retyped. Every reordering and rename
+# below is derived from this one string, so a harness fixture cannot go on
+# asserting the refusal of a header the generator stopped expecting.
+EXPECTED_HEADER="$(sed -nE 's/^EXPECTED_HEADER = "(.*)"$/\1/p' "$MERIT_SEED")"
+[ -n "$EXPECTED_HEADER" ] ||
+  fail_test "the harness could not read EXPECTED_HEADER out of [$MERIT_SEED]"
+
+# Test urls and test publishers, never the real ones: this file asserts the
+# VALIDATOR, and a fixture quoting NMSC's own pages would read as data. The
+# committed corpus under db/seed/national-merit/ is the only home for what NMSC
+# and College Board actually publish.
+readonly NMSC_2028="https://example.test/nmsc-2028"
+readonly BOARD_2028="https://example.test/board-2028"
+readonly NMSC_2029="https://example.test/nmsc-2029"
+readonly BOARD_2029="https://example.test/board-2029"
+readonly NMSC_ARCHIVE="https://example.test/nmsc-2028-archive"
+readonly BOARD_ARCHIVE="https://example.test/board-2028-archive"
+readonly NEVER_SWEPT="https://example.test/never-swept"
+readonly SPONSOR="Example Merit Corporation"
+readonly ADMINISTRATOR="Example Test Board"
+
+# ONE CSV ROW FROM THIRTY-THREE CELLS, BY NAME AND NOT BY POSITION. The sibling
+# generators' harnesses pass twelve and fourteen cells positionally; thirty-three
+# would make every fixture below a wall of commas in which the cell a case is
+# actually about is invisible, and a case that meant to change `finalists` would
+# silently change `semifinalists`.
+#
+# So a row is the DEFAULTS -- the 2028 competition, dated, funnelled, priced, and
+# inside every CHECK -- plus `name=value` overrides, and an override naming a cell
+# that does not exist FAILS THE HARNESS rather than being ignored. A silently
+# dropped override is a case asserting the refusal of a row that was never bad.
+#
+# The cells are written by python's own CSV writer, so no fixture has to remember
+# RFC 4180 -- and QUOTE_MINIMAL still quotes the comma-bearing prose, so every
+# fixture exercises the quoted-field path the real corpus needs. Three of those
+# cells carry what makes this corpus not ASCII and not comma-splittable: a comma,
+# an apostrophe, and the ellipsis character that marks an elision.
+cycle_row() { # cycle_row [<cell>=<value>]...
+  local competition_year=2028
+  local qualifying_grade=11
+  local window_opens_on=2026-10-01
+  local window_closes_on=2026-10-30
+  local window_as_published="The window is October 1 to 30, 2026, in school."
+  local alternate_entry_deadline=2027-04-01
+  local alternate_entry_contact="ae@example.invalid"
+  local alternate_entry_as_published="Write to us by April 1, 2027, to ask for another route of entry."
+  local selection_index_low=48
+  local selection_index_high=228
+  local semifinalist_cutoff_basis=state_representational
+  local commended_cutoff_basis=national
+  local cutoff_as_published="Qualifying scores vary from state to state. … They are not published in advance."
+  local score_visibility_as_published="No, colleges won't receive your child's actual test scores."
+  local test_takers=3500000
+  local met_entry_requirements=1200000
+  local high_scorers_screened=50000
+  local commended=34000
+  local semifinalists=16000
+  local finalists=15000
+  local winners=6700
+  local funnel_as_published="About 1,200,000 entrants; some 15,000 reach Finalist."
+  local nmsc_award_usd=2500
+  local nmsc_award_as_published="A single payment of USD 2,500."
+  local sponsor_cap_as_published="Each sponsor college chooses its annual payment, within a published range."
+  local publisher="$SPONSOR"
+  local source_url="$NMSC_2028"
+  local archive_url=""
+  local administrator_publisher="$ADMINISTRATOR"
+  local administrator_source_url="$BOARD_2028"
+  local administrator_archive_url=""
+  local checked_on="$FIXTURE_CHECKED"
+  local expires_on="$FIXTURE_EXPIRES"
+
+  local override name value
+  for override in "$@"; do
+    name="${override%%=*}"
+    value="${override#*=}"
+    case "$name" in
+    competition_year) competition_year="$value" ;;
+    qualifying_grade) qualifying_grade="$value" ;;
+    window_opens_on) window_opens_on="$value" ;;
+    window_closes_on) window_closes_on="$value" ;;
+    window_as_published) window_as_published="$value" ;;
+    alternate_entry_deadline) alternate_entry_deadline="$value" ;;
+    alternate_entry_contact) alternate_entry_contact="$value" ;;
+    alternate_entry_as_published) alternate_entry_as_published="$value" ;;
+    selection_index_low) selection_index_low="$value" ;;
+    selection_index_high) selection_index_high="$value" ;;
+    semifinalist_cutoff_basis) semifinalist_cutoff_basis="$value" ;;
+    commended_cutoff_basis) commended_cutoff_basis="$value" ;;
+    cutoff_as_published) cutoff_as_published="$value" ;;
+    score_visibility_as_published) score_visibility_as_published="$value" ;;
+    test_takers) test_takers="$value" ;;
+    met_entry_requirements) met_entry_requirements="$value" ;;
+    high_scorers_screened) high_scorers_screened="$value" ;;
+    commended) commended="$value" ;;
+    semifinalists) semifinalists="$value" ;;
+    finalists) finalists="$value" ;;
+    winners) winners="$value" ;;
+    funnel_as_published) funnel_as_published="$value" ;;
+    nmsc_award_usd) nmsc_award_usd="$value" ;;
+    nmsc_award_as_published) nmsc_award_as_published="$value" ;;
+    sponsor_cap_as_published) sponsor_cap_as_published="$value" ;;
+    publisher) publisher="$value" ;;
+    source_url) source_url="$value" ;;
+    archive_url) archive_url="$value" ;;
+    administrator_publisher) administrator_publisher="$value" ;;
+    administrator_source_url) administrator_source_url="$value" ;;
+    administrator_archive_url) administrator_archive_url="$value" ;;
+    checked_on) checked_on="$value" ;;
+    expires_on) expires_on="$value" ;;
+    *) fail_test "cycle_row: no cell named [$name]; the fixture would have asserted nothing" ;;
+    esac
+  done
+
+  # ONE ROW THROUGH THE STDLIB'S CSV WRITER. A printf format with the quotes
+  # typed in cannot double a `"` inside a cell and left twenty-two cells bare, so
+  # a fixture carrying a comma or a quote built a row of a different shape and the
+  # case then asserted the refusal of a row it never wrote. python3 is the
+  # language this harness's subject is written in, and it ships the tested writer.
+  python3 -c 'import csv, sys; csv.writer(sys.stdout, lineterminator="\n").writerow(sys.argv[1:])' \
+    "$competition_year" "$qualifying_grade" "$window_opens_on" "$window_closes_on" \
+    "$window_as_published" "$alternate_entry_deadline" "$alternate_entry_contact" \
+    "$alternate_entry_as_published" "$selection_index_low" "$selection_index_high" \
+    "$semifinalist_cutoff_basis" "$commended_cutoff_basis" "$cutoff_as_published" \
+    "$score_visibility_as_published" "$test_takers" "$met_entry_requirements" \
+    "$high_scorers_screened" "$commended" "$semifinalists" "$finalists" "$winners" \
+    "$funnel_as_published" "$nmsc_award_usd" "$nmsc_award_as_published" \
+    "$sponsor_cap_as_published" "$publisher" "$source_url" "$archive_url" \
+    "$administrator_publisher" "$administrator_source_url" "$administrator_archive_url" \
+    "$checked_on" "$expires_on"
+}
+
+# THE TWO SHAPES THE CORPUS ACTUALLY HAS, and the second one is the reason this
+# generator is not the sibling's (brief 0010 D22: the deliberately unlike cases).
+#
+# GOOD_DATED is the cycle in progress: dated, funnelled, priced, with an alternate
+# entry route. GOOD_UNDATED is the cycle NMSC has DESCRIBED and not dated -- no
+# window dates, no alternate-entry trio, no funnel counts, no award -- which is
+# the NORMAL case for a student two years out and the row every NULL in the
+# generated tuple comes from. A harness that only fed dated rows would never
+# execute the NULL path at all.
+GOOD_DATED="$(cycle_row)"
+GOOD_UNDATED="$(cycle_row \
+  competition_year=2029 \
+  window_opens_on= window_closes_on= \
+  "window_as_published=They take the test again in 2027, when they are juniors." \
+  alternate_entry_deadline= alternate_entry_contact= alternate_entry_as_published= \
+  test_takers= met_entry_requirements= high_scorers_screened= commended= \
+  semifinalists= finalists= winners= \
+  "funnel_as_published=An initial screen of over 1.2 million entrants each year." \
+  nmsc_award_usd= nmsc_award_as_published= sponsor_cap_as_published= \
+  "source_url=$NMSC_2029" "administrator_source_url=$BOARD_2029")"
+
+# A CSV: the generator's own header, then the rows this case means.
+write_csv() { # write_csv <file> <row>...
+  local file="$1"
+  shift
+  printf '%s\n' "$EXPECTED_HEADER" "$@" > "$file"
+}
+
+# The SWEEP, beside the CSV, because RFC 220 made a citation with no evidence
+# unstorable: external_documents.url_status has no default and url_checked_on is
+# NOT NULL, so every fixture needs an answer for every url it cites or the
+# generator refuses it. The header is READ OUT OF THE SCRIPT for the same reason
+# EXPECTED_HEADER is.
+EXPECTED_LINK_STATUS_HEADER="$(sed -nE 's/^EXPECTED_LINK_STATUS_HEADER = "(.*)"$/\1/p' "$MERIT_SEED")"
+[ -n "$EXPECTED_LINK_STATUS_HEADER" ] ||
+  fail_test "the harness could not read EXPECTED_LINK_STATUS_HEADER out of [$MERIT_SEED]"
+readonly FIXTURE_SWEPT_ON="2026-09-26"
+
+# A sweep file: the generator's own header, then one answer per url given. An
+# entry may carry its own status (`url,not_found`), which the status cases use.
+write_link_status() { # write_link_status <file> <url|url,status>...
+  local file="$1"
+  shift
+  printf '%s\n' "$EXPECTED_LINK_STATUS_HEADER" > "$file"
+  local entry
+  for entry in "$@"; do
+    case "$entry" in
+    *,*) printf '%s,%s\n' "$entry" "$FIXTURE_SWEPT_ON" >> "$file" ;;
+    *) printf '%s,found,%s\n' "$entry" "$FIXTURE_SWEPT_ON" >> "$file" ;;
+    esac
+  done
+}
+
+# Every url any fixture row below cites, swept `found` unless a case says
+# otherwise -- and NEVER $NEVER_SWEPT, which is the url the RFC 220 case cites
+# precisely because nobody asked about it. Kept in one place so a new fixture row
+# is not silently refused for a reason the case was not about.
+write_fixture_sweep() {
+  write_link_status "$LINK_CSV" "$NMSC_2028" "$BOARD_2028" "$NMSC_2029" "$BOARD_2029" \
+    "$NMSC_ARCHIVE" "$BOARD_ARCHIVE"
+}
+
+# A throwaway schema directory with an ORDER holding one unrelated line. Not
+# empty, because "the generator appended exactly one line" must be a statement
+# about an ORDER that already had content, and not about a file it created.
+reset_fixture() {
+  rm -rf "$SCHEMA"
+  mkdir -p "$SCHEMA"
+  printf '%s\n' "create-national-merit-cycles.sql" > "$SCHEMA/ORDER"
+  write_csv "$CSV" "$GOOD_DATED" "$GOOD_UNDATED"
+  write_fixture_sweep
+}
+
+# Records BOTH halves of the answer -- the status in $seed_status, stderr in
+# $seed_err -- and keeps stdout in its own file rather than merging the two. A
+# refusal assertion that greps a merged stream passes on a script that printed its
+# diagnostics to stdout, which is one of the things this file exists to catch.
+run_seed() { # run_seed <args>...
+  seed_status=0
+  "$MERIT_SEED" "$@" > "$seed_out" 2> "$seed_err" || seed_status=$?
+}
+
+# How many times <line> appears in the fixture ORDER file. `grep -Fxq` answers
+# "at least once", and the bug a second run has is "twice".
+order_count() { # order_count <line>
+  grep -Fxc "$1" "$SCHEMA/ORDER" 2> /dev/null || true
+}
+
+# The whole refusal contract for ONE bad row, as one assertion.
+#
+# The bad row is always LINE 3, with a true row above it on line 2, so "the fault
+# names its line" is a real count rather than a constant that would be right by
+# accident for every fixture with one row in it. The row above is the UNDATED
+# 2029 cycle, so no bad row below can collide with it on the primary key.
+assert_row_refused() { # assert_row_refused <what it is> <bad row> <message fragment>
+  local label="$1" row="$2" fragment="$3"
+  reset_fixture
+  write_csv "$CSV" "$GOOD_UNDATED" "$row"
+  run_seed -c "$CSV" -d "$SCHEMA"
+
+  [ "$seed_status" -eq 1 ] ||
+    fail_test "$label exited $seed_status, expected 1: [$(cat "$seed_err")]"
+  grep -qF "line 3: " "$seed_err" ||
+    fail_test "$label did not name the offending line; said [$(cat "$seed_err")]"
+  grep -qF "$fragment" "$seed_err" ||
+    fail_test "$label did not say why; said [$(cat "$seed_err")]"
+  [ ! -s "$seed_out" ] ||
+    fail_test "$label wrote to stdout: [$(cat "$seed_out")]"
+  [ ! -e "$SEED_BODY" ] ||
+    fail_test "$label wrote a seed anyway: [$(ls "$SCHEMA")]"
+  [ "$(order_count "$SEED_NAME")" -eq 0 ] ||
+    fail_test "$label appended to ORDER: [$(cat "$SCHEMA/ORDER")]"
+  pass_test "$label"
+}
+
+echo "==== national-merit-seed: it must PARSE, and its harness with it ===="
+
+# 0. The generator is python3, so the parse check is python's. A construct that
+# does not parse is a syntax error where a refusal should be, and every other case
+# here would report it as "exited 1" with an unreadable traceback.
+assert_success "bin/national-merit-seed parses as python3" \
+  python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$MERIT_SEED"
+# The harness is bash, and macOS `/usr/bin/env bash` is bash 3.2: a construct only
+# bash 5 can parse is not a lenient script, it is a syntax error. /bin/bash is
+# named explicitly because the point is the SYSTEM interpreter; inside the Nix dev
+# shell a bare `bash` is 5.x and would assert nothing.
+assert_success "bin/national-merit-seed-scripts-tests parses under the system bash (/bin/bash -n)" \
+  /bin/bash -n "$PROJECT_ROOT/bin/national-merit-seed-scripts-tests"
+
+echo ""
+echo "==== national-merit-seed: the usage band ===="
+
+reset_fixture
+
+# 1. The reserved usage codes from bin/functions, which bin/pyfunctions.py mirrors
+# for the python half, so a caller who invoked the script wrongly is
+# distinguishable from a run that faulted. Named by their variables and never by
+# their numbers: a harness that agreed with a number rather than with bin/functions
+# would keep passing after the band moved.
+#
+# Every one is ROUTED with -c and -d even though all of them refuse before either
+# path is used. That is the point: an assertion that is a no-op against the fixture
+# today must not become a write against the operator's real db/schema the day one
+# of these refusals moves a line later.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "an unknown option exits EXIT_UNKNOWN_OPTION" \
+  "$MERIT_SEED" -c "$CSV" -d "$SCHEMA" -Z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-c with no value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$MERIT_SEED" -d "$SCHEMA" -c
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "-d with no value exits EXIT_OPTION_REQUIRES_VALUE" \
+  "$MERIT_SEED" -c "$CSV" -d
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "a positional argument exits EXIT_UNEXPECTED_ARG" \
+  "$MERIT_SEED" -c "$CSV" -d "$SCHEMA" stray
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c with an EMPTY value exits EXIT_INVALID_ARG_VALUE" \
+  "$MERIT_SEED" -c "" -d "$SCHEMA"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d with an EMPTY value exits EXIT_INVALID_ARG_VALUE" \
+  "$MERIT_SEED" -c "$CSV" -d ""
+# getopt would happily take `-d` as the VALUE of `-c` and then look for a schema
+# directory named `-d`; pyfunctions' post-getopt guard refuses a value that is
+# another option, which is the dropped-operand case.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c given another option as its value exits EXIT_INVALID_ARG_VALUE" \
+  "$MERIT_SEED" -c -n -d "$SCHEMA"
+# A repeated option is a last-wins guess about which of two corpora was meant, and
+# this script writes committed, reviewed artifacts.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c given twice exits EXIT_INVALID_ARG_VALUE rather than guessing" \
+  "$MERIT_SEED" -c "$CSV" -c "$CSV" -d "$SCHEMA"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c naming a file that is not there exits EXIT_INVALID_ARG_VALUE" \
+  "$MERIT_SEED" -c "$FIXTURE_DIR/no-such-file.csv" -d "$SCHEMA"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d naming a directory that is not there exits EXIT_INVALID_ARG_VALUE" \
+  "$MERIT_SEED" -c "$CSV" -d "$FIXTURE_DIR/no-such-dir"
+# `[ -f ]` and `[ -d ]` are different questions, and a guard that only asked "is it
+# there" would take a regular file as a schema directory and fail much later,
+# mid-write.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-d naming a FILE rather than a directory exits EXIT_INVALID_ARG_VALUE" \
+  "$MERIT_SEED" -c "$CSV" -d "$CSV"
+# An EMPTY file is not a CSV with no rows: it has no header either, so it is a
+# usage fault rather than a corpus the validator reads and refuses.
+: > "$FIXTURE_DIR/empty.csv"
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "-c naming an EMPTY file exits EXIT_INVALID_ARG_VALUE" \
+  "$MERIT_SEED" -c "$FIXTURE_DIR/empty.csv" -d "$SCHEMA"
+
+# 2. -h is the ONE thing the caller asked for by name, so it is the one thing that
+# goes to stdout -- and it exits 0, because asking for help is not an error.
+help_out="$("$MERIT_SEED" -h 2> "$seed_err")" ||
+  fail_test "-h should exit 0: $(cat "$seed_err")"
+[ -n "$help_out" ] || fail_test "-h printed nothing to stdout"
+case "$help_out" in
+*"national-merit-seed [-c CSV] [-d DIR] [-n] [-h]"*) ;;
+*) fail_test "-h printed something that is not the usage text: [$help_out]" ;;
+esac
+# The CONTRACT, not merely a usage line: the exit codes a caller branches on, and
+# the second source file -c implies. A help text that omitted either would leave
+# the reader to discover the 3 and the link-status requirement by hitting them.
+case "$help_out" in
+*"3   -n only: the tree differs from what would be generated"*) ;;
+*) fail_test "-h does not state the exit-3 contract: [$help_out]" ;;
+esac
+case "$help_out" in
+*"link-status.csv"*) ;;
+*) fail_test "-h does not name the second source file it reads: [$help_out]" ;;
+esac
+[ ! -s "$seed_err" ] || fail_test "-h wrote to stderr as well: [$(cat "$seed_err")]"
+pass_test "-h exits 0 and prints the contract to stdout and nothing to stderr"
+
+echo ""
+echo "==== national-merit-seed: db/schema/ORDER, before anything is read ===="
+
+# 3. ORDER is what makes a generated seed apply at all, so a schema directory
+# without one is refused BEFORE the CSV is even opened, and with the code
+# bin/functions reserves for an ORDER the corpus cannot use.
+reset_fixture
+rm -f "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SCHEMA_ORDER_DRIFT" ] ||
+  fail_test "a missing ORDER exited $seed_status, expected EXIT_SCHEMA_ORDER_DRIFT: $(cat "$seed_err")"
+grep -qF "does not exist, so a generated seed could never be applied" "$seed_err" ||
+  fail_test "the missing-ORDER refusal did not say why; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the missing-ORDER refusal wrote a seed anyway"
+pass_test "a schema directory with no ORDER exits EXIT_SCHEMA_ORDER_DRIFT and writes nothing"
+
+# 4. A DUPLICATED line in ORDER. bin/db-migrate refuses such a corpus two steps
+# later, and appending to it would only add a third fault, so this script refuses
+# it up front with the same code and the same instruction.
+reset_fixture
+printf '%s\n' "create-national-merit-cycles.sql" "create-external-documents.sql" \
+  "create-national-merit-cycles.sql" > "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SCHEMA_ORDER_DRIFT" ] ||
+  fail_test "a duplicated ORDER line exited $seed_status, expected EXIT_SCHEMA_ORDER_DRIFT: $(cat "$seed_err")"
+grep -qF "[create-national-merit-cycles.sql] more than once" "$seed_err" ||
+  fail_test "the corrupt-ORDER refusal did not name the duplicated line; said [$(cat "$seed_err")]"
+grep -qF "bin/db-status" "$seed_err" ||
+  fail_test "the corrupt-ORDER refusal did not point at bin/db-status; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the corrupt-ORDER refusal wrote a seed anyway"
+pass_test "a duplicated ORDER line exits EXIT_SCHEMA_ORDER_DRIFT, naming it, and writes nothing"
+
+# 5. A line whose bytes differ only by TRAILING WHITESPACE is the SAME line. That
+# is the defect bin/prompt-seed records as already shipped: `grep -Fxq` reads it as
+# ABSENT, the append writes a second line for one migration, and bin/db-migrate
+# refuses a corpus the generator had just called correct.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the first run exited $seed_status: $(cat "$seed_err")"
+printf '%s\n' "create-national-merit-cycles.sql" "$SEED_NAME   " > "$SCHEMA/ORDER"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a trailing-space ORDER line exited $seed_status, expected 0: $(cat "$seed_err")"
+[ "$(grep -c "$SEED_NAME" "$SCHEMA/ORDER")" -eq 1 ] ||
+  fail_test "the generator appended a SECOND line for one migration: [$(cat "$SCHEMA/ORDER")]"
+pass_test "an ORDER line carrying trailing whitespace is read as PRESENT, and never appended twice"
+
+echo ""
+echo "==== national-merit-seed: the header, asserted exactly and in order ===="
+
+# 6. A REORDERED header. Two columns swapped is the fault the exact-header rule
+# exists for: read positionally, it moves the administrator's page into the
+# sponsor's citation, or one cycle's deadline onto another's row, and every row
+# still "parses". The swapped header is DERIVED from the script's own, so this
+# fixture cannot drift away from the real one.
+reset_fixture
+reordered_header="$(printf '%s\n' "$EXPECTED_HEADER" | awk -F, '{ t = $1; $1 = $2; $2 = t; print }' OFS=,)"
+[ "$reordered_header" != "$EXPECTED_HEADER" ] ||
+  fail_test "the harness failed to derive a reordered header from [$EXPECTED_HEADER]"
+printf '%s\n' "$reordered_header" "$GOOD_DATED" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a reordered header exited $seed_status, expected 1"
+grep -qF "the cycles CSV header is not the header this generator expects" "$seed_err" ||
+  fail_test "the reordered-header refusal did not say what was wrong; said [$(cat "$seed_err")]"
+grep -qF "expected: [$EXPECTED_HEADER]" "$seed_err" ||
+  fail_test "the refusal did not show the header it expected; said [$(cat "$seed_err")]"
+grep -qF "found:    [$reordered_header]" "$seed_err" ||
+  fail_test "the refusal did not show the header it found; said [$(cat "$seed_err")]"
+[ ! -s "$seed_out" ] || fail_test "the header refusal wrote to stdout: [$(cat "$seed_out")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the header refusal wrote a seed anyway"
+pass_test "a reordered header is refused, showing expected and found, and nothing is written"
+
+# 7. A RENAMED column, which reads as the same fault and must not read as a missing
+# one: the column count still matches, so only the exact comparison sees it.
+reset_fixture
+renamed_header="${EXPECTED_HEADER/checked_on/checked_at}"
+[ "$renamed_header" != "$EXPECTED_HEADER" ] ||
+  fail_test "the harness failed to derive a renamed header from [$EXPECTED_HEADER]"
+printf '%s\n' "$renamed_header" "$GOOD_DATED" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a renamed column exited $seed_status, expected 1"
+grep -qF "found:    [$renamed_header]" "$seed_err" ||
+  fail_test "the renamed-column refusal did not show what it found; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the renamed-column refusal wrote a seed anyway"
+pass_test "a renamed column is refused, showing expected and found"
+
+# 8. A header and nothing under it. It is a DIFFERENT diagnosis from a bad header
+# -- a corpus with no rows -- and reporting both would be a second diagnosis of a
+# file the run never read past line 1.
+reset_fixture
+printf '%s\n' "$EXPECTED_HEADER" > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a header with no rows exited $seed_status, expected 1"
+grep -qF "has a header and no rows" "$seed_err" ||
+  fail_test "an empty corpus was not diagnosed as such; said [$(cat "$seed_err")]"
+if grep -qF "is not the header this generator expects" "$seed_err"; then
+  fail_test "an empty corpus was ALSO reported as a header fault; said [$(cat "$seed_err")]"
+fi
+[ ! -e "$SEED_BODY" ] || fail_test "an empty corpus wrote a seed anyway"
+pass_test "a CSV with a header and no rows is refused, and not reported as a header fault"
+
+# 9. A row with the wrong NUMBER of cells. Thirty-three columns and an embedded
+# comma in an UNQUOTED cell is the likely typo, and it must be an arity fault
+# naming the line rather than a row read one cell out of step.
+assert_row_refused "a row with too few columns is refused by its line" \
+  "2030,11,,," \
+  "columns, expected [33]"
+
+echo ""
+echo "==== national-merit-seed: the bytes a SQL literal may carry ===="
+
+# 10. A BACKSLASH. The escaper doubles apostrophes and nothing else, so a
+# backslash is a literal whose meaning depends on the server's
+# standard_conforming_strings -- and it is invisible in a wall of publisher prose,
+# which is why the refusal names its COLUMN as well as its line.
+assert_row_refused "a backslash in a cell is refused by line and column" \
+  "$(cycle_row competition_year=2030 window_opens_on=2028-10-01 window_closes_on=2028-10-30 \
+    alternate_entry_deadline=2029-04-01 \
+    'cutoff_as_published=Scores vary by state \\ and by year.')" \
+  "a backslash at column"
+
+# 11. A CONTROL CHARACTER, here a tab. It looks like whitespace in an editor and
+# like nothing at all in a diff, and it would reach the family as part of a quoted
+# sentence.
+assert_row_refused "a control character in a cell is refused by line and column" \
+  "$(cycle_row competition_year=2030 window_opens_on=2028-10-01 window_closes_on=2028-10-30 \
+    alternate_entry_deadline=2029-04-01 \
+    "cutoff_as_published=Scores vary by state$(printf '\t')and by year.")" \
+  "a control character at column"
+
+# 12. A byte that is not UTF-8 at all. NON-ASCII IS LEGAL in this corpus -- the
+# publishers' sentences carry an ellipsis character -- so the rule cannot be the
+# sibling generator's printable-ASCII one; what it is instead is STRICT UTF-8, and
+# the refusal names the LINE rather than a byte offset into the whole file.
+reset_fixture
+{
+  printf '%s\n' "$EXPECTED_HEADER"
+  printf '%s\n' "$GOOD_UNDATED"
+  printf '2030,11,2028-10-01,2028-10-30,"a \xff byte",2029-04-01,'
+  printf '"ae@example.invalid","words",48,228,state_representational,national,"c","v",'
+  printf '1,1,1,1,1,1,1,"f",,,,"%s",%s,,"%s",%s,,%s,%s\n' \
+    "$SPONSOR" "$NMSC_2028" "$ADMINISTRATOR" "$BOARD_2028" "$FIXTURE_CHECKED" "$FIXTURE_EXPIRES"
+} > "$CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a non-UTF-8 byte exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 3: is not valid UTF-8" "$seed_err" ||
+  fail_test "the non-UTF-8 refusal did not name the line; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the non-UTF-8 refusal wrote a seed anyway"
+pass_test "a byte that is not UTF-8 is refused by its LINE, while non-ASCII prose is not"
+
+echo ""
+echo "==== national-merit-seed: the CHECK mirrors, each named by its line ===="
+
+# 13. The competition year, which is the PRIMARY KEY and the student's own
+# graduation year.
+assert_row_refused "a competition year outside the table's range is refused" \
+  "$(cycle_row competition_year=1999)" \
+  "competition_year [1999] is outside"
+assert_row_refused "a competition year that is not four digits is refused" \
+  "$(cycle_row competition_year=28)" \
+  "is not a four-digit year"
+
+# 14. The qualifying grade. Stored rather than hard-coded because it is a published
+# rule of the programme, so a typo here is a rule we invented.
+assert_row_refused "a qualifying grade outside 9..12 is refused" \
+  "$(cycle_row qualifying_grade=13)" \
+  "qualifying_grade [13] is outside"
+
+# 15. HALF A WINDOW, both directions. The pair CHECK exists because the undated
+# cycle is the NORMAL case here: a row with one date is not "partly dated", it is a
+# date nobody published.
+assert_row_refused "a window opened and not closed is refused" \
+  "$(cycle_row window_closes_on=)" \
+  "a window is dated at both ends or at neither"
+assert_row_refused "a window closed and not opened is refused" \
+  "$(cycle_row window_opens_on=)" \
+  "a window is dated at both ends or at neither"
+
+# 16. A window that closes before it opens.
+assert_row_refused "a window whose close precedes its open is refused" \
+  "$(cycle_row window_opens_on=2026-10-30 window_closes_on=2026-10-01)" \
+  "is before window_opens_on"
+
+# 17. THE OFFSET IS competition_year - 2, AND THIS IS THE CASE THAT PROVES IT. The
+# 2028 competition is the OCTOBER 2026 sitting, so the probe is OCTOBER 2027 --
+# the NEIGHBOURING cycle's window, which is exactly what a year-shift typo
+# produces. A probe from 2020 would pass a generator whose offset was wrong by one.
+assert_row_refused "the NEIGHBOURING cycle's October under this cycle's year is refused" \
+  "$(cycle_row window_opens_on=2027-10-01 window_closes_on=2027-10-30)" \
+  "the qualifying sitting is in the autumn TWO"
+
+# 18. A deadline or an address with no publisher's words is a claim we made
+# ourselves -- and the trio is the check that says so.
+assert_row_refused "an alternate-entry deadline with no publisher's words is refused" \
+  "$(cycle_row alternate_entry_as_published=)" \
+  "a deadline or an address we cannot show the publisher's words for"
+
+# 19. And the deadline's own window.
+assert_row_refused "an alternate-entry deadline outside the cycle is refused" \
+  "$(cycle_row alternate_entry_deadline=2030-04-01)" \
+  "alternate_entry_deadline [2030-04-01] is outside"
+
+# 20. The Selection Index scale, which is NOT a cutoff and which a family reads a
+# score against.
+assert_row_refused "a selection index low above its high is refused" \
+  "$(cycle_row selection_index_low=228 selection_index_high=48)" \
+  "is not below selection_index_high"
+assert_row_refused "a selection index high above the table's ceiling is refused" \
+  "$(cycle_row selection_index_high=501)" \
+  "is above [500]"
+
+# 21. The two OWN enumerations. Each admits exactly one value today because each
+# stage has exactly one published basis, and the difference between them is the
+# whole reason the coach may not speak a national figure as a student's own bar.
+assert_row_refused "a semifinalist cutoff basis outside the vocabulary is refused" \
+  "$(cycle_row semifinalist_cutoff_basis=national)" \
+  "semifinalist_cutoff_basis [national] is not one of"
+assert_row_refused "a commended cutoff basis outside the vocabulary is refused" \
+  "$(cycle_row commended_cutoff_basis=state_representational)" \
+  "commended_cutoff_basis [state_representational] is not one of"
+
+# 22. A funnel stage of zero. A published stage has people in it; a stage the
+# publisher does not publish is EMPTY, and the difference is what stops "0
+# Finalists" being spoken as a base rate.
+assert_row_refused "a funnel stage of zero is refused, and an empty one is not the same thing" \
+  "$(cycle_row winners=0)" \
+  "winners [0] is not above zero"
+
+# 23. A FUNNEL THAT WIDENS. Typing 15,000 Semifinalists under 16,000 Finalists
+# inverts the base rate the coach is required to speak -- and the base rate is
+# DERIVED at read time, so nothing downstream recomputes it into something sane.
+assert_row_refused "a funnel that widens is refused, naming both stages" \
+  "$(cycle_row semifinalists=15000 finalists=16000)" \
+  "a funnel only narrows"
+
+# 24. NMSC's own money. A price with no sentence beside it is our figure rather
+# than theirs.
+assert_row_refused "an award figure with no publisher's sentence is refused" \
+  "$(cycle_row nmsc_award_as_published=)" \
+  "a price with no publisher's sentence beside it is our figure"
+assert_row_refused "an award figure that is not a positive whole number is refused" \
+  "$(cycle_row nmsc_award_usd=-5)" \
+  "is not a positive whole number of dollars"
+
+# 25. A quoted sentence that is blank is not a quotation -- in both directions the
+# table states it: a NOT NULL column that is empty, and a nullable one that is
+# whitespace. An EMPTY nullable cell IS the SQL NULL and is legal, which is the
+# distinction the whitespace case protects.
+assert_row_refused "an empty NOT NULL quotation is refused" \
+  "$(cycle_row cutoff_as_published=)" \
+  "cutoff_as_published is empty, and the column is NOT NULL"
+assert_row_refused "a nullable quotation that is only whitespace is refused" \
+  "$(cycle_row 'sponsor_cap_as_published=   ')" \
+  "sponsor_cap_as_published is whitespace"
+
+# 26. The four citations, and the two that must be there. A row that cites nothing
+# is the uncitable row this corpus exists to prevent.
+assert_row_refused "a sponsor page that is not an http url is refused" \
+  "$(cycle_row source_url=nmsc.example)" \
+  "source_url [nmsc.example] is not an http or https url"
+assert_row_refused "an administrator page that is not an http url is refused" \
+  "$(cycle_row administrator_source_url=)" \
+  "administrator_source_url [] is not an http or https url"
+assert_row_refused "a mirror that is not an http url is refused" \
+  "$(cycle_row archive_url=web.archive.example)" \
+  "archive_url [web.archive.example] is not an http or https url"
+
+# 27. An archive of a page may not BE that page: a row carrying both would print
+# one link twice. BOTH pairs, because this row has two publishers and the second
+# pair is the one a copy-paste gets wrong.
+assert_row_refused "a sponsor mirror that IS the sponsor page is refused" \
+  "$(cycle_row "archive_url=$NMSC_2028")" \
+  "is the source_url: an archive of a page is not that page"
+assert_row_refused "an administrator mirror that IS the administrator page is refused" \
+  "$(cycle_row "administrator_archive_url=$BOARD_2028")" \
+  "is the administrator_source_url: an archive of a page is not that page"
+
+# 28. TWO PUBLISHERS, WHICH IS THE DESIGN. The curation pass measured that four
+# cells per row are the administrator's, so a row citing one page -- or one
+# publisher -- for both lost half its provenance, which is exactly the mis-citation
+# RFC 228 exists to prevent.
+assert_row_refused "one page cited for both publishers is refused" \
+  "$(cycle_row "administrator_source_url=$NMSC_2028")" \
+  "source_url and administrator_source_url are the same page"
+assert_row_refused "one publisher named as both sponsor and administrator is refused" \
+  "$(cycle_row "administrator_publisher=$SPONSOR")" \
+  "the competition's sponsor and the test's administrator are two publishers"
+
+# 29. The day we stop believing the page, never the day a deadline falls.
+assert_row_refused "an expiry on or before the reading day is refused" \
+  "$(cycle_row "expires_on=$FIXTURE_CHECKED")" \
+  "is not after checked_on"
+assert_row_refused "a reading day that is not a real date is refused" \
+  "$(cycle_row checked_on=2026-09-31)" \
+  "checked_on [2026-09-31] is not a real yyyy-mm-dd date"
+
+# 30. THE PRIMARY KEY, PER READING DAY. Two rows for one cycle read on one day
+# would land in ONE `INSERT ... ON CONFLICT DO UPDATE`, which Postgres refuses
+# outright ("cannot affect row a second time") -- so the generated file would not
+# APPLY AT ALL. The same year on a LATER day is the correction mechanism itself,
+# which case 46 below executes.
+assert_row_refused "two rows for one cycle in one reading day are refused" \
+  "$(cycle_row competition_year=2029 window_opens_on= window_closes_on= \
+    alternate_entry_deadline= alternate_entry_contact= alternate_entry_as_published= \
+    test_takers= met_entry_requirements= high_scorers_screened= commended= \
+    semifinalists= finalists= winners= nmsc_award_usd= nmsc_award_as_published= \
+    sponsor_cap_as_published= "source_url=$NMSC_2029" "administrator_source_url=$BOARD_2029")" \
+  "one reading day carries one row per cycle"
+
+echo ""
+echo "==== national-merit-seed: the sweep, which RFC 220 made part of storing a citation ===="
+
+# 31. A CITED URL NOBODY ASKED ABOUT. external_documents.url_status has no default
+# and url_checked_on is NOT NULL, so the seed could not state this citation's
+# evidence -- and the refusal names the url, the sweep file and the command that
+# fixes it, because the fix is not in the file the fault is in.
+reset_fixture
+write_csv "$CSV" "$GOOD_UNDATED" "$(cycle_row "archive_url=$NEVER_SWEPT")"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "an unswept url exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "line 3: " "$seed_err" ||
+  fail_test "the unswept-url refusal did not name the line; said [$(cat "$seed_err")]"
+grep -qF "$NEVER_SWEPT" "$seed_err" ||
+  fail_test "the unswept-url refusal did not name the url; said [$(cat "$seed_err")]"
+grep -qF "link-status.csv" "$seed_err" ||
+  fail_test "the unswept-url refusal did not name the sweep file; said [$(cat "$seed_err")]"
+grep -qF "bin/check-link" "$seed_err" ||
+  fail_test "the unswept-url refusal did not name the command that fixes it; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the unswept-url refusal wrote a seed anyway"
+pass_test "a cited url with no row in the sweep is refused by name, and nothing is written"
+
+# 32. NO SWEEP FILE AT ALL. It is resolved BESIDE the CSV rather than behind an
+# option of its own, so this is also the assertion that -c names both files.
+reset_fixture
+rm -f "$LINK_CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a missing sweep exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "is not in the tree" "$seed_err" ||
+  fail_test "the missing-sweep refusal did not say what was missing; said [$(cat "$seed_err")]"
+grep -qF "RFC 220" "$seed_err" ||
+  fail_test "the missing-sweep refusal did not say why a citation needs evidence; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the missing-sweep refusal wrote a seed anyway"
+pass_test "a corpus with no link-status.csv beside it is refused, and the sweep is found by the CSV's own path"
+
+# 33. A STATUS OUTSIDE RFC 200's THREE WORDS, which is also the link_status
+# domain's whole range: the seed would fail at apply time on a domain the whole
+# repo shares.
+reset_fixture
+write_link_status "$LINK_CSV" "$NMSC_2028,gone" "$BOARD_2028" "$NMSC_2029" "$BOARD_2029"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a bad url_status exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "url_status [gone] is not one of" "$seed_err" ||
+  fail_test "the bad-status refusal did not name the offender; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the bad-status refusal wrote a seed anyway"
+pass_test "a url_status outside the link_status domain is refused by name"
+
+# 34. ONE URL, ONE ANSWER. Two rows for one address is two statuses for one
+# external_documents row, and the seed would then depend on which one the reader
+# happened to keep.
+reset_fixture
+write_link_status "$LINK_CSV" "$NMSC_2028" "$BOARD_2028" "$NMSC_2029" "$BOARD_2029" "$NMSC_2028"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a twice-swept url exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "is already swept at line" "$seed_err" ||
+  fail_test "the duplicate-sweep refusal did not name the earlier line; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the duplicate-sweep refusal wrote a seed anyway"
+pass_test "one url swept twice is refused, naming the line that already answered"
+
+# 35. AND A SWEPT URL CARRIES THE DAY IT WAS ASKED ABOUT. `unknown` with a date is
+# a check that ran and got no usable answer; a claim with no date is a check that
+# never ran looking like one that passed (RFC 182).
+reset_fixture
+printf '%s\n' "$EXPECTED_LINK_STATUS_HEADER" "$NMSC_2028,found," > "$LINK_CSV"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "an undated sweep row exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "a swept url carries the day it was asked about" "$seed_err" ||
+  fail_test "the undated-sweep refusal did not say why; said [$(cat "$seed_err")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the undated-sweep refusal wrote a seed anyway"
+pass_test "a swept url with no day it was asked about is refused"
+
+echo ""
+echo "==== national-merit-seed: every fault in ONE pass ===="
+
+# 36. A validator that stops at the first offender turns a five-line fix into five
+# runs. Two bad rows, and a row that is bad in TWO ways: all three faults, and
+# every line number, in one run.
+reset_fixture
+write_csv "$CSV" "$GOOD_UNDATED" \
+  "$(cycle_row qualifying_grade=13)" \
+  "$(cycle_row competition_year=2030 window_opens_on=2028-10-01 window_closes_on=2028-10-30 \
+    alternate_entry_deadline=2029-04-01 selection_index_high=501 finalists=20000)"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a multi-fault corpus exited $seed_status, expected 1"
+grep -qF "line 3: " "$seed_err" || fail_test "the first bad row was not reported; said [$(cat "$seed_err")]"
+grep -qF "line 4: " "$seed_err" || fail_test "the second bad row was not reported; said [$(cat "$seed_err")]"
+grep -qF "is above [500]" "$seed_err" || fail_test "the index fault was not reported; said [$(cat "$seed_err")]"
+grep -qF "a funnel only narrows" "$seed_err" || fail_test "the funnel fault was not reported; said [$(cat "$seed_err")]"
+grep -qE "\[[0-9]+\] fault\(s\) in " "$seed_err" ||
+  fail_test "the refusal did not count the faults; said [$(cat "$seed_err")]"
+[ ! -s "$seed_out" ] || fail_test "the multi-fault refusal wrote to stdout: [$(cat "$seed_out")]"
+[ ! -e "$SEED_BODY" ] || fail_test "the multi-fault refusal wrote a seed anyway"
+pass_test "every fault in a corpus is reported in ONE pass, each by its line, and nothing is written"
+
+echo ""
+echo "==== national-merit-seed: the happy path, and what the seed says ===="
+
+# 37. THE HAPPY PATH, IN FULL: the exit code, the two streams, the file, the ORDER
+# line appended exactly ONCE, and the second run changing nothing.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the happy path exited $seed_status: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] ||
+  fail_test "a normal run wrote to stdout, and its product is files on disk: [$(cat "$seed_out")]"
+[ -s "$seed_err" ] ||
+  fail_test "a normal run said nothing at all on stderr; the summary is a diagnostic and belongs there"
+[ -f "$SEED_BODY" ] || fail_test "the happy path wrote no seed: [$(ls "$SCHEMA")]"
+[ "$(order_count "$SEED_NAME")" -eq 1 ] ||
+  fail_test "the seed's ORDER line was not appended exactly once: [$(cat "$SCHEMA/ORDER")]"
+pass_test "a normal run writes the seed, appends its ORDER line once, and puts nothing on stdout"
+
+# 38. BYTE-IDENTICAL ON A SECOND RUN, and the ORDER line still appearing once.
+# Without this the `-n` contract means nothing: a generator whose output depended on
+# a dict ordering or a timestamp would refuse the tree it had just written.
+cp "$SEED_BODY" "$FIXTURE_DIR/first-run.sql"
+cp "$SCHEMA/ORDER" "$FIXTURE_DIR/first-run.order"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the second run exited $seed_status: $(cat "$seed_err")"
+cmp -s "$FIXTURE_DIR/first-run.sql" "$SEED_BODY" ||
+  fail_test "the second run's seed is not byte-identical to the first's"
+cmp -s "$FIXTURE_DIR/first-run.order" "$SCHEMA/ORDER" ||
+  fail_test "the second run changed ORDER: [$(cat "$SCHEMA/ORDER")]"
+[ ! -s "$seed_out" ] || fail_test "the second run wrote to stdout: [$(cat "$seed_out")]"
+grep -qF "is already what this corpus generates" "$seed_err" ||
+  fail_test "the second run did not say the seed was already correct; said [$(cat "$seed_err")]"
+pass_test "a second run is byte-identical, says so, and appends nothing"
+
+# 39. THE GENERATED FILE SAYS WHAT IT IS. A committed migration nobody wrote by
+# hand has to announce that, or the next person edits it.
+grep -qF "GENERATED FILE -- do not edit." "$SEED_BODY" ||
+  fail_test "the generated seed does not say it is generated: [$(head -3 "$SEED_BODY")]"
+grep -qF "bin/national-merit-seed" "$SEED_BODY" ||
+  fail_test "the generated seed does not name the script that wrote it"
+grep -qF "$(basename "$CSV")" "$SEED_BODY" ||
+  fail_test "the generated seed does not name the source it was generated from"
+pass_test "the generated seed names itself generated, its generator and its source"
+
+# 40. THE DOCUMENTS ARE UPSERTED FIRST, AND EVERY ID IS SUBSELECTED BY URL. The id
+# is a uuidv7 the database mints, so a generated file cannot know it -- and a cycle
+# row citing a document the upsert never inserted violates the foreign key at apply
+# time, which is a failure in somebody else's db-reset.
+documents_at="$(grep -n '^INSERT INTO external_documents ' "$SEED_BODY" | head -1 | cut -d: -f1)"
+cycles_at="$(grep -n '^INSERT INTO national_merit_cycles$' "$SEED_BODY" | head -1 | cut -d: -f1)"
+[ -n "$documents_at" ] || fail_test "the seed carries no external_documents INSERT"
+[ -n "$cycles_at" ] || fail_test "the seed carries no national_merit_cycles INSERT"
+[ "$documents_at" -lt "$cycles_at" ] ||
+  fail_test "the cycles INSERT is before the external_documents INSERT (lines $cycles_at and $documents_at)"
+grep -qF "ON CONFLICT (url) DO NOTHING;" "$SEED_BODY" ||
+  fail_test "the documents upsert is not DO NOTHING, so re-stating a url could reset a swept status (RFC 182)"
+grep -qF "ON CONFLICT (competition_year) DO UPDATE SET" "$SEED_BODY" ||
+  fail_test "the cycles INSERT does not upsert on the competition year"
+# One sweep row per url, with its status and the day it was asked: RFC 220's whole
+# requirement, rendered.
+grep -qF "('$NMSC_2028', 'found', DATE '$FIXTURE_SWEPT_ON')" "$SEED_BODY" ||
+  fail_test "the sponsor page's sweep answer is not in the seed: [$(sed -n "$documents_at,\$p" "$SEED_BODY" | head -6)]"
+grep -qF "('$BOARD_2029', 'found', DATE '$FIXTURE_SWEPT_ON')" "$SEED_BODY" ||
+  fail_test "the administrator page's sweep answer is not in the seed"
+# FOUR citation slots per row, each resolved by url. The two page ids are
+# subselects and the two mirrors are NULL in this fixture, which is today's corpus.
+# COUNTED WITH grep -o, not grep -c: both of a row's page citations are on ONE
+# line, so counting LINES would answer 2 for the four ids this corpus has.
+subselects="$(grep -o "SELECT id FROM external_documents WHERE url = " "$SEED_BODY" | grep -c . || true)"
+[ "$subselects" -eq 4 ] ||
+  fail_test "the two rows carry [$subselects] subselected document ids between them, expected four (a page each, plus no mirror)"
+pass_test "the documents are upserted first, DO NOTHING, and every citation is subselected by url"
+
+# 41. THE DATED ROW AND THE UNDATED ROW, CELL FOR CELL WHERE IT MATTERS. The
+# undated cycle is the row every NULL comes from -- no window, no alternate-entry
+# trio, no funnel, no award -- and a generator that rendered an empty cell as '' or
+# as 0 would pass every case above.
+dated_tuple="$(grep -F "  (2028, 11, " "$SEED_BODY")"
+undated_tuple="$(grep -F "  (2029, 11, " "$SEED_BODY")"
+[ -n "$dated_tuple" ] || fail_test "the dated cycle's tuple is not in the seed: [$(sed -n "$cycles_at,\$p" "$SEED_BODY")]"
+[ -n "$undated_tuple" ] || fail_test "the undated cycle's tuple is not in the seed"
+case "$dated_tuple" in
+*"(2028, 11, DATE '2026-10-01', DATE '2026-10-30', "*) ;;
+*) fail_test "the dated cycle's window is not two DATE literals: [$dated_tuple]" ;;
+esac
+case "$undated_tuple" in
+*"(2029, 11, NULL, NULL, "*) ;;
+*) fail_test "the undated cycle's window is not NULL, NULL: [$undated_tuple]" ;;
+esac
+case "$undated_tuple" in
+*", NULL, NULL, NULL, 48, 228, "*) ;;
+*) fail_test "the undated cycle's alternate-entry trio is not three NULLs: [$undated_tuple]" ;;
+esac
+case "$undated_tuple" in
+*", NULL, NULL, NULL, NULL, NULL, NULL, NULL, '"*) ;;
+*) fail_test "the undated cycle's seven funnel stages are not seven NULLs: [$undated_tuple]" ;;
+esac
+# The dated row's funnel, in the DDL's own stage order, which is what makes the
+# derived base rate mean what it says.
+case "$dated_tuple" in
+*", 3500000, 1200000, 50000, 34000, 16000, 15000, 6700, '"*) ;;
+*) fail_test "the dated cycle's funnel is not its seven stages in order: [$dated_tuple]" ;;
+esac
+pass_test "the dated row carries its dates and funnel, and the undated row carries NULLs and not empty strings"
+
+# 42. THE QUOTING, CHARACTER FOR CHARACTER. An apostrophe inside a publisher's
+# sentence is the escaper's whole job -- it appears TWICE in one fixture cell -- and
+# the ellipsis character is what makes this corpus not ASCII. A seed that lost
+# either would apply and store a sentence the publisher did not print.
+grep -qF "'No, colleges won''t receive your child''s actual test scores.'" "$SEED_BODY" ||
+  fail_test "an apostrophe in a quoted cell did not round-trip as a doubled one: [$dated_tuple]"
+grep -qF "Qualifying scores vary from state to state. … They are not published in advance." "$SEED_BODY" ||
+  fail_test "the ellipsis character did not survive into the seed: [$dated_tuple]"
+# And the commas inside a quoted cell are still inside one literal: a comma split
+# would have ended the field at "October 1 to 30".
+grep -qF "'The window is October 1 to 30, 2026, in school.'" "$SEED_BODY" ||
+  fail_test "a quoted cell carrying commas did not round-trip as one literal"
+pass_test "an apostrophe doubles, a comma stays inside its literal, and the ellipsis character survives"
+
+echo ""
+echo "==== national-merit-seed: -n, the contract that keeps the tree honest ===="
+
+# 43. -n WRITES NOTHING, and says what is missing. This is the form the operator
+# and a reviewer run against a tree they have not regenerated.
+reset_fixture
+run_seed -n -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n over a tree with no seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE: $(cat "$seed_err")"
+[ ! -e "$SEED_BODY" ] || fail_test "-n wrote a seed"
+[ "$(order_count "$SEED_NAME")" -eq 0 ] || fail_test "-n appended to ORDER: [$(cat "$SCHEMA/ORDER")]"
+[ ! -s "$seed_out" ] || fail_test "-n wrote to stdout: [$(cat "$seed_out")]"
+grep -qF "$SEED_NAME" "$seed_err" || fail_test "-n did not name the file that is missing"
+pass_test "-n over a tree with no seed exits 3, names it, and writes nothing"
+
+# 44. AND EXITS 0 WHEN THE TREE IS ALREADY CORRECT. A drift guard that could not
+# say "clean" would be run once and then ignored.
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the run before the clean -n exited $seed_status: $(cat "$seed_err")"
+run_seed -n -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "-n over the tree it had just generated exited $seed_status, expected 0: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] || fail_test "the clean -n wrote to stdout: [$(cat "$seed_out")]"
+pass_test "-n over a tree that is already what this corpus generates exits 0"
+
+# 45. ONE BYTE OF DRIFT IN THE GENERATED SEED, WHICH IS THE CASE THE GUARD EXISTS
+# FOR: a hand-edited migration. It exits 3 under -n, names the file, and leaves the
+# edit alone -- a dry run that repaired the file would be the write it promised not
+# to make.
+printf '%s\n' "-- a human edited this generated file" >> "$SEED_BODY"
+cp "$SEED_BODY" "$FIXTURE_DIR/edited.sql"
+run_seed -n -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq "$EXIT_SEED_WOULD_CHANGE" ] ||
+  fail_test "-n over a hand-edited seed exited $seed_status, expected $EXIT_SEED_WOULD_CHANGE: $(cat "$seed_err")"
+grep -qF "$SEED_NAME" "$seed_err" || fail_test "-n did not name the seed that drifted; said [$(cat "$seed_err")]"
+grep -qF "a human edited this generated file" "$seed_err" ||
+  fail_test "-n did not show WHICH lines differ; said [$(cat "$seed_err")]"
+cmp -s "$FIXTURE_DIR/edited.sql" "$SEED_BODY" || fail_test "-n rewrote the hand-edited seed"
+[ ! -s "$seed_out" ] || fail_test "the drift -n wrote to stdout: [$(cat "$seed_out")]"
+pass_test "-n over a seed that drifted by one line exits 3, names it, shows the diff, and writes nothing"
+
+echo ""
+echo "==== national-merit-seed: a generated seed already in the tree may not CHANGE ===="
+
+# 46. A CELL REWRITTEN IN THE CSV, WHICH IS THE APPEND-ONLY RULE AS ONE BYTE
+# COMPARISON. A landed migration is replayed from the top on every db-reset, so the
+# generator REFUSES rather than rewriting it -- and the refusal prints the escape,
+# because the guard cannot tell a landed seed from one this same uncommitted run
+# wrote ten minutes ago.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the landing run exited $seed_status: $(cat "$seed_err")"
+cp "$SEED_BODY" "$FIXTURE_DIR/landed.sql"
+write_csv "$CSV" "$(cycle_row winners=6800)" "$GOOD_UNDATED"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a rewritten cell exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "$SEED_NAME" "$seed_err" || fail_test "the refusal did not name the seed that would change"
+grep -qF "may never change" "$seed_err" ||
+  fail_test "the refusal did not say why a landed migration cannot change; said [$(cat "$seed_err")]"
+grep -qF "If it has NOT LANDED yet" "$seed_err" ||
+  fail_test "the refusal did not print the escape for a seed still being authored; said [$(cat "$seed_err")]"
+grep -qF "6800" "$seed_err" || fail_test "the refusal did not show what changed; said [$(cat "$seed_err")]"
+cmp -s "$FIXTURE_DIR/landed.sql" "$SEED_BODY" || fail_test "the refused run rewrote the landed seed anyway"
+[ ! -s "$seed_out" ] || fail_test "the would-change refusal wrote to stdout: [$(cat "$seed_out")]"
+pass_test "a CSV that would rewrite a generated seed already in the tree is refused, with the diff and the escape"
+
+# 47. A ROW DROPPED FROM THE CSV IS THE SAME REFUSAL, which is what makes this one
+# comparison the whole append-only rule: a landed migration cannot lose a row
+# either, and a tuple-level reader would need a second guard to say so.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the landing run exited $seed_status: $(cat "$seed_err")"
+cp "$SEED_BODY" "$FIXTURE_DIR/landed.sql"
+write_csv "$CSV" "$GOOD_DATED"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] || fail_test "a dropped row exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "$SEED_NAME" "$seed_err" || fail_test "the dropped-row refusal did not name the seed"
+cmp -s "$FIXTURE_DIR/landed.sql" "$SEED_BODY" || fail_test "the dropped-row run rewrote the landed seed anyway"
+pass_test "a row dropped from the CSV is refused by the same guard, and the landed seed is untouched"
+
+# 48. AND THE WAY A CORRECTION ACTUALLY LANDS: a RE-READ, APPENDED. It carries a
+# new checked_on, so it is a NEW file with a NEW ORDER line; the landed seed is
+# byte-identical afterwards; and the new file upserts the SAME competition year,
+# which is how the migrations replay a correction rather than an edit. The
+# per-reading-day key is what makes this legal where case 30's same-day duplicate
+# was not.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the landing run exited $seed_status: $(cat "$seed_err")"
+cp "$SEED_BODY" "$FIXTURE_DIR/landed.sql"
+REREAD_ON="2027-06-01"
+REREAD_NAME="${SEED_NAME_TEMPLATE/\%s/$REREAD_ON}"
+[ "$REREAD_NAME" != "$SEED_NAME" ] ||
+  fail_test "the harness built the same seed name for two reading days; this case would pass vacuously"
+write_csv "$CSV" "$GOOD_DATED" "$GOOD_UNDATED" \
+  "$(cycle_row winners=6800 "checked_on=$REREAD_ON")"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] ||
+  fail_test "a re-read appended as a new reading day exited $seed_status, expected 0: $(cat "$seed_err")"
+[ -f "$SCHEMA/$REREAD_NAME" ] || fail_test "the new reading day's seed was not written: [$(ls "$SCHEMA")]"
+cmp -s "$FIXTURE_DIR/landed.sql" "$SEED_BODY" ||
+  fail_test "appending a new reading day changed the landed seed"
+grep -qF "  (2028, 11, " "$SCHEMA/$REREAD_NAME" ||
+  fail_test "the re-read seed does not carry the corrected cycle: [$(cat "$SCHEMA/$REREAD_NAME")]"
+grep -qF ", 6800, '" "$SCHEMA/$REREAD_NAME" ||
+  fail_test "the re-read seed does not carry the corrected figure"
+grep -qF "ON CONFLICT (competition_year) DO UPDATE SET" "$SCHEMA/$REREAD_NAME" ||
+  fail_test "the new reading day's seed does not upsert on the competition year"
+[ "$(order_count "$REREAD_NAME")" -eq 1 ] ||
+  fail_test "the new seed's ORDER line was not appended exactly once: [$(cat "$SCHEMA/ORDER")]"
+[ "$(order_count "$SEED_NAME")" -eq 1 ] ||
+  fail_test "the landed seed's ORDER line changed: [$(cat "$SCHEMA/ORDER")]"
+pass_test "a re-read lands as a NEW reading day's seed with its own ORDER line, leaving the landed one byte-identical"
+
+# 49. AND A GENERATED SEED THE NAME PATTERN REFUSES IS NAMED, not skipped. The glob
+# has already said the file belongs to this corpus; a name the pattern then refuses
+# (`-2026-9-1.sql`, `-2026-09-25.bak.sql`) carries a reading day nothing can read,
+# and skipping it makes every line in it invisible to the guard.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the landing run exited $seed_status: $(cat "$seed_err")"
+BAD_SEED_NAME="${SEED_NAME_TEMPLATE/\%s/2026-9-1}"
+[ "$BAD_SEED_NAME" != "$SEED_NAME" ] ||
+  fail_test "the harness built the same name twice; this case would pass vacuously"
+cp "$SEED_BODY" "$SCHEMA/$BAD_SEED_NAME"
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 1 ] ||
+  fail_test "a misnamed generated seed exited $seed_status, expected 1: $(cat "$seed_err")"
+grep -qF "$BAD_SEED_NAME" "$seed_err" ||
+  fail_test "the refusal did not name the misnamed seed; said [$(cat "$seed_err")]"
+grep -qF "is in the schema directory and its name is not" "$seed_err" ||
+  fail_test "the refusal did not say why the name was refused; said [$(cat "$seed_err")]"
+[ ! -s "$seed_out" ] ||
+  fail_test "the misnamed-seed refusal wrote to stdout: [$(cat "$seed_out")]"
+pass_test "a generated seed whose FILENAME the pattern refuses is refused by name, never skipped"
+
+echo ""
+echo "==== national-merit-seed: the CHECK mirrors, tied to the DDL ===="
+
+# 50. The CHECK constraints exist TWICE -- once in
+# db/schema/create-national-merit-cycles.sql, once in this generator -- and NOTHING
+# but a comment tag ties them. Without this case a further CHECK could land
+# unmirrored in silence: the DDL would refuse a row at apply time in somebody else's
+# db-reset, which is the exact failure the generator exists to prevent.
+#
+# SET EQUALITY, not just a count: a mirror whose constraint was RENAMED or removed
+# is as wrong as a constraint with no mirror, and the message names the offender
+# either way. Both sides are DERIVED from the files. The floor is what stops the
+# case passing vacuously if either grep stops matching.
+ddl_checks="$(grep -oE 'CONSTRAINT national_merit_cycles[a-z0-9_]*_check' "$MERIT_DDL" |
+  sed 's/^CONSTRAINT //' | sort -u)"
+mirrored_checks="$(grep -oE '# MIRRORS national_merit_cycles[a-z0-9_]*_check' "$MERIT_SEED" |
+  sed 's/^# MIRRORS //' | sort -u)"
+ddl_check_count="$(printf '%s\n' "$ddl_checks" | grep -c . || true)"
+[ "$ddl_check_count" -ge 18 ] ||
+  fail_test "only [$ddl_check_count] CHECK constraint(s) were read out of [$MERIT_DDL]; the grep no longer matches the DDL, so this case would pass vacuously"
+[ "$ddl_checks" = "$mirrored_checks" ] ||
+  fail_test "the generator does not mirror the DDL's CHECK constraints one for one. DDL: [$(printf '%s' "$ddl_checks" | tr '\n' ' ')] mirrored: [$(printf '%s' "$mirrored_checks" | tr '\n' ' ')]"
+pass_test "every CHECK in the National Merit cycle DDL is mirrored by name in the generator ([$ddl_check_count] of them), and none extra"
+
+# 51. And the other half of "no tag naming a constraint that does not exist". A
+# mirror may legitimately name something declared ELSEWHERE -- external_documents'
+# url shape and the link_status domain's own check, both of which this generator
+# re-checks because it writes rows into that table. What is NOT legitimate is a tag
+# naming nothing at all.
+foreign_mirrors="$(grep -oE '# MIRRORS [a-z0-9_]+' "$MERIT_SEED" | sed 's/^# MIRRORS //' |
+  grep -vE '^national_merit_cycles[a-z0-9_]*_check$' | sort -u || true)"
+foreign_mirror_count=0
+while IFS= read -r mirror; do
+  [ -n "$mirror" ] || continue
+  foreign_mirror_count=$((foreign_mirror_count + 1))
+  grep -rqE "(CONSTRAINT|CREATE UNIQUE INDEX) $mirror( |\$)" "$PROJECT_ROOT/db/schema" ||
+    fail_test "the generator carries [# MIRRORS $mirror] and nothing of that name is declared anywhere in db/schema"
+done <<< "$foreign_mirrors"
+[ "$foreign_mirror_count" -ge 2 ] ||
+  fail_test "only [$foreign_mirror_count] out-of-table MIRRORS tag(s) were found; the generator mirrors the external_documents url shape and the link_status domain, so this case is no longer reading the file it thinks it is"
+pass_test "every MIRRORS tag naming something outside this table's CHECKs ([$foreign_mirror_count] of them) resolves to a real declaration"
+
+# 52. THE NAME SWEEPS ABOVE PROVE THE MIRROR EXISTS AND NOTHING ABOUT WHAT IS IN
+# IT. The two cutoff bases are vocabularies -- a CHECK IN (...) list in the DDL and
+# a python tuple in the generator -- and a value RENAMED on one side would pass both
+# sweeps above while leaving the generator admitting a row PostgreSQL refuses at
+# apply time. So the MEMBERS are compared, as sets, both sides read out of the
+# files.
+#
+# THE TWO ARE SWEPT SEPARATELY AND THAT IS THE POINT: each column admits exactly one
+# value today and they are DIFFERENT values, because Semifinalist standing is
+# allocated per state and Commended is set nationally. A sweep that pooled them
+# would pass a generator that had accepted either on either column, which is the
+# defect that would let the coach speak a national number as a student's own bar.
+ddl_semifinalist="$(sed -n '/CONSTRAINT national_merit_cycles_semifinalist_cutoff_basis_check/,/)),/p' "$MERIT_DDL" |
+  grep -oE "'[a-z_]+'" | tr -d "'" | sort -u)"
+seed_semifinalist="$(sed -nE 's/^SEMIFINALIST_CUTOFF_BASES = \((.*)\)$/\1/p' "$MERIT_SEED" |
+  grep -oE '"[a-z_]+"' | tr -d '"' | sort -u)"
+[ -n "$ddl_semifinalist" ] ||
+  fail_test "no semifinalist_cutoff_basis value was read out of [$MERIT_DDL]; the sweep is no longer reading the CHECK it thinks it is"
+[ "$ddl_semifinalist" = "$seed_semifinalist" ] ||
+  fail_test "the generator's SEMIFINALIST_CUTOFF_BASES are not the DDL's vocabulary. DDL: [$(printf '%s' "$ddl_semifinalist" | tr '\n' ' ')] generator: [$(printf '%s' "$seed_semifinalist" | tr '\n' ' ')]"
+
+ddl_commended="$(sed -n '/CONSTRAINT national_merit_cycles_commended_cutoff_basis_check/,/)),/p' "$MERIT_DDL" |
+  grep -oE "'[a-z_]+'" | tr -d "'" | sort -u)"
+seed_commended="$(sed -nE 's/^COMMENDED_CUTOFF_BASES = \((.*)\)$/\1/p' "$MERIT_SEED" |
+  grep -oE '"[a-z_]+"' | tr -d '"' | sort -u)"
+[ -n "$ddl_commended" ] ||
+  fail_test "no commended_cutoff_basis value was read out of [$MERIT_DDL]; the sweep is no longer reading the CHECK it thinks it is"
+[ "$ddl_commended" = "$seed_commended" ] ||
+  fail_test "the generator's COMMENDED_CUTOFF_BASES are not the DDL's vocabulary. DDL: [$(printf '%s' "$ddl_commended" | tr '\n' ' ')] generator: [$(printf '%s' "$seed_commended" | tr '\n' ' ')]"
+[ "$ddl_semifinalist" != "$ddl_commended" ] ||
+  fail_test "the DDL's two cutoff-basis vocabularies read as the SAME value, so this sweep could not tell them apart"
+pass_test "each cutoff-basis vocabulary is the DDL's own, member for member, and the two are different vocabularies"
+
+# 52b. AND THE TWO external_documents RULES THIS GENERATOR RE-CHECKS, on the case
+# above's own argument. Case 51 proves only that a declaration of each NAME exists,
+# which is exactly the weaker treatment this pair of cases rejects: a word renamed
+# in the link_status domain, or a url regex tightened in that table, would leave
+# this generator admitting a row PostgreSQL refuses at apply time -- in somebody
+# else's db-reset, which is the failure the generator exists to prevent.
+ddl_link_statuses="$(sed -n '/CONSTRAINT link_status_check/,/));/p' "$EXTERNAL_DOCUMENTS_DDL" |
+  grep -oE "'[a-z_]+'" | tr -d "'" | sort -u)"
+seed_link_statuses="$(sed -nE 's/^LINK_STATUSES = \((.*)\)$/\1/p' "$MERIT_SEED" |
+  grep -oE '"[a-z_]+"' | tr -d '"' | sort -u)"
+[ -n "$ddl_link_statuses" ] ||
+  fail_test "no link_status value was read out of [$EXTERNAL_DOCUMENTS_DDL]; the sweep is no longer reading the domain it thinks it is"
+[ "$ddl_link_statuses" = "$seed_link_statuses" ] ||
+  fail_test "the generator's LINK_STATUSES are not the link_status domain's vocabulary. DDL: [$(printf '%s' "$ddl_link_statuses" | tr '\n' ' ')] generator: [$(printf '%s' "$seed_link_statuses" | tr '\n' ' ')]"
+
+ddl_url_shape="$(grep -oE "url ~ '[^']+'" "$EXTERNAL_DOCUMENTS_DDL" |
+  sed -E "s/^url ~ '(.*)'$/\1/" | head -1)"
+seed_url_shape="$(sed -nE 's/^URL_SHAPE = re\.compile\(r"(.*)"\)$/\1/p' "$MERIT_SEED")"
+[ -n "$ddl_url_shape" ] ||
+  fail_test "the external_documents url shape was not found in [$EXTERNAL_DOCUMENTS_DDL]; this case would pass vacuously"
+[ "$ddl_url_shape" = "$seed_url_shape" ] ||
+  fail_test "the generator's URL_SHAPE [$seed_url_shape] is not the DDL's [$ddl_url_shape]"
+pass_test "the link_status vocabulary and the url shape are external_documents' own, member for member and pattern for pattern"
+
+# 53. THE SAME ARGUMENT FOR THE NUMERIC BOUNDS the DDL states as literals. The
+# generator carries them as its own constants, and a `MIRRORS` tag proves only that
+# a constraint of that name is declared -- a range NARROWED in the DDL would leave
+# this generator admitting a row the database refuses.
+ddl_year_bounds="$(grep -oE 'competition_year BETWEEN [0-9]+ AND [0-9]+' "$MERIT_DDL" |
+  sed -E 's/.*BETWEEN ([0-9]+) AND ([0-9]+)/\1 \2/' | head -1)"
+seed_year_bounds="$(printf '%s %s' \
+  "$(sed -nE 's/^COMPETITION_YEAR_MIN = ([0-9]+)$/\1/p' "$MERIT_SEED")" \
+  "$(sed -nE 's/^COMPETITION_YEAR_MAX = ([0-9]+)$/\1/p' "$MERIT_SEED")")"
+[ -n "$ddl_year_bounds" ] ||
+  fail_test "the competition_year BETWEEN bounds were not found in [$MERIT_DDL]; this case would pass vacuously"
+[ "$ddl_year_bounds" = "$seed_year_bounds" ] ||
+  fail_test "the generator's competition_year bounds [$seed_year_bounds] are not the DDL's [$ddl_year_bounds]"
+
+ddl_grade_bounds="$(grep -oE 'qualifying_grade BETWEEN [0-9]+ AND [0-9]+' "$MERIT_DDL" |
+  sed -E 's/.*BETWEEN ([0-9]+) AND ([0-9]+)/\1 \2/' | head -1)"
+seed_grade_bounds="$(printf '%s %s' \
+  "$(sed -nE 's/^QUALIFYING_GRADE_MIN = ([0-9]+)$/\1/p' "$MERIT_SEED")" \
+  "$(sed -nE 's/^QUALIFYING_GRADE_MAX = ([0-9]+)$/\1/p' "$MERIT_SEED")")"
+[ -n "$ddl_grade_bounds" ] ||
+  fail_test "the qualifying_grade BETWEEN bounds were not found in [$MERIT_DDL]; this case would pass vacuously"
+[ "$ddl_grade_bounds" = "$seed_grade_bounds" ] ||
+  fail_test "the generator's qualifying_grade bounds [$seed_grade_bounds] are not the DDL's [$ddl_grade_bounds]"
+
+ddl_index_ceiling="$(grep -oE 'selection_index_high <= [0-9]+' "$MERIT_DDL" |
+  sed -E 's/.*<= ([0-9]+)/\1/' | head -1)"
+seed_index_ceiling="$(sed -nE 's/^SELECTION_INDEX_MAX = ([0-9]+)$/\1/p' "$MERIT_SEED")"
+[ -n "$ddl_index_ceiling" ] ||
+  fail_test "the selection_index_high ceiling was not found in [$MERIT_DDL]; this case would pass vacuously"
+[ "$ddl_index_ceiling" = "$seed_index_ceiling" ] ||
+  fail_test "the generator's selection index ceiling [$seed_index_ceiling] is not the DDL's [$ddl_index_ceiling]"
+pass_test "the generator's numeric bounds are the DDL's own: year [$ddl_year_bounds], grade [$ddl_grade_bounds], index ceiling [$ddl_index_ceiling]"
+
+# 54. AND THE CYCLE ARITHMETIC, which is the copy that matters most: the window's
+# offset is what refuses the NEIGHBOURING cycle's October typed under this cycle's
+# year, and case 17 above is the row that probes it. FOUR bounds -- the window's two
+# and the alternate-entry deadline's two -- and each is read out of BOTH files as
+# (sign, offset, month, day), so a bound tightened in the DDL cannot silently not
+# carry here.
+ddl_bounds="$(grep -oE 'make_date\(competition_year [-+] [0-9]+, [0-9]+, [0-9]+\)' "$MERIT_DDL" |
+  sed -E 's/.*competition_year ([-+]) ([0-9]+), ([0-9]+), ([0-9]+)\)/\1 \2 \3 \4/' | sort -u)"
+seed_bounds="$(grep -oE 'return date\(competition_year [-+] [0-9]+, [0-9]+, [0-9]+\)' "$MERIT_SEED" |
+  sed -E 's/.*competition_year ([-+]) ([0-9]+), ([0-9]+), ([0-9]+)\)/\1 \2 \3 \4/' | sort -u)"
+ddl_bound_count="$(printf '%s\n' "$ddl_bounds" | grep -c . || true)"
+[ "$ddl_bound_count" -eq 4 ] ||
+  fail_test "[$ddl_bound_count] make_date bound(s) were read out of [$MERIT_DDL], expected the window's two and the alternate-entry deadline's two; the sweep is no longer reading the DDL it thinks it is"
+[ "$ddl_bounds" = "$seed_bounds" ] ||
+  fail_test "the generator's cycle arithmetic is not the DDL's. DDL: [$(printf '%s' "$ddl_bounds" | tr '\n' ' ')] generator: [$(printf '%s' "$seed_bounds" | tr '\n' ' ')]"
+pass_test "all [$ddl_bound_count] cycle bounds are the DDL's own arithmetic, sign, offset, month and day"
+
+# 54b. THE FUNNEL'S NARROWING PAIRS, read out of both files as `narrower wider`.
+# The base rate is derived from two of these stages at read time and never stored,
+# so an inverted funnel is a wrong base rate nothing downstream recomputes -- and a
+# pair added or re-aimed in the DDL cannot silently not carry here.
+ddl_pairs="$(sed -n '/CONSTRAINT national_merit_cycles_funnel_narrows_check/,/),$/p' "$MERIT_DDL" |
+  grep -oE '[a-z_]+ <= [a-z_]+' | sed -E 's/ <= / /' | sort -u)"
+seed_pairs="$(sed -n '/^FUNNEL_NARROWS = (/,/^)$/p' "$MERIT_SEED" |
+  grep -oE '"[a-z_]+", "[a-z_]+"' | tr -d '"' | sed -E 's/, / /' | sort -u)"
+ddl_pair_count="$(printf '%s\n' "$ddl_pairs" | grep -c . || true)"
+[ "$ddl_pair_count" -eq 6 ] ||
+  fail_test "[$ddl_pair_count] narrowing pair(s) were read out of [$MERIT_DDL], expected six; the sweep is no longer reading the CHECK it thinks it is"
+[ "$ddl_pairs" = "$seed_pairs" ] ||
+  fail_test "the generator's FUNNEL_NARROWS are not the DDL's comparisons. DDL: [$(printf '%s' "$ddl_pairs" | tr '\n' ' ')] generator: [$(printf '%s' "$seed_pairs" | tr '\n' ' ')]"
+pass_test "all [$ddl_pair_count] funnel comparisons are the DDL's own, narrower and wider"
+
+# 54c. AND WHICH PROSE COLUMNS THE TABLE LETS BE ABSENT. The generator renders an
+# empty cell as SQL NULL for the words in this list and REFUSES an empty cell for
+# the others, so the split is read out of the DDL's own nullable TEXT columns: a
+# column flipped either way there is a generated migration that fails at apply
+# time, or a true row refused at review.
+ddl_nullable_words="$(grep -oE '^    [a-z_]+ +TEXT +NULL,' "$MERIT_DDL" |
+  awk '{ print $1 }' | sort -u)"
+seed_nullable_words="$(sed -n '/^NULLABLE_WORDS = (/,/^)$/p' "$MERIT_SEED" |
+  grep -oE '"[a-z_]+"' | tr -d '"' | sort -u)"
+[ -n "$ddl_nullable_words" ] ||
+  fail_test "no nullable TEXT column was read out of [$MERIT_DDL]; this case would pass vacuously"
+[ "$ddl_nullable_words" = "$seed_nullable_words" ] ||
+  fail_test "the generator's NULLABLE_WORDS are not the DDL's nullable TEXT columns. DDL: [$(printf '%s' "$ddl_nullable_words" | tr '\n' ' ')] generator: [$(printf '%s' "$seed_nullable_words" | tr '\n' ' ')]"
+pass_test "the generator's nullable prose columns are the DDL's own"
+
+echo ""
+echo "==== national-merit-seed: ONE column order ===="
+
+# 55. THE THIRTY-THREE COLUMNS HAVE ONE HOME. The INSERT's column list, the rendered
+# VALUES tuple and the DO UPDATE SET body all derive from SEED_COLUMNS, and this case
+# is what says so: twenty-one of these columns are TEXT or DATE, so swapping
+# `publisher` with `administrator_publisher` -- or `checked_on` with `expires_on` --
+# applies cleanly and stores wrong data for every row. Nothing downstream catches
+# that: the :db seed test reads the database and cannot know which cell the CSV meant.
+reset_fixture
+run_seed -c "$CSV" -d "$SCHEMA"
+[ "$seed_status" -eq 0 ] || fail_test "the column-order run exited $seed_status: $(cat "$seed_err")"
+python_columns="$(sed -n '/^SEED_COLUMNS = (/,/^)$/p' "$MERIT_SEED" |
+  grep -oE '^    \("[a-z_]+"' | tr -d ' ("')"
+python_column_count="$(printf '%s\n' "$python_columns" | grep -c . || true)"
+[ "$python_column_count" -eq 33 ] ||
+  fail_test "[$python_column_count] column(s) were read out of SEED_COLUMNS in [$MERIT_SEED], expected the table's thirty-three; this case is no longer reading the list it thinks it is"
+generated_columns="$(sed -n '/^INSERT INTO national_merit_cycles$/,/^VALUES$/p' "$SEED_BODY" |
+  sed -e '1d' -e '$d' | tr -d ' ()' | tr ',' '\n' | grep -E '^[a-z_]+$')"
+[ "$python_columns" = "$generated_columns" ] ||
+  fail_test "the generated INSERT's column list is not SEED_COLUMNS' order. python: [$(printf '%s' "$python_columns" | tr '\n' ' ')] generated: [$(printf '%s' "$generated_columns" | tr '\n' ' ')]"
+# And the upsert assigns every column but the one it conflicts on: a DO UPDATE SET
+# that forgot a column would replay a correction that silently kept the old cell.
+updated_columns="$(sed -n '/^ON CONFLICT (competition_year) DO UPDATE SET$/,$p' "$SEED_BODY" |
+  sed -e '1d' | sed -nE 's/^    ([a-z_]+) +=.*/\1/p')"
+expected_updated="$(printf '%s\n' "$python_columns" | grep -v '^competition_year$')"
+[ "$updated_columns" = "$expected_updated" ] ||
+  fail_test "the upsert does not assign every column but competition_year. assigned: [$(printf '%s' "$updated_columns" | tr '\n' ' ')]"
+pass_test "the INSERT's column list and the upsert's assignments are ONE list of [$python_column_count] columns"
+
+echo ""
+echo "==== national-merit-seed: the COMMITTED tree, which is the whole claim ===="
+
+# 56. EVERY CASE ABOVE FEEDS A TEMP FIXTURE, so a stale or hand-edited committed
+# seed would pass the whole harness -- and "the CSV is the source, the SQL is an
+# artifact" is a claim about the COMMITTED files or it is not a claim at all.
+#
+# `-n` against the real corpus and the real db/schema is that claim, and it is safe
+# because -n writes nothing, which cases 43 and 45 assert.
+#
+# It is run with NEITHER -c NOR -d, so this case names no path at all: the script's
+# own defaults ARE the committed corpus and the committed db/schema, and a case that
+# retyped them would answer a MOVED corpus by testing nothing and still passing.
+# Moving or renaming it is now the generator's own refusal, named and counted here.
+run_seed -n
+[ "$seed_status" -eq 0 ] ||
+  fail_test "the COMMITTED corpus and the COMMITTED db/schema disagree (exit $seed_status). Run [nix develop -c bin/national-merit-seed]: $(cat "$seed_err")"
+[ ! -s "$seed_out" ] ||
+  fail_test "-n over the committed tree wrote to stdout: [$(cat "$seed_out")]"
+pass_test "the committed db/schema is exactly what the committed corpus generates"
+
+end_tests

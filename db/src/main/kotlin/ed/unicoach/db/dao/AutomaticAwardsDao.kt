@@ -139,34 +139,6 @@ object AutomaticAwardsDao {
   private const val BAND_SERVED_ORDER = "award_id, award_name, test ASC NULLS FIRST, score_low, gpa_low"
 
   /**
-   * The `?, ?, …` of one `IN` list and the binder that fills it, generated
-   * TOGETHER from one de-duplicated list of ids.
-   *
-   * [queryListWhereIn] is the home for this and serves every read that is a
-   * plain `SELECT … WHERE key IN (…)`; the three statements here that it cannot
-   * serve -- the citation JOIN, and the two DELETEs -- go through this instead
-   * of restating the expansion each time. The 1-based index rule and the OFFSET
-   * a leading bound parameter forces (the `i + 2` of a DELETE that also binds
-   * its award) are stated once, in [bindFrom], rather than per statement.
-   */
-  private class IdList(
-    ids: Collection<UUID>,
-  ) {
-    val values: List<UUID> = ids.distinct()
-
-    /** `IN ()` is not valid SQL, so every caller must decide what "no keys" means before it builds a statement. */
-    val isEmpty: Boolean get() = values.isEmpty()
-
-    val placeholders: String get() = values.joinToString(", ") { "?" }
-
-    /** Binds every id, starting at [firstIndex] -- which is 1 for a statement that binds nothing before its list. */
-    fun bindFrom(
-      stmt: PreparedStatement,
-      firstIndex: Int,
-    ) = values.forEachIndexed { i, value -> stmt.setObject(firstIndex + i, value) }
-  }
-
-  /**
    * Every column [mapAward] reads: the award row plus its two citation urls
    * (RFC 213/228) -- the source an INNER join, because `source_document_id` is
    * NOT NULL and a row that cites nothing cannot exist, and the archive a LEFT

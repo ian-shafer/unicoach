@@ -72,6 +72,12 @@ class CollegeScorecardLoader(
   // loader and for its reason: the phase ordering D10 promises is then
   // observable from a test rather than buried in an `ingest` local.
   private val automaticAwardSeedLoader: AutomaticAwardSeedLoader = AutomaticAwardSeedLoader(database, ioDispatcher),
+  // The hand-typed National Merit award corpus (RFC 243), injected beside the
+  // automatic-award loader and for its reason: its phase runs immediately
+  // after that one, and that ordering is then observable from a test rather
+  // than buried in an `ingest` local.
+  private val nationalMeritAwardSeedLoader: NationalMeritAwardSeedLoader =
+    NationalMeritAwardSeedLoader(database, ioDispatcher),
   // The IPEDS SFA staging half (RFC 162), injected like every other phase
   // loader rather than constructed mid-`ingest`: whether the phase RUNS is
   // decided by the nullable `sfa` group, never by whether a loader exists.
@@ -491,6 +497,12 @@ class CollegeScorecardLoader(
      */
     val automaticAwards: AutomaticAwardSeedLoader.LoadResult? = null,
     /**
+     * The National Merit award corpus load (RFC 243), `null` when that source
+     * was not supplied -- the same omit-vs-zero distinction [automaticAwards]
+     * draws.
+     */
+    val nationalMeritAwards: NationalMeritAwardSeedLoader.LoadResult? = null,
+    /**
      * The published-codebook load (RFC 147) and D46's unknown-code report, both
      * `null` when no codebook source was supplied — the same omit-vs-zero
      * distinction [ipeds] and [cds] draw.
@@ -719,6 +731,7 @@ class CollegeScorecardLoader(
     sfa: SfaSources? = null,
     cds: CdsSources? = null,
     automaticAwards: AutomaticAwardSources? = null,
+    nationalMeritAwards: SourceFile? = null,
     codebooks: SourceFile? = null,
     subjects: SourceFile? = null,
     moneyVocabulary: SourceFile? = null,
@@ -764,6 +777,11 @@ class CollegeScorecardLoader(
     // nobody passes. The loader owns its own IO hop -- [CollegeSfaLoader]'s
     // shape one line up -- so this reads as a plain call.
     automaticAwards?.let { sources -> automaticAwardSeedLoader.assertHeaders(sources) }
+    // Beside the automatic-award assertion, and it asserts TWO headers for one
+    // file, for that group's reason: this corpus's committed link answers are
+    // read from beside its awards CSV, so they are a file this run depends on
+    // and cannot be validated by a flag nobody passes.
+    nationalMeritAwards?.let { source -> nationalMeritAwardSeedLoader.assertHeaders(source) }
     val sources =
       withContext(ioDispatcher) {
         listOf(digest(institution), digest(fields), digest(aliasesFile)) +
@@ -771,6 +789,7 @@ class CollegeScorecardLoader(
           (sfa?.let { listOf(digest(it.survey)) } ?: emptyList()) +
           (cds?.files?.map { digest(it) } ?: emptyList()) +
           (automaticAwards?.files?.map { digest(it) } ?: emptyList()) +
+          (nationalMeritAwards?.let { listOf(digest(it)) } ?: emptyList()) +
           (codebooks?.let { listOf(digest(it)) } ?: emptyList()) +
           (subjects?.let { listOf(digest(it)) } ?: emptyList()) +
           (moneyVocabulary?.let { listOf(digest(it)) } ?: emptyList())
@@ -909,6 +928,19 @@ class CollegeScorecardLoader(
           automaticAwardSeedLoader.load(sources.awards.file, sources.bands.file)
         }
       }
+    // IMMEDIATELY AFTER the automatic-award phase (RFC 243), and before
+    // `name-words` and `provenance` for every row phase's reason: a count
+    // written after the row that should have carried it is not provenance. It
+    // is a SECOND corpus and not a widening of the one above -- a National
+    // Merit standing is not a score -- so it is its own phase with its own
+    // single transaction, and a refusal rolls this corpus back without
+    // touching the score grids that already committed.
+    val nationalMeritAwardResult =
+      nationalMeritAwards?.let { source ->
+        phase("national-merit-awards", committedPhases) {
+          nationalMeritAwardSeedLoader.load(source.file)
+        }
+      }
     // Phase 2 of the two-phase ingest (RFC 146): rows first, derived state
     // second, never per-row triggers. It runs after EVERY row phase — the
     // aliases it splits words from, and the IPEDS phases beside them — and
@@ -1005,6 +1037,7 @@ class CollegeScorecardLoader(
       sfa = sfaResult,
       cds = cdsResult,
       automaticAwards = automaticAwardResult,
+      nationalMeritAwards = nationalMeritAwardResult,
       codebooks = codebookResult,
       subjects = subjectResult,
       moneyVocabulary = moneyVocabularyResult,

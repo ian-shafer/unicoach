@@ -2,6 +2,7 @@ package ed.unicoach.coaching.synthesis
 
 import com.typesafe.config.Config
 import java.time.Duration
+import java.time.Period
 
 /**
  * Typed reader for the synthesis domain's config surface (the `synthesis` block
@@ -28,6 +29,13 @@ import java.time.Duration
  *   here for the same reason. A SECOND pair and not the share nudge's: the two
  *   offers roll back independently, and one knob would make the rollback of
  *   either the rollback of both.
+ * - [psatWindowNudgeEnabled] gates the deterministic PSAT/NMSQT window step
+ *   (RFC 243).
+ * - [psatWindowNudgeLead] is how far before the published window opens that
+ *   step calls it near. A [Period] and not a [Duration], because it is compared
+ *   against a DATE -- the window opens on a day, not at an instant -- and the
+ *   key/env contract stays an integer day count
+ *   (`synthesis.psatWindowNudgeLeadDays`), the unit attached HERE, once.
  */
 class SynthesisConfig private constructor(
   val enabled: Boolean,
@@ -42,6 +50,8 @@ class SynthesisConfig private constructor(
   val shareNudgeCooldown: Duration,
   val inviteNudgeEnabled: Boolean,
   val inviteNudgeCooldown: Duration,
+  val psatWindowNudgeEnabled: Boolean,
+  val psatWindowNudgeLead: Period,
 ) {
   companion object {
     fun from(config: Config): Result<SynthesisConfig> =
@@ -59,6 +69,8 @@ class SynthesisConfig private constructor(
           shareNudgeCooldown = Duration.ofDays(config.getInt("synthesis.shareNudgeCooldownDays").toLong()),
           inviteNudgeEnabled = config.getBoolean("synthesis.inviteNudgeEnabled"),
           inviteNudgeCooldown = Duration.ofDays(config.getInt("synthesis.inviteNudgeCooldownDays").toLong()),
+          psatWindowNudgeEnabled = config.getBoolean("synthesis.psatWindowNudgeEnabled"),
+          psatWindowNudgeLead = Period.ofDays(config.getInt("synthesis.psatWindowNudgeLeadDays")),
         )
       }
   }

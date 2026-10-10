@@ -1,0 +1,1537 @@
+#!/usr/bin/env python3
+# national-merit-seed -- generate the National Merit competition-cycle seed
+# migration from the file a human actually edits,
+# db/seed/national-merit/cycles.csv
+# (RFC 243, slice test/08/the-psat-is-money).
+#
+# ROUTE A, AND THE ROUTE IS THE REASON THIS SCRIPT EXISTS. RFC 243 picks the
+# route by a KEY test, not a size or subject test: national_merit_cycles is keyed
+# by a competition year and nothing else, so a migration can seed it -- and must,
+# because `bin/test` does db-reset (drop, create, migrate) and NEVER ingests.
+# "What this test is and when it is" can therefore never depend on an import
+# having run. The per-school dollars, keyed by colleges(id), take the other route
+# and wait for an ingest; these rows are in every database by construction.
+#
+# THE CSV IS THE SOURCE; THE SQL IS AN ARTIFACT. Never hand-edit a generated
+# seed: edit the CSV and re-run this. `-n` refuses a tree that differs from what
+# this run generates, so a hand-edited or stale seed is caught rather than
+# served.
+#
+# A SIBLING OF bin/fafsa-deadline-seed AND NOT A GENERALISATION OF IT, on that
+# script's own argument (which RFC 223 wrote down and which has not changed): the
+# `-n`/exit-3 contract, one generated file per reading day, the ORDER append, the
+# SQL escaping and the link-status requirement are COPIED here
+# format-independently, because a THIRD generator needing them is the trigger to
+# extract them into bin/pyfunctions.py and this is the second. What is NOT copied
+# is anything that knows what a row looks like: this corpus is 33 columns with
+# two citations per row, and nothing about a FAFSA deadline reads it.
+#
+# WHICH IS ALSO WHY THIS ONE IS PYTHON RATHER THAN bash+awk. Quoted-CSV parsing
+# and SQL literal escaping over publisher prose is what the `csv` module and a
+# careful escaper do correctly and what awk field splitting does not: the cells
+# here carry commas, apostrophes ("colleges won't receive"), an ellipsis
+# character, an en dash and a registered-trademark sign. bin/pyfunctions.py is
+# the declared python counterpart of bin/functions, so every bin/ convention
+# holds -- getopts grammar through stdlib getopt, SHORT options only, all logging
+# on stderr, NOTHING on stdout on a normal run, the reserved exit codes.
+#
+# NON-ASCII CELLS ARE LEGAL HERE, WHICH IS A DELIBERATE DIFFERENCE FROM THE
+# SIBLING. bin/fafsa-deadline-seed refuses any byte outside printable ASCII;
+# this corpus cannot, because NMSC's own sentences carry U+2026 (the character
+# that marks every elision in a quote), an en dash in "October 1-30" and the
+# registered sign in "Merit Scholarship(R) winners". Dropping them would make the
+# stored quotation not the publisher's. What IS refused, by line and column, is
+# a BACKSLASH and any control character: the escaper below doubles apostrophes
+# and nothing else, so a backslash would be a literal whose meaning depends on
+# the server's standard_conforming_strings, and a CR or a tab is invisible in a
+# diff. Every other migration in db/schema already carries non-ASCII prose
+# (82 of 149 on the day this was written), so the file this produces is not a
+# new kind of artifact.
+#
+# ONE SEED PER READING DAY, AND THE READING DAY NAMES THE FILE. RFC 243's Files
+# Modified section writes the name as seed-national-merit-cycles-<cycle>.sql, and
+# this script departs from that: <cycle> cannot name the ONE file the same
+# section describes, because the committed corpus holds TWO cycles (2028 and
+# 2029) read on ONE day, and a file per cycle would have to be REWRITTEN when
+# NMSC dates the 2029 window in the summer of 2027 -- a landed migration is
+# replayed from the top on every db-reset and may never change. The reading day
+# is the sibling's name (seed-fafsa-filing-deadlines-<yyyy-mm-dd>.sql) and it is
+# the property the corpus actually has: PROVENANCE.json records that both rows
+# expire on the same day ON PURPOSE, so that the two are re-read in ONE pass, and
+# that pass lands as ONE new file upserting ON CONFLICT (competition_year) over
+# the rows this one wrote.
+#
+# A GENERATED SEED THAT IS ALREADY IN THE SCHEMA DIRECTORY MAY NOT CHANGE, AND
+# THAT IS THE WHOLE APPEND-ONLY GUARD. It is one byte comparison rather than a
+# reader that parses landed tuples back out of SQL, and it is STRICTER than such
+# a reader in every direction that matters: a row dropped from the CSV, a cell
+# rewritten, a reading day retyped, a hand edit to the migration, and a re-sweep
+# that changed a url's status all change those bytes and are all refused by name.
+# A tuple-level reader sees only the first two, and the version of this guard in
+# the sibling generator would silently overwrite a landed file for the last one.
+#
+# AND THE REFUSAL NAMES THE WAY OUT, because the guard cannot tell a LANDED seed
+# from one this same uncommitted run wrote ten minutes ago. If the named seed has
+# NOT landed yet -- you are still authoring this reading -- delete it and its line
+# in db/schema/ORDER, then re-run. The guard is about a LANDED seed: once a
+# migration is in main it is replayed on every db-reset and may never change. A
+# genuine correction is a RE-READ, which carries a new checked_on and therefore
+# lands as a NEW file.
+#
+# IT VALIDATES BEFORE IT WRITES, AND IT REPORTS EVERY FAULT IN ONE PASS. Every
+# CHECK constraint on national_merit_cycles is mirrored here, so a typo is a
+# REVIEW error naming its line number rather than a migration that fails at apply
+# time in somebody else's db-reset. Each mirroring predicate carries a
+# `MIRRORS <constraint>` comment, and bin/national-merit-seed-scripts-tests reads
+# the constraint names out of the DDL and asserts this file mirrors exactly
+# those -- so a nineteenth CHECK cannot go unmirrored in silence. A validator
+# that stops at the first offender turns a five-line fix into five runs.
+#
+# A CITATION CARRIES EVIDENCE, OR IT CANNOT BE STORED (RFC 220,
+# db/schema/require-a-check-on-every-external-document.sql): url_status has no
+# DEFAULT and url_checked_on is NOT NULL, so `INSERT INTO external_documents
+# (url)` does not apply to a migrated database at all. The corpus therefore
+# carries its sweep beside it, db/seed/national-merit/link-status.csv -- the
+# answers bin/check-link got for every url the corpus cites, source and mirror
+# alike -- and a cited url with no row there is a fault named by its line in
+# cycles.csv. THIS SCRIPT TOUCHES NO NETWORK: the sweep is bin/check-link's job
+# and an operator runs it; this script reads committed files and writes generated
+# ones.
+#
+# FOUR CITATIONS PER ROW, WHICH NO OTHER CORPUS HERE HAS. national_merit_cycles
+# carries TWO publishers -- NMSC sponsors the competition, College Board
+# administers the test and is the only publisher of the window DATES, the
+# Selection Index scale and the score-visibility sentence -- so a row has a
+# sponsor page, an optional sponsor mirror, an administrator page and an optional
+# administrator mirror. Both mirror columns are EMPTY in today's corpus and the
+# generator still handles them: the column is nullable because a page that stops
+# opening for every client is read through an archive, and the day that happens
+# must not be the day this script learns to emit one.
+"""national-merit-seed: generate the National Merit cycle seed migration.
+
+Reads the authored corpus db/seed/national-merit/cycles.csv -- the hand-typed,
+per-row-cited National Merit competition cycles a human edits and reviews in a
+diff -- and writes one seed migration per READING DAY into the schema directory,
+each appended to db/schema/ORDER:
+
+    <schema-dir>/seed-national-merit-cycles-<yyyy-mm-dd>.sql
+
+Each seed UPSERTS its rows ON CONFLICT (competition_year), so a later re-read of
+the same cycle corrects it when the migrations replay.
+
+The CSV is the source of truth and the SQL is a generated artifact: edit the CSV
+and re-run this, never the other way round. Every CHECK constraint on
+national_merit_cycles is re-checked here first, so a row that cannot be true is
+named by its line number before anything is written -- and a generated seed that
+is already in the schema directory may not CHANGE, because a landed migration is
+replayed on every db-reset.
+
+It reads a SECOND source file beside the CSV, link-status.csv -- the sweep
+bin/check-link answered for every url the corpus cites. external_documents'
+url_status has no default and url_checked_on is NOT NULL (RFC 220), so a seed
+states a citation's evidence or it cannot be applied at all; a cited url with no
+row in that file is refused by its line in the cycles CSV. This script itself
+touches no network.
+
+Usage:
+
+    national-merit-seed [-c CSV] [-d DIR] [-n] [-h]
+
+    -c CSV  the authored CSV (default: db/seed/national-merit/cycles.csv under
+            the repo root). It names BOTH source files: link-status.csv is
+            REQUIRED and is resolved BESIDE whatever this option names, in the
+            same directory, never behind an option of its own. A run whose CSV
+            has no link-status.csv beside it is refused and writes nothing.
+    -d DIR  the schema directory to generate into (default: db/schema)
+    -n      dry run: writes nothing, and exits 3 if the tree differs from what a
+            real run would generate
+    -h      help
+
+Options are parsed by the stdlib getopt module, the same short-option grammar
+every bash script in bin/ uses; there are no long options and no positionals.
+
+LOGGING GOES TO STDERR, all of it, including the closing summary: this script's
+product is files on disk, so a normal run writes NOTHING to stdout. The help
+answering -h is the one thing that does.
+
+Exit codes:
+
+    0   the seed and its ORDER line are correct, or were written
+    1   refused: a source file is not usable (the cycles CSV, or the
+        link-status.csv beside it, which is missing or unreadable), a row cannot
+        be true, a cited url was never swept, or a generated seed already in the
+        schema directory would have to change
+    3   -n only: the tree differs from what would be generated
+    9   refused: db/schema/ORDER cannot be appended to safely (run bin/db-status)
+    10, 11, 20, 22  usage errors
+"""
+
+import csv
+import difflib
+import re
+import sys
+import textwrap
+from datetime import date
+from pathlib import Path
+
+# The shared python half of bin/functions (bin/pyfunctions.py): the EXIT_* band,
+# the log_* family that writes to stderr, fatal, and the post-getopt guard suite.
+# Resolved against THIS script's own directory rather than the caller's cwd,
+# because these scripts are run from anywhere -- and with no bytecode cache
+# beside it, because bin/ is a reviewed directory of scripts and not a package
+# build tree.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pyfunctions import (  # noqa: E402  (import after the sys.path bootstrap above)
+    EXIT_INVALID_ARG_VALUE,
+    fatal as shared_fatal,
+    log_error,
+    log_info,
+    parse_short_options,
+    write_atomically,
+)
+
+SCRIPT_NAME = "national-merit-seed"
+
+
+# Every refusal names the script, because this one runs under bin/shell-tests and
+# beside four other seed generators: a bare "[FATAL] ORDER cannot be appended to"
+# costs the reader a lookup to find out which one said it.
+def fatal(message, status=1):
+    shared_fatal(f"{SCRIPT_NAME}: {message}", status=status)
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CSV = REPO_ROOT / "db" / "seed" / "national-merit" / "cycles.csv"
+DEFAULT_SCHEMA_DIR = REPO_ROOT / "db" / "schema"
+
+# Two exit codes bin/functions reserves that bin/pyfunctions.py does not carry,
+# because no python script in bin/ has needed them before. The NUMBERS are
+# bin/functions' and the names are its names, so this file cannot disagree with
+# its bash siblings about what a 3 or a 9 means:
+#   EXIT_SEED_WOULD_CHANGE  3  -n: the tree is not what this corpus generates
+#   EXIT_SCHEMA_ORDER_DRIFT 9  ORDER and the schema directory disagree
+EXIT_SEED_WOULD_CHANGE = 3
+EXIT_SCHEMA_ORDER_DRIFT = 9
+
+GETOPT_SPEC = "c:d:nh"
+
+# The header this generator was written against, exactly and in order. A CSV with
+# a different header is REFUSED rather than read positionally: this corpus has
+# THIRTY-THREE columns, eleven of them prose and eight of them dates or counts,
+# so a reordered column would silently move an administrator's page into the
+# sponsor's citation or one cycle's deadline onto another's row and every row
+# would still "parse".
+#
+# ONE declaration, on ONE line, because there is one authored file -- and
+# bin/national-merit-seed-scripts-tests READS THIS LINE to derive its fixtures. A
+# harness that retyped the header could go on asserting the refusal of a header
+# this script had stopped expecting.
+EXPECTED_HEADER = "competition_year,qualifying_grade,window_opens_on,window_closes_on,window_as_published,alternate_entry_deadline,alternate_entry_contact,alternate_entry_as_published,selection_index_low,selection_index_high,semifinalist_cutoff_basis,commended_cutoff_basis,cutoff_as_published,score_visibility_as_published,test_takers,met_entry_requirements,high_scorers_screened,commended,semifinalists,finalists,winners,funnel_as_published,nmsc_award_usd,nmsc_award_as_published,sponsor_cap_as_published,publisher,source_url,archive_url,administrator_publisher,administrator_source_url,administrator_archive_url,checked_on,expires_on"
+
+# The SWEPT file: a HAND-COMMITTED SOURCE FILE, not a generated one, declared
+# once and read out of these lines by the harness rather than retyped there. The
+# header is the column order external_documents itself names them in, and is the
+# siblings' (db/seed/fafsa-deadlines/link-status.csv,
+# db/seed/test-state-programmes/link-status.csv), because the three files answer
+# the same question about the same table.
+#
+# It sits BESIDE the authored CSV rather than behind an option of its own: the
+# sweep is a fact about THAT corpus's urls, so naming one file names both, and a
+# harness fixture in a temp tree gets its own sweep for free.
+LINK_STATUS_NAME = "link-status.csv"
+EXPECTED_LINK_STATUS_HEADER = "url,url_status,url_checked_on"
+
+# RFC 200's three words, which is also the link_status DOMAIN's whole range.
+# SWEPT BY THE HARNESS against that domain member for member, and not merely by
+# the tag below: a word renamed there would leave this generator admitting a row
+# PostgreSQL refuses at apply time. ONE line, quoted plainly, so it can be.
+# MIRRORS link_status_check
+LINK_STATUSES = ("found", "not_found", "unknown")
+
+# The GENERATED file name, with the reading day in it, declared once and read by
+# the harness for the same reason as the header.
+SEED_NAME_TEMPLATE = "seed-national-merit-cycles-%s.sql"
+SEED_NAME_PATTERN = re.compile(r"^seed-national-merit-cycles-(\d{4}-\d{2}-\d{2})\.sql$")
+
+# THE INDENTS OF A GENERATED SEED, named once here and never typed again: a cycle
+# tuple is indented TUPLE_INDENT and an external_documents row DOCUMENT_INDENT.
+# They are a contract between this writer and every reader of the file -- the
+# harness reads the INSERT's column list back out of it, and a human reads the
+# tuples in a diff.
+TUPLE_INDENT = "  "
+DOCUMENT_INDENT = "    "
+
+# The two OWN enumerations this table carries (TEXT + CHECK IN, the house rule),
+# each with exactly one legal value today because each stage has exactly one
+# published basis. Not derived from the Kotlin CutoffBasis enum: this script
+# cannot compile Kotlin.
+#
+# THESE TWO LINES ARE SWEPT BY THE HARNESS AGAINST THE DDL ITSELF, member for
+# member and not merely by constraint name. A name sweep proves the mirror EXISTS
+# and says nothing about what is IN it, so a value renamed in
+# create-national-merit-cycles.sql would leave this generator happily admitting a
+# row PostgreSQL refuses at apply time -- in somebody else's db-reset, which is
+# the whole failure this script exists to prevent. They are written on ONE line
+# each and quoted plainly, for the same reason EXPECTED_HEADER is.
+SEMIFINALIST_CUTOFF_BASES = ("state_representational",)
+COMMENDED_CUTOFF_BASES = ("national",)
+
+# The numeric bounds the DDL states as literals. SWEPT against it by the harness
+# on the same argument as the vocabularies above: a `MIRRORS` tag proves only
+# that a constraint of that name is declared, and a bound narrowed there would
+# leave this generator admitting a row the database refuses.
+#
+# competition_year is deliberately NOT the academic_year DOMAIN (0087): that
+# domain means "the academic year beginning in", so borrowing it would make 2028
+# mean 2028-29 here and Fall 2028 in college_national_merit_awards next door.
+COMPETITION_YEAR_MIN = 2020
+COMPETITION_YEAR_MAX = 2100
+QUALIFYING_GRADE_MIN = 9
+QUALIFYING_GRADE_MAX = 12
+SELECTION_INDEX_MAX = 500
+
+# The characters no SQL literal this script writes may carry: the C0 controls
+# and DEL. Non-ASCII is deliberately NOT one of them -- NMSC's own sentences
+# carry U+2026, an en dash and a registered sign -- which is why this corpus
+# names its own set instead of reusing bin/fafsa-deadline-seed's PRINTABLE_ASCII.
+# ONE home, because the rule had been typed into two function bodies that must
+# agree: the detector and the printer.
+CONTROL_CHARACTERS = frozenset(chr(code) for code in [*range(0x20), 0x7F])
+
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# external_documents_url_shape_check's own pattern, and SWEPT BY THE HARNESS
+# against it: a scheme rule tightened in that table must not stay loose here.
+URL_SHAPE = re.compile(r"^https?://")
+YEAR_SHAPE = re.compile(r"^[0-9]{4}$")
+COUNT_SHAPE = re.compile(r"^[0-9]+$")
+
+
+# ---------------------------------------------------------------------------
+# Small readers, and the arithmetic the DDL also states
+# ---------------------------------------------------------------------------
+
+
+def is_iso_date(text):
+    """A real day, and not merely a yyyy-mm-dd shape. A pattern-only check hands
+    2027-02-30 to Postgres as a literal that fails at apply time in somebody
+    else's db-reset."""
+    if not ISO_DATE.match(text):
+        return False
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def window_opens_earliest(competition_year):
+    """The earliest day the qualifying sitting can open: 1 July two calendar
+    years before the competition year.
+
+    THE OFFSET IS THE LOAD-BEARING HALF. The 2028 competition is the OCTOBER 2026
+    sitting, so `competition_year - 2` is what refuses a window typed into the
+    wrong cycle -- the year-shift typo that would tell a junior to sit a test a
+    year after her entry closed. The DDL states the same arithmetic in
+    national_merit_cycles_window_in_cycle_check, and the harness sweeps the
+    offset, the month and the day out of both files, because a bound tightened
+    there cannot silently not carry here."""
+    return date(competition_year - 2, 7, 1)
+
+
+def window_opens_latest(competition_year):
+    """The last day that sitting can open: 30 June of the year before the
+    competition. The DDL writes it as make_date(competition_year - 1, 6, 30)."""
+    return date(competition_year - 1, 6, 30)
+
+
+def alternate_entry_earliest(competition_year):
+    """The earliest the alternate-entry letter deadline can fall: 1 October of
+    the sitting's own autumn. The DDL writes it as
+    make_date(competition_year - 2, 10, 1)."""
+    return date(competition_year - 2, 10, 1)
+
+
+def alternate_entry_latest(competition_year):
+    """And the latest: 31 December of the year before the competition. The DDL
+    writes it as make_date(competition_year - 1, 12, 31)."""
+    return date(competition_year - 1, 12, 31)
+
+
+# ---------------------------------------------------------------------------
+# SQL rendering
+# ---------------------------------------------------------------------------
+
+
+def sql_quoted(text):
+    """A SQL string literal: the apostrophes doubled and nothing else.
+
+    That is the WHOLE escaper, and it is correct only while
+    standard_conforming_strings is on and the cell carries no backslash and no
+    control character. Both are refused by the validator, by line and column,
+    before any cell reaches this function. Non-ASCII prose passes through
+    unchanged and must: it is the publisher's own sentence."""
+    doubled = text.replace("'", "''")
+    return f"'{doubled}'"
+
+
+def sql_text_or_null(text):
+    return "NULL" if text == "" else sql_quoted(text)
+
+
+def sql_date(text):
+    return f"DATE {sql_quoted(text)}"
+
+
+def sql_date_or_null(text):
+    return "NULL" if text == "" else sql_date(text)
+
+
+def sql_int_or_null(text):
+    return "NULL" if text == "" else text
+
+
+def document_id(url):
+    """The document id of a url, as a SUBSELECT rather than a literal. The id is
+    a uuidv7 the DATABASE mints, so a generated file cannot know it: the row that
+    cites a document looks it up by the one thing both statements agree on, which
+    is the url -- the natural key external_documents is built on."""
+    return f"(SELECT id FROM external_documents WHERE url = {sql_quoted(url)})"
+
+
+def document_id_or_null(url):
+    return "NULL" if url == "" else document_id(url)
+
+
+# THE THIRTY-THREE COLUMNS OF A CYCLE TUPLE, IN ORDER, EACH WITH THE RENDERER OF
+# ITS CELL -- and this is the ONE place that order is stated.
+#
+# Both sites DERIVE from this tuple: insert_column_lines() writes the INSERT's
+# column list and render_tuple() writes the VALUES, so the two cannot drift. That
+# matters more here than in any sibling corpus: twenty-one of these columns are
+# TEXT or DATE and eight more are integers, so swapping `publisher` with
+# `administrator_publisher`, or `checked_on` with `expires_on`, produces a
+# migration that APPLIES CLEANLY and stores wrong data for every row.
+#
+# The four CITATION columns are rendered as subselects by url, and the two
+# ARCHIVE ones are the nullable pair: empty in today's corpus, handled anyway,
+# because the day a page stops opening for every client must not be the day this
+# script learns to emit a mirror.
+SEED_COLUMNS = (
+    ("competition_year", lambda cells: cells["competition_year"]),
+    ("qualifying_grade", lambda cells: cells["qualifying_grade"]),
+    ("window_opens_on", lambda cells: sql_date_or_null(cells["window_opens_on"])),
+    ("window_closes_on", lambda cells: sql_date_or_null(cells["window_closes_on"])),
+    ("window_as_published", lambda cells: sql_quoted(cells["window_as_published"])),
+    ("alternate_entry_deadline", lambda cells: sql_date_or_null(cells["alternate_entry_deadline"])),
+    ("alternate_entry_contact", lambda cells: sql_text_or_null(cells["alternate_entry_contact"])),
+    ("alternate_entry_as_published", lambda cells: sql_text_or_null(cells["alternate_entry_as_published"])),
+    ("selection_index_low", lambda cells: cells["selection_index_low"]),
+    ("selection_index_high", lambda cells: cells["selection_index_high"]),
+    ("semifinalist_cutoff_basis", lambda cells: sql_quoted(cells["semifinalist_cutoff_basis"])),
+    ("commended_cutoff_basis", lambda cells: sql_quoted(cells["commended_cutoff_basis"])),
+    ("cutoff_as_published", lambda cells: sql_quoted(cells["cutoff_as_published"])),
+    ("score_visibility_as_published", lambda cells: sql_quoted(cells["score_visibility_as_published"])),
+    ("test_takers", lambda cells: sql_int_or_null(cells["test_takers"])),
+    ("met_entry_requirements", lambda cells: sql_int_or_null(cells["met_entry_requirements"])),
+    ("high_scorers_screened", lambda cells: sql_int_or_null(cells["high_scorers_screened"])),
+    ("commended", lambda cells: sql_int_or_null(cells["commended"])),
+    ("semifinalists", lambda cells: sql_int_or_null(cells["semifinalists"])),
+    ("finalists", lambda cells: sql_int_or_null(cells["finalists"])),
+    ("winners", lambda cells: sql_int_or_null(cells["winners"])),
+    ("funnel_as_published", lambda cells: sql_quoted(cells["funnel_as_published"])),
+    ("nmsc_award_usd", lambda cells: sql_int_or_null(cells["nmsc_award_usd"])),
+    ("nmsc_award_as_published", lambda cells: sql_text_or_null(cells["nmsc_award_as_published"])),
+    ("sponsor_cap_as_published", lambda cells: sql_text_or_null(cells["sponsor_cap_as_published"])),
+    ("publisher", lambda cells: sql_quoted(cells["publisher"])),
+    ("source_document_id", lambda cells: document_id(cells["source_url"])),
+    ("archive_document_id", lambda cells: document_id_or_null(cells["archive_url"])),
+    ("administrator_publisher", lambda cells: sql_quoted(cells["administrator_publisher"])),
+    ("administrator_document_id", lambda cells: document_id(cells["administrator_source_url"])),
+    ("administrator_archive_document_id", lambda cells: document_id_or_null(cells["administrator_archive_url"])),
+    ("checked_on", lambda cells: sql_date(cells["checked_on"])),
+    ("expires_on", lambda cells: sql_date(cells["expires_on"])),
+)
+SEED_COLUMN_NAMES = tuple(name for name, _ in SEED_COLUMNS)
+
+# The shape of the generated statement, written down once: the writer emits these
+# strings and the harness reads the column list back between them.
+CYCLE_INSERT = "INSERT INTO national_merit_cycles"
+VALUES_LINE = "VALUES"
+CONFLICT_LINE = "ON CONFLICT (competition_year) DO UPDATE SET"
+
+
+def insert_column_lines():
+    """The INSERT's column list, wrapped, and DERIVED from SEED_COLUMNS rather
+    than retyped beside it."""
+    wrapped = textwrap.wrap(
+        ", ".join(SEED_COLUMN_NAMES),
+        width=76,
+        initial_indent="    (",
+        subsequent_indent="     ",
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    return wrapped[:-1] + [wrapped[-1] + ")"]
+
+
+def update_assignment_lines():
+    """The DO UPDATE SET body: every column EXCEPT the conflict target, derived
+    from SEED_COLUMNS for insert_column_lines()' reason.
+
+    competition_year is excluded because it IS the key being conflicted on --
+    assigning it would be a no-op that reads as though the key could change. The
+    names are padded to one width so a human scanning the diff of a re-read sees
+    the columns and not the punctuation."""
+    assigned = [name for name in SEED_COLUMN_NAMES if name != "competition_year"]
+    width = max(len(name) for name in assigned)
+    lines = [f"    {name.ljust(width)} = EXCLUDED.{name}," for name in assigned]
+    return lines[:-1] + [lines[-1][:-1] + ";"]
+
+
+def render_tuple(cells):
+    """One VALUES tuple, one line, in SEED_COLUMNS' order."""
+    return f"{TUPLE_INDENT}(" + ", ".join(render(cells) for _, render in SEED_COLUMNS) + ")"
+
+
+# ---------------------------------------------------------------------------
+# The authored CSV
+# ---------------------------------------------------------------------------
+
+
+def first_character_offence(line):
+    """The first character of `line` that no SQL literal this script writes may
+    carry: its 1-based column, the character itself, and the rule it broke -- or
+    None if the line is clean.
+
+    NAMED, and not merely detected. The cells here are publishers' sentences
+    hundreds of characters long and both offences are invisible in an editor: a
+    backslash disappears into a wall of prose and a CR looks like nothing at all.
+    A refusal that says only "a control character, or a backslash" leaves the
+    operator to work out WHICH rule fired and WHERE, by eye, on a line they
+    cannot see the offender in.
+
+    NON-ASCII IS NOT AN OFFENCE HERE, unlike in bin/fafsa-deadline-seed. See the
+    header: NMSC's own sentences carry U+2026, an en dash and a registered sign,
+    and refusing them would make the stored quotation not the publisher's."""
+    for column, character in enumerate(line, start=1):
+        if character == "\\":
+            return column, character, "a backslash"
+        if character in CONTROL_CHARACTERS:
+            return column, character, "a control character"
+    return None
+
+
+def shown_character(character):
+    """The offending character as a message can print it: itself when it is
+    visible, and its python escape when it is not -- a CR printed raw would move
+    the cursor rather than appear."""
+    if character in CONTROL_CHARACTERS:
+        return repr(character)[1:-1]
+    return character
+
+
+def read_rows(csv_path, csv_label, faults):
+    """Every record of the CSV, as (line number, raw text, [cells]).
+
+    PER PHYSICAL LINE, on purpose. RFC 4180 lets a quoted field carry a newline;
+    this corpus refuses one, because a cell holding a newline is a SQL literal
+    nobody can review in a diff -- and parsing line by line gives every fault the
+    line number a human can go and fix, which csv.reader's own line_num cannot
+    promise once a record spans lines.
+
+    The bytes are decoded ONE LINE AT A TIME so that an undecodable byte is a
+    fault naming its LINE rather than a UnicodeDecodeError naming a byte offset
+    into a 12 kB file. The decoding is strict UTF-8: this corpus is prose in
+    UTF-8, and a cp1252 smart quote pasted off a page would otherwise reach the
+    seed as a character the publisher did not print."""
+    try:
+        raw = csv_path.read_bytes()
+    except OSError as error:
+        fatal(f"could not read [{csv_label}]: [{type(error).__name__}] [{error}]")
+
+    chunks = raw.split(b"\n")
+    records = []
+    for index, chunk in enumerate(chunks, start=1):
+        # A trailing newline ends the last record; it is not an empty record.
+        if index == len(chunks) and chunk == b"":
+            break
+        try:
+            line = chunk.decode("utf-8")
+        except UnicodeDecodeError as error:
+            faults.append(
+                f"  {csv_label} line {index}: is not valid UTF-8 ([{error.reason}] at byte "
+                f"[{error.start}] of the line); this corpus is UTF-8 prose, and a byte from "
+                f"another encoding would reach the seed as a character no publisher printed"
+            )
+            continue
+        offence = first_character_offence(line)
+        if offence is not None:
+            column, character, rule = offence
+            faults.append(
+                f"  {csv_label} line {index}: {rule} at column {column}: "
+                f"[{shown_character(character)}] (U+{ord(character):04X}): the escaper here "
+                f"doubles apostrophes and nothing else, so a backslash would be a SQL literal "
+                f"whose meaning depends on the server's standard_conforming_strings, and a "
+                f"control character is invisible in the diff a human reviews"
+            )
+            continue
+        records.append((index, line, next(csv.reader([line]))))
+    return records
+
+
+def read_csv_with_header(path, label, expected_header, source_name, faults):
+    """Every record of a source CSV BELOW its header, with the preamble both of
+    this script's two source files need done identically.
+
+    ONE helper and not two copies, because the preamble is four decisions and each
+    one is a judgement this file only wants to make once:
+
+      * LINE 1 ITSELF WAS UNREADABLE -- a CR from a CRLF checkout is the common
+        case, and it makes EVERY line of the file a fault. Those faults are
+        reported and the header is NOT diagnosed: comparing a header this run
+        could not read would be a second, wrong diagnosis of the same file.
+      * A FILE WITH NO LINES AT ALL is refused rather than read as a corpus with
+        no rows: there is no header to agree with, so nothing below could be
+        validated against anything.
+      * THE HEADER IS REFUSED BEFORE ANY ROW IS READ, and it is its OWN diagnosis:
+        a file whose columns are in a different order is not a file with bad rows.
+        A header is never read POSITIONALLY -- a reordered column would silently
+        move an administrator's page into the sponsor's citation.
+      * THE EXPECTED/FOUND PAIR IS PRINTED, on three lines, because "the header is
+        wrong" without the two strings costs the operator a diff by eye over
+        thirty-three column names.
+
+    `source_name` names the file in the header refusal ("cycles CSV",
+    "link-status CSV"), because this script reads two.
+
+    ONLY THE FAULTS THIS CALL PRODUCED ARE PRINTED AND COUNTED. `faults` is the
+    run's one shared list and this helper reads BOTH source files, so a refusal
+    counting the whole list would report cycles.csv's faults, and their number,
+    under link-status.csv's name."""
+    already = len(faults)
+    records = read_rows(path, label, faults)
+    mine = faults[already:]
+
+    if mine and (not records or records[0][0] != 1):
+        for fault in mine:
+            log_error(fault)
+        fatal(f"[{len(mine)}] fault(s) in [{label}]; nothing was written")
+
+    if not records:
+        fatal(f"[{label}] has no lines at all; nothing was written")
+
+    header_line, header_text, _header_cells = records[0]
+    if header_text != expected_header:
+        log_error(f"the {source_name} header is not the header this generator expects.")
+        log_error(f"  expected: [{expected_header}]")
+        log_error(f"  found:    [{header_text}]")
+        fatal(f"refused [{label}] at line [{header_line}]; nothing was written")
+
+    return records[1:]
+
+
+def read_link_status(path, label, faults):
+    """The committed sweep, as {url: (url_status, url_checked_on)}.
+
+    WHY THIS FILE EXISTS AT ALL: RFC 220's
+    require-a-check-on-every-external-document.sql dropped
+    external_documents.url_status's DEFAULT and made url_checked_on NOT NULL, so a
+    generated seed that names only `url` cannot be applied to a migrated database.
+    Evidence is now part of storing a citation, and this is where this corpus
+    keeps it.
+
+    IT IS A SOURCE FILE, not an artifact: an operator sweeps the cited urls with
+    bin/check-link, applies this repo's reading of the codes -- 2xx found,
+    404/410 not_found, everything else unknown WITH the date we asked -- and
+    commits the answer for a human to review in a diff, exactly like cycles.csv.
+
+    EVERY ROW CARRIES A DATE, which is stricter than the old table CHECK and is
+    the rule this file needs: `unknown` WITH a date is a check that ran and got no
+    usable answer, while a url ABSENT from a file that is the record of a sweep is
+    a url nobody asked about -- which is the one thing RFC 220 made unstorable."""
+    if not path.is_file():
+        fatal(
+            f"[{label}] is not in the tree, so the urls this corpus cites carry no evidence and "
+            f"a generated seed could not be applied: external_documents.url_status has no default "
+            f"and url_checked_on is NOT NULL (RFC 220). Sweep the cited urls with bin/check-link "
+            f"and commit the answer there. Nothing was written"
+        )
+
+    rows = read_csv_with_header(path, label, EXPECTED_LINK_STATUS_HEADER, "link-status CSV", faults)
+    # DERIVED from the header this call just validated against, the way
+    # validate_and_render derives its own: the arity was typed twice as a literal
+    # one line below its source of truth, so an added evidence column would
+    # leave this reader enforcing the old width with a message that said so too.
+    columns = EXPECTED_LINK_STATUS_HEADER.split(",")
+
+    swept = {}
+    first_seen = {}
+    for line, _text, cells in rows:
+        if len(cells) != len(columns):
+            faults.append(
+                f"  {label} line {line}: [{len(cells)}] columns, expected [{len(columns)}]"
+            )
+            continue
+        url, status, checked_on = cells
+
+        # MIRRORS external_documents_url_shape_check
+        if not URL_SHAPE.match(url):
+            faults.append(f"  {label} line {line}: url [{url}] is not an http or https url")
+        # MIRRORS link_status_check, the domain every url-bearing table shares.
+        if status not in LINK_STATUSES:
+            faults.append(
+                f"  {label} line {line}: url_status [{status}] is not one of "
+                f"[{', '.join(LINK_STATUSES)}]"
+            )
+        if not is_iso_date(checked_on):
+            faults.append(
+                f"  {label} line {line}: url_checked_on [{checked_on}] is not a real yyyy-mm-dd "
+                f"day; a swept url carries the day it was asked about (RFC 220)"
+            )
+        # One url, one answer. Two rows for one address is two statuses for one
+        # external_documents row, and the seed would then depend on which one this
+        # reader happened to keep.
+        if url in first_seen:
+            faults.append(
+                f"  {label} line {line}: url [{url}] is already swept at line "
+                f"[{first_seen[url]}]; one url carries one answer"
+            )
+            continue
+        first_seen[url] = line
+        swept[url] = (status, checked_on)
+    return swept
+
+
+def validate_and_render(records, csv_label, faults, swept, link_label):
+    """Every row, checked against every rule, and rendered.
+
+    EVERY row is checked and EVERY fault is collected: a validator that stopped at
+    the first offender would turn a five-line fix into five runs. The return value
+    is a list of rendered rows; the caller writes nothing while `faults` is
+    non-empty."""
+    rendered = []
+    first_seen = {}
+    columns = EXPECTED_HEADER.split(",")
+
+    for line, _text, cells in records:
+        faults_before = len(faults)
+
+        def fail(message, line=line):
+            faults.append(f"  {csv_label} line {line}: {message}")
+
+        if len(cells) != len(columns):
+            fail(f"[{len(cells)}] columns, expected [{len(columns)}]")
+            continue
+
+        cell = dict(zip(columns, cells))
+
+        # MIRRORS national_merit_cycles_competition_year_check
+        #
+        # NMSC's own name for the cycle, and the student's graduation year: the
+        # 2028 competition is the October 2026 sitting, taken by the class of
+        # 2028. It is the PRIMARY KEY, so a mistyped year is a row about a class
+        # that does not exist rather than a correction of one that does.
+        competition_year = None
+        year_text = cell["competition_year"]
+        if not YEAR_SHAPE.match(year_text):
+            fail(
+                f"competition_year [{year_text}] is not a four-digit year; it is NMSC's own name "
+                f"for the cycle and the class's graduation year, so the 2028 competition -- the "
+                f"October 2026 sitting -- is 2028"
+            )
+        elif not COMPETITION_YEAR_MIN <= int(year_text) <= COMPETITION_YEAR_MAX:
+            fail(
+                f"competition_year [{year_text}] is outside "
+                f"[{COMPETITION_YEAR_MIN}]..[{COMPETITION_YEAR_MAX}]"
+            )
+        else:
+            competition_year = int(year_text)
+
+        # MIRRORS national_merit_cycles_qualifying_grade_check
+        #
+        # The only sitting that qualifies -- 11 in every row we hold. Stored
+        # rather than hard-coded because it is a published rule of the programme
+        # and the coach must not speak it from memory.
+        grade_text = cell["qualifying_grade"]
+        if not COUNT_SHAPE.match(grade_text):
+            fail(f"qualifying_grade [{grade_text}] is not a whole number")
+        elif not QUALIFYING_GRADE_MIN <= int(grade_text) <= QUALIFYING_GRADE_MAX:
+            fail(
+                f"qualifying_grade [{grade_text}] is outside "
+                f"[{QUALIFYING_GRADE_MIN}]..[{QUALIFYING_GRADE_MAX}]"
+            )
+
+        # The dates, shape first: a cell that is not a real day cannot be
+        # compared with anything below, so each bound check asks again.
+        for name in ("window_opens_on", "window_closes_on", "alternate_entry_deadline"):
+            if cell[name] != "" and not is_iso_date(cell[name]):
+                fail(f"{name} [{cell[name]}] is not a real yyyy-mm-dd date")
+
+        opens = cell["window_opens_on"]
+        closes = cell["window_closes_on"]
+
+        # MIRRORS national_merit_cycles_window_pair_check
+        #
+        # One window date without the other is half a fact, and half a window is
+        # what a coach would render as a date nobody published. The UNDATED cycle
+        # is the normal case here and not an edge case: NMSC dates only the cycle
+        # in progress, so a row two years out carries the description and BOTH
+        # dates empty.
+        if (opens == "") != (closes == ""):
+            fail(
+                f"window_opens_on [{opens}] and window_closes_on [{closes}]: a window is dated at "
+                f"both ends or at neither. A cycle NMSC has described and not dated carries both "
+                f"cells empty and its own words in window_as_published"
+            )
+
+        # MIRRORS national_merit_cycles_window_ordered_check
+        if is_iso_date(opens) and is_iso_date(closes) and closes < opens:
+            fail(f"window_closes_on [{closes}] is before window_opens_on [{opens}]")
+
+        # MIRRORS national_merit_cycles_window_in_cycle_check
+        #
+        # The qualifying sitting is in the AUTUMN TWO CALENDAR YEARS BEFORE the
+        # competition year: October 2026 for the 2028 competition. This is the
+        # check that refuses a window typed into the wrong cycle, which is a date
+        # a family would act on.
+        if competition_year is not None and is_iso_date(opens):
+            earliest = window_opens_earliest(competition_year)
+            latest = window_opens_latest(competition_year)
+            if not earliest <= date.fromisoformat(opens) <= latest:
+                fail(
+                    f"window_opens_on [{opens}] is outside the [{competition_year}] cycle's own "
+                    f"window [{earliest}]..[{latest}]: the qualifying sitting is in the autumn TWO "
+                    f"calendar years before the competition year, so a window from a NEIGHBOURING "
+                    f"cycle typed under this one's year is a date a family would act on"
+                )
+
+        # MIRRORS national_merit_cycles_alternate_entry_trio_check
+        #
+        # A deadline or an address we cannot show the publisher's words for is a
+        # claim we made ourselves. THE WORDS ARE WHAT MAKES THE ROUTE EXIST and
+        # the date does not: NMSC describes the route for a cycle it has not yet
+        # dated.
+        deadline = cell["alternate_entry_deadline"]
+        contact = cell["alternate_entry_contact"]
+        if cell["alternate_entry_as_published"] == "" and (deadline != "" or contact != ""):
+            fail(
+                f"alternate_entry_as_published is empty while alternate_entry_deadline "
+                f"[{deadline}] or alternate_entry_contact [{contact}] is not: a deadline or an "
+                f"address we cannot show the publisher's words for is a claim we made ourselves"
+            )
+
+        # MIRRORS national_merit_cycles_alternate_entry_in_cycle_check
+        if competition_year is not None and is_iso_date(deadline):
+            earliest = alternate_entry_earliest(competition_year)
+            latest = alternate_entry_latest(competition_year)
+            if not earliest <= date.fromisoformat(deadline) <= latest:
+                fail(
+                    f"alternate_entry_deadline [{deadline}] is outside the [{competition_year}] "
+                    f"cycle's own window [{earliest}]..[{latest}]"
+                )
+
+        # MIRRORS national_merit_cycles_selection_index_ordered_check
+        # MIRRORS national_merit_cycles_selection_index_range_check
+        #
+        # What KIND of number the score is, so a family reading "212" knows what
+        # it is out of. IT IS NOT A CUTOFF and no column here holds one.
+        low_text = cell["selection_index_low"]
+        high_text = cell["selection_index_high"]
+        low = int(low_text) if COUNT_SHAPE.match(low_text) else None
+        high = int(high_text) if COUNT_SHAPE.match(high_text) else None
+        if low is None:
+            fail(f"selection_index_low [{low_text}] is not a whole number")
+        if high is None:
+            fail(f"selection_index_high [{high_text}] is not a whole number")
+        if low is not None and high is not None and low >= high:
+            fail(f"selection_index_low [{low}] is not below selection_index_high [{high}]")
+        if low is not None and low <= 0:
+            fail(f"selection_index_low [{low}] is not above zero")
+        if high is not None and high > SELECTION_INDEX_MAX:
+            fail(f"selection_index_high [{high}] is above [{SELECTION_INDEX_MAX}]")
+
+        # MIRRORS national_merit_cycles_semifinalist_cutoff_basis_check
+        # MIRRORS national_merit_cycles_commended_cutoff_basis_check
+        #
+        # HOW the bar is set -- never WHAT it is. Semifinalist standing is
+        # allocated state-representationally and Commended by one national
+        # number, and the difference between them is the whole reason the coach
+        # may not speak a national figure as a student's own bar.
+        if cell["semifinalist_cutoff_basis"] not in SEMIFINALIST_CUTOFF_BASES:
+            fail(
+                f"semifinalist_cutoff_basis [{cell['semifinalist_cutoff_basis']}] is not one of "
+                f"[{', '.join(SEMIFINALIST_CUTOFF_BASES)}]"
+            )
+        if cell["commended_cutoff_basis"] not in COMMENDED_CUTOFF_BASES:
+            fail(
+                f"commended_cutoff_basis [{cell['commended_cutoff_basis']}] is not one of "
+                f"[{', '.join(COMMENDED_CUTOFF_BASES)}]"
+            )
+
+        # The funnel. Every stage is NULL-or-a-positive-whole-number, because
+        # NMSC publishes some stages and rounds others, and publishes none at all
+        # for a cycle it has not yet run.
+        #
+        # MIRRORS national_merit_cycles_funnel_positive_check
+        funnel = {}
+        for stage in FUNNEL_STAGES:
+            text = cell[stage]
+            if text == "":
+                funnel[stage] = None
+                continue
+            if not COUNT_SHAPE.match(text):
+                fail(f"{stage} [{text}] is not a whole number")
+                continue
+            if int(text) <= 0:
+                fail(
+                    f"{stage} [{text}] is not above zero: a published stage of a funnel has "
+                    f"people in it, and a stage the publisher does not publish is EMPTY"
+                )
+                continue
+            funnel[stage] = int(text)
+
+        # MIRRORS national_merit_cycles_funnel_narrows_check
+        #
+        # A funnel only narrows. Typing 15,000 Semifinalists and 16,000 Finalists
+        # inverts the base rate the coach is required to speak -- and the base
+        # rate is DERIVED from two of these at read time and never stored, which
+        # is why getting them in the wrong order is not caught anywhere else.
+        for narrower, wider in FUNNEL_NARROWS:
+            if funnel.get(narrower) is None or funnel.get(wider) is None:
+                continue
+            if funnel[narrower] > funnel[wider]:
+                fail(
+                    f"funnel stage {narrower} [{funnel[narrower]}] is above the wider stage "
+                    f"{wider} [{funnel[wider]}]: a funnel only narrows"
+                )
+
+        # MIRRORS national_merit_cycles_nmsc_award_pair_check
+        #
+        # NMSC's OWN money, which is small. A price with no sentence beside it is
+        # our figure rather than theirs, and the point of storing it at all is
+        # that "the big numbers are the university's, not NMSC's" is a stored
+        # fact and not a sentence the model remembers.
+        award_text = cell["nmsc_award_usd"]
+        if award_text != "":
+            if not COUNT_SHAPE.match(award_text) or int(award_text) <= 0:
+                fail(f"nmsc_award_usd [{award_text}] is not a positive whole number of dollars")
+            if cell["nmsc_award_as_published"] == "":
+                fail(
+                    f"nmsc_award_usd [{award_text}] carries no nmsc_award_as_published: a price "
+                    f"with no publisher's sentence beside it is our figure rather than theirs"
+                )
+
+        # MIRRORS national_merit_cycles_words_not_blank_check
+        #
+        # A quoted sentence that is blank is not a quotation. The NOT NULL
+        # columns must carry something; the nullable ones are either ABSENT or
+        # real, and never whitespace -- an empty CSV cell IS the SQL NULL here,
+        # so the two cases are distinguished by emptiness and then by btrim.
+        for name in NOT_NULL_WORDS:
+            if cell[name].strip() == "":
+                fail(f"{name} is empty, and the column is NOT NULL: this row states it or it is not a row")
+        for name in NULLABLE_WORDS:
+            if cell[name] != "" and cell[name].strip() == "":
+                fail(f"{name} is whitespace; a quoted sentence that is blank is not a quotation")
+
+        # MIRRORS external_documents_url_shape_check
+        #
+        # http IS ACCEPTED beside https, the ruling the sibling corpora record
+        # (Ian, 2026-09-14: prefer https, do not block insecure). BOTH page
+        # citations are required outright -- source_document_id and
+        # administrator_document_id are NOT NULL -- because a row that cites
+        # nothing is the uncitable row this corpus exists to prevent.
+        for name in REQUIRED_URLS:
+            if not URL_SHAPE.match(cell[name]):
+                fail(
+                    f"{name} [{cell[name]}] is not an http or https url: this row has TWO "
+                    f"publishers and cites a page for each, because no page carries all of it"
+                )
+        for name in OPTIONAL_URLS:
+            if cell[name] != "" and not URL_SHAPE.match(cell[name]):
+                fail(f"{name} [{cell[name]}] is not an http or https url")
+
+        # A CITATION CARRIES EVIDENCE, OR IT CANNOT BE STORED (RFC 220). All
+        # four urls, because an archived address is a document like any other and
+        # is stored in the same table with the same NOT NULL columns. The fault
+        # names the CYCLES line, which is the line a human edits; the sweep file
+        # is named beside it so the way out is in the message.
+        for name in REQUIRED_URLS + OPTIONAL_URLS:
+            cited = cell[name]
+            if cited == "" or not URL_SHAPE.match(cited):
+                continue
+            if cited not in swept:
+                fail(
+                    f"{name} [{cited}] has no row in [{link_label}], so this seed could not state "
+                    f"its url_status or url_checked_on -- and external_documents has no default "
+                    f"for either (RFC 220). Sweep it with bin/check-link and add its row"
+                )
+
+        # MIRRORS national_merit_cycles_archive_differs_check
+        #
+        # An archive of a page may not BE that page: a row carrying both would
+        # print one link twice.
+        for source_name, archive_name in ARCHIVE_PAIRS:
+            if cell[archive_name] != "" and cell[archive_name] == cell[source_name]:
+                fail(
+                    f"{archive_name} [{cell[archive_name]}] is the {source_name}: an archive of a "
+                    f"page is not that page"
+                )
+
+        # MIRRORS national_merit_cycles_two_publishers_check
+        #
+        # The sponsor and the administrator are TWO publishers, and the curation
+        # pass measured that four cells per row are the administrator's. A row
+        # citing one page, or one publisher, for both is a row that lost half its
+        # provenance -- exactly the mis-citation RFC 228 exists to prevent.
+        if cell["administrator_source_url"] == cell["source_url"]:
+            fail(
+                f"source_url and administrator_source_url are the same page "
+                f"[{cell['source_url']}]: NMSC publishes the entry rule, the alternate entry "
+                f"route, the funnel and the cutoff sentence, and College Board publishes the "
+                f"window dates, the Selection Index scale and the score-visibility sentence"
+            )
+        if cell["administrator_publisher"] == cell["publisher"]:
+            fail(
+                f"publisher and administrator_publisher are both [{cell['publisher']}]: the "
+                f"competition's sponsor and the test's administrator are two publishers"
+            )
+
+        # MIRRORS national_merit_cycles_expiry_after_checked_check
+        #
+        # The day we stop believing the page, never the day a deadline falls.
+        checked_on = cell["checked_on"]
+        expires_on = cell["expires_on"]
+        checked_ok = is_iso_date(checked_on)
+        expires_ok = is_iso_date(expires_on)
+        if not checked_ok:
+            fail(f"checked_on [{checked_on}] is not a real yyyy-mm-dd date")
+        if not expires_ok:
+            fail(f"expires_on [{expires_on}] is not a real yyyy-mm-dd date")
+        if checked_ok and expires_ok and expires_on <= checked_on:
+            fail(f"expires_on [{expires_on}] is not after checked_on [{checked_on}]")
+
+        # At least one fault on this row. Nothing will be written anyway, so the
+        # rendering below is skipped rather than run over cells that failed -- and
+        # the duplicate-key check is skipped with it, because a row that is not a
+        # row cannot own a key.
+        if len(faults) > faults_before:
+            continue
+
+        # THE PRIMARY KEY, competition_year, PER READING DAY. The DDL declares it
+        # inline on the column (`SMALLINT NOT NULL PRIMARY KEY`), so it carries no
+        # CONSTRAINT name for a MIRRORS tag to name -- but the rule is the one
+        # that decides whether a generated file can be APPLIED AT ALL: two rows
+        # for one year in ONE reading day would land in one
+        # `INSERT ... ON CONFLICT DO UPDATE`, which Postgres refuses outright
+        # ("cannot affect row a second time"). The same year read on a LATER day
+        # is the correction mechanism itself, so the check is keyed on the pair.
+        key = (checked_on, competition_year)
+        if key in first_seen:
+            fail(
+                f"competition_year [{competition_year}] read on [{checked_on}] is already at line "
+                f"[{first_seen[key]}]: one reading day carries one row per cycle, and a "
+                f"CORRECTION is a re-read with a LATER checked_on"
+            )
+            continue
+        first_seen[key] = line
+
+        rendered.append(
+            {
+                "line": line,
+                "checked_on": checked_on,
+                "competition_year": competition_year,
+                "urls": [cell[name] for name in REQUIRED_URLS + OPTIONAL_URLS if cell[name] != ""],
+                "tuple": render_tuple(cell),
+            }
+        )
+    return rendered
+
+
+# The seven funnel stages, in the order the table declares them, and the six
+# narrowing pairs the DDL compares. Written down once, beside each other, because
+# the pairs are the reason the stages are a list at all: the base rate is derived
+# from two of them at read time, so an inverted funnel is a wrong base rate and
+# nothing downstream recomputes it.
+#
+# THE PAIRS ARE SWEPT BY THE HARNESS against the DDL's own comparisons, narrower
+# and wider, for the reason the vocabularies above are: a pair re-aimed there and
+# not here is a row the database refuses at apply time.
+FUNNEL_STAGES = (
+    "test_takers",
+    "met_entry_requirements",
+    "high_scorers_screened",
+    "commended",
+    "semifinalists",
+    "finalists",
+    "winners",
+)
+FUNNEL_NARROWS = (
+    ("met_entry_requirements", "test_takers"),
+    ("high_scorers_screened", "met_entry_requirements"),
+    ("commended", "met_entry_requirements"),
+    ("semifinalists", "met_entry_requirements"),
+    ("finalists", "semifinalists"),
+    ("winners", "finalists"),
+)
+
+# The prose columns, split by whether the table lets them be absent. The NOT NULL
+# ones are what every row says whatever its cycle; the nullable ones are what a
+# publisher may simply not have published for a cycle it has not yet run.
+#
+# THE SPLIT IS SWEPT BY THE HARNESS against the DDL's nullable TEXT columns: an
+# empty cell is rendered as SQL NULL for the words below and refused for the ones
+# above, so a column flipped either way there is caught here and not at apply time.
+NOT_NULL_WORDS = (
+    "window_as_published",
+    "cutoff_as_published",
+    "score_visibility_as_published",
+    "funnel_as_published",
+    "publisher",
+    "administrator_publisher",
+)
+NULLABLE_WORDS = (
+    "alternate_entry_contact",
+    "alternate_entry_as_published",
+    "nmsc_award_as_published",
+    "sponsor_cap_as_published",
+)
+
+# The four citations: two pages that must be there, two mirrors that may not be,
+# and which mirror archives which page.
+REQUIRED_URLS = ("source_url", "administrator_source_url")
+OPTIONAL_URLS = ("archive_url", "administrator_archive_url")
+ARCHIVE_PAIRS = (
+    ("source_url", "archive_url"),
+    ("administrator_source_url", "administrator_archive_url"),
+)
+
+
+# ---------------------------------------------------------------------------
+# The generated seed
+# ---------------------------------------------------------------------------
+
+# THE ROW ORDER OF A SEED, DECIDED ONCE AND WRITTEN DOWN. A generated file must be
+# byte-identical across runs or `-n` refuses the tree it has just regenerated, so
+# the order cannot be "whatever the CSV happened to say".
+#
+# It is BY COMPETITION YEAR, ascending: the cycle in progress first and the
+# described-but-undated cycles after it, which is how a reader looks for them and
+# is stable under any re-sorting of the authored file. The CSV's own row order is
+# deliberately NOT used -- re-sorting the authored file would then rewrite a
+# landed seed, which is the one thing this corpus may not do.
+
+
+def sort_key(row):
+    return row["competition_year"]
+
+
+def render_seed(day, rows, csv_label, swept):
+    """One reading day's whole file, as text."""
+    rows = sorted(rows, key=sort_key)
+
+    # EVERY distinct url of the day -- both pages and any mirror -- because a row
+    # citing one the upsert never inserted would violate the foreign key at apply
+    # time. SORTED, so the block is stable whatever order the CSV lists the rows
+    # in: a first-seen order makes the generated bytes depend on the authored
+    # file's line order, which nothing forbids a human from changing.
+    urls = sorted({url for row in rows for url in row["urls"]})
+
+    lines = [
+        "-- GENERATED FILE -- do not edit.",
+        "--",
+        f"-- Written by bin/national-merit-seed from {csv_label}.",
+        "-- The CSV is the source a human edits and reviews in a diff; this file is an",
+        "-- artifact of it. To change a row, change the CSV and re-run the script.",
+        "--",
+        f"-- Read on {day}: {len(rows)} National Merit competition cycle(s), each with the",
+        "-- publishers' own pages it was read from and the day a human read them. A landed seed",
+        "-- is replayed on every db-reset and so never changes: a CORRECTION is a re-read, which",
+        "-- carries a new checked_on and therefore lands as a NEW seed upserting on the",
+        "-- competition year.",
+        "--",
+        "-- ROUTE A (RFC 243): this corpus is keyed by a competition year and nothing else, so a",
+        "-- migration can seed it -- and must, because `bin/test` does db-reset and never ingests.",
+        '-- "What this test is and when it is" can never depend on an import having run.',
+        "--",
+        "-- NO CUTOFF SCORE IS STORED, by design. NMSC publishes none in advance and says the",
+        "-- qualifying score varies by state and by year; what is here is HOW each bar is set",
+        "-- plus NMSC's own sentence saying it is not published.",
+        "--",
+        "-- Each row cites FOUR documents by foreign key into external_documents (RFC 213/228):",
+        "-- the sponsor's page and the administrator's, and either one's optional mirror. The",
+        "-- urls are upserted FIRST, and each id is SUBSELECTED by url, because the id is a",
+        "-- uuidv7 the database mints and a generated file cannot know it.",
+        "--",
+        "-- Each url carries the sweep bin/check-link answered for it: url_status has no default",
+        "-- and url_checked_on is NOT NULL (RFC 220), so a citation states its evidence or it",
+        "-- cannot be stored. The answers are committed beside the corpus in link-status.csv.",
+        "",
+        "INSERT INTO external_documents (url, url_status, url_checked_on)",
+        "VALUES",
+    ]
+    for index, url in enumerate(urls):
+        separator = "" if index == len(urls) - 1 else ","
+        status, checked_on = swept[url]
+        lines.append(
+            f"{DOCUMENT_INDENT}({sql_quoted(url)}, {sql_quoted(status)}, "
+            f"{sql_date(checked_on)}){separator}"
+        )
+    # DO NOTHING and never DO UPDATE: a url this seed cites may already have been
+    # swept -- by bin/check-link for another corpus, or on a later day than this
+    # file records -- and re-stating it must not reset url_status to an older
+    # answer or to "we never asked" (RFC 182, RFC 213, RFC 220).
+    lines.extend(
+        [
+            "ON CONFLICT (url) DO NOTHING;",
+            "",
+            CYCLE_INSERT,
+            *insert_column_lines(),
+            VALUES_LINE,
+        ]
+    )
+    for index, row in enumerate(rows):
+        separator = "" if index == len(rows) - 1 else ","
+        lines.append(f"{row['tuple']}{separator}")
+    lines.append(CONFLICT_LINE)
+    lines.extend(update_assignment_lines())
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# The guard: a generated seed already in the schema directory may not change
+# ---------------------------------------------------------------------------
+#
+# ONE BYTE COMPARISON, AND IT IS THE APPEND-ONLY RULE. See the header: a row
+# dropped from the CSV, a cell rewritten, a reading day retyped, a hand edit to
+# the migration and a re-sweep that changed a url's status all change the bytes of
+# an EXISTING generated file, and every one of them is a change to a migration
+# that is replayed from the top on every db-reset. A tuple-level reader would see
+# the first two and silently overwrite the file for the last three.
+#
+# WHAT IS ALLOWED is a NEW file: a re-read carries a new checked_on, so its rows
+# land in a day this schema directory does not yet have and nothing already there
+# is touched.
+
+
+def seed_difference(landed, generated):
+    """WHICH LINES MOVED, and not merely that some did. A refusal that says only
+    "the file differs" leaves the operator to diff a generated migration by eye.
+    Capped, because a corpus-wide change differs on every line and a refusal
+    nobody reads to the end of is a refusal that gets worked around."""
+    diff = list(
+        difflib.unified_diff(
+            landed.splitlines(),
+            generated.splitlines(),
+            fromfile="landed",
+            tofile="generated",
+            lineterm="",
+            n=0,
+        )
+    )
+    shown = diff[:DIFF_LINES_SHOWN]
+    tail = (
+        [f"      ... and [{len(diff) - DIFF_LINES_SHOWN}] more diff line(s)"]
+        if len(diff) > DIFF_LINES_SHOWN
+        else []
+    )
+    return "\n".join([f"      {line}" for line in shown] + tail)
+
+
+DIFF_LINES_SHOWN = 20
+
+
+def would_change_escape(name):
+    """THE ESCAPE, WRITTEN DOWN WHERE THE REFUSAL IS READ. The guard is right
+    about a LANDED seed and unhelpful about one that is still being AUTHORED -- a
+    seed this very run wrote ten minutes ago, uncommitted, which the next run then
+    treats as history. It is one sentence, so it is printed rather than worked
+    out.
+
+    The refusal itself does NOT change. Deleting a seed that has landed is the one
+    thing this corpus may never do, so the escape names the condition ("has NOT
+    landed yet") before it names the command."""
+    return (
+        f"  [{name}] is the generated seed that would change. If it has NOT LANDED yet -- you "
+        f"are still authoring this reading -- delete it and its line in ORDER, then re-run. The "
+        f"guard is about a LANDED seed: once a migration is in main it is replayed on every "
+        f"db-reset and may never change. A CORRECTION is a re-read, which carries a new "
+        f"checked_on and lands as a NEW seed."
+    )
+
+
+def read_existing_seed(path, csv_label):
+    """A generated seed already in the schema directory, as text, or None when it
+    is not there.
+
+    An unreadable one is a REFUSAL and never a missing file: writing over a
+    migration this script could not compare itself against is exactly the silent
+    rewrite the guard exists to prevent."""
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        fatal(
+            f"could not read [{path}] to compare it with what [{csv_label}] generates "
+            f"([{type(error).__name__}] [{error}]); nothing has been written"
+        )
+
+
+def assert_seed_names_are_readable(schema_dir):
+    """Every file the corpus's own glob matches carries a reading day this script
+    can read.
+
+    NAMED, not skipped: the glob has already said the file belongs to this corpus,
+    so a name the pattern then refuses (`-2026-9-1.sql`, `-2026-09-25.bak.sql`) is
+    a generated seed the guard would be blind to -- it would compare nothing
+    against it and a hand edit in it would never be reported."""
+    for path in sorted(schema_dir.glob("seed-national-merit-cycles-*.sql")):
+        if SEED_NAME_PATTERN.match(path.name) is None:
+            fatal(
+                f"[{path}] is in the schema directory and its name is not "
+                f"[{SEED_NAME_TEMPLATE % 'yyyy-mm-dd'}], so the reading day it holds cannot be "
+                f"read and it could not be compared with what this corpus generates; nothing was "
+                f"written. Rename it, or move it out of the schema directory"
+            )
+
+
+# ---------------------------------------------------------------------------
+# db/schema/ORDER
+# ---------------------------------------------------------------------------
+#
+# THE HONEST MINIMUM, AND IT IS SAID OUT LOUD. bin/common owns what ORDER is, what
+# a legal migration filename is and what counts as a disagreement, and the bash
+# siblings ASK it (schema_order_scan / schema_order_lists) rather than answering
+# with their own `grep -Fxq`. A python script cannot source bin/common, and
+# shelling out to bash to ask one question would put a second process in the
+# middle of a file this script is about to append to. So the minimum is
+# implemented here, and the minimum is exactly this:
+#
+#   * every line is NORMALISED -- trailing whitespace and a CR from a CRLF
+#     checkout stripped -- before it is compared. That is the defect
+#     bin/prompt-seed records as already shipped: `grep -Fxq` answers "is there a
+#     line whose BYTES are exactly this", so a line carrying a trailing space
+#     reads as ABSENT, the append writes a SECOND line for one migration, and
+#     bin/db-migrate refuses two steps later a corpus this script had just called
+#     correct;
+#   * a NORMALISED DUPLICATE anywhere in ORDER, or a missing ORDER, is
+#     EXIT_SCHEMA_ORDER_DRIFT (9) and not something to append to -- the same
+#     answer bin/common's schema_order_file_is_corrupt gives, and the same
+#     instruction: fix it and re-run, `bin/db-status` reports the same corpus
+#     without refusing it.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO IS PLACE THE LINE. It APPENDS, at the end,
+# and /ship's .prime/agent/skills/ship/scripts/ship-order owns the final PLACEMENT
+# at land time -- a seed must apply after the table it fills, and where exactly
+# that is depends on what else landed while this branch was open.
+
+
+def normalised_order_lines(order_file):
+    try:
+        body = order_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        fatal(
+            f"could not read [{order_file}] ([{type(error).__name__}] [{error}]); a generated seed "
+            f"nothing declares would never be applied, so nothing was written",
+            status=EXIT_SCHEMA_ORDER_DRIFT,
+        )
+    return [line.rstrip().rstrip("\r") for line in body.splitlines()]
+
+
+def assert_order_is_appendable(order_file):
+    """Refuses unless a line can be appended to ORDER safely. A GUARD, and only a
+    guard: it returns nothing, so a caller that also wants the lines asks
+    normalised_order_lines for them and cannot mistake state for a check."""
+    if not order_file.is_file():
+        fatal(
+            f"[{order_file}] does not exist, so a generated seed could never be applied; nothing "
+            f"was written",
+            status=EXIT_SCHEMA_ORDER_DRIFT,
+        )
+    lines = normalised_order_lines(order_file)
+    seen = set()
+    duplicates = set()
+    for line in lines:
+        if line == "":
+            continue
+        if line in seen:
+            duplicates.add(line)
+        seen.add(line)
+    if duplicates:
+        fatal(
+            f"[{order_file}] cannot be appended to safely: it lists "
+            f"{', '.join(f'[{name}]' for name in sorted(duplicates))} more than once. Fix it and "
+            f"re-run. `bin/db-status` reports the same corpus without refusing it",
+            status=EXIT_SCHEMA_ORDER_DRIFT,
+        )
+
+
+def append_to_order(order_file, name):
+    try:
+        body = order_file.read_bytes()
+        prefix = b"" if body == b"" or body.endswith(b"\n") else b"\n"
+        with order_file.open("ab") as handle:
+            handle.write(prefix + name.encode("ascii") + b"\n")
+    except OSError as error:
+        fatal(
+            f"could not append [{name}] to [{order_file}] ([{type(error).__name__}] [{error}]); "
+            f"the seed is in the schema directory and nothing declares it, so it would never be "
+            f"applied. Add the line by hand or re-run"
+        )
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+
+def resolve_paths(options):
+    csv_path = Path(options.get("-c", str(DEFAULT_CSV)))
+    schema_arg = Path(options.get("-d", str(DEFAULT_SCHEMA_DIR)))
+
+    if not csv_path.is_file():
+        fatal(f"cycles CSV not found [{csv_path}]", status=EXIT_INVALID_ARG_VALUE)
+    if csv_path.stat().st_size == 0:
+        fatal(
+            f"cycles CSV is empty [{csv_path}]; a file with no header is not a corpus this "
+            f"validator can read",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    if not schema_arg.is_dir():
+        fatal(
+            f"schema directory not found [{schema_arg}]"
+            + ("" if not schema_arg.exists() else ", and what is there is not a directory"),
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    return csv_path.resolve(), schema_arg.resolve()
+
+
+def label_for(path):
+    """The path as a message says it: relative to the repo root where it is under
+    it, and absolute otherwise (a harness fixture in a temp tree)."""
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def main(argv):
+    options = parse_short_options(argv, GETOPT_SPEC, __doc__, SCRIPT_NAME)
+    dry_run = "-n" in options
+    csv_path, schema_dir = resolve_paths(options)
+    order_file = schema_dir / "ORDER"
+    csv_label = label_for(csv_path)
+    # BESIDE the authored CSV, and not behind an option of its own: the sweep is a
+    # fact about THAT corpus's urls, so -c names both files.
+    link_status_path = csv_path.parent / LINK_STATUS_NAME
+    link_label = label_for(link_status_path)
+
+    assert_order_is_appendable(order_file)
+    assert_seed_names_are_readable(schema_dir)
+
+    faults = []
+    # The undecodable bytes, the empty file and the header -- all four decisions
+    # are read_csv_with_header's, which is also where the reasoning for each one
+    # is written down, because link-status.csv needs the identical preamble.
+    rows = read_csv_with_header(csv_path, csv_label, EXPECTED_HEADER, "cycles CSV", faults)
+
+    # The sweep is read BEFORE the rows, so a row whose url nobody asked about is
+    # a fault named by its own line rather than a migration that fails at apply
+    # time in somebody else's db-reset (RFC 220).
+    swept = read_link_status(link_status_path, link_label, faults)
+    rendered = validate_and_render(rows, csv_label, faults, swept, link_label)
+
+    if not faults and not rendered:
+        fatal(f"[{csv_label}] has a header and no rows; nothing was written")
+
+    if faults:
+        for fault in faults:
+            log_error(fault)
+        fatal(f"[{len(faults)}] fault(s) in [{csv_label}]; nothing was written")
+
+    days = {}
+    for row in rendered:
+        days.setdefault(row["checked_on"], []).append(row)
+
+    # WHAT WOULD CHANGE IS DECIDED FOR EVERY DAY BEFORE ANYTHING IS WRITTEN, and
+    # that ordering is the guard: a corpus whose SECOND reading day would rewrite
+    # a landed seed must not have had its first day's file written on the way to
+    # finding out. A migration corpus half-written by a run that then refused is
+    # the state nobody can reason about.
+    plan = []
+    would_change = []
+    for day in sorted(days):
+        name = SEED_NAME_TEMPLATE % day
+        target = schema_dir / name
+        body = render_seed(day, days[day], csv_label, swept)
+        landed = read_existing_seed(target, csv_label)
+        if landed is not None and landed != body:
+            would_change.append((name, landed, body))
+        plan.append((day, name, target, body, landed))
+
+    if would_change:
+        for name, landed, body in would_change:
+            log_error(
+                f"[{name}] is already in [{schema_dir}] and what [{csv_label}] generates today is "
+                f"not what it holds. A landed migration is replayed on every db-reset and may "
+                f"never change, so nothing was written."
+            )
+            log_error(seed_difference(landed, body))
+        for name, _landed, _body in would_change:
+            log_error(would_change_escape(name))
+        fatal(
+            f"[{len(would_change)}] generated seed(s) would change; nothing was written",
+            status=EXIT_SEED_WOULD_CHANGE if dry_run else 1,
+        )
+
+    order_lines = normalised_order_lines(order_file)
+    changed = False
+
+    for day, name, target, body, landed in plan:
+        if landed == body:
+            log_info(f"{SCRIPT_NAME}: [{name}] is already what this corpus generates.")
+        else:
+            changed = True
+            if dry_run:
+                log_error(f"{SCRIPT_NAME}: [{target}] is not what [{csv_label}] generates.")
+                log_error(f"  Run: nix develop -c bin/{SCRIPT_NAME}")
+            else:
+                # ATOMICALLY, through bin/pyfunctions.py's shared writer: the body
+                # is staged beside the target and renamed into place, so an
+                # interrupted or out-of-space run leaves the PREVIOUS file
+                # standing rather than a truncated one. What is written here is a
+                # MIGRATION, replayed from the top on every db-reset, and half an
+                # INSERT is a corpus nobody can apply. write_atomically refuses
+                # through this script's own channel, so there is no OSError to
+                # catch here.
+                write_atomically([(target, body.encode("utf-8"))], SCRIPT_NAME)
+                log_info(f"{SCRIPT_NAME}: wrote [{target}].")
+
+        if name in order_lines:
+            continue
+        changed = True
+        if dry_run:
+            log_error(
+                f"{SCRIPT_NAME}: [{order_file}] does not declare [{name}], so the seed would never "
+                f"be applied."
+            )
+        else:
+            append_to_order(order_file, name)
+            log_info(f"{SCRIPT_NAME}: appended [{name}] to [{order_file}].")
+            # The append made the list above stale, and the next day asks the same
+            # question. Re-read the corpus rather than reasoning about what this
+            # loop just did -- and re-assert it, because an append that produced a
+            # duplicate is a corpus bin/db-migrate would refuse.
+            assert_order_is_appendable(order_file)
+            order_lines = normalised_order_lines(order_file)
+
+    if dry_run and changed:
+        return EXIT_SEED_WOULD_CHANGE
+    log_info(f"{SCRIPT_NAME}: done.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

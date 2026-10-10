@@ -275,6 +275,28 @@ class SystemPromptCatalogTest {
     private val TEST_TIMELINE_TOOL_NAME = AdmissionTestTimelineChatTool.TOOL_NAME
 
     /**
+     * The PSAT/National Merit tool the RFC 243 sentences name, read from the tool
+     * itself on the same precedent as [ADMISSIONS_TOOL_NAME].
+     */
+    private val NATIONAL_MERIT_TOOL_NAME = ed.unicoach.coaching.testing.NationalMeritChatTool.TOOL_NAME
+
+    /**
+     * A Selection Index figure presented as a bar to clear: the shape RFC 243
+     * refuses to store and therefore must never speak.
+     *
+     * Deliberately narrow -- a "need"/"qualify"/"cutoff" word within a short reach
+     * of two or three digits -- because the body is full of legitimate numbers
+     * (four cost lines, a 150% completion rate) and a sweep for digits alone would
+     * be a test nobody could keep green.
+     */
+    private val SELECTION_INDEX_FIGURE: Regex =
+      Regex(
+        "(need|needs|qualif\\w*|cutoff|cut-off|score of|index of)[^.]{0,40}\\b\\d{2,3}\\b|" +
+          "\\b\\d{2,3}\\b[^.]{0,30}(to qualify|selection index)",
+        RegexOption.IGNORE_CASE,
+      )
+
+    /**
      * The automatic-award tool the RFC 239 paragraphs name, read from the tool
      * itself on the same precedent as [ADMISSIONS_TOOL_NAME]: the pairing under
      * test is SEEDED COPY versus SHIPPING TOOL, and a literal here would keep
@@ -2949,13 +2971,33 @@ class SystemPromptCatalogTest {
    * pin test states.
    */
   @Test
-  fun `the version below the pin does not already name the parent-invite tool`() {
-    val previous = "v${versionNumberOf(coaching.systemPromptVersion) - 1}"
+  fun `the version below the parent-invite version does not already name that tool`() {
+    // THE ROLLBACK TARGET IS ONE BELOW THE VERSION THAT INTRODUCED THE
+    // PARAGRAPH, NOT ONE BELOW THE PIN (corrected by RFC 243, which cut the
+    // next version on top of RFC 240's). This test read `pin - 1`, which was
+    // the same row only while RFC 240 was the newest prompt in the catalog.
+    // The moment any later run cuts a version -- which is the normal case, not
+    // an unusual one -- `pin - 1` became RFC 240's OWN row, and the test failed
+    // asserting that RFC 240's paragraph had not been added by RFC 240. What
+    // the rollback claim is actually about is this paragraph's own predecessor,
+    // so the version is FOUND by walking the catalog rather than computed from
+    // wherever the pin happens to be today.
+    val introduced =
+      (1..versionNumberOf(coaching.systemPromptVersion))
+        .firstOrNull { n ->
+          SystemPromptsDao
+            .findByNameAndVersion(session, coaching.systemPromptName, "v$n")
+            .getOrNull()
+            ?.body
+            ?.contains(INVITE_SUPPORTER_TOOL_NAME) == true
+        } ?: fail("no catalog version names the parent-invite tool, so there is no paragraph to roll back")
+
+    val previous = "v${introduced - 1}"
     val row =
       SystemPromptsDao
         .findByNameAndVersion(session, coaching.systemPromptName, previous)
         .getOrElse { cause ->
-          fail("the row below the pin [$previous] must remain selectable, or the rollback is not one", cause)
+          fail("the row below [v$introduced] must remain selectable, or the rollback is not one", cause)
         }
 
     assertFalse(
@@ -3744,6 +3786,97 @@ class SystemPromptCatalogTest {
       "every date a family acts on comes from the tool, and the prompt is where that is stated",
     )
     assertParagraphKeepsTheStandingCopyRules("testing timeline", paragraph)
+  }
+
+  /**
+   * RFC 243: THE PSAT/NMSQT IS A MONEY EVENT AND NOT AN ADMISSIONS TEST, and the
+   * arm of the cycle comes from the tool rather than from the coach's own
+   * arithmetic.
+   *
+   * The tool name is read from [NATIONAL_MERIT_TOOL_NAME] and never retyped, on
+   * this file's standing precedent: the pairing under test is SEEDED COPY versus
+   * SHIPPING TOOL, and a literal here would keep passing after a rename.
+   */
+  @Test
+  fun `the testing-timeline paragraph says no college sees a PSAT score and routes the cycle arm to the tool`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      NATIONAL_MERIT_TOOL_NAME,
+      "the coach cannot call a tool the prompt never names",
+    )
+    assertParagraphStates(
+      paragraph,
+      "not an admissions test and no college ever sees the score",
+      "a PSAT score reaches no admission decision anywhere, which is what makes this a money event",
+    )
+    assertParagraphStates(
+      paragraph,
+      "never describe it as test prep",
+      "practice for the SAT is the one thing this sitting is not for, for money purposes",
+    )
+    assertParagraphStates(
+      paragraph,
+      "never arithmetic of your own",
+      "which arm of the cycle she is in is the tool's answer, not a calculation from a date",
+    )
+  }
+
+  /**
+   * RFC 243'S TWO REFUSALS, in the copy: no qualifying score is ever stated, and
+   * no figure a school pays is spoken without the base rate in the same answer.
+   *
+   * The first is D9 and correction 4 together -- the bar is allocated per STATE,
+   * is published nowhere in advance, and varies by year -- and the second is why
+   * correction 4 exists at all: the six-figure numbers are the memorable part.
+   */
+  @Test
+  fun `the testing-timeline paragraph refuses a qualifying score and demands the base rate with every figure`() {
+    val paragraph = testingTimelineParagraph()
+    assertParagraphStates(
+      paragraph,
+      "Never state a qualifying score for National Merit, national or per state",
+      "we hold none, nobody publishes one in advance, and a figure from elsewhere is not hers either",
+    )
+    assertParagraphStates(
+      paragraph,
+      "speak that payload's base rate in the same answer",
+      "a package figure without the base rate beside it is a lottery ticket",
+    )
+    assertParagraphStates(
+      paragraph,
+      "never say the chance is gone forever",
+      "the letter route is real, and the brief corrected this sentence in writing before the slice was designed",
+    )
+    assertParagraphStates(
+      paragraph,
+      "never that the school pays nothing",
+      "a school we have not read is a gap in our data and never an absence at the school",
+    )
+  }
+
+  /**
+   * NO NUMBER ANYWHERE IN THE SERVED BODY IS PRESENTED AS A NATIONAL MERIT BAR.
+   *
+   * Swept over the WHOLE served body rather than one paragraph, because the
+   * defect this forbids is a figure appearing anywhere in the copy the coach
+   * reads -- and the corpus deliberately stores none, so a number here could only
+   * have come from someone's memory. The pattern's own health is asserted first:
+   * a guard that cannot fire and a clean body are indistinguishable otherwise.
+   */
+  @Test
+  fun `no sentence of the served body states a National Merit qualifying score`() {
+    val body = servedBody()
+
+    assertTrue(
+      SELECTION_INDEX_FIGURE.containsMatchIn("you need a Selection Index of 212 to qualify"),
+      "the guard pattern must be able to fire",
+    )
+    assertEquals(
+      emptyList(),
+      SELECTION_INDEX_FIGURE.findAll(body).map { it.value }.toList(),
+      "no figure in the coach's copy is a National Merit bar: the corpus stores none, so one here came from memory",
+    )
   }
 
   /**

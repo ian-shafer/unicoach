@@ -375,6 +375,60 @@ class IngestApplicationArgvTest {
   }
 
   // ---------------------------------------------------------------------------
+  // The National Merit award corpus (RFC 243): the money-vocabulary shape, and
+  // ONE file rather than the automatic-award group's two -- its committed link
+  // answers are read from beside it, so a second flag could only ever pair one
+  // corpus's rows with another corpus's answers
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a run with no national-merit-awards flag has no corpus source`() {
+    assertNull(ok().nationalMeritAwards, "absent must stay absent -- no fabricated repo default at this layer")
+  }
+
+  @Test
+  fun `the national-merit-awards flag carries the path, and its source flag the original argument`() {
+    val remote =
+      ok(
+        "--national-merit-awards=/tmp/scratch/awards.csv",
+        "--national-merit-awards-source=s3://snap/national-merit-awards/awards.csv",
+      )
+    assertEquals("/tmp/scratch/awards.csv", remote.nationalMeritAwards?.file?.path)
+    assertEquals("s3://snap/national-merit-awards/awards.csv", remote.nationalMeritAwards?.sourceArg)
+    assertEquals(
+      "db/seed/national-merit-awards/awards.csv",
+      ok("--national-merit-awards=db/seed/national-merit-awards/awards.csv").nationalMeritAwards?.sourceArg,
+    )
+  }
+
+  @Test
+  fun `a national-merit-awards source flag without its file is refused, never silently ignored`() {
+    val message = usage(*positional, codebooksFlag, "--national-merit-awards-source=s3://snap/awards.csv")
+    assertTrue(message.contains("--national-merit-awards-source"), message)
+    assertTrue(message.contains("was not supplied"), message)
+  }
+
+  @Test
+  fun `a repeated or blank national-merit-awards flag is refused like any other`() {
+    assertTrue(
+      usage(*positional, "--national-merit-awards=a.csv", "--national-merit-awards=b.csv").contains("more than once"),
+    )
+    assertTrue(usage(*positional, "--national-merit-awards=").contains("non-empty"))
+  }
+
+  @Test
+  fun `the corpus file joins the existence probe under its own role`() {
+    val named =
+      namedSources(
+        ok("--codebooks=db/data/codebooks.json", "--national-merit-awards=db/seed/national-merit-awards/awards.csv"),
+      )
+    // The corpus's link-status.csv is NOT probed here: it has no flag and so no
+    // role name, and the loader's own header assertion is what requires it --
+    // before the first phase commits, like every other file.
+    assertEquals(listOf("institution", "fields", "aliases", "codebooks", "national-merit-awards"), named.map { it.first })
+  }
+
+  // ---------------------------------------------------------------------------
   // The optional SFA group (RFC 162): the IPEDS group's shape, its own year
   // ---------------------------------------------------------------------------
 

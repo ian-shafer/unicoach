@@ -6,7 +6,7 @@ help() {
 load-external-data [-n] [-h] <institution.csv> <fields.csv> [aliases.json]
 
 Runs bin/ingest-colleges ONCE, with every path this repo already knows defaulted
-(RFC 172, RFC 170). The maximal ingest command is fifteen flags and paths over
+(RFC 172, RFC 170). The maximal ingest command is eighteen flags and paths over
 case-sensitive option pairs (-a/-A, -y/-Y, -f) and year-stamped IPEDS filenames;
 nothing in the tree wrote it down, and the failure that invites is not a crash
 but a green run that loaded less than the operator believed it loaded.
@@ -19,6 +19,7 @@ Defaulted for you, with NO flag to override any of them:
                                      -p db/seed/cds/aid_policy.csv
   -w db/seed/automatic-awards/awards.csv
   -b db/seed/automatic-awards/bands.csv
+  -N db/seed/national-merit-awards/awards.csv
   -H -I -A -C -Y -y -S -f            read from db/seed/ipeds/PROVENANCE.json
 
 db/seed/automatic-awards/link-status.csv is checked for here and passed to
@@ -26,6 +27,13 @@ nothing: bin/ingest-colleges' award phase reads it from beside the -w file, so i
 has no flag to default. It is checked anyway, because this script's whole job is
 that every required input is named before the JVM starts -- and that file is
 required: the phase refuses a cited url with no committed answer.
+
+db/seed/national-merit-awards/link-status.csv is checked for and passed to
+nothing for exactly those reasons, one corpus along (RFC 243): the National
+Merit award phase reads it from beside the -N file, it has no flag, and that
+phase also refuses a cited url with no committed answer. Each corpus's sidecar
+is checked against ITS OWN directory, so a run with one of the two present is
+told which one is missing rather than that "link-status.csv" is.
 
 bin/ingest-colleges keeps every one of its flags and is still the tool to reach
 for when a path is unusual; this wrapper's entire value is that it has no
@@ -129,6 +137,13 @@ AUTOMATIC_AWARDS_DIR="$PROJECT_ROOT/db/seed/automatic-awards"
 AWARDS_CSV="$AUTOMATIC_AWARDS_DIR/awards.csv"
 AWARD_BANDS_CSV="$AUTOMATIC_AWARDS_DIR/bands.csv"
 AWARDS_LINK_STATUS_CSV="$AUTOMATIC_AWARDS_DIR/link-status.csv"
+# The hand-typed National Merit award corpus (RFC 243). Two files and one flag:
+# -N names awards.csv, and its link-status.csv is read from beside that file, so
+# like the award corpus's sidecar above it is named here to be CHECKED, never to
+# be passed.
+NATIONAL_MERIT_AWARDS_DIR="$PROJECT_ROOT/db/seed/national-merit-awards"
+NATIONAL_MERIT_AWARDS_CSV="$NATIONAL_MERIT_AWARDS_DIR/awards.csv"
+NATIONAL_MERIT_AWARDS_LINK_STATUS_CSV="$NATIONAL_MERIT_AWARDS_DIR/link-status.csv"
 IPEDS_DIR="$PROJECT_ROOT/db/seed/ipeds"
 IPEDS_MANIFEST="$IPEDS_DIR/PROVENANCE.json"
 
@@ -257,6 +272,8 @@ require_inputs() {
   require_input "$AWARDS_CSV" "the hand-typed automatic-award corpus; it is committed at db/seed/automatic-awards/awards.csv"
   require_input "$AWARD_BANDS_CSV" "the automatic-award band cells; they are committed at db/seed/automatic-awards/bands.csv"
   require_input "$AWARDS_LINK_STATUS_CSV" "the automatic-award corpus's committed link answers, read from beside awards.csv; they are committed at db/seed/automatic-awards/link-status.csv"
+  require_input "$NATIONAL_MERIT_AWARDS_CSV" "the hand-typed National Merit award corpus; it is committed at db/seed/national-merit-awards/awards.csv"
+  require_input "$NATIONAL_MERIT_AWARDS_LINK_STATUS_CSV" "the National Merit award corpus's committed link answers, read from beside awards.csv; they are committed at db/seed/national-merit-awards/link-status.csv"
   require_input "$IPEDS_HD" "the IPEDS HD survey file; run bin/fetch-ipeds"
   require_input "$IPEDS_IC" "the IPEDS IC survey file; run bin/fetch-ipeds"
   require_input "$IPEDS_ADM" "the IPEDS ADM survey file; run bin/fetch-ipeds"
@@ -291,6 +308,7 @@ build_ingest_command() {
     -p "$CDS_AID_POLICY"
     -w "$AWARDS_CSV"
     -b "$AWARD_BANDS_CSV"
+    -N "$NATIONAL_MERIT_AWARDS_CSV"
     -H "$IPEDS_HD"
     -I "$IPEDS_IC"
     -A "$IPEDS_ADM"

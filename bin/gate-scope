@@ -103,6 +103,7 @@ KNOWN_HARNESSES=(
   test-calendar-seed-scripts-tests
   test-state-programme-seed-scripts-tests
   fafsa-deadline-seed-scripts-tests
+  national-merit-seed-scripts-tests
   gate-scope-scripts-tests
   web-assets-scripts-tests
   q-scripts-tests
