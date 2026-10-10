@@ -121,7 +121,7 @@ Status:
     written at the line. Gate: full check, 1,135s, 0 failures, verified tree
     recorded. iOS 722 tests, 0 failures; 84 snapshots, 0 drift on the 74
     pre-existing scenes.
-  - `family/03.5/who-pays` LANDED as RFC 244 (`main@04260df0` + `6a96f1e6`,
+  - `family/03.5/who-pays` LANDED as RFC 244 (`main@04260df0` + `1b3e7506`,
     2026-10-10) — a parent's account can now be paid for. Billing and metering
     moved from the STUDENT to the ACCOUNT: `subscriptions.user_id` replaces
     `student_id` on the live table and on `subscriptions_versions`, the gate
