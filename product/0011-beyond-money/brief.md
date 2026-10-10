@@ -673,7 +673,7 @@ nudge, never a bare repeat.
       check passed in 11.6 minutes. 41 review lenses over four tiers, 39 fixes
       applied, 0 halted, 0 contradictions.
 
-    beyond/08/your-field-in-search LANDED as RFC 245 (main@80e695fc,
+    beyond/08/your-field-in-search LANDED as RFC 245 (main@80e695fc + 67bc7f36,
       2026-10-10) — a student who has said what they want to study now sees, for
       every school a search returns, whether it teaches that subject: `yes`, `no`
       or `unknown`, and a `yes` names which of their subjects matched so the coach
