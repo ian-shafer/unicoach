@@ -719,6 +719,33 @@ nudge, never a bare repeat.
       fuzz cases). 41 review lenses over four tiers, 29 fixes applied, 0
       contradictions.
 
+    beyond/07/the-report-weave LANDED as RFC 251 (main@51c578bb + DOCSHA, 2026-10-11) — a
+      parent opening the Family Cost Report now sees, in each school's money paragraph and
+      before that school's own borrowing block, what graduates of the student's own subjects
+      earn and owe there: every stored subject (up to three, alphabetical, no favourite
+      picked) and every matching programme by its published title, with Treasury median
+      earnings four years after finishing (2024 dollars), NSLDS median federal loan debt at
+      completion, and the publisher's own monthly payment on a standard 10-year plan — each
+      its own sentence naming its publisher and cohort. Short marks say withheld for privacy,
+      not reported, or no programme; the coverage limit is said once; the figures join the
+      administrative-record "kind of number" sentence; one College Scorecard link sits in
+      "Sources and what this is not". Ian's gate: all three figures (Option B), one link (D34
+      Option A), both doors, consent words verbatim. Shown ONLY behind the student's
+      `intended_subjects` permission from RFC 248, read in the report's one session: never
+      asked and refused both hide, granted shows, and links already sent change on their next
+      load; with no grant or no subjects the page is unchanged (D20). The student's doors: iOS
+      "Your details" → "What you want to study" → "Who can see them" ("Show them" / "Keep them
+      to me", neither selected until answered), and the coach, which asks once in the same
+      consent words when a student with stored subjects who was never asked shares the report
+      — a no is never re-asked — through the new `update_sharing_permission` chat tool. Coach
+      prompt v50, rollback v49, PARTIAL (the payload field and the tool still ship; revert the
+      code commit too). No new table, no migration but the generated prompt seed; grants stay
+      in `sharing_permissions` after a revert and are read by nothing. Gradle 4,281 executed,
+      0 failures on the landed tree; iOS 791, 0 failures, 2 pre-existing skips; the hook's
+      full check passed. 41 review lenses over four tiers, every finding accepted, 0
+      contradictions. The last slice of this brief: brief 0011 is COMPLETE, and it frees
+      nothing.
+
 ### Spec defect found by `beyond/05`'s review (recorded 2026-09-23)
 
 The slice text DEFINED the "no matching programme" sentence by the PROGRAMME
