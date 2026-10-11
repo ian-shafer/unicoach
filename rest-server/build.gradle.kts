@@ -53,6 +53,7 @@ dependencies {
   testImplementation(testFixtures(project(":chat")))
   testImplementation(testFixtures(project(":email")))
   testImplementation(testFixtures(project(":appstore")))
+  testImplementation(testFixtures(project(":web-common")))
 }
 
 tasks.withType<Test> {

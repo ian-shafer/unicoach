@@ -81,22 +81,26 @@ suspend fun registerVerifiedUser(
   return sessionCookie(response)
 }
 
+/** The password [registerUser] registers every account with, so a suite can log one in again. */
+internal const val E2E_PASSWORD = "Password123!"
+
 /** Registers [email] over HTTP and returns the 201 response, unverified. */
 internal suspend fun registerUser(
   client: HttpClient,
   baseUrl: String,
   email: String,
+  name: String = "E2E User",
 ): HttpResponse {
   val response =
     client.post("$baseUrl/api/v1/auth/register") {
       header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      setBody(jacksonObjectMapper().writeValueAsString(RegisterRequest(email, "Password123!", "E2E User")))
+      setBody(jacksonObjectMapper().writeValueAsString(RegisterRequest(email, E2E_PASSWORD, name)))
     }
   assertEquals(HttpStatusCode.Created, response.status, "got ${response.bodyAsText()}")
   return response
 }
 
-private fun markEmailVerified(
+internal fun markEmailVerified(
   dbConnection: Connection,
   email: String,
 ) {

@@ -15,6 +15,7 @@ import ed.unicoach.rest.routing.MoneyProfileRouteHandler
 import ed.unicoach.rest.routing.SharingPermissionRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
 import ed.unicoach.rest.routing.StudentSupporterRouteHandler
+import ed.unicoach.rest.routing.SubjectRoutes
 import ed.unicoach.rest.routing.SubjectsRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
 import ed.unicoach.rest.routing.SupporterInviteRoutes
@@ -94,6 +95,7 @@ fun Application.configureRouting(
   supporterInviteService: ed.unicoach.family.SupporterInviteService,
   supporterService: ed.unicoach.family.SupporterService,
   accountClosureService: ed.unicoach.account.AccountClosureService,
+  subjectReadService: ed.unicoach.family.SubjectReadService,
 ) {
   val authRouteHandler =
     AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier, accountClosureService)
@@ -126,6 +128,7 @@ fun Application.configureRouting(
     SupporterRoutes(authService, sessionConfig, supporterService, budgetService)
   val studentSupporterRouteHandler =
     StudentSupporterRouteHandler(authService, studentService, supporterService, sessionConfig)
+  val subjectRouteHandler = SubjectRoutes(authService, sessionConfig, subjectReadService)
   routing {
     route("/healthz") {
       get {
@@ -152,5 +155,6 @@ fun Application.configureRouting(
     supporterInviteRouteHandler.registerRoutes(this)
     supporterRouteHandler.registerRoutes(this)
     studentSupporterRouteHandler.registerRoutes(this)
+    subjectRouteHandler.registerRoutes(this)
   }
 }

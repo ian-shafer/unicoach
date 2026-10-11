@@ -18,6 +18,23 @@ import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.Observation
 import ed.unicoach.db.models.ObservationId
 import ed.unicoach.db.models.StudentId
+import java.time.Instant
+
+/**
+ * One entry of a student's list as a linked adult sees it (RFC 250): the
+ * school, where the student stands with it, and the school's own living plan.
+ *
+ * No `reasons`, no supporting observations, no entry id and no version. The
+ * first two are the student's own words from their coach conversations; the
+ * last two only serve writes, and an adult has none.
+ */
+data class SharedCollegeListEntry(
+  val collegeId: CollegeId,
+  val collegeName: String,
+  val status: CollegeListEntryStatus,
+  val livingPlan: LivingArrangement?,
+  val updatedAt: Instant,
+)
 
 /**
  * Same shape as [ed.unicoach.student.StudentService]: one [Database]-backed
@@ -91,26 +108,56 @@ class CollegeListService(
    */
   suspend fun listActiveWithNames(studentId: StudentId): Result<List<EntryWithCollegeName>> =
     try {
-      database.withConnection { session ->
-        CollegeListEntriesDao.listActiveByStudent(session, studentId).map { entries ->
-          val names =
-            CollegesDao
-              .listByIds(session, entries.map { it.collegeId })
-              .getOrThrow()
-              .associate { it.id to it.name }
-          entries.map { entry ->
-            // FK-guaranteed present; a miss is corruption worth naming.
-            val name =
-              checkNotNull(names[entry.collegeId]) {
-                "college [${entry.collegeId.value}] missing for active list entry [${entry.id.value}]"
-              }
-            EntryWithCollegeName(entry, name)
-          }
-        }
-      }
+      Result.success(database.withConnection { session -> activeWithNames(session, studentId) })
     } catch (e: Exception) {
       Result.failure(e)
     }
+
+  /**
+   * The active list as a linked adult may see it (RFC 250), read on the
+   * CALLER's session so the link check and the read are one snapshot.
+   *
+   * It loads no observations and selects no `reasons` into the result: both
+   * are the student's own words from their coach conversations, and an adult
+   * reading the list sees which schools and where they stand, not why.
+   *
+   * Throws on a failed read, like `CollegeCostService.readInSession`: inside
+   * the caller's `withConnection` block a throw is what rolls the session back.
+   */
+  fun listShared(
+    session: SqlSession,
+    studentId: StudentId,
+  ): List<SharedCollegeListEntry> =
+    activeWithNames(session, studentId).map { (entry, collegeName) ->
+      SharedCollegeListEntry(
+        collegeId = entry.collegeId,
+        collegeName = collegeName,
+        status = entry.status,
+        livingPlan = entry.livingPlan,
+        updatedAt = entry.updatedAt,
+      )
+    }
+
+  /** The active list with each college's name, on [session]. Throws on a failed read. */
+  private fun activeWithNames(
+    session: SqlSession,
+    studentId: StudentId,
+  ): List<EntryWithCollegeName> {
+    val entries = CollegeListEntriesDao.listActiveByStudent(session, studentId).getOrThrow()
+    val names =
+      CollegesDao
+        .listByIds(session, entries.map { it.collegeId })
+        .getOrThrow()
+        .associate { it.id to it.name }
+    return entries.map { entry ->
+      // FK-guaranteed present; a miss is corruption worth naming.
+      val name =
+        checkNotNull(names[entry.collegeId]) {
+          "college [${entry.collegeId.value}] missing for active list entry [${entry.id.value}]"
+        }
+      EntryWithCollegeName(entry, name)
+    }
+  }
 
   suspend fun getForStudent(
     studentId: StudentId,

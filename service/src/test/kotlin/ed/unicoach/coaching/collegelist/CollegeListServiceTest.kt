@@ -426,4 +426,48 @@ class CollegeListServiceTest {
 
       assertEquals(emptyMap(), service.listNames(emptyList()).getOrThrow())
     }
+
+  // ---------------------------------------------------------------------------
+  // listShared (RFC 250)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The entry carries BOTH of the student's own words — reasons and a cited
+   * quote — so the projection's equality with exactly these five fields is what
+   * proves neither travels.
+   */
+  @Test
+  fun `listShared projects the active list without reasons or observations, even when the entry has both`() =
+    runTest {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val college = createCollege()
+      val removed = createCollege()
+      val quote = observation(student, convo, "I could see myself there")
+      val added =
+        (
+          service
+            .addToList(student, college, CollegeListEntryStatus.APPLYING, "Loved the tour", LivingArrangement.ON_CAMPUS, listOf(quote))
+            .getOrThrow() as AddToListResult.Success
+        )
+      assertEquals(1, added.supportingObservations.size, "the fixture must cite a quote, or leaving it out proves nothing")
+      val gone = addEntry(student, removed)
+      service.removeFromList(student, gone.id, gone.version).getOrThrow()
+
+      val shared = database.withConnection { session -> service.listShared(session, student) }
+
+      assertEquals(
+        listOf(
+          SharedCollegeListEntry(
+            college,
+            "Test College",
+            CollegeListEntryStatus.APPLYING,
+            LivingArrangement.ON_CAMPUS,
+            added.entry.updatedAt,
+          ),
+        ),
+        shared,
+        "the active entry only, as the five fields a linked adult may see",
+      )
+    }
 }

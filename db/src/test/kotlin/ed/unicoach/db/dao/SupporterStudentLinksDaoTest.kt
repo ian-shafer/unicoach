@@ -1096,4 +1096,86 @@ class SupporterStudentLinksDaoTest {
 
     assertEquals(emptyList(), supportersOf(emptyList()), "an empty IN list asks about nobody")
   }
+
+  // --- The live-link check (RFC 250) ----------------------------------------
+
+  /** A supporter's user, its live link to a fresh student, and both ends' user ids — the fixture each predicate below breaks once. */
+  private class LiveLink(
+    val supporterUser: UserId,
+    val supporter: Supporter,
+    val studentUser: UserId,
+    val student: StudentId,
+    val link: SupporterStudentLink,
+  )
+
+  private fun liveLink(): LiveLink {
+    val supporterUser = createUser("Parent Jane")
+    val supporter = createSupporter(supporterUser)
+    val studentUser = createUser("Ava Okafor")
+    val student = createStudent(studentUser)
+    return LiveLink(supporterUser, supporter, studentUser, student, link(supporter.id, student).getOrThrow())
+  }
+
+  private fun liveLinkFor(
+    userId: UserId,
+    studentId: StudentId,
+  ): SupporterStudentLinkId? = SupporterStudentLinksDao.findLiveForUser(session, userId, studentId).getOrThrow()
+
+  @Test
+  fun `a live link answers its id`() {
+    val live = liveLink()
+
+    assertEquals(live.link.id, liveLinkFor(live.supporterUser, live.student))
+  }
+
+  @Test
+  fun `a severed link answers null`() {
+    val live = liveLink()
+    sever(live.link)
+
+    assertNull(liveLinkFor(live.supporterUser, live.student))
+  }
+
+  @Test
+  fun `a closed supporter row answers null`() {
+    val live = liveLink()
+    SupportersDao.delete(session, live.supporter.id, live.supporter.version).getOrThrow()
+
+    assertNull(liveLinkFor(live.supporterUser, live.student), "closing a supporter leaves the link standing, so the check must look")
+  }
+
+  @Test
+  fun `a closed supporter user answers null`() {
+    val live = liveLink()
+    closeUser(live.supporterUser)
+
+    assertNull(liveLinkFor(live.supporterUser, live.student))
+  }
+
+  @Test
+  fun `a closed student row answers null`() {
+    val live = liveLink()
+    closeStudent(live.student)
+
+    assertNull(liveLinkFor(live.supporterUser, live.student))
+  }
+
+  /** The `students` row stays live, as in [closeUser]'s KDoc: this is the state only the last predicate refuses. */
+  @Test
+  fun `a closed student user answers null`() {
+    val live = liveLink()
+    closeUser(live.studentUser)
+
+    assertNull(liveLinkFor(live.supporterUser, live.student))
+  }
+
+  @Test
+  fun `a link to a different student answers null`() {
+    val live = liveLink()
+    val otherStudent = createStudent()
+    link(createSupporter().id, otherStudent).getOrThrow()
+
+    assertNull(liveLinkFor(live.supporterUser, otherStudent), "this user holds no link to that student")
+    assertNull(liveLinkFor(createUser(), live.student), "and a user with no link reads nothing of this one")
+  }
 }

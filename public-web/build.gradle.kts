@@ -40,6 +40,8 @@ dependencies {
   // report page is now checked against, and the field-of-study registry the
   // page's program fixtures are built from.
   testImplementation(testFixtures(project(":college")))
+  // The Ktor route-tree walker the route-coverage guard reads (RegisteredRoutes).
+  testImplementation(testFixtures(project(":web-common")))
 }
 
 tasks.withType<Test> {

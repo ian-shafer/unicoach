@@ -358,6 +358,16 @@ fun Application.appModule(
   val sharingPermissionService =
     ed.unicoach.coaching
       .SharingPermissionService(database)
+  // Hoisted (RFC 250): the cost chat tool and the subject seam read the cost
+  // picture through one instance.
+  val collegeCostService =
+    ed.unicoach.coaching.costs
+      .CollegeCostService(database)
+  // The subject seam (RFC 250): the one service that reads a student a linked
+  // adult names, over the same list, cost and permission services the
+  // student's own doors use.
+  val subjectReadService =
+    ed.unicoach.family.SubjectReadService(database, collegeListService, collegeCostService, sharingPermissionService)
   // The tool registry advertised on every coaching turn (RFC 94). New tools
   // append here; nothing else in the loop changes.
   // One CollegeSearchService serves both the chat tool and the REST search
@@ -425,10 +435,7 @@ fun Application.appModule(
           ),
         ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
         ed.unicoach.coaching.costs
-          .CollegeCostChatTool(
-            ed.unicoach.coaching.costs
-              .CollegeCostService(database),
-          ),
+          .CollegeCostChatTool(collegeCostService),
         ed.unicoach.coaching.collegelist
           .CollegeListChatTool(collegeListService),
         ed.unicoach.coaching.admissions
@@ -561,5 +568,6 @@ fun Application.appModule(
     supporterInviteService,
     supporterService,
     accountClosureService,
+    subjectReadService,
   )
 }

@@ -12,6 +12,7 @@ import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.db.models.SupporterStudentLink
 import ed.unicoach.db.models.SupporterStudentLinkId
 import ed.unicoach.db.models.UnlinkOutcome
+import ed.unicoach.db.models.UserId
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -50,6 +51,20 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
   // ActiveSupporterLinkException and names the TYPE, so a rename in the
   // migration cannot quietly change what `:service` does.
   private const val ACTIVE_LINK_INDEX = "supporter_student_links_supporter_student_active_idx"
+
+  /**
+   * What makes each end of a link live: its role row and the `users` row behind
+   * it. Closing an account leaves its links standing (the liveness guard fires
+   * on INSERT only), so every read of a live link joins through and checks
+   * these — [findLiveForUser], [listActiveSupportersOf] and
+   * [listActiveLinkedStudents] interpolate the same fragment, so the
+   * authorisation check and the rosters cannot disagree about who is live.
+   *
+   * Each query aliases the supporter side `sup`/`su` and the student side
+   * `s`/`stu`.
+   */
+  private const val LIVE_SUPPORTER = "sup.deleted_at IS NULL AND su.deleted_at IS NULL"
+  private const val LIVE_STUDENT = "s.deleted_at IS NULL AND stu.deleted_at IS NULL"
 
   private fun mapLink(rs: ResultSet): SupporterStudentLink {
     val id = SupporterStudentLinkId(UUID.fromString(rs.getString("id")))
@@ -117,8 +132,11 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
    * The active link for one pair, or null when the two are not linked.
    *
    * Null rather than [NotFoundException]: "these two are not linked" is the
-   * ordinary state of almost every pair, and it is exactly the answer an
-   * authorisation check asks for.
+   * ordinary state of almost every pair.
+   *
+   * It checks the LINK row only, not either account behind it, so it is not an
+   * authorisation check: a closed adult's or closed student's link still
+   * answers here. "May this user read this student" is [findLiveForUser].
    */
   fun findActive(
     session: SqlSession,
@@ -136,6 +154,50 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
           stmt.setObject(2, studentId.value)
         },
         map = ::mapLink,
+        onNoRow = { NotFoundException() },
+      ).orNullOnNotFound()
+
+  /**
+   * The live link between [userId]'s supporter row and [studentId], or null —
+   * the ONE answer to "may this user read this student" (RFC 250).
+   *
+   * Live means all five rows: the link, the supporter row, the supporter's
+   * user, the student row and the student's user. Closing either account
+   * leaves its links standing (the liveness guard fires on INSERT only), so a
+   * link-only predicate like [findActive]'s would admit a closed adult or a
+   * closed student. The partial active-pair index allows at most one row.
+   *
+   * Null for every miss — never linked, severed, either side closed, no such
+   * student — so a caller cannot tell them apart, and must not.
+   *
+   * Both sides' liveness is [LIVE_SUPPORTER] and [LIVE_STUDENT], the fragments
+   * the rosters use.
+   */
+  fun findLiveForUser(
+    session: SqlSession,
+    userId: UserId,
+    studentId: StudentId,
+  ): Result<SupporterStudentLinkId?> =
+    session
+      .queryOne(
+        """
+        SELECT l.id
+        FROM supporter_student_links l
+        JOIN supporters sup ON sup.id = l.supporter_id
+        JOIN users su ON su.id = sup.user_id
+        JOIN students s ON s.id = l.student_id
+        JOIN users stu ON stu.id = s.user_id
+        WHERE sup.user_id = ?
+          AND l.student_id = ?
+          AND l.deleted_at IS NULL
+          AND $LIVE_SUPPORTER
+          AND $LIVE_STUDENT
+        """.trimIndent(),
+        bind = { stmt ->
+          stmt.setObject(1, userId.value)
+          stmt.setObject(2, studentId.value)
+        },
+        map = { rs -> SupporterStudentLinkId(UUID.fromString(rs.getString("id"))) },
         onNoRow = { NotFoundException() },
       ).orNullOnNotFound()
 
@@ -230,14 +292,13 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
   ): Result<List<LinkedStudent>> =
     session.queryList(
       """
-      SELECT l.id AS link_id, l.student_id, l.relationship, u.name AS student_name
+      SELECT l.id AS link_id, l.student_id, l.relationship, stu.name AS student_name
       FROM supporter_student_links l
       JOIN students s ON s.id = l.student_id
-      JOIN users u ON u.id = s.user_id
+      JOIN users stu ON stu.id = s.user_id
       WHERE l.supporter_id = ?
         AND l.deleted_at IS NULL
-        AND s.deleted_at IS NULL
-        AND u.deleted_at IS NULL
+        AND $LIVE_STUDENT
       ORDER BY l.created_at, l.id
       """.trimIndent(),
       bind = { it.setObject(1, supporterId.value) },
@@ -321,14 +382,13 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
     if (ids.isEmpty) return Result.success(emptyList())
     return session.queryList(
       """
-      SELECT l.id AS link_id, l.student_id, u.name AS supporter_name
+      SELECT l.id AS link_id, l.student_id, su.name AS supporter_name
       FROM supporter_student_links l
       JOIN supporters sup ON sup.id = l.supporter_id
-      JOIN users u ON u.id = sup.user_id
+      JOIN users su ON su.id = sup.user_id
       WHERE l.student_id IN (${ids.placeholders})
         AND l.deleted_at IS NULL
-        AND sup.deleted_at IS NULL
-        AND u.deleted_at IS NULL
+        AND $LIVE_SUPPORTER
       ORDER BY l.created_at, l.id
       """.trimIndent(),
       bind = { stmt -> ids.bindFrom(stmt, 1) },

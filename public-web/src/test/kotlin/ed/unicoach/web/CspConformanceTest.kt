@@ -2,6 +2,7 @@ package ed.unicoach.web
 
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
+import ed.unicoach.web.common.routing.registeredRoutes
 import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.WHO_PAYS_PATH
 import io.ktor.client.request.forms.FormDataContent
@@ -16,17 +17,8 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.server.application.plugin
-import io.ktor.server.routing.HttpMethodRouteSelector
-import io.ktor.server.routing.PathSegmentConstantRouteSelector
-import io.ktor.server.routing.PathSegmentOptionalParameterRouteSelector
-import io.ktor.server.routing.PathSegmentParameterRouteSelector
-import io.ktor.server.routing.PathSegmentTailcardRouteSelector
-import io.ktor.server.routing.PathSegmentWildcardRouteSelector
-import io.ktor.server.routing.RootRouteSelector
-import io.ktor.server.routing.RouteSelector
 import io.ktor.server.routing.RoutingNode
 import io.ktor.server.routing.RoutingRoot
-import io.ktor.server.routing.TrailingSlashRouteSelector
 import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -148,10 +140,10 @@ class CspConformanceTest {
   @Test
   fun `every registered GET route is evaluated or named as an exclusion`() =
     testApplication {
-      var registered = emptyList<RegisteredRoute>()
+      var registered = emptyList<Pair<HttpMethod, String>>()
       application {
         testPublicWebModule()
-        registered = registeredGetRoutes(plugin(RoutingRoot) as RoutingNode)
+        registered = registeredRoutes(plugin(RoutingRoot) as RoutingNode).filter { it.method == HttpMethod.Get }.map { it.named }
       }
 
       // The application block runs when the server starts, i.e. on the first call.
@@ -167,7 +159,7 @@ class CspConformanceTest {
       )
       assertEquals(
         emptyList(),
-        accounted.filterNot { registered.contains(it) }.sortedBy { it.path },
+        accounted.filterNot { registered.contains(it) }.sortedBy { (_, path) -> path },
         "this test names a GET route the application does not register: the list has gone stale",
       )
     }
@@ -538,20 +530,6 @@ class CspConformanceTest {
     val url: String get() = if (query.isEmpty()) path else "$path?$query"
   }
 
-  /**
-   * One registered route, as the routing tree describes it: a typed method and
-   * a path.
-   *
-   * The guard used to compare Ktor's `toString()` rendering of a node
-   * (`"/verify-email/(method:GET)"`), which is a foreign library's debug format
-   * — undeclared anywhere, restated at every entry, and silently different if
-   * Ktor ever reformats it.
-   */
-  private data class RegisteredRoute(
-    val method: HttpMethod,
-    val path: String,
-  )
-
   private companion object {
     /**
      * Every route a stranger can reach without a token, plus the 404 — which is
@@ -599,119 +577,23 @@ class CspConformanceTest {
     val EVALUATED_GET_ROUTES =
       PUBLIC_ROUTES
         .filter { page -> page.expectedStatus == HttpStatusCode.OK }
-        .map { page -> RegisteredRoute(HttpMethod.Get, page.path) }
+        .map { page -> HttpMethod.Get to page.path }
         .distinct()
 
     /** Every registered `GET` route this test does NOT evaluate, and why. */
     val EXCLUDED_GET_ROUTES =
       mapOf(
-        RegisteredRoute(HttpMethod.Get, "/healthz") to "a JSON liveness probe: no HTML, so no resource for a policy to govern",
-        RegisteredRoute(HttpMethod.Get, "/report") to "needs a live share token; ReportLinkContractTest owns that route",
-        RegisteredRoute(HttpMethod.Get, "/invite") to
+        (HttpMethod.Get to "/healthz") to "a JSON liveness probe: no HTML, so no resource for a policy to govern",
+        (HttpMethod.Get to "/report") to "needs a live share token; ReportLinkContractTest owns that route",
+        (HttpMethod.Get to "/invite") to
           "needs a live invite token: InviteRoutingTest mints one and renders the page, InviteLinkContractTest pins the link path",
-        RegisteredRoute(HttpMethod.Get, "/account") to
+        (HttpMethod.Get to "/account") to
           "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
-        RegisteredRoute(HttpMethod.Get, "/account/email") to
+        (HttpMethod.Get to "/account/email") to
           "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
-        RegisteredRoute(HttpMethod.Get, "/{...}") to
+        (HttpMethod.Get to "/{...}") to
           "the static mount's tailcard: chrome-less files under static/, not pages; StaticAssetsTest owns it",
       )
-
-    /**
-     * Every `GET` route Ktor itself has registered, as a typed method and a path.
-     *
-     * Read from `RoutingRoot` rather than from the source: a route added to
-     * `Routing.kt` appears here with no edit to this test, which is the whole
-     * point of the check that consumes it.
-     */
-    fun registeredGetRoutes(root: RoutingNode): List<RegisteredRoute> {
-      val found = mutableListOf<RegisteredRoute>()
-
-      fun walk(node: RoutingNode) {
-        val selector = node.selector
-        if (selector is HttpMethodRouteSelector && selector.method == HttpMethod.Get && node.hasHandler()) {
-          found += RegisteredRoute(selector.method, pathOf(node))
-        }
-        node.children.forEach { child -> walk(child) }
-      }
-
-      walk(root)
-      return found
-    }
-
-    /** The path a node answers on, assembled from its own chain of selectors up to the root. */
-    fun pathOf(node: RoutingNode): String =
-      generateSequence(node) { it.parent }
-        .toList()
-        .reversed()
-        .mapNotNull { ancestor -> pathSegmentOf(ancestor.selector) }
-        .filter { it.isNotEmpty() }
-        .joinToString(separator = "/", prefix = "/")
-
-    /**
-     * Ktor's internal marker node for a static mount. It is not a public type,
-     * so it cannot be named as one — and being matched by NAME is the safe
-     * direction: if Ktor renames it, it stops being recognised, falls into the
-     * `error` arm below, and this test says so.
-     */
-    const val STATIC_CONTENT_SELECTOR = "io.ktor.server.http.content.TailcardSelector"
-
-    /**
-     * The path segment [selector] contributes, or `null` when it contributes
-     * none — the root, a trailing slash, the method (which this guard carries
-     * TYPED, beside the path, rather than as a token inside it), and the
-     * wrapper node a static mount adds.
-     *
-     * A selector this `when` does not know is a FAILURE rather than a skip: a
-     * skipped one would silently shorten a path, and a path that collapses onto
-     * an evaluated one is a route the coverage guard then counts as evaluated
-     * while nobody looks at it.
-     */
-    fun pathSegmentOf(selector: RouteSelector): String? =
-      when {
-        selector is RootRouteSelector -> {
-          null
-        }
-
-        selector is TrailingSlashRouteSelector -> {
-          null
-        }
-
-        selector is HttpMethodRouteSelector -> {
-          null
-        }
-
-        selector.javaClass.name == STATIC_CONTENT_SELECTOR -> {
-          null
-        }
-
-        selector is PathSegmentConstantRouteSelector -> {
-          selector.value
-        }
-
-        selector is PathSegmentParameterRouteSelector -> {
-          "{${selector.name}}"
-        }
-
-        selector is PathSegmentOptionalParameterRouteSelector -> {
-          "{${selector.name}?}"
-        }
-
-        selector is PathSegmentWildcardRouteSelector -> {
-          "*"
-        }
-
-        selector is PathSegmentTailcardRouteSelector -> {
-          "{...}"
-        }
-
-        else -> {
-          error(
-            "the route-coverage guard cannot spell the path of [$selector] ([${selector.javaClass.name}]): " +
-              "teach it that selector, or the route it is part of is graded against the wrong path",
-          )
-        }
-      }
 
     val SCRIPT_ELEMENT = Regex("""(?is)<script\b([^>]*)>(.*?)</script\s*>""")
     val STYLE_ELEMENT = Regex("""(?is)<style\b([^>]*)>(.*?)</style\s*>""")
