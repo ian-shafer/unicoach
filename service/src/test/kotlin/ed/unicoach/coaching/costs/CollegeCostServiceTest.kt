@@ -21,10 +21,13 @@ import ed.unicoach.coaching.costs.canonical.FigureAddress
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.coaching.costs.canonical.figureGroup
+import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
+import ed.unicoach.coaching.testing.NationalMeritService
 import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.CalendarYear
 import ed.unicoach.db.dao.CorruptPersistedValueException
+import ed.unicoach.db.dao.NationalMeritFixture
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.AssuranceTier
@@ -53,6 +56,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.Instant
+import java.time.InstantSource
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -943,6 +948,32 @@ class CollegeCostServiceTest {
       "the read must cost the same statements for five colleges as for one, " +
         "never one per college: one=[${one.prepared}] five=[${five.prepared}]",
     )
+  }
+
+  /**
+   * THE NATIONAL MERIT ROWS REACH THE REPORT'S READ (RFC 247), through the
+   * student-free door and on a pinned clock: a seeded row for a school on the
+   * list rides on that school's cost, and a listed school with no row gets an
+   * empty list -- never a made-up arm.
+   */
+  @Test
+  fun `a National Merit row for a school on the list reaches its cost, and a school with no row gets an empty list`() {
+    val student = createStudent()
+    val curated = seedCollege("National Merit Curated U").also { addToCollegeList(student, it) }
+    val uncurated = seedCollege("National Merit Uncurated U").also { addToCollegeList(student, it) }
+    NationalMeritFixture.seedAward(CostsTestDb.sqlSession, NationalMeritFixture.award(curated))
+    val pinned =
+      CollegeCostService(
+        CostsTestDb.database,
+        nationalMeritReader =
+          NationalMeritService(CostsTestDb.database, InstantSource.fixed(Instant.parse("2026-10-10T16:00:00Z"))),
+      )
+
+    val byId = runBlocking { pinned.getForStudent(student).getOrThrow() }.colleges.associateBy { it.collegeId }
+
+    val answer = assertIs<NationalMeritPublishedAnswer.Automatic>(byId.getValue(curated).nationalMerit.single())
+    assertEquals(curated, answer.collegeId, "the row rides on its own school's cost")
+    assertEquals(emptyList(), byId.getValue(uncurated).nationalMerit, "and a school we hold no row for gets nothing")
   }
 
   @Test

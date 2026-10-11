@@ -18,6 +18,9 @@ import ed.unicoach.coaching.costs.canonical.residencyTiersOf
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
 import ed.unicoach.coaching.testing.AutomaticAwardReader
 import ed.unicoach.coaching.testing.AutomaticAwardService
+import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
+import ed.unicoach.coaching.testing.NationalMeritReportReader
+import ed.unicoach.coaching.testing.NationalMeritService
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AidPolicyDao
@@ -435,6 +438,24 @@ data class CollegeCost(
    * from the next construction site to buy.
    */
   val automaticAwards: List<AutomaticAwardAnswer>,
+  /**
+   * What this school PUBLISHES for a National Merit standing (RFC 247) -- one
+   * answer per stored row, and never anything about the student.
+   *
+   * A LIST for [automaticAwards]' reason and one more: a school may publish
+   * several rows -- one per residency basis it prices, one per standing it
+   * pays -- and each rides; none is picked for the family.
+   *
+   * NOTHING ABOUT THE STUDENT IS IN HERE (RFC 247 D1): these come from
+   * [NationalMeritReportReader.publishedAnswersInSession], which takes no
+   * student id, and [NationalMeritPublishedAnswer] carries no residency
+   * comparison, no timing arm and no standing of hers.
+   *
+   * NOT DEFAULTED, for [automaticAwards]' reason: an empty list is the verified
+   * answer "we hold no row for this school", and a default would let an unwired
+   * read state that on our authority.
+   */
+  val nationalMerit: List<NationalMeritPublishedAnswer>,
   /**
    * The way of living this answer LEADS with, resolved once here from the
    * school's own override and the family's usual plan (RFC 152 D2a), rather
@@ -1302,6 +1323,16 @@ class CollegeCostService(
    * "expired outranks the kind" to be decided differently.
    */
   private val automaticAwardService: AutomaticAwardReader = AutomaticAwardService(database),
+  /**
+   * The curated National Merit read (RFC 247), injected for
+   * [automaticAwardService]'s reason: `expires_on` and the base rate's own
+   * expiry are clock questions, and a test must be able to pin the clock.
+   *
+   * IT IS CALLED THROUGH ITS STUDENT-FREE DOOR and nothing else -- the
+   * interface has no other -- so no residency comparison is made on the cost
+   * path at all. The arm rule stays in `NationalMeritService`.
+   */
+  private val nationalMeritReader: NationalMeritReportReader = NationalMeritService(database),
 ) {
   suspend fun getForStudent(
     studentId: StudentId,
@@ -1411,6 +1442,15 @@ class CollegeCostService(
         .gridAnswersInSession(session, selection.selected)
         .groupBy { it.collegeId }
 
+    // The curated National Merit rows (RFC 247), batched the same way and on the
+    // same connection: [NationalMeritService.REPORT_READ_STATEMENTS] statements
+    // for the whole answer whatever the length of the list. It takes no student
+    // id and makes no residency comparison.
+    val nationalMeritByCollege =
+      nationalMeritReader
+        .publishedAnswersInSession(session, selection.selected)
+        .groupBy { it.collegeId }
+
     // The major answer (RFC 231), on the SAME connection: the intended-subjects
     // answer, and -- only when it is `answered` -- two batched reads over the
     // colleges and subjects already selected, one per question.
@@ -1435,6 +1475,7 @@ class CollegeCostService(
           // a contract that ever slips must fail loudly instead.
           figuresById.getValue(college.id),
           awardsByCollege[college.id].orEmpty(),
+          nationalMeritByCollege[college.id].orEmpty(),
         )
       }
 
@@ -1636,6 +1677,7 @@ class CollegeCostService(
     offersOnCampusHousing: Boolean?,
     figures: CollegeFigures,
     automaticAwards: List<AutomaticAwardAnswer>,
+    nationalMerit: List<NationalMeritPublishedAnswer>,
   ): CollegeCost {
     // The family's own answer, resolved ONCE: it selects the net-price row, the
     // vintage label that dates it, and the status spoken beside it, and those
@@ -1707,6 +1749,9 @@ class CollegeCostService(
       // `AutomaticAwardService`, and nothing here re-decides it. A college with
       // no curated grid gets an empty list, not a made-up arm.
       automaticAwards = automaticAwards,
+      // Handed straight through for the same reason: WHICH arm each row is was
+      // decided once, by `NationalMeritPublishedAnswer.of`.
+      nationalMerit = nationalMerit,
       // Two rules, two helpers, orchestrated here: WHICH plan applies (the
       // entry and the profile) is a different question from whether THIS
       // school prices it (the breakdown and the housing flag).

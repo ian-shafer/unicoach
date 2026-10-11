@@ -26,6 +26,7 @@ import ed.unicoach.coaching.costs.publishedPriceOf
 import ed.unicoach.coaching.costs.reportedOf
 import ed.unicoach.coaching.costs.tuitionLineOf
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
+import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AnswerStatus
@@ -292,8 +293,15 @@ fun costFixture(
    */
   automaticAwards: List<AutomaticAwardAnswer> = emptyList(),
   /**
+   * What this school PUBLISHES for a National Merit standing (RFC 247), as
+   * `NationalMeritService`'s student-free door answers it -- assembled answers
+   * and not rows, for [automaticAwards]' reason: which arm a row is, and
+   * whether its price is withheld, is that service's decision.
+   */
+  nationalMerit: List<NationalMeritPublishedAnswer> = emptyList(),
+  /**
    * This school's id, nameable so a caller can build the answers that are KEYED
-   * by it ([automaticAwards]) against the same school it is describing. A fresh
+   * by it ([automaticAwards], [nationalMerit]) against the same school it is describing. A fresh
    * one otherwise, which is what every caller that does not care wants.
    */
   collegeId: CollegeId = CollegeId(UUID.randomUUID()),
@@ -378,6 +386,9 @@ fun costFixture(
     // nothing about the student: the default is the ordinary school, which has
     // no curated grid and no block.
     automaticAwards = automaticAwards,
+    // And its National Merit rows (RFC 247): the default is the ordinary school,
+    // which we hold no row for and which prints no block.
+    nationalMerit = nationalMerit,
     chosen = ChosenLivingPlan.NotChosen,
   )
 }

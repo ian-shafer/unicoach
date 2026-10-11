@@ -3,7 +3,9 @@ package ed.unicoach.coaching.testing
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.HighSchoolYear
 import ed.unicoach.coaching.Residency
+import ed.unicoach.coaching.admissions.AdmissionsTestDb
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.db.dao.NationalMeritFixture
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.NationalMeritAward
 import ed.unicoach.db.models.NationalMeritAwardId
@@ -490,7 +492,13 @@ class NationalMeritServiceTest {
           readFor(student, NationalMeritTestDb.NOON_EASTERN_2028_09_01).schools.single(),
         ).claim
 
-      val baseRate = PublishedBaseRate(NationalMeritTestDb.FIXTURE_CYCLE_YEAR, NationalMeritTestDb.datedCycle().funnel)
+      val baseRate =
+        PublishedBaseRate(
+          competitionYear = NationalMeritTestDb.FIXTURE_CYCLE_YEAR,
+          funnel = NationalMeritTestDb.datedCycle().funnel,
+          publisher = NationalMeritTestDb.datedCycle().sponsor.publisher,
+          checkedOn = NationalMeritTestDb.CYCLE_CHECKED_ON,
+        )
       assertIs<PublishedPackage.Priced>(
         PublishedPackage.of(paying, baseRate),
         "with a base rate, the school's price is stated",
@@ -856,6 +864,118 @@ class NationalMeritServiceTest {
         "ten colleges must cost what one college costs: [${forTen.prepared}]",
       )
     }
+
+  // ---------------------------------------------------------------------------
+  // The family cost report's door (RFC 247)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * THE REPORT'S DOOR ANSWERS FROM THE SAME ARM RULE, with no student behind it:
+   * every college here is seeded with NO `students` row and no list, which the
+   * chat door would refuse outright (`graduationDateOf` throws), so a pass is
+   * the proof that nothing of hers is read.
+   *
+   * A COLLEGE WITH NO ROW IS SIMPLY ABSENT -- the door has no `not_curated` arm,
+   * so the report has nothing to refuse and nothing to explain.
+   */
+  @Test
+  fun `the report door answers every arm for college ids with no student, and skips a school with no row`() {
+    NationalMeritTestDb.seedCycle(NationalMeritTestDb.datedCycle())
+    val pays = AdmissionsTestDb.seedCollege(name = "Report Pays College", state = "AL")
+    val considers = AdmissionsTestDb.seedCollege(name = "Report Considers College", state = "AL")
+    val absent = AdmissionsTestDb.seedCollege(name = "Report Absent College", state = "AL")
+    val unread = AdmissionsTestDb.seedCollege(name = "Report Unread College", state = "AL")
+    NationalMeritTestDb.seedAward(NationalMeritTestDb.award(pays, residencyBasis = ResidencyBasis.IN_STATE))
+    NationalMeritTestDb.seedAward(NationalMeritTestDb.award(considers, awardKind = NationalMeritAwardKind.COMPETITIVE))
+    NationalMeritTestDb.seedAward(NationalMeritTestDb.absence(absent))
+
+    val answers =
+      NationalMeritTestDb
+        .serviceAt(NationalMeritTestDb.NOON_EASTERN_2028_09_01)
+        .publishedAnswersInSession(NationalMeritTestDb.sqlSession, listOf(pays, considers, absent, unread))
+        .associateBy { it.collegeId }
+
+    assertEquals(setOf(pays, considers, absent), answers.keys, "a school we never read contributes nothing at all")
+    val automatic = assertIs<NationalMeritPublishedAnswer.Automatic>(answers.getValue(pays))
+    assertEquals(ResidencyBasis.IN_STATE, automatic.award.residencyBasis, "the row keeps the audience the school published it for")
+    val priced = assertIs<PublishedPackage.Priced>(automatic.published)
+    assertEquals(NationalMeritTestDb.FIXTURE_CYCLE_YEAR, priced.baseRate.competitionYear, "the price carries its base rate")
+    assertEquals(NationalMeritFixture.DEFAULT_SPONSOR, priced.baseRate.publisher, "and the base rate carries its own publisher")
+    assertEquals(NationalMeritTestDb.CYCLE_CHECKED_ON, priced.baseRate.checkedOn, "and the day we read it")
+    assertIs<NationalMeritPublishedAnswer.Competitive>(answers.getValue(considers), "considered is never paid")
+    assertIs<NationalMeritPublishedAnswer.NonePublished>(answers.getValue(absent), "a verified absence is its own arm")
+  }
+
+  /** EXPIRY OUTRANKS THE KIND on the report's door too: it is the same rule, in the same function. */
+  @Test
+  fun `the report door answers expired the morning after a row's expires_on`() {
+    NationalMeritTestDb.seedCycle(NationalMeritTestDb.datedCycle())
+    val college = AdmissionsTestDb.seedCollege(name = "Report Expiring College", state = "AL")
+    NationalMeritTestDb.seedAward(NationalMeritTestDb.award(college))
+
+    val expired =
+      assertIs<NationalMeritPublishedAnswer.Expired>(
+        NationalMeritTestDb
+          .serviceAt(NationalMeritTestDb.NOON_EASTERN_2029_08_01)
+          .publishedAnswersInSession(NationalMeritTestDb.sqlSession, listOf(college))
+          .single(),
+      )
+    assertEquals(NationalMeritTestDb.AWARD_EXPIRES_ON, expired.expiredOn)
+  }
+
+  /**
+   * WITH NO BELIEVED FUNNEL THE REPORT GETS NO PRICE. No fixture cycle is
+   * seeded, and the committed 2028 and 2029 cycles stopped being believed on
+   * July 31, 2027 -- long before this clock -- so no cycle publishes a base rate
+   * today while the award row itself is still live.
+   */
+  @Test
+  fun `the report door withholds the price when no cycle we still believe publishes a base rate`() {
+    val college = AdmissionsTestDb.seedCollege(name = "Report Withheld College", state = "AL")
+    NationalMeritTestDb.seedAward(NationalMeritTestDb.award(college))
+
+    val automatic =
+      assertIs<NationalMeritPublishedAnswer.Automatic>(
+        NationalMeritTestDb
+          .serviceAt(NationalMeritTestDb.NOON_EASTERN_2028_09_01)
+          .publishedAnswersInSession(NationalMeritTestDb.sqlSession, listOf(college))
+          .single(),
+      )
+    assertEquals(PublishedPackage.Withheld, automatic.published, "the figures and the school's words alike")
+  }
+
+  /** The report door's budget, absolute: two for one college and for ten, one with no curated school, none for no ids. */
+  @Test
+  fun `the report door costs the stated number of statements, for one college and for ten, and none for no ids`() {
+    NationalMeritTestDb.seedCycle(NationalMeritTestDb.datedCycle())
+    val ids =
+      (1..10).map { n ->
+        AdmissionsTestDb.seedCollege(name = "Report Budget College $n", state = "AL").also {
+          NationalMeritTestDb.seedAward(NationalMeritTestDb.award(it))
+        }
+      }
+    val uncurated = AdmissionsTestDb.seedCollege(name = "Report Uncurated College", state = "AL")
+    val service = NationalMeritTestDb.serviceAt(NationalMeritTestDb.NOON_EASTERN_2028_09_01)
+
+    val forOne = CoachingTestDb.CountingSession()
+    val forTen = CoachingTestDb.CountingSession()
+    val forUncurated = CoachingTestDb.CountingSession()
+    val forNone = CoachingTestDb.CountingSession()
+    assertEquals(1, service.publishedAnswersInSession(forOne, ids.take(1)).size)
+    assertEquals(10, service.publishedAnswersInSession(forTen, ids).size)
+    assertEquals(emptyList(), service.publishedAnswersInSession(forUncurated, listOf(uncurated)))
+    assertEquals(emptyList(), service.publishedAnswersInSession(forNone, emptyList()))
+
+    assertEquals(
+      NationalMeritService.REPORT_READ_STATEMENTS,
+      forOne.prepared.size,
+      "the report door is [${NationalMeritService.REPORT_READ_STATEMENTS}] statements -- the award rows and every " +
+        "cycle. It prepared [${forOne.prepared}]",
+    )
+    assertEquals(forOne.prepared.size, forTen.prepared.size, "ten colleges must cost what one costs: [${forTen.prepared}]")
+    assertEquals(1, forUncurated.prepared.size, "no row to price reads no cycle: [${forUncurated.prepared}]")
+    assertEquals(0, forNone.prepared.size, "and no ids is no statement at all: [${forNone.prepared}]")
+  }
 
   // ---------------------------------------------------------------------------
   // Helpers

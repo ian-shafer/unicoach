@@ -161,6 +161,19 @@ sealed interface CycleTiming {
 data class PublishedBaseRate(
   val competitionYear: Int,
   val funnel: NationalMeritFunnel,
+  /**
+   * Who published the funnel: the chosen cycle's SPONSOR, which publishes
+   * everything on the row but the window dates and the scale.
+   *
+   * The chat ignores it, because the coach names the competition year and the
+   * funnel rides inside its own cycle object. The family cost report cannot: it
+   * says the base rate once for the page, in a block that names no publisher of
+   * its own, so the sentence carries its own citation or it carries none
+   * (RFC 247 D3).
+   */
+  val publisher: String,
+  /** The day a person read the sponsor's page for this cycle -- the read date the report's sentence cites. */
+  val checkedOn: LocalDate,
 ) {
   /**
    * The share of entrants who reach Finalist, as [NationalMeritFunnel] derives
@@ -196,7 +209,14 @@ data class PublishedBaseRate(
       cycles
         .filter { today <= it.expiresOn && it.funnel.finalistShareOfEntrants != null }
         .maxByOrNull { it.competitionYear }
-        ?.let { PublishedBaseRate(it.competitionYear, it.funnel) }
+        ?.let {
+          PublishedBaseRate(
+            competitionYear = it.competitionYear,
+            funnel = it.funnel,
+            publisher = it.sponsor.publisher,
+            checkedOn = it.checkedOn,
+          )
+        }
   }
 }
 
@@ -436,6 +456,108 @@ class CorruptAwardResidencyBasisException(
 }
 
 /**
+ * What ONE school PUBLISHED for a National Merit standing, for one entry year
+ * and one residency basis, on this day -- and nothing whatever about a student.
+ *
+ * THE SCOPE-FREE HALF OF [NationalMeritSchoolAnswer], and the family cost
+ * report's answer type (RFC 247 D1). There is no [ResidencyScope] on it, no
+ * timing arm and no standing of hers, so the shared report -- which a
+ * logged-out parent reads -- cannot print a comparison with the family it was
+ * never handed. Passing [Residency.NotAsked] to the chat door instead would put
+ * `no_state_on_file` on every row: a false sentence about a family whose state
+ * may well be on file.
+ *
+ * FOUR ARMS AND NO [NationalMeritSchoolAnswer.NotCurated]. Every arm is built
+ * from a stored row, so a school we have not read is simply absent from a list
+ * of these -- the report's door never claims a school pays nothing.
+ *
+ * EVERY ARM'S CONSTRUCTOR IS INTERNAL, so outside this module [of] is the only
+ * door: an [Automatic] around a competitive claim, or around another row's
+ * claim, is not a value a caller can make. `@ConsistentCopyVisibility` closes
+ * `copy()` with the constructor (the `FafsaFilingDeadline.State` precedent).
+ * Internal and not private, because a nested class's private constructor is
+ * closed to the companion's [of].
+ */
+sealed interface NationalMeritPublishedAnswer {
+  /** The stored row: its citation, its audience and its entry year are owed by every arm. */
+  val award: NationalMeritAward
+
+  val collegeId: CollegeId get() = award.collegeId
+
+  /** We read the page and this school publishes NO National Merit award at all. */
+  @ConsistentCopyVisibility
+  data class NonePublished internal constructor(
+    override val award: NationalMeritAward,
+    /** The absence, with the sentence that proves it. */
+    val claim: NationalMeritClaim.NonePublished,
+  ) : NationalMeritPublishedAnswer
+
+  /** The row is no longer believed: `expires_on` has passed. No price is spoken from it. */
+  @ConsistentCopyVisibility
+  data class Expired internal constructor(
+    override val award: NationalMeritAward,
+  ) : NationalMeritPublishedAnswer {
+    /** The day we stopped believing the row: read off it, so it cannot disagree with it. */
+    val expiredOn: LocalDate get() = award.expiresOn
+  }
+
+  /** The page GUARANTEES the package to anyone holding the standing. */
+  @ConsistentCopyVisibility
+  data class Automatic internal constructor(
+    override val award: NationalMeritAward,
+    val claim: NationalMeritClaim.Paying,
+    val published: PublishedPackage,
+  ) : NationalMeritPublishedAnswer
+
+  /** The standing is CONSIDERED and not paid. */
+  @ConsistentCopyVisibility
+  data class Competitive internal constructor(
+    override val award: NationalMeritAward,
+    val claim: NationalMeritClaim.Paying,
+    val published: PublishedPackage,
+  ) : NationalMeritPublishedAnswer
+
+  companion object {
+    /**
+     * THE ONE HOME OF THE ARM RULE, for both doors: what the school published,
+     * for one award row, on this day -- and the base rate, which travels inside
+     * the price or the price is not built.
+     *
+     * EXPIRY OUTRANKS THE KIND. A stale reading is not a cheaper answer about the
+     * same money; it is a page somebody has to open again, and no price is
+     * spoken from it.
+     *
+     * The chat door adds its residency comparison to what comes back
+     * ([NationalMeritService]'s `answerFor`); the report door renders it as it
+     * is. A second `when` over the claim in either place would be a second home
+     * for "expired outranks the kind" to be decided differently.
+     */
+    fun of(
+      award: NationalMeritAward,
+      today: LocalDate,
+      baseRate: PublishedBaseRate?,
+    ): NationalMeritPublishedAnswer {
+      // `>` AND NOT `>=`: a row is believed THROUGH its expires_on, the predicate
+      // the two landed corpora already share.
+      if (today > award.expiresOn) return Expired(award)
+      return when (val claim = award.claim) {
+        is NationalMeritClaim.NonePublished -> {
+          NonePublished(award, claim)
+        }
+
+        is NationalMeritClaim.Paying -> {
+          val published = PublishedPackage.of(claim, baseRate)
+          when (claim.guarantee) {
+            AwardGuarantee.AUTOMATIC -> Automatic(award, claim, published)
+            AwardGuarantee.COMPETITIVE -> Competitive(award, claim, published)
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
  * What we can say about ONE school's National Merit package, for one entry year,
  * one residency basis and one standing.
  *
@@ -542,6 +664,32 @@ data class NationalMeritReading(
 )
 
 /**
+ * The student-free National Merit read (RFC 247) as a SEAM, for
+ * [AutomaticAwardReader]'s reason one corpus along: the family cost report's
+ * cost service only RENDERS what comes back, so a test must be able to hand it
+ * a stub or a pinned clock, and Kotlin classes are final.
+ *
+ * ONLY THE REPORT'S DOOR RIDES HERE. The chat tool constructs
+ * [NationalMeritService] itself and nothing needs to substitute it, so a
+ * student-scoped door on this interface would be surface with no caller.
+ *
+ * The one implementation is [NationalMeritService], and every rule stays there.
+ */
+interface NationalMeritReportReader {
+  /**
+   * What each of [collegeIds] PUBLISHED, with NO STUDENT IN THE ANSWER. The
+   * CALLER owns the [SqlSession], exactly as
+   * [AutomaticAwardReader.gridAnswersInSession] does: the Family Cost Report
+   * resolves a share token and then reads the whole profile on one connection,
+   * so one read is one snapshot.
+   */
+  fun publishedAnswersInSession(
+    session: SqlSession,
+    collegeIds: Collection<CollegeId>,
+  ): List<NationalMeritPublishedAnswer>
+}
+
+/**
  * The read behind `national_merit_cycles` and `college_national_merit_awards`
  * (RFC 243): what the PSAT/NMSQT is worth, where this student stands in the one
  * cycle that is hers, and what each school on her list publishes for a National
@@ -571,7 +719,7 @@ data class NationalMeritReading(
 class NationalMeritService(
   private val database: Database,
   private val clock: InstantSource = InstantSource.system(),
-) {
+) : NationalMeritReportReader {
   /**
    * This student's cycle, her schools' packages, and the base rate.
    *
@@ -644,6 +792,38 @@ class NationalMeritService(
       schools = schools,
       unknownCollegeIds = selection.unknown,
     )
+  }
+
+  /**
+   * What each of [collegeIds] published, with NO STUDENT IN THE ANSWER -- the
+   * family cost report's entry point (RFC 247 D1).
+   *
+   * NOTHING OF HERS IS READ OR RETURNED. No `students` row (so a college id with
+   * no student behind it is answered), no money profile and no timing arm, and
+   * [NationalMeritPublishedAnswer] has nowhere to put a residency comparison:
+   * every row rides labelled only by the audience the SCHOOL published it for.
+   *
+   * A COLLEGE WITH NO ROW CONTRIBUTES NOTHING, never a `not_curated` arm: the
+   * report says nothing about our own corpus coverage, so there is no arm here
+   * for it to have to refuse.
+   *
+   * THE CYCLES ARE READ ONLY WHEN THERE IS A ROW TO PRICE, the
+   * [AutomaticAwardService.gridAnswersInSession] order: a list with no curated
+   * school costs one statement, and the base rate is still read in the same
+   * snapshot as the rows it prices whenever it is needed.
+   *
+   * [REPORT_READ_STATEMENTS] statements, whatever the length of the list.
+   */
+  override fun publishedAnswersInSession(
+    session: SqlSession,
+    collegeIds: Collection<CollegeId>,
+  ): List<NationalMeritPublishedAnswer> {
+    if (collegeIds.isEmpty()) return emptyList()
+    val today = clock.coachToday()
+    val awards = NationalMeritAwardsDao.listByColleges(session, collegeIds).getOrThrow()
+    if (awards.isEmpty()) return emptyList()
+    val baseRate = PublishedBaseRate.of(NationalMeritCyclesDao.list(session).getOrThrow(), today)
+    return awards.map { award -> NationalMeritPublishedAnswer.of(award, today, baseRate) }
   }
 
   /**
@@ -789,12 +969,16 @@ class NationalMeritService(
   }
 
   /**
-   * WHAT THE SCHOOL PUBLISHED, for one award row, on this day -- and the base
-   * rate, which travels inside the price or the price is not built.
+   * WHAT THE SCHOOL PUBLISHED, for one award row, on this day, and whose award
+   * it is against the state we hold.
    *
-   * EXPIRY OUTRANKS THE KIND. A stale reading is not a cheaper answer about the
-   * same money; it is a page somebody has to open again, and no price is spoken
-   * from it.
+   * THE ARMS ARE [NationalMeritPublishedAnswer.of]'s, mapped one to one: this
+   * door adds the residency comparison and decides nothing else, so the chat
+   * and the family cost report cannot disagree about which arm a row is.
+   *
+   * THE SCOPE IS COMPUTED FIRST, as it always was: a corrupt residency basis is
+   * refused even on an expired row, because the refusal is about the row and
+   * not about the day.
    */
   private fun answerFor(
     award: NationalMeritAward,
@@ -804,22 +988,21 @@ class NationalMeritService(
     residency: Residency,
   ): NationalMeritSchoolAnswer {
     val scope = ResidencyScope.of(award, collegeState, residency)
-    // `>` AND NOT `>=`: a row is believed THROUGH its expires_on, the predicate
-    // the two landed corpora already share.
-    if (today > award.expiresOn) {
-      return NationalMeritSchoolAnswer.Expired(award, scope, award.expiresOn)
-    }
-    return when (val claim = award.claim) {
-      is NationalMeritClaim.NonePublished -> {
-        NationalMeritSchoolAnswer.NonePublished(award, scope, claim)
+    return when (val published = NationalMeritPublishedAnswer.of(award, today, baseRate)) {
+      is NationalMeritPublishedAnswer.NonePublished -> {
+        NationalMeritSchoolAnswer.NonePublished(published.award, scope, published.claim)
       }
 
-      is NationalMeritClaim.Paying -> {
-        val published = PublishedPackage.of(claim, baseRate)
-        when (claim.guarantee) {
-          AwardGuarantee.AUTOMATIC -> NationalMeritSchoolAnswer.Automatic(award, scope, claim, published)
-          AwardGuarantee.COMPETITIVE -> NationalMeritSchoolAnswer.Competitive(award, scope, claim, published)
-        }
+      is NationalMeritPublishedAnswer.Expired -> {
+        NationalMeritSchoolAnswer.Expired(published.award, scope, published.expiredOn)
+      }
+
+      is NationalMeritPublishedAnswer.Automatic -> {
+        NationalMeritSchoolAnswer.Automatic(published.award, scope, published.claim, published.published)
+      }
+
+      is NationalMeritPublishedAnswer.Competitive -> {
+        NationalMeritSchoolAnswer.Competitive(published.award, scope, published.claim, published.published)
       }
     }
   }
@@ -836,5 +1019,15 @@ class NationalMeritService(
      * `IN ()` is not valid SQL and a query for nothing has nothing to answer.
      */
     const val READ_STATEMENTS: Int = 5
+
+    /**
+     * What [publishedAnswersInSession] costs: this corpus's award rows and every
+     * cycle. No student is read on that path at all -- the privacy ruling, not
+     * the budget. A list with no curated school costs one, and an empty list
+     * none.
+     *
+     * ABSOLUTE, and asserted, for [READ_STATEMENTS]'s reason.
+     */
+    const val REPORT_READ_STATEMENTS: Int = 2
   }
 }

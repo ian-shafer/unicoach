@@ -28,17 +28,26 @@ import ed.unicoach.coaching.costs.canonical.CoveredFigure
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
+import ed.unicoach.coaching.testing.CorruptAwardResidencyBasisException
+import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
+import ed.unicoach.coaching.testing.PublishedPackage
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.common.util.PublishedGpa
 import ed.unicoach.common.util.UsDate
+import ed.unicoach.db.models.ApplyDeadline
 import ed.unicoach.db.models.AutomaticAward
 import ed.unicoach.db.models.AutomaticAwardBand
+import ed.unicoach.db.models.AwardGuarantee
 import ed.unicoach.db.models.BandScoreAxis
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.FirstChoiceRule
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NationalMeritAward
+import ed.unicoach.db.models.NationalMeritClaim
+import ed.unicoach.db.models.QualifyingStanding
 import ed.unicoach.db.models.ResidencyTierBasis
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
@@ -62,6 +71,7 @@ import kotlinx.html.th
 import kotlinx.html.thead
 import kotlinx.html.tr
 import kotlinx.html.ul
+import java.time.LocalDate
 import ed.unicoach.db.models.ResidencyBasis as PublishedResidency
 
 // The Family Cost Report (RFC 155): the parent-facing page behind a student's
@@ -132,6 +142,32 @@ private const val NO_SCORE_EFFECT_LINE = "A test score does not change what this
 
 /** The published cell that asks for no test score -- the tier a student who submits none lands in, at a school where a score IS money. */
 private const val NO_SCORE_ROW_LABEL = "no test score"
+
+/**
+ * The heading over one school's published National Merit scholarships (RFC
+ * 247). "Scholarships" and not "awards", for [AWARD_GRID_HEADING]'s reason.
+ */
+private const val NATIONAL_MERIT_HEADING = "National Merit scholarships this school publishes"
+
+/**
+ * WHAT KIND OF NUMBER a published National Merit scholarship is, said ONCE for
+ * the page (RFC 247 D8), for [AWARD_KIND_SENTENCE]'s reason: it is the school's
+ * money and not National Merit's, it is paid only to a student who reaches the
+ * standing, and nobody has offered it to this family.
+ */
+private const val NATIONAL_MERIT_KIND_SENTENCE =
+  "A National Merit scholarship a school publishes is the school's own money, paid only to students who reach " +
+    "the standing it names, and is not a financial aid offer."
+
+/** An `automatic` row (RFC 247 D5): the school pays everyone who holds the standing and meets its terms. */
+private const val AUTOMATIC_MERIT_LINE = "The school pays this to every student holding this standing who meets its terms."
+
+/** A `competitive` row (RFC 247 D5): CONSIDERED, and never said as paid. */
+private const val COMPETITIVE_MERIT_LINE =
+  "The school considers students holding this standing for this scholarship. It does not promise it."
+
+/** A row whose page says nothing about first choice: the silence stated, never resolved into a yes or a no. */
+private const val FIRST_CHOICE_UNSAID = "This school's page does not say whether it must be named first choice."
 
 /** D-A said aloud: the parent must know the page moves under them, because it does. */
 private const val LIVE_LINE = "This report is live \u2014 it updates as your student updates their list."
@@ -710,6 +746,7 @@ private fun FlowContent.schoolSection(
     if (basisIsThisSchool) p("report-hint") { +schoolBlendedHint(cost) }
     meritBlock(cost)
     awardGridBlocks(cost)
+    nationalMeritBlocks(cost)
     debtBlock(cost)
   }
 }
@@ -1356,46 +1393,72 @@ private fun printableGridOf(answer: AutomaticAwardAnswer): PrintableGrid? {
 }
 
 /**
- * WHO the school published this grid for, said in the heading. NEVER ABSENT:
- * the three bases the table admits each have a heading, and the two it refuses
- * are corruption rather than a silence this page is entitled to.
+ * How this page attributes a fact it read off someone else's page without a
+ * link: who published it, and the day we read it (RFC 190). One home, so the
+ * award grid, the National Merit block and the base rate cite alike.
+ */
+private fun readOnCitationOf(
+  publisher: String,
+  readOn: LocalDate,
+): String = "Source: $publisher, read on ${UsDate.of(readOn)}."
+
+/**
+ * WHO a school published a residency-scoped row for, or null for one package
+ * for everybody -- the one rule both published-scholarship blocks use (RFC
+ * 239's grid headings, RFC 247's standing lines), so the two name the same
+ * audience the same way and refuse the same corruption.
  *
  * ALIASED AT THE IMPORT as `PublishedResidency`, because this file already has
  * a `ResidencyBasis`: [ed.unicoach.coaching.costs.ResidencyBasis] is the
  * FAMILY's basis for a price, and this one is the axis the SCHOOL published a
- * grid on. Two different facts that must never be read as one.
+ * row on. Two different facts that must never be read as one.
  *
- * `in_district` and `unknown` are refused by the table's own CHECK
- * (`create-college-automatic-awards.sql`), so no stored row reaches them --
- * which is why reaching them is CORRUPTION AND IS NAMED rather than a grid this
- * page quietly declines to print. A school publishing two grids would otherwise
- * print one of them and read as complete, and nothing -- not the page, not a log
- * -- would say a current, cited grid had been suppressed. This page answers
- * every other absence with a labelled blank (`NOT_REPORTED`, [withheldBlankFor],
+ * `in_district` and `unknown` are refused by each table's own CHECK, so no
+ * stored row reaches them -- which is why reaching them is CORRUPTION AND IS
+ * NAMED rather than a row this page quietly declines to print. The caller's
+ * [refuse] names it, because only the caller holds the row that locates it.
+ * A school publishing two grids would otherwise print one of them and
+ * read as complete, and nothing -- not the page, not a log -- would say a
+ * current, cited row had been suppressed. This page answers every other
+ * absence with a labelled blank (`NOT_REPORTED`, [withheldBlankFor],
  * [blankFor]); the one thing it does not do is show a family a shorter table
  * than the school published with nothing saying so.
  */
-private fun gridHeadingOf(residency: PublishedResidency): String =
+private fun publishedAudienceOf(
+  residency: PublishedResidency,
+  refuse: () -> Nothing,
+): String? =
   when (residency) {
     PublishedResidency.NOT_APPLICABLE -> {
-      AWARD_GRID_HEADING
+      null
     }
 
     PublishedResidency.IN_STATE -> {
-      "$AWARD_GRID_HEADING for students it classes as in-state"
+      "for students it classes as in-state"
     }
 
     PublishedResidency.OUT_OF_STATE -> {
-      "$AWARD_GRID_HEADING for students it classes as out-of-state"
+      "for students it classes as out-of-state"
     }
 
     PublishedResidency.IN_DISTRICT, PublishedResidency.UNKNOWN -> {
-      error(
-        "automatic award grid carries residency basis [${residency.value}], which this page cannot name an " +
-          "audience for (college_automatic_awards_residency_basis_check refuses it, so this row is corrupt)",
-      )
+      refuse()
     }
   }
+
+/**
+ * WHO the school published this grid for, said in the heading. NEVER ABSENT:
+ * the three bases the table admits each have a heading, and the two it refuses
+ * are corruption rather than a silence this page is entitled to.
+ */
+private fun gridHeadingOf(residency: PublishedResidency): String =
+  publishedAudienceOf(residency) {
+    error(
+      "automatic award grid carries residency basis [${residency.value}], which this page cannot name an " +
+        "audience for (college_automatic_awards_residency_basis_check refuses it, so this row is corrupt)",
+    )
+  }?.let { "$AWARD_GRID_HEADING $it" }
+    ?: AWARD_GRID_HEADING
 
 /**
  * One school's published grid: who it is for, who published it and when we read
@@ -1428,7 +1491,7 @@ private fun FlowContent.awardGridBlock(grid: PrintableGrid) {
   if (cells.isEmpty()) return
   section("report-award-grid") {
     h3 { +grid.heading }
-    p("report-source") { +"Source: ${award.publisher}, read on ${UsDate.of(award.checkedOn)}." }
+    p("report-source") { +readOnCitationOf(award.publisher, award.checkedOn) }
     if (!grid.scoreIsMoney) p { +NO_SCORE_EFFECT_LINE }
     // The school's OWN sentence about submitting a score where it published one.
     // Where it published none, the silence is stated as the silence it is --
@@ -1525,6 +1588,217 @@ private fun gpaRangeOf(band: AutomaticAwardBand): String? {
     high != null -> "GPA up to $high"
     else -> null
   }
+}
+
+/**
+ * What this school PUBLISHES for a National Merit standing (RFC 247) -- every
+ * printable row, labelled by the audience the school published it for, and
+ * nothing whatever about the student.
+ *
+ * NOTHING ABOUT THE STUDENT, BY TYPE (D1). [CollegeCost.nationalMerit] comes
+ * from `NationalMeritService`'s student-free door, and
+ * [NationalMeritPublishedAnswer] carries no score, no standing of hers and no
+ * comparison with the family's state. A standing is not a score, which is what
+ * lets this page print the package at all; it never lets it print her result.
+ *
+ * EVERY RESIDENCY ROW, COMPARED WITH NOTHING (D2). The page knows the family's
+ * state and does not say which row is theirs: residency for tuition purposes is
+ * a status the school decides, and [awardGridBlocks] beside this picks nothing
+ * either.
+ *
+ * ONE SECTION PER PUBLISHER AND READ DATE, so every row under a heading is
+ * attributed once, above it (RFC 190): a school whose rows named two would get
+ * two attributed sections rather than one misattributed one.
+ *
+ * A SIBLING OF [awardGridBlocks] AND NOT A CHILD OF IT, for the reason that
+ * block is not a child of [meritBlock]: a different corpus, a different page.
+ */
+private fun FlowContent.nationalMeritBlocks(cost: CollegeCost) {
+  cost.nationalMerit
+    .mapNotNull { printableMeritRowOf(it) }
+    // `groupBy` keeps first-appearance order, so the rows keep the read's order.
+    .groupBy { it.award.publisher to it.award.checkedOn }
+    .forEach { (citation, rows) -> nationalMeritBlock(publisher = citation.first, readOn = citation.second, rows = rows) }
+}
+
+/** One National Merit row this page will print: the school's claim, and the price it was built with. */
+private data class PrintableMeritRow(
+  val award: NationalMeritAward,
+  val claim: NationalMeritClaim.Paying,
+  /** The school's price and the base rate it must be said with, as one value: the only home of money here. */
+  val priced: PublishedPackage.Priced,
+)
+
+/**
+ * Which National Merit rows this page prints, decided ONCE so the block and the
+ * two sentences in [tierKindsSection] can never disagree (D3, D8).
+ *
+ * Exhaustive with no `else`, the [printableGridOf] shape. Three refusals (D4):
+ *
+ *  - `NonePublished` -- a verified absence, and a heading over nothing is what
+ *    [meritBlock] refuses.
+ *  - `Expired` -- our reading is stale, so it is not shown as current money.
+ *  - a `Withheld` package -- no cycle we still believe publishes a base rate,
+ *    and the school's words ARE the price, so neither its figures nor its words
+ *    are spoken without the odds beside them.
+ *
+ * A school we have not read is not in the answer at all, so it needs no arm.
+ */
+private fun printableMeritRowOf(answer: NationalMeritPublishedAnswer): PrintableMeritRow? {
+  val claim: NationalMeritClaim.Paying
+  val published: PublishedPackage
+  when (answer) {
+    is NationalMeritPublishedAnswer.NonePublished -> {
+      return null
+    }
+
+    is NationalMeritPublishedAnswer.Expired -> {
+      return null
+    }
+
+    is NationalMeritPublishedAnswer.Automatic -> {
+      claim = answer.claim
+      published = answer.published
+    }
+
+    is NationalMeritPublishedAnswer.Competitive -> {
+      claim = answer.claim
+      published = answer.published
+    }
+  }
+  val priced =
+    when (published) {
+      is PublishedPackage.Priced -> published
+      PublishedPackage.Withheld -> return null
+    }
+  return PrintableMeritRow(award = answer.award, claim = claim, priced = priced)
+}
+
+/**
+ * One publisher's rows for one school: the heading, the attribution once, then
+ * one item per row in the order the read served them.
+ *
+ * NOTHING IS SUMMED, RANKED OR CALLED BEST (D6). A school may publish words
+ * and no figure, so there is no order by money to compute, and none is.
+ *
+ * NOT A LINK, for [awardGridBlock]'s reason: this corpus's `source_url` has no
+ * scheme-checked door to an `href` yet, so the publisher is named and no anchor
+ * is opened.
+ */
+private fun FlowContent.nationalMeritBlock(
+  publisher: String,
+  readOn: LocalDate,
+  rows: List<PrintableMeritRow>,
+) {
+  section("report-national-merit") {
+    h3 { +NATIONAL_MERIT_HEADING }
+    p("report-source") { +readOnCitationOf(publisher, readOn) }
+    ul { rows.forEach { row -> li { meritRowLines(row) } } }
+  }
+}
+
+/** One printed row, in the order a parent reads it: whose scholarship, who it is for, whether it is paid, what, and when. */
+private fun FlowContent.meritRowLines(row: PrintableMeritRow) {
+  // The school's own name for its scholarship, quoted where it names one.
+  row.claim.awardName?.let { name -> p("report-merit-name") { +name } }
+  p("report-merit-standing") { +meritStandingLineOf(row) }
+  p("report-merit-guarantee") { +guaranteeLineOf(row.claim.guarantee) }
+  meritFigureOf(row.priced)?.let { figure -> p("report-merit-figure") { +figure } }
+  p("report-merit-words") { +row.priced.asPublished }
+  p("report-merit-first-choice") { +firstChoiceLineOf(row.claim.firstChoice) }
+  row.claim.applyDeadline?.let { deadline -> p("report-merit-apply") { +applyLineOf(deadline) } }
+}
+
+/** The school's application deadline: its day through the date seam, then its own words. */
+private fun applyLineOf(deadline: ApplyDeadline): String = "Apply by ${UsDate.of(deadline.on)}. ${deadline.asPublished}"
+
+/**
+ * Who the row is for: the standing, the entering class it was published for
+ * (D7 -- a school's headline figure can be for a different entering class than
+ * the one a reader assumes), and the school's audience where it publishes one.
+ */
+private fun meritStandingLineOf(row: PrintableMeritRow): String {
+  val audience =
+    publishedAudienceOf(row.award.residencyBasis) { throw CorruptAwardResidencyBasisException(row.award) }
+      ?.let { ", $it" }
+      .orEmpty()
+  return "For ${meritStandingOf(row.claim.standing)} entering in ${row.award.entryYear.label}$audience."
+}
+
+/** D5: an `automatic` row is paid; a `competitive` one is considered and never said as paid. */
+private fun guaranteeLineOf(guarantee: AwardGuarantee): String =
+  when (guarantee) {
+    AwardGuarantee.AUTOMATIC -> AUTOMATIC_MERIT_LINE
+    AwardGuarantee.COMPETITIVE -> COMPETITIVE_MERIT_LINE
+  }
+
+/** The standing, in this page's own words (the chat tool's labels are the coach's, and say "her"). */
+private fun meritStandingOf(standing: QualifyingStanding): String =
+  when (standing) {
+    QualifyingStanding.FINALIST -> "National Merit Finalists"
+    QualifyingStanding.SEMIFINALIST -> "National Merit Semifinalists"
+    QualifyingStanding.COMMENDED -> "National Merit Commended Students"
+  }
+
+/**
+ * The school's own figures, where it publishes any, and null where it publishes
+ * words alone -- never a `$0` (D6). A count of years with no amount is words
+ * alone too: the school's sentence carries it, and "Over 4 years." says nothing. Read off the [PublishedPackage.Priced], so
+ * no figure reaches this page except inside the value that carries the base
+ * rate.
+ */
+private fun meritFigureOf(priced: PublishedPackage.Priced): String? {
+  val amounts =
+    listOfNotNull(
+      priced.perYearUsd?.let { "${WholeDollars.spoken(it)} a year" },
+      priced.totalUsd?.let { "${WholeDollars.spoken(it)} in total" },
+    )
+  if (amounts.isEmpty()) return null
+  val spoken = amounts.joinToString(", ")
+  val years = priced.years?.let { if (it == 1) "1 year" else "$it years" }
+  return if (years == null) "$spoken." else "$spoken over $years."
+}
+
+/** The first-choice rule in the school's own words, the silence where it states none. */
+private fun firstChoiceLineOf(rule: FirstChoiceRule?): String =
+  when (rule) {
+    is FirstChoiceRule.Required -> {
+      rule.deadline?.let { "${rule.asPublished} Name it first choice by ${UsDate.of(it)}." } ?: rule.asPublished
+    }
+
+    is FirstChoiceRule.NotRequired -> {
+      rule.asPublished
+    }
+
+    null -> {
+      FIRST_CHOICE_UNSAID
+    }
+  }
+
+/**
+ * The base rate, said once for the page (D3), with its own publisher and read
+ * date because the block it sits in names none.
+ *
+ * READ OFF THE PRINTED ROWS' OWN PRICES, so no National Merit figure is on this
+ * page unless the base rate it was built with is too. Every price in one read
+ * carries the same base rate (one `PublishedBaseRate.of` per read), so a page
+ * whose rows carried two is corruption and is named, not a choice to make here.
+ */
+private fun baseRateSentenceOf(rows: List<PrintableMeritRow>): String {
+  val rates = rows.map { it.priced.baseRate }.distinct()
+  val baseRate =
+    rates.singleOrNull()
+      ?: error(
+        "the printed National Merit rows carry [${rates.size}] base rates " +
+          "${rates.map { "${it.competitionYear} (${it.publisher}, read ${it.checkedOn})" }}; " +
+          "one read builds every price with one",
+      )
+  val share =
+    checkNotNull(baseRate.finalistShareOfEntrants) {
+      "the [${baseRate.competitionYear}] base rate publishes no Finalist share, which PublishedBaseRate.of never chooses"
+    }
+  return "About ${share.spokenPercent()} of entrants in the ${baseRate.competitionYear} National Merit competition " +
+    "reach Finalist. ${readOnCitationOf(baseRate.publisher, baseRate.checkedOn)}"
 }
 
 /**
@@ -1691,7 +1965,10 @@ private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
   // second rule would be free to say the sentence on a page that shows no grid,
   // or stay silent on one that does.
   val printsAGrid = colleges.any { cost -> cost.automaticAwards.any { printableGridOf(it) != null } }
-  if (groups.isEmpty() && !printsAGrid) return
+  // The same rule for National Merit rows (RFC 247 D3, D8), asked of
+  // [printableMeritRowOf] -- and the base rate is read off these same rows.
+  val meritRows = colleges.flatMap { cost -> cost.nationalMerit.mapNotNull { printableMeritRowOf(it) } }
+  if (groups.isEmpty() && !printsAGrid && meritRows.isEmpty()) return
   section("report-kinds") {
     h2 { +KINDS_HEADING }
     groups.forEach { group ->
@@ -1709,6 +1986,10 @@ private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
     // grid is, in the one section that exists to say what kind of numbers these
     // are.
     if (printsAGrid) p("report-kind") { +AWARD_KIND_SENTENCE }
+    if (meritRows.isNotEmpty()) {
+      p("report-kind") { +NATIONAL_MERIT_KIND_SENTENCE }
+      p("report-kind report-merit-base-rate") { +baseRateSentenceOf(meritRows) }
+    }
   }
 }
 

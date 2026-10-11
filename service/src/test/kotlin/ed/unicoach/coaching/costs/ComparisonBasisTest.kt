@@ -167,6 +167,7 @@ class ComparisonBasisTest {
       // publishes no curated automatic-award grid" answer, and a comparison
       // basis is assembled from figures, so it is the right answer here.
       automaticAwards = emptyList(),
+      nationalMerit = emptyList(),
       chosen = chosen,
     )
 

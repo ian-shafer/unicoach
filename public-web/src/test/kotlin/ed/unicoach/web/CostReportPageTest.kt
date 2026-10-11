@@ -18,7 +18,9 @@ import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.spokenLabel
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
+import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
 import ed.unicoach.coaching.testing.NextBand
+import ed.unicoach.coaching.testing.PublishedBaseRate
 import ed.unicoach.coaching.testing.SittingScore
 import ed.unicoach.coaching.testing.StudentStanding
 import ed.unicoach.common.util.AcademicYear
@@ -31,16 +33,23 @@ import ed.unicoach.db.models.AutomaticAwardBand
 import ed.unicoach.db.models.AutomaticAwardBandId
 import ed.unicoach.db.models.AutomaticAwardId
 import ed.unicoach.db.models.AutomaticAwardKind
+import ed.unicoach.db.models.AwardGuarantee
 import ed.unicoach.db.models.BandScoreAxis
 import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.CollegeBorrowing
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.FirstChoiceRule
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NationalMeritAward
+import ed.unicoach.db.models.NationalMeritAwardId
+import ed.unicoach.db.models.NationalMeritClaim
+import ed.unicoach.db.models.NationalMeritFunnel
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PublishedCell
+import ed.unicoach.db.models.QualifyingStanding
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ScholarshipSuperscoreRule
@@ -104,15 +113,19 @@ class CostReportPageTest {
       housingAndFoodOffCampus = 9000,
     )
 
-  private fun render(profile: CollegeCostProfile): String {
-    var body = ""
+  private fun render(profile: CollegeCostProfile): String = renderResponse(profile).second
+
+  /** The page and its status: what a test of a page that must refuse itself reads. */
+  private fun renderResponse(profile: CollegeCostProfile): Pair<HttpStatusCode, String> {
+    lateinit var result: Pair<HttpStatusCode, String>
     testApplication {
       application {
         testPublicWebModule(costReportSource = FakeCostReportSource(FakeReportAnswer.Live(profile)))
       }
-      body = client.get("/report?token=$TEST_LIVE_TOKEN").bodyAsText()
+      val response = client.get("/report?token=$TEST_LIVE_TOKEN")
+      result = response.status to response.bodyAsText()
     }
-    return body
+    return result
   }
 
   /**
@@ -2609,6 +2622,341 @@ class CostReportPageTest {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // RFC 247: the National Merit scholarships a school publishes
+  // ---------------------------------------------------------------------------
+
+  /** The base rate every priced row in one read carries: 15,000 of 1,200,000 entrants, said as 1.3%. */
+  private val meritBaseRate =
+    PublishedBaseRate(
+      competitionYear = 2028,
+      funnel =
+        NationalMeritFunnel(
+          testTakers = 3_500_000,
+          metEntryRequirements = 1_200_000,
+          highScorersScreened = 50_000,
+          commended = 34_000,
+          semifinalists = 16_000,
+          finalists = 15_000,
+          winners = 6_700,
+          asPublished = "About 1.2 million entrants; some 15,000 reach Finalist.",
+        ),
+      publisher = MERIT_SPONSOR,
+      checkedOn = MERIT_BASE_RATE_READ_ON,
+    )
+
+  /** One school's paying claim, with the shape most of the corpus's rows take. */
+  private fun payingClaim(
+    guarantee: AwardGuarantee = AwardGuarantee.AUTOMATIC,
+    standing: QualifyingStanding = QualifyingStanding.FINALIST,
+    asPublished: String = MERIT_WORDS,
+    awardName: String? = null,
+    perYearUsd: Int? = 17_500,
+    totalUsd: Int? = 70_000,
+    years: Int? = 4,
+    firstChoice: FirstChoiceRule? = FirstChoiceRule.Required(deadline = MERIT_FIRST_CHOICE_BY, asPublished = MERIT_FIRST_CHOICE_WORDS),
+  ): NationalMeritClaim.Paying =
+    NationalMeritClaim.Paying(
+      guarantee = guarantee,
+      standing = standing,
+      asPublished = asPublished,
+      awardName = awardName,
+      perYearUsd = perYearUsd,
+      totalUsd = totalUsd,
+      years = years,
+      firstChoice = firstChoice,
+      applyDeadline = null,
+    )
+
+  /** One stored row, built in memory exactly as `NationalMeritAwardsDao` hands it out. */
+  private fun meritAward(
+    collegeId: CollegeId,
+    claim: NationalMeritClaim = payingClaim(),
+    residencyBasis: ResidencyBasis = ResidencyBasis.NOT_APPLICABLE,
+  ): NationalMeritAward =
+    NationalMeritAward(
+      id = NationalMeritAwardId(UUID.randomUUID()),
+      collegeId = collegeId,
+      entryYear = AcademicYear(2027),
+      residencyBasis = residencyBasis,
+      claim = claim,
+      publisher = MERIT_PUBLISHER,
+      sourceUrl = "https://example.test/riverside-national-merit",
+      archiveUrl = null,
+      checkedOn = MERIT_READ_ON,
+      expiresOn = LocalDate.of(2027, 7, 31),
+    )
+
+  /**
+   * The answer the report receives for one stored row, decided by
+   * `NationalMeritPublishedAnswer.of` -- the one home of the arm rule -- so the
+   * page is only ever tested on answers the service can produce. By default on
+   * the day the row was read, inside its belief window, and priced with
+   * [meritBaseRate]; a null [baseRate] withholds the price.
+   */
+  private fun meritAnswer(
+    award: NationalMeritAward,
+    today: LocalDate = award.checkedOn,
+    baseRate: PublishedBaseRate? = meritBaseRate,
+  ): NationalMeritPublishedAnswer = NationalMeritPublishedAnswer.of(award, today, baseRate)
+
+  /** A school on the report with its National Merit answers, keyed to the same college they name. */
+  private fun meritSchool(
+    name: String = "Riverside State University",
+    collegeId: CollegeId = CollegeId(UUID.randomUUID()),
+    answers: (CollegeId) -> List<NationalMeritPublishedAnswer>,
+  ): CollegeCost =
+    costFixture(
+      name = name,
+      collegeId = collegeId,
+      state = "AL",
+      control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+      tuitionInState = 12000,
+      publishedPrice = 28000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 15000),
+      medianDebt = 21000,
+      meritAid = meritFixture(name),
+      nationalMerit = answers(collegeId),
+    )
+
+  /** Every `report-national-merit` section on the page, markup and all -- what "inside the block" means. */
+  private fun meritSectionsOf(body: String): List<String> =
+    body
+      .split("<section class=\"report-national-merit\">")
+      .drop(1)
+      .map { it.substringBefore("</section>") }
+
+  @Test
+  fun `an automatic row shows who it is for, that it is paid, the figures, the school's words and its first-choice rule`() {
+    val body =
+      render(
+        costProfile(
+          listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, residencyBasis = ResidencyBasis.IN_STATE))) }),
+          answeredMoney(),
+        ),
+      )
+
+    val block = meritSectionsOf(body).single()
+    assertTrue(block.contains("National Merit scholarships this school publishes"), "the heading: [$block]")
+    assertTrue(block.contains("Source: $MERIT_PUBLISHER, read on Sep 25, 2026."), "cited once, at the head: [$block]")
+    assertTrue(
+      block.contains("For National Merit Finalists entering in 2027-28, for students it classes as in-state."),
+      "the standing, the entering class and the school's audience: [$block]",
+    )
+    assertTrue(block.contains(AUTOMATIC_MERIT_LINE), "an automatic row is said as paid: [$block]")
+    assertTrue(block.contains("\$17,500 a year, \$70,000 in total over 4 years."), "the school's own figures: [$block]")
+    assertTrue(block.contains(MERIT_WORDS), "the school's own sentence, verbatim: [$block]")
+    assertTrue(
+      block.contains("$MERIT_FIRST_CHOICE_WORDS Name it first choice by May 1, 2027."),
+      "the first-choice rule in the school's words, its day through the date seam: [$block]",
+    )
+    assertFalse(block.contains("of entrants"), "the base rate is said once for the page, never inside a school's block: [$block]")
+  }
+
+  @Test
+  fun `a competitive row is said as considered and not promised, and never as paid`() {
+    val claim = payingClaim(guarantee = AwardGuarantee.COMPETITIVE, standing = QualifyingStanding.SEMIFINALIST)
+    val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+
+    val block = meritSectionsOf(body).single()
+    assertTrue(block.contains(COMPETITIVE_MERIT_LINE), "considered, and not promised: [$block]")
+    assertFalse(block.contains(AUTOMATIC_MERIT_LINE), "and never the automatic sentence: [$block]")
+    assertTrue(block.contains("For National Merit Semifinalists entering in 2027-28."), "a row for everybody names no audience: [$block]")
+  }
+
+  @Test
+  fun `a row the school prices in words alone prints its words and no figure line, never a zero`() {
+    // A COUNT OF YEARS IS NOT A PRICE: a row with years and no amount is still
+    // words alone, and the school's sentence says how long it pays.
+    listOf(null, 4).forEach { years ->
+      val claim = payingClaim(asPublished = MERIT_WORDS_ONLY, perYearUsd = null, totalUsd = null, years = years)
+      val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+
+      val block = meritSectionsOf(body).single()
+      assertTrue(block.contains(MERIT_WORDS_ONLY), "[$years years] the school's words ARE the price: [$block]")
+      assertFalse(block.contains("report-merit-figure"), "[$years years] no figure line where the school publishes no figure: [$block]")
+      assertFalse(body.contains("\$0"), "[$years years] and never a zero: [$body]")
+    }
+  }
+
+  @Test
+  fun `a National Merit row with an audience the page cannot name refuses the page rather than print it`() {
+    listOf(ResidencyBasis.IN_DISTRICT, ResidencyBasis.UNKNOWN).forEach { corrupt ->
+      val (status, body) =
+        renderResponse(
+          costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, residencyBasis = corrupt))) }), answeredMoney()),
+        )
+      assertEquals(HttpStatusCode.ServiceUnavailable, status, "[$corrupt] is corruption, and stops the page: [$body]")
+      assertFalse(body.contains(MERIT_WORDS), "[$corrupt] must not reach the page as a row: [$body]")
+      assertFalse(body.contains("report-national-merit"), "[$corrupt] must open no section: [$body]")
+    }
+  }
+
+  @Test
+  fun `no block and no kinds sentence for an absence, a stale reading, a withheld price or no row at all`() {
+    val silences =
+      mapOf<String, (CollegeId) -> List<NationalMeritPublishedAnswer>>(
+        "the school publishes none" to { id ->
+          listOf(meritAnswer(meritAward(id, NationalMeritClaim.NonePublished(MERIT_ABSENCE_WORDS))))
+        },
+        "our reading is stale" to { id ->
+          val award = meritAward(id)
+          listOf(meritAnswer(award, today = award.expiresOn.plusDays(1)))
+        },
+        "no believed cycle publishes a base rate" to { id -> listOf(meritAnswer(meritAward(id), baseRate = null)) },
+        "we hold no row" to { _ -> emptyList() },
+      )
+
+    silences.forEach { (silence, answers) ->
+      val body = render(costProfile(listOf(meritSchool(answers = answers)), answeredMoney()))
+      assertFalse(body.contains("report-national-merit"), "[$silence] must open no section: [$body]")
+      assertFalse(body.contains(NATIONAL_MERIT_KIND_SENTENCE), "[$silence] must not say what kind of number it is: [$body]")
+      assertFalse(body.contains("report-merit-base-rate"), "[$silence] must say no base rate: [$body]")
+      assertFalse(body.contains(MERIT_WORDS), "[$silence] must quote none of the school's price: [$body]")
+    }
+  }
+
+  @Test
+  fun `one stale row beside a live one prints only the live one`() {
+    val body =
+      render(
+        costProfile(
+          listOf(
+            meritSchool { id ->
+              val stale = meritAward(id, payingClaim(standing = QualifyingStanding.SEMIFINALIST, asPublished = MERIT_WORDS_ONLY))
+              listOf(meritAnswer(stale, today = stale.expiresOn.plusDays(1)), meritAnswer(meritAward(id)))
+            },
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    val block = meritSectionsOf(body).single()
+    assertEquals(1, countOf(block, "<li>"), "only the live row: [$block]")
+    assertTrue(block.contains(MERIT_WORDS), "the live row's words: [$block]")
+    assertFalse(block.contains(MERIT_WORDS_ONLY), "and never the stale row's: [$block]")
+  }
+
+  @Test
+  fun `an in-state and an out-of-state row both print, each labelled, and neither is compared with the family`() {
+    // THE FAMILY LIVES IN OREGON and the school is in Alabama, so the page holds
+    // everything it would need to say "this one is not yours" -- and it does
+    // not (D2): residency for tuition is a status the school decides.
+    val body =
+      render(
+        costProfile(
+          listOf(
+            meritSchool { id ->
+              listOf(
+                meritAnswer(meritAward(id, payingClaim(perYearUsd = 15_000, totalUsd = 60_000), ResidencyBasis.IN_STATE)),
+                meritAnswer(meritAward(id, payingClaim(perYearUsd = 17_500, totalUsd = 70_000), ResidencyBasis.OUT_OF_STATE)),
+              )
+            },
+          ),
+          answeredMoney(state = "OR"),
+        ),
+      )
+
+    val block = meritSectionsOf(body).single()
+    assertEquals(2, countOf(block, "<li>"), "both rows, and neither picked: [$block]")
+    assertTrue(block.contains("for students it classes as in-state."), "the in-state row says who it is for: [$block]")
+    assertTrue(block.contains("for students it classes as out-of-state."), "and so does the other one: [$block]")
+    assertTrue(block.contains("\$15,000 a year") && block.contains("\$17,500 a year"), "each keeps its own money: [$block]")
+    assertFalse(Regex("\\bOR\\b|Oregon|your state|lives in|not yours").containsMatchIn(block), "no comparison with the family: [$block]")
+  }
+
+  @Test
+  fun `the National Merit block follows the grid and precedes debt`() {
+    val body =
+      render(
+        costProfile(
+          listOf(
+            CollegeId(UUID.randomUUID()).let { id ->
+              costFixture(
+                name = "Riverside State University",
+                collegeId = id,
+                meritAid = meritFixture("Riverside State University"),
+                medianDebt = 21000,
+                automaticAwards = listOf(scoreBands(gridAward(collegeId = id))),
+                nationalMerit = listOf(meritAnswer(meritAward(id))),
+              )
+            },
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    assertTrue(body.indexOf("report-merit\"") < body.indexOf("report-award-grid"), "merit, then the grid: [$body]")
+    assertTrue(body.indexOf("report-award-grid") < body.indexOf("report-national-merit"), "then National Merit: [$body]")
+    assertTrue(body.indexOf("report-national-merit") < body.indexOf("report-debt"), "then debt: [$body]")
+  }
+
+  @Test
+  fun `the National Merit block says nothing about the student`() {
+    // A STANDING IS NOT A SCORE (D1): that is what lets the page print the
+    // package, and it never lets it print her result. The page's own heading and
+    // live line say "your student", so the block itself is what is swept.
+    val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id))) }), answeredMoney()))
+
+    val block = meritSectionsOf(body).single().lowercase()
+    listOf("selection index", "your student", "scored", "psat score", "qualifies").forEach { studentWords ->
+      assertFalse(block.contains(studentWords), "the block must say nothing about the student: [$studentWords] in [$block]")
+    }
+    val lower = body.lowercase()
+    listOf("selection index", "psat score", "qualifies").forEach { studentWords ->
+      assertFalse(lower.contains(studentWords), "nor anywhere on the page: [$studentWords]")
+    }
+  }
+
+  @Test
+  fun `what kind of number a National Merit scholarship is, and the base rate, are said once for the page`() {
+    val body =
+      render(
+        costProfile(
+          listOf(
+            meritSchool(name = "Riverside State University") { id -> listOf(meritAnswer(meritAward(id))) },
+            meritSchool(name = "Ashford College") { id -> listOf(meritAnswer(meritAward(id))) },
+            stateSchool(),
+          ),
+          answeredMoney(),
+        ),
+      )
+
+    assertEquals(2, countOf(body, "<section class=\"report-national-merit\">"), "one block per school: [$body]")
+    assertEquals(1, countOf(body, NATIONAL_MERIT_KIND_SENTENCE), "the kind sentence once for the page: [$body]")
+    val baseRate =
+      "About 1.3% of entrants in the 2028 National Merit competition reach Finalist. " +
+        "Source: $MERIT_SPONSOR, read on Sep 1, 2026."
+    assertEquals(1, countOf(body, baseRate), "the base rate once, with its own publisher and read date: [$body]")
+    val kinds = kindsBlockOf(body)
+    assertTrue(kinds.contains(NATIONAL_MERIT_KIND_SENTENCE), "inside the kinds block: [$kinds]")
+    assertTrue(kinds.contains(baseRate), "and so is the base rate: [$kinds]")
+
+    val none = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    assertFalse(none.contains(NATIONAL_MERIT_KIND_SENTENCE), "no National Merit row, no kind sentence: [$none]")
+    assertFalse(none.contains("of entrants"), "and no base rate: [$none]")
+  }
+
+  @Test
+  fun `a school's own National Merit words are quoted verbatim, and our own prose never says the word they use`() {
+    val claim = payingClaim(awardName = MERIT_SCHOOL_NAME, asPublished = MERIT_SCHOOL_WORDS)
+    val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+
+    val prose = visibleProseOf(body)
+    val quotations = listOf(MERIT_SCHOOL_NAME, MERIT_SCHOOL_WORDS, MERIT_FIRST_CHOICE_WORDS)
+    val quoted = quotations.flatMap { quotation -> occurrencesOf(prose, quotation).map { it until it + quotation.length } }
+    assertEquals(quotations.size, quoted.size, "each quotation must be on the page exactly once for this test to mean anything")
+
+    val saidAt = occurrencesOf(prose.lowercase(), "award")
+    assertTrue(saidAt.isNotEmpty(), "the word must be on the page at all, or this test asserts nothing: [$prose]")
+    saidAt.forEach { at ->
+      assertTrue(
+        quoted.any { at in it },
+        "\"award\" at [$at] is not inside a school's own quoted words, so it is OUR prose saying it: [$prose]",
+      )
+    }
+  }
+
   private companion object {
     /** The day we read the school's scholarship page -- the read date every grid block cites. */
     val GRID_READ_ON: LocalDate = LocalDate.of(2026, 8, 1)
@@ -2644,5 +2992,37 @@ class CostReportPageTest {
 
     /** Our mirror of the same filing -- on the wire, never on this page (RFC 196). */
     const val ARCHIVE_URL = "https://archive.example.test/ashford-cds.pdf"
+
+    /** Who published a school's National Merit row, and the day we read it, rendered as `Sep 25, 2026`. */
+    const val MERIT_PUBLISHER = "Riverside State University Office of Scholarships"
+    val MERIT_READ_ON: LocalDate = LocalDate.of(2026, 9, 25)
+
+    /** Who published the base rate, and the day we read it, rendered as `Sep 1, 2026` -- a different day, so neither date can pass for the other. */
+    const val MERIT_SPONSOR = "Example Merit Corporation"
+    val MERIT_BASE_RATE_READ_ON: LocalDate = LocalDate.of(2026, 9, 1)
+
+    /** The first-choice deadline, rendered through the date seam as `May 1, 2027`. */
+    val MERIT_FIRST_CHOICE_BY: LocalDate = LocalDate.of(2027, 5, 1)
+    const val MERIT_FIRST_CHOICE_WORDS = "Name us your first choice with NMSC."
+
+    /** A school's own sentences for what it pays, in figures and in words alone. */
+    const val MERIT_WORDS = "Finalists receive \$17,500 a year for four years."
+    const val MERIT_WORDS_ONLY = "Finalists receive the full cost of tuition and required fees, for four years."
+    const val MERIT_ABSENCE_WORDS = "We no longer participate in offering college-sponsored National Merit scholarships."
+
+    /**
+     * Pinned HERE and not imported, for [AWARD_KIND_SENTENCE]'s reason: copy a
+     * parent reads, so a reword must fail a test.
+     */
+    const val NATIONAL_MERIT_KIND_SENTENCE =
+      "A National Merit scholarship a school publishes is the school's own money, paid only to students who reach " +
+        "the standing it names, and is not a financial aid offer."
+    const val AUTOMATIC_MERIT_LINE = "The school pays this to every student holding this standing who meets its terms."
+    const val COMPETITIVE_MERIT_LINE =
+      "The school considers students holding this standing for this scholarship. It does not promise it."
+
+    /** The corpus's own shape: a school's scholarship name and its sentence both say "award", and both are quoted. */
+    const val MERIT_SCHOOL_NAME = "National Merit Finalist Award"
+    const val MERIT_SCHOOL_WORDS = "Finalists will be awarded full tuition for four years."
   }
 }
