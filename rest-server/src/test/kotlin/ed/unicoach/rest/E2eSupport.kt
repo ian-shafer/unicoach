@@ -1,5 +1,6 @@
 package ed.unicoach.rest
 
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.typesafe.config.Config
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreTestFixtures
@@ -28,7 +29,17 @@ import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateStudentRequest
+import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.web.common.logging.RequestLoggingConfig
+import io.ktor.client.HttpClient
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -38,6 +49,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import java.sql.Connection
+import java.util.UUID
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.fail
 
 /**
@@ -50,6 +64,75 @@ import kotlin.test.fail
  */
 fun createStudentBody(graduationDate: String = "2028"): CreateStudentRequest =
   CreateStudentRequest(graduationDate, StudentRowFixture.DEFAULT_DATE_OF_BIRTH.toString())
+
+/**
+ * Registers a fresh user over HTTP, marks its email verified, and returns the
+ * session cookie as `name=value`: the caller every authenticated route test
+ * starts from.
+ */
+suspend fun registerVerifiedUser(
+  client: HttpClient,
+  baseUrl: String,
+  dbConnection: Connection,
+): String {
+  val email = "e2e-${UUID.randomUUID()}@company.com"
+  val response = registerUser(client, baseUrl, email)
+  markEmailVerified(dbConnection, email)
+  return sessionCookie(response)
+}
+
+private suspend fun registerUser(
+  client: HttpClient,
+  baseUrl: String,
+  email: String,
+): HttpResponse {
+  val response =
+    client.post("$baseUrl/api/v1/auth/register") {
+      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+      setBody(jacksonObjectMapper().writeValueAsString(RegisterRequest(email, "Password123!", "E2E User")))
+    }
+  assertEquals(HttpStatusCode.Created, response.status, "got ${response.bodyAsText()}")
+  return response
+}
+
+private fun markEmailVerified(
+  dbConnection: Connection,
+  email: String,
+) {
+  val verified =
+    dbConnection
+      .prepareStatement(
+        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      ).use { stmt ->
+        stmt.setString(1, email)
+        stmt.executeUpdate()
+      }
+  assertEquals(1, verified, "exactly one freshly registered user [$email] must be verified")
+}
+
+/** The `Set-Cookie` header as `name=value`, without its attributes. */
+private fun sessionCookie(response: HttpResponse): String =
+  assertNotNull(response.headers[HttpHeaders.SetCookie], "register must set a session cookie")
+    .split(";")
+    .first()
+    .trim()
+
+/** [registerVerifiedUser] plus a student profile: the caller every `/students/me` route serves. */
+suspend fun registerStudentSession(
+  client: HttpClient,
+  baseUrl: String,
+  dbConnection: Connection,
+): String {
+  val cookie = registerVerifiedUser(client, baseUrl, dbConnection)
+  val created =
+    client.post("$baseUrl/api/v1/students") {
+      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+      header(HttpHeaders.Cookie, cookie)
+      setBody(jacksonObjectMapper().writeValueAsString(createStudentBody()))
+    }
+  assertEquals(HttpStatusCode.Created, created.status, "got ${created.bodyAsText()}")
+  return cookie
+}
 
 /**
  * A [JobsDao] that fails the insert for one [JobType], simulating an enqueue

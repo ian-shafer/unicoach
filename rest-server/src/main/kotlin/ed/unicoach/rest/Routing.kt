@@ -12,6 +12,7 @@ import ed.unicoach.rest.routing.CollegeRouteHandler
 import ed.unicoach.rest.routing.ConvoRouteHandler
 import ed.unicoach.rest.routing.IntendedSubjectsRouteHandler
 import ed.unicoach.rest.routing.MoneyProfileRouteHandler
+import ed.unicoach.rest.routing.SharingPermissionRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
 import ed.unicoach.rest.routing.SubjectsRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
@@ -66,6 +67,7 @@ fun Application.configureRouting(
   vocabularyService: ed.unicoach.vocabulary.VocabularyService,
   subjectVocabularyService: ed.unicoach.coaching.SubjectVocabularyService,
   intendedSubjectsService: ed.unicoach.coaching.IntendedSubjectsService,
+  sharingPermissionService: ed.unicoach.coaching.SharingPermissionService,
   supporterInviteService: ed.unicoach.family.SupporterInviteService,
   supporterService: ed.unicoach.family.SupporterService,
 ) {
@@ -91,6 +93,8 @@ fun Application.configureRouting(
     SubjectsRouteHandler(authService, studentService, subjectVocabularyService, sessionConfig)
   val intendedSubjectsRouteHandler =
     IntendedSubjectsRouteHandler(authService, studentService, intendedSubjectsService, sessionConfig)
+  val sharingPermissionRouteHandler =
+    SharingPermissionRouteHandler(authService, studentService, sharingPermissionService, sessionConfig)
   val supporterInviteRouteHandler =
     SupporterInviteRoutes(authService, studentService, sessionConfig, supporterInviteService)
   val supporterRouteHandler =
@@ -117,6 +121,7 @@ fun Application.configureRouting(
     vocabularyRouteHandler.registerRoutes(this)
     subjectsRouteHandler.registerRoutes(this)
     intendedSubjectsRouteHandler.registerRoutes(this)
+    sharingPermissionRouteHandler.registerRoutes(this)
     supporterInviteRouteHandler.registerRoutes(this)
     supporterRouteHandler.registerRoutes(this)
   }

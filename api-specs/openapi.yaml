@@ -1295,6 +1295,117 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/students/me/sharing-permissions:
+    get:
+      summary: Get the current student's sharing permissions
+      description: >
+        Always 200, never 404: one entry per sharing permission, in a fixed
+        order. A permission the student was never asked is listed with status
+        `not_asked`, which is not a grant.
+      operationId: getSharingPermissions
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Every sharing permission and the caller's answer to it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SharingPermissionsResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/students/me/sharing-permissions/{permission}:
+    put:
+      summary: Grant or withdraw one sharing permission
+      description: >
+        Stores the student's answer, `granted` or `refused`. Reversible both
+        ways at any time; withdrawing is `refused`. `not_asked` cannot be
+        written. Re-sending the current answer is a 200 that writes nothing.
+      operationId: putSharingPermission
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: permission
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [intended_subjects]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSharingPermissionRequest'
+      responses:
+        '200':
+          description: The permission and the caller's answer as it now stands
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSharingPermission'
+        '400':
+          description: >
+            Validation failure: `status` missing, not a known value, or
+            `not_asked`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such sharing permission (code not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/vocabularies:
     get:
       summary: Read the served vocabularies
@@ -2390,6 +2501,36 @@ components:
       properties:
         intendedSubjects:
           $ref: '#/components/schemas/PublicIntendedSubjects'
+    PublicSharingPermission:
+      type: object
+      required: [permission, status]
+      properties:
+        permission:
+          type: string
+          enum: [intended_subjects]
+        status:
+          type: string
+          enum: [not_asked, granted, refused]
+          description: >-
+            `not_asked` is the state of a student who was never asked. Only
+            `granted` lets anyone see the data.
+    SharingPermissionsResponse:
+      type: object
+      required: [permissions]
+      properties:
+        permissions:
+          type: array
+          description: One entry per sharing permission, never fewer.
+          items:
+            $ref: '#/components/schemas/PublicSharingPermission'
+    UpdateSharingPermissionRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [granted, refused]
     MoneyProfileResponse:
       type: object
       required: [profile]

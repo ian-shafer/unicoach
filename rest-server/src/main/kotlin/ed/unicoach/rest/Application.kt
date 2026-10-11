@@ -348,6 +348,10 @@ fun Application.appModule(
   val intendedSubjectsService =
     ed.unicoach.coaching
       .IntendedSubjectsService(database, subjectVocabularyService)
+  // The student's sharing permissions (RFC 248).
+  val sharingPermissionService =
+    ed.unicoach.coaching
+      .SharingPermissionService(database)
   // The tool registry advertised on every coaching turn (RFC 94). New tools
   // append here; nothing else in the loop changes.
   // One CollegeSearchService serves both the chat tool and the REST search
@@ -535,6 +539,7 @@ fun Application.appModule(
     vocabularyService,
     subjectVocabularyService,
     intendedSubjectsService,
+    sharingPermissionService,
     supporterInviteService,
     supporterService,
   )

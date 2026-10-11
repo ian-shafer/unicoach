@@ -175,9 +175,13 @@ internal fun <T> SqlSession.mutateReturning(
     Result.failure(mapDatabaseError(e))
   }
 
-/** A write returning its affected-row count. */
+/**
+ * A write returning its affected-row count. [mapError] discriminates SQLSTATE
+ * exactly as it does for [mutateReturning], defaulting to [mapDatabaseError].
+ */
 internal fun SqlSession.execute(
   sql: String,
+  mapError: (SQLException) -> Exception = ::mapDatabaseError,
   bind: (PreparedStatement) -> Unit = {},
 ): Result<Int> =
   try {
@@ -185,6 +189,8 @@ internal fun SqlSession.execute(
       bind(stmt)
       Result.success(stmt.executeUpdate())
     }
+  } catch (e: SQLException) {
+    Result.failure(mapError(e))
   } catch (e: Exception) {
     Result.failure(mapDatabaseError(e))
   }
