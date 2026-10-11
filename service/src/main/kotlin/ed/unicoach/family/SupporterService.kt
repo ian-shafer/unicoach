@@ -68,8 +68,8 @@ data class StudentSupporters(
  *
  * [Closed] is the third answer. `supporters_user_id_unique_idx` is TOTAL, so a
  * soft-deleted row holds its `user_id` forever and no live row can be minted
- * for that user again. Re-opening is `family/09`; until then the refusal is an
- * ANSWER this door gives — named here, so the route can name it too — and not
+ * for that user again. There is no re-opening path (`family/09` closes the
+ * whole account instead, RFC 252), so the refusal is an ANSWER this door gives — named here, so the route can name it too — and not
  * an exception the error channel carries to an untyped 400.
  */
 sealed interface EnsureSupporterOutcome {
@@ -109,6 +109,7 @@ sealed interface EnsureSupporterOutcome {
  */
 class SupporterService(
   private val database: Database,
+  private val linkEndedNotice: LinkEndedNotice,
 ) {
   private val logger = LoggerFactory.getLogger(SupporterService::class.java)
 
@@ -202,9 +203,11 @@ class SupporterService(
     }
 
   /**
-   * The student ends one adult's access (RFC 249). Nothing else changes: both
-   * accounts, the student's conversations, the adult's own rows, any unused
-   * invite link and the Family Cost Report link all stay as they are.
+   * The student ends one adult's access (RFC 249), and the adult is told the
+   * link ended (RFC 252) — inside this transaction, so a failed enqueue undoes
+   * the disconnect. Nothing else changes: both accounts, the student's
+   * conversations, the adult's own rows, any unused invite link and the Family
+   * Cost Report link all stay as they are.
    */
   suspend fun disconnectAsStudent(
     studentId: StudentId,
@@ -212,13 +215,16 @@ class SupporterService(
   ): Result<UnlinkOutcome> =
     runCatching {
       database.withConnection { session ->
-        SupporterStudentLinksDao.unlink(session, linkId, LinkSide.Student(studentId)).getOrThrow()
+        SupporterStudentLinksDao.unlink(session, linkId, LinkSide.Student(studentId)).getOrThrow().also { outcome ->
+          if (outcome is UnlinkOutcome.Unlinked) linkEndedNotice.tellSupporter(session, outcome.link)
+        }
       }
     }
 
   /**
-   * The supporter ends their own access to one student (RFC 249). A caller with
-   * no live `supporters` row holds no link, so the answer is
+   * The supporter ends their own access to one student (RFC 249), and the
+   * student is told the link ended (RFC 252), on this transaction. A caller
+   * with no live `supporters` row holds no link, so the answer is
    * [UnlinkOutcome.NotFound], the same as for a link they never held.
    */
   suspend fun disconnectAsSupporter(
@@ -234,7 +240,9 @@ class SupporterService(
           logger.info("Disconnect of link [{}] by user [{}]: the user has no live supporters row", linkId.asString, userId.asString)
           return@withConnection UnlinkOutcome.NotFound
         }
-        SupporterStudentLinksDao.unlink(session, linkId, LinkSide.Supporter(supporter.id)).getOrThrow()
+        SupporterStudentLinksDao.unlink(session, linkId, LinkSide.Supporter(supporter.id)).getOrThrow().also { outcome ->
+          if (outcome is UnlinkOutcome.Unlinked) linkEndedNotice.tellStudent(session, outcome.link)
+        }
       }
     }
 

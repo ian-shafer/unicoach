@@ -21,6 +21,7 @@ import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
+import ed.unicoach.family.LinkEndedNotice
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterService
@@ -102,7 +103,7 @@ object WebAuthTestSupport {
       database,
       SupporterInviteConfig.from(config).getOrThrow(),
       TokenGenerator(),
-      SupporterService(database),
+      SupporterService(database, LinkEndedNotice(QueueService(database))),
     )
 
   /** Truncates users (cascading to sessions) and the job queue, for an isolated test. */

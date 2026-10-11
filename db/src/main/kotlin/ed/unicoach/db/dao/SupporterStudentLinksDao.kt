@@ -212,10 +212,10 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
    * type's KDoc.
    *
    * `deleted_at IS NULL` is asserted on the LINK, on the STUDENT and on the
-   * USER. Closing an account soft-deletes the `students` row and the `users` row
-   * in one transaction (`StudentService.deleteStudentAndAccount`), so the third
-   * predicate is redundant today — and it is what keeps this read's answer
-   * correct if `family/09` ever closes a `users` row on its own. A boundary
+   * USER. Closing an account severs its links and soft-deletes its role rows and
+   * its `users` row in one transaction (`AccountClosureService`), so the last two
+   * predicates are redundant for a close — and they are what keeps this read's
+   * answer correct for any other path that closes one row on its own. A boundary
    * belongs in the statement that admits the rows, not in an argument about
    * another module's transaction. The join to `users` is INNER because
    * `students.user_id` is a foreign key — a student with no user row is not a
@@ -416,26 +416,53 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
     linkId: SupporterStudentLinkId,
     side: LinkSide,
   ): Result<UnlinkOutcome> =
-    session
-      .queryList(
-        """
-        UPDATE supporter_student_links
-        SET deleted_at = NOW(), version = version + 1
-        WHERE id = ? AND ${side.column} = ? AND deleted_at IS NULL
-        RETURNING *
-        """.trimIndent(),
-        bind = { stmt ->
-          stmt.setObject(1, linkId.value)
-          stmt.setObject(2, side.boundId)
-        },
-        map = ::mapLink,
-      ).mapCatching { severed ->
-        when (severed.size) {
-          0 -> UnlinkOutcome.NotFound
-          1 -> UnlinkOutcome.Unlinked(severed.single())
-          else -> error("unlink of link [${linkId.asString}] severed [${severed.size}] rows; supporter_student_links.id is the primary key")
-        }
+    sever(session, side, linkId).mapCatching { severed ->
+      when (severed.size) {
+        0 -> UnlinkOutcome.NotFound
+        1 -> UnlinkOutcome.Unlinked(severed.single())
+        else -> error("unlink of link [${linkId.asString}] severed [${severed.size}] rows; supporter_student_links.id is the primary key")
       }
+    }
+
+  /**
+   * Severs EVERY active link [side] holds (RFC 252) — the account close's
+   * write, one statement per side. Returns the severed rows, so the caller can
+   * tell each other party the link ended; empty when [side] held none.
+   *
+   * The same [sever] write as [unlink], without the id. The `AFTER UPDATE`
+   * snapshot writes each sever into `supporter_student_links_versions`, exactly
+   * as for one unlink.
+   */
+  fun severAll(
+    session: SqlSession,
+    side: LinkSide,
+  ): Result<List<SupporterStudentLink>> = sever(session, side, linkId = null)
+
+  /**
+   * The ONE sever write, shared by [unlink] (narrowed to [linkId]) and
+   * [severAll] (every link [side] holds), so a close and a disconnect cannot
+   * store different severed rows. The side rides in the WHERE that severs;
+   * `deleted_at IS NULL` keeps an already-severed link's moment from being
+   * re-stamped, and `version = version + 1` satisfies `enforce_versioning`.
+   */
+  private fun sever(
+    session: SqlSession,
+    side: LinkSide,
+    linkId: SupporterStudentLinkId?,
+  ): Result<List<SupporterStudentLink>> =
+    session.queryList(
+      """
+      UPDATE supporter_student_links
+      SET deleted_at = NOW(), version = version + 1
+      WHERE ${side.column} = ? AND deleted_at IS NULL${if (linkId != null) " AND id = ?" else ""}
+      RETURNING *
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setObject(1, side.boundId)
+        if (linkId != null) stmt.setObject(2, linkId.value)
+      },
+      map = ::mapLink,
+    )
 
   /**
    * The create-path mapping, built from the ids that were written.

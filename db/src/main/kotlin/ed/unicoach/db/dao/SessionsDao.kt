@@ -249,6 +249,24 @@ object SessionsDao :
     )
   }
 
+  /**
+   * Revokes every live session [userId] holds, on every device (RFC 252), and
+   * returns how many it revoked. A closed account's sessions already fail to
+   * resolve, because session resolution reads the user as ACTIVE; revoking
+   * them makes the session table say so too.
+   */
+  fun revokeAllForUser(
+    session: SqlSession,
+    userId: UserId,
+  ): Result<Int> =
+    session.execute(
+      """
+      UPDATE sessions
+      SET version = version + 1, is_revoked = true
+      WHERE user_id = ? AND is_revoked = false
+      """.trimIndent(),
+    ) { it.setObject(1, userId.value) }
+
   fun expireZombieSessions(session: SqlSession): Result<Unit> =
     session
       .execute(

@@ -77,6 +77,35 @@ class AuthClientTests: XCTestCase {
         authClient = AuthClient(apiClient: apiClient)
     }
     
+    /// The account close is `DELETE /api/v1/auth/me`, and `204` is success
+    /// (RFC 252).
+    func testDeleteAccountSendsDeleteToAuthMe() async throws {
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/auth/me")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            return (HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        try await authClient.deleteAccount()
+    }
+
+    func testDeleteAccountThrowsTheServersRefusal() async {
+        MockURLProtocol.requestHandler = { request in
+            let body = #"{"code":"unauthorized","message":"Not signed in"}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+        }
+
+        do {
+            try await authClient.deleteAccount()
+            XCTFail("a 401 is not a closed account")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "unauthorized")
+            XCTAssertEqual(error.status, 401)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     func testSuccessfulRegistration() async throws {
         let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         let responsePayload = RegisterResponse(user: expectedUser)

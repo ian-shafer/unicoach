@@ -95,4 +95,8 @@ final class MockSupporterSubjectStore: SupporterSubjectStore, @unchecked Sendabl
     func select(studentId: UUID, forUserId userId: UUID) {
         selections[userId] = studentId
     }
+
+    func clear(forUserId userId: UUID) {
+        selections[userId] = nil
+    }
 }

@@ -1,13 +1,10 @@
 package ed.unicoach.auth
 
 import ed.unicoach.common.json.deserialize
-import ed.unicoach.common.models.ValidationResult
-import ed.unicoach.email.EmailBody
-import ed.unicoach.email.EmailSubject
 import ed.unicoach.email.EmailTemplate
 import ed.unicoach.email.EmailTemplateRenderer
-import ed.unicoach.email.RenderValidationException
 import ed.unicoach.email.RenderedEmail
+import ed.unicoach.email.renderedEmail
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -33,34 +30,12 @@ class VerificationEmailRenderer(
 
     val link = "$verifyUrlBase?token=$verifyToken"
 
-    val subject =
-      when (val s = EmailSubject.create("Verify your email address")) {
-        is ValidationResult.Valid -> {
-          s.value
-        }
-
-        is ValidationResult.Invalid -> {
-          return Result.failure(RenderValidationException("verification subject", s.error))
-        }
-      }
-
-    val body =
-      when (
-        val b =
-          EmailBody.create(
-            "Welcome to Unicoach. Confirm your email address by visiting:\n\n$link\n\n" +
-              "If you did not create this account, you can ignore this message.",
-          )
-      ) {
-        is ValidationResult.Valid -> {
-          b.value
-        }
-
-        is ValidationResult.Invalid -> {
-          return Result.failure(RenderValidationException("verification body", b.error))
-        }
-      }
-
-    return Result.success(RenderedEmail(subject, body))
+    return renderedEmail(
+      template = template,
+      subject = "Verify your email address",
+      body =
+        "Welcome to Unicoach. Confirm your email address by visiting:\n\n$link\n\n" +
+          "If you did not create this account, you can ignore this message.",
+    )
   }
 }

@@ -17,7 +17,8 @@ import java.util.UUID
  * Append-only DAO for `user_auth_identities`. Composes [Creatable] for the
  * single write; [findByProviderAndSubject] and [listByUser] are bespoke reads
  * (not `findById`/`list` shapes), so they stay outside the capability
- * interfaces. There is no update/delete surface — the table is append-only.
+ * interfaces. There is no update surface, and the one delete is
+ * [deleteForClosedUser] — the table is append-only for every live account.
  */
 object UserAuthIdentitiesDao : Creatable<NewAuthIdentity, AuthIdentity> {
   /**
@@ -108,6 +109,21 @@ object UserAuthIdentitiesDao : Creatable<NewAuthIdentity, AuthIdentity> {
       },
       map = ::mapIdentity,
     )
+
+  /**
+   * Deletes every identity of a CLOSED account (RFC 252) and returns how many,
+   * so a returning sign-in on the same Apple or Google subject finds no
+   * identity and takes the first-time path instead of `account_disabled`.
+   *
+   * The `users` row must already be soft-deleted in the caller's transaction:
+   * the table's delete guard (`user-auth-identities-delete-on-closed-account.sql`)
+   * refuses a delete for a live account, so a call for one fails rather than
+   * erasing a live person's sign-in.
+   */
+  fun deleteForClosedUser(
+    session: SqlSession,
+    userId: UserId,
+  ): Result<Int> = session.execute("DELETE FROM user_auth_identities WHERE user_id = ?") { it.setObject(1, userId.value) }
 
   /** All identities linked to a user, oldest-first; empty for an unknown user. */
   fun listByUser(

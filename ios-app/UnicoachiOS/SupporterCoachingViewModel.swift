@@ -107,6 +107,20 @@ final class SupporterCoachingViewModel: ObservableObject {
         }
     }
 
+    /// Whether this account pays through its own subscription — what the
+    /// account-deletion notice is driven by (RFC 252). The coverage KIND
+    /// alone, not `state`: a subscription whose period end failed to decode
+    /// renders `.unavailable`, and is still billed by Apple. `nil` while the
+    /// reading is loading or unavailable: not knowing is not "does not pay".
+    var holdsOwnSubscription: Bool? {
+        switch reading {
+        case .loading, .unavailable:
+            return nil
+        case .ready(let read):
+            return read.coverage.kind == .ownSubscription
+        }
+    }
+
     /// Re-reads the meter. The parent's home takes it on appearance and on every
     /// return to the foreground, for the reason the roster refresh does: a
     /// parent's spend changes while the app is in the background, and nothing

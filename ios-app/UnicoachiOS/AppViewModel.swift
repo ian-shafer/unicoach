@@ -4,7 +4,10 @@ import os
 @MainActor
 class AppViewModel: ObservableObject {
     @Published var authState: UserAuthState = .loading
-    let authClient: AuthClientProtocol & SsoAuthenticating
+    /// Set when this device just closed its account (RFC 252), so the login
+    /// screen the app lands on can say so. Cleared by the next sign-in.
+    @Published private(set) var accountClosed = false
+    let authClient: AuthClientProtocol & SsoAuthenticating & AccountDeleting
     let studentClient: StudentClientProtocol
     let moneyProfileClient: MoneyProfileClientProtocol
     let conversationClient: ConversationClientProtocol
@@ -31,6 +34,10 @@ class AppViewModel: ObservableObject {
     /// like every other dependency, so a test substitutes it by conforming to
     /// the protocol rather than by reaching into `UserDefaults`.
     let supporterSubjectStore: SupporterSubjectStore
+    /// The name Apple disclosed at first sign-in, cleared when an account is
+    /// deleted (RFC 252). The default `AppleSignInProvider` is built over this
+    /// same instance, so the sweep clears what sign-in wrote.
+    let appleNameStore: AppleNameStore
 
     /// The StoreKit rail and the one `TransactionRecorder` over it.
     ///
@@ -97,7 +104,7 @@ class AppViewModel: ObservableObject {
     init(
         apiClient: APIClient = APIClient(),
         cookieStorage: CookieStorageProtocol = HTTPCookieStorage.shared,
-        authClient: (AuthClientProtocol & SsoAuthenticating)? = nil,
+        authClient: (AuthClientProtocol & SsoAuthenticating & AccountDeleting)? = nil,
         studentClient: StudentClientProtocol? = nil,
         moneyProfileClient: MoneyProfileClientProtocol? = nil,
         conversationClient: ConversationClientProtocol? = nil,
@@ -110,10 +117,11 @@ class AppViewModel: ObservableObject {
         supporterClient: SupporterClientProtocol? = nil,
         supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol? = nil,
         supporterSubjectStore: SupporterSubjectStore? = nil,
+        appleNameStore: AppleNameStore = UserDefaultsAppleNameStore(),
         subscriptionClient: SubscriptionClientProtocol? = nil,
         subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = AppViewModel.defaultSubscriptionStore(),
         googleSignInProvider: SsoSignInProviding = GoogleSignInProvider(),
-        appleSignInProvider: SsoSignInProviding = AppleSignInProvider()
+        appleSignInProvider: SsoSignInProviding? = nil
     ) {
         self.authClient = authClient ?? AuthClient(apiClient: apiClient)
         self.studentClient = studentClient ?? StudentClient(apiClient: apiClient)
@@ -129,8 +137,9 @@ class AppViewModel: ObservableObject {
         self.supporterCoachingUsageClient = supporterCoachingUsageClient
             ?? SupporterCoachingUsageClient(apiClient: apiClient)
         self.supporterSubjectStore = supporterSubjectStore ?? UserDefaultsSupporterSubjectStore()
+        self.appleNameStore = appleNameStore
         self.googleSignInProvider = googleSignInProvider
-        self.appleSignInProvider = appleSignInProvider
+        self.appleSignInProvider = appleSignInProvider ?? AppleSignInProvider(nameStore: appleNameStore)
         self.cookieStorage = cookieStorage
         self.subscriptionStore = subscriptionStore
         // The one place a `TransactionFinishing` is ever handed out.
@@ -163,10 +172,12 @@ class AppViewModel: ObservableObject {
     }
 
     func onLoginSuccess(_ user: PublicUser) async {
+        accountClosed = false
         await resolveProfileState(user)
     }
 
     func onRegisterSuccess(_ user: PublicUser) async {
+        accountClosed = false
         await resolveProfileState(user)
     }
 
@@ -318,12 +329,61 @@ class AppViewModel: ObservableObject {
         } catch {
             logger.error("Network logout failed, proceeding with local session clear: [\(error, privacy: .public)]")
         }
+        endLocalSession()
+    }
+
+    /// Closes the signed-in account (RFC 252): `DELETE /api/v1/auth/me`, then
+    /// the logout tail, plus the per-user `UserDefaults` this device holds.
+    ///
+    /// Returns `false` when the server did not confirm the close. Nothing local
+    /// is touched then: the account still exists, so the person stays signed
+    /// in and Settings says the attempt failed — unless the refusal is
+    /// `unauthorized`. That session is already dead (the account closed from
+    /// another device, or the session was revoked), so the app ends it locally
+    /// and lands on the login screen, as `checkSession` would.
+    func deleteAccount() async -> Bool {
+        do {
+            try await authClient.deleteAccount()
+        } catch {
+            logger.error("Account deletion failed: [\(String(describing: error), privacy: .public)]")
+            if let refusal = error as? ErrorResponse, refusal.code == "unauthorized" {
+                profileRefreshTask?.cancel()
+                endLocalSession()
+            }
+            return false
+        }
+        if let user = signedInUser {
+            supporterSubjectStore.clear(forUserId: user.id)
+        }
+        appleNameStore.removeAll()
+        profileRefreshTask?.cancel()
+        accountClosed = true
+        endLocalSession()
+        return true
+    }
+
+    /// The local half of ending a session, shared by logout and deletion.
+    private func endLocalSession() {
         if let cookies = cookieStorage.cookies {
             for cookie in cookies {
                 cookieStorage.deleteCookie(cookie)
             }
         }
         authState = .unauthenticated
+    }
+
+    /// The user the current state is about, when it is about one.
+    private var signedInUser: PublicUser? {
+        switch authState {
+        case .authenticated(let user),
+             .onboarding(let user),
+             .roleChoice(let user),
+             .supporterHome(let user, _),
+             .verificationRequired(let user):
+            return user
+        case .loading, .unauthenticated, .serverError, .unexpectedError, .noConnectivity:
+            return nil
+        }
     }
 
     /// Outcome of a verification re-check, reported back to the blocked screen.

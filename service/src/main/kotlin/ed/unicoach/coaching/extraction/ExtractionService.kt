@@ -25,6 +25,7 @@ import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ExtractionRunsDao
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.ClaimId
@@ -135,6 +136,13 @@ open class ExtractionService(
       if (convo.deletedAt != null) return@withConnection ReadPhase.NoOp
 
       val studentId = convo.studentId
+      // A closed student's turn, queued just before the close, must not run and
+      // bill after it (RFC 252): the same no-op the synthesis pass takes.
+      val student =
+        StudentsDao.findById(session, studentId, SoftDeleteScope.ALL).getOrElse {
+          throw IllegalStateException("Convo [${convo.id.asString}] names student [${studentId.asString}], which has no row", it)
+        }
+      if (student.deletedAt != null) return@withConnection ReadPhase.NoOp
       AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
 
       // Budget gate (RFC 109), taken under the lock so the verdict is consistent

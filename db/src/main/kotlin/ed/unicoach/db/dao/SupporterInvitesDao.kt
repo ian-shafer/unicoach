@@ -196,6 +196,31 @@ object SupporterInvitesDao : Creatable<NewSupporterInvite, SupporterInvite> {
   }
 
   /**
+   * Revokes every LIVE invite [inviterUserId] minted, in either role (RFC 252) —
+   * the account close's write. Returns the revoked rows; empty when there were
+   * none.
+   *
+   * Keyed on `inviter_user_id`, the one column every invite carries whoever
+   * minted it, so a dual-role account's student-minted and supporter-minted
+   * invites go together. A closed inviter's invite is already refused at accept
+   * time; revoking it makes the row say so too.
+   */
+  fun revokeAllByInviter(
+    session: SqlSession,
+    inviterUserId: UserId,
+  ): Result<List<SupporterInvite>> =
+    session.queryList(
+      """
+      UPDATE supporter_invites
+      SET revoked_at = NOW()
+      WHERE inviter_user_id = ? AND $LIVE_PREDICATE
+      RETURNING *
+      """.trimIndent(),
+      bind = { it.setObject(1, inviterUserId.value) },
+      map = ::mapInvite,
+    )
+
+  /**
    * The shared child-table write mapping, not a fourth private copy of it: this
    * table has three foreign keys, and the copy this replaced had no `23503` arm
    * at all, so a missing endpoint arrived as an unclassified fault.

@@ -443,6 +443,50 @@ class SupporterStudentLinksDaoTest {
   }
 
   /**
+   * The close's sever (RFC 252): every live link on ONE side, and nothing on the
+   * other side's other links. A link already severed is not re-stamped, and each
+   * sever is a history row like an unlink's.
+   */
+  @Test
+  fun `severAll severs every live link of one side and no other`() {
+    val student = createStudent()
+    val otherStudent = createStudent()
+    val jane = createSupporter()
+    val sam = createSupporter()
+    val janes = link(jane.id, student).getOrThrow()
+    val sams = link(sam.id, student).getOrThrow()
+    val janesOther = link(jane.id, otherStudent).getOrThrow()
+    val alreadySevered = sever(link(createSupporter().id, student).getOrThrow())
+
+    val severed = SupporterStudentLinksDao.severAll(session, LinkSide.Student(student)).getOrThrow()
+
+    assertEquals(setOf(janes.id, sams.id), severed.map { it.id }.toSet(), "both live links of the student, and only those")
+    assertTrue(severed.all { it.deletedAt != null && it.version == janes.version + 1 })
+    assertEquals(alreadySevered.deletedAt, deletedAtOf(alreadySevered.id.value), "an earlier sever keeps its moment")
+    assertNull(deletedAtOf(janesOther.id.value), "the supporter's link to ANOTHER student is not the student's to end")
+    assertEquals(
+      2,
+      connection
+        .prepareStatement("SELECT count(*) FROM supporter_student_links_versions WHERE id = ?")
+        .use { stmt ->
+          stmt.setObject(1, janes.id.value)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            rs.getInt(1)
+          }
+        },
+      "the live row and the severed row",
+    )
+
+    assertEquals(
+      listOf(janesOther.id),
+      SupporterStudentLinksDao.severAll(session, LinkSide.Supporter(jane.id)).getOrThrow().map { it.id },
+      "from the supporter's side, only what is still live",
+    )
+    assertEquals(emptyList(), SupporterStudentLinksDao.severAll(session, LinkSide.Supporter(jane.id)).getOrThrow())
+  }
+
+  /**
    * The other half: a wrong id is NOT a lost race for the OCC write. It sits on
    * the spine every later slice authorises against, and a caller that cannot
    * tell "you named a link that does not exist" from "somebody beat you to it"
@@ -906,11 +950,10 @@ class SupporterStudentLinksDaoTest {
 
   /**
    * The third predicate, held on its own. Production closes the `students` row
-   * and the `users` row in ONE transaction
-   * (`StudentService.deleteStudentAndAccount`), so this state does not occur
-   * today — which is exactly why the read has to be tested for it rather than
-   * trusted to another module's transaction. `family/09` adds a deletion path,
-   * and the day a `users` row closes alone, the name on it must not still be
+   * and the `users` row in ONE transaction (`AccountClosureService`), so a close
+   * never leaves this state — which is exactly why the read has to be tested for
+   * it rather than trusted to another module's transaction. The operator admin
+   * can close a `users` row alone, and the name on it must not still be
    * rendered on a parent's home.
    */
   @Test

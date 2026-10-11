@@ -8,6 +8,10 @@ import Foundation
 protocol AppleNameStore {
     func name(forUserId id: String) -> String?
     func store(name: String, forUserId id: String)
+    /// Forgets every stored name — on account deletion (RFC 252). All of them,
+    /// not one: the stored key is Apple's `sub`, and nothing on the device
+    /// records which `sub` the deleted account signed in with.
+    func removeAll()
 }
 
 /// Production `AppleNameStore`. Keyed by Apple's own per-app-per-user `sub`
@@ -18,9 +22,17 @@ final class UserDefaultsAppleNameStore: AppleNameStore {
     /// entry; the Apple user id is appended verbatim.
     private static let keyPrefix = "AppleSignIn.name."
 
-    /// The app has exactly one name suite. Substituting the storage in a test
-    /// is done by conforming to `AppleNameStore`, not by swapping the suite.
-    private let defaults = UserDefaults.standard
+    /// The suite this store reads and writes, on the
+    /// `UserDefaultsSupporterSubjectStore` precedent: the app names nothing and
+    /// gets the one suite it has, while this class's own tests — the only tests
+    /// of the real key prefix and the `removeAll` sweep — run against an
+    /// isolated suite. Every other caller still substitutes by conforming to
+    /// `AppleNameStore`.
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
     func name(forUserId id: String) -> String? {
         defaults.string(forKey: Self.keyPrefix + id)
@@ -28,5 +40,11 @@ final class UserDefaultsAppleNameStore: AppleNameStore {
 
     func store(name: String, forUserId id: String) {
         defaults.set(name, forKey: Self.keyPrefix + id)
+    }
+
+    func removeAll() {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.keyPrefix) {
+            defaults.removeObject(forKey: key)
+        }
     }
 }

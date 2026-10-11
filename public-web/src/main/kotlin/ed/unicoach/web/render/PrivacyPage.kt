@@ -43,10 +43,14 @@ suspend fun ApplicationCall.respondPrivacyPage(nav: ShellNav = ShellNav.SignedOu
 
         h2 { +"Your choices" }
         p {
+          // Names the iOS control `DeleteAccountControl` ("Delete account",
+          // ios-app/UnicoachiOS/SettingsView.swift). Rename or move it and this
+          // sentence points users at a control that no longer exists.
           +(
-            "You may request access to or deletion of your account information by " +
-              "contacting us. Some information may be retained as required to operate " +
-              "the service or to comply with legal obligations."
+            "You may request access to your account information by contacting us. " +
+              "You can close your account in the app: Settings › Delete account. " +
+              "Some information may be retained as required to operate the service " +
+              "or to comply with legal obligations."
           )
         }
       }

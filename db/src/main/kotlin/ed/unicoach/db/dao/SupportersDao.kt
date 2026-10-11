@@ -131,16 +131,13 @@ object SupportersDao :
    * left is never re-stamped by a second delete.
    *
    * There is no re-opening: `supporters_user_id_unique_idx` is TOTAL, so a
-   * closed supporter holds its `user_id` forever and account deletion is what
-   * removes it.
+   * closed supporter holds its `user_id` forever.
    *
-   * **Closing a supporter does NOT sever its links.** `supporter_student_links`
-   * rows pointing at this supporter stay exactly as they are, and the link
-   * table's liveness guard fires on INSERT only, so each of them can still be
-   * unlinked — tidying them away remains possible, it is simply not automatic.
-   * What SHOULD happen to a closed supporter's links is an account-deletion
-   * question (`family/07`), and that slice owns it; a cascade invented here
-   * would decide it silently.
+   * **This write does NOT sever the supporter's links.** The account close
+   * (`AccountClosureService`, RFC 252) severs them first, in the same
+   * transaction, because it also tells each student the link ended; a cascade
+   * here would sever without that. The link table's liveness guard fires on
+   * INSERT only, so a link left by any other path can still be unlinked.
    */
   fun delete(
     session: SqlSession,

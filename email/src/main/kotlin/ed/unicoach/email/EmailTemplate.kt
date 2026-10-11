@@ -10,4 +10,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class EmailTemplate {
   EMAIL_VERIFICATION,
+
+  /** A supporter–student link ended (RFC 252); one text for every cause. */
+  LINK_ENDED,
 }

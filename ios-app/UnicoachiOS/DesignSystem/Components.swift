@@ -193,6 +193,9 @@ enum DSTextButtonRole {
     /// A way out of the screen — "Done", "Not now": `dsTextSecondary`, so it
     /// sits behind the action above it without becoming invisible.
     case secondary
+    /// The quiet door to an irreversible action — "Delete account": `dsError`,
+    /// the colour `DestructiveButtonStyle` gives the confirming control.
+    case destructive
 }
 
 /// The plain, centred text button: no fill, no border, full width, `dsLabel`
@@ -274,6 +277,7 @@ struct DSTextButton: View {
         switch role {
         case .primary: return Color.dsTextPrimary
         case .secondary: return Color.dsTextSecondary
+        case .destructive: return Color.dsError
         }
     }
 }

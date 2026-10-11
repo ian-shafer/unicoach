@@ -84,6 +84,20 @@ final class SupporterSubjectStoreTests: XCTestCase {
         XCTAssertNil(store.selectedStudentId(forUserId: userId))
     }
 
+    /// Account deletion forgets the selection (RFC 252) — this user's only.
+    func testClearForgetsOnlyThisUsersSelection() {
+        let closing = user()
+        let other = user()
+        let studentId = UUID()
+        store.select(studentId: studentId, forUserId: closing)
+        store.select(studentId: studentId, forUserId: other)
+
+        store.clear(forUserId: closing)
+
+        XCTAssertNil(defaults.string(forKey: UserDefaultsSupporterSubjectStore.key(closing)))
+        XCTAssertEqual(store.selectedStudentId(forUserId: other), studentId)
+    }
+
     // MARK: - Resolution
 
     func testResolveAnswersNilForAnEmptyRoster() {

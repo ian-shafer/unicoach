@@ -9,6 +9,7 @@ import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
+import ed.unicoach.queue.QueueService
 import ed.unicoach.util.TokenGenerator
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
@@ -33,7 +34,7 @@ class SupporterInviteServiceTest {
       inviteUrlBase = "https://app.unicoach.test/invite",
       tokenTtl = Duration.ofDays(14),
     )
-  private val supporterService = SupporterService(database)
+  private val supporterService = SupporterService(database, LinkEndedNotice(QueueService(database)))
   private val service = SupporterInviteService(database, config, tokenGenerator, supporterService)
 
   @BeforeEach

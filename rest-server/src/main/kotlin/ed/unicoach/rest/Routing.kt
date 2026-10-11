@@ -93,8 +93,10 @@ fun Application.configureRouting(
   sharingPermissionService: ed.unicoach.coaching.SharingPermissionService,
   supporterInviteService: ed.unicoach.family.SupporterInviteService,
   supporterService: ed.unicoach.family.SupporterService,
+  accountClosureService: ed.unicoach.account.AccountClosureService,
 ) {
-  val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
+  val authRouteHandler =
+    AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier, accountClosureService)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
   val convoRouteHandler =
     ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)

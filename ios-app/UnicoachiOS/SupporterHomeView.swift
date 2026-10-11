@@ -38,6 +38,7 @@ struct SupporterHomeView: View {
     let refreshHome: () async -> Void
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
+    let onDeleteAccount: () async -> Bool
 
     /// Destinations pushed from the home. Two, and both are student-free:
     /// college lookup reads `GET /api/v1/colleges`, and Settings for a
@@ -78,7 +79,8 @@ struct SupporterHomeView: View {
         switcherOpenOnAppear: Bool = false,
         refreshHome: @escaping () async -> Void,
         onEmailChanged: @escaping (PublicUser) async -> Void,
-        onLogout: @escaping () async -> Void
+        onLogout: @escaping () async -> Void,
+        onDeleteAccount: @escaping () async -> Bool
     ) {
         self.user = user
         self.home = home
@@ -94,6 +96,7 @@ struct SupporterHomeView: View {
         self.refreshHome = refreshHome
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
+        self.onDeleteAccount = onDeleteAccount
         _selectedStudentId = State(initialValue: SupporterSubject.resolve(
             roster: home.students,
             stored: subjectStore.selectedStudentId(forUserId: user.id)
@@ -271,11 +274,17 @@ struct SupporterHomeView: View {
                 // The roster and the refresh are for the family list
                 // (RFC 249): popping back from Settings does not re-run this
                 // scene's `.task`, so a disconnect re-reads the home itself.
-                caller: .supporter(.init(roster: home.students, client: supporterClient, refreshHome: refreshHome)),
+                // The coaching reading is this scene's own, already loaded:
+                // the delete confirmation reads it rather than asking again.
+                caller: .supporter(
+                    .init(roster: home.students, client: supporterClient, refreshHome: refreshHome),
+                    coaching: coachingViewModel
+                ),
                 authClient: authClient,
                 supporterInviteClient: supporterInviteClient,
                 onEmailChanged: onEmailChanged,
-                onLogout: onLogout
+                onLogout: onLogout,
+                onDeleteAccount: onDeleteAccount
             )
         }
     }
@@ -323,6 +332,7 @@ private final class SupporterHomePreviewCollegeListClient: CollegeListClientProt
 private struct SupporterHomePreviewSubjectStore: SupporterSubjectStore {
     func selectedStudentId(forUserId userId: UUID) -> UUID? { nil }
     func select(studentId: UUID, forUserId userId: UUID) {}
+    func clear(forUserId userId: UUID) {}
 }
 
 @MainActor private func supporterHomePreview(_ students: [LinkedStudent]) -> some View {
@@ -337,7 +347,8 @@ private struct SupporterHomePreviewSubjectStore: SupporterSubjectStore {
         subjectStore: SupporterHomePreviewSubjectStore(),
         refreshHome: {},
         onEmailChanged: { _ in },
-        onLogout: {}
+        onLogout: {},
+        onDeleteAccount: { false }
     )
 }
 

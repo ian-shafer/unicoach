@@ -16,6 +16,8 @@ import os
 protocol SupporterSubjectStore {
     func selectedStudentId(forUserId userId: UUID) -> UUID?
     func select(studentId: UUID, forUserId userId: UUID)
+    /// Forgets this user's selection — on account deletion (RFC 252).
+    func clear(forUserId userId: UUID)
 }
 
 /// Production `SupporterSubjectStore`, on the `UserDefaultsAppleNameStore`
@@ -62,6 +64,10 @@ final class UserDefaultsSupporterSubjectStore: SupporterSubjectStore {
 
     func select(studentId: UUID, forUserId userId: UUID) {
         defaults.set(studentId.uuidString, forKey: Self.key(userId))
+    }
+
+    func clear(forUserId userId: UUID) {
+        defaults.removeObject(forKey: Self.key(userId))
     }
 
     /// Internal rather than private so the parse guard above can be tested at

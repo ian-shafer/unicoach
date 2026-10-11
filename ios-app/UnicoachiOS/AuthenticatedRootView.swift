@@ -21,6 +21,7 @@ struct AuthenticatedRootView: View {
     let onProfileRequired: () -> Void
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
+    let onDeleteAccount: () async -> Bool
 
     /// The StoreKit rail and the one `TransactionRecorder` over it, **built by
     /// `AppViewModel` and passed in**. This view's `init` runs again on every
@@ -134,7 +135,8 @@ struct AuthenticatedRootView: View {
         transactionRecorder: TransactionRecording,
         onProfileRequired: @escaping () -> Void,
         onEmailChanged: @escaping (PublicUser) async -> Void,
-        onLogout: @escaping () async -> Void
+        onLogout: @escaping () async -> Void,
+        onDeleteAccount: @escaping () async -> Bool
     ) {
         self.user = user
         self.authClient = authClient
@@ -148,6 +150,7 @@ struct AuthenticatedRootView: View {
         self.onProfileRequired = onProfileRequired
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
+        self.onDeleteAccount = onDeleteAccount
         _menuViewModel = StateObject(wrappedValue: ConversationListViewModel(conversationClient: conversationClient))
 
         self.store = subscriptionStore
@@ -375,7 +378,8 @@ struct AuthenticatedRootView: View {
                 authClient: authClient,
                 supporterInviteClient: supporterInviteClient,
                 onEmailChanged: onEmailChanged,
-                onLogout: onLogout
+                onLogout: onLogout,
+                onDeleteAccount: onDeleteAccount
             )
         }
     }
@@ -512,7 +516,8 @@ private final class AuthenticatedRootPreviewIntendedSubjectsClient: IntendedSubj
         transactionRecorder: PreviewTransactionRecorder(),
         onProfileRequired: {},
         onEmailChanged: { _ in },
-        onLogout: {}
+        onLogout: {},
+        onDeleteAccount: { false }
     )
 }
 

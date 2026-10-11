@@ -13,6 +13,7 @@ import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.family.LinkEndedNotice
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterService
@@ -105,7 +106,12 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   // The accept path mints the recipient's `supporters` row, through the one
   // writer of it (RFC 241) -- this process serves no supporter surface of its own.
   val supporterInviteService =
-    SupporterInviteService(database, supporterInviteConfig, TokenGenerator(), SupporterService(database))
+    SupporterInviteService(
+      database,
+      supporterInviteConfig,
+      TokenGenerator(),
+      SupporterService(database, LinkEndedNotice(QueueService(database))),
+    )
 
   val authServices = WebAuthServices.build(emailVerificationConfig, database)
 

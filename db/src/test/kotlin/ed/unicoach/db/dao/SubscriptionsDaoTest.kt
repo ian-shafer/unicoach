@@ -229,6 +229,38 @@ class SubscriptionsDaoTest {
   }
 
   /**
+   * RFC 252 §1b: the row's owner CLOSED their account and came back on a new
+   * one with the same Apple ID. The conflict arm rebinds the row to the new
+   * account — even with Apple's state unchanged — and the history table records
+   * the move. The live-owner refusal above is unchanged.
+   */
+  @Test
+  fun `upsert rebinds a closed account's subscription to the new account`() {
+    val closed = createAccount()
+    val returning = createAccount()
+    val first = assertIs<SubscriptionUpsert.Applied>(upsert(closed)).subscription
+    val owner = UsersDao.findById(session, closed, ed.unicoach.db.models.SoftDeleteScope.ACTIVE).getOrThrow()
+    UsersDao.delete(session, closed, owner.version).getOrThrow()
+
+    val rebound = assertIs<SubscriptionUpsert.Applied>(upsert(returning)).subscription
+
+    assertEquals(first.id, rebound.id, "the same row moves; no second row is minted")
+    assertEquals(returning, rebound.userId)
+    assertEquals(2, rebound.version)
+    assertEquals(
+      listOf(closed.value, returning.value),
+      connection.prepareStatement("SELECT user_id FROM subscriptions_versions WHERE id = ? ORDER BY version").use { stmt ->
+        stmt.setObject(1, first.id.value)
+        stmt.executeQuery().use { rs ->
+          buildList { while (rs.next()) add(rs.getObject("user_id", UUID::class.java)) }
+        }
+      },
+      "the history records who held it before and after",
+    )
+    assertIs<SubscriptionUpsert.Unchanged>(upsert(returning), "once rebound, a re-verify is an ordinary no-op")
+  }
+
+  /**
    * The upsert's third classification — the row the conflict arm did not write
    * and the follow-up SELECT cannot find — fails in THIS module's exception
    * vocabulary, not the driver's. It is thrown from a `mapCatching` rather than

@@ -345,6 +345,44 @@ class SupporterInvitesDaoTest {
     ).getOrThrow()
 
   /**
+   * The close's revoke (RFC 252): every LIVE invite the inviter minted, in BOTH
+   * roles, and nobody else's. A consumed invite keeps its history: it is not
+   * live, so it is not revoked.
+   */
+  @Test
+  fun `revokeAllByInviter revokes the inviter's live invites in both roles and no other's`() {
+    val dualUser = createUser()
+    val studentId = createStudent(dualUser)
+    val supporterId = createSupporter(dualUser)
+    val asStudent = mintForStudent(dualUser, studentId, "dual-a")
+    val consumed = mintForStudent(dualUser, studentId, "dual-b")
+    SupporterInvitesDao.consume(session, consumed.tokenHash).getOrThrow()
+    val asSupporter =
+      SupporterInvitesDao
+        .create(
+          session,
+          NewSupporterInvite(
+            tokenHash = TokenHash.fromRawToken("revoke-all-supporter-0123456789012345"),
+            inviterUserId = dualUser,
+            inviterRole = InviterRole.SUPPORTER,
+            studentId = null,
+            supporterId = supporterId,
+            relationship = SupporterRelationship.PARENT,
+            expiresAt = future(),
+          ),
+        ).getOrThrow()
+    val otherUser = createUser()
+    val others = mintForStudent(otherUser, createStudent(otherUser), "other")
+
+    val revoked = SupporterInvitesDao.revokeAllByInviter(session, dualUser).getOrThrow()
+
+    assertEquals(setOf(asStudent.id, asSupporter.id), revoked.map { it.id }.toSet())
+    assertNull(SupporterInvitesDao.findLiveByTokenHash(session, asSupporter.tokenHash).getOrThrow())
+    assertNull(SupporterInvitesDao.findByTokenHash(session, consumed.tokenHash).getOrThrow()?.revokedAt, "a consumed invite is history")
+    assertNotNull(SupporterInvitesDao.findLiveByTokenHash(session, others.tokenHash).getOrThrow(), "another inviter's invite stays live")
+  }
+
+  /**
    * RFC 240's read. All FOUR states are present at once, because each dead state
    * dies by a DIFFERENT term of the live predicate and the index predicate
    * carries only two of the three: a read that inherited the index's definition

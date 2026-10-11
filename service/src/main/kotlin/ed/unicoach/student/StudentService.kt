@@ -4,15 +4,12 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ConcurrentModificationException
 import ed.unicoach.db.dao.NotFoundException
-import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.StudentAlreadyExistsException
 import ed.unicoach.db.dao.StudentsDao
-import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentEdit
-import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
 import ed.unicoach.error.FieldError
 import java.time.Clock
@@ -238,32 +235,4 @@ class StudentService(
       Result.failure(e)
     }
   }
-
-  suspend fun deleteStudentAndAccount(
-    userId: UserId,
-    currentTokenHash: TokenHash,
-  ): Result<DeleteStudentResult> =
-    try {
-      database.withConnection { session ->
-        val studentResult = StudentsDao.findByUserIdForUpdate(session, userId)
-        if (studentResult.isFailure) {
-          return@withConnection if (studentResult.exceptionOrNull() is NotFoundException) {
-            Result.success(DeleteStudentResult.NotFound)
-          } else {
-            Result.failure(studentResult.exceptionOrNull()!!)
-          }
-        }
-        val student = studentResult.getOrThrow()
-
-        val user = UsersDao.findByIdForUpdate(session, userId).getOrThrow()
-
-        StudentsDao.delete(session, student.id, student.version).getOrThrow()
-        UsersDao.delete(session, user.id, user.version).getOrThrow()
-        SessionsDao.revokeByTokenHash(session, currentTokenHash).getOrThrow()
-
-        Result.success(DeleteStudentResult.Success)
-      }
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
 }

@@ -78,16 +78,22 @@ object SubscriptionsDao {
   /**
    * Insert-or-refresh keyed on `original_transaction_id`. The conflict arm sets
    * `version = subscriptions.version + 1` (satisfying `enforce_versioning`) and
-   * updates product/status/period only when the existing row's `user_id`
-   * matches AND the incoming state actually differs (`IS DISTINCT FROM` over
-   * the four mutable columns). The state-distinct guard keeps an app-launch
-   * re-verify from minting a version row (and bumping `updated_at`) when
-   * Apple's state is unchanged.
+   * writes in exactly two cases:
+   *
+   * - the existing row's `user_id` matches AND the incoming state actually
+   *   differs (`IS DISTINCT FROM` over the four mutable columns). The
+   *   state-distinct guard keeps an app-launch re-verify from minting a version
+   *   row (and bumping `updated_at`) when Apple's state is unchanged;
+   * - the existing row is owned by a CLOSED account (RFC 252 §1b). The row
+   *   REBINDS to the caller's account, because the person who closed it has
+   *   come back on the same Apple ID, and nobody else can ride a closed
+   *   account's subscription. The history table records the move.
    *
    * Zero rows returned is therefore ambiguous, so the DAO classifies with a
    * follow-up SELECT by `original_transaction_id` in the same transaction: same
-   * account → [SubscriptionUpsert.Unchanged], different account →
-   * [SubscriptionUpsert.OwnedByOtherAccount]. Never a silent no-op or a rebind.
+   * account → [SubscriptionUpsert.Unchanged], a different LIVE account →
+   * [SubscriptionUpsert.OwnedByOtherAccount]. Never a silent no-op, and never a
+   * rebind away from a live account.
    */
   fun upsert(
     session: SqlSession,
@@ -105,13 +111,19 @@ object SubscriptionsDao {
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT (original_transaction_id) DO UPDATE SET
           version = subscriptions.version + 1,
+          user_id = EXCLUDED.user_id,
           product_id = EXCLUDED.product_id,
           status = EXCLUDED.status,
           period_start = EXCLUDED.period_start,
           period_end = EXCLUDED.period_end
-        WHERE subscriptions.user_id = EXCLUDED.user_id
-          AND (subscriptions.product_id, subscriptions.status, subscriptions.period_start, subscriptions.period_end)
-              IS DISTINCT FROM (EXCLUDED.product_id, EXCLUDED.status, EXCLUDED.period_start, EXCLUDED.period_end)
+        WHERE (
+            subscriptions.user_id = EXCLUDED.user_id
+            AND (subscriptions.product_id, subscriptions.status, subscriptions.period_start, subscriptions.period_end)
+                IS DISTINCT FROM (EXCLUDED.product_id, EXCLUDED.status, EXCLUDED.period_start, EXCLUDED.period_end)
+          ) OR (
+            subscriptions.user_id <> EXCLUDED.user_id
+            AND EXISTS (SELECT 1 FROM users u WHERE u.id = subscriptions.user_id AND u.deleted_at IS NOT NULL)
+          )
         RETURNING *
         """.trimIndent(),
         bind = { stmt ->

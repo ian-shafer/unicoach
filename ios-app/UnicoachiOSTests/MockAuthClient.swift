@@ -1,7 +1,7 @@
 import Foundation
 @testable import UnicoachiOS
 
-class MockAuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable {
+class MockAuthClient: AuthClientProtocol, SsoAuthenticating, AccountDeleting, @unchecked Sendable {
     var registerResult: Result<RegisterResponse, Error>?
     var loginResult: Result<LoginResponse, Error>?
     var signInResult: Result<LoginResponse, Error>?
@@ -9,6 +9,8 @@ class MockAuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable
     var meResult: Result<MeResponse, Error>?
     var resendVerificationResult: Result<Void, Error>?
     var changeEmailResult: Result<PublicUser, Error>?
+    var deleteAccountResult: Result<Void, Error>?
+    private(set) var deleteAccountCallCount = 0
     private(set) var signInCredentials: [SsoCredential] = []
 
     func register(request: RegisterRequest) async throws -> RegisterResponse {
@@ -58,6 +60,12 @@ class MockAuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable
             }
         }
         fatalError("No result configured")
+    }
+
+    func deleteAccount() async throws {
+        deleteAccountCallCount += 1
+        guard let deleteAccountResult else { fatalError("No result configured") }
+        try deleteAccountResult.get()
     }
 
     func me() async throws -> MeResponse {

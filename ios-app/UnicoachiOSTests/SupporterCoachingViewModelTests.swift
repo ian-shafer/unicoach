@@ -31,6 +31,33 @@ final class SupporterCoachingViewModelTests: XCTestCase {
         )
     }
 
+    // MARK: - The account-deletion notice (RFC 252)
+
+    /// The notice follows the coverage KIND: a subscription whose period end
+    /// is missing renders `.unavailable` and is still billed by Apple.
+    func testHoldsOwnSubscriptionFollowsTheCoverageKind() async {
+        client.results = [.success(reading(kind: .ownSubscription, usedPercent: 10, resetsAt: nil))]
+        await viewModel.load()
+        XCTAssertEqual(viewModel.state, .unavailable)
+        XCTAssertEqual(viewModel.holdsOwnSubscription, true)
+
+        let freeClient = MockSupporterCoachingUsageClient()
+        freeClient.results = [.success(reading(kind: .freeAllowance, usedPercent: 10))]
+        let free = SupporterCoachingViewModel(client: freeClient)
+        await free.load()
+        XCTAssertEqual(free.holdsOwnSubscription, false)
+    }
+
+    /// Not knowing is not "does not pay": before the first read and after a
+    /// read that produced nothing, the answer is unknown, never `false`.
+    func testHoldsOwnSubscriptionIsUnknownWhenTheCoverageIsNotRead() async {
+        XCTAssertNil(viewModel.holdsOwnSubscription, "nothing read yet")
+
+        client.results = [.success(nil)]
+        await viewModel.load()
+        XCTAssertNil(viewModel.holdsOwnSubscription, "a read that produced nothing")
+    }
+
     // MARK: - The four rendered states
 
     func testNothingIsReadBeforeTheFirstLoad() {

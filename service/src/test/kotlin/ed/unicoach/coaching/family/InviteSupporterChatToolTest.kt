@@ -8,9 +8,11 @@ import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SupporterInvitesDao
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SupporterRelationship
+import ed.unicoach.family.LinkEndedNotice
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterService
+import ed.unicoach.queue.QueueService
 import ed.unicoach.util.TokenGenerator
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -62,7 +64,7 @@ class InviteSupporterChatToolTest {
       CoachingTestDb.database,
       SupporterInviteConfig(inviteUrlBase = INVITE_URL_BASE, tokenTtl = Duration.ofDays(14)),
       TokenGenerator(),
-      SupporterService(CoachingTestDb.database),
+      SupporterService(CoachingTestDb.database, LinkEndedNotice(QueueService(CoachingTestDb.database))),
     )
 
   private val tool = InviteSupporterChatTool(service)

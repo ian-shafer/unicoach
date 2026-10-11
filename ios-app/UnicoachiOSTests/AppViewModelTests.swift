@@ -518,6 +518,111 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(mockCookieStorage.cookies?.isEmpty, true)
     }
 
+    // MARK: - Account deletion (RFC 252)
+
+    private func makeDeletionViewModel(
+        subjectStore: MockSupporterSubjectStore,
+        appleNameStore: MockAppleNameStore
+    ) -> AppViewModel {
+        AppViewModel(
+            cookieStorage: mockCookieStorage,
+            authClient: mockClient,
+            studentClient: mockStudentClient,
+            supporterClient: mockSupporterClient,
+            supporterSubjectStore: subjectStore,
+            appleNameStore: appleNameStore
+        )
+    }
+
+    /// A confirmed close runs the logout tail — cookies gone, `.unauthenticated`
+    /// — WITHOUT a second call to `POST /auth/logout` (the mock would trap), and
+    /// forgets what this device held for the account.
+    func testDeleteAccountEndsTheSessionAndClearsPerUserDefaults() async {
+        let user = PublicUser(id: UUID(), email: "parent@example.com", name: "Robin", emailVerified: true)
+        let studentId = UUID()
+        let subjectStore = MockSupporterSubjectStore(selections: [user.id: studentId])
+        let appleNameStore = MockAppleNameStore()
+        appleNameStore.store(name: "Robin Carter", forUserId: "apple-sub")
+        let viewModel = makeDeletionViewModel(subjectStore: subjectStore, appleNameStore: appleNameStore)
+        viewModel.authState = .supporterHome(user, makeSupporterHome())
+        mockClient.deleteAccountResult = .success(())
+        mockCookieStorage.cookies = [HTTPCookie(properties: [.domain: "example.com", .path: "/", .name: "session", .value: "123"])!]
+
+        let deleted = await viewModel.deleteAccount()
+
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(mockClient.deleteAccountCallCount, 1)
+        XCTAssertEqual(viewModel.authState, .unauthenticated)
+        XCTAssertTrue(viewModel.accountClosed, "the login screen says the account was closed")
+        XCTAssertEqual(mockCookieStorage.deletedCookies.map(\.name), ["session"])
+        XCTAssertNil(subjectStore.selectedStudentId(forUserId: user.id))
+        XCTAssertNil(appleNameStore.name(forUserId: "apple-sub"))
+    }
+
+    /// A close the server did not confirm changes nothing local: the account
+    /// still exists, so the person stays signed in and Settings shows the
+    /// failure.
+    func testDeleteAccountFailureKeepsTheUserSignedIn() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let studentId = UUID()
+        let subjectStore = MockSupporterSubjectStore(selections: [user.id: studentId])
+        let appleNameStore = MockAppleNameStore()
+        appleNameStore.store(name: "Test Student", forUserId: "apple-sub")
+        let viewModel = makeDeletionViewModel(subjectStore: subjectStore, appleNameStore: appleNameStore)
+        viewModel.authState = .authenticated(user)
+        mockClient.deleteAccountResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Error", fieldErrors: nil, status: 500))
+        mockCookieStorage.cookies = [HTTPCookie(properties: [.domain: "example.com", .path: "/", .name: "session", .value: "123"])!]
+
+        let deleted = await viewModel.deleteAccount()
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(viewModel.authState, .authenticated(user))
+        XCTAssertFalse(viewModel.accountClosed)
+        XCTAssertTrue(mockCookieStorage.deletedCookies.isEmpty)
+        XCTAssertEqual(subjectStore.selectedStudentId(forUserId: user.id), studentId)
+        XCTAssertEqual(appleNameStore.name(forUserId: "apple-sub"), "Test Student")
+    }
+
+    /// A `401` means the session is already dead — the account closed from
+    /// another device, or the session was revoked — so the app ends it locally
+    /// rather than leaving the person "signed in" to retry forever. Whether the
+    /// account is closed is unknown, so nothing per-user is cleared and the
+    /// closed line is not shown.
+    func testDeleteAccountUnauthorizedEndsTheLocalSession() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        let studentId = UUID()
+        let subjectStore = MockSupporterSubjectStore(selections: [user.id: studentId])
+        let appleNameStore = MockAppleNameStore()
+        appleNameStore.store(name: "Test Student", forUserId: "apple-sub")
+        let viewModel = makeDeletionViewModel(subjectStore: subjectStore, appleNameStore: appleNameStore)
+        viewModel.authState = .authenticated(user)
+        mockClient.deleteAccountResult = .failure(ErrorResponse(code: "unauthorized", message: "Not authenticated", fieldErrors: nil, status: 401))
+        mockCookieStorage.cookies = [HTTPCookie(properties: [.domain: "example.com", .path: "/", .name: "session", .value: "123"])!]
+
+        let deleted = await viewModel.deleteAccount()
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(viewModel.authState, .unauthenticated)
+        XCTAssertFalse(viewModel.accountClosed)
+        XCTAssertEqual(mockCookieStorage.deletedCookies.map(\.name), ["session"])
+        XCTAssertEqual(subjectStore.selectedStudentId(forUserId: user.id), studentId)
+        XCTAssertEqual(appleNameStore.name(forUserId: "apple-sub"), "Test Student")
+    }
+
+    /// The closed line is for the screen the deletion lands on, not for the
+    /// next account that signs in on this device.
+    func testTheNextSignInClearsTheAccountClosedLine() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .authenticated(user)
+        mockClient.deleteAccountResult = .success(())
+        _ = await viewModel.deleteAccount()
+        XCTAssertTrue(viewModel.accountClosed)
+
+        await viewModel.onLoginSuccess(PublicUser(id: UUID(), email: "next@example.com", name: "Next", emailVerified: false))
+
+        XCTAssertFalse(viewModel.accountClosed)
+    }
+
     // MARK: - Email verification routing
 
     func testOnLoginSuccessUnverifiedRoutesToVerificationRequired() async {

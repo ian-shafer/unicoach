@@ -10,11 +10,13 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.postgresql.util.PSQLException
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class UserAuthIdentitiesDaoTest {
@@ -180,22 +182,41 @@ class UserAuthIdentitiesDaoTest {
     assertTrue(threw, "Append-only trigger must reject UPDATE")
   }
 
+  /** The guard (RFC 252) still refuses a delete for a LIVE account, under its own name. */
   @Test
-  fun `DELETE against a row is rejected by the append-only trigger`() {
+  fun `deleteForClosedUser is refused for a live account`() {
     val user = createUser()
-    val created = UserAuthIdentitiesDao.create(session, newIdentity(user, "nodelete")).getOrThrow()
+    UserAuthIdentitiesDao.create(session, newIdentity(user, "live-sub")).getOrThrow()
 
-    val threw =
-      try {
-        connection.prepareStatement("DELETE FROM user_auth_identities WHERE id = ?").use { stmt ->
-          stmt.setObject(1, created.id.value)
-          stmt.executeUpdate()
-        }
-        false
-      } catch (e: java.sql.SQLException) {
-        true
-      }
-    assertTrue(threw, "Append-only trigger must reject DELETE")
+    val refused = assertIs<DatabaseException>(UserAuthIdentitiesDao.deleteForClosedUser(session, user).exceptionOrNull())
+
+    assertEquals(
+      "user_auth_identities_owner_closed",
+      (refused.cause as PSQLException).serverErrorMessage?.constraint,
+      "the refusal is the closed-owner guard, not some other failure",
+    )
+    assertEquals(1, UserAuthIdentitiesDao.listByUser(session, user).getOrThrow().size, "the live account keeps its sign-in")
+  }
+
+  /**
+   * The guard ADMITS a delete once the owning `users` row is soft-deleted, so a
+   * returning sign-in on the same subject finds no identity. Only the closed
+   * account's rows go.
+   */
+  @Test
+  fun `deleteForClosedUser removes a closed account's identities and nobody else's`() {
+    val closed = createUser()
+    val live = createUser()
+    UserAuthIdentitiesDao.create(session, newIdentity(closed, "closed-1")).getOrThrow()
+    UserAuthIdentitiesDao.create(session, newIdentity(closed, "closed-2")).getOrThrow()
+    UserAuthIdentitiesDao.create(session, newIdentity(live, "live-1")).getOrThrow()
+    val loaded = UsersDao.findById(session, closed, ed.unicoach.db.models.SoftDeleteScope.ACTIVE).getOrThrow()
+    UsersDao.delete(session, closed, loaded.version).getOrThrow()
+
+    assertEquals(2, UserAuthIdentitiesDao.deleteForClosedUser(session, closed).getOrThrow())
+
+    assertTrue(UserAuthIdentitiesDao.listByUser(session, closed).getOrThrow().isEmpty())
+    assertEquals(1, UserAuthIdentitiesDao.listByUser(session, live).getOrThrow().size)
   }
 
   @Test

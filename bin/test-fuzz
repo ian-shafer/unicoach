@@ -36,7 +36,7 @@ shared PostgreSQL cluster is never stopped.
 
 Excluded from every run:
   - /api/v1/conversations* (9 operations; routes unregistered in Routing.kt)
-  - logoutUser, deleteStudentMe (would revoke the injected credential)
+  - logoutUser, deleteAccount (would revoke the injected credential)
   - the ignored_auth check (the static -H cookie makes it a false positive)
 
 This harness is a contract referee: it runs the full --checks all set against a
@@ -182,7 +182,7 @@ WHERE email = '${FUZZ_EMAIL}' AND email_verified_at IS NULL AND deleted_at IS NU
 SQL
 
 # Surface the excluded coverage so the gap is never silent.
-log-info "Excluding from this run: /api/v1/conversations* (9 unimplemented), logoutUser + deleteStudentMe (session-destructive), and the ignored_auth check (false positive under static cookie injection). The full --checks all set otherwise runs, including unsupported_method and every data-conformance check."
+log-info "Excluding from this run: /api/v1/conversations* (9 unimplemented), logoutUser + deleteAccount (session-destructive), and the ignored_auth check (false positive under static cookie injection). The full --checks all set otherwise runs, including unsupported_method and every data-conformance check."
 
 # 8. Run Schemathesis over the 7 implemented, non-destructive operations.
 #    --checks all runs the full check set; only one check is excluded.
@@ -209,7 +209,7 @@ EXIT_CODE=0
   --exclude-checks ignored_auth \
   --exclude-path-regex conversations \
   --exclude-operation-id logoutUser \
-  --exclude-operation-id deleteStudentMe \
+  --exclude-operation-id deleteAccount \
   --generation-with-security-parameters false \
   -H "Cookie: UNICOACH_SESSION=$TOKEN" \
   --report junit --report-junit-path "$REPORT_PATH" || EXIT_CODE=$?

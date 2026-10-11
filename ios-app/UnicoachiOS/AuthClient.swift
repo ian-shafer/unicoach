@@ -19,7 +19,16 @@ protocol SsoAuthenticating {
     func signIn(with credential: SsoCredential) async throws -> LoginResponse
 }
 
-class AuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable {
+/// Narrow protocol for closing the caller's account (RFC 252), kept off
+/// `AuthClientProtocol` on the `SsoAuthenticating` precedent: only the
+/// composition root closes an account, so the preview conformers need no stub.
+protocol AccountDeleting {
+    /// `DELETE /api/v1/auth/me`. Returns on `204`; the server has then closed
+    /// the account, revoked every session and cleared the cookie.
+    func deleteAccount() async throws
+}
+
+class AuthClient: AuthClientProtocol, SsoAuthenticating, AccountDeleting, @unchecked Sendable {
     private let apiClient: APIClient
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AuthClient")
 
@@ -59,6 +68,12 @@ class AuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable {
     func logout() async throws {
         logger.debug("Starting logout")
         let (data, response) = try await apiClient.post("/api/v1/auth/logout")
+        try apiClient.expect(data: data, response: response, expectedStatus: 204)
+    }
+
+    func deleteAccount() async throws {
+        logger.debug("Starting account deletion")
+        let (data, response) = try await apiClient.delete("/api/v1/auth/me")
         try apiClient.expect(data: data, response: response, expectedStatus: 204)
     }
 

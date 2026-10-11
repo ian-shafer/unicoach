@@ -1,5 +1,7 @@
 package ed.unicoach.rest.routing
 
+import ed.unicoach.account.AccountClosureService
+import ed.unicoach.account.CloseAccountOutcome
 import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.AuthProvider
 import ed.unicoach.db.models.TokenHash
@@ -38,6 +40,7 @@ class AuthRouteHandler(
   private val sessionConfig: ed.unicoach.rest.auth.SessionConfig,
   private val emailVerificationService: ed.unicoach.auth.EmailVerificationService,
   private val emailVerifier: ed.unicoach.auth.EmailVerifier,
+  private val accountClosureService: AccountClosureService,
 ) {
   fun registerRoutes(route: Route) {
     route.route("/api/v1/auth") {
@@ -59,7 +62,8 @@ class AuthRouteHandler(
       }
       route("/me") {
         get { handleMe() }
-        rejectUnsupportedMethods(HttpMethod.Get)
+        delete { handleCloseAccount() }
+        rejectUnsupportedMethods(HttpMethod.Get, HttpMethod.Delete)
       }
       route("/logout") {
         post { handleLogout() }
@@ -133,6 +137,32 @@ class AuthRouteHandler(
       call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
     } else {
       call.respond(HttpStatusCode.OK, MeResponse(PublicUser.from(user)))
+    }
+  }
+
+  /**
+   * Closes the CALLER'S ACCOUNT, whatever its shape (RFC 252). Under
+   * `/api/v1/auth/`, so the email-verification gate does not refuse an
+   * unverified account the door that ends it. A caller whose account closed
+   * between resolving the session and the close is answered as one with no
+   * session.
+   */
+  private suspend fun RoutingContext.handleCloseAccount() {
+    val caller = call.resolveCaller(authService, sessionConfig)
+    if (caller == null) {
+      call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
+      return
+    }
+    when (accountClosureService.close(caller.user.id).getOrThrow()) {
+      CloseAccountOutcome.Closed -> {
+        call.clearSessionCookie(sessionConfig)
+        call.respond(HttpStatusCode.NoContent)
+      }
+
+      CloseAccountOutcome.NotFound -> {
+        call.clearSessionCookie(sessionConfig)
+        call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
+      }
     }
   }
 

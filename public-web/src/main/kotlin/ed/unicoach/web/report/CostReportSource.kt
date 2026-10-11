@@ -76,4 +76,11 @@ enum class MissReason {
 
   /** A well-formed token, and no live share carries its hash — unknown or revoked, never told apart. */
   NO_LIVE_SHARE,
+
+  /**
+   * A LIVE share whose account is closed — the `students` row or the owning
+   * `users` row (RFC 252). The close revokes the share, so this firing means
+   * some other path left it live. The page is the same 404 as every other miss.
+   */
+  ACCOUNT_CLOSED,
 }

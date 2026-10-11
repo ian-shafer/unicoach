@@ -5,8 +5,6 @@ import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.User
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.auth.SessionConfig
-import ed.unicoach.rest.auth.clearSessionCookie
-import ed.unicoach.rest.auth.resolveCaller
 import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
@@ -15,7 +13,6 @@ import ed.unicoach.rest.models.StudentResponse
 import ed.unicoach.rest.models.UpdateStudentRequest
 import ed.unicoach.rest.rejectUnsupportedMethods
 import ed.unicoach.student.CreateStudentResult
-import ed.unicoach.student.DeleteStudentResult
 import ed.unicoach.student.StudentService
 import ed.unicoach.student.UpdateStudentResult
 import io.ktor.http.HttpMethod
@@ -25,7 +22,6 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RoutingContext
-import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
@@ -75,8 +71,7 @@ class StudentRouteHandler(
       route("/me") {
         get { handleGet() }
         patch { handleUpdate() }
-        delete { handleDelete() }
-        rejectUnsupportedMethods(HttpMethod.Get, HttpMethod.Patch, HttpMethod.Delete)
+        rejectUnsupportedMethods(HttpMethod.Get, HttpMethod.Patch)
       }
     }
   }
@@ -161,25 +156,6 @@ class StudentRouteHandler(
 
       is UpdateStudentResult.VersionConflict -> {
         call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.VERSION_CONFLICT, "Student was modified concurrently"))
-      }
-    }
-  }
-
-  private suspend fun RoutingContext.handleDelete() {
-    val caller = call.resolveCaller(authService, sessionConfig)
-    if (caller == null) {
-      respondUnauthorized()
-      return
-    }
-
-    when (studentService.deleteStudentAndAccount(caller.user.id, caller.tokenHash).getOrThrow()) {
-      is DeleteStudentResult.Success -> {
-        call.clearSessionCookie(sessionConfig)
-        call.respond(HttpStatusCode.NoContent)
-      }
-
-      is DeleteStudentResult.NotFound -> {
-        respondStudentNotFound()
       }
     }
   }

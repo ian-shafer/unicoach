@@ -3,6 +3,8 @@ import SwiftUI
 struct LoginView: View {
     @StateObject private var viewModel: LoginViewModel
     let onSwitchToRegister: () -> Void
+    /// This device just deleted its account (RFC 252).
+    let accountClosed: Bool
     @FocusState private var focusedField: Field?
 
     enum Field {
@@ -13,6 +15,7 @@ struct LoginView: View {
         authClient: AuthClientProtocol & SsoAuthenticating,
         googleSignInProvider: SsoSignInProviding,
         appleSignInProvider: SsoSignInProviding,
+        accountClosed: Bool,
         onLoginSuccess: @escaping (PublicUser) async -> Void,
         onSwitchToRegister: @escaping () -> Void
     ) {
@@ -23,12 +26,17 @@ struct LoginView: View {
             onLoginSuccess: onLoginSuccess
         ))
         self.onSwitchToRegister = onSwitchToRegister
+        self.accountClosed = accountClosed
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DSSpacing.lg) {
                 logoLockup
+
+                if accountClosed {
+                    accountClosedNotice
+                }
 
                 ssoButtons
 
@@ -117,6 +125,25 @@ struct LoginView: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
+    }
+
+    /// Said once, on the screen a deletion lands on (RFC 252). The app cannot
+    /// tell which provider a session came from, so the Apple line is asked as
+    /// a question: Apple has no API this server can call to remove the app
+    /// from an Apple ID, and the person can (TN3194).
+    private var accountClosedNotice: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.xs) {
+            Text("Your account has been closed.")
+                .font(.dsLabel)
+                .foregroundStyle(Color.dsTextPrimary)
+                .accessibilityIdentifier("accountClosedNotice")
+            Text("Signed in with Apple? To remove unicoach from your Apple ID too, go to Settings › your name › Sign-In & Security › Sign in with Apple.")
+                .font(.dsBody)
+                .foregroundStyle(Color.dsTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("accountClosedAppleNotice")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// The "or" rule separating the password form from the SSO buttons.
@@ -230,6 +257,7 @@ private final class LoginPreviewSsoSignInProvider: SsoSignInProviding {
         authClient: LoginPreviewAuthClient(),
         googleSignInProvider: LoginPreviewSsoSignInProvider(provider: .google),
         appleSignInProvider: LoginPreviewSsoSignInProvider(provider: .apple),
+        accountClosed: false,
         onLoginSuccess: { _ in },
         onSwitchToRegister: {}
     )

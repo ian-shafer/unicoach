@@ -380,7 +380,8 @@ enum SnapshotSeed {
             // roster refresh is `AppViewModel`'s, tested there.
             refreshHome: {},
             onEmailChanged: { _ in },
-            onLogout: {}
+            onLogout: {},
+            onDeleteAccount: { false }
         )
     }
 
@@ -439,25 +440,38 @@ enum SnapshotSeed {
 
     /// A parent's Settings with a roster: one student another adult also
     /// supports, and one they support alone.
-    static func supporterSettings(confirmingOnAppear: UUID? = nil) -> AnyView {
+    ///
+    /// `coaching` is the home's reading the delete confirmation consults
+    /// (RFC 252); unloaded by default, which shows the notice's conditional
+    /// form (coverage not known is not "does not pay").
+    static func supporterSettings(
+        confirmingOnAppear: UUID? = nil,
+        coaching: SupporterCoachingViewModel? = nil,
+        deleteConfirmation: DeleteAccountConfirmation = .closed
+    ) -> AnyView {
         UserDefaults.standard.set(AppearancePreference.system.rawValue, forKey: AppearancePreference.storageKey)
         return AnyView(
             NavigationStack {
                 SettingsView(
                     user: supporterUser,
-                    caller: .supporter(.init(
-                        roster: [
-                            linkedStudent(1, name: "Ava Carter", otherSupporterNames: ["Sam Lee", "Jordan Lee"]),
-                            linkedStudent(2, name: "Noah Carter"),
-                        ],
-                        client: PreviewSupporterClient(),
-                        refreshHome: {}
-                    )),
+                    caller: .supporter(
+                        .init(
+                            roster: [
+                                linkedStudent(1, name: "Ava Carter", otherSupporterNames: ["Sam Lee", "Jordan Lee"]),
+                                linkedStudent(2, name: "Noah Carter"),
+                            ],
+                            client: PreviewSupporterClient(),
+                            refreshHome: {}
+                        ),
+                        coaching: coaching ?? SupporterCoachingViewModel(client: PreviewSupporterCoachingUsageClient())
+                    ),
                     authClient: MockAuthClient(),
                     supporterInviteClient: PreviewSupporterInviteClient(),
                     disconnectConfirmationOnAppear: confirmingOnAppear,
+                    deleteAccountConfirmationOnAppear: deleteConfirmation,
                     onEmailChanged: { _ in },
-                    onLogout: {}
+                    onLogout: {},
+                    onDeleteAccount: { false }
                 )
             }
         )
@@ -778,7 +792,8 @@ enum SnapshotCatalogue {
                             authClient: MockAuthClient(),
                             supporterInviteClient: PreviewSupporterInviteClient(),
                             onEmailChanged: { _ in },
-                            onLogout: {}
+                            onLogout: {},
+                            onDeleteAccount: { false }
                         )
                     }
                 )
@@ -797,11 +812,15 @@ enum SnapshotCatalogue {
                     NavigationStack {
                         SettingsView(
                             user: SnapshotSeed.supporterUser,
-                            caller: .supporter(.init(roster: [], client: PreviewSupporterClient(), refreshHome: {})),
+                            caller: .supporter(
+                                .init(roster: [], client: PreviewSupporterClient(), refreshHome: {}),
+                                coaching: SupporterCoachingViewModel(client: PreviewSupporterCoachingUsageClient())
+                            ),
                             authClient: MockAuthClient(),
                             supporterInviteClient: PreviewSupporterInviteClient(),
                             onEmailChanged: { _ in },
-                            onLogout: {}
+                            onLogout: {},
+                            onDeleteAccount: { false }
                         )
                     }
                 )
@@ -826,7 +845,8 @@ enum SnapshotCatalogue {
                             authClient: MockAuthClient(),
                             supporterInviteClient: SnapshotSeed.studentFamilyClient(SnapshotSeed.twoAdults),
                             onEmailChanged: { _ in },
-                            onLogout: {}
+                            onLogout: {},
+                            onDeleteAccount: { false }
                         )
                     }
                 )
@@ -850,6 +870,45 @@ enum SnapshotCatalogue {
             },
             SnapshotScene(name: "settings-supporter-family-confirm-open", size: SnapshotScene.tallCanvas(height: 1100)) {
                 SnapshotSeed.supporterSettings(confirmingOnAppear: SnapshotSeed.linkedStudent(1, name: "Ava Carter").linkId)
+            },
+
+            // --- Account deletion (RFC 252): the inline confirmation, open,
+            // from both ends, each with the Apple billing notice — a student's
+            // driven by the bound subscription on the StoreKit rail, a
+            // parent's by coverage `own_subscription` on the home's reading.
+            SnapshotScene(name: "settings-delete-confirm-open", size: SnapshotScene.tallCanvas(height: 1500)) {
+                let rail = await SnapshotSeed.boundActiveRail()
+                UserDefaults.standard.set(
+                    AppearancePreference.system.rawValue,
+                    forKey: AppearancePreference.storageKey
+                )
+                return AnyView(
+                    NavigationStack {
+                        SettingsView(
+                            user: SnapshotSeed.user,
+                            caller: .student(rail: rail),
+                            authClient: MockAuthClient(),
+                            supporterInviteClient: PreviewSupporterInviteClient(),
+                            deleteAccountConfirmationOnAppear: .open,
+                            onEmailChanged: { _ in },
+                            onLogout: {},
+                            onDeleteAccount: { false }
+                        )
+                    }
+                )
+            },
+            SnapshotScene(name: "settings-supporter-delete-confirm-open", size: SnapshotScene.tallCanvas(height: 1400)) {
+                let coaching = await SnapshotSeed.supporterCoaching(
+                    kind: .ownSubscription,
+                    usage: CoachingUsage(usedPercent: 64, exhausted: false, resetsAt: SnapshotClock.pinned)
+                )
+                return SnapshotSeed.supporterSettings(coaching: coaching, deleteConfirmation: .open)
+            },
+            // The confirmation after a delete the server did not confirm: the
+            // person is still signed in, and the error line sits above the
+            // buttons that let them try again.
+            SnapshotScene(name: "settings-delete-confirm-failed", size: SnapshotScene.tallCanvas(height: 1400)) {
+                SnapshotSeed.supporterSettings(deleteConfirmation: .failed)
             },
 
             // --- The parent account (RFC 241). Four screens the gate has never
@@ -1196,6 +1255,21 @@ enum SnapshotCatalogue {
                         authClient: MockAuthClient(),
                         googleSignInProvider: MockSsoSignInProvider(provider: .google),
                         appleSignInProvider: MockSsoSignInProvider(provider: .apple),
+                        accountClosed: false,
+                        onLoginSuccess: { _ in },
+                        onSwitchToRegister: {}
+                    )
+                )
+            },
+            // Where a deletion lands (RFC 252): the closed line and the Apple
+            // ID directions above the sign-in buttons.
+            SnapshotScene(name: "login-account-closed") {
+                AnyView(
+                    LoginView(
+                        authClient: MockAuthClient(),
+                        googleSignInProvider: MockSsoSignInProvider(provider: .google),
+                        appleSignInProvider: MockSsoSignInProvider(provider: .apple),
+                        accountClosed: true,
                         onLoginSuccess: { _ in },
                         onSwitchToRegister: {}
                     )

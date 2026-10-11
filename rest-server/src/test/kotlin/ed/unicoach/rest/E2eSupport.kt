@@ -81,7 +81,8 @@ suspend fun registerVerifiedUser(
   return sessionCookie(response)
 }
 
-private suspend fun registerUser(
+/** Registers [email] over HTTP and returns the 201 response, unverified. */
+internal suspend fun registerUser(
   client: HttpClient,
   baseUrl: String,
   email: String,
@@ -111,8 +112,8 @@ private fun markEmailVerified(
 }
 
 /** The `Set-Cookie` header as `name=value`, without its attributes. */
-private fun sessionCookie(response: HttpResponse): String =
-  assertNotNull(response.headers[HttpHeaders.SetCookie], "register must set a session cookie")
+internal fun sessionCookie(response: HttpResponse): String =
+  assertNotNull(response.headers[HttpHeaders.SetCookie], "the response must set a session cookie")
     .split(";")
     .first()
     .trim()

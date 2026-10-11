@@ -244,9 +244,9 @@ private struct FamilyConnectionRow: View {
 
     private var prompt: String {
         if callerIsStudent {
-            return "Disconnect \(connection.name)? They lose access right away. Your account and theirs stay as they are."
+            return "Disconnect \(connection.name)? They lose access right away. Your account and theirs stay as they are. We let them know the connection ended."
         }
-        return "Disconnect from \(connection.name)? You lose access right away. Your account and theirs stay as they are."
+        return "Disconnect from \(connection.name)? You lose access right away. Your account and theirs stay as they are. We let them know the connection ended."
     }
 
     private var confirmation: some View {

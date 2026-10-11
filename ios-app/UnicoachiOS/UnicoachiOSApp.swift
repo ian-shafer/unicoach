@@ -21,6 +21,7 @@ struct UnicoachiOSApp: App {
                         authClient: viewModel.authClient,
                         googleSignInProvider: viewModel.googleSignInProvider,
                         appleSignInProvider: viewModel.appleSignInProvider,
+                        accountClosed: viewModel.accountClosed,
                         onLoginSuccess: viewModel.onLoginSuccess,
                         onRegisterSuccess: viewModel.onRegisterSuccess
                     )
@@ -51,7 +52,8 @@ struct UnicoachiOSApp: App {
                         subjectStore: viewModel.supporterSubjectStore,
                         refreshHome: viewModel.refreshSupporterHome,
                         onEmailChanged: viewModel.onEmailChanged,
-                        onLogout: viewModel.logout
+                        onLogout: viewModel.logout,
+                        onDeleteAccount: viewModel.deleteAccount
                     )
                 case .authenticated(let user):
                     AuthenticatedRootView(
@@ -69,7 +71,8 @@ struct UnicoachiOSApp: App {
                         transactionRecorder: viewModel.transactionRecorder,
                         onProfileRequired: viewModel.onStudentProfileRequired,
                         onEmailChanged: viewModel.onEmailChanged,
-                        onLogout: viewModel.logout
+                        onLogout: viewModel.logout,
+                        onDeleteAccount: viewModel.deleteAccount
                     )
                 case .verificationRequired(let user):
                     VerificationRequiredView(

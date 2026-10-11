@@ -410,51 +410,16 @@ class StudentRoutingTest {
       assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
 
-  // --- DELETE /students/me ---
+  // --- DELETE /students/me (removed by RFC 252; the account closes at DELETE /auth/me) ---
 
   @Test
-  fun `DELETE students me returns 204 clears cookie and invalidates account`() =
-    runBlocking {
-      val cookie = registerAndGetCookie()
-      client.post(buildUrl("/api/v1/students")) {
-        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-        header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(createStudentBody()))
-      }
-
-      val deleteResponse =
-        client.delete(buildUrl("/api/v1/students/me")) {
-          header(HttpHeaders.Cookie, cookie)
-        }
-      assertEquals(HttpStatusCode.NoContent, deleteResponse.status)
-      val cleared = deleteResponse.headers[HttpHeaders.SetCookie]
-      assertTrue(cleared != null)
-      assertTrue(cleared.contains("Max-Age=0") || cleared.contains("max-age=0"))
-
-      // Account is gone: /api/v1/auth/me returns 401 for the old cookie.
-      val meResponse =
-        client.get(buildUrl("/api/v1/auth/me")) {
-          header(HttpHeaders.Cookie, cookie)
-        }
-      assertEquals(HttpStatusCode.Unauthorized, meResponse.status)
-    }
-
-  @Test
-  fun `DELETE students me without profile returns 404`() =
+  fun `DELETE students me is gone`() =
     runBlocking {
       val cookie = registerAndGetCookie()
       val response =
         client.delete(buildUrl("/api/v1/students/me")) {
           header(HttpHeaders.Cookie, cookie)
         }
-      assertEquals(HttpStatusCode.NotFound, response.status)
-      assertTrue(response.bodyAsText().contains("student_not_found"))
-    }
-
-  @Test
-  fun `DELETE students me unauthenticated returns 401`() =
-    runBlocking {
-      val response = client.delete(buildUrl("/api/v1/students/me"))
-      assertEquals(HttpStatusCode.Unauthorized, response.status)
+      assertEquals(HttpStatusCode.MethodNotAllowed, response.status)
     }
 }

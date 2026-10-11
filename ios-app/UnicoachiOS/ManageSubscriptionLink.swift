@@ -50,6 +50,17 @@ struct ManageSubscriptionLink: View {
     /// The link itself and the sentence under it — the pair the rule above
     /// separates, named so the body's two children sit at the same altitude.
     private var content: some View {
+        ManageSubscriptionButton { await viewModel.showManagement() }
+    }
+}
+
+/// The "Manage subscription" control and the sentence under it, without the
+/// rule or the condition — the caller decides when it shows and what the
+/// tap does.
+struct ManageSubscriptionButton: View {
+    let action: () async -> Void
+
+    var body: some View {
         VStack(spacing: DSSpacing.xs) {
             // The action this block exists for, so `.primary` — the colour
             // rule and the 44pt target are `DSTextButton`'s.
@@ -58,7 +69,7 @@ struct ManageSubscriptionLink: View {
                 accessibilityIdentifier: "manageSubscriptionButton",
                 accessibilityLabel: "Manage subscription",
                 accessibilityHint: "Opens the App Store",
-                action: { Task { await viewModel.showManagement() } }
+                action: { Task { await action() } }
             )
 
             // Said once, next to the control, rather than left to be
@@ -73,6 +84,7 @@ struct ManageSubscriptionLink: View {
         }
     }
 }
+
 
 // MARK: - Previews
 

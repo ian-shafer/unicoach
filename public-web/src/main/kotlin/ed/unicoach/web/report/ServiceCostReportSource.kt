@@ -4,6 +4,11 @@ import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.coaching.report.ShareToken
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.StudentsDao
+import ed.unicoach.db.dao.UsersDao
+import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
 import kotlinx.coroutines.CancellationException
 
@@ -77,7 +82,28 @@ class ServiceCostReportSource(
           .findLiveByTokenHash(session, tokenHash)
           .getOrThrow()
           ?: return@withConnection CostReportOutcome.NotFound(MissReason.NO_LIVE_SHARE)
+      // A closed account's report never renders, whatever path left the share
+      // live (RFC 252): the close revokes it, and this read does not rely on that.
+      if (isAccountClosed(session, share.studentId)) {
+        return@withConnection CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED)
+      }
       CostReportOutcome.Found(costs.readInSession(session, share.studentId))
     }
+  }
+
+  /**
+   * Whether the account behind [studentId] is closed, in either of its two
+   * shapes: the `students` row, or the owning `users` row closed alone (the
+   * operator admin can close one without the other). Both reads are in ALL scope
+   * and test `deleted_at` here, so the check is visible in this function rather
+   * than in a DAO default; a missing row is corruption and fails the read.
+   */
+  private fun isAccountClosed(
+    session: SqlSession,
+    studentId: StudentId,
+  ): Boolean {
+    val student = StudentsDao.findById(session, studentId, SoftDeleteScope.ALL).getOrThrow()
+    if (student.deletedAt != null) return true
+    return UsersDao.findById(session, student.userId, SoftDeleteScope.ALL).getOrThrow().deletedAt != null
   }
 }

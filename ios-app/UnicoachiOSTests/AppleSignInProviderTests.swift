@@ -111,3 +111,38 @@ class AppleSignInProviderTests: XCTestCase {
         }
     }
 }
+
+/// The REAL `UserDefaultsAppleNameStore`, in an isolated suite
+/// (`SupporterSubjectStoreTests` precedent): the account-deletion sweep
+/// (RFC 252) is a claim about the key prefix, which `MockAppleNameStore`
+/// cannot break.
+final class UserDefaultsAppleNameStoreTests: XCTestCase {
+    private static let suiteName = "UserDefaultsAppleNameStoreTests"
+    private var defaults: UserDefaults!
+    private var store: UserDefaultsAppleNameStore!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: Self.suiteName)
+        store = UserDefaultsAppleNameStore(defaults: defaults)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: Self.suiteName)
+        defaults = nil
+        store = nil
+        super.tearDown()
+    }
+
+    func testRemoveAllForgetsEveryStoredNameAndNothingElse() {
+        store.store(name: "Robin Carter", forUserId: "apple-sub-1")
+        store.store(name: "Sam Lee", forUserId: "apple-sub-2")
+        defaults.set("kept", forKey: "unrelated")
+
+        store.removeAll()
+
+        XCTAssertNil(store.name(forUserId: "apple-sub-1"))
+        XCTAssertNil(store.name(forUserId: "apple-sub-2"))
+        XCTAssertEqual(defaults.string(forKey: "unrelated"), "kept")
+    }
+}

@@ -11,6 +11,10 @@ final class MockAppleNameStore: AppleNameStore {
     func store(name: String, forUserId id: String) {
         namesByUserId[id] = name
     }
+
+    func removeAll() {
+        namesByUserId = [:]
+    }
 }
 
 /// A `@MainActor` box for observing whether a suspended call ever resumed.

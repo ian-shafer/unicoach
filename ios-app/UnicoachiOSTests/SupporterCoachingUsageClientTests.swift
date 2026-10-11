@@ -190,7 +190,8 @@ final class SupporterHomeWireTests: XCTestCase {
             // this test is about is what the SCENE itself asks for.
             refreshHome: {},
             onEmailChanged: { _ in },
-            onLogout: {}
+            onLogout: {},
+            onDeleteAccount: { false }
         )))
         addTeardownBlock { @MainActor in SnapshotHost.dismiss(window) }
         SnapshotHost.settle(1.0)
@@ -232,11 +233,15 @@ final class SupporterHomeWireTests: XCTestCase {
         let window = SnapshotHost.mount(AnyView(NavigationStack {
             SettingsView(
                 user: user,
-                caller: .supporter(.init(roster: roster, client: SupporterClient(apiClient: apiClient), refreshHome: {})),
+                caller: .supporter(
+                    .init(roster: roster, client: SupporterClient(apiClient: apiClient), refreshHome: {}),
+                    coaching: SupporterCoachingViewModel(client: SupporterCoachingUsageClient(apiClient: apiClient))
+                ),
                 authClient: AuthClient(apiClient: apiClient),
                 supporterInviteClient: SupporterInviteClient(apiClient: apiClient),
                 onEmailChanged: { _ in },
-                onLogout: {}
+                onLogout: {},
+                onDeleteAccount: { false }
             )
         }))
         addTeardownBlock { @MainActor in SnapshotHost.dismiss(window) }

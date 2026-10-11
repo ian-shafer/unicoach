@@ -1,5 +1,6 @@
 package ed.unicoach.rest
 
+import ed.unicoach.account.AccountClosureService
 import ed.unicoach.appstore.AppStoreConfig
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreServerApiFactory
@@ -46,6 +47,7 @@ import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.family.LinkEndedNotice
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterService
@@ -324,7 +326,11 @@ fun Application.appModule(
   // ONE SupporterService (RFC 241): accepting an invite and signing up as a
   // parent both mint the `supporters` row, and they mint it through the same
   // writer rather than through two copies of a get-or-create.
-  val supporterService = SupporterService(database)
+  // ONE notice for every severance (RFC 252): the two disconnect doors and the
+  // account close tell the other party through the same enqueue and text.
+  val linkEndedNotice = LinkEndedNotice(queueService)
+  val supporterService = SupporterService(database, linkEndedNotice)
+  val accountClosureService = AccountClosureService(database, linkEndedNotice)
   val supporterInviteService =
     SupporterInviteService(database, supporterInviteConfig, tokenGenerator, supporterService)
   val emailVerificationService =
@@ -542,5 +548,6 @@ fun Application.appModule(
     sharingPermissionService,
     supporterInviteService,
     supporterService,
+    accountClosureService,
   )
 }

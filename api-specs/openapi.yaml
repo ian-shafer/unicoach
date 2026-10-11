@@ -282,6 +282,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Close the current user's account
+      description: >
+        Closes the caller's account whatever its shape (student, supporter,
+        both, or neither): severs every supporter-student link and emails each
+        other party that the connection ended, revokes the caller's unused
+        invite links and Family Cost Report link, soft-deletes the account and
+        its role rows, deletes its sign-in identities, revokes every session,
+        and clears the session cookie. Not gated on email verification.
+      operationId: deleteAccount
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: Account closed; session cookie cleared
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: The cleared session cookie
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/auth/logout:
     post:
@@ -530,40 +562,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '415':
           description: Request body could not be deserialized into the expected shape
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    delete:
-      summary: Delete the current user's student profile and account
-      description: >
-        Soft-deletes the student row and the owning user row atomically and
-        clears the session cookie. All sessions are invalidated.
-      operationId: deleteStudentMe
-      security:
-        - cookieAuth: []
-      responses:
-        '204':
-          description: Student profile and account deleted; session cookie cleared
-          headers:
-            Set-Cookie:
-              schema:
-                type: string
-              description: The cleared session cookie
-        '401':
-          description: Not authenticated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: The user has no student profile
           content:
             application/json:
               schema:

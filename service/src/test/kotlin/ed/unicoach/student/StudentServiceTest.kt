@@ -4,18 +4,13 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
-import ed.unicoach.db.models.LoginMethod
-import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
-import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
-import ed.unicoach.db.models.UserId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterAll
@@ -26,7 +21,6 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.time.Clock
-import java.time.Duration
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
@@ -318,107 +312,5 @@ class StudentServiceTest {
       val created = (service.createStudent(u.id, "2028", ADULT_DOB).getOrThrow() as CreateStudentResult.Success).student
       val result = service.updateStudent(u.id, created.version, "garbage").getOrThrow()
       assertTrue(result is UpdateStudentResult.ValidationFailure)
-    }
-
-  // --- deleteStudentAndAccount ---
-
-  private fun userDeletedAt(userId: UserId): java.sql.Timestamp? {
-    connection.prepareStatement("SELECT deleted_at FROM users WHERE id = ?").use { stmt ->
-      stmt.setObject(1, userId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getTimestamp("deleted_at")
-      }
-    }
-  }
-
-  private fun studentDeletedAt(userId: UserId): java.sql.Timestamp? {
-    connection.prepareStatement("SELECT deleted_at FROM students WHERE user_id = ?").use { stmt ->
-      stmt.setObject(1, userId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getTimestamp("deleted_at")
-      }
-    }
-  }
-
-  private fun versionRowCount(
-    table: String,
-    id: UUID,
-  ): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM $table WHERE id = ? AND deleted_at IS NOT NULL").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
-
-  @Test
-  fun `deleteStudentAndAccount soft-deletes student and user atomically with identical deleted_at`() =
-    runTest {
-      val u = createUser()
-      val created = (service.createStudent(u.id, "2028", ADULT_DOB).getOrThrow() as CreateStudentResult.Success).student
-
-      val tokenHash = TokenHash(byteArrayOf(1, 2, 3, 4))
-      SessionsDao
-        .create(
-          sqlSession,
-          NewSession(
-            userId = u.id,
-            tokenHash = tokenHash,
-            userAgent = null,
-            initialIp = null,
-            metadata = null,
-            expiration = Duration.ofDays(7),
-            loginMethod = LoginMethod.PASSWORD,
-          ),
-        ).getOrThrow()
-
-      val result = service.deleteStudentAndAccount(u.id, tokenHash).getOrThrow()
-      assertTrue(result is DeleteStudentResult.Success)
-
-      val userDel = userDeletedAt(u.id)
-      val studentDel = studentDeletedAt(u.id)
-      assertNotNull(userDel)
-      assertNotNull(studentDel)
-      assertEquals(userDel, studentDel, "User and student must share an identical deleted_at")
-
-      // getCurrentUser via AuthService would return null; verify the session is revoked.
-      val sessionLookup = SessionsDao.findByTokenHash(sqlSession, tokenHash)
-      assertTrue(sessionLookup.isFailure, "Session should be revoked after delete")
-
-      // Both version tables logged the deletion.
-      assertTrue(versionRowCount("students_versions", created.id.value) >= 1)
-      assertTrue(versionRowCount("users_versions", u.id.value) >= 1)
-    }
-
-  @Test
-  fun `deleteStudentAndAccount is all-or-nothing and rolls back on a later failure`() =
-    runTest {
-      val u = createUser()
-      service.createStudent(u.id, "2028", ADULT_DOB).getOrThrow()
-
-      // No session is created for this token, so the trailing revokeByTokenHash
-      // raises NotFound and aborts the transaction AFTER the student and user
-      // soft-deletes have been staged. The whole unit must roll back.
-      val tokenHash = TokenHash(byteArrayOf(9, 9, 9))
-
-      val result = service.deleteStudentAndAccount(u.id, tokenHash)
-      assertTrue(result.isFailure, "Delete should fail when the session revoke cannot proceed")
-
-      // Rollback: neither the student nor the user row may be soft-deleted.
-      assertNull(studentDeletedAt(u.id), "Student must remain active after rollback")
-      assertNull(userDeletedAt(u.id), "User must remain active after rollback")
-    }
-
-  @Test
-  fun `deleteStudentAndAccount returns NotFound when user has no student`() =
-    runTest {
-      val u = createUser()
-      val tokenHash = TokenHash(byteArrayOf(7, 7, 7))
-      val result = service.deleteStudentAndAccount(u.id, tokenHash).getOrThrow()
-      assertTrue(result is DeleteStudentResult.NotFound)
     }
 }

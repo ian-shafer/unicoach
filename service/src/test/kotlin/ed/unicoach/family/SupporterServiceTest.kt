@@ -1,6 +1,9 @@
 package ed.unicoach.family
 
+import ed.unicoach.auth.FailingJobsDao
+import ed.unicoach.auth.SendEmailJobQueries
 import ed.unicoach.coaching.CoachingTestDb
+import ed.unicoach.common.json.deserialize
 import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.SupporterStudentLinksDao
@@ -14,6 +17,7 @@ import ed.unicoach.db.models.SupporterStudentLink
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UnlinkOutcome
 import ed.unicoach.db.models.UserId
+import ed.unicoach.queue.QueueService
 import ed.unicoach.util.TokenGenerator
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
@@ -40,11 +44,12 @@ class SupporterServiceTest {
   private val database = CoachingTestDb.database
   private val connection = CoachingTestDb.connection
   private val sqlSession = CoachingTestDb.sqlSession
-  private val service = SupporterService(database)
+  private val service = SupporterService(database, LinkEndedNotice(QueueService(database)))
 
   @BeforeEach
   fun reset() {
     CoachingTestDb.truncate(
+      "jobs",
       "cost_report_shares",
       "convos",
       "supporter_invites",
@@ -339,6 +344,59 @@ class SupporterServiceTest {
         inviteService.accept(unusedInvite.rawToken, createUser("Sam Okafor")).getOrThrow(),
         "an unused invite link the student minted earlier still works",
       )
+    }
+
+  private fun verify(userId: UserId): UserId {
+    connection.prepareStatement("UPDATE users SET email_verified_at = NOW(), version = version + 1 WHERE id = ?").use { stmt ->
+      stmt.setObject(1, userId.value)
+      stmt.executeUpdate()
+    }
+    return userId
+  }
+
+  /** The queued link-ended emails, as (recipient, the other person's name). */
+  private fun linkEndedEmails(): List<Pair<String, String>> =
+    SendEmailJobQueries.payloads(connection).map { it.to to it.context.deserialize<LinkEndedContext>().otherName }
+
+  /**
+   * Both RFC 249 doors tell the OTHER party (RFC 252), one job each, so an
+   * account close is not the only severance that emails.
+   */
+  @Test
+  fun `each disconnect door emails the other party once`(): Unit =
+    runBlocking {
+      val avaUser = verify(createUser("Ava Okafor"))
+      val studentId = createStudent(avaUser)
+      val janeUser = verify(createUser("Jane Okafor"))
+      val samUser = verify(createUser("Sam Okafor"))
+      val janes = link(supporterOf(janeUser), studentId)
+      val sams = link(supporterOf(samUser), studentId)
+
+      assertIs<UnlinkOutcome.Unlinked>(service.disconnectAsStudent(studentId, janes.id).getOrThrow())
+      assertEquals(listOf("user-${janeUser.value}@example.com" to "Ava Okafor"), linkEndedEmails())
+
+      CoachingTestDb.truncate("jobs")
+      assertIs<UnlinkOutcome.Unlinked>(service.disconnectAsSupporter(samUser, sams.id).getOrThrow())
+      assertEquals(listOf("user-${avaUser.value}@example.com" to "Sam Okafor"), linkEndedEmails())
+
+      CoachingTestDb.truncate("jobs")
+      assertEquals(UnlinkOutcome.NotFound, service.disconnectAsSupporter(samUser, sams.id).getOrThrow())
+      assertEquals(emptyList(), linkEndedEmails(), "nothing severed, nobody told")
+    }
+
+  /** ASYNC_WORK.md rule 2: the email is required, so a failed enqueue undoes the disconnect. */
+  @Test
+  fun `a failed enqueue rolls the disconnect back`(): Unit =
+    runBlocking {
+      val failing = SupporterService(database, LinkEndedNotice(QueueService(database, FailingJobsDao())))
+      val avaUser = verify(createUser("Ava Okafor"))
+      val studentId = createStudent(avaUser)
+      val janeUser = verify(createUser("Jane Okafor"))
+      val janes = link(supporterOf(janeUser), studentId)
+
+      assertTrue(failing.disconnectAsStudent(studentId, janes.id).isFailure)
+      assertTrue(failing.disconnectAsSupporter(janeUser, janes.id).isFailure)
+      assertEquals(1, liveLinkCount(studentId), "the link is still live")
     }
 
   /**

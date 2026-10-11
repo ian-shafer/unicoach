@@ -976,6 +976,24 @@ class ExtractionServiceTest {
     }
 
   @Test
+  fun `a closed student's queued turn is a no-op success`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val req = appendUserTurn(convo, "hi")
+      connection.prepareStatement("UPDATE students SET deleted_at = NOW(), version = version + 1 WHERE id = ?").use { stmt ->
+        stmt.setObject(1, student)
+        stmt.executeUpdate()
+      }
+
+      val result =
+        service(TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null)))
+          .extract(ConvoId(convo), ConvoRequestId(req))
+      assertTrue(result is ExtractionResult.Success, "got $result")
+      assertEquals(0, countWhere("extraction_runs", "convo_id", convo))
+    }
+
+  @Test
   fun `internal visibility from provider output is honored`() =
     runBlocking {
       val student = createStudent()

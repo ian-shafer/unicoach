@@ -233,6 +233,22 @@ class SessionsDaoTest {
   }
 
   @Test
+  fun `revokeAllForUser revokes every session of one user and no other`() {
+    val user = createUser()
+    val other = createUser()
+    createSession(user, byteArrayOf(40, 41))
+    createSession(user, byteArrayOf(42, 43))
+    createSession(other, byteArrayOf(44, 45))
+
+    assertEquals(2, SessionsDao.revokeAllForUser(session, user).getOrThrow())
+
+    assertTrue(SessionsDao.findByTokenHash(session, TokenHash(byteArrayOf(40, 41))).exceptionOrNull() is NotFoundException)
+    assertTrue(SessionsDao.findByTokenHash(session, TokenHash(byteArrayOf(42, 43))).exceptionOrNull() is NotFoundException)
+    assertTrue(SessionsDao.findByTokenHash(session, TokenHash(byteArrayOf(44, 45))).isSuccess, "another user's session is untouched")
+    assertEquals(0, SessionsDao.revokeAllForUser(session, user).getOrThrow(), "nothing live is left to revoke")
+  }
+
+  @Test
   fun `revokeByTokenHash returns NotFound for nonexistent token`() {
     val hash = byteArrayOf(10, 11, 12)
     val tokenHash = TokenHash(hash)
