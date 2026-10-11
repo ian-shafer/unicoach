@@ -235,7 +235,7 @@ Status:
     exhaustive `when`), one escalated to Ian. `family/02.5` unblocks NOTHING: no
     slice in any brief has a `Needs:` edge on it.
   - `family/04/parents-supporting-you` LANDED as RFC 249 (`main@2bfb35d9` +
-    `a59ebb46`, 2026-10-11) — a student can now see every adult connected to
+    `da0f8d02`, 2026-10-11) — a student can now see every adult connected to
     them, what those adults can see, and disconnect any of them in two taps; a
     parent sees the students they support, the other adults supporting each, and
     can disconnect from their side too. **The door:** student — side menu →
