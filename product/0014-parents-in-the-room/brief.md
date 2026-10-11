@@ -234,6 +234,85 @@ Status:
     coordinator's held list — one upheld and fixed (`OFFER_LENSES` became an
     exhaustive `when`), one escalated to Ian. `family/02.5` unblocks NOTHING: no
     slice in any brief has a `Needs:` edge on it.
+  - `family/04/parents-supporting-you` LANDED as RFC 249 (`main@2bfb35d9` +
+    `a59ebb46`, 2026-10-11) — a student can now see every adult connected to
+    them, what those adults can see, and disconnect any of them in two taps; a
+    parent sees the students they support, the other adults supporting each, and
+    can disconnect from their side too. **The door:** student — side menu →
+    Settings → "Family & Supporters"; parent — home → Settings → "Family &
+    Supporters". Both one level deep. Disconnecting is immediate, needs nobody's
+    approval, deletes no account and no data, and re-inviting afterwards makes
+    one fresh live link (now proven at service level, closing RFC 232's gap).
+    **Ian approved with all three gate defaults:** (1) the list states the
+    ceiling ONCE, from ONE home — new `SupporterCeiling`, two voices side by
+    side, which the invite page now renders too; (2) parents see each other's
+    names, and the invite page gains "Other supporters connected to this student
+    will see your name."; (3) unused invite links are untouched by a disconnect
+    (D2 — they expire in 14 days). New doors:
+    `GET /api/v1/students/me/supporters`,
+    `DELETE /api/v1/students/me/supporters/{linkId}`,
+    `DELETE /api/v1/supporters/me/students/{linkId}`, and `otherSupporterNames`
+    on `GET /api/v1/supporters/me`; `404 supporter_link_not_found` for "not
+    yours", "never existed" and "already ended" alike, so the doors cannot probe
+    ids. In `:db`, `SupporterStudentLinksDao.unlink(linkId, LinkSide)` replaces
+    the uncalled OCC `unlink(id, version)` — the caller's side rides in the
+    WHERE that severs the row, so the side IS the authorisation — and
+    `listActiveSupportersOf` is the ONE read that names a connected adult (live
+    link, live supporter, live user). No schema change, no migration, no config
+    key; rollback is a revert. **Deviations from the approved RFC, all amended
+    into it, none touching a gate answer:** `400` on a malformed id on BOTH
+    DELETEs (they stay in `bin/test-fuzz`); a disconnect answered `404` removes
+    the row, because another device ended it first; a load-failure line with Try
+    again, a supporter empty state, and a `.task` on the family section; one
+    co-supporter read instead of two; and the iOS half ran in parallel with the
+    server half. Tests: phase-5 final suite 2,326 executed, 0 failures on the
+    rebased tree; iOS 762 executed, 0 failures; 50 snapshot scenes, 6 new; the
+    hook's full check passed in 1,150s including fuzz (3,169 generated, 3,169
+    passed). Review: 41 lenses over four tiers, 3 fix passes, 0 contradictions,
+    tier 3 ALL CLEAN. **The real defect review caught:** a `?linkId=` query
+    parameter could override the path id on a DELETE; the new shared `pathId`
+    helper reads PATH parameters only and accepts only a canonical UUID, and the
+    college-list and conversation routes now use it too. **Open items:** the
+    coach's spoken ceiling (tool, prompt, synthesis nudge) does not yet say
+    connected adults see each other's names — the invite page and the student's
+    list do; invite revocation still has no door (RFC 232), so an unused invite
+    link outlives a disconnect for up to 14 days; `StatusPages` echoes a
+    `PermanentError` message into a 500 body (outside this diff); the DAO's
+    private `parseName` wants a shared home; and
+    `SupporterRelationship.SUPPORTER` still carries two meanings (RFC 240) —
+    this slice renders no relationship word. `family/04` unblocks NOTHING: no
+    slice in any brief has a `Needs:` edge on it.
+- **Next slices re-checked against RFC 249 (2026-10-11).** The code wins over
+  the slice text; nothing below rewrites a slice, it says what each will find.
+  - `family/05/the-subject-seam` — unaffected in substance. Two things to reuse
+    rather than rebuild: the live-link test is three predicates, not one —
+    `listActiveSupportersOf` checks `deleted_at` on the link, the supporter AND
+    the supporter's `users` row, because closing an account leaves its links
+    standing (the liveness guard fires on INSERT only) — so an authorisation
+    check on the link row alone would authorise a closed adult; and if the
+    subject rides as a path parameter, `pathId` in `rest-server/.../Routing.kt`
+    already reads PATH parameters only and accepts only a canonical UUID (the
+    `?linkId=` override review caught on RFC 249).
+  - `family/06/the-parent-coach` — the ceiling now has ONE home,
+    `ed.unicoach.family.SupporterCeiling` (two voices: to the supporter, to the
+    student). The parent coach's prompt should read or match it rather than add
+    a home. The coach's SPOKEN ceiling (`InviteSupporterChatTool`, the prompt,
+    `SynthesisService.INVITE_NUDGE_STATEMENT`) still lacks the line "Other
+    supporters connected to this student will see your name." — `family/06`
+    edits the prompt anyway and is the natural place to close it. The student's
+    list already promises the parent can see the college list and cost
+    estimates; `family/05` + `family/06` are what make that true.
+  - `family/09/the-deletion-partition` — must sever every link of a closing
+    account explicitly: closing an account leaves its links standing today. The
+    only production unlink is per link,
+    `SupporterStudentLinksDao.unlink(linkId,
+    LinkSide)`, scoped to one side;
+    deletion either walks that side's live links through it or adds a bulk sever
+    by side. RFC 249 sends NO notice on disconnect (the other side sees it on
+    its next read), so notify-on-close (D9) is still wholly `family/09`'s. And
+    it must decide what becomes of unused invite links the closing account
+    minted — revocation still has no door, and a disconnect leaves them live
+    (Ian's RFC 249 gate answer 3).
 - **Renumbered 0012 -> 0014 on 2026-09-14, before landing.** Two sibling
   sessions took `0012-fafsa-support` and `0013-unicoach-on-the-web` while this
   brief was between its gates. Slice IDs are unaffected — they key off the
