@@ -4,12 +4,10 @@
 
 ## Status
 
-- **Phase:** EXECUTE — **waves 1, 2 and 3 COMPLETE, and wave 4's first slice
-  landed** (RFCs 186, 187, 195, 197, 207, 208, 209, 213, 220, 227, 228, 229,
-  239). Only `test/08/the-psat-is-money` remains, and its PREFER edge on
-  `test/07` is now met: the curated award corpus and its `checked_on` discipline
-  exist, so the PSAT slice extends a seam rather than inventing a second one.
-  Ask `slice-board`, not this line.
+- **Phase:** EXECUTE — **COMPLETE. All nine slices landed** (RFCs 186, 187, 195,
+  197, 207, 208, 209, 213, 220, 227, 228, 229, 239, 243, 247). The last,
+  `test/09/the-report-says-it-too` (D30), put the National Merit packages on the
+  family cost report as RFC 247. Ask `slice-board`, not this line.
 - **Gate 1 (prioritisation):** **APPROVED by Ian 2026-09-10, verbatim:
   "approve".** All fourteen decisions taken at their defaults. D4, D10 and D13
   already carried Ian's pre-approval amendments (explain the stakes once; infer
@@ -227,6 +225,31 @@ cannot. Only the deletion needed a window.
        tiers, every ledger check exit 0. Door: the chat, both asked and raised.
        **BRIEF 0010 IS COMPLETE** — test/09/the-report-says-it-too (D30) is the
        report half and is a new slice, not part of this one.
+
+    test/09/the-report-says-it-too LANDED as RFC 247 (main@a6bdebe2 + <doc>,
+       2026-10-10) — the family cost report a student shares with a parent now
+       shows, per school on her list, a report-national-merit section: the
+       standing the school pays, the entering class it was published for, its
+       own audience label (in-state / out-of-state / everybody — never compared
+       with the family's state, Ian's gate call), whether it PAYS every holder or
+       only CONSIDERS them, its figures only where it prints them, its own words
+       verbatim, its first-choice rule, and the day we read its page. The base
+       rate ("about 1.3% of entrants in the 2028 competition reach Finalist",
+       NMSC, read Sep 25, 2026) is said ONCE for the page in "What kind of
+       numbers these are" — Ian chose this at the gate over the slice text's
+       per-figure reading — and it prints exactly when a National Merit row
+       prints, read off the same priced values, so no figure reaches the page
+       without it. Four refusals, per row: none published (UNC), expired, no
+       believed base rate (the code's fourth — the slice listed three), and a
+       school we never read is simply absent. Nothing about the student: a new
+       student-free door (NationalMeritReportReader, 2 statements) and a
+       scope-free answer type that has nowhere to put a score, a timing arm or a
+       residency comparison; the chat tool and its wire are unchanged. Zero DDL,
+       no prompt change. Executed: 4,403 tests, 0 failures on the full tree,
+       then incremental re-runs after each review tier; every shell harness
+       passed at the hook. 40 review lenses over four tiers, 16 fixes, 0
+       contradictions, every ledger check exit 0. Door: the family cost report
+       page, the same share link.
 
 ## The question
 
