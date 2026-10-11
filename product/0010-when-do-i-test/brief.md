@@ -226,7 +226,7 @@ cannot. Only the deletion needed a window.
        **BRIEF 0010 IS COMPLETE** — test/09/the-report-says-it-too (D30) is the
        report half and is a new slice, not part of this one.
 
-    test/09/the-report-says-it-too LANDED as RFC 247 (main@a6bdebe2 + <doc>,
+    test/09/the-report-says-it-too LANDED as RFC 247 (main@a6bdebe2 + 5443d455,
        2026-10-10) — the family cost report a student shares with a parent now
        shows, per school on her list, a report-national-merit section: the
        standing the school pays, the entering class it was published for, its
