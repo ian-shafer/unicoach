@@ -282,6 +282,58 @@ Status:
     `SupporterRelationship.SUPPORTER` still carries two meanings (RFC 240) —
     this slice renders no relationship word. `family/04` unblocks NOTHING: no
     slice in any brief has a `Needs:` edge on it.
+  - `family/09/the-deletion-partition` LANDED as RFC 252 (`main@b99a77d3` +
+    DOCSHA, 2026-10-11) — a student or a parent can delete their account in the
+    iOS app: Settings → "Delete account", both roles, confirmed once inside the
+    screen. `DELETE /api/v1/auth/me` closes any account shape in ONE
+    transaction: it severs every live link (`severAll` by side), emails each
+    other party, revokes the closer's invite links and Family Cost Report link,
+    soft-deletes the role rows and the user, deletes its Apple/Google identities
+    and revokes every session; `DELETE /api/v1/students/me` is removed. **Ian's
+    gate (all defaults, "approve"):** (1) close now, ERASE later — this slice
+    keeps rows soft-deleted; erasure is its own slice with brief 0002's
+    per-table keep-or-erase questions, and is NOT yet written; (2) EVERY
+    severance sends one identical "no longer connected" email — account close
+    AND both RFC 249 disconnect doors — so the email cannot reveal a reason
+    (verified addresses only); (3) a payer is warned, with Apple's manage sheet,
+    not blocked; (4) Apple sign-in users get TN3194's manual directions, no
+    token revocation; (5) coming back is fixed here — migration
+    `user-auth-identities-delete-on-closed-account.sql` admits deleting a CLOSED
+    account's identities only, and a closed owner's Apple subscription rebinds
+    to the new account (a LIVE owner still answers `OwnedByOtherAccount`, D24
+    unchanged). **Gate amendment to the acceptance criterion:** "proven per
+    table" is met by testing what the close WRITES (the other party's account,
+    supporter row, sessions, other invites and other links untouched, both
+    directions, and dual-role), not by a per-table fixture or a schema walk —
+    Ian: "How would it be maintained? … There is nothing to enforce that." The
+    drift `family/03.5` left is answered in writing: `subscriptions` and
+    `supporter_llm_costs` rows are RETAINED. Also fixed: the public cost report
+    kept rendering a closed student's costs (now refused, logged as its own
+    reason, either closure shape), and extraction no longer runs a closed
+    student's queued turn. Review: 41 lenses over four tiers, 34 fixes, 0
+    contradictions; the real catches were the app showing "try again" forever
+    when the account was already closed elsewhere, a parent's billing notice
+    silently absent when coverage had not loaded, and Cancel leaving a stale
+    error. Tests: final suite 4,248 executed, 0 failures (tree reused by the
+    hook, which ran the full check incl. fuzz 3,220/3,220); iOS 774 executed, 0
+    failures; 4 new snapshot scenes. **Open:** erasure (launch-blocking, /chart
+    to write); extraction checks `students.deleted_at` only, so a `users` row
+    closed ALONE (admin-only path) still runs a queued turn; a returning Apple
+    user without Apple-side revocation gets a name derived from their email; the
+    link-ended email names the other person in the append-only `email_sends`; no
+    delete door before a role is chosen or on the web. `family/09` unblocks
+    NOTHING.
+- **Next slices re-checked against RFC 252 (2026-10-11).** Any NEW sever path
+  must send the link-ended email through `LinkEndedNotice` inside its own
+  transaction — a sever that skips it reveals a reason (gate decision 2).
+  `family/05/the-subject-seam`: a closing account's links are now severed, so
+  the three-predicate live-link check is still right and still needed (the
+  admin-only close closes a `users` row alone and severs nothing).
+  `family/06/the-parent-coach`: its parent conversations and owner cost rows
+  will sit under a soft-deleted owner on close, like every other per-account
+  row, until the erasure slice. `family/10/claim-from-the-report`: closing a
+  student revokes the report link, so a claim from a dead link meets the
+  report's uniform not-found page.
 - **Next slices re-checked against RFC 249 (2026-10-11).** The code wins over
   the slice text; nothing below rewrites a slice, it says what each will find.
   - `family/05/the-subject-seam` — unaffected in substance. Two things to reuse
