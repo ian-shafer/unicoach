@@ -65,6 +65,7 @@ struct UnicoachiOSApp: App {
                         vocabularyClient: viewModel.vocabularyClient,
                         subjectsClient: viewModel.subjectsClient,
                         intendedSubjectsClient: viewModel.intendedSubjectsClient,
+                        sharingPermissionsClient: viewModel.sharingPermissionsClient,
                         coachingUsageClient: viewModel.coachingUsageClient,
                         supporterInviteClient: viewModel.supporterInviteClient,
                         subscriptionStore: viewModel.subscriptionStore,

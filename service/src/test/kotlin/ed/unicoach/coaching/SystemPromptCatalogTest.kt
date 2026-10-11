@@ -25,11 +25,11 @@ import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.coaching.testing.AdmissionTestTimelineChatTool
 import ed.unicoach.coaching.testing.AutomaticAwardChatTool
 import ed.unicoach.college.CollegeSearchTool
-import ed.unicoach.college.FIGURE_COMPARISON_WORDS
 import ed.unicoach.college.FindCollegeTool
 import ed.unicoach.college.REMOVED_BY_FILTER_WIRE_KEY
 import ed.unicoach.college.SimilarCollegesTool
 import ed.unicoach.college.TeachesYourField
+import ed.unicoach.college.figureComparisonWordsIn
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SystemPromptsDao
@@ -38,6 +38,7 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.RESIDENCY_TIERS_KEY
+import ed.unicoach.db.models.SharingPermissionStatus
 import ed.unicoach.db.models.SystemPrompt
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -49,7 +50,6 @@ import java.sql.PreparedStatement
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -1877,6 +1877,45 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The share moment's one question (RFC 251): the coach asks whether people
+   * the student shares with may see their subjects only when the share result
+   * carries an ask, records the answer with the tool that exists, and never
+   * asks again after a no.
+   */
+  @Test
+  fun `the served cost-report paragraph asks once about showing the subjects`() {
+    val paragraph = costReportParagraph()
+
+    assertTrue(paragraph.contains(ShareCostReportChatTool.YOUR_SUBJECTS_KEY), "the paragraph names the field the ask rides in")
+    assertTrue(
+      paragraph.contains("${ShareCostReportChatTool.YOUR_SUBJECTS_KEY} with an ${ShareCostReportChatTool.ASK_KEY}"),
+      "the coach asks only when the share result carries an ask",
+    )
+    assertTrue(paragraph.contains("in the ask's own words"), "the ask is said in the words every grant door carries")
+    assertTrue(
+      paragraph.contains(UpdateSharingPermissionChatTool.TOOL_NAME),
+      "the answer is recorded with the tool the registry serves, read from the class",
+    )
+    assertTrue(paragraph.contains("never raise the question again after a no"), "a no is never asked again")
+    assertTrue(paragraph.contains("never asked again"), "an answered student is not asked at the next share")
+    assertTrue(
+      paragraph.contains("lets the question pass") && paragraph.contains("do not ask it again in this conversation"),
+      "a student who lets the question pass is not asked again at the next share in the same conversation",
+    )
+    assertTrue(
+      paragraph.contains("as ${SharingPermissionStatus.GRANTED.value} and a no as ${SharingPermissionStatus.REFUSED.value}"),
+      "the prompt names the statuses the tool's schema accepts, read from the enum",
+    )
+    assertTrue(paragraph.contains("held back or changed by either answer"), "nothing is gated on the answer")
+    assertTrue(paragraph.contains("in chat or in Your details"), "the student can change it at either door")
+    assertTrue(
+      paragraph.contains("anyone who has it can see") && paragraph.contains("only if the student has said yes"),
+      "the reach sentence names the subjects only behind a yes",
+    )
+    assertParagraphKeepsTheStandingCopyRules("the cost-report paragraph", paragraph)
+  }
+
+  /**
    * The rollback RFC 155 documents is one env var
    * (`COACHING_SYSTEM_PROMPT_VERSION=v14`), which is only real if the v14 row is
    * still in the insert-only catalog and still carries the copy it was approved
@@ -2641,32 +2680,24 @@ class SystemPromptCatalogTest {
     // between the two completion windows: the Pell figure is the lower of the
     // two at only 65.8% of schools, so any copy that said so would be wrong
     // about one school in three. The scanned words are
-    // [FIGURE_COMPARISON_WORDS], the same list `:college`'s citation guard
+    // FIGURE_COMPARISON_WORDS, the same list `:college`'s citation guard
     // reads: ONE copy rule, one vocabulary, so a word added to protect one of
     // the two surfaces protects both.
-    for (comparison in FIGURE_COMPARISON_WORDS) {
-      // WORD boundaries, not a bare substring: `lower` is inside `slower` and
-      // `follower`, and the scanned text is the WHOLE outcome-figures
-      // paragraph, so a bare match would fail an unrelated future line with a
-      // message about the Pell arms. The RULE is the same -- these words, as
-      // words, may not appear in this paragraph.
-      //
-      // The OFFENDING LINE travels with the refusal. The paragraph is many
-      // sentences long, so naming the word alone leaves a reader grepping the
-      // served body for it -- and the line is the one value that tells a
-      // genuine comparison apart from a word this guard should learn to allow.
-      // Its twin in `:college` prints the offending sentence; this copy
-      // located the match and then threw the position away.
-      val offending =
-        paragraph.lines().firstOrNull { line ->
-          Regex("""\b${Regex.escape(comparison)}\b""").containsMatchIn(line)
-        }
-      assertNull(
-        offending,
-        "the paragraph states a relation between two outcome figures with [$comparison]; between the Pell " +
-          "arms in particular that is false at a third of schools: line=[$offending]",
-      )
-    }
+    // WORD boundaries and any case, decided once by [figureComparisonWordsIn]:
+    // the scanned text is the WHOLE outcome-figures paragraph, so a bare match
+    // would fail an unrelated future line with a message about the Pell arms.
+    //
+    // The OFFENDING LINE travels with the refusal. The paragraph is many
+    // sentences long, so naming the word alone leaves a reader grepping the
+    // served body for it -- and the line is the one value that tells a genuine
+    // comparison apart from a word this guard should learn to allow.
+    val offending = paragraph.lines().associateWith(::figureComparisonWordsIn).filterValues { it.isNotEmpty() }
+    assertEquals(
+      emptyMap(),
+      offending,
+      "the paragraph states a relation between two outcome figures; between the Pell arms in particular that is " +
+        "false at a third of schools",
+    )
     assertParagraphKeepsTheStandingCopyRules("the outcome-figures paragraph", paragraph)
   }
 

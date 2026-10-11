@@ -134,7 +134,7 @@ class CollegeCostChatTool(
         is ProgramReturnCollege.NoProgram -> {
           putJsonObject(PROGRAM_AVAILABILITY_KEY) {
             put(BASIS_KEY, PROGRAM_NO_PROGRAM_BASIS)
-            put(STATEMENT_KEY, PROGRAM_NO_PROGRAM_STATEMENT)
+            put(STATEMENT_KEY, ProgramReturnCopy.NO_PROGRAM_STATEMENT)
           }
         }
       }
@@ -152,6 +152,7 @@ class CollegeCostChatTool(
   private fun programObject(program: ProgramReturnProgram): JsonObject =
     buildJsonObject {
       put(PROGRAM_CIP_CODE_KEY, program.cipCode.value)
+      put(PROGRAM_TITLE_KEY, program.title)
       when (program) {
         is ProgramReturnProgram.WithFigures -> {
           putJsonArray(PROGRAM_FIGURES_KEY) { program.figures.forEach { add(programReturnFigureObject(it)) } }
@@ -163,7 +164,7 @@ class CollegeCostChatTool(
         is ProgramReturnProgram.NoPublishedFigures -> {
           putJsonObject(PROGRAM_FIGURES_AVAILABILITY_KEY) {
             put(BASIS_KEY, PROGRAM_NO_PUBLISHED_FIGURES_BASIS)
-            put(STATEMENT_KEY, PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT)
+            put(STATEMENT_KEY, ProgramReturnCopy.NO_PUBLISHED_FIGURES_STATEMENT)
           }
         }
       }
@@ -185,7 +186,7 @@ class CollegeCostChatTool(
         is ProgramReturnFigure.NoFigure -> {
           putJsonObject(PROGRAM_MEASURE_AVAILABILITY_KEY) {
             put(BASIS_KEY, PROGRAM_NO_FIGURE_BASIS)
-            put(STATEMENT_KEY, PROGRAM_NO_FIGURE_STATEMENT)
+            put(STATEMENT_KEY, ProgramReturnCopy.NO_FIGURE_STATEMENT)
           }
         }
       }
@@ -2027,6 +2028,9 @@ class CollegeCostChatTool(
     /** The matched program's own CIP code, which is its identity inside one college. */
     const val PROGRAM_CIP_CODE_KEY = "cip_code"
 
+    /** The matched program's published title, verbatim (RFC 251), so the coach names it rather than reading a code. */
+    const val PROGRAM_TITLE_KEY = "program_title"
+
     /** The per-program figures: one entry per `ProgramMoneyMeasure`, always. */
     const val PROGRAM_FIGURES_KEY = "figures"
 
@@ -2071,7 +2075,6 @@ class CollegeCostChatTool(
      */
     const val PROGRAM_AVAILABILITY_KEY = "program_availability"
     const val PROGRAM_NO_PROGRAM_BASIS = "no_program"
-    const val PROGRAM_NO_PROGRAM_STATEMENT = "This school does not run that program."
 
     /**
      * OURS, at the PROGRAM: the school runs the matched program and we hold no
@@ -2083,7 +2086,6 @@ class CollegeCostChatTool(
      */
     const val PROGRAM_FIGURES_AVAILABILITY_KEY = "program_figures_availability"
     const val PROGRAM_NO_PUBLISHED_FIGURES_BASIS = "no_published_figures"
-    const val PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT = "This school runs that program and we hold no published figures for it."
 
     /**
      * OURS, at ONE MEASURE: we hold no row for this measure of a program whose
@@ -2095,7 +2097,6 @@ class CollegeCostChatTool(
      */
     const val PROGRAM_MEASURE_AVAILABILITY_KEY = "measure_availability"
     const val PROGRAM_NO_FIGURE_BASIS = "no_figure_held"
-    const val PROGRAM_NO_FIGURE_STATEMENT = "We hold no published figure for that measure of that program at this school."
 
     // The legend is the tool's whole job (RFC 192): one entry per wire key, what
     // it means, and what values it takes, in payload order. Every behavioural
@@ -2233,8 +2234,9 @@ class CollegeCostChatTool(
         "$PROGRAM_PROGRAMS_KEY - one entry per matched bachelor's program at that college, in $PROGRAM_CIP_CODE_KEY " +
         "order; a school can run two programs one subject reaches, and each carries its own figures.\n" +
         "$PROGRAM_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a COLLEGE entry, instead of " +
-        "$PROGRAM_PROGRAMS_KEY (\"$PROGRAM_NO_PROGRAM_BASIS\": \"$PROGRAM_NO_PROGRAM_STATEMENT\").\n" +
+        "$PROGRAM_PROGRAMS_KEY (\"$PROGRAM_NO_PROGRAM_BASIS\": \"${ProgramReturnCopy.NO_PROGRAM_STATEMENT}\").\n" +
         "$PROGRAM_CIP_CODE_KEY - the program's own CIP code, which is which program the entry is about.\n" +
+        "$PROGRAM_TITLE_KEY - the program's published title, verbatim; name the program by it, never by its code.\n" +
         "$PROGRAM_FIGURES_KEY - one entry per measure, ALWAYS every measure and in this order: " +
         ProgramMoneyMeasure.entries.joinToString(", ") { "\"${it.value}\"" } + ". Each carries " +
         "$PROGRAM_MEASURE_KEY and then either $PROGRAM_STATUS_KEY with its provenance " +
@@ -2243,7 +2245,7 @@ class CollegeCostChatTool(
         "$PROGRAM_MEASURE_AVAILABILITY_KEY.\n" +
         "$PROGRAM_FIGURES_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a PROGRAM entry, instead of " +
         "$PROGRAM_FIGURES_KEY (\"$PROGRAM_NO_PUBLISHED_FIGURES_BASIS\": " +
-        "\"$PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT\").\n" +
+        "\"${ProgramReturnCopy.NO_PUBLISHED_FIGURES_STATEMENT}\").\n" +
         // The value-bearing HALF of the partition, from the property FigureStatus
         // owns: naming its two members here is a rule that goes quietly wrong
         // the moment a seventh status carries a number.
@@ -2266,7 +2268,7 @@ class CollegeCostChatTool(
           .joinToString(", ") { "\"${it.measure.value}\"" } +
         ", because the publisher names a dollar year for no other measure.\n" +
         "$PROGRAM_MEASURE_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a FIGURE entry, instead of " +
-        "$PROGRAM_STATUS_KEY (\"$PROGRAM_NO_FIGURE_BASIS\": \"$PROGRAM_NO_FIGURE_STATEMENT\").\n" +
+        "$PROGRAM_STATUS_KEY (\"$PROGRAM_NO_FIGURE_BASIS\": \"${ProgramReturnCopy.NO_FIGURE_STATEMENT}\").\n" +
         "Read-only: this tool changes nothing."
   }
 }

@@ -77,6 +77,36 @@ final class MockIntendedSubjectsClient: IntendedSubjectsClientProtocol, @uncheck
     }
 }
 
+/// The RFC 248 permissions route, in the same shape. Unconfigured, the read
+/// answers what the server answers before any write — every permission
+/// `not_asked` — and a write answers the choice it was sent, as the server
+/// stores it.
+final class MockSharingPermissionsClient: SharingPermissionsClientProtocol, @unchecked Sendable {
+    var fetchResult: Result<[PublicSharingPermission], Error> = .success(SharingPermission.allCases.map {
+        PublicSharingPermission(permission: $0.rawValue, status: SharingPermissionStatus.notAsked.rawValue)
+    })
+    var updateResult: Result<PublicSharingPermission, Error>?
+    /// Awaited inside `update`, so a test can hold a write open
+    /// (`MockMoneyProfileClient.updateGate`).
+    var updateGate: (@Sendable () async -> Void)?
+
+    private(set) var fetchCallCount = 0
+    private(set) var updateCallCount = 0
+    private(set) var lastUpdate: (permission: SharingPermission, choice: SharingChoice)?
+
+    func fetch() async throws -> [PublicSharingPermission] {
+        fetchCallCount += 1
+        return try fetchResult.get()
+    }
+
+    func update(_ permission: SharingPermission, to choice: SharingChoice) async throws -> PublicSharingPermission {
+        updateCallCount += 1
+        lastUpdate = (permission, choice)
+        await updateGate?()
+        return try (updateResult ?? .success(PublicSharingPermission(permission: permission.rawValue, status: choice.rawValue))).get()
+    }
+}
+
 // MARK: - Fixtures
 
 extension PublicSubject {
@@ -90,6 +120,12 @@ extension PublicSubject {
         PublicSubject(slug: "neuroscience", name: "Neuroscience"),
         PublicSubject(slug: "computer-science", name: "Computer science"),
     ]
+}
+
+extension PublicSharingPermission {
+    static func intendedSubjects(_ status: SharingPermissionStatus) -> PublicSharingPermission {
+        PublicSharingPermission(permission: SharingPermission.intendedSubjects.rawValue, status: status.rawValue)
+    }
 }
 
 extension PublicIntendedSubjects {

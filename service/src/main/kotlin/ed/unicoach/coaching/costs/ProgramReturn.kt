@@ -8,6 +8,7 @@ import ed.unicoach.db.dao.ProgramReturnStat
 import ed.unicoach.db.dao.SubjectProgramMatch
 import ed.unicoach.db.dao.programMoneyStatNaturalKey
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
@@ -98,6 +99,9 @@ data class ProgramFigureProvenance private constructor(
 
   /** Who published the figure, in the publisher's own word for itself. */
   val publisher: String get() = variable.publisher
+
+  /** What kind of number the figure is (RFC 191), the registry's fact about its variable. */
+  val assuranceTier: AssuranceTier get() = variable.assuranceTier
 
   /** The publisher's own cohort cell, verbatim -- the evidence for the two years and the dollar base. */
   val cohortSentence: String get() = variable.publisherCohortCell
@@ -272,6 +276,13 @@ sealed interface ProgramReturnProgram {
   val cipCode: CipCode
 
   /**
+   * The program's published title (`college_programs.cip_title`, RFC 251),
+   * verbatim -- "Biology, General." -- so a family is told which program a
+   * figure is about in words rather than as a code.
+   */
+  val title: String
+
+  /**
    * We hold at least one figure for this program, and [figures] carries an
    * entry for EVERY measure.
    *
@@ -287,6 +298,7 @@ sealed interface ProgramReturnProgram {
   @ConsistentCopyVisibility
   data class WithFigures private constructor(
     override val cipCode: CipCode,
+    override val title: String,
     val figures: List<ProgramReturnFigure>,
   ) : ProgramReturnProgram {
     companion object {
@@ -305,13 +317,15 @@ sealed interface ProgramReturnProgram {
        */
       fun ofHeldFigures(
         cipCode: CipCode,
+        title: String,
         held: Map<ProgramMoneyMeasure, ProgramReturnFigure.Held>,
       ): ProgramReturnProgram =
         if (held.isEmpty()) {
-          NoPublishedFigures(cipCode)
+          NoPublishedFigures(cipCode, title)
         } else {
           WithFigures(
             cipCode = cipCode,
+            title = title,
             figures = ProgramMoneyMeasure.entries.map { measure -> held[measure] ?: ProgramReturnFigure.NoFigure(measure) },
           )
         }
@@ -328,6 +342,7 @@ sealed interface ProgramReturnProgram {
    */
   data class NoPublishedFigures(
     override val cipCode: CipCode,
+    override val title: String,
   ) : ProgramReturnProgram
 }
 
@@ -401,7 +416,28 @@ data class ProgramReturn(
 ) {
   /** The subject entries in the stored answer's own order, head first. */
   val subjects: List<ProgramReturnSubject> get() = listOf(headSubject) + tailSubjects
+
+  /**
+   * One college's slice of every subject, in the stored answer's own order
+   * (RFC 251): what a surface that is laid out college by college -- the Family
+   * Cost Report -- prints inside that college's section, so it does no
+   * re-keying of its own.
+   *
+   * Empty for a college this section holds no entry for.
+   */
+  fun forCollege(collegeId: CollegeId): List<CollegeSubjectReturn> =
+    subjects.mapNotNull { subject ->
+      subject.colleges.firstOrNull { it.collegeId == collegeId }?.let { college ->
+        CollegeSubjectReturn(subjectName = subject.subjectName, college = college)
+      }
+    }
 }
+
+/** One subject's answer at one college: [ProgramReturn.forCollege]'s unit. */
+data class CollegeSubjectReturn(
+  val subjectName: String,
+  val college: ProgramReturnCollege,
+)
 
 /**
  * The section, assembled from rows already read: per stored subject, per
@@ -409,7 +445,8 @@ data class ProgramReturn(
  *
  * TWO reads in, and each answers a different question. [matches] is the PROGRAM
  * question -- which (subject, college, CIP) triples run a matching bachelor's
- * program -- and it is what decides between "this school does not run that
+ * program, each mapped to that program's published title (`cip_title`,
+ * verbatim) -- and it is what decides between "this school does not run that
  * program" and "we hold no figures for it". [rows] is the MONEY question. A
  * section built from the money rows alone would speak a gap in our data as a
  * statement about a school's offering, which is the one thing this section may
@@ -431,7 +468,7 @@ internal fun programReturnOf(
   subjects: List<IntendedSubjectName>,
   collegeIds: List<CollegeId>,
   nameOf: (CollegeId) -> String,
-  matches: Set<SubjectProgramMatch>,
+  matches: Map<SubjectProgramMatch, String>,
   rows: List<ProgramReturnStat>,
 ): ProgramReturn? {
   if (collegeIds.isEmpty()) return null
@@ -448,15 +485,16 @@ internal fun programReturnOf(
   // program read stays authoritative: a college the money rows alone vouch for
   // would be answered with programs the read that owns that question did not
   // find.
-  (byMatch.keys - matches).forEach { orphan ->
+  (byMatch.keys - matches.keys).forEach { orphan ->
     programReturnLog.warn(
       "held program figures at [{}] name no matched bachelor's program: the program read and the money " +
         "read disagree, so the figures are not served",
       programMoneyStatNaturalKey(orphan.collegeId, orphan.subjectSlug, orphan.cipCode),
     )
   }
-  val programsByCollege = matches.groupBy { it.collegeId }
-  val entries = subjects.map { subject -> subjectEntryOf(subject, collegeIds, nameOf, programsByCollege, byMatch) }
+  val programsByCollege = matches.keys.groupBy { it.collegeId }
+  val entries =
+    subjects.map { subject -> subjectEntryOf(subject, collegeIds, nameOf, programsByCollege, matches::getValue, byMatch) }
   // An `answered` status always carries a subject, so this is the type keeping
   // the empty section unconstructible rather than a case the read expects.
   val head = entries.firstOrNull() ?: return null
@@ -475,6 +513,7 @@ private fun subjectEntryOf(
   collegeIds: List<CollegeId>,
   nameOf: (CollegeId) -> String,
   programsByCollege: Map<CollegeId, List<SubjectProgramMatch>>,
+  titleOf: (SubjectProgramMatch) -> String,
   byMatch: Map<SubjectProgramMatch, List<ProgramReturnStat>>,
 ): ProgramReturnSubject {
   val colleges =
@@ -483,6 +522,7 @@ private fun subjectEntryOf(
         collegeId = collegeId,
         name = nameOf(collegeId),
         matches = programsByCollege[collegeId].orEmpty().filter { it.subjectSlug == subject.slug },
+        titleOf = titleOf,
         byMatch = byMatch,
       )
     }
@@ -506,9 +546,10 @@ private fun collegeEntryOf(
   collegeId: CollegeId,
   name: String,
   matches: List<SubjectProgramMatch>,
+  titleOf: (SubjectProgramMatch) -> String,
   byMatch: Map<SubjectProgramMatch, List<ProgramReturnStat>>,
 ): ProgramReturnCollege {
-  val programs = matches.sortedBy { it.cipCode.value }.map { programEntryOf(it, byMatch[it].orEmpty()) }
+  val programs = matches.sortedBy { it.cipCode.value }.map { programEntryOf(it, titleOf(it), byMatch[it].orEmpty()) }
   val head = programs.firstOrNull() ?: return ProgramReturnCollege.NoProgram(collegeId, name)
   return ProgramReturnCollege.WithPrograms(collegeId, name, head, programs.drop(1))
 }
@@ -527,10 +568,12 @@ private fun collegeEntryOf(
  */
 private fun programEntryOf(
   match: SubjectProgramMatch,
+  title: String,
   rows: List<ProgramReturnStat>,
 ): ProgramReturnProgram =
   ProgramReturnProgram.WithFigures.ofHeldFigures(
     cipCode = match.cipCode,
+    title = title,
     held = rows.mapNotNull(::heldFigureOfOrNull).associateBy { it.measure },
   )
 

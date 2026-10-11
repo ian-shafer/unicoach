@@ -463,7 +463,14 @@ fun Application.appModule(
               .FafsaDeadlineService(database),
             moneyProfileService,
           ),
-        ShareCostReportChatTool(costReportShareService),
+        // The share door reads the student's sharing permission and subjects
+        // answer (RFC 251), so the reach sentence it hands over is true for
+        // this student, and the coach knows whether to ask once.
+        ShareCostReportChatTool(
+          costReportShareService,
+          sharingPermissionService::read,
+          intendedSubjectsService::getForStudent,
+        ),
         RevokeCostReportShareChatTool(costReportShareService),
         // "Never suggest sharing again" (RFC 160): needs no secret — it writes
         // the opted_out share event, not a link — so it stands even when the
@@ -511,6 +518,11 @@ fun Application.appModule(
         // answer and not two copies of it.
         ed.unicoach.coaching
           .IntendedSubjectsChatTool(intendedSubjectsService, subjectVocabularyService),
+        // Whether people the student shares with may see their subjects (RFC
+        // 251): the chat door over the SAME service the REST door writes
+        // through, so the coach's yes and the "Your details" yes are one answer.
+        ed.unicoach.coaching
+          .UpdateSharingPermissionChatTool(sharingPermissionService),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the

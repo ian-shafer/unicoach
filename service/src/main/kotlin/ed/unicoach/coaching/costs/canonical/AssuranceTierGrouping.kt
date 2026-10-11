@@ -1,9 +1,12 @@
 package ed.unicoach.coaching.costs.canonical
 
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.ProgramReturnCopy
 import ed.unicoach.coaching.costs.SpokenAssurance
 import ed.unicoach.coaching.costs.spokenLabel
+import ed.unicoach.common.util.phraseOf
 import ed.unicoach.db.models.AssuranceTier
+import ed.unicoach.db.models.ProgramMoneyMeasure
 
 /**
  * A tier sentence and the SET of figures it covers, said once (RFC 191, brief
@@ -50,10 +53,10 @@ object AssuranceTierGrouping {
     // apart -- so it is refused here rather than printed. A caller that holds a
     // second reading of one figure has a fault upstream of this seam.
     (figures + spokenElsewhere)
-      .groupBy { it.collegeName to it.field }
+      .groupBy { it.collegeName to it.figure }
       .forEach { (pair, readings) ->
         require(readings.map { it.assurance.tier }.distinct().size == 1) {
-          "one figure is on one tier: college=[${pair.first}] field=[${pair.second.wireName}] " +
+          "one figure is on one tier: college=[${pair.first}] figure=[${pair.second.wireName}] " +
             "tiers=[${readings.map { it.assurance.tier.value }.distinct()}]"
         }
       }
@@ -85,9 +88,9 @@ object AssuranceTierGrouping {
   private fun ambiguousFieldsOf(
     figures: List<CoveredFigure>,
     spokenElsewhere: List<CoveredFigure>,
-  ): Set<CostField> =
+  ): Set<FigureIdentity> =
     (figures + spokenElsewhere)
-      .groupBy { it.field }
+      .groupBy { it.figure }
       .filterValues { withField -> withField.map { it.assurance.tier }.distinct().size > 1 }
       .keys
 
@@ -102,36 +105,20 @@ object AssuranceTierGrouping {
    */
   private fun scopeOf(
     covered: List<CoveredFigure>,
-    ambiguous: Set<CostField>,
+    ambiguous: Set<FigureIdentity>,
   ): String {
     val phrases =
       covered
-        .groupBy { it.field }
-        .map { (field, withField) ->
-          if (field !in ambiguous) {
-            field.spokenLabel
+        .groupBy { it.figure }
+        .map { (figure, withFigure) ->
+          if (figure !in ambiguous) {
+            figure.spokenLabel
           } else {
-            "${field.spokenLabel} at ${spokenListOf(withField.map { it.collegeName }.distinct())}"
+            "${figure.spokenLabel} at ${phraseOf(withFigure.map { it.collegeName }.distinct())}"
           }
         }
-    return "${spokenListOf(phrases).replaceFirstChar { it.uppercase() }}:"
+    return "${phraseOf(phrases).replaceFirstChar { it.uppercase() }}:"
   }
-
-  /**
-   * "a", "a and b", "a, b and c" -- the house list, with no Oxford comma, as
-   * [MoneySourceCopy.spokenListOf] writes it.
-   *
-   * Local rather than shared with that one: it lists PUBLISHERS and returns null
-   * for an empty set because a sentence naming no publisher must not be said at
-   * all. Here the caller has already proved the list non-empty (a group exists
-   * because a figure is in it), so a nullable return would be an absence that
-   * cannot happen, handled at every call site.
-   */
-  private fun spokenListOf(parts: List<String>): String =
-    when (parts.size) {
-      1 -> parts.single()
-      else -> "${parts.dropLast(1).joinToString(", ")} and ${parts.last()}"
-    }
 }
 
 /**
@@ -142,17 +129,49 @@ object AssuranceTierGrouping {
  * done with it is saying it, and a grouping that held ids would need the caller
  * to hand it a second map to render one header.
  *
- * A figure with NO NUMBER is never one of these, and neither is a line we
- * authored ourselves: the caller builds them from figures it actually shows, so
- * a blank cell keeps its own status sentence and the at-home `$0` housing line
- * (RFC 166 §7) -- which carries no published cell at all -- cannot be swept
- * under a publisher's tier.
+ * A school figure with NO NUMBER is never one of these, and neither is a line
+ * we authored ourselves: the caller builds them from figures it actually shows,
+ * so a blank cell keeps its own status sentence with its own tier and the
+ * at-home `$0` housing line (RFC 166 §7) -- which carries no published cell at
+ * all -- cannot be swept under a publisher's tier. A figure by field of study
+ * IS one with or without a number, because its gap mark states no tier of its
+ * own ([ProgramReturnCopy.coveredFiguresOf]).
  */
 data class CoveredFigure(
   val collegeName: String,
-  val field: CostField,
+  val figure: FigureIdentity,
   val assurance: SpokenAssurance,
 )
+
+/**
+ * WHICH figure a [CoveredFigure] is (RFC 251): one of the school's canonical
+ * money figures, or one measure of the major answer's figures by field of
+ * study. Sealed, so the grouping names both kinds and a third cannot reach a
+ * header unnamed.
+ */
+sealed interface FigureIdentity {
+  /** How a family hears the figure's name mid-sentence -- what a group's scope is built from. */
+  val spokenLabel: String
+
+  /** The figure's wire name, for a refusal an operator reads. */
+  val wireName: String
+
+  /** One of the school's canonical money figures. */
+  data class Cost(
+    val field: CostField,
+  ) : FigureIdentity {
+    override val spokenLabel: String get() = this.field.spokenLabel
+    override val wireName: String get() = this.field.wireName
+  }
+
+  /** One measure of the figures by field of study, across every program it is shown for. */
+  data class Program(
+    val measure: ProgramMoneyMeasure,
+  ) : FigureIdentity {
+    override val spokenLabel: String get() = ProgramReturnCopy.spokenLabelOf(measure)
+    override val wireName: String get() = measure.value
+  }
+}
 
 /**
  * One tier sentence and the figures it covers -- the unit a surface renders.

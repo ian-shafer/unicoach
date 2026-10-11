@@ -8,6 +8,7 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.coaching.SharingPermissionService
 import ed.unicoach.coaching.aid.FafsaDeadlineService
 import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.common.config.AppConfig
@@ -99,7 +100,8 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val database = Database(databaseConfig)
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
-  val costReportSource: CostReportSource = ServiceCostReportSource(database, CollegeCostService(database))
+  val costReportSource: CostReportSource =
+    ServiceCostReportSource(database, CollegeCostService(database), SharingPermissionService(database))
   // RFC 230 assigned this construction site to `fafsa/04`: the public page and
   // the coach read ONE service, so the two doors cannot disagree about a date.
   val fafsaDeadlines: FafsaDeadlineSource = ServiceFafsaDeadlineSource(FafsaDeadlineService(database))

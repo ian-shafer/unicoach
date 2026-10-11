@@ -8,6 +8,7 @@ import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.UpdateSharingPermissionChatTool
 import ed.unicoach.coaching.aid.FafsaDeadlineChatTool
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
@@ -504,6 +505,32 @@ class ConvoToolLoopRoutingTest {
       assertTrue(
         advertised.contains(InviteSupporterChatTool.TOOL_NAME),
         "the appModule must advertise the invite tool, or the coach cannot reach it at all, got [$advertised]",
+      )
+    }
+  }
+
+  /**
+   * RFC 251, the same claim for the sharing-permission door: the coach is told
+   * to record the student's answer with this tool, and nothing but the wired
+   * registry decides whether it can.
+   */
+  @Test
+  fun `the wired registry advertises the sharing permission tool`() {
+    runBlocking {
+      resetLoop(SEARCH_COLLEGES_TOOL_USE)
+      val cookie = registerWithStudent()
+      val created =
+        client.post(url("/api/v1/conversations")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(CreateConversationRequest("please share my costs with my dad", null)))
+        }
+      assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+
+      val advertised = requests[0].tools.map { it["name"]!!.jsonPrimitive.content }
+      assertTrue(
+        advertised.contains(UpdateSharingPermissionChatTool.TOOL_NAME),
+        "the appModule must advertise the sharing permission tool, or the coach cannot record an answer, got [$advertised]",
       )
     }
   }

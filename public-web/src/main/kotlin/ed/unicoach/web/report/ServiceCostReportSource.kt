@@ -1,5 +1,6 @@
 package ed.unicoach.web.report
 
+import ed.unicoach.coaching.SharingPermissionService
 import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.coaching.report.ShareToken
 import ed.unicoach.db.Database
@@ -7,6 +8,7 @@ import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.UsersDao
+import ed.unicoach.db.models.SharingPermission
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
@@ -37,10 +39,18 @@ import kotlinx.coroutines.CancellationException
  *
  * The cost read is unchanged inside that session — still batched, still
  * list-size independent — so a fifty-school report is still one round.
+ *
+ * The student's intended subjects, and what graduates of them earn and owe,
+ * reach the page only when the student has GRANTED
+ * [SharingPermission.INTENDED_SUBJECTS] (RFC 251). The answer is removed here,
+ * in the same session, so the page never receives what it may not print. The
+ * read is live per request, so a grant or a withdrawal reaches every link on
+ * its next load, including links minted before it.
  */
 class ServiceCostReportSource(
   private val database: Database,
   private val costs: CollegeCostService,
+  private val permissions: SharingPermissionService,
 ) : CostReportSource {
   override suspend fun getByShareToken(rawToken: String): Result<CostReportOutcome> =
     try {
@@ -87,7 +97,9 @@ class ServiceCostReportSource(
       if (isAccountClosed(session, share.studentId)) {
         return@withConnection CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED)
       }
-      CostReportOutcome.Found(costs.readInSession(session, share.studentId))
+      val profile = costs.readInSession(session, share.studentId)
+      val subjectsShown = permissions.isGranted(session, share.studentId, SharingPermission.INTENDED_SUBJECTS)
+      CostReportOutcome.Found(if (subjectsShown) profile else profile.copy(programReturn = null))
     }
   }
 

@@ -4336,7 +4336,7 @@ class CollegeCostServiceTest {
 
     val fromOneFigure =
       assertIs<ProgramReturnProgram.WithFigures>(
-        ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode("5101"), mapOf(earnings.measure to earnings)),
+        ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode("5101"), "Registered Nursing.", mapOf(earnings.measure to earnings)),
         "one held figure is a program we hold figures for",
       )
     assertEquals(
@@ -4352,7 +4352,7 @@ class CollegeCostServiceTest {
 
     val fromNothing =
       assertIs<ProgramReturnProgram.NoPublishedFigures>(
-        ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode("5101"), emptyMap()),
+        ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode("5101"), "Registered Nursing.", emptyMap()),
         "a program we could stamp nothing for is [NoPublishedFigures], never an all-absent figure list",
       )
     assertEquals("5101", fromNothing.cipCode.value, "and it still names the program it is about")

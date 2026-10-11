@@ -234,18 +234,22 @@ enum SnapshotSeed {
     static func yourDetails(
         profile: PublicMoneyProfile? = nil,
         fetchResult: Result<PublicMoneyProfile?, Error>? = nil,
-        intendedSubjects: PublicIntendedSubjects = .unanswered
+        intendedSubjects: PublicIntendedSubjects = .unanswered,
+        sharing: SharingPermissionStatus = .notAsked
     ) -> some View {
         let moneyProfileClient = MockMoneyProfileClient()
         moneyProfileClient.fetchResult = fetchResult ?? .success(profile)
         let intendedSubjectsClient = MockIntendedSubjectsClient()
         intendedSubjectsClient.fetchResult = .success(intendedSubjects)
+        let sharingPermissionsClient = MockSharingPermissionsClient()
+        sharingPermissionsClient.fetchResult = .success([.intendedSubjects(sharing)])
         return NavigationStack {
             YourDetailsView(
                 moneyProfileClient: moneyProfileClient,
                 vocabularyClient: MockVocabularyClient(),
                 subjectsClient: MockSubjectsClient(),
                 intendedSubjectsClient: intendedSubjectsClient,
+                sharingPermissionsClient: sharingPermissionsClient,
                 onProfileRequired: {},
                 onMyColleges: {}
             )
@@ -1186,6 +1190,16 @@ enum SnapshotCatalogue {
             // still offered beneath it.
             SnapshotScene(name: "your-details-subjects-declined", size: SnapshotScene.tallCanvas(height: SnapshotScene.maxHeight)) {
                 AnyView(SnapshotSeed.yourDetails(intendedSubjects: .declined))
+            },
+            // The sharing control answered yes (RFC 251 §5): "Show them"
+            // selected and no never-asked line. The three scenes above carry
+            // the default, never asked, with neither segment selected.
+            SnapshotScene(name: "your-details-sharing-granted", size: SnapshotScene.tallCanvas(height: SnapshotScene.maxHeight)) {
+                AnyView(SnapshotSeed.yourDetails(
+                    profile: SnapshotSeed.mixedMoneyProfile,
+                    intendedSubjects: .answered(["nursing", "marine-biology"]),
+                    sharing: .granted
+                ))
             },
             SnapshotScene(name: "your-details-failed") {
                 AnyView(SnapshotSeed.yourDetails(

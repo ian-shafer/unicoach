@@ -29,6 +29,7 @@ final class YourDetailsSubjectsTests: XCTestCase {
             vocabularyClient: vocabularyClient,
             subjectsClient: subjectsClient,
             intendedSubjectsClient: intendedSubjectsClient,
+            sharingPermissionsClient: MockSharingPermissionsClient(),
             onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 },
             receiptDuration: .seconds(60)
         )

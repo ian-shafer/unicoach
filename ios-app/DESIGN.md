@@ -227,6 +227,13 @@ segment carries a `BrandAccent` fill with a **black** (`OnBrandAccent`) label.
 a stock grey capsule, which contradicts both §2 (no grey fills) and §3 (not a
 capsule).
 
+Bound to an optional tag, it shows **no** segment filled: the state of a
+question not yet answered. "Your details" uses this for its sharing control (RFC
+251), where never asked is the default and must not read as either answer.
+Tapping a segment answers the question; nothing un-answers it. This is the app's
+on/off control too. A stock `Toggle` is a system-green capsule and is ruled out
+for the same reasons.
+
 ### Step indicator
 
 Horizontal rail of N circles joined by a 1pt line; current step filled, the rest

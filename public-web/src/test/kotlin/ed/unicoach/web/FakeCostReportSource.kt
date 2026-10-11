@@ -14,6 +14,7 @@ import ed.unicoach.coaching.costs.CostBreakdown
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.MoneyProfileStatuses
 import ed.unicoach.coaching.costs.NetPrice
+import ed.unicoach.coaching.costs.ProgramReturn
 import ed.unicoach.coaching.costs.ScorecardVariableNames
 import ed.unicoach.coaching.costs.applicableTuitionFor
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
@@ -581,13 +582,15 @@ private fun readingOf(
 fun costProfile(
   colleges: List<CollegeCost>,
   moneyProfile: MoneyProfileStatuses = UNANSWERED_MONEY,
+  /** The major answer (RFC 231), which the report source leaves on the profile only behind a grant (RFC 251). */
+  programReturn: ProgramReturn? = null,
 ): CollegeCostProfile =
   CollegeCostProfile(
     colleges = colleges,
     unknownCollegeIds = emptyList(),
     moneyProfile = moneyProfile,
     comparisonBasis = ComparisonBasis.of(colleges, moneyProfile),
-    programReturn = null,
+    programReturn = programReturn,
   )
 
 /** A merit-aid section with its own CDS citation, the second source the page cites separately. */

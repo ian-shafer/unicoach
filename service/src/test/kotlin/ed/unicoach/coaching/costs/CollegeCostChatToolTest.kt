@@ -4682,7 +4682,7 @@ class CollegeCostChatToolTest {
     )
     val availability = college.getValue(CollegeCostChatTool.PROGRAM_AVAILABILITY_KEY).jsonObject
     assertEquals(CollegeCostChatTool.PROGRAM_NO_PROGRAM_BASIS, availability.getValue("basis").jsonPrimitive.content)
-    assertEquals(CollegeCostChatTool.PROGRAM_NO_PROGRAM_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
+    assertEquals(ProgramReturnCopy.NO_PROGRAM_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
   }
 
   /**
@@ -4754,7 +4754,7 @@ class CollegeCostChatToolTest {
       availability.getValue("basis").jsonPrimitive.content,
     )
     assertEquals(
-      CollegeCostChatTool.PROGRAM_NO_PUBLISHED_FIGURES_STATEMENT,
+      ProgramReturnCopy.NO_PUBLISHED_FIGURES_STATEMENT,
       availability.getValue("statement").jsonPrimitive.content,
     )
     // The three bases are three DIFFERENT codes, so no reader can fold two of
@@ -4805,7 +4805,7 @@ class CollegeCostChatToolTest {
     assertFalse(debt.containsKey(CollegeCostChatTool.PROGRAM_PUBLISHER_KEY), "and no publisher to stamp it with")
     val availability = debt.getValue(CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY).jsonObject
     assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_BASIS, availability.getValue("basis").jsonPrimitive.content)
-    assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
+    assertEquals(ProgramReturnCopy.NO_FIGURE_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
   }
 
   /**
@@ -4868,7 +4868,7 @@ class CollegeCostChatToolTest {
     assertFalse(earnings.containsKey(CollegeCostChatTool.PROGRAM_AMOUNT_USD_KEY), "and carries no number")
     val availability = earnings.getValue(CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY).jsonObject
     assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_BASIS, availability.getValue("basis").jsonPrimitive.content)
-    assertEquals(CollegeCostChatTool.PROGRAM_NO_FIGURE_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
+    assertEquals(ProgramReturnCopy.NO_FIGURE_STATEMENT, availability.getValue("statement").jsonPrimitive.content)
     // The other two figures answer as themselves: one row we cannot attribute
     // costs a family that row and nothing beside it.
     val debt =

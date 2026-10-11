@@ -1095,6 +1095,11 @@ data class CollegeCostProfile(
    * intended-subjects answer is not `answered`, so the section is absent and
    * the school-level median earnings and debt stay the degrade.
    *
+   * On the Family Cost Report it is ALSO null when the student has not granted
+   * `SharingPermission.INTENDED_SUBJECTS` (RFC 251): `ServiceCostReportSource`
+   * removes it. A surface may therefore never read null as "no subjects
+   * chosen" -- the two causes are deliberately indistinguishable there.
+   *
    * Present only on the profile rather than on each [CollegeCost], because the
    * wire section is keyed by SUBJECT first (subject_slug -> colleges ->
    * programs -> figures) and no per-college object can carry that order alone.

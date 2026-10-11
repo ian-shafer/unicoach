@@ -761,6 +761,58 @@ struct UpdateIntendedSubjectsRequest: Encodable, Equatable, Sendable {
     }
 }
 
+// MARK: - Sharing-permission domain models (RFC 248)
+
+/// A piece of the student's data that people they share with may be allowed to
+/// see. The raw values are the server's own (`SharingPermission.kt`), and the
+/// value is the path segment a write names.
+enum SharingPermission: String, Sendable, CaseIterable {
+    case intendedSubjects = "intended_subjects"
+}
+
+/// The two answers a student can GIVE. "Never asked" is not one of them: it is
+/// the absence of an answer, so it has no case here and cannot be written
+/// (the server refuses it with a 400 as well).
+enum SharingChoice: String, Sendable {
+    case granted
+    case refused
+}
+
+/// The status vocabulary the server READS back: the two answers plus
+/// `not_asked`, the wire word for "no answer stored".
+enum SharingPermissionStatus: String, Sendable {
+    case notAsked = "not_asked"
+    case granted
+    case refused
+}
+
+/// One permission and the student's answer to it. Both fields are raw strings
+/// with `known…` accessors, on the `PublicIntendedSubjects` precedent: a bare
+/// `enum: String, Codable` would throw on decode the day the server adds a
+/// permission or a status.
+struct PublicSharingPermission: Codable, Equatable, Sendable {
+    let permission: String
+    let status: String
+
+    var knownPermission: SharingPermission? { SharingPermission(rawValue: permission) }
+    var knownStatus: SharingPermissionStatus? { SharingPermissionStatus(rawValue: status) }
+}
+
+/// `GET /api/v1/students/me/sharing-permissions`: one entry per permission the
+/// server knows, a never-asked one included as `not_asked`.
+struct SharingPermissionsResponse: Codable, Equatable, Sendable {
+    let permissions: [PublicSharingPermission]
+}
+
+/// The `PUT /api/v1/students/me/sharing-permissions/{permission}` body.
+struct UpdateSharingPermissionRequest: Encodable, Equatable, Sendable {
+    let status: String
+
+    init(_ choice: SharingChoice) {
+        status = choice.rawValue
+    }
+}
+
 // MARK: - Subscription and coaching-usage domain models
 
 /// Body of `POST /api/v1/subscriptions/verify`: the StoreKit 2 JWS exactly as

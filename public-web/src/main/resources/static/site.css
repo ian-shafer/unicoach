@@ -392,6 +392,12 @@ main {
   font-weight: 600;
 }
 
+/* A program's published title opens its paragraph of figures by field of
+   study (RFC 251), so a reader can see which program each paragraph is about. */
+.report-program-title {
+  font-weight: 600;
+}
+
 .report-sources {
   border-top: 1px solid var(--border);
   margin-top: 2rem;

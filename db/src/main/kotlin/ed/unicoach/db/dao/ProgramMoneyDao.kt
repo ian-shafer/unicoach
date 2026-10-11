@@ -295,19 +295,25 @@ object ProgramMoneyDao {
    * `p.cip_code` is selected, so a college that runs TWO matched programs
    * answers with two members and not one: at the fixed credential level this
    * read uses, the code is the program's identity (see [SubjectProgramMatch]).
+   *
+   * Each match maps to the program's published title (`cip_title`, RFC 251), so
+   * a surface can name the program instead of reading out a code. The title is
+   * the VALUE and not part of the key: `college_programs_unique_idx` makes it a
+   * function of (college, code) at this level, and the key is the one the money
+   * rows join on ([ProgramReturnStat.match]).
    */
   fun bachelorProgramsBySubject(
     session: SqlSession,
     collegeIds: Collection<CollegeId>,
     subjectSlugs: Collection<String>,
-  ): Result<Set<SubjectProgramMatch>> {
+  ): Result<Map<SubjectProgramMatch, String>> {
     val distinctCollegeIds = collegeIds.distinct()
     val distinctSlugs = subjectSlugs.distinct()
-    if (distinctCollegeIds.isEmpty() || distinctSlugs.isEmpty()) return Result.success(emptySet())
+    if (distinctCollegeIds.isEmpty() || distinctSlugs.isEmpty()) return Result.success(emptyMap())
     val sql =
       listOf(
         SUBJECT_PREFIX_MATCH_CTE,
-        "SELECT DISTINCT w.subject_slug, p.college_id, p.cip_code",
+        "SELECT DISTINCT w.subject_slug, p.college_id, p.cip_code, p.cip_title",
         MATCHED_BACHELOR_PROGRAMS_JOIN,
         SELECTED_COLLEGES_PREDICATE,
         "ORDER BY w.subject_slug, p.college_id, p.cip_code",
@@ -321,9 +327,9 @@ object ProgramMoneyDao {
             subjectSlug = rs.getString("subject_slug"),
             collegeId = CollegeId(UUID.fromString(rs.getString("college_id"))),
             cipCode = CipCode(rs.getString("cip_code")),
-          )
+          ) to rs.getString("cip_title")
         },
-      ).map { it.toSet() }
+      ).map { it.toMap() }
   }
 
   /**

@@ -17,6 +17,7 @@ struct AuthenticatedRootView: View {
     let vocabularyClient: VocabularyClientProtocol
     let subjectsClient: SubjectsClientProtocol
     let intendedSubjectsClient: IntendedSubjectsClientProtocol
+    let sharingPermissionsClient: SharingPermissionsClientProtocol
     let supporterInviteClient: SupporterInviteClientProtocol
     let onProfileRequired: () -> Void
     let onEmailChanged: (PublicUser) async -> Void
@@ -129,6 +130,7 @@ struct AuthenticatedRootView: View {
         vocabularyClient: VocabularyClientProtocol,
         subjectsClient: SubjectsClientProtocol,
         intendedSubjectsClient: IntendedSubjectsClientProtocol,
+        sharingPermissionsClient: SharingPermissionsClientProtocol,
         coachingUsageClient: CoachingUsageClientProtocol,
         supporterInviteClient: SupporterInviteClientProtocol,
         subscriptionStore: SubscriptionStoreProtocol,
@@ -146,6 +148,7 @@ struct AuthenticatedRootView: View {
         self.vocabularyClient = vocabularyClient
         self.subjectsClient = subjectsClient
         self.intendedSubjectsClient = intendedSubjectsClient
+        self.sharingPermissionsClient = sharingPermissionsClient
         self.supporterInviteClient = supporterInviteClient
         self.onProfileRequired = onProfileRequired
         self.onEmailChanged = onEmailChanged
@@ -363,6 +366,7 @@ struct AuthenticatedRootView: View {
                 vocabularyClient: vocabularyClient,
                 subjectsClient: subjectsClient,
                 intendedSubjectsClient: intendedSubjectsClient,
+                sharingPermissionsClient: sharingPermissionsClient,
                 onProfileRequired: onProfileRequired,
                 // The college list keeps its own screen: the footer link is a
                 // push onto this same stack, not a second copy of the list.
@@ -510,6 +514,7 @@ private final class AuthenticatedRootPreviewIntendedSubjectsClient: IntendedSubj
         vocabularyClient: AuthenticatedRootPreviewVocabularyClient(),
         subjectsClient: AuthenticatedRootPreviewSubjectsClient(),
         intendedSubjectsClient: AuthenticatedRootPreviewIntendedSubjectsClient(),
+        sharingPermissionsClient: PreviewSharingPermissionsClient(),
         coachingUsageClient: PreviewCoachingUsageClient(),
         supporterInviteClient: PreviewSupporterInviteClient(),
         subscriptionStore: PreviewSubscriptionStore(),

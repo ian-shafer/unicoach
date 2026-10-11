@@ -157,3 +157,4 @@ seed-coach-system-prompt-v48.sql
 seed-coach-system-prompt-v49.sql
 create-sharing-permissions.sql
 user-auth-identities-delete-on-closed-account.sql
+seed-coach-system-prompt-v50.sql

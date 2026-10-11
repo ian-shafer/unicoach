@@ -19,6 +19,9 @@ class AppViewModel: ObservableObject {
     /// answer.
     let subjectsClient: SubjectsClientProtocol
     let intendedSubjectsClient: IntendedSubjectsClientProtocol
+    /// Whether people the student shares with may see their data (RFC 248),
+    /// read and written by "Your details" (RFC 251).
+    let sharingPermissionsClient: SharingPermissionsClientProtocol
     let googleSignInProvider: SsoSignInProviding
     let appleSignInProvider: SsoSignInProviding
     let cookieStorage: CookieStorageProtocol
@@ -112,6 +115,7 @@ class AppViewModel: ObservableObject {
         vocabularyClient: VocabularyClientProtocol? = nil,
         subjectsClient: SubjectsClientProtocol? = nil,
         intendedSubjectsClient: IntendedSubjectsClientProtocol? = nil,
+        sharingPermissionsClient: SharingPermissionsClientProtocol? = nil,
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
         supporterInviteClient: SupporterInviteClientProtocol? = nil,
         supporterClient: SupporterClientProtocol? = nil,
@@ -131,6 +135,7 @@ class AppViewModel: ObservableObject {
         self.vocabularyClient = vocabularyClient ?? VocabularyClient(apiClient: apiClient)
         self.subjectsClient = subjectsClient ?? SubjectsClient(apiClient: apiClient)
         self.intendedSubjectsClient = intendedSubjectsClient ?? IntendedSubjectsClient(apiClient: apiClient)
+        self.sharingPermissionsClient = sharingPermissionsClient ?? SharingPermissionsClient(apiClient: apiClient)
         self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)
         self.supporterInviteClient = supporterInviteClient ?? SupporterInviteClient(apiClient: apiClient)
         self.supporterClient = supporterClient ?? SupporterClient(apiClient: apiClient)

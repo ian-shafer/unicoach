@@ -2,8 +2,10 @@ package ed.unicoach.college
 
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.CalendarYear
+import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.ProgramMoneyMeasure
+import java.net.URI
 
 /**
  * The pinned Scorecard FIELD-OF-STUDY file's money columns, and everything the
@@ -95,6 +97,40 @@ object ScorecardFieldOfStudyColumns {
   val SOURCE: MoneySource = MoneySource.SCORECARD
 
   /**
+   * The College Scorecard's own data page, where a family can look up any
+   * program's figures themselves (RFC 251, brief 0011 D34).
+   *
+   * A typed constant, not a stored row: it changes only when a human edits it,
+   * so it is a fact of the code (brief 0011 D46). Checked to answer 200 on
+   * 2026-10-11. The Family Cost Report links to it once, and only when it prints
+   * a figure by field of study.
+   *
+   * Stated twice, on purpose: `bin/fetch-scorecard` holds the same URL as
+   * `DATA_PAGE_URL`, the page each release is discovered from. A Python script
+   * and the JVM cannot read each other's constant, and carrying one URL through
+   * every committed environment file costs more than a disagreement would: a
+   * stale link on the report, or a fetch that refuses loudly. No money moves.
+   * Edit both.
+   */
+  val DATA_PAGE: URI = URI.create("https://collegescorecard.ed.gov/data/")
+
+  /**
+   * Who published a field-of-study figure: the agency that holds the records
+   * the figure is computed from.
+   *
+   * An enumeration rather than free text, so the words a family is told for
+   * each publisher are decided at one exhaustive `when` and a new publisher
+   * cannot reach a page unnamed.
+   */
+  enum class FieldOfStudyPublisher(
+    /** The publisher's own word for itself, as the data dictionary names it ("NSLDS") -- never spoken to a family. */
+    val word: String,
+  ) {
+    TREASURY("Treasury"),
+    NSLDS("NSLDS"),
+  }
+
+  /**
    * One field-of-study money variable, and everything true of EVERY row that
    * carries it.
    *
@@ -108,8 +144,15 @@ object ScorecardFieldOfStudyColumns {
     val sourceVariable: String,
     /** Which stored measure the cell becomes. */
     val measure: ProgramMoneyMeasure,
-    /** Who published the figure, in the publisher's own word for itself. */
-    val publisher: String,
+    /** Who published the figure. */
+    val publishedBy: FieldOfStudyPublisher,
+    /**
+     * What KIND of number the figure is (RFC 191). Every field-of-study figure
+     * is computed from federal loan or tax records, so it covers only students
+     * who received federal aid -- [AssuranceTier.ADMINISTRATIVE_RECORD], whose
+     * own description names NSLDS and Treasury.
+     */
+    val assuranceTier: AssuranceTier,
     /** The FIRST academic year the cohort pools, as its start year. */
     val cohortFirstYear: AcademicYear,
     /** The LAST academic year the cohort pools, as its start year; never earlier than the first. */
@@ -133,6 +176,9 @@ object ScorecardFieldOfStudyColumns {
      */
     val inflationBaseYear: CalendarYear?,
   ) {
+    /** Who published the figure, in the publisher's own word for itself. */
+    val publisher: String get() = publishedBy.word
+
     init {
       require(cohortLastYear >= cohortFirstYear) {
         "[$sourceVariable] pools [${cohortFirstYear.label}]..[${cohortLastYear.label}]: a cohort cannot end before it starts"
@@ -153,7 +199,8 @@ object ScorecardFieldOfStudyColumns {
     FieldOfStudyVariable(
       sourceVariable = EARN_MDN_4YR,
       measure = ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY,
-      publisher = "Treasury",
+      publishedBy = FieldOfStudyPublisher.TREASURY,
+      assuranceTier = AssuranceTier.ADMINISTRATIVE_RECORD,
       cohortFirstYear = AcademicYear(2017),
       cohortLastYear = AcademicYear(2018),
       publisherCohortCell =
@@ -167,7 +214,8 @@ object ScorecardFieldOfStudyColumns {
     FieldOfStudyVariable(
       sourceVariable = DEBT_ALL_STGP_EVAL_MDN,
       measure = ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION,
-      publisher = "NSLDS",
+      publishedBy = FieldOfStudyPublisher.NSLDS,
+      assuranceTier = AssuranceTier.ADMINISTRATIVE_RECORD,
       cohortFirstYear = AcademicYear(2018),
       cohortLastYear = AcademicYear(2019),
       publisherCohortCell = "NSLDS pooled AY2018-19, AY2019-20 cohort",
@@ -185,7 +233,8 @@ object ScorecardFieldOfStudyColumns {
     FieldOfStudyVariable(
       sourceVariable = DEBT_ALL_STGP_EVAL_MDN10YRPAY,
       measure = ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT,
-      publisher = "NSLDS",
+      publishedBy = FieldOfStudyPublisher.NSLDS,
+      assuranceTier = AssuranceTier.ADMINISTRATIVE_RECORD,
       cohortFirstYear = AcademicYear(2018),
       cohortLastYear = AcademicYear(2019),
       publisherCohortCell = "NSLDS pooled AY2018-19, AY2019-20 cohort",

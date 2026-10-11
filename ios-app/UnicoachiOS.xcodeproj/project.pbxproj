@@ -27,12 +27,15 @@
 		EF2444000000000000000B05 /* SupporterCoachingUsageClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */; };
 		CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000009F /* YourDetailsSubjectsTests.swift */; };
 		CC20500000000000000008B /* SubjectsClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000008F /* SubjectsClientTests.swift */; };
+		CC25100000000000000003B /* YourDetailsSharingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC25100000000000000003F /* YourDetailsSharingTests.swift */; };
+		CC25100000000000000002B /* SharingPermissionsClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC25100000000000000002F /* SharingPermissionsClientTests.swift */; };
 		CC20500000000000000007B /* SubjectPickerViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000007F /* SubjectPickerViewModelTests.swift */; };
 		CC20500000000000000006B /* DSSubjectsRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000006F /* DSSubjectsRowTests.swift */; };
 		CC20500000000000000005B /* MockSubjectClients.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000005F /* MockSubjectClients.swift */; };
 		CC20500000000000000004B /* SubjectPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000004F /* SubjectPickerSheet.swift */; };
 		CC20500000000000000003B /* SubjectPickerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000003F /* SubjectPickerViewModel.swift */; };
 		CC20500000000000000002B /* IntendedSubjectsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000002F /* IntendedSubjectsClient.swift */; };
+		CC25100000000000000001B /* SharingPermissionsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC25100000000000000001F /* SharingPermissionsClient.swift */; };
 		CC20500000000000000001B /* SubjectsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000001F /* SubjectsClient.swift */; };
 		DDDD00010000000000000B01 /* GoogleSignInProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00010000000000000F01 /* GoogleSignInProvider.swift */; };
 		DDDD00010000000000000B02 /* GoogleSignInButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00010000000000000F02 /* GoogleSignInButton.swift */; };
@@ -195,12 +198,15 @@
 		EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingUsageClientTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000009F /* YourDetailsSubjectsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsSubjectsTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000008F /* SubjectsClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectsClientTests.swift; sourceTree = "<group>"; };
+		CC25100000000000000003F /* YourDetailsSharingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsSharingTests.swift; sourceTree = "<group>"; };
+		CC25100000000000000002F /* SharingPermissionsClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SharingPermissionsClientTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000007F /* SubjectPickerViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerViewModelTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000006F /* DSSubjectsRowTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DSSubjectsRowTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000005F /* MockSubjectClients.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockSubjectClients.swift; sourceTree = "<group>"; };
 		CC20500000000000000004F /* SubjectPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerSheet.swift; sourceTree = "<group>"; };
 		CC20500000000000000003F /* SubjectPickerViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectPickerViewModel.swift; sourceTree = "<group>"; };
 		CC20500000000000000002F /* IntendedSubjectsClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IntendedSubjectsClient.swift; sourceTree = "<group>"; };
+		CC25100000000000000001F /* SharingPermissionsClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SharingPermissionsClient.swift; sourceTree = "<group>"; };
 		CC20500000000000000001F /* SubjectsClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectsClient.swift; sourceTree = "<group>"; };
 		DDDD00010000000000000F01 /* GoogleSignInProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInProvider.swift; sourceTree = "<group>"; };
 		DDDD00010000000000000F02 /* GoogleSignInButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInButton.swift; sourceTree = "<group>"; };
@@ -384,6 +390,7 @@
 				CC20500000000000000004F /* SubjectPickerSheet.swift */,
 				CC20500000000000000003F /* SubjectPickerViewModel.swift */,
 				CC20500000000000000002F /* IntendedSubjectsClient.swift */,
+				CC25100000000000000001F /* SharingPermissionsClient.swift */,
 				CC20500000000000000001F /* SubjectsClient.swift */,
 				6BA3C895E84184F93D916BB5 /* Models.swift */,
 				6825BBE278E8DA9E9B075B91 /* AuthClient.swift */,
@@ -492,6 +499,8 @@
 				EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */,
 				CC20500000000000000009F /* YourDetailsSubjectsTests.swift */,
 				CC20500000000000000008F /* SubjectsClientTests.swift */,
+				CC25100000000000000003F /* YourDetailsSharingTests.swift */,
+				CC25100000000000000002F /* SharingPermissionsClientTests.swift */,
 				CC20500000000000000007F /* SubjectPickerViewModelTests.swift */,
 				CC20500000000000000006F /* DSSubjectsRowTests.swift */,
 				CC20500000000000000005F /* MockSubjectClients.swift */,
@@ -698,6 +707,7 @@
 				CC20500000000000000004B /* SubjectPickerSheet.swift in Sources */,
 				CC20500000000000000003B /* SubjectPickerViewModel.swift in Sources */,
 				CC20500000000000000002B /* IntendedSubjectsClient.swift in Sources */,
+				CC25100000000000000001B /* SharingPermissionsClient.swift in Sources */,
 				CC20500000000000000001B /* SubjectsClient.swift in Sources */,
 				F42153F746F1877B7A2463BD /* Models.swift in Sources */,
 				7FADE3CF9342DBBA420151F0 /* AuthClient.swift in Sources */,
@@ -791,6 +801,8 @@
 				EF2410000000000000000B09 /* SupporterClientTests.swift in Sources */,
 				CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */,
 				CC20500000000000000008B /* SubjectsClientTests.swift in Sources */,
+				CC25100000000000000003B /* YourDetailsSharingTests.swift in Sources */,
+				CC25100000000000000002B /* SharingPermissionsClientTests.swift in Sources */,
 				CC20500000000000000007B /* SubjectPickerViewModelTests.swift in Sources */,
 				CC20500000000000000006B /* DSSubjectsRowTests.swift in Sources */,
 				CC20500000000000000005B /* MockSubjectClients.swift in Sources */,

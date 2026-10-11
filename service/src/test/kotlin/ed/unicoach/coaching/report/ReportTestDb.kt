@@ -32,7 +32,14 @@ object ReportTestDb {
 
   /** Truncates every table the share path touches; each suite calls this from `@BeforeEach`. */
   fun reset() {
-    CoachingTestDb.truncate("share_events", "cost_report_shares", "students", "users")
+    CoachingTestDb.truncate(
+      "share_events",
+      "cost_report_shares",
+      "sharing_permissions_versions",
+      "sharing_permissions",
+      "students",
+      "users",
+    )
   }
 
   fun createStudent(label: String = "report"): StudentId = CoachingTestDb.createStudent(label)

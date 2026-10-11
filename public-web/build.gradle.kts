@@ -36,6 +36,10 @@ dependencies {
   // RFC 209's ONE `students` INSERT (StudentRowFixture), the same dependency
   // :admin-web, :rest-server, :service and :college already carry.
   testImplementation(testFixtures(project(":db")))
+  // RFC 251: the figure-comparison word list (FIGURE_COMPARISON_WORDS) the
+  // report page is now checked against, and the field-of-study registry the
+  // page's program fixtures are built from.
+  testImplementation(testFixtures(project(":college")))
 }
 
 tasks.withType<Test> {

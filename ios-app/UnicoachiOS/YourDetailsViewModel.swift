@@ -181,6 +181,27 @@ private extension DSSubjectChip {
     var subjectSlug: String { id }
 }
 
+/// The student's answer to "may people you share with see what you want to
+/// study?" (RFC 251 §5), as the control renders it.
+///
+/// `notAsked` is a case of its own rather than a `nil` choice because it is
+/// the default every student starts in and the screen SAYS it, while
+/// `unreadable` — a status this build has no case for, or no entry for the
+/// permission at all — says nothing: printing "nobody sees them" over a grant
+/// this build merely cannot read would be the false statement this screen
+/// exists to avoid.
+enum SharingAnswer: Equatable {
+    case notAsked
+    case chosen(SharingChoice)
+    case unreadable
+
+    /// The segment the control shows selected, or `nil` for none.
+    var choice: SharingChoice? {
+        guard case .chosen(let choice) = self else { return nil }
+        return choice
+    }
+}
+
 @MainActor
 final class YourDetailsViewModel: ObservableObject {
     @Published private(set) var state: YourDetailsState = .loading
@@ -229,10 +250,19 @@ final class YourDetailsViewModel: ObservableObject {
     /// nobody chose is not.
     private var writingSubjects = false
 
+    /// Whether people the student shares with may see their subjects (RFC 251
+    /// §5). Off until the student says yes: `notAsked` hides them exactly as
+    /// `refused` does.
+    @Published private(set) var sharingAnswer: SharingAnswer = .notAsked
+
+    /// True while a permission write is open — the `writingSubjects` rule.
+    private var writingSharing = false
+
     private let moneyProfileClient: MoneyProfileClientProtocol
     private let vocabularyClient: VocabularyClientProtocol
     private let subjectsClient: SubjectsClientProtocol
     private let intendedSubjectsClient: IntendedSubjectsClientProtocol
+    private let sharingPermissionsClient: SharingPermissionsClientProtocol
     private let onProfileRequired: () -> Void
     private let receiptDuration: Duration
     private var receiptTask: Task<Void, Never>?
@@ -245,6 +275,7 @@ final class YourDetailsViewModel: ObservableObject {
         vocabularyClient: VocabularyClientProtocol,
         subjectsClient: SubjectsClientProtocol,
         intendedSubjectsClient: IntendedSubjectsClientProtocol,
+        sharingPermissionsClient: SharingPermissionsClientProtocol,
         onProfileRequired: @escaping () -> Void,
         receiptDuration: Duration = .seconds(3)
     ) {
@@ -252,6 +283,7 @@ final class YourDetailsViewModel: ObservableObject {
         self.vocabularyClient = vocabularyClient
         self.subjectsClient = subjectsClient
         self.intendedSubjectsClient = intendedSubjectsClient
+        self.sharingPermissionsClient = sharingPermissionsClient
         self.onProfileRequired = onProfileRequired
         self.receiptDuration = receiptDuration
     }
@@ -269,8 +301,10 @@ final class YourDetailsViewModel: ObservableObject {
         async let vocabularies = fetchVocabularies()
         async let subjectListReachable = fetchSubjectListReachability()
         async let subjectsOutcome = fetchIntendedSubjects()
+        async let sharingOutcome = fetchSharingPermissions()
         let profile = await profileOutcome
         let subjects = await subjectsOutcome
+        let sharing = await sharingOutcome
 
         // The vocabularies are applied FIRST and unconditionally: `adopt` selects
         // each picker by matching the stored wire value against these option
@@ -279,71 +313,75 @@ final class YourDetailsViewModel: ObservableObject {
         applyVocabularies(await vocabularies)
         subjectsAvailability = await subjectListReachable ? .available : .unavailable
 
-        // Either read failing fails the screen, and for the same reason: this
-        // screen's whole job is to show what unicoach believes about a family,
-        // and a screen that renders "Not answered yet" over an answer it merely
-        // could not read tells them something false. The LIST is different —
-        // that degrades, because it is a menu and not an answer.
+        // Any of the three answer reads failing fails the screen, and for the
+        // same reason: this screen's whole job is to show what unicoach
+        // believes about a family, and a screen that renders "Not answered yet"
+        // over an answer it merely could not read tells them something false.
+        // The LIST is different — that degrades, because it is a menu and not
+        // an answer.
         //
         // Both outcomes are already typed, so they are SWITCHED rather than
         // re-thrown: `student_profile_required` is a state this screen expects
         // — the student has no profile yet, so this screen is the wrong one —
         // and routing on it here keeps it out of the error channel entirely.
-        // The profile is named first in the failure patterns so that when both
-        // reads failed, the profile's error is the one shown.
-        switch (profile, subjects) {
-        case (.success(let loadedProfile), .success(let loadedSubjects)):
+        // The profile is named first in the failure patterns so that when
+        // several reads failed, the profile's error is the one shown. The
+        // sharing permission is an answer in the same sense (RFC 251 §5):
+        // showing "nobody sees them" over an unread grant would be false.
+        switch (profile, subjects, sharing) {
+        case (.success(let loadedProfile), .success(let loadedSubjects), .success(let loadedSharing)):
             adopt(MoneyProfileAnswers(profile: loadedProfile))
             adopt(loadedSubjects)
-        case (.failure(let error), _) where error.knownCode == .studentProfileRequired,
-             (_, .failure(let error)) where error.knownCode == .studentProfileRequired:
+            adopt(sharing: loadedSharing)
+        case (.failure(let error), _, _) where error.knownCode == .studentProfileRequired,
+             (_, .failure(let error), _) where error.knownCode == .studentProfileRequired,
+             (_, _, .failure(let error)) where error.knownCode == .studentProfileRequired:
             onProfileRequired()
-        case (.failure(let error), _), (_, .failure(let error)):
+        case (.failure(let error), _, _), (_, .failure(let error), _), (_, _, .failure(let error)):
             state = .failed(error)
         }
     }
 
-    private func fetchProfile() async -> Result<PublicMoneyProfile?, ErrorResponse> {
+    /// One answer read for `load`: the value, or the error the screen fails on.
+    ///
+    /// Every failure is logged HERE, not where the screen decides what to
+    /// show: when several reads fail, `load`'s tuple pattern binds only the
+    /// first — deliberately, the profile's error is the one shown — so the
+    /// others would otherwise vanish with no trace anywhere, which is the worst
+    /// case for diagnosing a report from a student. Errors the client layer did
+    /// not convert are logged with their cause, because `.unexpected` carries
+    /// none and this is the last place the real one is in hand.
+    private func readAnswer<Answer>(
+        _ what: String,
+        _ read: () async throws -> Answer
+    ) async -> Result<Answer, ErrorResponse> {
         do {
-            return .success(try await moneyProfileClient.fetch())
+            return .success(try await read())
         } catch let error as ErrorResponse {
-            // Logged HERE, not where the screen decides what to show. `load`
-            // reads both this and the subjects, and when BOTH fail its tuple
-            // pattern binds only the first — deliberately, the profile's error
-            // is the one shown — so the other error would otherwise vanish with
-            // no trace anywhere, which is the worst case for diagnosing a
-            // report from a student.
             logger.error("""
-                Money profile read failed: code=[\(error.code, privacy: .public)] \
+                \(what, privacy: .public) read failed: code=[\(error.code, privacy: .public)] \
                 status=[\(error.status ?? -1, privacy: .public)]
                 """)
             return .failure(error)
         } catch {
-            // Only errors the client layer did not convert reach here, and
-            // `.unexpected` carries no cause, so this is the last place the
-            // real one is in hand.
-            logger.error("Money profile read failed (unexpected): [\(error, privacy: .public)]")
+            logger.error("\(what, privacy: .public) read failed (unexpected): [\(error, privacy: .public)]")
             return .failure(.unexpected)
         }
+    }
+
+    private func fetchProfile() async -> Result<PublicMoneyProfile?, ErrorResponse> {
+        await readAnswer("Money profile") { try await moneyProfileClient.fetch() }
     }
 
     /// Reads the student's stored answer. Failure fails the screen, like the
     /// profile read — see `load`.
     private func fetchIntendedSubjects() async -> Result<PublicIntendedSubjects, ErrorResponse> {
-        do {
-            return .success(try await intendedSubjectsClient.fetch())
-        } catch let error as ErrorResponse {
-            // Logged for the same reason as the profile read above: when both
-            // reads fail, this is the one the screen does NOT show.
-            logger.error("""
-                Intended subjects read failed: code=[\(error.code, privacy: .public)] \
-                status=[\(error.status ?? -1, privacy: .public)]
-                """)
-            return .failure(error)
-        } catch {
-            logger.error("Intended subjects read failed (unexpected): [\(error, privacy: .public)]")
-            return .failure(.unexpected)
-        }
+        await readAnswer("Intended subjects") { try await intendedSubjectsClient.fetch() }
+    }
+
+    /// Reads the sharing permissions. Failure fails the screen — see `load`.
+    private func fetchSharingPermissions() async -> Result<[PublicSharingPermission], ErrorResponse> {
+        await readAnswer("Sharing permissions") { try await sharingPermissionsClient.fetch() }
     }
 
     /// Whether the subject list could be reached, once, at load.
@@ -581,20 +619,8 @@ final class YourDetailsViewModel: ObservableObject {
         writingSubjects = true
         defer { writingSubjects = false }
 
-        actionError = nil
-        do {
+        await performWrite("Intended subjects") {
             adopt(try await intendedSubjectsClient.update(UpdateIntendedSubjectsRequest(answer)))
-        } catch let error as ErrorResponse {
-            // The routing signal, not an error to show — the money writes'
-            // rule, for the same reason.
-            if error.knownCode == .studentProfileRequired {
-                onProfileRequired()
-                return
-            }
-            actionError = error
-        } catch {
-            logger.error("Intended subjects write failed (unexpected): [\(error, privacy: .public)]")
-            actionError = .unexpected
         }
     }
 
@@ -631,6 +657,56 @@ final class YourDetailsViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Writes: who can see what you want to study (RFC 251)
+
+    /// Answers the sharing question. Only `granted` or `refused` can be sent —
+    /// "never asked" is not an answer, so nothing here can write it.
+    ///
+    /// Choosing the answer already stored sends nothing. A write while another
+    /// is open is dropped, for the reason `writingSubjects` exists. A failed
+    /// write leaves the STORED answer on the control: for a consent, showing a
+    /// choice the server never recorded would say something false about who
+    /// can see the student's subjects.
+    func answerSharing(_ choice: SharingChoice) async {
+        guard !writingSharing, sharingAnswer != .chosen(choice) else { return }
+        writingSharing = true
+        defer { writingSharing = false }
+
+        await performWrite(
+            "Sharing permission (permission=\(SharingPermission.intendedSubjects.rawValue) status=\(choice.rawValue))"
+        ) {
+            adopt(sharing: [try await sharingPermissionsClient.update(.intendedSubjects, to: choice)])
+        }
+    }
+
+    /// The one place a stored permission becomes the control's state. Only the
+    /// intended-subjects entry is read; a permission this build does not know
+    /// is someone else's question. Exactly one entry is an answer: none, two
+    /// (even agreeing), or a status this build has no case for is `unreadable`
+    /// and logged with what arrived — never "not asked", and never whichever
+    /// of two conflicting entries came first.
+    private func adopt(sharing permissions: [PublicSharingPermission]) {
+        let entries = permissions.filter { $0.knownPermission == .intendedSubjects }
+        let entry = entries.count == 1 ? entries[0] : nil
+        switch entry?.knownStatus {
+        case .notAsked:
+            sharingAnswer = .notAsked
+        case .granted:
+            sharingAnswer = .chosen(.granted)
+        case .refused:
+            sharingAnswer = .chosen(.refused)
+        case .none:
+            let received = permissions.map { "\($0.permission)=\($0.status)" }.joined(separator: ",")
+            logger.error("""
+                Unusable sharing permission, shown with NO answer: \
+                permission=[\(SharingPermission.intendedSubjects.rawValue, privacy: .public)] \
+                entries=[\(entries.count, privacy: .public)] \
+                received=[\(received, privacy: .public)]
+                """)
+            sharingAnswer = .unreadable
+        }
+    }
+
     /// Claims a field for one write, or reports that one is already open. A
     /// second action on the same field is dropped here — the request itself is
     /// an absolute per-field statement and is safe to repeat; what is not safe
@@ -646,26 +722,33 @@ final class YourDetailsViewModel: ObservableObject {
     private func send(_ field: MoneyProfileField, _ request: UpdateMoneyProfileRequest) async {
         defer { writing.remove(field) }
 
-        actionError = nil
         clearReceipt()
-        do {
-            let profile = try await moneyProfileClient.update(request)
-            adopt(MoneyProfileAnswers(profile: profile))
+        await performWrite("Money profile (field=\(field.rawValue))") {
+            adopt(MoneyProfileAnswers(profile: try await moneyProfileClient.update(request)))
             showReceipt(field)
+        }
+    }
+
+    /// Runs one write on this screen and routes its failure by the screen's
+    /// one rule. `student_profile_required` is a routing signal, not an error
+    /// to show: the account has no student row yet, which the root state
+    /// machine — not this screen — knows how to resolve (the
+    /// `CollegeListViewModel` precedent). Any other `ErrorResponse` is shown;
+    /// anything else is logged as `what` with its cause and shown as
+    /// `.unexpected`. Only a `200` moves state: `write` adopts the server's
+    /// answer itself.
+    private func performWrite(_ what: String, _ write: () async throws -> Void) async {
+        actionError = nil
+        do {
+            try await write()
         } catch let error as ErrorResponse {
-            // A routing signal, not an error to show: the account has no
-            // student row yet, which the root state machine — not this screen —
-            // knows how to resolve (the `CollegeListViewModel` precedent).
             if error.knownCode == .studentProfileRequired {
                 onProfileRequired()
                 return
             }
             actionError = error
         } catch {
-            logger.error("""
-                Money profile write failed (unexpected): [\(error, privacy: .public)] \
-                field=[\(field.rawValue, privacy: .public)]
-                """)
+            logger.error("\(what, privacy: .public) write failed (unexpected): [\(error, privacy: .public)]")
             actionError = .unexpected
         }
     }

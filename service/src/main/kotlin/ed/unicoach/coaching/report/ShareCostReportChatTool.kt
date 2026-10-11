@@ -1,9 +1,16 @@
 package ed.unicoach.coaching.report
 
+import ed.unicoach.coaching.SharingPermissionCopy
 import ed.unicoach.coaching.StudentScopedChatTool
+import ed.unicoach.coaching.UpdateSharingPermissionChatTool
 import ed.unicoach.coaching.noArgumentToolDefinition
+import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.IntendedSubjectAnswer
+import ed.unicoach.db.models.SharingPermission
+import ed.unicoach.db.models.SharingPermissionStatus
 import ed.unicoach.db.models.StudentId
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -16,12 +23,22 @@ import org.slf4j.LoggerFactory
  * sentence about who can see it.
  *
  * Total by the [ed.unicoach.chat.ChatTool] contract: a malformed call or a failed
- * write returns a structured `{ "error": ... }` object, never a throw. A thin
- * adapter by design — minting, revocation and the link shape live in
- * [CostReportShareService].
+ * write returns a structured `{ "error": ... }` object, never a throw. Minting,
+ * revocation and the link shape live in [CostReportShareService]; the one
+ * decision made here is what the result says about the student's subjects
+ * ([SubjectsConsent], RFC 251).
+ *
+ * The reach sentence is TRUE FOR THE STUDENT'S STATE (RFC 251): with a grant of
+ * [SharingPermission.INTENDED_SUBJECTS] the page also shows the subjects, so
+ * the sentence says so. Both answers are read BEFORE a link is minted. A failed
+ * permission read is a failed share: a reach sentence this tool cannot state
+ * truthfully is not a link handed over with a guess beside it. A failed subjects
+ * read decides only the ask, so the link is minted without `your_subjects`.
  */
 class ShareCostReportChatTool(
   private val service: CostReportShareService,
+  private val readPermissions: suspend (StudentId) -> Result<Map<SharingPermission, SharingPermissionStatus?>>,
+  private val readSubjects: suspend (StudentId) -> Result<IntendedSubjectAnswer>,
 ) : StudentScopedChatTool() {
   override val name: String = TOOL_NAME
 
@@ -35,6 +52,9 @@ class ShareCostReportChatTool(
   ): JsonObject {
     unknownFieldsReason(input, emptySet())?.let { return errorObject(it) }
 
+    val subjectsPermission = subjectsPermissionOf(studentId).getOrElse { return errorObject("cost report share failed") }
+    val consent = subjectsConsentOf(subjectsPermission, subjectsOf(studentId))
+
     val outcome =
       service
         .share(studentId)
@@ -45,13 +65,23 @@ class ShareCostReportChatTool(
 
     // A pure router: each branch is one named step, one level down.
     return when (outcome) {
-      is ShareCostReportOutcome.Link -> sharedLink(outcome)
+      is ShareCostReportOutcome.Link -> sharedLink(outcome, subjectsPermission, consent)
       ShareCostReportOutcome.Unavailable -> sharingUnavailable()
     }
   }
 
-  /** The link handed over, with the sentences that must ride with it every time. */
-  private fun sharedLink(link: ShareCostReportOutcome.Link): JsonObject {
+  /**
+   * The link handed over, with the sentences that must ride with it every time.
+   *
+   * [subjectsPermission] is the student's answer, null when never asked, and
+   * decides only the reach sentence; [consent] is what the result says about
+   * the student's subjects, already classified by [subjectsConsentOf].
+   */
+  private fun sharedLink(
+    link: ShareCostReportOutcome.Link,
+    subjectsPermission: SharingPermissionStatus?,
+    consent: SubjectsConsent,
+  ): JsonObject {
     // Minted now, or handed back for the second time? The coach says "same link
     // as before" rather than implying the old one has been replaced. BOTH wire
     // keys are decided by ONE exhaustive `when` over the three cases: written as
@@ -81,12 +111,99 @@ class ShareCostReportChatTool(
         put(URL_KEY, link.url)
         put("newly_created", newlyCreated)
         put("live_report", LIVE_REPORT)
-        put("who_can_see", WHO_CAN_SEE)
+        put("who_can_see", whoCanSeeOf(subjectsPermission))
         put("previous_link_no_longer_works", reissued)
         if (reissued) put("previous_link_note", PREVIOUS_LINK_NOTE)
+        putYourSubjects(consent)
       }
     }
   }
+
+  /** The `your_subjects` field: absent with nothing to show, the ask while never answered, else the answer. */
+  private fun JsonObjectBuilder.putYourSubjects(consent: SubjectsConsent) {
+    when (consent) {
+      SubjectsConsent.NothingToShow -> {
+        Unit
+      }
+
+      SubjectsConsent.Ask -> {
+        putJsonObject(YOUR_SUBJECTS_KEY) {
+          put(PERMISSION_KEY, SharingPermissionStatus.NOT_ASKED_WIRE)
+          put(ASK_KEY, SharingPermissionCopy.CONSENT_WORDS)
+        }
+      }
+
+      is SubjectsConsent.Answered -> {
+        putJsonObject(YOUR_SUBJECTS_KEY) { put(PERMISSION_KEY, consent.status.value) }
+      }
+    }
+  }
+
+  /** The student's answer about showing their subjects, null when never asked; a failed read is logged here. */
+  private suspend fun subjectsPermissionOf(studentId: StudentId): Result<SharingPermissionStatus?> =
+    readPermissions(studentId)
+      .map { it[SharingPermission.INTENDED_SUBJECTS] }
+      .onFailure { e -> logger.warn("tool [{}] sharing permission read failed for student=[{}]", TOOL_NAME, studentId.value, e) }
+
+  /** The student's intended-subjects answer; a failed read is logged here and classified by [subjectsConsentOf]. */
+  private suspend fun subjectsOf(studentId: StudentId): Result<IntendedSubjectAnswer> =
+    readSubjects(studentId)
+      .onFailure { e -> logger.warn("tool [{}] intended subjects read failed for student=[{}]", TOOL_NAME, studentId.value, e) }
+
+  /**
+   * What the share result says about the student's subjects (RFC 251).
+   * `your_subjects` rides only when there ARE stored subjects -- with none, the
+   * answer changes nothing on the page -- and carries the ask only while the
+   * student has never answered, so the store, not the model's memory, is what
+   * makes the coach ask once.
+   */
+  private sealed interface SubjectsConsent {
+    /** No stored subjects, or they could not be read: the answer changes nothing, so nothing rides. */
+    data object NothingToShow : SubjectsConsent
+
+    /** Subjects stored, never asked: the coach asks, in the consent words. */
+    data object Ask : SubjectsConsent
+
+    /** Subjects stored and answered. */
+    data class Answered(
+      val status: SharingPermissionStatus,
+    ) : SubjectsConsent
+  }
+
+  /**
+   * The one classifier of the two reads. Every [AnswerStatus] is named, so a new
+   * status is a compile error here rather than a silent "nothing to show"; a
+   * failed subjects read is [SubjectsConsent.NothingToShow], deciding only the ask.
+   */
+  private fun subjectsConsentOf(
+    permission: SharingPermissionStatus?,
+    subjects: Result<IntendedSubjectAnswer>,
+  ): SubjectsConsent {
+    val answered =
+      subjects.fold(
+        onSuccess = { answer ->
+          when (answer.status) {
+            AnswerStatus.ANSWERED -> true
+
+            // No subject is stored, so a yes would change nothing on the page.
+            AnswerStatus.UNANSWERED, AnswerStatus.DECLINED, AnswerStatus.UNDECIDED -> false
+          }
+        },
+        onFailure = { false },
+      )
+    return when {
+      !answered -> SubjectsConsent.NothingToShow
+      permission == null -> SubjectsConsent.Ask
+      else -> SubjectsConsent.Answered(permission)
+    }
+  }
+
+  /** The reach sentence: only a grant adds the subjects; `null` is never asked, which shows nothing. */
+  private fun whoCanSeeOf(subjectsPermission: SharingPermissionStatus?): String =
+    when (subjectsPermission) {
+      SharingPermissionStatus.GRANTED -> WHO_CAN_SEE_WITH_SUBJECTS
+      SharingPermissionStatus.REFUSED, null -> WHO_CAN_SEE
+    }
 
   /**
    * A missing secret is a deployment state, not this student's fault, so it is a
@@ -105,10 +222,27 @@ class ShareCostReportChatTool(
 
     const val RESULT_KEY = "cost_report_share"
 
+    /** What every reach sentence ends with: no login, and the tool that takes the link back. */
+    private const val NO_LOGIN_AND_REVOKE =
+      "It needs no login. The student can revoke it at any time with ${RevokeCostReportShareChatTool.TOOL_NAME}."
+
     /** The honest description of the link's reach, spoken every time it is handed over. */
     const val WHO_CAN_SEE =
-      "Anyone with this link can see the student's college list and its cost figures. " +
-        "It needs no login. The student can revoke it at any time with revoke_cost_report_share."
+      "Anyone with this link can see the student's college list and its cost figures. $NO_LOGIN_AND_REVOKE"
+
+    /** [WHO_CAN_SEE] for a student who has said yes to showing their subjects (RFC 251). */
+    const val WHO_CAN_SEE_WITH_SUBJECTS =
+      "Anyone with this link can see the student's college list and its cost figures, and what the student " +
+        "wants to study, with what graduates of those subjects earn and owe. $NO_LOGIN_AND_REVOKE"
+
+    /** The student's answer about showing their subjects, present only when they have stored subjects. */
+    const val YOUR_SUBJECTS_KEY = "your_subjects"
+
+    /** `not_asked`, `granted` or `refused`, inside [YOUR_SUBJECTS_KEY]. */
+    const val PERMISSION_KEY = "permission"
+
+    /** The words to ask in, present only while the student has never answered. */
+    const val ASK_KEY = "ask"
 
     /** The page is not a document: the student's own list, whenever the parent opens it. */
     const val LIVE_REPORT = "This report is live - it updates as your student updates their list."
@@ -138,6 +272,9 @@ class ShareCostReportChatTool(
         "When you give the link, say plainly that anyone with the link can see it, that the report is live " +
         "and updates as the student updates their list, and that the student can revoke it at any time. " +
         "Asking again returns the same link, so a link already sent keeps working. " +
+        "If the result carries $YOUR_SUBJECTS_KEY with an $ASK_KEY, ask the student once, in those words, " +
+        "whether people they share with may see their subjects, and record the answer with " +
+        "${UpdateSharingPermissionChatTool.TOOL_NAME}; never raise it again after a no. " +
         "Do not push, do not repeat the offer, and do not treat declining as something to work around: " +
         "declining changes nothing about what you do next. " +
         "The page is live - it shows the student's list as it stands whenever it is opened."

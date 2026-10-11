@@ -187,6 +187,10 @@ DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "scorecard"
 # https://ed-public-download.scorecard.network/downloads/ is a 404, so there is
 # no directory listing to read, and the site's _payload.json carries the
 # glossary rather than the download hrefs. The HTML is the source.
+# Stated twice, on purpose: ScorecardFieldOfStudyColumns.DATA_PAGE (college/)
+# links families to this same page from the Family Cost Report. Neither runtime
+# can read the other's constant, and a one-sided edit costs a stale link or a
+# loud fetch failure, not money. Edit both.
 DATA_PAGE_URL = "https://collegescorecard.ed.gov/data/"
 # The recorded stand-in an offline (-F) run reads that page from, so the
 # discovery below is exercised by the shell harness with no network at all.

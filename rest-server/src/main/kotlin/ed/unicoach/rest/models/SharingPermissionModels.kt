@@ -25,7 +25,7 @@ enum class SharingPermissionStatusView(
   @get:JsonValue val wire: String,
 ) {
   /** The student was never asked. Never stored and cannot be written; withdrawing is [REFUSED]. */
-  NOT_ASKED("not_asked"),
+  NOT_ASKED(SharingPermissionStatus.NOT_ASKED_WIRE),
   GRANTED(SharingPermissionStatus.GRANTED.value),
   REFUSED(SharingPermissionStatus.REFUSED.value),
   ;

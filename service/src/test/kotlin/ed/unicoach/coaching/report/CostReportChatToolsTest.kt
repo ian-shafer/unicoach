@@ -1,8 +1,15 @@
 package ed.unicoach.coaching.report
 
+import ed.unicoach.coaching.SharingPermissionCopy
+import ed.unicoach.coaching.SharingPermissionService
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.report.ReportTestDb.SHARE_URL_BASE
 import ed.unicoach.coaching.report.ReportTestDb.serviceWith
+import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.IntendedSubjectAnswer
+import ed.unicoach.db.models.IntendedSubjectName
+import ed.unicoach.db.models.SharingPermission
+import ed.unicoach.db.models.SharingPermissionStatus
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -34,7 +41,27 @@ class CostReportChatToolsTest {
 
   private val service = serviceWith()
 
-  private val shareTool = ShareCostReportChatTool(service)
+  private val permissions = SharingPermissionService(ReportTestDb.database)
+
+  /**
+   * The share door over the real permission store and a stated subjects
+   * answer: [subjects] empty is a student who has told us none.
+   */
+  private fun shareToolWith(
+    shares: CostReportShareService = service,
+    subjects: List<IntendedSubjectName> = emptyList(),
+  ) = ShareCostReportChatTool(
+    shares,
+    permissions::read,
+    { studentId ->
+      val status = if (subjects.isEmpty()) AnswerStatus.UNANSWERED else AnswerStatus.ANSWERED
+      Result.success(IntendedSubjectAnswer(studentId, status, subjects))
+    },
+  )
+
+  private val shareTool = shareToolWith()
+
+  private val biology = listOf(IntendedSubjectName("biology", "Biology"))
   private val revokeTool = RevokeCostReportShareChatTool(service)
 
   private fun input(raw: String): JsonObject = Json.parseToJsonElement(raw).jsonObject
@@ -116,7 +143,7 @@ class CostReportChatToolsTest {
       val studentId = createStudent()
       val before = shareOf(shareTool.execute(studentId, input("{}")))
 
-      val rotated = ShareCostReportChatTool(serviceWith("a-rotated-share-token-secret-long-enough"))
+      val rotated = shareToolWith(serviceWith("a-rotated-share-token-secret-long-enough"))
       val after = shareOf(rotated.execute(studentId, input("{}")))
 
       assertNotEquals(
@@ -133,7 +160,7 @@ class CostReportChatToolsTest {
     runBlocking {
       val studentId = createStudent()
 
-      val result = ShareCostReportChatTool(serviceWith(secret = null)).execute(studentId, input("{}"))
+      val result = shareToolWith(serviceWith(secret = null)).execute(studentId, input("{}"))
 
       // A RESULT, not an error: a deployment with no secret is not a fault of
       // this student's request, and the model must be able to tell "there is
@@ -300,5 +327,119 @@ class CostReportChatToolsTest {
       assertEquals("unknown field(s): [student_id]", errorOf(stopTool.execute(studentId, input("""{"student_id": "x"}"""))))
       assertNotNull(errorOf(stopTool.execute(input("{}"))))
       assertEquals(0, optOutRows(studentId), "a refused call must record no opt-out")
+    }
+
+  @Test
+  fun `the reach sentence names the subjects only once the student has said yes`() =
+    runBlocking {
+      val studentId = createStudent()
+      val tool = shareToolWith(subjects = biology)
+
+      assertEquals(
+        ShareCostReportChatTool.WHO_CAN_SEE,
+        shareOf(tool.execute(studentId, input("{}"))).getValue("who_can_see").jsonPrimitive.content,
+        "never asked shows no subjects, so the sentence does not claim them",
+      )
+
+      permissions.set(studentId, SharingPermission.INTENDED_SUBJECTS, SharingPermissionStatus.GRANTED).getOrThrow()
+      assertEquals(
+        ShareCostReportChatTool.WHO_CAN_SEE_WITH_SUBJECTS,
+        shareOf(tool.execute(studentId, input("{}"))).getValue("who_can_see").jsonPrimitive.content,
+        "with a grant the page shows the subjects, and the sentence must say so",
+      )
+
+      permissions.set(studentId, SharingPermission.INTENDED_SUBJECTS, SharingPermissionStatus.REFUSED).getOrThrow()
+      assertEquals(
+        ShareCostReportChatTool.WHO_CAN_SEE,
+        shareOf(tool.execute(studentId, input("{}"))).getValue("who_can_see").jsonPrimitive.content,
+        "a withdrawal takes the subjects back off the sentence",
+      )
+    }
+
+  @Test
+  fun `the share result carries the ask only while a student with subjects has never answered`() =
+    runBlocking {
+      val studentId = createStudent()
+      val tool = shareToolWith(subjects = biology)
+
+      val neverAsked = shareOf(tool.execute(studentId, input("{}"))).getValue(ShareCostReportChatTool.YOUR_SUBJECTS_KEY).jsonObject
+      assertEquals(
+        SharingPermissionStatus.NOT_ASKED_WIRE,
+        neverAsked.getValue(ShareCostReportChatTool.PERMISSION_KEY).jsonPrimitive.content,
+      )
+      assertEquals(
+        SharingPermissionCopy.CONSENT_WORDS,
+        neverAsked.getValue(ShareCostReportChatTool.ASK_KEY).jsonPrimitive.content,
+        "the coach asks in the same words every grant door carries",
+      )
+
+      permissions.set(studentId, SharingPermission.INTENDED_SUBJECTS, SharingPermissionStatus.REFUSED).getOrThrow()
+      val refused = shareOf(tool.execute(studentId, input("{}"))).getValue(ShareCostReportChatTool.YOUR_SUBJECTS_KEY).jsonObject
+      assertEquals("refused", refused.getValue(ShareCostReportChatTool.PERMISSION_KEY).jsonPrimitive.content)
+      assertNull(refused[ShareCostReportChatTool.ASK_KEY], "a no is never asked again: [$refused]")
+
+      permissions.set(studentId, SharingPermission.INTENDED_SUBJECTS, SharingPermissionStatus.GRANTED).getOrThrow()
+      val granted = shareOf(tool.execute(studentId, input("{}"))).getValue(ShareCostReportChatTool.YOUR_SUBJECTS_KEY).jsonObject
+      assertEquals("granted", granted.getValue(ShareCostReportChatTool.PERMISSION_KEY).jsonPrimitive.content)
+      assertNull(granted[ShareCostReportChatTool.ASK_KEY], "a yes is not asked again either: [$granted]")
+    }
+
+  @Test
+  fun `a student with no stored subjects is not asked about showing them`() =
+    runBlocking {
+      val studentId = createStudent()
+
+      val share = shareOf(shareTool.execute(studentId, input("{}")))
+
+      assertNull(share[ShareCostReportChatTool.YOUR_SUBJECTS_KEY], "with no subjects the answer changes nothing: [$share]")
+    }
+
+  @Test
+  fun `a failed permission read mints no link`() =
+    runBlocking {
+      val studentId = createStudent()
+      val tool =
+        ShareCostReportChatTool(
+          service,
+          { Result.failure(IllegalStateException("the permission store is down")) },
+          { id -> Result.success(IntendedSubjectAnswer(id, AnswerStatus.ANSWERED, biology)) },
+        )
+
+      val result = tool.execute(studentId, input("{}"))
+
+      assertEquals("cost report share failed", errorOf(result), "a reach sentence we cannot state is a failed share")
+      assertFalse(
+        shareOf(revokeTool.execute(studentId, input("{}"))).getValue("revoked").jsonPrimitive.boolean,
+        "and no link was minted behind it",
+      )
+    }
+
+  @Test
+  fun `a failed subjects read still mints the link, with the reach sentence and without the ask`() =
+    runBlocking {
+      val studentId = createStudent()
+      permissions.set(studentId, SharingPermission.INTENDED_SUBJECTS, SharingPermissionStatus.GRANTED).getOrThrow()
+      val tool =
+        ShareCostReportChatTool(
+          service,
+          permissions::read,
+          { Result.failure(IllegalStateException("the subjects store is down")) },
+        )
+
+      val result = tool.execute(studentId, input("{}"))
+
+      assertNull(errorOf(result), "the subjects answer only decides the ask, so the share goes ahead: [$result]")
+      val share = shareOf(result)
+      assertTrue(share.getValue(StudentScopedChatTool.LINK_CREATED_KEY).jsonPrimitive.boolean, "a link was handed over")
+      assertEquals(
+        ShareCostReportChatTool.WHO_CAN_SEE_WITH_SUBJECTS,
+        share.getValue("who_can_see").jsonPrimitive.content,
+        "the reach sentence still follows the permission that was read",
+      )
+      assertNull(share[ShareCostReportChatTool.YOUR_SUBJECTS_KEY], "with the subjects unknown there is nothing to ask: [$share]")
+      assertTrue(
+        shareOf(revokeTool.execute(studentId, input("{}"))).getValue("revoked").jsonPrimitive.boolean,
+        "and the link is real: revoking it finds it",
+      )
     }
 }

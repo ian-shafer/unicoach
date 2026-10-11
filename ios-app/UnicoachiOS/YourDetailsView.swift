@@ -49,6 +49,33 @@ enum SubjectsRowCopy {
     }
 }
 
+/// The sharing control's words (RFC 251 §5). Beside `SubjectsRowCopy` because
+/// they speak about the same answer; quoted verbatim from the RFC, whose gate
+/// approved them as consent words.
+enum SharingPermissionCopy {
+    static let label = "Who can see them"
+    static let grant = "Show them"
+    static let refuse = "Keep them to me"
+
+    /// Said with the control, before any grant can be written: what a yes
+    /// reaches — links already sent included, because the report is read live
+    /// on every load — and that the coach's use does not depend on it.
+    ///
+    /// Byte-identical to `SharingPermissionCopy.CONSENT_WORDS` in
+    /// service/src/main/kotlin/ed/unicoach/coaching/SharingPermissionChatTool.kt,
+    /// the words the coach asks in. Nothing checks that the two agree: edit one
+    /// without the other and the two consent doors tell the student different
+    /// things.
+    static let caption =
+        "Off until you say yes. If you say yes, people you share with can see the subjects you chose "
+            + "and what graduates of them earn and owe — that includes anyone holding a Family Cost Report "
+            + "link you've already sent. Your coach uses them either way, and you can change this whenever you like."
+
+    /// The answer line while nothing is stored, so neither segment being
+    /// selected reads as the default it is rather than as a blank.
+    static let notAsked = "You haven't said yet, so nobody you share with sees them."
+}
+
 /// "Your details" (RFC 171): the two facts that change every number unicoach
 /// shows a family — household income band and state of residence — visible and
 /// changeable without talking to the coach.
@@ -77,6 +104,7 @@ struct YourDetailsView: View {
         vocabularyClient: VocabularyClientProtocol,
         subjectsClient: SubjectsClientProtocol,
         intendedSubjectsClient: IntendedSubjectsClientProtocol,
+        sharingPermissionsClient: SharingPermissionsClientProtocol,
         onProfileRequired: @escaping () -> Void,
         onMyColleges: @escaping () -> Void
     ) {
@@ -85,6 +113,7 @@ struct YourDetailsView: View {
             vocabularyClient: vocabularyClient,
             subjectsClient: subjectsClient,
             intendedSubjectsClient: intendedSubjectsClient,
+            sharingPermissionsClient: sharingPermissionsClient,
             onProfileRequired: onProfileRequired
         ))
         self.subjectsClient = subjectsClient
@@ -230,7 +259,47 @@ struct YourDetailsView: View {
                     )
                 }
             )
+
+            sharingControl
         }
+    }
+
+    /// Whether people the student shares with may see these subjects (RFC 251
+    /// §5). Shown whatever the subjects answer is: the permission is its own
+    /// answer, and a yes given before any subject is chosen covers the ones
+    /// chosen later.
+    ///
+    /// The tag is OPTIONAL so a student never asked sees neither segment
+    /// selected, and the setter can only ever receive `granted` or `refused` —
+    /// "never asked" cannot be written from here. The answer line sits above
+    /// the control, as every field on this screen reads its state before the
+    /// control that changes it.
+    private var sharingControl: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.sm) {
+            Text(SharingPermissionCopy.label)
+                .font(.dsLabel)
+                .foregroundStyle(Color.dsTextSecondary)
+
+            if viewModel.sharingAnswer == .notAsked {
+                Text(SharingPermissionCopy.notAsked)
+                    .font(.dsBody)
+                    .foregroundStyle(Color.dsTextPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("sharingNotAskedText")
+            }
+
+            DSCaptioned(SharingPermissionCopy.caption) {
+                SegmentedSelector(
+                    options: [
+                        (tag: SharingChoice?.some(.granted), title: SharingPermissionCopy.grant),
+                        (tag: SharingChoice?.some(.refused), title: SharingPermissionCopy.refuse),
+                    ],
+                    selection: sharingSelection,
+                    accessibilityIdentifier: "sharingSubjectsSelector"
+                )
+            }
+        }
+        .padding(.top, DSSpacing.sm)
     }
 
     /// What this screen is for, said once at the top: the two answers below are
@@ -355,15 +424,15 @@ struct YourDetailsView: View {
     ///
     /// One generic binding rather than one per field, so that rule has a single
     /// home. The key path keeps the read live, so no value is captured.
-    private func selection<Value: MoneyProfileFieldValue & Hashable>(
-        _ selected: KeyPath<YourDetailsViewModel, DetailOption<Value>?>,
-        write: @escaping (DetailOption<Value>) async -> Void
-    ) -> Binding<DetailOption<Value>?> {
+    private func selection<Choice>(
+        _ selected: KeyPath<YourDetailsViewModel, Choice?>,
+        write: @escaping (Choice) async -> Void
+    ) -> Binding<Choice?> {
         Binding(
             get: { viewModel[keyPath: selected] },
-            set: { option in
-                guard let option else { return }
-                Task { await write(option) }
+            set: { choice in
+                guard let choice else { return }
+                Task { await write(choice) }
             }
         )
     }
@@ -374,6 +443,12 @@ struct YourDetailsView: View {
 
     private var residencySelection: Binding<DetailOption<ResidencyState>?> {
         selection(\.selectedResidency) { await viewModel.answer(residency: $0) }
+    }
+
+    /// Reads the stored answer, never a hoped-for one: a failed write leaves
+    /// the segment on what the server holds.
+    private var sharingSelection: Binding<SharingChoice?> {
+        selection(\.sharingAnswer.choice) { await viewModel.answerSharing($0) }
     }
 }
 
@@ -488,6 +563,7 @@ private final class YourDetailsPreviewIntendedSubjectsClient: IntendedSubjectsCl
             vocabularyClient: YourDetailsPreviewVocabularyClient(),
             subjectsClient: YourDetailsPreviewSubjectsClient(),
             intendedSubjectsClient: YourDetailsPreviewIntendedSubjectsClient(),
+            sharingPermissionsClient: PreviewSharingPermissionsClient(),
             onProfileRequired: {},
             onMyColleges: {}
         )

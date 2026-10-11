@@ -24,6 +24,7 @@ final class YourDetailsViewModelTests: XCTestCase {
             vocabularyClient: vocabularyClient,
             subjectsClient: subjectsClient,
             intendedSubjectsClient: intendedSubjectsClient,
+            sharingPermissionsClient: MockSharingPermissionsClient(),
             onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 },
             // Long enough that no test races the receipt away; the receipt's
             // own expiry is not what these tests are about.
@@ -500,6 +501,7 @@ final class YourDetailsViewModelTests: XCTestCase {
             vocabularyClient: vocabularyClient,
             subjectsClient: subjectsClient,
             intendedSubjectsClient: intendedSubjectsClient,
+            sharingPermissionsClient: MockSharingPermissionsClient(),
             onProfileRequired: {},
             receiptDuration: receiptDuration
         )
@@ -515,7 +517,7 @@ final class YourDetailsViewModelTests: XCTestCase {
 
 /// A write held open, so a test can act on the view model while a request is
 /// genuinely in flight rather than guessing at a sleep.
-private actor WriteGate {
+actor WriteGate {
     private var isReleased = false
     private var isHeld = false
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []

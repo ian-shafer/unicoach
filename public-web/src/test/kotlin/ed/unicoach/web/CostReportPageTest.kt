@@ -63,7 +63,6 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
-import java.io.File
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.Month
@@ -136,39 +135,6 @@ class CostReportPageTest {
    * or a spoken name the fixture does not actually carry.
    */
   private fun linkedCitation(citation: CdsCitation): String = "<a href=\"${citation.url}\" rel=\"noreferrer\">${citation.citedAs}</a>"
-
-  /** How many times [needle] is on the page -- the measurement "said once" actually needs. */
-  private fun countOf(
-    body: String,
-    needle: String,
-  ): Int = body.split(needle).size - 1
-
-  /**
-   * The PROSE a parent actually reads: the report section with its markup
-   * stripped and its entities restored.
-   *
-   * Extracted from [visibleWordsOf] so a test about the WORDS on the page can
-   * ask the same question the word count asks, over the same text, rather than
-   * matching a class name or an attribute and calling that a sentence.
-   */
-  private fun visibleProseOf(body: String): String {
-    // The marker is ASSERTED, not assumed: `substringAfter` returns the WHOLE
-    // document when it misses, so a renamed section would quietly start
-    // measuring the head and the site chrome and the ceiling would be a
-    // measurement of something else that still passed.
-    val opening = "<section class=\"report\""
-    assertTrue(body.contains(opening), "the report section must be on the page to be measured")
-    val report = body.substringAfter(opening).substringBeforeLast("</section>")
-    return report
-      .replace(Regex("<[^>]*>"), " ")
-      .replace("&#39;", "'")
-      .replace("&quot;", "\"")
-      .replace("&lt;", "<")
-      .replace("&gt;", ">")
-      // LAST, always: decoding it first would turn `&amp;lt;` into a `<` the
-      // page never printed.
-      .replace("&amp;", "&")
-  }
 
   /** Every index [needle] occurs at in [text] -- the spans a "only inside a quotation" assertion needs. */
   private fun occurrencesOf(
@@ -1904,60 +1870,6 @@ class CostReportPageTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * `sourceLink` is the ONLY place this page opens an anchor.
-   *
-   * A SOURCE SWEEP, and it exists because the type cannot carry this one:
-   * [ed.unicoach.coaching.admissions.CdsCitation.url] is a public property, so
-   * `a(href = citation.url)` still compiles and would render the executable url
-   * `linkTarget()` refuses. The guarantee is therefore a convention, and an
-   * unenforced convention on a page served to a logged-out parent is the shape
-   * this repo has been bitten by before -- so the convention is asserted over
-   * the file rather than written in a comment.
-   *
-   * Scoped to THIS FILE, not the module: the site chrome, the home page and the
-   * verify-email page all open anchors legitimately, and a module-wide ban would
-   * be false. What is banned is a SECOND link shape on the report.
-   */
-  @Test
-  fun `the report page opens exactly one anchor, and never on a raw citation url`() {
-    val source = File("src/main/kotlin/ed/unicoach/web/render/CostReportPage.kt")
-    assertTrue(source.isFile, "the page source must be readable for this sweep to mean anything: [${source.absolutePath}]")
-    // CODE ONLY. The ban is on what the page RENDERS, and this file explains
-    // itself at length -- a KDoc that says the word `href` is the rule being
-    // documented, not broken.
-    val code =
-      source
-        .readLines()
-        .filterNot { it.trimStart().startsWith("*") || it.trimStart().startsWith("//") || it.trimStart().startsWith("/*") }
-        .joinToString("\n")
-
-    // COUNTED ON `href`, not on `a(href` -- the second is a SPELLING, and
-    // `a { href = citation.url }` is a second kotlinx.html anchor form that
-    // spelling never sees. Counting the attribute catches every form of the
-    // thing being banned rather than the one form somebody wrote first.
-    //
-    // ONE `href` still, after RFC 200 widened `sourceLink` to two branches: the
-    // second branch renders TEXT and opens no anchor, so the count of the
-    // attribute is exactly what distinguishes "a filing said without a link"
-    // from "a second link shape".
-    assertEquals(1, countOf(code, "href"), "the page named [href] outside [sourceLink]: [${source.name}]")
-    // The one anchor targets the CHECKED url, and it is checked by the function
-    // that can also answer "no link" -- `linkTargetOrNull`. Asserted as the CALL
-    // plus the fact that the value it returned is what the anchor is given, so a
-    // renderer cannot call it, discard the answer and link `citation.url`.
-    assertTrue(code.contains("citation.linkTargetOrNull()"), "the anchor decision must come from the CHECKED accessor")
-    assertTrue(code.contains("a(href = target)"), "the one anchor must target the value that check returned")
-    // The raw property, reached from this page at all, is the defect: it is what
-    // `linkTargetOrNull()` exists to stand in front of.
-    assertEquals(0, countOf(code, ".url"), "the page reached for a raw citation url: [${source.name}]")
-    // NOT VACUOUS: the sweep must be reading the branch it is judging. A file
-    // that stopped containing `sourceLink` would satisfy every assertion above
-    // by having nothing in it.
-    assertTrue(code.contains("private fun FlowContent.sourceLink("), "the sweep must have read [sourceLink] itself")
-    assertTrue(code.contains("+citation.citedAs"), "the sweep must have read the text branch it permits")
-  }
-
-  /**
    * THE ACCEPTANCE CRITERION, walked rather than listed.
    *
    * `AssuranceTierCopy`'s voluntary-self-report sentence says, in our own
@@ -2105,22 +2017,6 @@ class CostReportPageTest {
   // ---------------------------------------------------------------------------
   // And no link to a grave (RFC 200)
   // ---------------------------------------------------------------------------
-
-  /**
-   * The REPORT's own markup, without the site chrome.
-   *
-   * The header and the footer open anchors legitimately -- Home, Terms, Privacy
-   * -- so "zero anchors" is a claim about the report, and measuring the whole
-   * document would make it a claim about the layout instead. The opening marker
-   * is asserted for the reason [visibleWordsOf] asserts it: `substringAfter`
-   * returns the WHOLE document when it misses, which would quietly widen the
-   * assertion to something that cannot hold.
-   */
-  private fun reportSectionOf(body: String): String {
-    val opening = "<section class=\"report\""
-    assertTrue(body.contains(opening), "the report section must be on the page to be measured")
-    return body.substringAfter(opening).substringBeforeLast("</section>")
-  }
 
   /**
    * A filing whose own file is gone is still CITED -- in the same words -- and

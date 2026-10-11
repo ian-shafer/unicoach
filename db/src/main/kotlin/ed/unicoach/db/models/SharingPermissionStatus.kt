@@ -18,6 +18,12 @@ enum class SharingPermissionStatus(
   ;
 
   companion object {
+    /**
+     * The wire word for "never asked": no row, so no member. Every surface that
+     * reports the state (the REST view, the share tool's `your_subjects`) reads it here.
+     */
+    const val NOT_ASKED_WIRE = "not_asked"
+
     fun fromValue(value: String): SharingPermissionStatus? = entries.find { it.value == value }
   }
 }

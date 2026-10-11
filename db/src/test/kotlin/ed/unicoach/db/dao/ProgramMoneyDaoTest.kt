@@ -466,7 +466,7 @@ class ProgramMoneyDaoTest {
     assertEquals(1, rows.size, "two prefixes reaching one program is one match, not two: [${rows.map { it.cipCode.value }}]")
     assertEquals(
       setOf(SubjectProgramMatch("biology", collegeId, CipCode("2607"))),
-      ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), listOf("biology")).getOrThrow(),
+      ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), listOf("biology")).getOrThrow().keys,
       "and the program question answers the same way",
     )
   }
@@ -630,7 +630,7 @@ class ProgramMoneyDaoTest {
 
     assertEquals(
       setOf(SubjectProgramMatch("biology", collegeId, CipCode("2607"))),
-      ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), listOf("biology")).getOrThrow(),
+      ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), listOf("biology")).getOrThrow().keys,
       "the program question is answered by college_programs alone: a school runs the program whether or not " +
         "the publisher gave us a figure for it",
     )
@@ -653,7 +653,8 @@ class ProgramMoneyDaoTest {
       setOf(SubjectProgramMatch("nursing", bachelorCollege, CipCode("5101"))),
       ProgramMoneyDao
         .bachelorProgramsBySubject(session, listOf(bachelorCollege, associateCollege), listOf("nursing"))
-        .getOrThrow(),
+        .getOrThrow()
+        .keys,
       "an associate's program is the wrong cohort to lead with, so it is not a match",
     )
   }
@@ -672,6 +673,7 @@ class ProgramMoneyDaoTest {
       ProgramMoneyDao
         .bachelorProgramsBySubject(counting, listOf(first, second), listOf("nursing", "physics"))
         .getOrThrow()
+        .keys
 
     assertEquals(1, counting.prepared.size, "one query for the whole answer, never one per subject or college: ${counting.prepared}")
     assertEquals(
@@ -681,13 +683,30 @@ class ProgramMoneyDaoTest {
   }
 
   @Test
+  fun `the program read names each matched program by its published title`() {
+    subject("biology", "Biology", "26")
+    val collegeId = college(ipedsUnitId = 220006)
+    SubjectTaxonomyFixture.insertProgram(session, collegeId = collegeId, cipCode = "2601", cipTitle = "Biology, General.")
+    SubjectTaxonomyFixture.insertProgram(session, collegeId = collegeId, cipCode = "2613", cipTitle = "Ecology, Evolution, Systematics.")
+
+    assertEquals(
+      mapOf(
+        SubjectProgramMatch("biology", collegeId, CipCode("2601")) to "Biology, General.",
+        SubjectProgramMatch("biology", collegeId, CipCode("2613")) to "Ecology, Evolution, Systematics.",
+      ),
+      ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), listOf("biology")).getOrThrow(),
+      "each program carries its own published title, verbatim",
+    )
+  }
+
+  @Test
   fun `the program read is empty when there is nothing to ask about`() {
     subject("nursing", "Nursing", "51")
     val collegeId = college(ipedsUnitId = 220006)
     programAt(collegeId, cipCode = "5101")
 
-    assertEquals(emptySet(), ProgramMoneyDao.bachelorProgramsBySubject(session, emptyList(), listOf("nursing")).getOrThrow())
-    assertEquals(emptySet(), ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), emptyList()).getOrThrow())
+    assertEquals(emptyMap(), ProgramMoneyDao.bachelorProgramsBySubject(session, emptyList(), listOf("nursing")).getOrThrow())
+    assertEquals(emptyMap(), ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), emptyList()).getOrThrow())
   }
 
   /**
@@ -716,7 +735,7 @@ class ProgramMoneyDaoTest {
 
     assertEquals(
       setOf(SubjectProgramMatch("nursing", collegeId, CipCode("5101"))),
-      ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), listOf("nursing")).getOrThrow(),
+      ProgramMoneyDao.bachelorProgramsBySubject(session, listOf(collegeId), listOf("nursing")).getOrThrow().keys,
       "a subject the student already chose still names its programs (RFC 205 D40 is about the search)",
     )
     assertEquals(

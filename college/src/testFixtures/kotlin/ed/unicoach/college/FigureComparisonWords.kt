@@ -23,3 +23,12 @@ package ed.unicoach.college
  */
 val FIGURE_COMPARISON_WORDS: List<String> =
   listOf("higher", "lower", "less often", "more often", "gap", "worse odds")
+
+/**
+ * The [FIGURE_COMPARISON_WORDS] [text] uses AS WORDS, in any case: `lower`
+ * inside `slower` or `follower` is not a comparison, and `Higher` opening a
+ * sentence is one. The one matcher every guard reads, so the word-boundary and
+ * case rules are decided once, beside the list.
+ */
+fun figureComparisonWordsIn(text: String): List<String> =
+  FIGURE_COMPARISON_WORDS.filter { word -> Regex("""\b${Regex.escape(word)}\b""", RegexOption.IGNORE_CASE).containsMatchIn(text) }

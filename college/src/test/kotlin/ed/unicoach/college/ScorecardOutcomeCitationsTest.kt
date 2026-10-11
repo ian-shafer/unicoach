@@ -375,24 +375,22 @@ class ScorecardOutcomeCitationsTest {
    * where it is false. Measured over the pinned snapshot, the Pell figure is
    * the lower of the two at only 65.8% of institutions.
    *
-   * The scanned words are [FIGURE_COMPARISON_WORDS], the same list the coach
-   * prompt's own guard reads: one copy rule, one vocabulary.
+   * The scanned words are [FIGURE_COMPARISON_WORDS], matched by
+   * [figureComparisonWordsIn], the same list and matcher the coach prompt's own
+   * guard reads: one copy rule, one vocabulary.
    */
   @Test
   fun `no citation sentence compares its figure with another figure`() {
     for (citation in Citation.entries) {
-      for (comparison in FIGURE_COMPARISON_WORDS) {
-        // WORD boundaries, not a bare substring: `lower` is inside `slower`
-        // and `follower`, so a bare match would accuse a sentence of comparing
-        // figures when it does no such thing. The RULE is the same -- these
-        // words, as words, are forbidden in a citation's sentence.
-        assertFalse(
-          Regex("""\b${Regex.escape(comparison)}\b""").containsMatchIn(citation.citedAs),
-          "[${citation.wireKey}] compares its figure with another one using [$comparison]: two measures over " +
-            "two populations and two cohorts are two measures, and the relation between them belongs to the " +
-            "coach prompt: [${citation.citedAs}]",
-        )
-      }
+      // WORD boundaries and any case, decided once by [figureComparisonWordsIn]:
+      // `lower` is inside `slower`, so a bare match would accuse a sentence of
+      // comparing figures when it does no such thing.
+      assertEquals(
+        emptyList(),
+        figureComparisonWordsIn(citation.citedAs),
+        "[${citation.wireKey}] compares its figure with another one: two measures over two populations and two " +
+          "cohorts are two measures, and the relation between them belongs to the coach prompt: [${citation.citedAs}]",
+      )
     }
   }
 

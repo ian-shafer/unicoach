@@ -4,6 +4,7 @@ import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.SpokenAssurance
 import ed.unicoach.coaching.costs.spokenLabel
 import ed.unicoach.db.models.AssuranceTier
+import ed.unicoach.db.models.ProgramMoneyMeasure
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -22,7 +23,7 @@ class AssuranceTierGroupingTest {
     college: String,
     field: CostField = CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
     tier: AssuranceTier = AssuranceTier.ADMINISTRATIVE_RECORD,
-  ) = CoveredFigure(collegeName = college, field = field, assurance = SpokenAssurance(tier))
+  ) = CoveredFigure(collegeName = college, figure = FigureIdentity.Cost(field), assurance = SpokenAssurance(tier))
 
   @Test
   fun `one tier over three schools is one sentence, said once`() {
@@ -84,17 +85,17 @@ class AssuranceTierGroupingTest {
     // would pass on any implementation that is self-consistent, including a
     // wrong one. The published price is on two tiers on this page and the debt
     // figure is on one, and those are facts about the fixture above.
-    val ambiguous = setOf(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD)
+    val ambiguous = setOf<FigureIdentity>(FigureIdentity.Cost(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD))
     figures.forEach { covered ->
       // Case-insensitive on the label: the scope capitalises its FIRST phrase,
       // so a label that happens to open a group reads "The median ..." there and
       // "and the median ..." in another. The name is the same name either way.
       val naming =
         groups.filter { group ->
-          group.scope.lowercase().contains(covered.field.spokenLabel.lowercase()) &&
-            (covered.field !in ambiguous || group.scope.contains(covered.collegeName))
+          group.scope.lowercase().contains(covered.figure.spokenLabel.lowercase()) &&
+            (covered.figure !in ambiguous || group.scope.contains(covered.collegeName))
         }
-      assertEquals(1, naming.size, "[${covered.field.wireName}] at [${covered.collegeName}] must be named once: [$groups]")
+      assertEquals(1, naming.size, "[${covered.figure.wireName}] at [${covered.collegeName}] must be named once: [$groups]")
       assertEquals(
         covered.assurance.tier,
         naming.single().tier,
@@ -154,5 +155,32 @@ class AssuranceTierGroupingTest {
         )
       }
     }
+  }
+
+  @Test
+  fun `figures by field of study join the school's federal debt figure under one sentence`() {
+    val groups =
+      AssuranceTierGrouping.groupsOf(
+        listOf(
+          figure("Lakeshore State University"),
+          CoveredFigure(
+            collegeName = "Lakeshore State University",
+            figure = FigureIdentity.Program(ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY),
+            assurance = SpokenAssurance(AssuranceTier.ADMINISTRATIVE_RECORD),
+          ),
+          CoveredFigure(
+            collegeName = "Wynnford College",
+            figure = FigureIdentity.Program(ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION),
+            assurance = SpokenAssurance(AssuranceTier.ADMINISTRATIVE_RECORD),
+          ),
+        ),
+      )
+
+    assertEquals(1, groups.size, "one kind of number is one sentence: [$groups]")
+    assertEquals(
+      "The median federal loan debt, the median earnings by field of study and the median federal loan debt by field of study:",
+      groups.single().scope,
+      "and the scope keeps the school-wide debt apart from the program debt",
+    )
   }
 }

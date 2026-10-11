@@ -9,6 +9,7 @@ import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.CollegeResidencyBasis
+import ed.unicoach.coaching.costs.CollegeSubjectReturn
 import ed.unicoach.coaching.costs.ComparisonBasis
 import ed.unicoach.coaching.costs.ComponentRole
 import ed.unicoach.coaching.costs.CostField
@@ -16,6 +17,9 @@ import ed.unicoach.coaching.costs.CostLine
 import ed.unicoach.coaching.costs.LineOrigin
 import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.NetPrice
+import ed.unicoach.coaching.costs.ProgramReturnCollege
+import ed.unicoach.coaching.costs.ProgramReturnCopy
+import ed.unicoach.coaching.costs.ProgramReturnProgram
 import ed.unicoach.coaching.costs.ResidencyBasis
 import ed.unicoach.coaching.costs.SingleSchoolBasis
 import ed.unicoach.coaching.costs.SpokenAssurance
@@ -25,6 +29,7 @@ import ed.unicoach.coaching.costs.applicableTuitionFor
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.AssuranceTierGrouping
 import ed.unicoach.coaching.costs.canonical.CoveredFigure
+import ed.unicoach.coaching.costs.canonical.FigureIdentity
 import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
@@ -57,6 +62,7 @@ import kotlinx.html.THEAD
 import kotlinx.html.TR
 import kotlinx.html.ThScope
 import kotlinx.html.a
+import kotlinx.html.div
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.h3
@@ -416,6 +422,19 @@ private fun bandSaidAboveOf(basis: MoneyBasis): IncomeBand? =
   }
 
 /**
+ * Each school's slice of the major answer (RFC 251), re-keyed by the domain.
+ * Every slice is empty when the answer is not on the profile -- the report
+ * source removes it unless the student said yes -- and then nothing prints a
+ * word about it.
+ */
+private fun programSlicesOf(profile: CollegeCostProfile): Map<CollegeId, List<CollegeSubjectReturn>> =
+  profile.colleges.associate { it.collegeId to profile.programReturn?.forCollege(it.collegeId).orEmpty() }
+
+/** Whether any school runs a matched program: the one condition the coverage and sources sentences are said on. */
+private fun printsAProgram(programSlices: Map<CollegeId, List<CollegeSubjectReturn>>): Boolean =
+  programSlices.values.flatten().any { it.college is ProgramReturnCollege.WithPrograms }
+
+/**
  * The Family Cost Report for one student's [profile].
  *
  * Rendered through [siteLayout] with `noindex` on (D-H) so the shared chrome is
@@ -443,6 +462,9 @@ suspend fun ApplicationCall.respondCostReportPage(
   // that one fact decides both what a school section may stop saying (its
   // residency sentence) and where the blended hint is said (RFC 188).
   val basisIsThisSchool = shape is ReportShape.OneSchool
+  // Re-keyed ONCE, like the residency bases above, so no render function groups.
+  val programSlices = programSlicesOf(profile)
+  val printsAProgram = printsAProgram(programSlices)
   respondHtml {
     siteLayout(PAGE_TITLE, noindex = true, nav = nav) {
       section("report") {
@@ -469,18 +491,19 @@ suspend fun ApplicationCall.respondCostReportPage(
               residency = residencyBases.getValue(it.collegeId),
               basisIsThisSchool = basisIsThisSchool,
               bandSaidAbove = bandSaidAbove,
+              subjects = programSlices.getValue(it.collegeId),
             )
           }
         }
         // What KIND of numbers the page's prose figures are, said once for the
         // set each sentence covers (RFC 191) -- above the publishers, because a
         // reader asks what a number is before asking who published it.
-        tierKindsSection(profile.colleges)
+        tierKindsSection(profile.colleges, programSlices, printsAProgram)
         // The publishers of the figures THIS page carries, never a constant:
         // a page with no IPEDS figure on it may not claim an IPEDS source, and
         // the constant this replaced claimed the Scorecard for every figure
         // (RFC 177 D5).
-        sourcesSection(profile.moneySources)
+        sourcesSection(profile.moneySources, printsAProgram)
       }
     }
   }
@@ -726,6 +749,8 @@ private fun FlowContent.schoolSection(
    */
   basisIsThisSchool: Boolean,
   bandSaidAbove: IncomeBand?,
+  /** This school's slice of every stored subject's answer, in stored order; empty when none may be shown. */
+  subjects: List<CollegeSubjectReturn>,
 ) {
   section("report-school") {
     h2 { +cost.name }
@@ -747,7 +772,7 @@ private fun FlowContent.schoolSection(
     meritBlock(cost)
     awardGridBlocks(cost)
     nationalMeritBlocks(cost)
-    debtBlock(cost)
+    debtBlock(cost, subjects)
   }
 }
 
@@ -1820,8 +1845,15 @@ private fun baseRateSentenceOf(rows: List<PrintableMeritRow>): String {
  *
  * No figure in this section is a price, and none of it is ever subtracted from
  * one (brief 0003).
+ *
+ * The figures by field of study (RFC 251) sit BETWEEN the two: every one of
+ * them names its own publisher, and after the borrowing header they would read
+ * as the school's own Common Data Set figures.
  */
-private fun FlowContent.debtBlock(cost: CollegeCost) {
+private fun FlowContent.debtBlock(
+  cost: CollegeCost,
+  subjects: List<CollegeSubjectReturn>,
+) {
   val debt = cost.medianDebtAtCompletionUsd
   section("report-debt") {
     if (debt == null) {
@@ -1838,7 +1870,53 @@ private fun FlowContent.debtBlock(cost: CollegeCost) {
     } else {
       p { +shownDebtSentence(cost, debt) }
     }
+    programReturnBlocks(subjects)
     borrowingParagraphs(cost)
+  }
+}
+
+/**
+ * What graduates of the student's chosen subjects earn and owe at this school
+ * (RFC 251): one block per stored subject, ALL of them and in stored order, and
+ * inside it every matched program by its published title, in CIP order.
+ *
+ * Nobody's favourite: no subject or program is promoted, sorted by value,
+ * summarised or dropped. Every sentence is [ProgramReturnCopy]'s, and so is the
+ * choice between one mark for the subject and its programs one by one; this
+ * only lays out the [ProgramReturnCopy.SubjectLayout] it is handed.
+ */
+private fun FlowContent.programReturnBlocks(subjects: List<CollegeSubjectReturn>) {
+  subjects.forEach { subjectReturnBlock(it) }
+}
+
+/** One subject's block: its lead, then the [ProgramReturnCopy.SubjectLayout] it is handed. */
+private fun FlowContent.subjectReturnBlock(subject: CollegeSubjectReturn) {
+  val lead = ProgramReturnCopy.subjectLeadOf(subject.subjectName)
+  div("report-program-return") {
+    when (val layout = ProgramReturnCopy.subjectLayoutOf(subject.college)) {
+      is ProgramReturnCopy.SubjectLayout.Mark -> {
+        p("report-program-subject") { +"$lead ${layout.statement}" }
+      }
+
+      is ProgramReturnCopy.SubjectLayout.Programs -> {
+        subjectPrograms(lead, layout)
+      }
+    }
+  }
+}
+
+private fun FlowContent.subjectPrograms(
+  lead: String,
+  layout: ProgramReturnCopy.SubjectLayout.Programs,
+) {
+  p("report-program-subject") { +lead }
+  layout.programs.forEach { programParagraph(it) }
+}
+
+private fun FlowContent.programParagraph(program: ProgramReturnProgram) {
+  p("report-program") {
+    span("report-program-title") { +ProgramReturnCopy.programLabelOf(program) }
+    +" ${ProgramReturnCopy.programSentencesOf(program).joinToString(" ")}"
   }
 }
 
@@ -1899,17 +1977,30 @@ private fun shownDebtSentence(
  * none after this RFC; that gap is RFC 191's open item, not a thing this
  * function may quietly close.
  */
-private fun proseFiguresOf(cost: CollegeCost): List<CoveredFigure> {
-  if (cost.medianDebtAtCompletionUsd == null) return emptyList()
-  val note = cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD) ?: return emptyList()
-  return listOf(
-    CoveredFigure(
-      collegeName = cost.name,
-      field = CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
-      assurance = SpokenAssurance(note.assurance),
-    ),
+private fun proseFiguresOf(
+  cost: CollegeCost,
+  subjects: List<CollegeSubjectReturn>,
+): List<CoveredFigure> = listOfNotNull(debtFigureOf(cost)) + programFiguresOf(cost, subjects)
+
+private fun debtFigureOf(cost: CollegeCost): CoveredFigure? {
+  if (cost.medianDebtAtCompletionUsd == null) return null
+  val note = cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD) ?: return null
+  return CoveredFigure(
+    collegeName = cost.name,
+    figure = FigureIdentity.Cost(CostField.MEDIAN_DEBT_AT_COMPLETION_USD),
+    assurance = SpokenAssurance(note.assurance),
   )
 }
+
+/**
+ * The figures by field of study this school's blocks speak of (RFC 251), with
+ * a number or without one -- which ones, and on what tier, is
+ * [ProgramReturnCopy.coveredFiguresOf]'s.
+ */
+private fun programFiguresOf(
+  cost: CollegeCost,
+  subjects: List<CollegeSubjectReturn>,
+): List<CoveredFigure> = subjects.flatMap { ProgramReturnCopy.coveredFiguresOf(cost.name, it.college) }
 
 /**
  * The figures whose tier this page states IN A CELL rather than in the block
@@ -1938,7 +2029,7 @@ private fun blankFiguresOf(cost: CollegeCost): List<CoveredFigure> =
           FigureStatus.NOT_APPLICABLE,
           FigureStatus.NOT_COLLECTED_BY_US,
         )
-    }.map { CoveredFigure(collegeName = cost.name, field = it.field, assurance = SpokenAssurance(it.assurance)) }
+    }.map { CoveredFigure(collegeName = cost.name, figure = FigureIdentity.Cost(it.field), assurance = SpokenAssurance(it.assurance)) }
 
 /**
  * What kind of numbers this page's prose figures are -- each sentence said ONCE,
@@ -1954,10 +2045,15 @@ private fun blankFiguresOf(cost: CollegeCost): List<CoveredFigure> =
  * whole page: what kind of numbers these are, then who published them and what
  * this is not.
  */
-private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
+private fun FlowContent.tierKindsSection(
+  colleges: List<CollegeCost>,
+  programSlices: Map<CollegeId, List<CollegeSubjectReturn>>,
+  printsAProgram: Boolean,
+) {
+  val proseFigures = colleges.flatMap { proseFiguresOf(it, programSlices.getValue(it.collegeId)) }
   val groups =
     AssuranceTierGrouping.groupsOf(
-      figures = colleges.flatMap { proseFiguresOf(it) },
+      figures = proseFigures,
       spokenElsewhere = colleges.flatMap { blankFiguresOf(it) },
     )
   // WHETHER ANY GRID IS PRINTED, asked of the one function that decides it
@@ -1968,7 +2064,7 @@ private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
   // The same rule for National Merit rows (RFC 247 D3, D8), asked of
   // [printableMeritRowOf] -- and the base rate is read off these same rows.
   val meritRows = colleges.flatMap { cost -> cost.nationalMerit.mapNotNull { printableMeritRowOf(it) } }
-  if (groups.isEmpty() && !printsAGrid && meritRows.isEmpty()) return
+  if (groups.isEmpty() && !printsAGrid && meritRows.isEmpty() && !printsAProgram) return
   section("report-kinds") {
     h2 { +KINDS_HEADING }
     groups.forEach { group ->
@@ -1990,6 +2086,10 @@ private fun FlowContent.tierKindsSection(colleges: List<CollegeCost>) {
       p("report-kind") { +NATIONAL_MERIT_KIND_SENTENCE }
       p("report-kind report-merit-base-rate") { +baseRateSentenceOf(meritRows) }
     }
+    // Once for the page, like the two above (brief 0011 D19). It leans on the
+    // administrative-record kind sentence for "only students who got federal
+    // aid", which every printed program's figures are grouped under above.
+    if (printsAProgram) p("report-kind report-program-coverage") { +ProgramReturnCopy.COVERAGE_SENTENCE }
   }
 }
 
@@ -2050,12 +2150,15 @@ private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
  * One CDS filing, said as a LINK to the college's own file (RFC 196, brief 0009
  * D15).
  *
- * THE ONE PLACE THIS PAGE OPENS AN ANCHOR. Merit and borrowing are two blocks
- * with one promise behind them: `AssuranceTierCopy`'s voluntary-self-report
- * sentence ends "We link to the college's own file so you can see it", and that
- * sentence is byte-frozen against the immutable v19 prompt row -- it cannot be
- * reworded, so the link has to exist. One helper rather than two renders means a
- * third CDS block cannot be added with a different link shape.
+ * THE ONE PLACE THIS PAGE OPENS AN ANCHOR TO A SCHOOL'S FILE; the only other
+ * anchor is the sources section's one link to the College Scorecard, said only
+ * with a figure by field of study ([fieldOfStudySources]). Merit and borrowing
+ * are two blocks with one promise behind them: `AssuranceTierCopy`'s
+ * voluntary-self-report sentence ends "We link to the college's own file so you
+ * can see it", and that sentence is byte-frozen against the immutable v19
+ * prompt row -- it cannot be reworded, so the link has to exist. One helper
+ * rather than two renders means a third CDS block cannot be added with a
+ * different link shape.
  *
  * - The TARGET is `source_url`, the college's own file, which is what the
  *   sentence promises. `archive_url` -- our mirror -- is not rendered beside it
@@ -2112,8 +2215,14 @@ private fun FlowContent.sourceLink(citation: CdsCitation) {
  * The merit-and-borrowing sentence stays hand-written and stays true: those
  * figures are not canonical money rows, they carry no [MoneySource], and each
  * one is already cited to its own school's Common Data Set beside it.
+ *
+ * The figures by field of study get their own paragraph, said only when a
+ * school on the page runs a matched program ([printsAProgram], RFC 251).
  */
-private fun FlowContent.sourcesSection(sources: List<MoneySource>) {
+private fun FlowContent.sourcesSection(
+  sources: List<MoneySource>,
+  printsAProgram: Boolean,
+) {
   section("report-sources") {
     h2 { +"Sources and what this is not" }
     p {
@@ -2131,6 +2240,7 @@ private fun FlowContent.sourcesSection(sources: List<MoneySource>) {
           "compared with each other."
       )
     }
+    if (printsAProgram) fieldOfStudySources()
     p {
       +(
         "These are averages for past students at each school. They are not an offer, and no figure here is a " +
@@ -2160,3 +2270,21 @@ private fun FlowContent.sourcesSection(sources: List<MoneySource>) {
  */
 private fun moneyAttributionSentence(sources: List<MoneySource>): String? =
   MoneySourceCopy.spokenListOf(sources)?.let { "The cost, price and federal debt figures come from $it. " }
+
+/**
+ * Who published the figures by field of study, with the page's one link to the
+ * College Scorecard (brief 0011 D34, RFC 251). Every word and the target are
+ * [ProgramReturnCopy.SOURCES]'s; the target is a typed constant, so there is no
+ * stored url to judge here. `rel="noreferrer"` for [sourceLink]'s reason.
+ */
+private fun FlowContent.fieldOfStudySources() {
+  val sentence = ProgramReturnCopy.SOURCES
+  p("report-field-of-study-sources") {
+    +sentence.lead
+    a(href = sentence.link.toString()) {
+      rel = "noreferrer"
+      +sentence.linkText
+    }
+    +sentence.tail
+  }
+}
