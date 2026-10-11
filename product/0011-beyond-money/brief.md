@@ -696,6 +696,29 @@ nudge, never a bare repeat.
       RFC 243 had minted coach prompt v48, so the generator cut v49, and RFC 243's
       catalog-walking rollback test replaced this run's literal-version fix.
 
+    beyond/10/one-place-for-permissions LANDED as RFC 248 (main@916d3016 + <doc>,
+      2026-10-11) — a student now has ONE place that records what people they share
+      with may see, and its first occupant is `intended_subjects`: "people I share
+      with may see what I want to study". Renamed at the RFC 248 gate on Ian's call
+      ("If one can see them on cost reports, why not see them elsewhere?"): a
+      permission names the DATA, not the page, so every surface that shows a
+      student's data to someone else honours the same answer — today the report
+      (once `beyond/07` reads it), later any parent-account surface that shows
+      subjects. New table `sharing_permissions` (+ versions; DDL approved at the
+      gate): one row per student per named permission, a closed CHECK list mirrored
+      by one Kotlin enum and pinned by a test, no row = never asked, `granted` /
+      `refused` reversible any number of times with every change in history. The
+      student's own door is `GET`/`PUT /api/v1/students/me/sharing-permissions`
+      (gate decision 2A: no screen and no chat tool yet — a switch with no effect
+      would be a false promise). DELIBERATELY INVISIBLE: nothing reads it;
+      `SharingPermissionService.isGranted(session, …)` is `beyond/07`'s seam, proven
+      to read inside the caller's own session. The three existing "no" shapes are
+      unchanged and recorded as candidates only; per-parent consents are out of
+      scope (3A). Full suite green (last full run 3,329 executed on the reviewed
+      tree); the gate's full check passed (Gradle, 1,249 shell assertions, 2,943
+      fuzz cases). 41 review lenses over four tiers, 29 fixes applied, 0
+      contradictions.
+
 ### Spec defect found by `beyond/05`'s review (recorded 2026-09-23)
 
 The slice text DEFINED the "no matching programme" sentence by the PROGRAMME
