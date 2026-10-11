@@ -323,6 +323,57 @@ Status:
     link-ended email names the other person in the append-only `email_sends`; no
     delete door before a role is chosen or on the web. `family/09` unblocks
     NOTHING.
+  - `family/05/the-subject-seam` LANDED as RFC 250 (`main@b8870093`, 2026-10-11)
+    — the authorisation seam: a request can now name a student other than the
+    caller's own, and the server checks a live link on every call, never cached.
+    `SupporterStudentLinksDao.findLiveForUser` checks five rows live (link,
+    supporter row, supporter's user, student row, student's user); "live" is
+    written once (`LIVE_SUPPORTER` / `LIVE_STUDENT`) and shared with both roster
+    reads. `ed.unicoach.family.SubjectReadService` is the ONLY service that
+    takes a non-owner's student id, and it has no write method: `collegeList`
+    (college, name, status, living plan, updated — no reasons and no
+    conversation quotes) and `costPicture` (the Family Cost Report's own
+    computation, as `SharedCostPicture.Full` or `SubjectsWithheld`, which names
+    every field it passes and drops program returns unless the student granted
+    `intended_subjects`). One REST read,
+    `GET
+    /api/v1/students/{studentId}/college-list`: 401, 403
+    `email_not_verified`, 400 on a malformed id, ONE byte-identical 404
+    `student_not_found` for never linked, severed, closed adult or closed
+    student, else 200. No door yet: `family/06/the-parent-coach` is the door.
+    **Ian's gate (all defaults, "approve"):** (1) the parent's list view has no
+    reasons and no chat quotes; (2) the cost picture is the one the Family Cost
+    Report already shows a parent, program returns only behind the student's
+    yes; (3) the seam is in the service layer for both, REST only for the list.
+    No schema change, no migration, no config; rollback is a revert. A new
+    `SubjectSeamRouteSweepTest` walks the SERVED route tree: every route naming
+    a student is a link-checked GET, and every write route must refuse a linked
+    parent as a caller (401/403/404/409) or be classified by name — RFC 252's
+    `DELETE /api/v1/auth/me` is classified as account-ending, named and not
+    called. The Ktor route walker now has one home in `web-common` test
+    fixtures. Review: 41 lenses over four tiers, 4 fix passes, 1 contradiction
+    (an advisory naming fix that would have edited a `/me` handler); the real
+    catches were a sweep that counted a body-validation 400 as a refusal, a
+    "withheld" program return indistinguishable from "never answered", and a
+    cost projection that passed every field but one (now an allowlist). Gate:
+    the hook's full check incl. fuzz passed on the landed tree, verified tree
+    `c7a3c74e`; phase-5 suite 2,374 executed, 0 failures on the rebased tree.
+    `family/05` UNBLOCKS `family/06/the-parent-coach`, whose BLOCKS edges are
+    now all met.
+- **Next slices re-checked against RFC 250 (2026-10-11).**
+  `family/06/the-parent-coach` is now READY (both BLOCKS edges met, its PREFER
+  edge met by RFC 244). What it will find: its tools call
+  `SubjectReadService.collegeList(viewer, studentId)` /
+  `costPicture(viewer, studentId)` with the subject injected by the dispatcher
+  (D15) — each call re-checks the link, so a tool never caches the decision;
+  `costPicture` returns `SharedCostPicture.Full` or `SubjectsWithheld`, and the
+  coach must say "the student has not shared what they want to study" for the
+  second, never "has not said"; the list projection already omits reasons and
+  chat quotes, which is half of cut point 1 (no student conversation content
+  reaches the parent) — the coaching memory and extraction cut points are still
+  wholly `family/06`'s. Any new student-reading route it adds must be a GET
+  spelled `/api/v1/students/{studentId}/...`, or `SubjectSeamRouteSweepTest`
+  fails it; any new write route must be classified there.
 - **Next slices re-checked against RFC 252 (2026-10-11).** Any NEW sever path
   must send the link-ended email through `LinkEndedNotice` inside its own
   transaction — a sever that skips it reveals a reason (gate decision 2).
