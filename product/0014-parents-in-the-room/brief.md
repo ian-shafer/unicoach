@@ -323,19 +323,19 @@ Status:
     link-ended email names the other person in the append-only `email_sends`; no
     delete door before a role is chosen or on the web. `family/09` unblocks
     NOTHING.
-  - `family/05/the-subject-seam` LANDED as RFC 250 (`main@b8870093`, 2026-10-11)
-    — the authorisation seam: a request can now name a student other than the
-    caller's own, and the server checks a live link on every call, never cached.
-    `SupporterStudentLinksDao.findLiveForUser` checks five rows live (link,
-    supporter row, supporter's user, student row, student's user); "live" is
-    written once (`LIVE_SUPPORTER` / `LIVE_STUDENT`) and shared with both roster
-    reads. `ed.unicoach.family.SubjectReadService` is the ONLY service that
-    takes a non-owner's student id, and it has no write method: `collegeList`
-    (college, name, status, living plan, updated — no reasons and no
-    conversation quotes) and `costPicture` (the Family Cost Report's own
-    computation, as `SharedCostPicture.Full` or `SubjectsWithheld`, which names
-    every field it passes and drops program returns unless the student granted
-    `intended_subjects`). One REST read,
+  - `family/05/the-subject-seam` LANDED as RFC 250 (`main@b8870093` +
+    `71068f4f`, 2026-10-11) — the authorisation seam: a request can now name a
+    student other than the caller's own, and the server checks a live link on
+    every call, never cached. `SupporterStudentLinksDao.findLiveForUser` checks
+    five rows live (link, supporter row, supporter's user, student row,
+    student's user); "live" is written once (`LIVE_SUPPORTER` / `LIVE_STUDENT`)
+    and shared with both roster reads. `ed.unicoach.family.SubjectReadService`
+    is the ONLY service that takes a non-owner's student id, and it has no write
+    method: `collegeList` (college, name, status, living plan, updated — no
+    reasons and no conversation quotes) and `costPicture` (the Family Cost
+    Report's own computation, as `SharedCostPicture.Full` or `SubjectsWithheld`,
+    which names every field it passes and drops program returns unless the
+    student granted `intended_subjects`). One REST read,
     `GET
     /api/v1/students/{studentId}/college-list`: 401, 403
     `email_not_verified`, 400 on a malformed id, ONE byte-identical 404
