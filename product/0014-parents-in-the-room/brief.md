@@ -283,9 +283,9 @@ Status:
     this slice renders no relationship word. `family/04` unblocks NOTHING: no
     slice in any brief has a `Needs:` edge on it.
   - `family/09/the-deletion-partition` LANDED as RFC 252 (`main@b99a77d3` +
-    DOCSHA, 2026-10-11) — a student or a parent can delete their account in the
-    iOS app: Settings → "Delete account", both roles, confirmed once inside the
-    screen. `DELETE /api/v1/auth/me` closes any account shape in ONE
+    `0c05ca65`, 2026-10-11) — a student or a parent can delete their account in
+    the iOS app: Settings → "Delete account", both roles, confirmed once inside
+    the screen. `DELETE /api/v1/auth/me` closes any account shape in ONE
     transaction: it severs every live link (`severAll` by side), emails each
     other party, revokes the closer's invite links and Family Cost Report link,
     soft-deletes the role rows and the user, deletes its Apple/Google identities
