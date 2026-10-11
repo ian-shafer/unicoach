@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.LinkSide
 import ed.unicoach.db.models.LinkedStudent
 import ed.unicoach.db.models.NewSupporter
 import ed.unicoach.db.models.NewSupporterStudentLink
@@ -9,6 +10,7 @@ import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.db.models.SupporterStudentLink
 import ed.unicoach.db.models.SupporterStudentLinkId
+import ed.unicoach.db.models.UnlinkOutcome
 import ed.unicoach.db.models.UserId
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -107,6 +109,13 @@ class SupporterStudentLinksDaoTest {
     relationship: SupporterRelationship = SupporterRelationship.PARENT,
   ) = SupporterStudentLinksDao.create(session, NewSupporterStudentLink(supporter, student, relationship))
 
+  /** Severs [link] from the student's side, as the student's door does, insists that it took, and returns the severed row. */
+  private fun sever(link: SupporterStudentLink): SupporterStudentLink =
+    assertIs<UnlinkOutcome.Unlinked>(
+      SupporterStudentLinksDao.unlink(session, link.id, LinkSide.Student(link.studentId)).getOrThrow(),
+      "the student holds this link, so the unlink must take",
+    ).link
+
   /**
    * Closes a student through the sanctioned writer, at the version the row
    * actually holds.
@@ -177,8 +186,7 @@ class SupporterStudentLinksDaoTest {
     val oneA = link(supporter1.id, studentA, SupporterRelationship.PARENT).getOrThrow()
     val twoA = link(supporter2.id, studentA, SupporterRelationship.GRANDPARENT).getOrThrow()
     val oneB = link(supporter1.id, studentB, SupporterRelationship.GUARDIAN).getOrThrow()
-    val severed = link(supporter3.id, studentA, SupporterRelationship.SUPPORTER).getOrThrow()
-    SupporterStudentLinksDao.unlink(session, severed.id, severed.version).getOrThrow()
+    sever(link(supporter3.id, studentA, SupporterRelationship.SUPPORTER).getOrThrow())
 
     assertEquals(
       setOf(oneA.id, twoA.id),
@@ -223,8 +231,8 @@ class SupporterStudentLinksDaoTest {
     val supporter = createSupporter()
     val first = link(supporter.id, student).getOrThrow()
 
-    val severed = SupporterStudentLinksDao.unlink(session, first.id, first.version).getOrThrow()
-    assertNotNull(severed.deletedAt, "unlink stamps deleted_at")
+    sever(first)
+    assertNotNull(deletedAtOf(first.id.value), "unlink stamps deleted_at")
     assertNull(SupporterStudentLinksDao.findActive(session, supporter.id, student).getOrThrow())
 
     val second = link(supporter.id, student, SupporterRelationship.GUARDIAN).getOrThrow()
@@ -337,21 +345,55 @@ class SupporterStudentLinksDaoTest {
     assertEquals(current.version, live.version)
   }
 
+  /**
+   * The side IS the authorisation (RFC 249): each end of the link can sever it
+   * by its own id, and nothing else can. A link the caller does not hold is
+   * [UnlinkOutcome.NotFound] — the same answer as an id no link has — and stays
+   * live.
+   */
   @Test
-  fun `a stale version loses on unlink`() {
+  fun `unlink severs from the student's side and from the supporter's side`() {
     val student = createStudent()
     val supporter = createSupporter()
-    val created = link(supporter.id, student, SupporterRelationship.PARENT).getOrThrow()
-    val current = updateRelationship(created, SupporterRelationship.GUARDIAN)
+    val otherSupporter = createSupporter()
+    val viaStudent = link(supporter.id, student).getOrThrow()
+    val viaSupporter = link(otherSupporter.id, student).getOrThrow()
 
-    assertIs<ConcurrentModificationException>(
-      SupporterStudentLinksDao.unlink(session, created.id, created.version).exceptionOrNull(),
-      "a stale version cannot unlink, and loses as a race rather than as an absence",
-    )
+    val severedByStudent =
+      assertIs<UnlinkOutcome.Unlinked>(
+        SupporterStudentLinksDao.unlink(session, viaStudent.id, LinkSide.Student(student)).getOrThrow(),
+      ).link
+    val severedBySupporter =
+      assertIs<UnlinkOutcome.Unlinked>(
+        SupporterStudentLinksDao.unlink(session, viaSupporter.id, LinkSide.Supporter(otherSupporter.id)).getOrThrow(),
+      ).link
 
-    val live = assertNotNull(SupporterStudentLinksDao.findActive(session, supporter.id, student).getOrThrow())
-    assertNull(live.deletedAt, "the stale unlink severed nothing")
-    assertEquals(current.version, live.version)
+    for ((before, severed) in listOf(viaStudent to severedByStudent, viaSupporter to severedBySupporter)) {
+      assertEquals(before.id, severed.id, "the outcome carries the row it severed")
+      assertNotNull(severed.deletedAt, "the unlink stamps deleted_at")
+      assertEquals(deletedAtOf(before.id.value), severed.deletedAt, "the returned row is the stored row")
+      assertEquals(before.version + 1, severed.version, "the unlink advances the version once")
+    }
+    assertEquals(emptyList(), SupporterStudentLinksDao.listForStudent(session, student).getOrThrow())
+  }
+
+  @Test
+  fun `an unlink from a side that does not hold the link is not found and severs nothing`() {
+    val student = createStudent()
+    val otherStudent = createStudent()
+    val supporter = createSupporter()
+    val otherSupporter = createSupporter()
+    val created = link(supporter.id, student).getOrThrow()
+    link(otherSupporter.id, otherStudent).getOrThrow()
+
+    for (wrongSide in listOf(LinkSide.Student(otherStudent), LinkSide.Supporter(otherSupporter.id))) {
+      assertEquals(
+        UnlinkOutcome.NotFound,
+        SupporterStudentLinksDao.unlink(session, created.id, wrongSide).getOrThrow(),
+        "[$wrongSide] does not hold this link, so it cannot sever it",
+      )
+    }
+    assertNull(deletedAtOf(created.id.value), "a refused unlink severed nothing")
   }
 
   /**
@@ -359,34 +401,61 @@ class SupporterStudentLinksDaoTest {
    * `deleted_at` would move the moment access ended.
    */
   @Test
-  fun `a second unlink reports no rows and does not restamp deleted_at`() {
+  fun `a second unlink is not found and does not restamp deleted_at`() {
     val student = createStudent()
     val supporter = createSupporter()
     val created = link(supporter.id, student).getOrThrow()
 
-    val severed = SupporterStudentLinksDao.unlink(session, created.id, created.version).getOrThrow()
+    sever(created)
     val stampedAt = assertNotNull(deletedAtOf(created.id.value))
 
-    assertIs<ConcurrentModificationException>(
-      SupporterStudentLinksDao.unlink(session, severed.id, severed.version).exceptionOrNull(),
-      "an already-severed link is a race somebody else won",
+    assertEquals(
+      UnlinkOutcome.NotFound,
+      SupporterStudentLinksDao.unlink(session, created.id, LinkSide.Supporter(supporter.id)).getOrThrow(),
+      "an already-severed link is the same answer as one the caller never held",
     )
     assertEquals(stampedAt, deletedAtOf(created.id.value), "the first unlink's timestamp stands")
   }
 
+  /** The unlink itself is history: the `_versions` snapshot carries the stamped `deleted_at`. */
+  @Test
+  fun `an unlink is recorded in the history table`() {
+    val student = createStudent()
+    val supporter = createSupporter()
+    val created = link(supporter.id, student).getOrThrow()
+
+    val severed = sever(created)
+
+    val history = mutableListOf<Pair<Int, Boolean>>()
+    connection
+      .prepareStatement(
+        "SELECT version, deleted_at IS NOT NULL AS severed FROM supporter_student_links_versions WHERE id = ? ORDER BY version",
+      ).use { stmt ->
+        stmt.setObject(1, created.id.value)
+        stmt.executeQuery().use { rs -> while (rs.next()) history.add(rs.getInt("version") to rs.getBoolean("severed")) }
+      }
+
+    assertEquals(
+      listOf(created.version to false, severed.version to true),
+      history,
+      "the live row and then the severed row, one version apart",
+    )
+  }
+
   /**
-   * The other half: a wrong id is NOT a lost race. Both writes sit on the spine
-   * every later slice authorises against, and a caller that cannot tell "you
-   * named a link that does not exist" from "somebody beat you to it" retries
-   * forever or gives up wrongly.
+   * The other half: a wrong id is NOT a lost race for the OCC write. It sits on
+   * the spine every later slice authorises against, and a caller that cannot
+   * tell "you named a link that does not exist" from "somebody beat you to it"
+   * retries forever or gives up wrongly.
    */
   @Test
   fun `unlink and updateRelationship report an id no link has as not found`() {
     val absent = SupporterStudentLinkId(UUID.randomUUID())
 
-    assertIs<NotFoundException>(
-      SupporterStudentLinksDao.unlink(session, absent, 1).exceptionOrNull(),
-      "no such link is not a concurrency failure",
+    assertEquals(
+      UnlinkOutcome.NotFound,
+      SupporterStudentLinksDao.unlink(session, absent, LinkSide.Student(createStudent())).getOrThrow(),
+      "no such link",
     )
     assertIs<NotFoundException>(
       SupporterStudentLinksDao
@@ -406,17 +475,17 @@ class SupporterStudentLinksDaoTest {
     val student = createStudent()
     val supporter = createSupporter()
     val created = link(supporter.id, student, SupporterRelationship.PARENT).getOrThrow()
-    val severed = SupporterStudentLinksDao.unlink(session, created.id, created.version).getOrThrow()
+    val severedVersion = sever(created).version
 
     assertIs<ConcurrentModificationException>(
       SupporterStudentLinksDao
-        .updateRelationship(session, severed.id, severed.version, SupporterRelationship.GUARDIAN)
+        .updateRelationship(session, created.id, severedVersion, SupporterRelationship.GUARDIAN)
         .exceptionOrNull(),
       "a correction applies to a LIVE link only; the row is there, so it is not a NotFound",
     )
 
     assertEquals(
-      "parent" to severed.version,
+      "parent" to severedVersion,
       relationshipAndVersionOf(created.id.value),
       "the severed row's word and version stand exactly as they were severed",
     )
@@ -759,8 +828,8 @@ class SupporterStudentLinksDaoTest {
 
     closeStudent(student)
 
-    val severed = SupporterStudentLinksDao.unlink(session, created.id, created.version).getOrThrow()
-    assertNotNull(severed.deletedAt, "unlinking a link to a closed student must still stamp deleted_at")
+    sever(created)
+    assertNotNull(deletedAtOf(created.id.value), "unlinking a link to a closed student must still stamp deleted_at")
     assertEquals(emptyList(), SupporterStudentLinksDao.listForSupporter(session, supporter.id).getOrThrow())
   }
   // --- The roster read (RFC 241) -------------------------------------------
@@ -809,7 +878,7 @@ class SupporterStudentLinksDaoTest {
     val keptLink = link(supporter.id, kept).getOrThrow()
     val severed = link(supporter.id, severedStudent).getOrThrow()
 
-    SupporterStudentLinksDao.unlink(session, severed.id, severed.version).getOrThrow()
+    sever(severed)
 
     assertEquals(
       listOf(keptLink.id),
@@ -901,5 +970,87 @@ class SupporterStudentLinksDaoTest {
       roster(supporter.id).map { it.studentName.value },
       "each row's name belongs to its own link, not to the row beside it",
     )
+  }
+
+  // --- The adults on a student's links (RFC 249) ----------------------------
+
+  /** A supporter whose own account carries [name], which is what both lists render. */
+  private fun createSupporterNamed(name: String): Supporter = createSupporter(createUser(name))
+
+  private fun supportersOf(studentId: StudentId): List<Pair<SupporterStudentLinkId, String>> =
+    SupporterStudentLinksDao
+      .listActiveSupportersOf(session, studentId)
+      .getOrThrow()
+      .map { it.linkId to it.name.value }
+
+  @Test
+  fun `a student's supporters are named in link order`() {
+    val student = createStudent()
+    val first = link(createSupporterNamed("Jane Okafor").id, student).getOrThrow()
+    val second = link(createSupporterNamed("Sam Okafor").id, student).getOrThrow()
+
+    assertEquals(
+      listOf(first.id to "Jane Okafor", second.id to "Sam Okafor"),
+      supportersOf(student),
+      "each adult by the name on their own account, oldest link first",
+    )
+  }
+
+  /**
+   * Every row that must NOT be listed, in one fixture: a severed link, a closed
+   * supporter row, a supporter whose `users` row alone is closed, and another
+   * student's adult. Each predicate is held by its own row, so deleting any one
+   * of the four puts exactly one wrong name on the list.
+   */
+  @Test
+  fun `a student's list excludes severed links, closed supporters, closed accounts and other students' adults`() {
+    val student = createStudent()
+    val kept = link(createSupporterNamed("Kept Adult").id, student).getOrThrow()
+
+    sever(link(createSupporterNamed("Severed Adult").id, student).getOrThrow())
+
+    val closedSupporter = createSupporterNamed("Closed Supporter")
+    link(closedSupporter.id, student).getOrThrow()
+    SupportersDao.delete(session, closedSupporter.id, closedSupporter.version).getOrThrow()
+
+    val closedUser = createUser("Closed Account")
+    link(createSupporter(closedUser).id, student).getOrThrow()
+    closeUser(closedUser)
+
+    link(createSupporterNamed("Someone Else's Adult").id, createStudent()).getOrThrow()
+
+    assertEquals(listOf(kept.id to "Kept Adult"), supportersOf(student))
+  }
+
+  private fun supportersOf(studentIds: List<StudentId>): List<Pair<StudentId, String>> =
+    SupporterStudentLinksDao
+      .listActiveSupportersOf(session, studentIds)
+      .getOrThrow()
+      .map { it.studentId to it.name.value }
+
+  /**
+   * The read a supporter's home makes over its roster: every adult on the
+   * students asked about, each tagged with its own student, and none of a
+   * student nobody asked about.
+   */
+  @Test
+  fun `the list over several students tags each adult with their student and reaches no other`() {
+    val first = createStudent()
+    val second = createStudent()
+    link(createSupporterNamed("First's Adult").id, first).getOrThrow()
+    link(createSupporterNamed("Second's Adult").id, second).getOrThrow()
+    link(createSupporterNamed("Stranger").id, createStudent()).getOrThrow()
+
+    assertEquals(
+      listOf(first to "First's Adult", second to "Second's Adult"),
+      supportersOf(listOf(first, second)),
+    )
+  }
+
+  @Test
+  fun `the list over no students is empty`() {
+    link(createSupporter().id, createStudent()).getOrThrow()
+
+    assertEquals(emptyList(), supportersOf(emptyList()), "an empty IN list asks about nobody")
   }
 }

@@ -1,7 +1,9 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationResult
+import ed.unicoach.db.models.LinkSide
 import ed.unicoach.db.models.LinkedStudent
+import ed.unicoach.db.models.LinkedSupporter
 import ed.unicoach.db.models.NewSupporterStudentLink
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.StudentId
@@ -9,6 +11,7 @@ import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.db.models.SupporterStudentLink
 import ed.unicoach.db.models.SupporterStudentLinkId
+import ed.unicoach.db.models.UnlinkOutcome
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -137,27 +140,23 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
       ).orNullOnNotFound()
 
   /**
-   * WHICH end of the link a side read filters on: the column, and the id to
-   * bind, held TOGETHER in one value that only a typed id can construct.
-   *
-   * The pair used to be a `(column: String, id: UUID)` parameter list, which
-   * erased [SupporterId] and [StudentId] to the same type: `"student_id"` with a
-   * supporter's id compiled, ran, and answered an empty list — a wrong answer
-   * that looks exactly like a right one. Here the column is not something a call
-   * site passes at all.
+   * The column a [LinkSide] names, and the id it binds — a fixed DAO
+   * identifier, never caller data. The side is the only way to reach either, so
+   * `"student_id"` with a supporter's id is not something a call site can write.
    */
-  private sealed class LinkSide(
-    val column: String,
-    val id: UUID,
-  ) {
-    class Supporter(
-      id: SupporterId,
-    ) : LinkSide("supporter_id", id.value)
+  private val LinkSide.column: String
+    get() =
+      when (this) {
+        is LinkSide.Student -> "student_id"
+        is LinkSide.Supporter -> "supporter_id"
+      }
 
-    class Student(
-      id: StudentId,
-    ) : LinkSide("student_id", id.value)
-  }
+  private val LinkSide.boundId: UUID
+    get() =
+      when (this) {
+        is LinkSide.Student -> id.value
+        is LinkSide.Supporter -> id.value
+      }
 
   /** This student's active supporters — the read `supporter_student_links_student_idx` exists for. */
   fun listForStudent(
@@ -181,8 +180,8 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
    * `ORDER BY` could be corrected on one side and not the other, and the two
    * directions of the same link table would disagree about what "active" means.
    *
-   * [LinkSide] owns the column name — a fixed DAO identifier, never caller data
-   * — and carries the id that goes with it; only the bound id varies.
+   * [LinkSide] decides the column name — a fixed DAO identifier, never caller
+   * data — and carries the id that goes with it; only the bound id varies.
    */
   private fun listActiveBy(
     session: SqlSession,
@@ -194,7 +193,7 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
       WHERE ${side.column} = ? AND deleted_at IS NULL
       ORDER BY created_at, id
       """.trimIndent(),
-      bind = { it.setObject(1, side.id) },
+      bind = { it.setObject(1, side.boundId) },
       map = ::mapLink,
     )
 
@@ -263,26 +262,85 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
       linkId = linkId,
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
       relationship = parseRelationship(rs.getString("relationship"), linkId),
-      studentName =
-        when (val name = PersonName.create(rawName)) {
-          is ValidationResult.Valid -> {
-            name.value
-          }
-
-          // The validator already said WHY — blank, or over-long — so its own
-          // [ValidationError] travels out instead of the synthesised "a known
-          // value" sentence [corruptValue] is for: an operator reading the log
-          // can tell a blank stored name from a 300-character one.
-          is ValidationResult.Invalid -> {
-            throw CorruptPersistedValueException(
-              value = rawName,
-              error = name.error,
-              location = "users.name (student of link [${linkId.asString}])",
-            )
-          }
-        },
+      studentName = parseName(rawName, "users.name (student of link [${linkId.asString}])"),
     )
   }
+
+  /** One row of [listActiveSupportersOf]; an invalid stored name is corruption, as in [mapLinkedStudent]. */
+  private fun mapLinkedSupporter(rs: ResultSet): LinkedSupporter {
+    val linkId = SupporterStudentLinkId(UUID.fromString(rs.getString("link_id")))
+    return LinkedSupporter(
+      linkId = linkId,
+      studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
+      name = parseName(rs.getString("supporter_name"), "users.name (supporter of link [${linkId.asString}])"),
+    )
+  }
+
+  /**
+   * A stored `users.name` back into a [PersonName], for every projection that
+   * renders one. `users_name_length_check` already refuses blank and over-long
+   * names, so an invalid one is corruption and throws naming [location].
+   */
+  private fun parseName(
+    rawName: String,
+    location: String,
+  ): PersonName =
+    when (val name = PersonName.create(rawName)) {
+      is ValidationResult.Valid -> {
+        name.value
+      }
+
+      // The validator already said WHY — blank, or over-long — so its own
+      // [ValidationError] travels out instead of the synthesised "a known
+      // value" sentence [corruptValue] is for: an operator reading the log
+      // can tell a blank stored name from a 300-character one.
+      is ValidationResult.Invalid -> {
+        throw CorruptPersistedValueException(value = rawName, error = name.error, location = location)
+      }
+    }
+
+  /**
+   * The ACTIVE adults on [studentIds]' links, each by the name on their own
+   * account, oldest link first (RFC 249) — the ONE read that names a connected
+   * adult: the student's own list, and the co-supporters on a supporter's home,
+   * which passes its roster's students and drops its own links.
+   *
+   * The three `deleted_at` predicates are on the LINK, the SUPPORTER and the
+   * supporter's USER, because closing either account leaves its links standing
+   * (the liveness guard fires on INSERT only), and a closed adult's name must not
+   * be listed as somebody who can see a student. Served by
+   * `supporter_student_links_student_idx`.
+   *
+   * [LinkedSupporter] cannot carry an email: this read selects none.
+   */
+  fun listActiveSupportersOf(
+    session: SqlSession,
+    studentIds: Collection<StudentId>,
+  ): Result<List<LinkedSupporter>> {
+    val ids = IdList(studentIds.map { it.value })
+    if (ids.isEmpty) return Result.success(emptyList())
+    return session.queryList(
+      """
+      SELECT l.id AS link_id, l.student_id, u.name AS supporter_name
+      FROM supporter_student_links l
+      JOIN supporters sup ON sup.id = l.supporter_id
+      JOIN users u ON u.id = sup.user_id
+      WHERE l.student_id IN (${ids.placeholders})
+        AND l.deleted_at IS NULL
+        AND sup.deleted_at IS NULL
+        AND u.deleted_at IS NULL
+      ORDER BY l.created_at, l.id
+      """.trimIndent(),
+      bind = { stmt -> ids.bindFrom(stmt, 1) },
+      map = ::mapLinkedSupporter,
+    )
+  }
+
+  /** This one student's active adults — the student's own list. */
+  fun listActiveSupportersOf(
+    session: SqlSession,
+    studentId: StudentId,
+  ): Result<List<LinkedSupporter>> = listActiveSupportersOf(session, listOf(studentId))
 
   /**
    * Compare-and-swap correction of the relationship word on a LIVE link at
@@ -331,43 +389,53 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
     )
 
   /**
-   * Compare-and-swap unlink: stamps `deleted_at` on an ACTIVE link at
-   * [currentVersion] and returns the severed row.
+   * Severs [linkId] when [side] holds it (RFC 249): stamps `deleted_at` on the
+   * ACTIVE link whose [LinkSide] column is the caller's id.
    *
-   * `deleted_at IS NULL` rides in the WHERE on top of the version check, so a
-   * second unlink cannot re-stamp a row that was already severed — which would
-   * move the moment access ended. It reports
-   * [ConcurrentModificationException]: the row is there and this write did not
-   * apply, which is the truth whether somebody else severed it or the caller's
-   * version went stale. An id no link has is [NotFoundException] — a different
-   * mistake, on the spine that authorises every later slice.
+   * The side IS the authorisation. It rides in the same WHERE that severs the
+   * row, so there is no read-then-write in which a link could change hands, and
+   * "not yours", "never existed" and "already severed" all match nothing and are
+   * one [UnlinkOutcome.NotFound] — a door on this cannot be used to probe ids.
+   *
+   * No version check: the write has one target state, severed, so a stale
+   * version would refuse nothing worth refusing. Two concurrent disconnects
+   * resolve to one [UnlinkOutcome.Unlinked] and one [UnlinkOutcome.NotFound],
+   * and `deleted_at IS NULL` keeps the second from re-stamping the moment access
+   * ended. `version = version + 1` is still required: `enforce_versioning`
+   * refuses any UPDATE that does not advance it.
    *
    * An UPDATE, never a DELETE: `prevent_physical_delete` refuses one outright,
    * and the snapshot of the row WITH its `deleted_at` set is what puts the
-   * unlink itself into the history.
+   * unlink itself into the history. [UnlinkOutcome.Unlinked] carries that row.
+   *
+   * `id` is the primary key, so more than one severed row is not an answer: it
+   * fails the call rather than being reported as either outcome.
    */
   fun unlink(
     session: SqlSession,
-    id: SupporterStudentLinkId,
-    currentVersion: Int,
-  ): Result<SupporterStudentLink> =
-    session.occUpdate(
-      table = "supporter_student_links",
-      sql =
+    linkId: SupporterStudentLinkId,
+    side: LinkSide,
+  ): Result<UnlinkOutcome> =
+    session
+      .queryList(
         """
         UPDATE supporter_student_links
         SET deleted_at = NOW(), version = version + 1
-        WHERE id = ? AND version = ? AND deleted_at IS NULL
+        WHERE id = ? AND ${side.column} = ? AND deleted_at IS NULL
         RETURNING *
         """.trimIndent(),
-      bind = { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.setInt(2, currentVersion)
-      },
-      idValue = id.value,
-      map = ::mapLink,
-      mapError = ::mapUpdateError,
-    )
+        bind = { stmt ->
+          stmt.setObject(1, linkId.value)
+          stmt.setObject(2, side.boundId)
+        },
+        map = ::mapLink,
+      ).mapCatching { severed ->
+        when (severed.size) {
+          0 -> UnlinkOutcome.NotFound
+          1 -> UnlinkOutcome.Unlinked(severed.single())
+          else -> error("unlink of link [${linkId.asString}] severed [${severed.size}] rows; supporter_student_links.id is the primary key")
+        }
+      }
 
   /**
    * The create-path mapping, built from the ids that were written.
@@ -409,7 +477,7 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
 
   /**
    * The update-path mapping. No foreign key can fire — `supporter_id` and
-   * `student_id` are frozen, so neither write changes an endpoint — but the
+   * `student_id` are frozen, so no update changes an endpoint — but the
    * self-link guard is `INSERT OR UPDATE` and stays mapped, because the rule it
    * states does not stop holding on a later write.
    */

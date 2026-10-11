@@ -2,6 +2,7 @@ package ed.unicoach.web.render
 
 import ed.unicoach.db.models.InviterRole
 import ed.unicoach.db.models.SupporterRelationship
+import ed.unicoach.family.SupporterCeiling
 import ed.unicoach.web.INVITE_PATH
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.HOME_PATH
@@ -51,20 +52,20 @@ enum class InviteViewer {
 /**
  * The ceiling statement the invite itself carries (brief 0014 D3, standing D12):
  * what linking gives and what it does not, written so a stranger reading a text
- * message can judge the ask before creating an account.
+ * message can judge the ask before creating an account. The lines are
+ * [SupporterCeiling]'s supporter voice — the student reads the same promise in
+ * their own voice — and only the headings belong to this page.
  */
 private fun SECTION.inviteCeiling() {
+  val ceiling = SupporterCeiling.toSupporter
   section("invite-ceiling") {
     h2 { +"What connecting lets you do" }
     ul {
-      li { +"See the student's college list and key application deadlines." }
-      li { +"See estimated college costs and financial-aid calculations." }
-      li { +"Use your own coach workspace for financial-aid and timeline help." }
+      ceiling.canSee.forEach { line -> li { +line } }
     }
     h2 { +"What stays private" }
     ul {
-      li { +"Student coach conversations stay 100% private to the student. Transcripts are never shared." }
-      li { +"Supporters cannot edit the student's college list, profile, or tasks — parents support, students direct." }
+      ceiling.staysPrivate.forEach { line -> li { +line } }
     }
   }
 }

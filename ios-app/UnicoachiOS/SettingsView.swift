@@ -30,9 +30,15 @@ struct SettingsView: View {
     /// The rail is built by `AuthenticatedRootView` — it shares the one
     /// `TransactionRecorder` with the session-long transaction listener — so it
     /// arrives from outside rather than being built here.
+    ///
+    /// A supporter's case also carries its side of the family list (RFC 249):
+    /// the roster the home already holds, the door it disconnects through, and
+    /// the home's refresh — so a student-only screen cannot be handed a
+    /// supporter's roster, and a supporter's Settings cannot forget to tell
+    /// the home a student left.
     enum Caller {
         case student(rail: SubscriptionViewModel)
-        case supporter
+        case supporter(FamilyConnectionsViewModel.SupporterFamily)
 
         /// The role the shared invite control speaks in. Derived, never passed:
         /// the caller states which side it is on exactly once.
@@ -41,6 +47,17 @@ struct SettingsView: View {
             case .student: return .student
             case .supporter: return .supporter
             }
+        }
+    }
+
+    /// The side the family list speaks for. The student's list reads its own
+    /// door through the invite client, which is the student's family client.
+    private var familySide: FamilyConnectionsViewModel.Side {
+        switch caller {
+        case .student:
+            return .student(supporterInviteClient)
+        case .supporter(let family):
+            return .supporter(family)
         }
     }
 
@@ -54,16 +71,22 @@ struct SettingsView: View {
     @State private var isChangingEmail = false
     @State private var isLoggingOut = false
 
+    /// The family row whose disconnect confirmation opens already expanded —
+    /// `nil` in the app; the snapshot catalogue photographs it open.
+    private let disconnectConfirmationOnAppear: UUID?
+
     init(
         user: PublicUser,
         caller: Caller,
         authClient: AuthClientProtocol,
         supporterInviteClient: SupporterInviteClientProtocol,
+        disconnectConfirmationOnAppear: UUID? = nil,
         onEmailChanged: @escaping (PublicUser) async -> Void,
         onLogout: @escaping () async -> Void
     ) {
         _user = State(initialValue: user)
         self.caller = caller
+        self.disconnectConfirmationOnAppear = disconnectConfirmationOnAppear
         self.authClient = authClient
         self.supporterInviteClient = supporterInviteClient
         self.onEmailChanged = onEmailChanged
@@ -134,7 +157,8 @@ struct SettingsView: View {
         }
     }
 
-    /// The inviter's door (RFC 232). The control itself is
+    /// Who is connected, with a disconnect for each (RFC 249), above the
+    /// inviter's door (RFC 232). The control itself is
     /// `SupporterInviteControl`, shared with the supporter home (RFC 241) —
     /// what stays here is the section this screen puts it in. The heading is
     /// role-neutral on purpose: it names the relationship, which is the same
@@ -144,6 +168,9 @@ struct SettingsView: View {
             Text("Family & Supporters")
                 .dsOverlineStyle()
                 .foregroundStyle(Color.dsTextSecondary)
+
+            FamilyConnectionsSection(side: familySide, confirmingOnAppear: disconnectConfirmationOnAppear)
+                .padding(.bottom, DSSpacing.sm)
 
             SupporterInviteControl(role: caller.inviteRole, client: supporterInviteClient)
         }

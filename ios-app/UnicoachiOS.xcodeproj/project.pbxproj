@@ -13,7 +13,11 @@
 		EF2410000000000000000B04 /* RoleChoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F04 /* RoleChoiceView.swift */; };
 		EF2410000000000000000B05 /* SupporterHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F05 /* SupporterHomeView.swift */; };
 		EF2410000000000000000B08 /* SupporterSubjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F08 /* SupporterSubjectSwitcher.swift */; };
+		EF2490000000000000000B02 /* FamilyConnectionsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2490000000000000000F02 /* FamilyConnectionsSection.swift */; };
+		EF2490000000000000000B01 /* FamilyConnectionsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2490000000000000000F01 /* FamilyConnectionsViewModel.swift */; };
 		EF2410000000000000000B06 /* MockSupporterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F06 /* MockSupporterClient.swift */; };
+		EF2490000000000000000B04 /* StudentSupportersClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2490000000000000000F04 /* StudentSupportersClientTests.swift */; };
+		EF2490000000000000000B03 /* FamilyConnectionsViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2490000000000000000F03 /* FamilyConnectionsViewModelTests.swift */; };
 		EF2410000000000000000B07 /* SupporterSubjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */; };
 		EF2410000000000000000B09 /* SupporterClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2410000000000000000F09 /* SupporterClientTests.swift */; };
 		EF2444000000000000000B01 /* SupporterCoachingUsageClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */; };
@@ -177,7 +181,11 @@
 		EF2410000000000000000F04 /* RoleChoiceView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RoleChoiceView.swift; sourceTree = "<group>"; };
 		EF2410000000000000000F05 /* SupporterHomeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterHomeView.swift; sourceTree = "<group>"; };
 		EF2410000000000000000F08 /* SupporterSubjectSwitcher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterSubjectSwitcher.swift; sourceTree = "<group>"; };
+		EF2490000000000000000F02 /* FamilyConnectionsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FamilyConnectionsSection.swift; sourceTree = "<group>"; };
+		EF2490000000000000000F01 /* FamilyConnectionsViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FamilyConnectionsViewModel.swift; sourceTree = "<group>"; };
 		EF2410000000000000000F06 /* MockSupporterClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockSupporterClient.swift; sourceTree = "<group>"; };
+		EF2490000000000000000F04 /* StudentSupportersClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StudentSupportersClientTests.swift; sourceTree = "<group>"; };
+		EF2490000000000000000F03 /* FamilyConnectionsViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FamilyConnectionsViewModelTests.swift; sourceTree = "<group>"; };
 		EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterSubjectStoreTests.swift; sourceTree = "<group>"; };
 		EF2410000000000000000F09 /* SupporterClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterClientTests.swift; sourceTree = "<group>"; };
 		EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingUsageClient.swift; sourceTree = "<group>"; };
@@ -368,6 +376,8 @@
 				EF2410000000000000000F04 /* RoleChoiceView.swift */,
 				EF2410000000000000000F05 /* SupporterHomeView.swift */,
 				EF2410000000000000000F08 /* SupporterSubjectSwitcher.swift */,
+				EF2490000000000000000F02 /* FamilyConnectionsSection.swift */,
+				EF2490000000000000000F01 /* FamilyConnectionsViewModel.swift */,
 				EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */,
 				EF2444000000000000000F02 /* SupporterCoachingViewModel.swift */,
 				EF2444000000000000000F03 /* SupporterCoachingSection.swift */,
@@ -474,6 +484,8 @@
 			isa = PBXGroup;
 			children = (
 				EF2410000000000000000F06 /* MockSupporterClient.swift */,
+				EF2490000000000000000F04 /* StudentSupportersClientTests.swift */,
+				EF2490000000000000000F03 /* FamilyConnectionsViewModelTests.swift */,
 				EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */,
 				EF2410000000000000000F09 /* SupporterClientTests.swift */,
 				EF2444000000000000000F04 /* SupporterCoachingViewModelTests.swift */,
@@ -681,6 +693,8 @@
 				EF2410000000000000000B04 /* RoleChoiceView.swift in Sources */,
 				EF2410000000000000000B05 /* SupporterHomeView.swift in Sources */,
 				EF2410000000000000000B08 /* SupporterSubjectSwitcher.swift in Sources */,
+				EF2490000000000000000B02 /* FamilyConnectionsSection.swift in Sources */,
+				EF2490000000000000000B01 /* FamilyConnectionsViewModel.swift in Sources */,
 				CC20500000000000000004B /* SubjectPickerSheet.swift in Sources */,
 				CC20500000000000000003B /* SubjectPickerViewModel.swift in Sources */,
 				CC20500000000000000002B /* IntendedSubjectsClient.swift in Sources */,
@@ -769,6 +783,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				EF2410000000000000000B06 /* MockSupporterClient.swift in Sources */,
+				EF2490000000000000000B04 /* StudentSupportersClientTests.swift in Sources */,
+				EF2490000000000000000B03 /* FamilyConnectionsViewModelTests.swift in Sources */,
 				EF2444000000000000000B04 /* SupporterCoachingViewModelTests.swift in Sources */,
 				EF2444000000000000000B05 /* SupporterCoachingUsageClientTests.swift in Sources */,
 				EF2410000000000000000B07 /* SupporterSubjectStoreTests.swift in Sources */,

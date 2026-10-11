@@ -45,6 +45,11 @@ enum class ErrorCode(
   // does NOT exist, and `supporters_user_id_unique_idx` is total, so no live
   // one can be minted for that user. Re-opening is family/09.
   SUPPORTER_CLOSED("supporter_closed"),
+
+  // The link named in a disconnect is not one the caller holds live (RFC 249):
+  // never existed, another person's, and already disconnected are one answer,
+  // so the door cannot be used to probe which link ids exist.
+  SUPPORTER_LINK_NOT_FOUND("supporter_link_not_found"),
   STUDENT_ALREADY_EXISTS("student_already_exists"),
   VERSION_CONFLICT("version_conflict"),
 

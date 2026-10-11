@@ -182,6 +182,7 @@ final class SupporterHomeWireTests: XCTestCase {
             home: SupporterHome(supporter: PublicSupporter(id: UUID()), students: []),
             authClient: AuthClient(apiClient: apiClient),
             supporterInviteClient: SupporterInviteClient(apiClient: apiClient),
+            supporterClient: SupporterClient(apiClient: apiClient),
             collegeListClient: CollegeListClient(apiClient: apiClient),
             supporterCoachingUsageClient: SupporterCoachingUsageClient(apiClient: apiClient),
             subjectStore: MockSupporterSubjectStore(),
@@ -199,5 +200,48 @@ final class SupporterHomeWireTests: XCTestCase {
             paths.current.contains { $0.contains("/students/") },
             "a supporter session fires no student-scoped read"
         )
+    }
+
+    /// A parent's Settings now carries the family list (RFC 249), and the
+    /// student's version of that list reads a student-scoped route. The
+    /// parent's version must read NOTHING: its roster came with the home.
+    func testAParentsSettingsAsksForNoStudentScopedPath() {
+        let paths = Locked<[String]>([])
+        MockURLProtocol.requestHandler = { request in
+            paths.withLock { $0.append(request.url?.path ?? "") }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, Data("{}".utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let apiClient = APIClient(
+            baseURL: URL(string: "http://localhost:8080")!,
+            session: URLSession(configuration: config)
+        )
+        let user = PublicUser(id: UUID(), email: "parent@example.com", name: "Robin", emailVerified: true)
+        let roster = [
+            LinkedStudent(
+                linkId: UUID(),
+                studentId: UUID(),
+                name: "Ava",
+                relationship: .parent,
+                otherSupporterNames: ["Sam Lee"]
+            ),
+        ]
+
+        let window = SnapshotHost.mount(AnyView(NavigationStack {
+            SettingsView(
+                user: user,
+                caller: .supporter(.init(roster: roster, client: SupporterClient(apiClient: apiClient), refreshHome: {})),
+                authClient: AuthClient(apiClient: apiClient),
+                supporterInviteClient: SupporterInviteClient(apiClient: apiClient),
+                onEmailChanged: { _ in },
+                onLogout: {}
+            )
+        }))
+        addTeardownBlock { @MainActor in SnapshotHost.dismiss(window) }
+        SnapshotHost.settle(1.0)
+
+        XCTAssertEqual(paths.current, [], "a parent's Settings reads nothing on appear")
     }
 }

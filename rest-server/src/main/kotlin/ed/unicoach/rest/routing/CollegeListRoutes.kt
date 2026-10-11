@@ -24,6 +24,7 @@ import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.models.ObservationSummary
 import ed.unicoach.rest.models.PublicCollegeListEntry
 import ed.unicoach.rest.models.UpdateCollegeListEntryRequest
+import ed.unicoach.rest.pathId
 import ed.unicoach.rest.rejectUnsupportedMethods
 import ed.unicoach.rest.respondValidationFailed
 import ed.unicoach.student.StudentService
@@ -125,10 +126,7 @@ class CollegeListRouteHandler(
     return LivingPlanParse.Ok(LivingPlanUpdate.of(plan, request.livingPlanClear))
   }
 
-  private fun RoutingContext.pathEntryId(): CollegeListEntryId? {
-    val raw = call.parameters["entryId"] ?: return null
-    return runCatching { CollegeListEntryId(java.util.UUID.fromString(raw)) }.getOrNull()
-  }
+  private fun RoutingContext.pathEntryId(): CollegeListEntryId? = pathId("entryId", ::CollegeListEntryId)
 
   // ---------------------------------------------------------------------------
   // Handlers

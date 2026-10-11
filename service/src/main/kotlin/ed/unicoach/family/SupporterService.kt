@@ -1,13 +1,20 @@
 package ed.unicoach.family
 
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SupporterAlreadyExistsException
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
+import ed.unicoach.db.models.LinkSide
 import ed.unicoach.db.models.LinkedStudent
+import ed.unicoach.db.models.LinkedSupporter
 import ed.unicoach.db.models.NewSupporter
+import ed.unicoach.db.models.PersonName
+import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.Supporter
+import ed.unicoach.db.models.SupporterStudentLinkId
+import ed.unicoach.db.models.UnlinkOutcome
 import ed.unicoach.db.models.UserId
 import org.slf4j.LoggerFactory
 
@@ -21,7 +28,29 @@ import org.slf4j.LoggerFactory
  */
 data class SupporterHome(
   val supporter: Supporter,
-  val students: List<LinkedStudent>,
+  val students: List<SupportedStudent>,
+)
+
+/**
+ * One student on a supporter's roster, with the OTHER live adults supporting
+ * that student (RFC 249) — names only, oldest link first, never the supporter
+ * reading it.
+ */
+data class SupportedStudent(
+  val student: LinkedStudent,
+  val otherSupporterNames: List<PersonName>,
+)
+
+/**
+ * Everything the student's "people connected to you" list is built from (RFC
+ * 249): the adults, the ceiling in the student's voice, and whether the
+ * student's Family Cost Report link is live — the one thing a disconnect does
+ * NOT turn off, so the list says so exactly when it is true.
+ */
+data class StudentSupporters(
+  val supporters: List<LinkedSupporter>,
+  val ceiling: CeilingStatement,
+  val costReportLinkLive: Boolean,
 )
 
 /**
@@ -63,7 +92,9 @@ sealed interface EnsureSupporterOutcome {
 
 /**
  * The supporter side of an account (RFC 241): make one, and read the home it
- * lands on.
+ * lands on. Since RFC 249 it also owns both ends' view of a link — the
+ * student's list of adults, the co-supporters on the home — and the
+ * disconnect either end can make.
  *
  * It is the ONE writer of a `supporters` row above `:db`.
  * [getOrCreate] moved here out of [SupporterInviteService], which now
@@ -155,6 +186,59 @@ class SupporterService(
     }
 
   /**
+   * The adults connected to [studentId], the ceiling as the student reads it,
+   * and whether their Family Cost Report link is live (RFC 249) — the read
+   * behind `GET /api/v1/students/me/supporters`.
+   */
+  suspend fun supportersOf(studentId: StudentId): Result<StudentSupporters> =
+    runCatching {
+      database.withConnection { session ->
+        StudentSupporters(
+          supporters = SupporterStudentLinksDao.listActiveSupportersOf(session, studentId).getOrThrow(),
+          ceiling = SupporterCeiling.toStudent,
+          costReportLinkLive = CostReportSharesDao.findLiveByStudent(session, studentId).getOrThrow() != null,
+        )
+      }
+    }
+
+  /**
+   * The student ends one adult's access (RFC 249). Nothing else changes: both
+   * accounts, the student's conversations, the adult's own rows, any unused
+   * invite link and the Family Cost Report link all stay as they are.
+   */
+  suspend fun disconnectAsStudent(
+    studentId: StudentId,
+    linkId: SupporterStudentLinkId,
+  ): Result<UnlinkOutcome> =
+    runCatching {
+      database.withConnection { session ->
+        SupporterStudentLinksDao.unlink(session, linkId, LinkSide.Student(studentId)).getOrThrow()
+      }
+    }
+
+  /**
+   * The supporter ends their own access to one student (RFC 249). A caller with
+   * no live `supporters` row holds no link, so the answer is
+   * [UnlinkOutcome.NotFound], the same as for a link they never held.
+   */
+  suspend fun disconnectAsSupporter(
+    userId: UserId,
+    linkId: SupporterStudentLinkId,
+  ): Result<UnlinkOutcome> =
+    runCatching {
+      database.withConnection { session ->
+        val supporter = SupportersDao.findByUserId(session, userId).getOrThrow()
+        if (supporter == null) {
+          // The door answers this exactly as it answers a link the caller never
+          // held, so this line is the only place the two misses are told apart.
+          logger.info("Disconnect of link [{}] by user [{}]: the user has no live supporters row", linkId.asString, userId.asString)
+          return@withConnection UnlinkOutcome.NotFound
+        }
+        SupporterStudentLinksDao.unlink(session, linkId, LinkSide.Supporter(supporter.id)).getOrThrow()
+      }
+    }
+
+  /**
    * Whether the row was there already, carried out of the transaction that
    * asked. PRIVATE: only [ensure] can tell a client about it, and
    * [getOrCreate] discards it.
@@ -181,14 +265,35 @@ class SupporterService(
       ?.let { EnsuredRow.Found(it) }
       ?: EnsuredRow.Created(SupportersDao.create(session, NewSupporter(userId)).getOrThrow())
 
+  /**
+   * The roster, each student carrying the other adults supporting them (RFC
+   * 249). The students are this supporter's own live links, so nobody outside
+   * them is reachable; the supporter's own links are the rows dropped.
+   */
   private fun homeOf(
     session: SqlSession,
     supporter: Supporter,
-  ): SupporterHome =
-    SupporterHome(
+  ): SupporterHome {
+    val roster = SupporterStudentLinksDao.listActiveLinkedStudents(session, supporter.id).getOrThrow()
+    val others = otherSupporterNamesByStudent(session, roster)
+    return SupporterHome(
       supporter = supporter,
-      students = SupporterStudentLinksDao.listActiveLinkedStudents(session, supporter.id).getOrThrow(),
+      students = roster.map { SupportedStudent(it, others[it.studentId].orEmpty()) },
     )
+  }
+
+  /** The live adults on [roster]'s students, minus the roster's own links — the supporter reading it. */
+  private fun otherSupporterNamesByStudent(
+    session: SqlSession,
+    roster: List<LinkedStudent>,
+  ): Map<StudentId, List<PersonName>> {
+    val ownLinks = roster.mapTo(HashSet()) { it.linkId }
+    return SupporterStudentLinksDao
+      .listActiveSupportersOf(session, roster.map { it.studentId })
+      .getOrThrow()
+      .filterNot { it.linkId in ownLinks }
+      .groupBy({ it.studentId }, { it.name })
+  }
 
   /**
    * A CONCURRENT call minted the row between this one's read and its insert —

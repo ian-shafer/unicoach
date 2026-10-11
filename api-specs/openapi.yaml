@@ -715,6 +715,157 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/supporters/me/students/{linkId}:
+    delete:
+      summary: End the caller's own access to one student
+      description: >
+        Disconnects the caller from the student on this link. Both accounts and
+        everything else stay as they are. A link the caller does not hold live —
+        never existed, another person's, or already disconnected — is one 404.
+      operationId: disconnectSupporterStudent
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: linkId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Disconnected
+        '400':
+          description: The link id is not a UUID (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such link held by the caller (supporter_link_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/students/me/supporters:
+    get:
+      summary: List the adults connected to the current student
+      description: >
+        The adults connected to the student, by name only, with what every one
+        of them can see and what stays private, stated once, and whether the
+        student's Family Cost Report link is live.
+      operationId: listStudentSupporters
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The adults connected to the student
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentSupportersResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/students/me/supporters/{linkId}:
+    delete:
+      summary: End one adult's access to the current student
+      description: >
+        Disconnects one adult from the student. Both accounts stay as they are,
+        unused invite links stay live, and the Family Cost Report link is not
+        turned off. A link the student does not hold live — never existed,
+        another student's, or already disconnected — is one 404.
+      operationId: disconnectStudentSupporter
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: linkId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Disconnected
+        '400':
+          description: The link id is not a UUID (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such link held by the student (supporter_link_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students/me/college-list:
     post:
       summary: Add a college to the current student's college list
@@ -2229,12 +2380,12 @@ components:
           format: uuid
     PublicLinkedStudent:
       type: object
-      # CLOSED on purpose: the four properties below are everything a supporter
-      # may read about a linked student in this slice. A date of birth or an
+      # CLOSED on purpose: the properties below are everything a supporter may
+      # read about a linked student in this slice. A date of birth or an
       # expected graduation date here would decide family/05's read policy, so
       # adding any property is an edit a reviewer sees.
       additionalProperties: false
-      required: [linkId, studentId, name, relationship]
+      required: [linkId, studentId, name, relationship, otherSupporterNames]
       properties:
         linkId:
           type: string
@@ -2249,6 +2400,14 @@ components:
           type: string
           description: How the supporter is related to the student.
           enum: [parent, guardian, grandparent, supporter]
+        otherSupporterNames:
+          type: array
+          description: >
+            The display names of the other adults connected to this student,
+            oldest link first. Never the caller's own name. Empty when the
+            caller is the only one.
+          items:
+            type: string
     SupporterHomeResponse:
       type: object
       # CLOSED, like both of the schemas it is built from: the envelope a client
@@ -2264,6 +2423,51 @@ components:
           description: Active links only, oldest first. Empty for a supporter who has linked nobody.
           items:
             $ref: '#/components/schemas/PublicLinkedStudent'
+    PublicLinkedSupporter:
+      type: object
+      # CLOSED: a student reads the link to disconnect and a name. No email and
+      # no relationship word.
+      additionalProperties: false
+      required: [linkId, name]
+      properties:
+        linkId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: The adult's display name, from their own account.
+    SupporterCeiling:
+      type: object
+      additionalProperties: false
+      required: [canSee, staysPrivate]
+      properties:
+        canSee:
+          type: array
+          description: What every connected adult can see, in the student's voice.
+          items:
+            type: string
+        staysPrivate:
+          type: array
+          description: What no connected adult can see or do, in the student's voice.
+          items:
+            type: string
+    StudentSupportersResponse:
+      type: object
+      additionalProperties: false
+      required: [supporters, ceiling, costReportLinkLive]
+      properties:
+        supporters:
+          type: array
+          description: The adults connected to the student, oldest link first. Empty when nobody is.
+          items:
+            $ref: '#/components/schemas/PublicLinkedSupporter'
+        ceiling:
+          $ref: '#/components/schemas/SupporterCeiling'
+        costReportLinkLive:
+          type: boolean
+          description: >
+            Whether the student's Family Cost Report link is live. A disconnect
+            does not turn it off.
     UpdateMoneyProfileRequest:
       type: object
       additionalProperties: false

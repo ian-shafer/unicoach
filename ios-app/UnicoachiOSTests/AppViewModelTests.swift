@@ -78,7 +78,7 @@ class AppViewModelTests: XCTestCase {
     func testCheckSessionSupporterHomeWhenOnlyASupporterRowExists() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         let home = makeSupporterHome(students: [
-            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent, otherSupporterNames: []),
         ])
         mockClient.meResult = .success(MeResponse(user: user))
         mockStudentClient.fetchProfileResult = .success(nil)
@@ -170,7 +170,7 @@ class AppViewModelTests: XCTestCase {
     func testRefreshSupporterHomeReplacesTheRoster() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         let linked = makeSupporterHome(students: [
-            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent, otherSupporterNames: []),
         ])
         viewModel.authState = .supporterHome(user, makeSupporterHome())
         mockSupporterClient.fetchHomeResult = .success(linked)
@@ -201,7 +201,7 @@ class AppViewModelTests: XCTestCase {
     func testRefreshSupporterHomeIgnoresAnAbsentSupporterRow() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         let home = makeSupporterHome(students: [
-            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent, otherSupporterNames: []),
         ])
         viewModel.authState = .supporterHome(user, home)
         mockSupporterClient.fetchHomeResult = .success(nil)
@@ -234,7 +234,7 @@ class AppViewModelTests: XCTestCase {
         viewModel.authState = .supporterHome(user, makeSupporterHome())
         mockClient.logoutResult = .success(())
         mockSupporterClient.fetchHomeResult = .success(makeSupporterHome(students: [
-            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
+            LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent, otherSupporterNames: []),
         ]))
         let gate = InFlightGate()
         mockSupporterClient.fetchHomeGate = { await gate.hold() }

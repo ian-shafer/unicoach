@@ -16,6 +16,8 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import kotlinx.html.li
+import kotlinx.html.stream.createHTML
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -79,6 +81,46 @@ class InviteRoutingTest {
       assertTrue(body.contains("Sign in to accept"), "missing the signed-out sign-in door")
       assertTrue(!body.contains("name=\"email\""), "a signed-out visitor must not be asked for credentials")
     }
+
+  /**
+   * The page's ceiling lines, written out (RFC 249): the four RFC 232 lines as
+   * they were, plus the one that tells an adult their name is visible to the
+   * other adults supporting the same student. Literal on purpose — the lines
+   * moved into `SupporterCeiling`, and this is what proves the move changed
+   * nothing a stranger reads except the added line.
+   */
+  @Test
+  fun `the invite page states the ceiling lines unchanged, plus the co-supporter name line`() =
+    testApplication {
+      application {
+        testPublicWebModule()
+      }
+      val body = client.get("/invite?token=${mintStudentInvite()}").bodyAsText()
+
+      val opening = "<section class=\"invite-ceiling\""
+      assertTrue(body.contains(opening), "the ceiling section must be on the page")
+      val items =
+        Regex("<li>(.*?)</li>", RegexOption.DOT_MATCHES_ALL)
+          .findAll(body.substringAfter(opening).substringBefore("</section>"))
+          .map { it.groupValues[1].trim() }
+          .toList()
+
+      assertEquals(
+        listOf(
+          "See the student's college list and key application deadlines.",
+          "See estimated college costs and financial-aid calculations.",
+          "Use your own coach workspace for financial-aid and timeline help.",
+          "Other supporters connected to this student will see your name.",
+          "Student coach conversations stay 100% private to the student. Transcripts are never shared.",
+          "Supporters cannot edit the student's college list, profile, or tasks — parents support, students direct.",
+        ).map(::encodedListItem),
+        items,
+      )
+    }
+
+  /** [line] as the page's own encoder writes it inside an `<li>`, so no hand-rolled decoder sits between the two. */
+  private fun encodedListItem(line: String): String =
+    createHTML(prettyPrint = false).li { +line }.removePrefix("<li>").removeSuffix("</li>")
 
   /**
    * The word nobody stated (RFC 240 decision 4). Both doors mint `supporter`

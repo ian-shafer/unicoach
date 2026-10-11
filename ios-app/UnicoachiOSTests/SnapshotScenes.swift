@@ -306,12 +306,18 @@ enum SnapshotSeed {
 
     /// Pinned ids: nothing renders them, but a scene that minted a fresh UUID
     /// per run would make the selection store answer differently each time.
-    static func linkedStudent(_ index: Int, name: String, relationship: SupporterRelationship = .parent) -> LinkedStudent {
+    static func linkedStudent(
+        _ index: Int,
+        name: String,
+        relationship: SupporterRelationship = .parent,
+        otherSupporterNames: [String] = []
+    ) -> LinkedStudent {
         LinkedStudent(
             linkId: UUID(uuidString: "66660000-0000-0000-0000-00000000000\(index)") ?? UUID(),
             studentId: UUID(uuidString: "55550000-0000-0000-0000-00000000000\(index)") ?? UUID(),
             name: name,
-            relationship: relationship
+            relationship: relationship,
+            otherSupporterNames: otherSupporterNames
         )
     }
 
@@ -360,6 +366,7 @@ enum SnapshotSeed {
             ),
             authClient: MockAuthClient(),
             supporterInviteClient: PreviewSupporterInviteClient(),
+            supporterClient: PreviewSupporterClient(),
             collegeListClient: MockCollegeListClient(),
             // The section reads on its own `.task`, which the harness's settle
             // lets through — the `ConversationView` history-load precedent.
@@ -374,6 +381,85 @@ enum SnapshotSeed {
             refreshHome: {},
             onEmailChanged: { _ in },
             onLogout: {}
+        )
+    }
+
+    // MARK: - The family list (RFC 249)
+
+    /// The ceiling in the student's voice, as `SupporterCeiling` in `:service`
+    /// serves it. Copied here because a scene photographs what the server
+    /// says; the app itself carries none of these words.
+    static let studentCeiling = SupporterCeiling(
+        canSee: [
+            "Your college list and key application deadlines.",
+            "Estimated college costs and financial-aid calculations.",
+            "The names of the other people connected to you.",
+        ],
+        staysPrivate: [
+            "Your coach conversations. Transcripts are never shared.",
+            "They cannot change your college list, profile or tasks.",
+        ]
+    )
+
+    static let robinLink = UUID(uuidString: "99990000-0000-0000-0000-000000000001") ?? UUID()
+
+    /// The invite double answering the student's list. The section reads it on
+    /// its own `.task`, which the settle lets through — the
+    /// `supporterHome` coaching-section precedent.
+    static func studentFamilyClient(
+        _ supporters: [LinkedSupporter],
+        costReportLinkLive: Bool = false
+    ) -> PreviewSupporterInviteClient {
+        PreviewSupporterInviteClient(supporters: StudentSupporters(
+            supporters: supporters,
+            ceiling: studentCeiling,
+            costReportLinkLive: costReportLinkLive
+        ))
+    }
+
+    static let twoAdults: [LinkedSupporter] = [
+        LinkedSupporter(linkId: robinLink, name: "Robin Carter"),
+        LinkedSupporter(linkId: UUID(uuidString: "99990000-0000-0000-0000-000000000002") ?? UUID(), name: "Sam Lee"),
+    ]
+
+    /// The student's family list on its own, at the screen margin — for the
+    /// states whose difference is inside the section, where a whole Settings
+    /// capture would spend its height on the rail.
+    static func studentFamilyStrip(
+        _ client: PreviewSupporterInviteClient,
+        confirmingOnAppear: UUID? = nil
+    ) -> AnyView {
+        AnyView(
+            FamilyConnectionsSection(side: .student(client), confirmingOnAppear: confirmingOnAppear)
+                .padding(DSSpacing.lg)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Color.dsBackground)
+        )
+    }
+
+    /// A parent's Settings with a roster: one student another adult also
+    /// supports, and one they support alone.
+    static func supporterSettings(confirmingOnAppear: UUID? = nil) -> AnyView {
+        UserDefaults.standard.set(AppearancePreference.system.rawValue, forKey: AppearancePreference.storageKey)
+        return AnyView(
+            NavigationStack {
+                SettingsView(
+                    user: supporterUser,
+                    caller: .supporter(.init(
+                        roster: [
+                            linkedStudent(1, name: "Ava Carter", otherSupporterNames: ["Sam Lee", "Jordan Lee"]),
+                            linkedStudent(2, name: "Noah Carter"),
+                        ],
+                        client: PreviewSupporterClient(),
+                        refreshHome: {}
+                    )),
+                    authClient: MockAuthClient(),
+                    supporterInviteClient: PreviewSupporterInviteClient(),
+                    disconnectConfirmationOnAppear: confirmingOnAppear,
+                    onEmailChanged: { _ in },
+                    onLogout: {}
+                )
+            }
         )
     }
 
@@ -711,7 +797,7 @@ enum SnapshotCatalogue {
                     NavigationStack {
                         SettingsView(
                             user: SnapshotSeed.supporterUser,
-                            caller: .supporter,
+                            caller: .supporter(.init(roster: [], client: PreviewSupporterClient(), refreshHome: {})),
                             authClient: MockAuthClient(),
                             supporterInviteClient: PreviewSupporterInviteClient(),
                             onEmailChanged: { _ in },
@@ -719,6 +805,51 @@ enum SnapshotCatalogue {
                         )
                     }
                 )
+            },
+
+            // --- The family list (RFC 249): who is connected, what they can
+            // see, and the two-tap disconnect, from both ends. The confirmation
+            // is an in-view disclosure precisely so it can be photographed open.
+            SnapshotScene(name: "settings-family-two-adults", size: SnapshotScene.tallCanvas(height: 1500)) {
+                let rail = await SnapshotSeed.rail(
+                    usage: CoachingUsage(usedPercent: 42, exhausted: false, resetsAt: nil)
+                )
+                UserDefaults.standard.set(
+                    AppearancePreference.system.rawValue,
+                    forKey: AppearancePreference.storageKey
+                )
+                return AnyView(
+                    NavigationStack {
+                        SettingsView(
+                            user: SnapshotSeed.user,
+                            caller: .student(rail: rail),
+                            authClient: MockAuthClient(),
+                            supporterInviteClient: SnapshotSeed.studentFamilyClient(SnapshotSeed.twoAdults),
+                            onEmailChanged: { _ in },
+                            onLogout: {}
+                        )
+                    }
+                )
+            },
+            SnapshotScene(name: "family-student-confirm-open", size: SnapshotScene.tallCanvas(height: 900)) {
+                SnapshotSeed.studentFamilyStrip(
+                    SnapshotSeed.studentFamilyClient(SnapshotSeed.twoAdults),
+                    confirmingOnAppear: SnapshotSeed.robinLink
+                )
+            },
+            SnapshotScene(name: "family-student-cost-report-live", size: SnapshotScene.tallCanvas(height: 900)) {
+                SnapshotSeed.studentFamilyStrip(
+                    SnapshotSeed.studentFamilyClient(SnapshotSeed.twoAdults, costReportLinkLive: true)
+                )
+            },
+            SnapshotScene(name: "family-student-empty", size: SnapshotScene.tallCanvas(height: 400)) {
+                SnapshotSeed.studentFamilyStrip(SnapshotSeed.studentFamilyClient([]))
+            },
+            SnapshotScene(name: "settings-supporter-family", size: SnapshotScene.tallCanvas(height: 1000)) {
+                SnapshotSeed.supporterSettings()
+            },
+            SnapshotScene(name: "settings-supporter-family-confirm-open", size: SnapshotScene.tallCanvas(height: 1100)) {
+                SnapshotSeed.supporterSettings(confirmingOnAppear: SnapshotSeed.linkedStudent(1, name: "Ava Carter").linkId)
             },
 
             // --- The parent account (RFC 241). Four screens the gate has never

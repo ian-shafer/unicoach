@@ -139,16 +139,15 @@ class InviteSupporterChatTool(
         "If they want to connect someone else as well, call $TOOL_NAME again for a second link."
 
     /**
-     * The same ceiling `InvitePage.inviteCeiling` shows the recipient (RFC 232's
-     * landed copy), RESTATED for speech — not that page's own strings. The page
-     * renders three HTML bullets to a stranger; this is one sentence a coach
-     * says to a student.
+     * The same ceiling [ed.unicoach.family.SupporterCeiling] states as a list —
+     * on the `/invite` page and on the student's list of connected adults —
+     * RESTATED for speech, not those lists' own strings: this is one sentence a
+     * coach says to a student.
      *
-     * Nothing binds the two: `inviteCeiling` is private and lives in the
-     * `public-web` module, which `service` does not depend on. So this is a
-     * second hand-written home for one claim, and the day they diverge is the
-     * day a student is told something the recipient's page contradicts. Reword
-     * either one and reword the other (RFC 240 §3, open item).
+     * Nothing binds the two, so this is a second hand-written home for one
+     * claim, and the day they diverge is the day a student is told something
+     * the recipient's page contradicts. Reword either one and reword the other
+     * (RFC 240 §3 open item, narrowed by RFC 249 to the spoken form).
      */
     const val WHAT_CONNECTING_GIVES =
       "Connecting gives the parent or supporter their own unicoach account and their own coach workspace, " +

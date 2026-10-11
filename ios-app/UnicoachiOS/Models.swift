@@ -153,6 +153,10 @@ struct LinkedStudent: Codable, Equatable, Identifiable, Sendable {
     let studentId: UUID
     let name: String
     let relationship: SupporterRelationship
+    /// The OTHER adults linked to this student, by name only (RFC 249) — never
+    /// the caller, never an email. Always emitted, empty when the caller is the
+    /// only one, so it is required rather than optional.
+    let otherSupporterNames: [String]
 
     var id: UUID { linkId }
 }
@@ -170,6 +174,44 @@ struct LinkedStudent: Codable, Equatable, Identifiable, Sendable {
 struct SupporterHome: Codable, Equatable, Sendable {
     let supporter: PublicSupporter
     let students: [LinkedStudent]
+}
+
+// MARK: - The student's supporters (RFC 249)
+
+/// `GET /api/v1/students/me/supporters`: every adult connected to the student,
+/// what any of them can see, and whether the student's Family Cost Report link
+/// is live — the one thing a disconnect does NOT turn off.
+///
+/// `Decodable` only: this body is read and never sent.
+struct StudentSupporters: Decodable, Equatable, Sendable {
+    let supporters: [LinkedSupporter]
+    let ceiling: SupporterCeiling
+    let costReportLinkLive: Bool
+}
+
+/// One adult on the student's list. Two fields, and the server's projection
+/// selects no more — in particular no email.
+struct LinkedSupporter: Decodable, Equatable, Identifiable, Sendable {
+    let linkId: UUID
+    let name: String
+
+    var id: UUID { linkId }
+}
+
+/// What a disconnect did (RFC 249) — the server's two answers. `alreadyGone`
+/// is `404 supporter_link_not_found`: not live for this caller, which from a
+/// list that showed the link means another device got there first.
+enum DisconnectOutcome: Equatable, Sendable {
+    case disconnected
+    case alreadyGone
+}
+
+/// What a connected adult can see, and what stays private, already worded for
+/// the student. The words are the server's (`SupporterCeiling` in `:service`,
+/// the same home the invite page renders from), so the app carries none.
+struct SupporterCeiling: Decodable, Equatable, Sendable {
+    let canSee: [String]
+    let staysPrivate: [String]
 }
 
 struct FieldError: Codable, Equatable {
@@ -254,6 +296,10 @@ enum ServerErrorCode: String {
     /// spent (RFC 109). Action-scoped: reads stay open, so this is never an auth
     /// state — see RFC 121.
     case coachingBudgetExhausted = "coaching_budget_exhausted"
+    /// The 404 both disconnect doors answer for a link that is not the
+    /// caller's, never existed, or is already severed (RFC 249). From a list
+    /// that showed the link, it means another device got there first.
+    case supporterLinkNotFound = "supporter_link_not_found"
     case timeout = "TIMEOUT"
     case networkError = "NETWORK_ERROR"
     case serverError = "SERVER_ERROR"

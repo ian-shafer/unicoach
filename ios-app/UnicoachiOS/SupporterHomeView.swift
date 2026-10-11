@@ -22,6 +22,8 @@ struct SupporterHomeView: View {
     let home: SupporterHome
     let authClient: AuthClientProtocol
     let supporterInviteClient: SupporterInviteClientProtocol
+    /// The supporter doors — here for the disconnect Settings offers (RFC 249).
+    let supporterClient: SupporterClientProtocol
     let collegeListClient: CollegeListClientProtocol
     let subjectStore: SupporterSubjectStore
     /// Re-reads the roster from `GET /api/v1/supporters/me` and hands it to the
@@ -69,6 +71,7 @@ struct SupporterHomeView: View {
         home: SupporterHome,
         authClient: AuthClientProtocol,
         supporterInviteClient: SupporterInviteClientProtocol,
+        supporterClient: SupporterClientProtocol,
         collegeListClient: CollegeListClientProtocol,
         supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol,
         subjectStore: SupporterSubjectStore,
@@ -81,6 +84,7 @@ struct SupporterHomeView: View {
         self.home = home
         self.authClient = authClient
         self.supporterInviteClient = supporterInviteClient
+        self.supporterClient = supporterClient
         self.collegeListClient = collegeListClient
         self.subjectStore = subjectStore
         self.switcherOpenOnAppear = switcherOpenOnAppear
@@ -263,7 +267,11 @@ struct SupporterHomeView: View {
                 // meter on their OWN scene — `SupporterCoachingSection` above,
                 // reading a supporter-scoped route. Settings gains nothing, so
                 // the `Caller` enum's claim stays true (RFC 244).
-                caller: .supporter,
+                //
+                // The roster and the refresh are for the family list
+                // (RFC 249): popping back from Settings does not re-run this
+                // scene's `.task`, so a disconnect re-reads the home itself.
+                caller: .supporter(.init(roster: home.students, client: supporterClient, refreshHome: refreshHome)),
                 authClient: authClient,
                 supporterInviteClient: supporterInviteClient,
                 onEmailChanged: onEmailChanged,
@@ -323,6 +331,7 @@ private struct SupporterHomePreviewSubjectStore: SupporterSubjectStore {
         home: SupporterHome(supporter: PublicSupporter(id: UUID()), students: students),
         authClient: SupporterHomePreviewAuthClient(),
         supporterInviteClient: PreviewSupporterInviteClient(),
+        supporterClient: PreviewSupporterClient(),
         collegeListClient: SupporterHomePreviewCollegeListClient(),
         supporterCoachingUsageClient: PreviewSupporterCoachingUsageClient(),
         subjectStore: SupporterHomePreviewSubjectStore(),
@@ -333,8 +342,8 @@ private struct SupporterHomePreviewSubjectStore: SupporterSubjectStore {
 }
 
 private let supporterHomePreviewRoster: [LinkedStudent] = [
-    LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent),
-    LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Noah", relationship: .parent),
+    LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Ava", relationship: .parent, otherSupporterNames: []),
+    LinkedStudent(linkId: UUID(), studentId: UUID(), name: "Noah", relationship: .parent, otherSupporterNames: []),
 ]
 
 #Preview("supporterHome empty - Light") {

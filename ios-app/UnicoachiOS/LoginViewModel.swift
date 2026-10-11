@@ -223,6 +223,7 @@ class LoginViewModel: ObservableObject {
              .validationFailed,
              .payloadTooLarge,
              .ageRequirementNotMet,
+             .supporterLinkNotFound,
              .coachingBudgetExhausted,
              .decodeError,
              .none:

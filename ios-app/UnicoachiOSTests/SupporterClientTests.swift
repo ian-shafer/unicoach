@@ -30,7 +30,8 @@ class SupporterClientTests: XCTestCase {
               "linkId": "66660000-0000-0000-0000-000000000001",
               "studentId": "55550000-0000-0000-0000-000000000001",
               "name": "Ava Carter",
-              "relationship": "\(relationship)"
+              "relationship": "\(relationship)",
+              "otherSupporterNames": ["Sam Lee"]
             }
           ]
         }
@@ -126,5 +127,42 @@ class SupporterClientTests: XCTestCase {
         let home = try await supporterClient.fetchHome()
 
         XCTAssertNil(home)
+    }
+
+    // MARK: - The co-supporters and the disconnect (RFC 249)
+
+    func testTheRosterCarriesEachStudentsOtherSupporters() async throws {
+        respond(status: 200, body: homeBody(relationship: "parent"))
+
+        let home = try await supporterClient.fetchHome()
+
+        XCTAssertEqual(home?.students.first?.otherSupporterNames, ["Sam Lee"])
+    }
+
+    func testDisconnectDeletesTheCallersOwnLinkAndAcceptsNoContent() async throws {
+        let linkId = UUID(uuidString: "66660000-0000-0000-0000-000000000001")!
+        let seen = Locked<(method: String?, path: String?)>((nil, nil))
+        MockURLProtocol.requestHandler = { request in
+            seen.withLock { $0 = (request.httpMethod, request.url?.path) }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+
+        let outcome = try await supporterClient.disconnect(linkId: linkId)
+
+        XCTAssertEqual(outcome, .disconnected)
+        XCTAssertEqual(seen.current.method, "DELETE")
+        XCTAssertEqual(seen.current.path?.lowercased(), "/api/v1/supporters/me/students/\(linkId.uuidString.lowercased())")
+    }
+
+    func testDisconnectAnswersTheServersNotFoundAsAlreadyGone() async throws {
+        respond(
+            status: 404,
+            body: Data(#"{"code":"supporter_link_not_found","message":"Not found"}"#.utf8)
+        )
+
+        let outcome = try await supporterClient.disconnect(linkId: UUID())
+
+        XCTAssertEqual(outcome, .alreadyGone)
     }
 }

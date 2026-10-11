@@ -16,6 +16,9 @@ class MockSupporterClient: SupporterClientProtocol, @unchecked Sendable {
     var becomeSupporterResult: Result<SupporterHome, Error>?
     private(set) var becomeSupporterCallCount = 0
 
+    var disconnectResult: Result<DisconnectOutcome, Error>?
+    private(set) var disconnectedLinkIds: [UUID] = []
+
     func fetchHome() async throws -> SupporterHome? {
         fetchHomeCallCount += 1
         await fetchHomeGate?()
@@ -41,6 +44,39 @@ class MockSupporterClient: SupporterClientProtocol, @unchecked Sendable {
             }
         }
         fatalError("No result configured")
+    }
+
+    func disconnect(linkId: UUID) async throws -> DisconnectOutcome {
+        disconnectedLinkIds.append(linkId)
+        guard let disconnectResult else { fatalError("No result configured") }
+        return try disconnectResult.get()
+    }
+}
+
+/// The student's family client double (RFC 249). Until this slice no test
+/// drove `SupporterInviteClientProtocol` — snapshot scenes used the app
+/// target's `PreviewSupporterInviteClient` — so this is its first mock.
+class MockSupporterInviteClient: SupporterInviteClientProtocol, @unchecked Sendable {
+    var fetchSupportersResult: Result<StudentSupporters, Error>?
+    private(set) var fetchSupportersCallCount = 0
+
+    var disconnectSupporterResult: Result<DisconnectOutcome, Error>?
+    private(set) var disconnectedLinkIds: [UUID] = []
+
+    func createInvite(relationship: SupporterRelationship?) async throws -> SupporterInviteResponse {
+        fatalError("Not used by these tests")
+    }
+
+    func fetchSupporters() async throws -> StudentSupporters {
+        fetchSupportersCallCount += 1
+        guard let fetchSupportersResult else { fatalError("No result configured") }
+        return try fetchSupportersResult.get()
+    }
+
+    func disconnectSupporter(linkId: UUID) async throws -> DisconnectOutcome {
+        disconnectedLinkIds.append(linkId)
+        guard let disconnectSupporterResult else { fatalError("No result configured") }
+        return try disconnectSupporterResult.get()
     }
 }
 

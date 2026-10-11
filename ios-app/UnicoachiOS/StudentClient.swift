@@ -38,6 +38,16 @@ protocol SupporterInviteClientProtocol: Sendable {
     /// `nil` sends no word at all: the server owns the product default, and the
     /// response reports the word it used.
     func createInvite(relationship: SupporterRelationship?) async throws -> SupporterInviteResponse
+
+    /// `GET /api/v1/students/me/supporters` (RFC 249): the adults connected to
+    /// the signed-in student, the ceiling in the student's voice, and whether
+    /// the Family Cost Report link is live. Student-scoped: only the student's
+    /// Settings calls it.
+    func fetchSupporters() async throws -> StudentSupporters
+
+    /// `DELETE /api/v1/students/me/supporters/{linkId}` (RFC 249). Every
+    /// status but `204` and `404 supporter_link_not_found` throws.
+    func disconnectSupporter(linkId: UUID) async throws -> DisconnectOutcome
 }
 
 class SupporterInviteClient: SupporterInviteClientProtocol, @unchecked Sendable {
@@ -63,6 +73,18 @@ class SupporterInviteClient: SupporterInviteClientProtocol, @unchecked Sendable 
             throw error
         }
     }
+
+    func fetchSupporters() async throws -> StudentSupporters {
+        logger.debug("Fetching the student's supporters")
+        let (data, response) = try await apiClient.get("/api/v1/students/me/supporters")
+        return try apiClient.decode(data: data, response: response, expectedStatus: 200)
+    }
+
+    func disconnectSupporter(linkId: UUID) async throws -> DisconnectOutcome {
+        logger.debug("Disconnecting supporter link [\(linkId, privacy: .public)]")
+        let (data, response) = try await apiClient.delete("/api/v1/students/me/supporters/\(linkId.uuidString)")
+        return try apiClient.disconnectOutcome(data: data, response: response)
+    }
 }
 
 /// The invite door's canvas double: one fixed minted link, no network. Declared
@@ -80,6 +102,14 @@ struct PreviewSupporterInviteClient: SupporterInviteClientProtocol {
     var inviterRole: InviterRole = .student
     var expiresAt = Date(timeIntervalSince1970: 4_102_444_800)
 
+    /// What the student's list shows on the canvas (RFC 249). Empty by
+    /// default; a canvas that wants people names them.
+    var supporters = StudentSupporters(
+        supporters: [],
+        ceiling: SupporterCeiling(canSee: [], staysPrivate: []),
+        costReportLinkLive: false
+    )
+
     func createInvite(relationship: SupporterRelationship?) async throws -> SupporterInviteResponse {
         SupporterInviteResponse(
             id: UUID(),
@@ -89,4 +119,8 @@ struct PreviewSupporterInviteClient: SupporterInviteClientProtocol {
             expiresAt: expiresAt
         )
     }
+
+    func fetchSupporters() async throws -> StudentSupporters { supporters }
+
+    func disconnectSupporter(linkId: UUID) async throws -> DisconnectOutcome { .disconnected }
 }

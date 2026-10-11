@@ -41,6 +41,7 @@ import ed.unicoach.rest.models.PostMessageResponse
 import ed.unicoach.rest.models.StreamErrorEvent
 import ed.unicoach.rest.models.UpdateConversationRequest
 import ed.unicoach.rest.models.UserMessageEvent
+import ed.unicoach.rest.pathId
 import ed.unicoach.rest.rejectUnsupportedMethods
 import ed.unicoach.rest.respondValidationFailed
 import ed.unicoach.student.StudentService
@@ -65,7 +66,6 @@ import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.put
 import java.time.Instant
-import java.util.UUID
 
 class ConvoRouteHandler(
   authService: AuthService,
@@ -119,10 +119,7 @@ class ConvoRouteHandler(
     call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.NOT_FOUND, "No such conversation"))
   }
 
-  private fun RoutingContext.pathConvoId(): ConvoId? {
-    val raw = call.parameters["conversationId"] ?: return null
-    return runCatching { ConvoId(UUID.fromString(raw)) }.getOrNull()
-  }
+  private fun RoutingContext.pathConvoId(): ConvoId? = pathId("conversationId", ::ConvoId)
 
   // ---------------------------------------------------------------------------
   // Buffered handlers

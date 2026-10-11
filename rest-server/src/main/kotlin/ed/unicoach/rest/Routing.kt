@@ -14,6 +14,7 @@ import ed.unicoach.rest.routing.IntendedSubjectsRouteHandler
 import ed.unicoach.rest.routing.MoneyProfileRouteHandler
 import ed.unicoach.rest.routing.SharingPermissionRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
+import ed.unicoach.rest.routing.StudentSupporterRouteHandler
 import ed.unicoach.rest.routing.SubjectsRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
 import ed.unicoach.rest.routing.SupporterInviteRoutes
@@ -32,10 +33,32 @@ import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import java.util.UUID
 
 /** The uniform 400 shape: `VALIDATION_FAILED` with per-field detail — one value, shared by every route handler. */
 suspend fun RoutingContext.respondValidationFailed(fieldErrors: List<FieldError>) {
   call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", fieldErrors))
+}
+
+/**
+ * The path parameter [name] as a typed id, or null when it is absent or not a
+ * canonical UUID. Read from the route's path only: in `call.parameters` a query
+ * parameter of the same name wins over the path, so `?linkId=` could redirect a
+ * DELETE. `UUID.fromString` also accepts short groups (`1-2-3-4-5`), so only a
+ * value that prints back as itself is an id.
+ */
+fun <T> RoutingContext.pathId(
+  name: String,
+  wrap: (UUID) -> T,
+): T? {
+  val raw = call.pathParameters[name] ?: return null
+  val id =
+    try {
+      UUID.fromString(raw)
+    } catch (_: IllegalArgumentException) {
+      return null
+    }
+  return if (id.toString() == raw.lowercase()) wrap(id) else null
 }
 
 fun Route.rejectUnsupportedMethods(vararg methods: HttpMethod) {
@@ -99,6 +122,8 @@ fun Application.configureRouting(
     SupporterInviteRoutes(authService, studentService, sessionConfig, supporterInviteService)
   val supporterRouteHandler =
     SupporterRoutes(authService, sessionConfig, supporterService, budgetService)
+  val studentSupporterRouteHandler =
+    StudentSupporterRouteHandler(authService, studentService, supporterService, sessionConfig)
   routing {
     route("/healthz") {
       get {
@@ -124,5 +149,6 @@ fun Application.configureRouting(
     sharingPermissionRouteHandler.registerRoutes(this)
     supporterInviteRouteHandler.registerRoutes(this)
     supporterRouteHandler.registerRoutes(this)
+    studentSupporterRouteHandler.registerRoutes(this)
   }
 }

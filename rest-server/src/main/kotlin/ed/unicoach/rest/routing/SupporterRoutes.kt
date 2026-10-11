@@ -3,6 +3,7 @@ package ed.unicoach.rest.routing
 import ed.unicoach.auth.AuthService
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.Entitlement
+import ed.unicoach.db.models.SupporterStudentLinkId
 import ed.unicoach.family.EnsureSupporterOutcome
 import ed.unicoach.family.SupporterHome
 import ed.unicoach.family.SupporterService
@@ -14,6 +15,7 @@ import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.models.SupporterCoachingUsageResponse
 import ed.unicoach.rest.models.toCoachingUsage
 import ed.unicoach.rest.models.toResponse
+import ed.unicoach.rest.pathId
 import ed.unicoach.rest.rejectUnsupportedMethods
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -21,6 +23,7 @@ import io.ktor.server.application.call
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RoutingContext
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
@@ -38,13 +41,19 @@ const val SUPPORTER_COACHING_USAGE_SEGMENT = "/coaching-usage"
 
 const val SUPPORTER_COACHING_USAGE_PATH = "$SUPPORTER_ME_PATH$SUPPORTER_COACHING_USAGE_SEGMENT"
 
+/** The supporter's disconnect from one student (RFC 249), under the home read. */
+const val SUPPORTER_STUDENT_LINK_SEGMENT = "/students/{$LINK_ID_PARAM}"
+
+const val SUPPORTER_STUDENT_LINK_PATH = "$SUPPORTER_ME_PATH$SUPPORTER_STUDENT_LINK_SEGMENT"
+
 /**
- * The three supporter doors: become a supporter (`POST /api/v1/supporters`), read
- * the supporter home (`GET /api/v1/supporters/me`) — both RFC 241 — and read how
+ * The four supporter doors: become a supporter (`POST /api/v1/supporters`), read
+ * the supporter home (`GET /api/v1/supporters/me`) — both RFC 241 — read how
  * the parent's own coaching is paid for
- * (`GET /api/v1/supporters/me/coaching-usage`, RFC 244).
+ * (`GET /api/v1/supporters/me/coaching-usage`, RFC 244), and end one's own
+ * access to a student (`DELETE /api/v1/supporters/me/students/{linkId}`, RFC 249).
  *
- * All three sit behind the session check and, unlike RFC 232's accept path,
+ * All four sit behind the session check and, unlike RFC 232's accept path,
  * behind `EmailVerificationGate` — none is on the path of an invite a stranger
  * followed, so none needs the X8 exemption and a parent verifies their email
  * exactly as a student does.
@@ -72,6 +81,10 @@ class SupporterRoutes(
         route(SUPPORTER_COACHING_USAGE_SEGMENT) {
           get { handleGetCoachingUsage() }
           rejectUnsupportedMethods(HttpMethod.Get)
+        }
+        route(SUPPORTER_STUDENT_LINK_SEGMENT) {
+          delete { handleDisconnect() }
+          rejectUnsupportedMethods(HttpMethod.Delete)
         }
       }
     }
@@ -107,6 +120,18 @@ class SupporterRoutes(
 
     val home = supporterService.homeFor(user.id).getOrThrow() ?: return respondSupporterNotFound()
     respondSupporterHome(home)
+  }
+
+  /**
+   * The supporter ends their own access to one student (RFC 249). A caller with
+   * no supporter row holds no link, so they get the same `404
+   * supporter_link_not_found` as for a link they never held — not
+   * `supporter_not_found`, which would answer a different question.
+   */
+  private suspend fun RoutingContext.handleDisconnect() {
+    val user = resolveUser() ?: return respondUnauthorized()
+
+    respondDisconnect(pathId(LINK_ID_PARAM, ::SupporterStudentLinkId)) { linkId -> supporterService.disconnectAsSupporter(user.id, linkId) }
   }
 
   /**

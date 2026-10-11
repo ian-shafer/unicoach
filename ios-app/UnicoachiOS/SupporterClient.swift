@@ -17,6 +17,11 @@ protocol SupporterClientProtocol: Sendable {
     /// parent-shaped the first time and answers the same home on every later
     /// call, so a retry after a dropped response is safe.
     func becomeSupporter() async throws -> SupporterHome
+
+    /// `DELETE /api/v1/supporters/me/students/{linkId}` (RFC 249): end the
+    /// caller's own link to one student. Every status but `204` and
+    /// `404 supporter_link_not_found` throws.
+    func disconnect(linkId: UUID) async throws -> DisconnectOutcome
 }
 
 final class SupporterClient: SupporterClientProtocol, @unchecked Sendable {
@@ -60,6 +65,12 @@ final class SupporterClient: SupporterClientProtocol, @unchecked Sendable {
             throw error
         }
     }
+
+    func disconnect(linkId: UUID) async throws -> DisconnectOutcome {
+        logger.debug("Disconnecting from student link [\(linkId, privacy: .public)]")
+        let (data, response) = try await apiClient.delete("/api/v1/supporters/me/students/\(linkId.uuidString)")
+        return try apiClient.disconnectOutcome(data: data, response: response)
+    }
 }
 
 /// The supporter doors' canvas double: one fixed home, no network. Declared
@@ -75,4 +86,6 @@ struct PreviewSupporterClient: SupporterClientProtocol {
     func fetchHome() async throws -> SupporterHome? { home }
 
     func becomeSupporter() async throws -> SupporterHome { home }
+
+    func disconnect(linkId: UUID) async throws -> DisconnectOutcome { .disconnected }
 }

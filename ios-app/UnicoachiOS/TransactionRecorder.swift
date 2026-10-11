@@ -131,7 +131,7 @@ actor TransactionRecorder: TransactionRecording {
              .accountDisabled, .serviceUnavailable, .studentAlreadyExists,
              .studentProfileRequired, .subscriptionNotFound, .payloadTooLarge,
              .versionConflict, .conflict, .notFound, .ageRequirementNotMet,
-             .timeout, .networkError, .serverError:
+             .supporterLinkNotFound, .timeout, .networkError, .serverError:
             return false
         case .coachingBudgetExhausted:
             // `/verify` cannot answer 402 — the coaching gate guards turn

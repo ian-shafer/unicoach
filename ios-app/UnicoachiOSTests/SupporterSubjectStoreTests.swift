@@ -33,7 +33,7 @@ final class SupporterSubjectStoreTests: XCTestCase {
     }
 
     private func student(_ name: String) -> LinkedStudent {
-        LinkedStudent(linkId: UUID(), studentId: UUID(), name: name, relationship: .parent)
+        LinkedStudent(linkId: UUID(), studentId: UUID(), name: name, relationship: .parent, otherSupporterNames: [])
     }
 
     // MARK: - Storage

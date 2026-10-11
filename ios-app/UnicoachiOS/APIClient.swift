@@ -206,6 +206,23 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
+    /// A disconnect's answer (RFC 249): `204`, or `404 supporter_link_not_found`
+    /// as `.alreadyGone`. Keyed on the CODE, so a gateway's bare `404` still
+    /// throws, as does every other status.
+    ///
+    /// The `404` is read BEFORE `decodeError`, which logs at error level: an
+    /// outcome the caller treats as success must not leave an error line. The
+    /// view model logs `.alreadyGone` at info, with the link id.
+    func disconnectOutcome(data: Data, response: HTTPURLResponse) throws -> DisconnectOutcome {
+        if response.statusCode == 204 { return .disconnected }
+        if response.statusCode == 404,
+           let answer = try? jsonDecoder.decode(ErrorResponse.self, from: data),
+           answer.knownCode == .supporterLinkNotFound {
+            return .alreadyGone
+        }
+        throw decodeError(data: data, status: response.statusCode)
+    }
+
     private func perform<B: Encodable>(method: String, path: String, body: B?) async throws -> (data: Data, response: HTTPURLResponse) {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw requestError(URLError(.badURL), method: method, path: path)

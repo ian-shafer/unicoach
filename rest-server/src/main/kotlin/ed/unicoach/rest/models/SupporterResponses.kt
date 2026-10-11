@@ -1,6 +1,9 @@
 package ed.unicoach.rest.models
 
-import ed.unicoach.db.models.LinkedStudent
+import ed.unicoach.db.models.LinkedSupporter
+import ed.unicoach.family.CeilingStatement
+import ed.unicoach.family.StudentSupporters
+import ed.unicoach.family.SupportedStudent
 import ed.unicoach.family.SupporterHome
 import java.util.UUID
 
@@ -19,23 +22,25 @@ data class PublicSupporter(
 
 /**
  * One student on a supporter's roster: which link, which student, the name to
- * render, and the relationship word.
+ * render, the relationship word, and the names of the other adults supporting
+ * the same student (RFC 249) — never the caller's own.
  *
- * FOUR fields, and the reason is the whole slice's boundary. It carries no date
- * of birth and no expected graduation date, because a supporter reading a
- * student's profile is `family/05/the-subject-seam` and nothing here authorises
- * it. `LinkedStudent` — the `:db` projection this maps from — cannot supply
- * either, so the omission is structural rather than a field somebody remembered
- * to leave out.
+ * Nothing about the student beyond the name, and the reason is the whole
+ * slice's boundary. It carries no date of birth and no expected graduation
+ * date, because a supporter reading a student's profile is
+ * `family/05/the-subject-seam` and nothing here authorises it. `LinkedStudent`
+ * — the `:db` projection this maps from — cannot supply either, so the omission
+ * is structural rather than a field somebody remembered to leave out.
  *
- * [linkId] rather than the supporter's own id, because the link is what a later
- * slice unlinks and what a later read authorises against.
+ * [linkId] rather than the supporter's own id, because the link is what either
+ * end disconnects (RFC 249) and what a later read authorises against.
  */
 data class PublicLinkedStudent(
   val linkId: UUID,
   val studentId: UUID,
   val name: String,
   val relationship: String,
+  val otherSupporterNames: List<String>,
 )
 
 /**
@@ -65,10 +70,50 @@ fun SupporterHome.toResponse(): SupporterHomeResponse =
     students = students.map { it.toResponse() },
   )
 
-private fun LinkedStudent.toResponse(): PublicLinkedStudent =
+private fun SupportedStudent.toResponse(): PublicLinkedStudent =
   PublicLinkedStudent(
-    linkId = linkId.value,
-    studentId = studentId.value,
-    name = studentName.value,
-    relationship = relationship.value,
+    linkId = student.linkId.value,
+    studentId = student.studentId.value,
+    name = student.studentName.value,
+    relationship = student.relationship.value,
+    otherSupporterNames = otherSupporterNames.map { it.value },
   )
+
+/**
+ * One adult connected to the caller, as the STUDENT reads them (RFC 249): the
+ * link to disconnect, and a name. No email and no relationship word — the
+ * `:db` projection carries neither.
+ */
+data class PublicLinkedSupporter(
+  val linkId: UUID,
+  val name: String,
+)
+
+/** The ceiling in the student's voice, stated once above the list (RFC 249). */
+data class SupporterCeilingResponse(
+  val canSee: List<String>,
+  val staysPrivate: List<String>,
+)
+
+/**
+ * `GET /api/v1/students/me/supporters` (RFC 249): the adults connected to the
+ * student, what every one of them can see and not see, and whether the
+ * student's Family Cost Report link is live — which a disconnect does not turn
+ * off, so the client says so exactly when this is true.
+ */
+data class StudentSupportersResponse(
+  val supporters: List<PublicLinkedSupporter>,
+  val ceiling: SupporterCeilingResponse,
+  val costReportLinkLive: Boolean,
+)
+
+fun StudentSupporters.toResponse(): StudentSupportersResponse =
+  StudentSupportersResponse(
+    supporters = supporters.map { it.toResponse() },
+    ceiling = ceiling.toResponse(),
+    costReportLinkLive = costReportLinkLive,
+  )
+
+private fun LinkedSupporter.toResponse(): PublicLinkedSupporter = PublicLinkedSupporter(linkId = linkId.value, name = name.value)
+
+private fun CeilingStatement.toResponse(): SupporterCeilingResponse = SupporterCeilingResponse(canSee = canSee, staysPrivate = staysPrivate)
