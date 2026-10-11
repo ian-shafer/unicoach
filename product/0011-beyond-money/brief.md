@@ -719,7 +719,7 @@ nudge, never a bare repeat.
       fuzz cases). 41 review lenses over four tiers, 29 fixes applied, 0
       contradictions.
 
-    beyond/07/the-report-weave LANDED as RFC 251 (main@51c578bb + DOCSHA, 2026-10-11) — a
+    beyond/07/the-report-weave LANDED as RFC 251 (main@51c578bb + cdb92d2e, 2026-10-11) — a
       parent opening the Family Cost Report now sees, in each school's money paragraph and
       before that school's own borrowing block, what graduates of the student's own subjects
       earn and owe there: every stored subject (up to three, alphabetical, no favourite
