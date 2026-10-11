@@ -696,7 +696,7 @@ nudge, never a bare repeat.
       RFC 243 had minted coach prompt v48, so the generator cut v49, and RFC 243's
       catalog-walking rollback test replaced this run's literal-version fix.
 
-    beyond/10/one-place-for-permissions LANDED as RFC 248 (main@916d3016 + <doc>,
+    beyond/10/one-place-for-permissions LANDED as RFC 248 (main@916d3016 + d3d57857,
       2026-10-11) — a student now has ONE place that records what people they share
       with may see, and its first occupant is `intended_subjects`: "people I share
       with may see what I want to study". Renamed at the RFC 248 gate on Ian's call
