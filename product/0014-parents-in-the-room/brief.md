@@ -360,6 +360,23 @@ Status:
     `c7a3c74e`; phase-5 suite 2,374 executed, 0 failures on the rebased tree.
     `family/05` UNBLOCKS `family/06/the-parent-coach`, whose BLOCKS edges are
     now all met.
+  - `family/10/claim-from-the-report` LANDED as RFC 254 (`main@0c9bfb73` +
+    `@DOCSHA@`, 2026-10-11) — a parent who opens the Family Cost Report can now
+    create their own unicoach account from that page, and the student who shared
+    the report approves the connection in one tap. Signup always works and lands
+    in the iPhone parent home; the link is a REQUEST the student approves (D19),
+    never a silent link, and the page still names no student (D-F upheld). New
+    table `supporter_link_requests` (pending / approved / declined / cancelled,
+    one pending per pair); a request stays hidden from the student until the
+    parent confirms their email (no impostor approval), and turning the report
+    link off, or deleting either account, cancels every pending request. RFC 155
+    D-G is superseded in part (the page may now offer the parent their OWN
+    account — it still asks nothing about the student); D-H's `Referrer-Policy`
+    moves to `same-origin`, because the old `no-referrer` made the web sign-up,
+    sign-in and invite POSTs arrive as `Origin: null` and get refused by the
+    same-origin guard in a real browser. Supersedes the referrer-policy part of
+    D-H; D-F upheld. 84 files; the hook ran full scope; 4,373 server + 807 iOS
+    tests green; fuzz 3,676/3,676.
 - **Next slices re-checked against RFC 250 (2026-10-11).**
   `family/06/the-parent-coach` is now READY (both BLOCKS edges met, its PREFER
   edge met by RFC 244). What it will find: its tools call
@@ -374,6 +391,17 @@ Status:
   wholly `family/06`'s. Any new student-reading route it adds must be a GET
   spelled `/api/v1/students/{studentId}/...`, or `SubjectSeamRouteSweepTest`
   fails it; any new write route must be classified there.
+- **Next slices re-checked against RFC 254 (2026-10-11).**
+  `family/10/claim-from-the-report` LANDED as RFC 254 (`main@0c9bfb73`) and
+  leaves the board; it frees nothing (no slice names it in a `Needs:` edge).
+  `family/06/the-parent-coach` inherits two facts: a parent's home now carries
+  `pendingRequests` (a claim still awaiting the student's approval, from
+  `GET /api/v1/supporters/me`), so the parent coach may want to mention it
+  rather than inviting again; and the RFC 240 invite nudge still does not see
+  pending requests (RFC 254's open item), so a student with a request pending
+  can still be offered "invite a parent" — `family/06` edits the prompt anyway
+  and is the natural place to close that. Nothing here drifts `family/06`'s
+  BLOCKS or its design.
 - **Next slices re-checked against RFC 252 (2026-10-11).** Any NEW sever path
   must send the link-ended email through `LinkEndedNotice` inside its own
   transaction — a sever that skips it reveals a reason (gate decision 2).
