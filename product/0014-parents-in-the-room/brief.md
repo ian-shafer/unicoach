@@ -361,7 +361,7 @@ Status:
     `family/05` UNBLOCKS `family/06/the-parent-coach`, whose BLOCKS edges are
     now all met.
   - `family/10/claim-from-the-report` LANDED as RFC 254 (`main@0c9bfb73` +
-    `@DOCSHA@`, 2026-10-11) — a parent who opens the Family Cost Report can now
+    `3f53ae15`, 2026-10-11) — a parent who opens the Family Cost Report can now
     create their own unicoach account from that page, and the student who shared
     the report approves the connection in one tap. Signup always works and lands
     in the iPhone parent home; the link is a REQUEST the student approves (D19),
