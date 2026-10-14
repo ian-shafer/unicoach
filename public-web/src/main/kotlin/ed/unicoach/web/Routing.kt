@@ -8,11 +8,15 @@ import ed.unicoach.auth.LoginResult
 import ed.unicoach.auth.RegisterResult
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
+import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
 import ed.unicoach.family.AcceptInviteOutcome
+import ed.unicoach.family.ClaimOutcome
 import ed.unicoach.family.InviteMissReason
 import ed.unicoach.family.InvitePreviewOutcome
 import ed.unicoach.family.SupporterInviteService
+import ed.unicoach.family.SupporterLinkRequestService
+import ed.unicoach.family.SupporterService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHANGE_EMAIL_PATH
@@ -40,7 +44,9 @@ import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.InviteViewer
 import ed.unicoach.web.render.NAME_FIELD
 import ed.unicoach.web.render.PASSWORD_FIELD
+import ed.unicoach.web.render.REPORT_FIELD
 import ed.unicoach.web.render.RegisterFormState
+import ed.unicoach.web.render.SIGNUP_DOOR_SECRET_PARAMS
 import ed.unicoach.web.render.ShellNav
 import ed.unicoach.web.render.SignInFormState
 import ed.unicoach.web.render.TOKEN_FIELD
@@ -68,6 +74,7 @@ import ed.unicoach.web.report.MissReason
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
+import io.ktor.http.encodeURLParameter
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
@@ -120,6 +127,33 @@ const val REPORT_TOKEN_PARAM = TOKEN_QUERY_PARAM
 const val INVITE_PATH = "/invite"
 
 /**
+ * The report page's own form target (RFC 254): a signed-in reader asks to
+ * connect with the student who shared the report.
+ */
+const val REPORT_CONNECT_PATH = "$REPORT_PATH/connect"
+
+/**
+ * The report page for [rawToken], as a same-origin path — where a signed-in
+ * reader holding a report token is sent instead of a second signup form (RFC
+ * 254). Percent-encoded for the reason [ed.unicoach.web.render.pathCarryingToken] gives.
+ *
+ * Not built by `pathCarryingToken`, on purpose: that joins the INVITE door key
+ * [TOKEN_FIELD], and this joins [REPORT_TOKEN_PARAM], the key `:service` mints
+ * the report link with. The two spell `token` today; they are different
+ * contracts, and coupling them would let a rename of one move the other.
+ */
+fun reportPagePath(rawToken: String): String = "$REPORT_PATH?$REPORT_TOKEN_PARAM=${rawToken.encodeURLParameter()}"
+
+/**
+ * Where a signed-in reader following a signup door in [parameters] lands (RFC
+ * 254): back to the ONE report token the door carries, else [ACCOUNT_PATH]. The
+ * token is read by [usableReportToken], the rule the doors themselves read it
+ * by, so a value not in the mint shape is never turned into a redirect.
+ */
+fun signedInDoorLanding(parameters: Parameters): String =
+  presentedToken(parameters.getAll(REPORT_FIELD)).usableReportToken()?.let(::reportPagePath) ?: ACCOUNT_PATH
+
+/**
  * The user-agent substring that means "iPhone".
  *
  * The open-in-app affordance on the verification result page is iPhone-only, so
@@ -146,6 +180,9 @@ private val authLog = LoggerFactory.getLogger("ed.unicoach.web.Auth")
 
 /** The invite routes' own log: WHY a link resolved to nothing or an accept was refused, never rendered. */
 private val inviteLog = LoggerFactory.getLogger("ed.unicoach.web.SupporterInvite")
+
+/** The report claim's own log (RFC 254): WHY a claim made no request, never rendered and never the token. */
+private val claimLog = LoggerFactory.getLogger("ed.unicoach.web.ReportClaim")
 
 /**
  * A year, as a DURATION. `max-age` is counted in seconds, so the header spells
@@ -229,6 +266,8 @@ fun Application.installPublicWebRouting(
   emailVerificationService: EmailVerificationService,
   sessionConfig: WebSessionConfig,
   supporterInviteService: SupporterInviteService,
+  supporterService: SupporterService,
+  linkRequestService: SupporterLinkRequestService,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
@@ -317,9 +356,9 @@ fun Application.installPublicWebRouting(
       call.respondVerifyEmailResult(outcome, openInAppUrl, isIPhone, call.shellNav(authService, sessionConfig))
     }
 
-    authRoutes(authService, emailVerificationService, sessionConfig, supporterInviteService)
+    authRoutes(authService, emailVerificationService, sessionConfig, supporterInviteService, supporterService, linkRequestService)
 
-    reportRoute(costReportSource, authService, sessionConfig)
+    reportRoute(costReportSource, authService, sessionConfig, linkRequestService)
 
     inviteRoute(supporterInviteService, authService, sessionConfig)
 
@@ -438,6 +477,99 @@ private fun refusedPresentedInvite(
 }
 
 /**
+ * Ask to connect from the report a just-authenticated reader presented (RFC
+ * 254), and say which notice their next page must carry. `null` means NO
+ * report was presented.
+ *
+ * The [acceptPresentedInvite] shape: NOT one transaction with the registration
+ * or login before it, so a claim that fails never fails the signup — the
+ * account exists and the reader can open the report again. Every refusal and
+ * every fault is ONE sentence, [WebNotice.CLAIM_NOT_SENT], so the notice says
+ * nothing about the student; the reason is LOGGED, the token never.
+ */
+private suspend fun claimPresentedReport(
+  linkRequestService: SupporterLinkRequestService,
+  presented: PresentedToken,
+  userId: UserId,
+  door: String,
+): WebNotice? =
+  when (presented) {
+    PresentedToken.Absent -> null
+    PresentedToken.Blank, PresentedToken.Repeated -> refusedPresentedReport(presented, userId, door)
+    is PresentedToken.One -> claimReport(linkRequestService, presented.raw, userId, door)
+  }
+
+/** A presented report this door could not even read; see [refusedPresentedInvite]. */
+private fun refusedPresentedReport(
+  presented: PresentedToken,
+  userId: UserId,
+  door: String,
+): WebNotice {
+  claimLog.debug("report claim refused: door=[{}] userId=[{}] presented=[{}]", door, userId.asString, presented)
+  return WebNotice.CLAIM_NOT_SENT
+}
+
+private suspend fun claimReport(
+  linkRequestService: SupporterLinkRequestService,
+  rawToken: String,
+  userId: UserId,
+  door: String,
+): WebNotice {
+  val outcome =
+    linkRequestService.claimFromReport(userId, rawToken).getOrElse { failure ->
+      claimLog.error("report claim faulted: door=[{}] userId=[{}]", door, userId.asString, failure)
+      return WebNotice.CLAIM_NOT_SENT
+    }
+  return noticeForClaim(outcome, userId, door)
+}
+
+private fun noticeForClaim(
+  outcome: ClaimOutcome,
+  userId: UserId,
+  door: String,
+): WebNotice =
+  when (outcome) {
+    is ClaimOutcome.Requested -> {
+      claimSentNotice(outcome.awaitingVerification)
+    }
+
+    is ClaimOutcome.AlreadyRequested -> {
+      claimSentNotice(outcome.awaitingVerification)
+    }
+
+    ClaimOutcome.AlreadyConnected, is ClaimOutcome.NotClaimed -> {
+      claimLog.debug("report claim made no request: door=[{}] userId=[{}] outcome=[{}]", door, userId.asString, outcome)
+      WebNotice.CLAIM_NOT_SENT
+    }
+  }
+
+/** A request is standing: the student has been asked, or will be once the reader confirms their email. */
+private fun claimSentNotice(awaitingVerification: Boolean): WebNotice =
+  if (awaitingVerification) WebNotice.CLAIM_PENDING else WebNotice.CLAIM_SENT
+
+/** Where a sign-in lands: the invite's notice wins on `/account`; a claim alone lands where its notice can be read. */
+private fun signInLandingUrl(
+  inviteNotice: WebNotice?,
+  claimNotice: WebNotice?,
+  user: User,
+): String =
+  if (inviteNotice == null && claimNotice != null) {
+    claimLandingUrl(claimNotice, verified = user.emailVerifiedAt != null)
+  } else {
+    noticeUrl(ACCOUNT_PATH, inviteNotice)
+  }
+
+/**
+ * Where a claim's notice is read: `/account` for a verified reader, and the
+ * verification hold screen for an unverified one — `/account` would bounce them
+ * there and drop the notice on the way.
+ */
+private fun claimLandingUrl(
+  notice: WebNotice,
+  verified: Boolean,
+): String = noticeUrl(if (verified) ACCOUNT_PATH else VERIFY_EMAIL_PATH, notice)
+
+/**
  * Sign in, register, sign out, resend verification, the signed-in home and
  * change email (RFC 224).
  *
@@ -461,6 +593,8 @@ private fun Route.authRoutes(
   emailVerificationService: EmailVerificationService,
   sessionConfig: WebSessionConfig,
   supporterInviteService: SupporterInviteService,
+  supporterService: SupporterService,
+  linkRequestService: SupporterLinkRequestService,
 ) {
   // `/invite` sends a signed-out recipient to these two doors with the RAW
   // invite token in the query string, so both scope it secret exactly as
@@ -468,9 +602,10 @@ private fun Route.authRoutes(
   // out of one log line and wrote it into the next one — and redaction covers
   // the LOG only, so both doors also carry `/invite`'s link-holder privacy
   // headers: a URL holding a live single-use credential must not be kept by a
-  // shared cache, indexed, or handed on in a `Referer`.
+  // shared cache, indexed, or handed on in a `Referer`. The report's own token
+  // rides the same two doors on its own key (RFC 254), and is as secret.
   route(SIGN_IN_PATH) {
-    secretQueryParams(TOKEN_FIELD)
+    secretQueryParams(*SIGNUP_DOOR_SECRET_PARAMS.toTypedArray())
     setLinkHolderPrivacyHeaders()
 
     get {
@@ -480,6 +615,7 @@ private fun Route.authRoutes(
       call.respondSignInPage(
         nav = call.shellNav(authService, sessionConfig),
         token = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken(),
+        report = presentedToken(call.request.queryParameters.getAll(REPORT_FIELD)).usableReportToken(),
       )
     }
 
@@ -492,11 +628,13 @@ private fun Route.authRoutes(
       val email = form.formField(EMAIL_FIELD)
       val password = form.formField(PASSWORD_FIELD)
       val presentedInvite = presentedToken(form.getAll(TOKEN_FIELD))
+      val presentedReport = presentedToken(form.getAll(REPORT_FIELD))
       if (email == null || password == null) {
         return@post call.respondSignInPage(
           SignInFormState.Rejected(email.orEmpty()),
           call.shellNav(authService, sessionConfig),
           presentedInvite.usableToken(),
+          presentedReport.usableReportToken(),
         )
       }
 
@@ -525,7 +663,8 @@ private fun Route.authRoutes(
           call.setWebSessionCookie(sessionConfig, result.token)
           val inviteNotice =
             acceptPresentedInvite(supporterInviteService, presentedInvite, result.user.id, SIGN_IN_PATH)
-          call.respondSeeOther(noticeUrl(ACCOUNT_PATH, inviteNotice))
+          val claimNotice = claimPresentedReport(linkRequestService, presentedReport, result.user.id, SIGN_IN_PATH)
+          call.respondSeeOther(signInLandingUrl(inviteNotice, claimNotice, result.user))
         }
 
         // All FOUR failures, one answer. The branches are listed rather than
@@ -548,6 +687,7 @@ private fun Route.authRoutes(
             SignInFormState.Rejected(email),
             call.shellNav(authService, sessionConfig),
             presentedInvite.usableToken(),
+            presentedReport.usableReportToken(),
           )
         }
       }
@@ -557,7 +697,7 @@ private fun Route.authRoutes(
   // Secret-scoped and link-holder private for the same reason as the sign-in
   // door above (RFC 232).
   route(REGISTER_PATH) {
-    secretQueryParams(TOKEN_FIELD)
+    secretQueryParams(*SIGNUP_DOOR_SECRET_PARAMS.toTypedArray())
     setLinkHolderPrivacyHeaders()
 
     get {
@@ -565,6 +705,7 @@ private fun Route.authRoutes(
       call.respondRegisterPage(
         nav = call.shellNav(authService, sessionConfig),
         token = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken(),
+        report = presentedToken(call.request.queryParameters.getAll(REPORT_FIELD)).usableReportToken(),
       )
     }
 
@@ -578,11 +719,13 @@ private fun Route.authRoutes(
       val email = form.formField(EMAIL_FIELD)
       val password = form.formField(PASSWORD_FIELD)
       val presentedInvite = presentedToken(form.getAll(TOKEN_FIELD))
+      val presentedReport = presentedToken(form.getAll(REPORT_FIELD))
       if (name == null || email == null || password == null) {
         return@post call.respondRegisterPage(
           RegisterFormState.Invalid(name.orEmpty(), email.orEmpty(), emptyList(), emptyList()),
           call.shellNav(authService, sessionConfig),
           presentedInvite.usableToken(),
+          presentedReport.usableReportToken(),
         )
       }
 
@@ -608,7 +751,8 @@ private fun Route.authRoutes(
           // product.
           val inviteNotice =
             acceptPresentedInvite(supporterInviteService, presentedInvite, result.user.id, REGISTER_PATH)
-          call.respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, inviteNotice))
+          val claimNotice = claimPresentedReport(linkRequestService, presentedReport, result.user.id, REGISTER_PATH)
+          call.respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, inviteNotice ?: claimNotice))
         }
 
         is RegisterResult.ValidationFailure -> {
@@ -620,6 +764,7 @@ private fun Route.authRoutes(
             RegisterFormState.Invalid(name, email, result.fieldErrors, result.errors),
             call.shellNav(authService, sessionConfig),
             presentedInvite.usableToken(),
+            presentedReport.usableReportToken(),
           )
         }
 
@@ -628,6 +773,7 @@ private fun Route.authRoutes(
             RegisterFormState.Duplicate(name, email),
             call.shellNav(authService, sessionConfig),
             presentedInvite.usableToken(),
+            presentedReport.usableReportToken(),
           )
         }
       }
@@ -656,7 +802,8 @@ private fun Route.authRoutes(
   }
 
   getVerified(ACCOUNT_PATH, authService, sessionConfig) { caller ->
-    call.respondAccountPage(caller.user, notice = call.requestedNotice())
+    val isSupporter = supporterService.find(caller.user.id).getOrThrow() != null
+    call.respondAccountPage(caller.user, isSupporter, notice = call.requestedNotice())
   }
 
   getVerified(CHANGE_EMAIL_PATH, authService, sessionConfig) { caller ->
@@ -729,52 +876,6 @@ private fun noticeUrl(
   path: String,
   notice: WebNotice?,
 ): String = if (notice == null) path else "$path?$NOTICE_QUERY_PARAM=${notice.key}"
-
-/**
- * WHAT a request presented on a single-token key: the one usable token, or
- * which miss it was.
- *
- * `queryParameters[name]` is `getAll(name).firstOrNull()`, so a link carrying
- * two tokens is a request we have no reading of rather than silently the first
- * of them. That rule is subtle and security-bearing, and four doors re-derived
- * it from `getAll(...).singleOrNull()`; it has one name here instead. Each door
- * keeps its OWN miss vocabulary, which is the only part that differs.
- */
-private sealed interface PresentedToken {
-  data class One(
-    val raw: String,
-  ) : PresentedToken
-
-  /** The key was not present at all: this request presented no token. */
-  data object Absent : PresentedToken
-
-  /** The key WAS present and carried nothing usable — a truncated link, not an absent one. */
-  data object Blank : PresentedToken
-
-  /** Two or more values on the one key: two credentials, not one. */
-  data object Repeated : PresentedToken
-}
-
-/**
- * The ONE token [values] carries, or which miss it was. [values] is a `getAll`.
- *
- * Nothing is `null` here on purpose: a nullable `raw` member let a consumer
- * null-check it and then identity-test the object to recover what the type had
- * already said, so a fourth case would be read as the third instead of failing
- * to compile.
- */
-private fun presentedToken(values: List<String>?): PresentedToken {
-  if (values == null) return PresentedToken.Absent
-  if (values.size > 1) return PresentedToken.Repeated
-  val single = values.singleOrNull()
-  return if (single.isNullOrBlank()) PresentedToken.Blank else PresentedToken.One(single)
-}
-
-/**
- * The token when exactly one usable one was presented, for the doors that want
- * only "usable or not" and answer every miss the same way.
- */
-private fun PresentedToken.usableToken(): String? = (this as? PresentedToken.One)?.raw
 
 /**
  * The submitted form, or `null` when the body was not one.
@@ -994,8 +1095,14 @@ private fun Result<VerifyEmailResult>.toOutcome(): VerifyEmailOutcome =
  * The three headers (D-H) are set BEFORE the outcome is known, so they ride the
  * 404 and the 503 exactly as they ride the report: `no-store` keeps a shared
  * proxy from holding a copy of a family's numbers, `X-Robots-Tag` keeps the page
- * out of an index that reads only the response head, and `no-referrer` keeps the
- * token out of the `Referer` of any link a parent follows from the page.
+ * out of an index that reads only the response head, and `same-origin` (RFC 254,
+ * superseding D-H's `no-referrer`) keeps the token out of the `Referer` of any
+ * link a parent follows off the site, while letting the page's own form POST
+ * carry a real `Origin` the same-origin guard can admit.
+ *
+ * After the report the page makes ONE offer, chosen by who is reading (RFC
+ * 254): the reader is resolved here and handed to the port, which decides the
+ * [ed.unicoach.family.ClaimView] in the report's own session.
  *
  * A missing, blank, unknown or revoked token renders the SAME branded 404 as any
  * unmatched route — one page, one body, no way to learn from it that a token was
@@ -1007,6 +1114,7 @@ private fun Route.reportRoute(
   costReportSource: CostReportSource,
   authService: AuthService,
   sessionConfig: WebSessionConfig,
+  linkRequestService: SupporterLinkRequestService,
 ) {
   route(REPORT_PATH) {
     secretQueryParams(REPORT_TOKEN_PARAM)
@@ -1015,31 +1123,78 @@ private fun Route.reportRoute(
       // EXACTLY one token, never the first of several. `queryParameters[name]`
       // is `getAll(name).firstOrNull()`, so `?token=junk&token=<live>` was a
       // request we have no reading of, answered by discarding the surplus.
-      val outcome =
-        when (val presented = presentedToken(call.request.queryParameters.getAll(REPORT_TOKEN_PARAM))) {
-          PresentedToken.Repeated -> CostReportOutcome.NotFound(MissReason.REPEATED_TOKEN_PARAM)
-
-          PresentedToken.Absent,
-          PresentedToken.Blank,
-          -> CostReportOutcome.NotFound(MissReason.BLANK_TOKEN)
-
-          is PresentedToken.One -> costReportSource.getByShareToken(presented.raw).getOrThrow()
-        }
-      when (outcome) {
-        is CostReportOutcome.Found -> {
-          call.respondCostReportPage(outcome.profile, call.shellNav(authService, sessionConfig))
+      when (val presented = presentedToken(call.request.queryParameters.getAll(REPORT_TOKEN_PARAM))) {
+        PresentedToken.Repeated -> {
+          call.respondReportMiss(MissReason.REPEATED_TOKEN_PARAM, authService, sessionConfig)
         }
 
-        // The reason is LOGGED, never rendered: the 404 body is byte-identical
-        // for every one of these, which is what stops a stranger holding a dead
-        // link learning that the token was once real.
-        is CostReportOutcome.NotFound -> {
-          reportLog.debug("cost report link resolved to nothing: reason=[{}]", outcome.reason)
-          call.respondNotFoundPage(call.shellNav(authService, sessionConfig))
+        PresentedToken.Absent,
+        PresentedToken.Blank,
+        -> {
+          call.respondReportMiss(MissReason.BLANK_TOKEN, authService, sessionConfig)
+        }
+
+        is PresentedToken.One -> {
+          call.respondPresentedReport(costReportSource, presented.raw, authService, sessionConfig)
         }
       }
     }
   }
+
+  // A signed-in reader asks to connect from the page (RFC 254). SIGNED_IN, not
+  // VERIFIED, like `POST /invite`: an unverified reader's request waits, unseen,
+  // until they confirm their address. The token rides in the body on its own
+  // key, and the query is scoped secret too, so a hand-built URL is not logged.
+  route(REPORT_CONNECT_PATH) {
+    secretQueryParams(REPORT_FIELD)
+    post {
+      handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig) { caller ->
+        val presented = presentedToken(call.formParametersOrNull()?.getAll(REPORT_FIELD))
+        val notice =
+          claimPresentedReport(linkRequestService, presented, caller.user.id, REPORT_CONNECT_PATH)
+            ?: WebNotice.CLAIM_NOT_SENT
+        call.respondSeeOther(claimLandingUrl(notice, verified = caller.user.emailVerifiedAt != null))
+      }
+    }
+  }
+}
+
+/** The report behind [rawToken], with the one offer chosen by who is reading it, or the miss. */
+private suspend fun ApplicationCall.respondPresentedReport(
+  costReportSource: CostReportSource,
+  rawToken: String,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+) {
+  val viewer = resolveWebCaller(authService, sessionConfig)?.user?.id
+  when (val outcome = costReportSource.getByShareToken(rawToken, viewer).getOrThrow()) {
+    is CostReportOutcome.Found -> {
+      respondCostReportPage(
+        profile = outcome.profile,
+        nav = if (viewer != null) ShellNav.SignedIn else ShellNav.SignedOut,
+        claim = outcome.claim,
+        token = rawToken,
+      )
+    }
+
+    is CostReportOutcome.NotFound -> {
+      respondReportMiss(outcome.reason, authService, sessionConfig)
+    }
+  }
+}
+
+/**
+ * The reason is LOGGED, never rendered: the 404 body is byte-identical for
+ * every miss, which is what stops a stranger holding a dead link learning that
+ * the token was once real.
+ */
+private suspend fun ApplicationCall.respondReportMiss(
+  reason: MissReason,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+) {
+  reportLog.debug("cost report link resolved to nothing: reason=[{}]", reason)
+  respondNotFoundPage(shellNav(authService, sessionConfig))
 }
 
 /**

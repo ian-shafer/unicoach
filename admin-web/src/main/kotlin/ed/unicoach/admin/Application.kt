@@ -34,6 +34,12 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.cron.dao.PeriodicJobsDao
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.UserId
+import ed.unicoach.family.LinkEndedNotice
+import ed.unicoach.family.LinkRequestedNotice
+import ed.unicoach.family.SupporterLinkRequestService
+import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
@@ -80,6 +86,15 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
   val emailVerificationService =
     EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
+  // An operator's "mark email verified" is a verification like any other: a
+  // parent's request waiting on that address is released to the student in the
+  // same transaction (RFC 254).
+  val linkRequestService =
+    SupporterLinkRequestService(
+      database,
+      SupporterService(database, LinkEndedNotice(queueService)),
+      LinkRequestedNotice(queueService),
+    )
   val authService =
     AuthService(
       database,
@@ -88,6 +103,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       emailVerificationService,
       GoogleIdTokenVerifier(DisabledIdTokenVerifier),
       AppleIdTokenVerifier(DisabledIdTokenVerifier),
+      linkRequestService::releaseOnVerified,
     )
 
   val server =
@@ -95,7 +111,16 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       environment.monitor.subscribe(ApplicationStopped) {
         database.close()
       }
-      adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig, requestLoggingConfig)
+      adminModule(
+        database,
+        authService,
+        argon2Hasher,
+        emailVerificationService,
+        queueService,
+        adminConfig,
+        requestLoggingConfig,
+        linkRequestService::releaseOnVerified,
+      )
     }
 
   server.start(wait = false)
@@ -121,6 +146,7 @@ fun Application.adminModule(
   queueService: QueueService,
   adminConfig: AdminConfig,
   requestLoggingConfig: RequestLoggingConfig,
+  afterVerified: (SqlSession, UserId) -> Unit,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -133,7 +159,7 @@ fun Application.adminModule(
   val registry =
     AdminRegistry(
       listOf(
-        UsersResource(argon2Hasher, emailVerificationService, studentsResource),
+        UsersResource(argon2Hasher, emailVerificationService, studentsResource, afterVerified),
         studentsResource,
         SessionsResource,
         SystemPromptsResource,

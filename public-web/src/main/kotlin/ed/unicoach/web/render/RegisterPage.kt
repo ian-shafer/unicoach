@@ -92,6 +92,7 @@ suspend fun ApplicationCall.respondRegisterPage(
   state: RegisterFormState = RegisterFormState.Fresh,
   nav: ShellNav = ShellNav.SignedOut,
   token: String? = null,
+  report: String? = null,
 ) {
   respondHtml(state.status) {
     siteLayout(REGISTER_HEADING, nav = nav) {
@@ -111,11 +112,12 @@ suspend fun ApplicationCall.respondRegisterPage(
         after = {
           p {
             +"Already have an account? "
-            a(href = pathCarryingToken(SIGN_IN_PATH, token)) { +SIGN_IN_HEADING }
+            a(href = pathCarryingToken(SIGN_IN_PATH, token, report)) { +SIGN_IN_HEADING }
           }
         },
       ) {
         tokenField(token)
+        reportField(report)
         textField(
           name = NAME_FIELD,
           labelText = "Your name",

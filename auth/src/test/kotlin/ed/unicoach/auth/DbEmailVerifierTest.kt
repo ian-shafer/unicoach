@@ -12,8 +12,10 @@ import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.NewVerificationToken
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
+import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
+import ed.unicoach.db.models.UserId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterAll
@@ -25,6 +27,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -71,7 +74,8 @@ class DbEmailVerifierTest {
       override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
     }
 
-  private fun verifier(): DbEmailVerifier = DbEmailVerifier(database)
+  private fun verifier(afterVerified: (SqlSession, UserId) -> Unit = { _, _ -> }): DbEmailVerifier =
+    DbEmailVerifier(database, afterVerified)
 
   private var userCounter = 0
 
@@ -145,5 +149,39 @@ class DbEmailVerifierTest {
 
       val second = verifier().verify(raw).getOrThrow()
       assertTrue(second is VerifyEmailResult.AlreadyConsumed, "Expected AlreadyConsumed, got $second")
+    }
+
+  /**
+   * RFC 254: the hook runs for the verified user, INSIDE the verifying
+   * transaction — a hook that fails rolls the verification back — and only on
+   * a successful consume.
+   */
+  @Test
+  fun `the afterVerified hook runs once, for the verified user, inside the verifying transaction`() =
+    runTest {
+      val user = createUser()
+      val raw = "hooked-raw"
+      seedToken(user, raw, Instant.now().plus(1, ChronoUnit.DAYS))
+      val seen = mutableListOf<UserId>()
+
+      verifier { _, userId -> seen.add(userId) }.verify(raw).getOrThrow()
+      verifier { _, userId -> seen.add(userId) }.verify(raw).getOrThrow()
+      verifier { _, userId -> seen.add(userId) }.verify("never-issued").getOrThrow()
+
+      assertEquals(listOf(user.id), seen, "once, on the one successful consume, and never on a refusal")
+    }
+
+  @Test
+  fun `a failing afterVerified hook rolls the verification back`() =
+    runTest {
+      val user = createUser()
+      val raw = "rolled-back-raw"
+      seedToken(user, raw, Instant.now().plus(1, ChronoUnit.DAYS))
+
+      val failed = verifier { _, _ -> error("hook failed") }.verify(raw)
+
+      assertTrue(failed.isFailure, "the hook's failure is the verification's failure")
+      assertEquals(null, UsersDao.findById(sqlSession, user.id, SoftDeleteScope.ACTIVE).getOrThrow().emailVerifiedAt)
+      assertTrue(verifier().verify(raw).getOrThrow() is VerifyEmailResult.Success, "and the token is still live")
     }
 }

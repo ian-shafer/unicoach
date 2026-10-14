@@ -5,6 +5,7 @@ import ed.unicoach.family.CeilingStatement
 import ed.unicoach.family.StudentSupporters
 import ed.unicoach.family.SupportedStudent
 import ed.unicoach.family.SupporterHome
+import java.time.Instant
 import java.util.UUID
 
 /**
@@ -54,10 +55,14 @@ data class PublicLinkedStudent(
  *
  * [students] is empty for a supporter who has linked nobody — the ordinary
  * first state of a parent-first signup, not an error.
+ *
+ * [pendingRequests] counts this supporter's requests to connect still waiting
+ * on a student (RFC 254), so a parent with nobody linked yet can be told why.
  */
 data class SupporterHomeResponse(
   val supporter: PublicSupporter,
   val students: List<PublicLinkedStudent>,
+  val pendingRequests: Int,
 )
 
 /**
@@ -68,6 +73,7 @@ fun SupporterHome.toResponse(): SupporterHomeResponse =
   SupporterHomeResponse(
     supporter = PublicSupporter(id = supporter.id.value),
     students = students.map { it.toResponse() },
+    pendingRequests = pendingRequests,
   )
 
 private fun SupportedStudent.toResponse(): PublicLinkedStudent =
@@ -96,13 +102,28 @@ data class SupporterCeilingResponse(
 )
 
 /**
+ * One pending request to connect, as the STUDENT reads it (RFC 254): the
+ * request to approve or decline, and the claimant's name and email from their
+ * own verified account. The email is here on purpose: the report link is not
+ * proof of who forwarded it, so the student decides with the address in view.
+ */
+data class PublicSupporterRequest(
+  val requestId: UUID,
+  val name: String,
+  val email: String,
+  val requestedAt: Instant,
+)
+
+/**
  * `GET /api/v1/students/me/supporters` (RFC 249): the adults connected to the
  * student, what every one of them can see and not see, and whether the
  * student's Family Cost Report link is live — which a disconnect does not turn
- * off, so the client says so exactly when this is true.
+ * off, so the client says so exactly when this is true. Since RFC 254 it also
+ * carries the pending requests to connect, oldest first.
  */
 data class StudentSupportersResponse(
   val supporters: List<PublicLinkedSupporter>,
+  val requests: List<PublicSupporterRequest>,
   val ceiling: SupporterCeilingResponse,
   val costReportLinkLive: Boolean,
 )
@@ -110,10 +131,20 @@ data class StudentSupportersResponse(
 fun StudentSupporters.toResponse(): StudentSupportersResponse =
   StudentSupportersResponse(
     supporters = supporters.map { it.toResponse() },
+    requests =
+      requests.map {
+        PublicSupporterRequest(
+          requestId = it.requestId.value,
+          name = it.name.value,
+          email = it.email.value,
+          requestedAt = it.requestedAt,
+        )
+      },
     ceiling = ceiling.toResponse(),
     costReportLinkLive = costReportLinkLive,
   )
 
-private fun LinkedSupporter.toResponse(): PublicLinkedSupporter = PublicLinkedSupporter(linkId = linkId.value, name = name.value)
+/** One connected adult on the wire — the list's entry, and the approve door's answer (RFC 254). */
+fun LinkedSupporter.toResponse(): PublicLinkedSupporter = PublicLinkedSupporter(linkId = linkId.value, name = name.value)
 
 private fun CeilingStatement.toResponse(): SupporterCeilingResponse = SupporterCeilingResponse(canSee = canSee, staysPrivate = staysPrivate)

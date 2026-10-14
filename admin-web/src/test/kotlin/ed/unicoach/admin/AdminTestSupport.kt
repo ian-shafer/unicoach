@@ -21,6 +21,7 @@ import ed.unicoach.db.dao.FitLensRunsDao
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.LlmCallsDao
 import ed.unicoach.db.dao.ObservationsDao
+import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SynthesisRunsDao
@@ -78,6 +79,10 @@ import ed.unicoach.db.models.SynthesisRun
 import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
+import ed.unicoach.family.LinkEndedNotice
+import ed.unicoach.family.LinkRequestedNotice
+import ed.unicoach.family.SupporterLinkRequestService
+import ed.unicoach.family.SupporterService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import io.ktor.server.application.Application
@@ -120,6 +125,14 @@ object AdminTestSupport {
         .from(config)
         .getOrThrow(),
     )
+
+  /** The production request service (RFC 254), wired as `Application.kt` wires it. */
+  val linkRequestService =
+    SupporterLinkRequestService(
+      database,
+      SupporterService(database, LinkEndedNotice(queueService)),
+      LinkRequestedNotice(queueService),
+    )
   val authService =
     AuthService(
       database,
@@ -128,10 +141,21 @@ object AdminTestSupport {
       emailVerificationService,
       GoogleIdTokenVerifier(DisabledIdTokenVerifier),
       AppleIdTokenVerifier(DisabledIdTokenVerifier),
+      linkRequestService::releaseOnVerified,
     )
 
-  fun Application.installTestAdminModule() {
-    adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig, requestLoggingConfig)
+  /** [afterVerified] defaults to the production hook; a test that needs the hook to fail passes its own. */
+  fun Application.installTestAdminModule(afterVerified: (SqlSession, UserId) -> Unit = linkRequestService::releaseOnVerified) {
+    adminModule(
+      database,
+      authService,
+      argon2Hasher,
+      emailVerificationService,
+      queueService,
+      adminConfig,
+      requestLoggingConfig,
+      afterVerified,
+    )
   }
 
   /**

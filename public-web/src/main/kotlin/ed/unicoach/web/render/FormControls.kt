@@ -53,8 +53,24 @@ const val NAME_FIELD = "name"
 const val TOKEN_FIELD = "token"
 
 /**
- * [path], carrying [token] on the one query key every invite door reads, or
- * [path] alone when no invite is in flight (RFC 232).
+ * The key a Family Cost Report token rides on through signup and
+ * `POST /report/connect` (RFC 254). NEVER [TOKEN_FIELD]: on `/register` and
+ * `/sign-in` that key already means an INVITE token, and a report token read as
+ * one would be refused as a dead invite.
+ */
+const val REPORT_FIELD = "report"
+
+/**
+ * The credential keys a signup door's URL may carry (RFC 232, RFC 254), all
+ * secret in the request log. Read by both doors' `secretQueryParams` AND by the
+ * signed-in landing, which answers before routing and stamps the set itself.
+ */
+val SIGNUP_DOOR_SECRET_PARAMS: Set<String> = setOf(TOKEN_FIELD, REPORT_FIELD)
+
+/**
+ * [path], carrying [token] on the one query key every invite door reads and
+ * [report] on its own key, or [path] alone when neither is in flight (RFC 232,
+ * RFC 254).
  *
  * The render-side sibling of `ed.unicoach.common.config.tokenLink`, which joins
  * the same key onto an ABSOLUTE minted base. Written once because four render
@@ -65,12 +81,26 @@ const val TOKEN_FIELD = "token"
 fun pathCarryingToken(
   path: String,
   token: String?,
-): String = if (token == null) path else "$path?$TOKEN_FIELD=${token.encodeURLParameter()}"
+  report: String? = null,
+): String {
+  val query =
+    listOfNotNull(
+      token?.let { "$TOKEN_FIELD=${it.encodeURLParameter()}" },
+      report?.let { "$REPORT_FIELD=${it.encodeURLParameter()}" },
+    )
+  return if (query.isEmpty()) path else "$path?${query.joinToString("&")}"
+}
 
 /** The hidden field that carries [token] through a form POST, or nothing when there is none. */
 fun FlowContent.tokenField(token: String?) {
   if (token == null) return
   hiddenInput(name = TOKEN_FIELD) { value = token }
+}
+
+/** The hidden field that carries a report token through a form POST (RFC 254), or nothing. */
+fun FlowContent.reportField(report: String?) {
+  if (report == null) return
+  hiddenInput(name = REPORT_FIELD) { value = report }
 }
 
 // The shared form controls for every public-web form (RFC 224).
@@ -124,6 +154,9 @@ enum class WebNotice(
   RESENT("resent", RESEND_CONFIRMATION),
   INVITE_ACCEPTED("invite-accepted", INVITE_ACCEPTED_CONFIRMATION),
   INVITE_NOT_ACCEPTED("invite-not-accepted", INVITE_NOT_ACCEPTED_NOTICE),
+  CLAIM_PENDING("claim-pending", CLAIM_PENDING_NOTICE),
+  CLAIM_SENT("claim-sent", CLAIM_SENT_NOTICE),
+  CLAIM_NOT_SENT("claim-not-sent", CLAIM_NOT_SENT_NOTICE),
   ;
 
   companion object {

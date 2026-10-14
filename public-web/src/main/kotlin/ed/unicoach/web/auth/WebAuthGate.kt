@@ -2,6 +2,9 @@ package ed.unicoach.web.auth
 
 import ed.unicoach.auth.AuthService
 import ed.unicoach.web.WebSessionConfig
+import ed.unicoach.web.common.logging.SecretQueryParamsKey
+import ed.unicoach.web.render.SIGNUP_DOOR_SECRET_PARAMS
+import ed.unicoach.web.signedInDoorLanding
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -158,6 +161,12 @@ fun Application.installWebAuthGate(
  * Installed before the gate, which is where the rule ran before, and the two
  * cannot collide: every path in [SIGNED_IN_REDIRECTS] classes as
  * [WebAccess.OPEN], so the gate has nothing to say about any of them.
+ *
+ * A signup door that carries ONE report token goes back to that report instead
+ * (RFC 254), where a signed-in reader is offered "Ask to connect". A parent who
+ * opened the link from Messages can look signed out on the page — the session
+ * cookie is `SameSite=Strict` — and be signed in by the time they follow its
+ * "Create your account"; sending them to `/account` would drop the token.
  */
 fun Application.installSignedInLanding(
   authService: AuthService,
@@ -168,7 +177,11 @@ fun Application.installSignedInLanding(
     if (call.request.path() !in SIGNED_IN_REDIRECTS) return@intercept
     if (call.resolveWebCaller(authService, config) == null) return@intercept
 
-    call.respondGateRedirect(ACCOUNT_PATH)
+    // This answer is made BEFORE routing, so the two doors' route-scoped
+    // `secretQueryParams` never runs for it: the redaction set is stamped here,
+    // or the request log writes the live token these URLs carry.
+    call.attributes.put(SecretQueryParamsKey, SIGNUP_DOOR_SECRET_PARAMS)
+    call.respondGateRedirect(signedInDoorLanding(call.request.queryParameters))
     finish()
   }
 }

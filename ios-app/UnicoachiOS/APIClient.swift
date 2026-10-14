@@ -215,12 +215,38 @@ final class APIClient: @unchecked Sendable {
     /// view model logs `.alreadyGone` at info, with the link id.
     func disconnectOutcome(data: Data, response: HTTPURLResponse) throws -> DisconnectOutcome {
         if response.statusCode == 204 { return .disconnected }
-        if response.statusCode == 404,
-           let answer = try? jsonDecoder.decode(ErrorResponse.self, from: data),
-           answer.knownCode == .supporterLinkNotFound {
+        if isNotFound(.supporterLinkNotFound, data: data, response: response) {
             return .alreadyGone
         }
         throw decodeError(data: data, status: response.statusCode)
+    }
+
+    /// An approve's answer (RFC 254): `200` with the new connection, or
+    /// `404 supporter_request_not_found` as `.noLongerPending`. Read like
+    /// `disconnectOutcome`, and for the same reasons.
+    func approveOutcome(data: Data, response: HTTPURLResponse) throws -> ApproveOutcome {
+        if isNotFound(.supporterRequestNotFound, data: data, response: response) {
+            return .noLongerPending
+        }
+        return .connected(try decode(data: data, response: response, expectedStatus: 200))
+    }
+
+    /// A decline's answer (RFC 254): `204`, or `404 supporter_request_not_found`
+    /// as `.noLongerPending`.
+    func declineOutcome(data: Data, response: HTTPURLResponse) throws -> DeclineOutcome {
+        if response.statusCode == 204 { return .declined }
+        if isNotFound(.supporterRequestNotFound, data: data, response: response) {
+            return .noLongerPending
+        }
+        throw decodeError(data: data, status: response.statusCode)
+    }
+
+    /// A `404` carrying this server code. Keyed on the CODE, so a gateway's
+    /// bare `404` is not mistaken for the server's answer.
+    private func isNotFound(_ code: ServerErrorCode, data: Data, response: HTTPURLResponse) -> Bool {
+        guard response.statusCode == 404,
+              let answer = try? jsonDecoder.decode(ErrorResponse.self, from: data) else { return false }
+        return answer.knownCode == code
     }
 
     private func perform<B: Encodable>(method: String, path: String, body: B?) async throws -> (data: Data, response: HTTPURLResponse) {

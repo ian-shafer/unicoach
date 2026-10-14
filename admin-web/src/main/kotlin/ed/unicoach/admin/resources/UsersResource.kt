@@ -14,8 +14,10 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.SessionsDao
+import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.UsersDao
+import ed.unicoach.db.dao.recordEmailVerified
 import ed.unicoach.db.models.DisplayName
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.NewUser
@@ -51,6 +53,8 @@ class UsersResource(
   private val argon2Hasher: Argon2Hasher,
   private val emailVerificationService: EmailVerificationService,
   private val studentsResource: StudentsResource,
+  /** Runs inside the operator's mark-verified transaction, as `DbEmailVerifier`'s hook does (RFC 254). */
+  private val afterVerified: (SqlSession, UserId) -> Unit,
 ) : AdminResource<User, UserId> {
   private val logger = LoggerFactory.getLogger(UsersResource::class.java)
 
@@ -335,10 +339,15 @@ class UsersResource(
 
     scope.post("/$slug/{id}/verify-email") {
       val userId = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondRedirect("/$slug")
-      db.withConnection { session -> UsersDao.markEmailVerified(session, userId) }.fold(
-        onSuccess = { call.respondRedirect("/$slug/${userId.value}") },
-        onFailure = { call.respondDaoError(it) },
-      )
+      // Only the user lookup is classified: a missing user is this route's 404.
+      db
+        .withConnection { session -> UsersDao.findById(session, userId, SoftDeleteScope.ACTIVE) }
+        .getOrElse { return@post call.respondDaoError(it) }
+      // A throw leaves the transaction, so a failing hook rolls the mark back with
+      // it, and the status-pages net logs it with the request URI — a not-found
+      // deep in the hook is not this user being missing.
+      db.withConnection { session -> recordEmailVerified(session, userId, afterVerified) }
+      call.respondRedirect("/$slug/${userId.value}")
     }
 
     scope.post("/$slug/{id}/send-verification-email") {

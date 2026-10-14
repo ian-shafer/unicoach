@@ -91,6 +91,7 @@ class AuthServiceTest {
       emailVerificationService(),
       GoogleIdTokenVerifier(StubIdTokenVerifier()),
       AppleIdTokenVerifier(StubIdTokenVerifier()),
+      { _, _ -> },
     )
 
   private fun authServiceWithFailingEnqueue(): AuthService {
@@ -106,6 +107,7 @@ class AuthServiceTest {
       evService,
       GoogleIdTokenVerifier(StubIdTokenVerifier()),
       AppleIdTokenVerifier(StubIdTokenVerifier()),
+      { _, _ -> },
     )
   }
 

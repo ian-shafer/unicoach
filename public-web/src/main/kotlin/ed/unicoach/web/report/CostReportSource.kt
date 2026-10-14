@@ -1,6 +1,8 @@
 package ed.unicoach.web.report
 
 import ed.unicoach.coaching.costs.CollegeCostProfile
+import ed.unicoach.db.models.UserId
+import ed.unicoach.family.ClaimView
 
 /**
  * The Family Cost Report read, as `public-web` needs it (RFC 155 D-E): a raw
@@ -20,7 +22,15 @@ import ed.unicoach.coaching.costs.CollegeCostProfile
  * never sees a DB" was true of the success path only.
  */
 interface CostReportSource {
-  suspend fun getByShareToken(rawToken: String): Result<CostReportOutcome>
+  /**
+   * [viewer] is the signed-in reader, or null for a signed-out one. It decides
+   * only what the page OFFERS its reader (RFC 254, [ClaimView]), never what the
+   * report says.
+   */
+  suspend fun getByShareToken(
+    rawToken: String,
+    viewer: UserId?,
+  ): Result<CostReportOutcome>
 }
 
 /**
@@ -48,9 +58,14 @@ class CostReportReadFailedException(
  * revoked share.
  */
 sealed interface CostReportOutcome {
-  /** A live share resolved to this student's current cost profile. */
+  /**
+   * A live share resolved to this student's current cost profile, and what the
+   * page offers the reader after it (RFC 254). [claim] is an enum and carries no
+   * student id, so the renderer still cannot print one (RFC 155 D-F).
+   */
   data class Found(
     val profile: CollegeCostProfile,
+    val claim: ClaimView,
   ) : CostReportOutcome
 
   /** No live share for this token. [reason] is for the log alone; the page is identical for every case. */

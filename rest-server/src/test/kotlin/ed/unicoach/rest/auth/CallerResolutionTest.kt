@@ -83,6 +83,7 @@ class CallerResolutionTest {
       evService,
       GoogleIdTokenVerifier(StubIdTokenVerifier()),
       AppleIdTokenVerifier(StubIdTokenVerifier()),
+      { _, _ -> },
     )
   }
 

@@ -78,6 +78,27 @@ class MockSupporterInviteClient: SupporterInviteClientProtocol, @unchecked Senda
         guard let disconnectSupporterResult else { fatalError("No result configured") }
         return try disconnectSupporterResult.get()
     }
+
+    var approveResult: Result<ApproveOutcome, Error>?
+    private(set) var approvedRequestIds: [UUID] = []
+    /// Holds an approve open, the `MockSupporterClient.fetchHomeGate` way.
+    var approveGate: (@Sendable () async -> Void)?
+
+    var declineResult: Result<DeclineOutcome, Error>?
+    private(set) var declinedRequestIds: [UUID] = []
+
+    func approveSupporterRequest(requestId: UUID) async throws -> ApproveOutcome {
+        approvedRequestIds.append(requestId)
+        await approveGate?()
+        guard let approveResult else { fatalError("No result configured") }
+        return try approveResult.get()
+    }
+
+    func declineSupporterRequest(requestId: UUID) async throws -> DeclineOutcome {
+        declinedRequestIds.append(requestId)
+        guard let declineResult else { fatalError("No result configured") }
+        return try declineResult.get()
+    }
 }
 
 /// An in-memory `SupporterSubjectStore`. Tests substitute the STORAGE by

@@ -45,7 +45,9 @@ import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceFigure
 import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.SourceUrlStatus
+import ed.unicoach.db.models.UserId
 import ed.unicoach.db.models.ValueBearingStatus
+import ed.unicoach.family.ClaimView
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.MissReason
@@ -66,10 +68,15 @@ const val TEST_LIVE_TOKEN = "live-share-token"
  * by a `!!` re-proving what the constructor should have made unrepresentable.
  */
 sealed interface FakeReportAnswer {
-  /** [token] resolves to [profile]; every other token is not found, as a revoked one would be. */
+  /**
+   * [token] resolves to [profile]; every other token is not found, as a revoked
+   * one would be. A signed-out reader is offered [ClaimView.SIGN_UP], as the
+   * real port answers; a signed-in one is offered [signedInClaim].
+   */
   data class Live(
     val profile: CollegeCostProfile,
     val token: String = TEST_LIVE_TOKEN,
+    val signedInClaim: ClaimView = ClaimView.ASK_TO_CONNECT,
   ) : FakeReportAnswer
 
   /** No token resolves — the unknown and revoked cases the port cannot tell apart. */
@@ -105,13 +112,16 @@ class FakeCostReportSource(
    */
   val tokensSeen: List<String> get() = seen.toList()
 
-  override suspend fun getByShareToken(rawToken: String): Result<CostReportOutcome> {
+  override suspend fun getByShareToken(
+    rawToken: String,
+    viewer: UserId?,
+  ): Result<CostReportOutcome> {
     seen.add(rawToken)
     return when (answer) {
       is FakeReportAnswer.Live -> {
         Result.success(
           if (rawToken == answer.token) {
-            CostReportOutcome.Found(answer.profile)
+            CostReportOutcome.Found(answer.profile, if (viewer == null) ClaimView.SIGN_UP else answer.signedInClaim)
           } else {
             CostReportOutcome.NotFound(MissReason.NO_LIVE_SHARE)
           },

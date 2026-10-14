@@ -204,12 +204,24 @@ struct SupporterHomeView: View {
     /// true of THIS slice — the invite, the acceptance, the name in the header,
     /// the switcher — because copy that promised what `family/05` will show
     /// would be a claim the screen cannot keep today.
+    ///
+    /// A parent who asked to connect from a Family Cost Report (RFC 254) is
+    /// told that instead of "No student linked yet": the request is the thing
+    /// they are waiting on. The count says no more than that one is waiting.
     private var whatLinkingAdds: some View {
         VStack(alignment: .leading, spacing: DSSpacing.md) {
-            Text("No student linked yet")
-                .font(.dsTitle)
-                .foregroundStyle(Color.dsTextPrimary)
-                .accessibilityIdentifier("supporterEmptyTitle")
+            if home.pendingRequests > 0 {
+                Text("Your request to connect is waiting for your student to approve it.")
+                    .font(.dsTitle)
+                    .foregroundStyle(Color.dsTextPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("supporterWaitingTitle")
+            } else {
+                Text("No student linked yet")
+                    .font(.dsTitle)
+                    .foregroundStyle(Color.dsTextPrimary)
+                    .accessibilityIdentifier("supporterEmptyTitle")
+            }
 
             VStack(alignment: .leading, spacing: DSSpacing.sm) {
                 Text("Send your student an invite. Nothing is shared until they accept it.")
@@ -338,7 +350,7 @@ private struct SupporterHomePreviewSubjectStore: SupporterSubjectStore {
 @MainActor private func supporterHomePreview(_ students: [LinkedStudent]) -> some View {
     SupporterHomeView(
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview Parent", emailVerified: true),
-        home: SupporterHome(supporter: PublicSupporter(id: UUID()), students: students),
+        home: SupporterHome(supporter: PublicSupporter(id: UUID()), students: students, pendingRequests: 0),
         authClient: SupporterHomePreviewAuthClient(),
         supporterInviteClient: PreviewSupporterInviteClient(),
         supporterClient: PreviewSupporterClient(),

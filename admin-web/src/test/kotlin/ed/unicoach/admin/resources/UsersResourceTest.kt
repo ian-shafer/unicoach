@@ -1,9 +1,15 @@
 package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
+import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.UsersDao
+import ed.unicoach.db.models.NewCostReportShare
 import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
+import ed.unicoach.email.EmailTemplate
+import ed.unicoach.queue.JobType
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -14,10 +20,13 @@ import io.ktor.http.parameters
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import java.security.SecureRandom
+import java.util.Base64
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class UsersResourceTest {
@@ -458,6 +467,99 @@ class UsersResourceTest {
 
       val reloaded = findUser(target.id)
       assertEquals(target.version + 1, reloaded.version, "Version must bump exactly once across two verify POSTs")
+    }
+
+  /**
+   * The operator's mark is a verification like the mailed link, so it burns the
+   * account's outstanding mailed links too: one left spendable could be spent
+   * later and run the verify hook a second time.
+   */
+  @Test
+  fun `mark-verified burns the account's outstanding verification links`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Burn Tokens")
+      client().submitForm(url = "/user/${target.id.value}/send-verification-email", formParameters = parameters {}) {
+        header(HttpHeaders.Cookie, cookie)
+      }
+      assertEquals(1, unconsumedTokenCount(target.id), "precondition: a mailed link is outstanding")
+
+      val verify =
+        client().submitForm(url = "/user/${target.id.value}/verify-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+
+      assertEquals(HttpStatusCode.Found, verify.status)
+      assertEquals(0, unconsumedTokenCount(target.id), "the mark burns every outstanding mailed link")
+    }
+
+  /**
+   * An operator's mark-verified is a verification like the mailed link (RFC
+   * 254): a parent's request waiting on that address reaches the student in
+   * the same transaction, once.
+   */
+  @Test
+  fun `mark-verified releases the claimant's waiting request to the student once`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val ava = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Ava Okafor")
+      val student = AdminTestSupport.seedStudent(ava.id).id
+      val raw = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32).also { SecureRandom().nextBytes(it) })
+      runBlocking {
+        AdminTestSupport.database.withConnection { session ->
+          // The student's own address is confirmed: an unconfirmed student is emailed nothing.
+          UsersDao.markEmailVerified(session, ava.id).getOrThrow()
+          val id = CostReportSharesDao.nextId(session).getOrThrow()
+          CostReportSharesDao.create(session, NewCostReportShare(id, student, TokenHash.fromRawToken(raw))).getOrThrow()
+        }
+      }
+      val jane = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Jane Okafor")
+      runBlocking { AdminTestSupport.linkRequestService.claimFromReport(jane.id, raw).getOrThrow() }
+      assertEquals(0, linkRequestedEmailCount(), "nothing is sent before the address is proved")
+
+      repeat(2) {
+        client().submitForm(url = "/user/${jane.id.value}/verify-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      }
+
+      assertEquals(1, linkRequestedEmailCount(), "the student is told once")
+    }
+
+  /**
+   * A failure inside the release hook is not "this user is missing": it reaches
+   * the status-pages net, which logs it, and the mark rolls back with it.
+   */
+  @Test
+  fun `a failing release hook on mark-verified is a 500 and leaves the address unverified`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule(afterVerified = { _, _ -> throw NotFoundException() }) } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Hook Fails")
+
+      val verify =
+        client().submitForm(url = "/user/${target.id.value}/verify-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+
+      assertEquals(HttpStatusCode.InternalServerError, verify.status, "a not-found inside the hook is not a missing user")
+      assertNull(findUser(target.id).emailVerifiedAt, "the mark rolled back with the hook")
+    }
+
+  private fun linkRequestedEmailCount(): Int =
+    runBlocking {
+      AdminTestSupport.database.withConnection { session ->
+        session.prepareStatement("SELECT count(*) FROM jobs WHERE job_type = ? AND payload->>'template' = ?").use { stmt ->
+          stmt.setString(1, JobType.SEND_EMAIL.value)
+          stmt.setString(2, EmailTemplate.LINK_REQUESTED.name)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            rs.getInt(1)
+          }
+        }
+      }
     }
 
   @Test

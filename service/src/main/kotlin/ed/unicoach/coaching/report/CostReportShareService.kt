@@ -7,6 +7,7 @@ import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.SupporterLinkRequestsDao
 import ed.unicoach.db.models.CommitmentLens
 import ed.unicoach.db.models.CostReportShare
 import ed.unicoach.db.models.NewCostReportShare
@@ -410,11 +411,20 @@ class CostReportShareService(
     )
   }
 
-  /** The compare-and-swap revoke: no live row is an absence the DAO already reports as null. */
+  /**
+   * The compare-and-swap revoke: no live row is an absence the DAO already
+   * reports as null. A revoked link withdraws the requests to connect still
+   * pending from it (RFC 254), in the same transaction: the email's remedy for a
+   * forwarded link is to turn it off, and a stranger who claimed unverified
+   * must not reach the student by verifying afterwards.
+   */
   private fun revokeLive(
     session: SqlSession,
     studentId: StudentId,
-  ): CostReportShare? = CostReportSharesDao.revokeLive(session, studentId).getOrThrow()
+  ): CostReportShare? =
+    CostReportSharesDao.revokeLive(session, studentId).getOrThrow()?.also { revoked ->
+      SupporterLinkRequestsDao.cancelAllPendingFromShare(session, revoked.id).getOrThrow()
+    }
 
   companion object {
     private val logger = LoggerFactory.getLogger(CostReportShareService::class.java)

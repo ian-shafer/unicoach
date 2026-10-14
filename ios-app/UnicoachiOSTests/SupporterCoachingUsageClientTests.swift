@@ -179,7 +179,7 @@ final class SupporterHomeWireTests: XCTestCase {
 
         let window = SnapshotHost.mount(AnyView(SupporterHomeView(
             user: user,
-            home: SupporterHome(supporter: PublicSupporter(id: UUID()), students: []),
+            home: SupporterHome(supporter: PublicSupporter(id: UUID()), students: [], pendingRequests: 0),
             authClient: AuthClient(apiClient: apiClient),
             supporterInviteClient: SupporterInviteClient(apiClient: apiClient),
             supporterClient: SupporterClient(apiClient: apiClient),

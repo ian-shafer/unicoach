@@ -10,6 +10,7 @@ import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.SupporterInvitesDao
+import ed.unicoach.db.dao.SupporterLinkRequestsDao
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.dao.UserAuthIdentitiesDao
@@ -21,11 +22,14 @@ import ed.unicoach.db.models.NewCostReportShare
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.NewSupporter
 import ed.unicoach.db.models.NewSupporterInvite
+import ed.unicoach.db.models.NewSupporterLinkRequest
 import ed.unicoach.db.models.NewSupporterStudentLink
 import ed.unicoach.db.models.ProviderSubject
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SupporterInvite
+import ed.unicoach.db.models.SupporterLinkRequest
+import ed.unicoach.db.models.SupporterLinkRequestResolution
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.db.models.SupporterStudentLink
 import ed.unicoach.db.models.TokenHash
@@ -391,5 +395,51 @@ class AccountClosureServiceTest {
     assertEquals(rendered[0].subject.value, rendered[1].subject.value)
     assertEquals(rendered[0].body.value, rendered[1].body.value)
     assertTrue(rendered[0].body.value.contains("You and Ava Okafor are no longer connected on unicoach."))
+  }
+
+  // --- pending requests to connect (RFC 254) ------------------------------------
+
+  /** A pending request from [supporter] to [student], made on the student's live share. */
+  private fun pendingRequest(
+    supporter: SupporterId,
+    student: StudentId,
+  ): SupporterLinkRequest {
+    if (CostReportSharesDao.findLiveByStudent(sqlSession, student).getOrThrow() == null) share(student)
+    val shareId = assertNotNull(CostReportSharesDao.findLiveByStudent(sqlSession, student).getOrThrow()).id
+    return assertNotNull(SupporterLinkRequestsDao.create(sqlSession, NewSupporterLinkRequest(supporter, student, shareId)).getOrThrow())
+  }
+
+  private fun resolutionOf(request: SupporterLinkRequest): SupporterLinkRequestResolution? =
+    connection.prepareStatement("SELECT resolution FROM supporter_link_requests WHERE id = ?").use { stmt ->
+      stmt.setObject(1, request.id.value)
+      stmt.executeQuery().use { rs ->
+        assertTrue(rs.next())
+        rs.getString(1)?.let { SupporterLinkRequestResolution.fromValue(it) }
+      }
+    }
+
+  @Test
+  fun `closing a student cancels the requests waiting on them, and sends nothing`() {
+    val ava = account("Ava Okafor")
+    val avaStudent = studentOf(ava)
+    val waiting = pendingRequest(supporterOf(account("Jane Okafor")), avaStudent)
+
+    close(ava)
+
+    assertEquals(SupporterLinkRequestResolution.CANCELLED, resolutionOf(waiting))
+    assertEquals(emptyList(), linkEndedEmails(), "a request is not a link, so nobody is told a link ended")
+  }
+
+  @Test
+  fun `closing a parent cancels their pending requests and leaves other parents' alone`() {
+    val jane = account("Jane Okafor")
+    val avaStudent = studentOf(account("Ava Okafor"))
+    val janes = pendingRequest(supporterOf(jane), avaStudent)
+    val noors = pendingRequest(supporterOf(account("Noor Parent")), avaStudent)
+
+    close(jane)
+
+    assertEquals(SupporterLinkRequestResolution.CANCELLED, resolutionOf(janes))
+    assertNull(resolutionOf(noors), "another parent's request still waits")
   }
 }

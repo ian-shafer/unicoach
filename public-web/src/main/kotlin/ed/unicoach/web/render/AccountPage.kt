@@ -19,6 +19,14 @@ const val ACCOUNT_HEADING = "Your account"
 const val ACCOUNT_CLASS = "account"
 
 /**
+ * Where a parent's product is (RFC 254): public-web has no supporter surface, so
+ * a supporter account is told it lives in the iPhone app.
+ */
+const val SUPPORTER_APP_NOTE =
+  "unicoach for parents and supporters is in the iPhone app. Sign in there with this email to search " +
+    "colleges and see who you're connected to."
+
+/**
  * The signed-in home.
  *
  * Rendered at [ShellWidth.WIDE] — the first production caller of the seam RFC
@@ -37,9 +45,13 @@ const val ACCOUNT_CLASS = "account"
  * slice answers `303` and the message is rendered by the GET that follows, so a
  * reload cannot resubmit the form that produced it. It is a [WebNotice] and not
  * a sentence, so an unknown query key renders nothing at all.
+ *
+ * [isSupporter] adds the one line a parent account needs (RFC 254): where its
+ * product is.
  */
 suspend fun ApplicationCall.respondAccountPage(
   user: User,
+  isSupporter: Boolean,
   notice: WebNotice? = null,
 ) {
   respondHtml {
@@ -53,6 +65,7 @@ suspend fun ApplicationCall.respondAccountPage(
           dt { +"Email" }
           dd { +user.email.value }
         }
+        if (isSupporter) p { +SUPPORTER_APP_NOTE }
         p {
           // Label and path both read from the page itself, so this link cannot
           // name it one thing while the page calls itself another.

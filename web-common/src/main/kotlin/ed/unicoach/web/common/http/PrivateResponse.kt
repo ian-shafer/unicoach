@@ -28,13 +28,25 @@ const val CACHE_CONTROL_NO_STORE = "no-store"
 /** The header that keeps the link out of the `Referer` of anything the parent follows from the page. */
 const val REFERRER_POLICY_HEADER = "Referrer-Policy"
 
-/** Its one value here: the URL carries a live credential, so it rides out with nothing. */
-const val REFERRER_POLICY_NO_REFERRER = "no-referrer"
+/**
+ * Its one value here (RFC 254, superseding RFC 155 D-H's `no-referrer`): the
+ * URL carries a live credential, so it never rides to ANOTHER origin, and every
+ * outbound link from these pages is cross-origin and gets no `Referer` at all.
+ *
+ * Not `no-referrer`, because under the Fetch standard a POST from a
+ * `no-referrer` document sends `Origin: null`, which the same-origin guard
+ * refuses — so every form on these pages (sign-in, register, accept, ask to
+ * connect) was refused in a real browser. `same-origin` sends the real origin
+ * on a same-origin POST. The one new place the token travels is a same-origin
+ * `Referer` to this server, which the guard reduces to its origin before it
+ * logs it.
+ */
+const val REFERRER_POLICY_SAME_ORIGIN = "same-origin"
 
 /**
  * Marks a route as PRIVATE TO WHOEVER HOLDS ITS LINK: no shared cache keeps a
- * copy, no crawler indexes it, and no outbound link carries its URL in a
- * `Referer` (RFC 155 D-H).
+ * copy, no crawler indexes it, and no link to another origin carries its URL in
+ * a `Referer` (RFC 155 D-H, RFC 254).
  *
  * Route-scoped and stamped in the `Setup` phase, beside `secretQueryParams` and
  * for the same reason: the headers are a standing property of the ROUTE, so they
@@ -52,6 +64,6 @@ val PrivateToLinkHolderPlugin =
     on(CallSetup) { call ->
       call.response.header(HttpHeaders.CacheControl, CACHE_CONTROL_NO_STORE)
       call.response.header(X_ROBOTS_TAG_HEADER, ROBOTS_NOINDEX)
-      call.response.header(REFERRER_POLICY_HEADER, REFERRER_POLICY_NO_REFERRER)
+      call.response.header(REFERRER_POLICY_HEADER, REFERRER_POLICY_SAME_ORIGIN)
     }
   }

@@ -30,6 +30,9 @@ dependencies {
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.ktor.server.test.host)
+  // RFC 254: a test selects queued email jobs by EmailTemplate, the enum that
+  // owns the template names, rather than by a hand-typed string.
+  testImplementation(project(":email"))
   // The one home of the UC San Diego Scorecard row (RFC 157), shared with the
   // :service cost tests that seed the same row.
   testImplementation(testFixtures(project(":service")))

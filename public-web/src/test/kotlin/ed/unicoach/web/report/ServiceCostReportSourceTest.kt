@@ -57,7 +57,7 @@ import kotlin.test.assertTrue
 class ServiceCostReportSourceTest {
   private val database = WebAuthTestSupport.database
   private val permissions = SharingPermissionService(database)
-  private val source = ServiceCostReportSource(database, CollegeCostService(database), permissions)
+  private val source = ServiceCostReportSource(database, CollegeCostService(database), permissions, WebAuthTestSupport.linkRequestService)
 
   private val shares: CostReportShareService =
     CostReportConfig
@@ -95,7 +95,7 @@ class ServiceCostReportSourceTest {
   }
 
   private fun profileOnTheReport(token: String) =
-    runBlocking { assertIs<CostReportOutcome.Found>(source.getByShareToken(token).getOrThrow()).profile }
+    runBlocking { assertIs<CostReportOutcome.Found>(source.getByShareToken(token, null).getOrThrow()).profile }
 
   private fun programReturnOnTheReport(token: String) = profileOnTheReport(token).programReturn
 
@@ -175,7 +175,7 @@ class ServiceCostReportSourceTest {
       val id = CostReportSharesDao.nextId(session).getOrThrow()
       CostReportSharesDao.create(session, NewCostReportShare(id, studentId, TokenHash.fromRawToken(raw))).getOrThrow()
     }
-    assertIs<CostReportOutcome.Found>(source.getByShareToken(raw).getOrThrow(), "a live account's live share renders")
+    assertIs<CostReportOutcome.Found>(source.getByShareToken(raw, null).getOrThrow(), "a live account's live share renders")
     return raw
   }
 
@@ -190,7 +190,7 @@ class ServiceCostReportSourceTest {
         StudentsDao.delete(session, studentId, student.version).getOrThrow()
       }
 
-      assertEquals(CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED), source.getByShareToken(raw).getOrThrow())
+      assertEquals(CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED), source.getByShareToken(raw, null).getOrThrow())
     }
 
   @Test
@@ -205,7 +205,7 @@ class ServiceCostReportSourceTest {
         UsersDao.delete(session, user.id, live.version).getOrThrow()
       }
 
-      assertEquals(CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED), source.getByShareToken(raw).getOrThrow())
+      assertEquals(CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED), source.getByShareToken(raw, null).getOrThrow())
     }
 
   private companion object {

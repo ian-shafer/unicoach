@@ -80,7 +80,8 @@ final class SupporterClient: SupporterClientProtocol, @unchecked Sendable {
 struct PreviewSupporterClient: SupporterClientProtocol {
     var home = SupporterHome(
         supporter: PublicSupporter(id: UUID(uuidString: "44440000-0000-0000-0000-000000000001") ?? UUID()),
-        students: []
+        students: [],
+        pendingRequests: 0
     )
 
     func fetchHome() async throws -> SupporterHome? { home }

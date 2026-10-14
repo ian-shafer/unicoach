@@ -79,6 +79,7 @@ suspend fun ApplicationCall.respondSignInPage(
   state: SignInFormState = SignInFormState.Fresh,
   nav: ShellNav = ShellNav.SignedOut,
   token: String? = null,
+  report: String? = null,
 ) {
   respondHtml(state.status) {
     siteLayout(SIGN_IN_HEADING, nav = nav) {
@@ -93,11 +94,12 @@ suspend fun ApplicationCall.respondSignInPage(
         after = {
           p {
             +"New to unicoach? "
-            a(href = pathCarryingToken(REGISTER_PATH, token)) { +"Create an account" }
+            a(href = pathCarryingToken(REGISTER_PATH, token, report)) { +"Create an account" }
           }
         },
       ) {
         tokenField(token)
+        reportField(report)
         textField(
           name = EMAIL_FIELD,
           labelText = "Email",

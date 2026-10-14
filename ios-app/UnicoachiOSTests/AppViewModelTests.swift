@@ -37,7 +37,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     private func makeSupporterHome(students: [LinkedStudent] = []) -> SupporterHome {
-        SupporterHome(supporter: PublicSupporter(id: UUID()), students: students)
+        SupporterHome(supporter: PublicSupporter(id: UUID()), students: students, pendingRequests: 0)
     }
 
     private func makeStudent() -> PublicStudent {
@@ -843,8 +843,9 @@ class AppViewModelTests: XCTestCase {
 
 /// A read held open, so a test can act on the view model while the request is
 /// genuinely in flight rather than guessing at a sleep. The `WriteGate`
-/// precedent in `YourDetailsViewModelTests`.
-private actor InFlightGate {
+/// precedent in `YourDetailsViewModelTests`. Not private: the family list's
+/// in-flight test holds an approve open with it too.
+actor InFlightGate {
     private var isReleased = false
     private var isHeld = false
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []

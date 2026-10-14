@@ -79,7 +79,7 @@ class CostReportRoutingTest {
     }
 
   @Test
-  fun `the report is not stored, not indexed and not referred`() =
+  fun `the report is not stored, not indexed and not referred to another origin`() =
     testApplication {
       application {
         testPublicWebModule(costReportSource = liveSource())
@@ -89,7 +89,7 @@ class CostReportRoutingTest {
 
       assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
       assertEquals("noindex, nofollow", response.headers["X-Robots-Tag"])
-      assertEquals("no-referrer", response.headers["Referrer-Policy"])
+      assertEquals("same-origin", response.headers["Referrer-Policy"])
       assertTrue(
         response.bodyAsText().contains("<meta name=\"robots\" content=\"noindex, nofollow\">"),
         "missing the robots meta for a crawler that reads the body",
@@ -108,7 +108,7 @@ class CostReportRoutingTest {
       assertEquals(HttpStatusCode.NotFound, response.status)
       assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
       assertEquals("noindex, nofollow", response.headers["X-Robots-Tag"])
-      assertEquals("no-referrer", response.headers["Referrer-Policy"])
+      assertEquals("same-origin", response.headers["Referrer-Policy"])
     }
 
   @Test

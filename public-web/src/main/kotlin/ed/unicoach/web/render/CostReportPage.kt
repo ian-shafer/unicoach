@@ -54,15 +54,24 @@ import ed.unicoach.db.models.NationalMeritAward
 import ed.unicoach.db.models.NationalMeritClaim
 import ed.unicoach.db.models.QualifyingStanding
 import ed.unicoach.db.models.ResidencyTierBasis
+import ed.unicoach.family.ClaimView
+import ed.unicoach.web.REPORT_CONNECT_PATH
+import ed.unicoach.web.auth.REGISTER_PATH
+import ed.unicoach.web.auth.SIGN_IN_PATH
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
+import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
+import kotlinx.html.FormMethod
 import kotlinx.html.TBODY
 import kotlinx.html.THEAD
 import kotlinx.html.TR
 import kotlinx.html.ThScope
 import kotlinx.html.a
+import kotlinx.html.aside
+import kotlinx.html.button
 import kotlinx.html.div
+import kotlinx.html.form
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.h3
@@ -95,7 +104,9 @@ import ed.unicoach.db.models.ResidencyBasis as PublishedResidency
 //  - NO UPGRADE CUE (D-G). CollegeCostProfile.precisionOffersFor() is an
 //    in-chat prompt for the STUDENT to answer a question. A logged-out parent
 //    cannot answer it, so this file never calls it -- only the honest half, the
-//    labelled statement of what is missing, survives here.
+//    labelled statement of what is missing, survives here. RFC 254 adds ONE
+//    offer after the report: the reader's own account. It asks the reader for
+//    nothing about the student, which is the line D-G still draws.
 //  - A MISSING PART IS A LABELLED BLANK. Never a zero, never a neighbour's
 //    number, and never a total summed from a partial set (that rule is
 //    ArrangementCost's own -- this file only prints what it computes).
@@ -450,6 +461,8 @@ private fun printsAProgram(programSlices: Map<CollegeId, List<CollegeSubjectRetu
 suspend fun ApplicationCall.respondCostReportPage(
   profile: CollegeCostProfile,
   nav: ShellNav = ShellNav.SignedOut,
+  claim: ClaimView,
+  token: String,
 ) {
   val residencyBases = residencyBasesOf(profile)
   val shape = ReportShape.of(profile)
@@ -505,8 +518,107 @@ suspend fun ApplicationCall.respondCostReportPage(
         // (RFC 177 D5).
         sourcesSection(profile.moneySources, printsAProgram)
       }
+      // AFTER the report and outside its section (RFC 254): the offer never
+      // stands in front of the report, and an `aside` keeps it out of every
+      // measure taken of the report section itself.
+      reportClaim(claim, token)
     }
   }
+}
+
+/** The class the after-report offer carries (RFC 254), so CSS and tests agree on it. */
+const val REPORT_CLAIM_CLASS = "report-claim"
+
+/** The offer's heading (RFC 254). */
+const val CLAIM_HEADING = "Keep going with your own account"
+
+/**
+ * What the offer says about unicoach (RFC 254). It asks the reader for nothing
+ * about the student — the test RFC 254 puts on every word here, so the cue RFC
+ * 155 D-G suppressed cannot come back through this copy.
+ */
+const val CLAIM_BODY =
+  "unicoach is a college coach. You can have an account of your own, to look up what any college " +
+    "costs a family like yours and to keep track of what comes next."
+
+/** What signing up from here does, said before anybody signs up (RFC 254). */
+const val CLAIM_CONSENT =
+  "If you sign up here, we'll ask the student who shared this report to approve connecting with you. " +
+    "Nothing of theirs is shared with you until they do. They will see your name and email."
+
+/** The signed-in reader's one action (RFC 254). */
+const val CLAIM_ASK_BUTTON = "Ask to connect"
+
+/** The one line a reader with a request already waiting sees instead of the offer (RFC 254). */
+const val CLAIM_PENDING_LINE = "Your request to connect is waiting for the student to approve it."
+
+/** After a signup whose claimant has not confirmed their email yet (RFC 254). */
+const val CLAIM_PENDING_NOTICE =
+  "Your account is ready. Once you confirm your email, we'll ask the student who shared the report " +
+    "to approve connecting with you."
+
+/** After a request the student has been asked about (RFC 254). */
+const val CLAIM_SENT_NOTICE = "We've asked the student who shared the report to approve connecting with you."
+
+/**
+ * ONE sentence for every claim that made no request (RFC 254) — a dead link, a
+ * decline before, the reader's own report — so the notice says nothing about
+ * the student.
+ */
+const val CLAIM_NOT_SENT_NOTICE =
+  "Your account is ready, but we couldn't send a request to connect from that report link."
+
+/**
+ * The offer after the report (RFC 254), chosen by WHO is reading and by
+ * nothing about the student, so its markup cannot carry a fact about them.
+ *
+ * The signed-out doors and the signed-in form carry the report token on its OWN
+ * key, [REPORT_FIELD] — `/register` and `/sign-in` read `token` as an invite.
+ * The links are same-origin, so they carry no `rel="noreferrer"`: the route's
+ * `Referrer-Policy: same-origin` already keeps the token off every other origin.
+ */
+private fun FlowContent.reportClaim(
+  claim: ClaimView,
+  token: String,
+) {
+  when (claim) {
+    ClaimView.SIGN_UP -> {
+      aside(REPORT_CLAIM_CLASS) {
+        claimOffer()
+        p {
+          a(href = pathCarryingToken(REGISTER_PATH, token = null, report = token)) { +REGISTER_HEADING }
+        }
+        p {
+          +"Already have an account? "
+          a(href = pathCarryingToken(SIGN_IN_PATH, token = null, report = token)) { +SIGN_IN_HEADING }
+        }
+      }
+    }
+
+    ClaimView.ASK_TO_CONNECT -> {
+      aside(REPORT_CLAIM_CLASS) {
+        claimOffer()
+        form(action = REPORT_CONNECT_PATH, method = FormMethod.post) {
+          reportField(token)
+          button(type = ButtonType.submit) { +CLAIM_ASK_BUTTON }
+        }
+      }
+    }
+
+    ClaimView.PENDING -> {
+      aside(REPORT_CLAIM_CLASS) { p { +CLAIM_PENDING_LINE } }
+    }
+
+    ClaimView.NONE -> {
+      Unit
+    }
+  }
+}
+
+private fun FlowContent.claimOffer() {
+  h2 { +CLAIM_HEADING }
+  p { +CLAIM_BODY }
+  p { +CLAIM_CONSENT }
 }
 
 /**
@@ -2173,7 +2285,8 @@ private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
  *   order is deliberate -- a filing whose file is gone needs no link, so its
  *   url is never judged -- and it is tested.
  * - `rel="noreferrer"` even though the report route already sends
- *   `Referrer-Policy: no-referrer` for exactly this reason. The header rides the
+ *   `Referrer-Policy: same-origin`, which gives a cross-origin link no
+ *   `Referer` for exactly this reason. The header rides the
  *   ROUTE and the link is on the PAGE; a page rendered from a second route later
  *   would otherwise lose the guarantee with nothing failing.
  *

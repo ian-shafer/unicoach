@@ -3,7 +3,7 @@ package ed.unicoach.web
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.web.common.http.CACHE_CONTROL_NO_STORE
 import ed.unicoach.web.common.http.REFERRER_POLICY_HEADER
-import ed.unicoach.web.common.http.REFERRER_POLICY_NO_REFERRER
+import ed.unicoach.web.common.http.REFERRER_POLICY_SAME_ORIGIN
 import ed.unicoach.web.common.http.ROBOTS_NOINDEX
 import ed.unicoach.web.common.http.X_ROBOTS_TAG_HEADER
 import ed.unicoach.web.render.INVITE_HEADING
@@ -281,9 +281,9 @@ class InviteRoutingTest {
         assertEquals(CACHE_CONTROL_NO_STORE, response.headers[HttpHeaders.CacheControl], "$path must not be stored")
         assertEquals(ROBOTS_NOINDEX, response.headers[X_ROBOTS_TAG_HEADER], "$path must not be indexed")
         assertEquals(
-          REFERRER_POLICY_NO_REFERRER,
+          REFERRER_POLICY_SAME_ORIGIN,
           response.headers[REFERRER_POLICY_HEADER],
-          "$path must not hand the token on in a Referer",
+          "$path must not hand the token to another origin in a Referer",
         )
       }
     }

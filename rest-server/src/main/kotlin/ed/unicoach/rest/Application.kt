@@ -48,8 +48,10 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.family.LinkEndedNotice
+import ed.unicoach.family.LinkRequestedNotice
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
+import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
@@ -331,13 +333,26 @@ fun Application.appModule(
   val linkEndedNotice = LinkEndedNotice(queueService)
   val supporterService = SupporterService(database, linkEndedNotice)
   val accountClosureService = AccountClosureService(database, linkEndedNotice)
+  // The one writer of a parent's request to connect (RFC 254). rest-server serves
+  // the student's approve and decline, and releases a waiting request when its
+  // claimant verifies their address here.
+  val supporterLinkRequestService =
+    SupporterLinkRequestService(database, supporterService, LinkRequestedNotice(queueService))
   val supporterInviteService =
     SupporterInviteService(database, supporterInviteConfig, tokenGenerator, supporterService)
   val emailVerificationService =
     EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
-  val emailVerifier: EmailVerifier = DbEmailVerifier(database)
+  val emailVerifier: EmailVerifier = DbEmailVerifier(database, supporterLinkRequestService::releaseOnVerified)
   val authService =
-    AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier, appleTokenVerifier)
+    AuthService(
+      database,
+      argon2Hasher,
+      tokenGenerator,
+      emailVerificationService,
+      googleTokenVerifier,
+      appleTokenVerifier,
+      supporterLinkRequestService::releaseOnVerified,
+    )
   val studentService = ed.unicoach.student.StudentService(database)
   val moneyProfileService =
     ed.unicoach.coaching.moneyprofile
@@ -569,5 +584,6 @@ fun Application.appModule(
     supporterService,
     accountClosureService,
     subjectReadService,
+    supporterLinkRequestService,
   )
 }

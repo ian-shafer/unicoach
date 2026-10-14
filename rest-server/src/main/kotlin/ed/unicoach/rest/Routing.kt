@@ -96,6 +96,7 @@ fun Application.configureRouting(
   supporterService: ed.unicoach.family.SupporterService,
   accountClosureService: ed.unicoach.account.AccountClosureService,
   subjectReadService: ed.unicoach.family.SubjectReadService,
+  supporterLinkRequestService: ed.unicoach.family.SupporterLinkRequestService,
 ) {
   val authRouteHandler =
     AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier, accountClosureService)
@@ -127,7 +128,7 @@ fun Application.configureRouting(
   val supporterRouteHandler =
     SupporterRoutes(authService, sessionConfig, supporterService, budgetService)
   val studentSupporterRouteHandler =
-    StudentSupporterRouteHandler(authService, studentService, supporterService, sessionConfig)
+    StudentSupporterRouteHandler(authService, studentService, supporterService, supporterLinkRequestService, sessionConfig)
   val subjectRouteHandler = SubjectRoutes(authService, sessionConfig, subjectReadService)
   routing {
     route("/healthz") {

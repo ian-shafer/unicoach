@@ -2,7 +2,8 @@ import Foundation
 import os
 
 /// The people on the other end of the caller's family links, and the two-tap
-/// disconnect (RFC 249). ONE view model for both voices: the student's list is
+/// disconnect (RFC 249) — plus, on the student's side, the adults asking to
+/// connect, with a one-tap approve and a two-tap decline (RFC 254). ONE view model for both voices: the student's list is
 /// read from its own door and held here; the supporter's IS the roster the home
 /// holds, rendered by `roster(of:)` from whatever the section is handed on each
 /// render, so it is never a copy that a refreshed home could leave behind.
@@ -38,13 +39,26 @@ final class FamilyConnectionsViewModel: ObservableObject {
     /// What the list shows once it has something to show.
     struct Roster: Equatable {
         var connections: [Connection]
-        let voice: Voice
+        var voice: Voice
+
+        /// The requests to answer: a student's only.
+        var requests: [SupporterRequest] {
+            if case .student(_, _, let requests) = voice { return requests }
+            return []
+        }
+
+        mutating func removeRequest(_ requestId: UUID) {
+            guard case .student(let ceiling, let costReportLinkLive, var requests) = voice else { return }
+            requests.removeAll { $0.requestId == requestId }
+            voice = .student(ceiling: ceiling, costReportLinkLive: costReportLinkLive, requests: requests)
+        }
     }
 
-    /// What only the student is told. The supporter accepted the ceiling on the
-    /// invite page and holds no Family Cost Report link.
+    /// What only the student is told, and what only the student answers: the
+    /// adults asking to connect (RFC 254). The supporter accepted the ceiling on
+    /// the invite page and holds no Family Cost Report link.
     enum Voice: Equatable {
-        case student(ceiling: SupporterCeiling, costReportLinkLive: Bool)
+        case student(ceiling: SupporterCeiling, costReportLinkLive: Bool, requests: [SupporterRequest])
         case supporter
     }
 
@@ -61,10 +75,30 @@ final class FamilyConnectionsViewModel: ObservableObject {
         case failed
     }
 
+    /// A request's approve or decline, the `RowState` way: a failure keeps the
+    /// request and says which answer did not go through, and a request in
+    /// flight cannot be answered twice.
+    enum RequestState: Equatable {
+        case inFlight(Answer)
+        case failed(Answer)
+
+        /// While one answer is in flight, neither can be sent.
+        var isInFlight: Bool {
+            if case .inFlight = self { return true }
+            return false
+        }
+    }
+
+    enum Answer: Equatable {
+        case approve
+        case decline
+    }
+
     /// The student's list. A supporter's list is not held here — see
     /// `roster(of:)` — so on that side this stays `.loading` and is never read.
     @Published private(set) var state: State = .loading
     @Published private(set) var rowStates: [UUID: RowState] = [:]
+    @Published private(set) var requestStates: [UUID: RequestState] = [:]
 
     let side: Side
     private let logger = Logger.unicoach(category: "FamilyConnectionsViewModel")
@@ -98,7 +132,11 @@ final class FamilyConnectionsViewModel: ObservableObject {
             let answer = try await client.fetchSupporters()
             state = .loaded(Roster(
                 connections: answer.supporters.map { Connection(linkId: $0.linkId, name: $0.name, alsoConnected: []) },
-                voice: .student(ceiling: answer.ceiling, costReportLinkLive: answer.costReportLinkLive)
+                voice: .student(
+                    ceiling: answer.ceiling,
+                    costReportLinkLive: answer.costReportLinkLive,
+                    requests: answer.requests
+                )
             ))
         } catch {
             logger.error("Loading the student's supporters failed: [\(String(describing: error), privacy: .public)]")
@@ -140,6 +178,69 @@ final class FamilyConnectionsViewModel: ObservableObject {
             await family.refreshHome()
         }
         rowStates[linkId] = nil
+    }
+
+    /// The one tap. On success the person moves from the requests to the
+    /// connected adults, from the approve's own answer, without a re-read.
+    func approve(_ requestId: UUID) async {
+        guard case .student(let client) = side, requestStates[requestId]?.isInFlight != true else { return }
+        requestStates[requestId] = .inFlight(.approve)
+        do {
+            switch try await client.approveSupporterRequest(requestId: requestId) {
+            case .connected(let supporter):
+                requestStates[requestId] = nil
+                connect(requestId, supporter)
+            case .noLongerPending:
+                await requestWasAnsweredElsewhere(requestId)
+            }
+        } catch {
+            logger.error("Approve failed: requestId=[\(requestId, privacy: .public)] error=[\(String(describing: error), privacy: .public)]")
+            requestStates[requestId] = .failed(.approve)
+        }
+    }
+
+    /// The second tap of a decline. On success the request leaves the list.
+    func decline(_ requestId: UUID) async {
+        guard case .student(let client) = side, requestStates[requestId]?.isInFlight != true else { return }
+        requestStates[requestId] = .inFlight(.decline)
+        do {
+            switch try await client.declineSupporterRequest(requestId: requestId) {
+            case .declined:
+                requestStates[requestId] = nil
+                removeRequest(requestId)
+            case .noLongerPending:
+                await requestWasAnsweredElsewhere(requestId)
+            }
+        } catch {
+            logger.error("Decline failed: requestId=[\(requestId, privacy: .public)] error=[\(String(describing: error), privacy: .public)]")
+            requestStates[requestId] = .failed(.decline)
+        }
+    }
+
+    /// `noLongerPending` says only that THIS list is out of date: the request
+    /// may have been approved on another device, so the person may now be
+    /// connected. The list is read again rather than guessed at.
+    private func requestWasAnsweredElsewhere(_ requestId: UUID) async {
+        logger.info("Request [\(requestId, privacy: .public)] was no longer pending; re-reading the list")
+        requestStates[requestId] = nil
+        await load()
+    }
+
+    private func connect(_ requestId: UUID, _ supporter: LinkedSupporter) {
+        guard case .loaded(var roster) = state else { return }
+        roster.removeRequest(requestId)
+        // The approve is idempotent on a live link, so the person may already
+        // be on the list.
+        if !roster.connections.contains(where: { $0.linkId == supporter.linkId }) {
+            roster.connections.append(Connection(linkId: supporter.linkId, name: supporter.name, alsoConnected: []))
+        }
+        state = .loaded(roster)
+    }
+
+    private func removeRequest(_ requestId: UUID) {
+        guard case .loaded(var roster) = state else { return }
+        roster.removeRequest(requestId)
+        state = .loaded(roster)
     }
 
     private func removeConnection(_ linkId: UUID) {

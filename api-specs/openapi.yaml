@@ -922,6 +922,125 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/students/me/supporter-requests/{requestId}/approve:
+    post:
+      summary: Approve a parent's request to connect
+      description: >
+        Connects the parent who asked to the student, with the relationship
+        word "supporter". A request the student cannot act on — another
+        student's, unknown, already resolved, or from a claimant who closed
+        their account or has not verified their email — is one 404.
+      operationId: approveStudentSupporterRequest
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The adult now connected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicLinkedSupporter'
+        '400':
+          description: The request id is not a UUID (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such request the student can act on (supporter_request_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/students/me/supporter-requests/{requestId}/decline:
+    post:
+      summary: Decline a parent's request to connect
+      description: >
+        Declines the request. Nothing is sent to anyone, and the same parent
+        cannot ask again from the report. A request the student cannot act on
+        is one 404, as for approve.
+      operationId: declineStudentSupporterRequest
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Declined
+        '400':
+          description: The request id is not a UUID (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such request the student can act on (supporter_request_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students/me/college-list:
     post:
       summary: Add a college to the current student's college list
@@ -2470,7 +2589,7 @@ components:
       # validates is the whole body, so leaving it open would stop the closure
       # claim one level short of what a supporter actually receives.
       additionalProperties: false
-      required: [supporter, students]
+      required: [supporter, students, pendingRequests]
       properties:
         supporter:
           $ref: '#/components/schemas/PublicSupporter'
@@ -2479,6 +2598,12 @@ components:
           description: Active links only, oldest first. Empty for a supporter who has linked nobody.
           items:
             $ref: '#/components/schemas/PublicLinkedStudent'
+        pendingRequests:
+          type: integer
+          minimum: 0
+          description: >
+            How many of the caller's requests to connect are still waiting on a
+            student to approve or decline them.
     PublicLinkedSupporter:
       type: object
       # CLOSED: a student reads the link to disconnect and a name. No email and
@@ -2492,6 +2617,25 @@ components:
         name:
           type: string
           description: The adult's display name, from their own account.
+    PublicSupporterRequest:
+      type: object
+      # CLOSED: the student reads who asked, by their own account's name and
+      # verified email, and when.
+      additionalProperties: false
+      required: [requestId, name, email, requestedAt]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: The claimant's display name, from their own account.
+        email:
+          type: string
+          description: The claimant's verified email, from their own account.
+        requestedAt:
+          type: string
+          format: date-time
     SupporterCeiling:
       type: object
       additionalProperties: false
@@ -2510,13 +2654,21 @@ components:
     StudentSupportersResponse:
       type: object
       additionalProperties: false
-      required: [supporters, ceiling, costReportLinkLive]
+      required: [supporters, requests, ceiling, costReportLinkLive]
       properties:
         supporters:
           type: array
           description: The adults connected to the student, oldest link first. Empty when nobody is.
           items:
             $ref: '#/components/schemas/PublicLinkedSupporter'
+        requests:
+          type: array
+          description: >
+            Pending requests to connect from a parent who opened the student's
+            Family Cost Report link, oldest first. Only from a claimant whose
+            account is live and whose email is verified. Empty when there are none.
+          items:
+            $ref: '#/components/schemas/PublicSupporterRequest'
         ceiling:
           $ref: '#/components/schemas/SupporterCeiling'
         costReportLinkLive:

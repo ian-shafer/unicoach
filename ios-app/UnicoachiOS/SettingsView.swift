@@ -192,7 +192,10 @@ struct SettingsView: View {
                 .dsOverlineStyle()
                 .foregroundStyle(Color.dsTextSecondary)
 
-            FamilyConnectionsSection(side: familySide, confirmingOnAppear: disconnectConfirmationOnAppear)
+            FamilyConnectionsSection(
+                side: familySide,
+                confirmingOnAppear: disconnectConfirmationOnAppear.map { .disconnect(linkId: $0) }
+            )
                 .padding(.bottom, DSSpacing.sm)
 
             SupporterInviteControl(role: caller.inviteRole, client: supporterInviteClient)

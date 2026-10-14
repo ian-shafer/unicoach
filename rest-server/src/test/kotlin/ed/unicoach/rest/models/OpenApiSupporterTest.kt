@@ -3,6 +3,8 @@ package ed.unicoach.rest.models
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.rest.routing.STUDENT_SUPPORTERS_PATH
 import ed.unicoach.rest.routing.STUDENT_SUPPORTER_LINK_PATH
+import ed.unicoach.rest.routing.STUDENT_SUPPORTER_REQUEST_APPROVE_PATH
+import ed.unicoach.rest.routing.STUDENT_SUPPORTER_REQUEST_DECLINE_PATH
 import ed.unicoach.rest.routing.SUPPORTERS_PATH
 import ed.unicoach.rest.routing.SUPPORTER_ME_PATH
 import ed.unicoach.rest.routing.SUPPORTER_STUDENT_LINK_PATH
@@ -166,5 +168,37 @@ class OpenApiSupporterTest {
       )
       assertEquals(false, schema.path("additionalProperties").asBoolean(true), "[$schemaName] is a CLOSED schema")
     }
+  }
+
+  /** The student's request doors (RFC 254): a session, the uniform 404, and the student-only 409. */
+  @Test
+  fun `the request doors require a session and publish their answers`() {
+    for (path in listOf(STUDENT_SUPPORTER_REQUEST_APPROVE_PATH, STUDENT_SUPPORTER_REQUEST_DECLINE_PATH)) {
+      assertEquals(
+        listOf("cookieAuth"),
+        OpenApiSpec.operation(path, "post").path("security").flatMap { scheme -> scheme.fieldNames().asSequence().toList() },
+        "[post $path] requires a session",
+      )
+    }
+    assertEquals(listOf("200", "400", "401", "403", "404", "409", "500"), responseCodes(STUDENT_SUPPORTER_REQUEST_APPROVE_PATH, "post"))
+    assertEquals(listOf("204", "400", "401", "403", "404", "409", "500"), responseCodes(STUDENT_SUPPORTER_REQUEST_DECLINE_PATH, "post"))
+  }
+
+  @Test
+  fun `a pending request publishes exactly the fields its Kotlin model carries, closed`() {
+    val schema = OpenApiSpec.schema("PublicSupporterRequest")
+    assertEquals(
+      OpenApiSpec.declaredFieldNames(PublicSupporterRequest::class),
+      OpenApiSpec.requiredProperties("PublicSupporterRequest").toSet(),
+    )
+    assertEquals(
+      OpenApiSpec.declaredFieldNames(PublicSupporterRequest::class),
+      schema
+        .path("properties")
+        .fieldNames()
+        .asSequence()
+        .toSet(),
+    )
+    assertEquals(false, schema.path("additionalProperties").asBoolean(true), "a CLOSED schema")
   }
 }

@@ -406,6 +406,27 @@ main {
   font-size: 0.9rem;
 }
 
+/* RFC 254 — the one offer after the report: the reader's own account. It sits
+   below the sources, set off by the same rule, and in the ordinary foreground
+   colour, because it is an offer and not a footnote. Its one button carries the
+   tap-target floor every other submit button on the site does. */
+.report-claim {
+  border-top: 1px solid var(--border);
+  margin-top: 2rem;
+  padding-top: 1rem;
+}
+
+.report-claim button {
+  min-height: var(--tap-target);
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  color: var(--bg);
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
 /* RFC 204 — the explainer pages. One measure, the same type scale as the legal
    pages, and two quiet marks: the "as of" line under the title, and the `[n]`
    reference markers that tie a claim to the page it was read from. The body

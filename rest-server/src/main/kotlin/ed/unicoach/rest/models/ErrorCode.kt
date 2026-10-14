@@ -50,6 +50,12 @@ enum class ErrorCode(
   // never existed, another person's, and already disconnected are one answer,
   // so the door cannot be used to probe which link ids exist.
   SUPPORTER_LINK_NOT_FOUND("supporter_link_not_found"),
+
+  // The request to connect named in an approve or decline is not one the
+  // student can act on (RFC 254) — every case
+  // `SupporterLinkRequestsDao.findPendingVisibleToStudentForUpdate` answers null
+  // for is this one code, so the doors cannot probe ids.
+  SUPPORTER_REQUEST_NOT_FOUND("supporter_request_not_found"),
   STUDENT_ALREADY_EXISTS("student_already_exists"),
   VERSION_CONFLICT("version_conflict"),
 

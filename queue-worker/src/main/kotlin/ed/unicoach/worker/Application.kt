@@ -3,7 +3,6 @@ package ed.unicoach.worker
 import ed.unicoach.appstore.AppStoreConfig
 import ed.unicoach.appstore.AppStoreServerApiFactory
 import ed.unicoach.auth.EmailVerificationConfig
-import ed.unicoach.auth.VerificationEmailRenderer
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.LlmCallLog
@@ -30,7 +29,7 @@ import ed.unicoach.email.EmailConfig
 import ed.unicoach.email.EmailProviderFactory
 import ed.unicoach.email.EmailSendHandler
 import ed.unicoach.email.EmailService
-import ed.unicoach.family.LinkEndedEmailRenderer
+import ed.unicoach.emailRenderers
 import ed.unicoach.net.NetConfig
 import ed.unicoach.net.handlers.SessionExpiryHandler
 import ed.unicoach.queue.JobHandler
@@ -122,7 +121,7 @@ fun main() {
           // email verification is not an optional feature — registration is broken
           // without it. When EMAIL_PROVIDER is unset the packaged `provider = "log"`
           // default is used, so the handler still runs (logging instead of transmitting).
-          add(EmailSendHandler(emailService, listOf(VerificationEmailRenderer(verifyUrlBase), LinkEndedEmailRenderer())))
+          add(EmailSendHandler(emailService, emailRenderers(verifyUrlBase)))
 
           // Registered unconditionally too (RFC 112): subscriptions are not an
           // optional coaching feature, so this sits outside the enabled-pass gate

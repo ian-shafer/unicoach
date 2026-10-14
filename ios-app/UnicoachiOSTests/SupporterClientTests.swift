@@ -21,7 +21,7 @@ class SupporterClientTests: XCTestCase {
     /// One home body, with the relationship word as the caller names it — a
     /// raw `String`, so a test may send a word `SupporterRelationship` does not
     /// have.
-    private func homeBody(relationship: String) -> Data {
+    private func homeBody(relationship: String, pendingRequests: Int = 0) -> Data {
         Data("""
         {
           "supporter": { "id": "44440000-0000-0000-0000-000000000001" },
@@ -33,7 +33,8 @@ class SupporterClientTests: XCTestCase {
               "relationship": "\(relationship)",
               "otherSupporterNames": ["Sam Lee"]
             }
-          ]
+          ],
+          "pendingRequests": \(pendingRequests)
         }
         """.utf8)
     }
@@ -137,6 +138,16 @@ class SupporterClientTests: XCTestCase {
         let home = try await supporterClient.fetchHome()
 
         XCTAssertEqual(home?.students.first?.otherSupporterNames, ["Sam Lee"])
+    }
+
+    // MARK: - Requests to connect (RFC 254)
+
+    func testTheHomeCarriesTheCountOfUnansweredRequests() async throws {
+        respond(status: 200, body: homeBody(relationship: "parent", pendingRequests: 2))
+
+        let home = try await supporterClient.fetchHome()
+
+        XCTAssertEqual(home?.pendingRequests, 2)
     }
 
     func testDisconnectDeletesTheCallersOwnLinkAndAcceptsNoContent() async throws {

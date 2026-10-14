@@ -360,13 +360,15 @@ enum SnapshotSeed {
 
     static func supporterHome(
         students: [LinkedStudent],
+        pendingRequests: Int = 0,
         switcherOpen: Bool = false
     ) -> some View {
         SupporterHomeView(
             user: supporterUser,
             home: SupporterHome(
                 supporter: PublicSupporter(id: UUID(uuidString: "44440000-0000-0000-0000-000000000001") ?? UUID()),
-                students: students
+                students: students,
+                pendingRequests: pendingRequests
             ),
             authClient: MockAuthClient(),
             supporterInviteClient: PreviewSupporterInviteClient(),
@@ -413,14 +415,23 @@ enum SnapshotSeed {
     /// `supporterHome` coaching-section precedent.
     static func studentFamilyClient(
         _ supporters: [LinkedSupporter],
-        costReportLinkLive: Bool = false
+        costReportLinkLive: Bool = false,
+        requests: [SupporterRequest] = []
     ) -> PreviewSupporterInviteClient {
         PreviewSupporterInviteClient(supporters: StudentSupporters(
             supporters: supporters,
             ceiling: studentCeiling,
-            costReportLinkLive: costReportLinkLive
+            costReportLinkLive: costReportLinkLive,
+            requests: requests
         ))
     }
+
+    /// An adult asking to connect from the Family Cost Report (RFC 254).
+    static let jordanRequest = SupporterRequest(
+        requestId: UUID(uuidString: "99990000-0000-0000-0000-000000000101") ?? UUID(),
+        name: "Jordan Lee",
+        email: "jordan.lee@example.com"
+    )
 
     static let twoAdults: [LinkedSupporter] = [
         LinkedSupporter(linkId: robinLink, name: "Robin Carter"),
@@ -432,7 +443,7 @@ enum SnapshotSeed {
     /// capture would spend its height on the rail.
     static func studentFamilyStrip(
         _ client: PreviewSupporterInviteClient,
-        confirmingOnAppear: UUID? = nil
+        confirmingOnAppear: FamilyConnectionsSection.ConfirmingOnAppear? = nil
     ) -> AnyView {
         AnyView(
             FamilyConnectionsSection(side: .student(client), confirmingOnAppear: confirmingOnAppear)
@@ -858,7 +869,7 @@ enum SnapshotCatalogue {
             SnapshotScene(name: "family-student-confirm-open", size: SnapshotScene.tallCanvas(height: 900)) {
                 SnapshotSeed.studentFamilyStrip(
                     SnapshotSeed.studentFamilyClient(SnapshotSeed.twoAdults),
-                    confirmingOnAppear: SnapshotSeed.robinLink
+                    confirmingOnAppear: .disconnect(linkId: SnapshotSeed.robinLink)
                 )
             },
             SnapshotScene(name: "family-student-cost-report-live", size: SnapshotScene.tallCanvas(height: 900)) {
@@ -868,6 +879,28 @@ enum SnapshotCatalogue {
             },
             SnapshotScene(name: "family-student-empty", size: SnapshotScene.tallCanvas(height: 400)) {
                 SnapshotSeed.studentFamilyStrip(SnapshotSeed.studentFamilyClient([]))
+            },
+            // --- Requests to connect (RFC 254): above the connected adults,
+            // and on their own — where the list must still show the request
+            // and the ceiling it would grant, not "No one is connected yet".
+            SnapshotScene(name: "family-student-request-no-links", size: SnapshotScene.tallCanvas(height: 900)) {
+                SnapshotSeed.studentFamilyStrip(
+                    SnapshotSeed.studentFamilyClient([], requests: [SnapshotSeed.jordanRequest])
+                )
+            },
+            SnapshotScene(name: "family-student-request-and-link", size: SnapshotScene.tallCanvas(height: 900)) {
+                SnapshotSeed.studentFamilyStrip(
+                    SnapshotSeed.studentFamilyClient(
+                        [LinkedSupporter(linkId: SnapshotSeed.robinLink, name: "Robin Carter")],
+                        requests: [SnapshotSeed.jordanRequest]
+                    )
+                )
+            },
+            SnapshotScene(name: "family-student-decline-confirm-open", size: SnapshotScene.tallCanvas(height: 900)) {
+                SnapshotSeed.studentFamilyStrip(
+                    SnapshotSeed.studentFamilyClient([], requests: [SnapshotSeed.jordanRequest]),
+                    confirmingOnAppear: .decline(requestId: SnapshotSeed.jordanRequest.requestId)
+                )
             },
             SnapshotScene(name: "settings-supporter-family", size: SnapshotScene.tallCanvas(height: 1000)) {
                 SnapshotSeed.supporterSettings()
@@ -931,6 +964,11 @@ enum SnapshotCatalogue {
             },
             SnapshotScene(name: "supporter-home-empty") {
                 AnyView(SnapshotSeed.supporterHome(students: []))
+            },
+            // A parent who asked to connect from the report (RFC 254): the
+            // waiting line where "No student linked yet" stood.
+            SnapshotScene(name: "supporter-home-waiting") {
+                AnyView(SnapshotSeed.supporterHome(students: [], pendingRequests: 1))
             },
             SnapshotScene(name: "supporter-home-one-student") {
                 AnyView(SnapshotSeed.supporterHome(students: SnapshotSeed.oneLinkedStudent))

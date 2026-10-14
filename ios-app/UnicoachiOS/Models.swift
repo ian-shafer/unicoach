@@ -171,9 +171,14 @@ struct LinkedStudent: Codable, Equatable, Identifiable, Sendable {
 ///
 /// `students` is EMPTY for a supporter who has linked nobody. That is the
 /// ordinary first state of a parent-first signup, not an error.
+///
+/// `pendingRequests` counts the caller's requests to connect that a student
+/// has not answered yet (RFC 254) — a count and nothing more, because the
+/// request names a student the caller is not connected to.
 struct SupporterHome: Codable, Equatable, Sendable {
     let supporter: PublicSupporter
     let students: [LinkedStudent]
+    let pendingRequests: Int
 }
 
 // MARK: - The student's supporters (RFC 249)
@@ -187,6 +192,39 @@ struct StudentSupporters: Decodable, Equatable, Sendable {
     let supporters: [LinkedSupporter]
     let ceiling: SupporterCeiling
     let costReportLinkLive: Bool
+    /// The adults asking to connect (RFC 254). The server lists only a request
+    /// whose claimant has a verified email and a live account.
+    let requests: [SupporterRequest]
+}
+
+/// One adult asking to connect with the student (RFC 254): someone who opened
+/// the student's Family Cost Report link and made an account. The email is
+/// here, unlike on `LinkedSupporter`, because it is how the student tells
+/// whether they know this person before approving.
+///
+/// The wire also carries `requestedAt`; nothing shows it, so it is not read.
+struct SupporterRequest: Decodable, Equatable, Identifiable, Sendable {
+    let requestId: UUID
+    let name: String
+    let email: String
+
+    var id: UUID { requestId }
+}
+
+/// What an approve did (RFC 254). `noLongerPending` is
+/// `404 supporter_request_not_found` — its cases are listed where
+/// `ServerErrorCode.supporterRequestNotFound` points. Unlike a disconnect's
+/// `alreadyGone`, the answer the student wanted may not be the one that holds.
+enum ApproveOutcome: Equatable, Sendable {
+    case connected(LinkedSupporter)
+    case noLongerPending
+}
+
+/// What a decline did (RFC 254), with the same `noLongerPending` as
+/// `ApproveOutcome`.
+enum DeclineOutcome: Equatable, Sendable {
+    case declined
+    case noLongerPending
 }
 
 /// One adult on the student's list. Two fields, and the server's projection
@@ -300,6 +338,11 @@ enum ServerErrorCode: String {
     /// caller's, never existed, or is already severed (RFC 249). From a list
     /// that showed the link, it means another device got there first.
     case supporterLinkNotFound = "supporter_link_not_found"
+    /// The 404 both request doors answer for a request the student cannot act
+    /// on (RFC 254). The cases are listed once, in the description of
+    /// `approveStudentSupporterRequest` in `api-specs/openapi.yaml`. From a
+    /// list that showed the request, it means the list is out of date.
+    case supporterRequestNotFound = "supporter_request_not_found"
     case timeout = "TIMEOUT"
     case networkError = "NETWORK_ERROR"
     case serverError = "SERVER_ERROR"

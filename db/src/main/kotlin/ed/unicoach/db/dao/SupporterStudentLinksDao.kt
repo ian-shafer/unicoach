@@ -201,25 +201,6 @@ object SupporterStudentLinksDao : Creatable<NewSupporterStudentLink, SupporterSt
         onNoRow = { NotFoundException() },
       ).orNullOnNotFound()
 
-  /**
-   * The column a [LinkSide] names, and the id it binds — a fixed DAO
-   * identifier, never caller data. The side is the only way to reach either, so
-   * `"student_id"` with a supporter's id is not something a call site can write.
-   */
-  private val LinkSide.column: String
-    get() =
-      when (this) {
-        is LinkSide.Student -> "student_id"
-        is LinkSide.Supporter -> "supporter_id"
-      }
-
-  private val LinkSide.boundId: UUID
-    get() =
-      when (this) {
-        is LinkSide.Student -> id.value
-        is LinkSide.Supporter -> id.value
-      }
-
   /** This student's active supporters — the read `supporter_student_links_student_idx` exists for. */
   fun listForStudent(
     session: SqlSession,

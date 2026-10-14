@@ -22,8 +22,10 @@ import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.family.LinkEndedNotice
+import ed.unicoach.family.LinkRequestedNotice
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
+import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
@@ -96,15 +98,22 @@ object WebAuthTestSupport {
       emailVerificationService,
       GoogleIdTokenVerifier(DisabledIdTokenVerifier),
       AppleIdTokenVerifier(DisabledIdTokenVerifier),
+      // A lambda, not a bound reference: the request service is declared below.
+      { session, userId -> linkRequestService.releaseOnVerified(session, userId) },
     )
+
+  val supporterService = SupporterService(database, LinkEndedNotice(QueueService(database)))
 
   val supporterInviteService =
     SupporterInviteService(
       database,
       SupporterInviteConfig.from(config).getOrThrow(),
       TokenGenerator(),
-      SupporterService(database, LinkEndedNotice(QueueService(database))),
+      supporterService,
     )
+
+  /** The production request service (RFC 254), wired as `Application.kt` wires it. */
+  val linkRequestService = SupporterLinkRequestService(database, supporterService, LinkRequestedNotice(QueueService(database)))
 
   /** Truncates users (cascading to sessions) and the job queue, for an isolated test. */
   fun resetDatabase() {

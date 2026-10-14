@@ -362,7 +362,7 @@ final class ConversationViewModel: ObservableObject {
              .subscriptionNotFound, .subscriptionOwnedByOtherAccount,
              .validationFailed, .payloadTooLarge, .decodeError,
              .versionConflict, .conflict, .notFound, .ageRequirementNotMet,
-             .supporterLinkNotFound, nil:
+             .supporterLinkNotFound, .supporterRequestNotFound, nil:
             setFailure(.server(error), turnId: turnId)
         }
         return nil

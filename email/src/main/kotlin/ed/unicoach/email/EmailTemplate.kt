@@ -13,4 +13,7 @@ enum class EmailTemplate {
 
   /** A supporter–student link ended (RFC 252); one text for every cause. */
   LINK_ENDED,
+
+  /** Somebody asked to connect with a student from their report link (RFC 254). */
+  LINK_REQUESTED,
 }

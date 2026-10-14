@@ -96,6 +96,7 @@ class SsoAuthServiceTest {
       emailVerificationService(),
       GoogleIdTokenVerifier(StubIdTokenVerifier()),
       AppleIdTokenVerifier(StubIdTokenVerifier()),
+      { _, _ -> },
     )
   }
 

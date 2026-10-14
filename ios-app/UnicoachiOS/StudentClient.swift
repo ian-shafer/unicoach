@@ -48,6 +48,16 @@ protocol SupporterInviteClientProtocol: Sendable {
     /// `DELETE /api/v1/students/me/supporters/{linkId}` (RFC 249). Every
     /// status but `204` and `404 supporter_link_not_found` throws.
     func disconnectSupporter(linkId: UUID) async throws -> DisconnectOutcome
+
+    /// `POST /api/v1/students/me/supporter-requests/{requestId}/approve`
+    /// (RFC 254). Every status but `200` and `404 supporter_request_not_found`
+    /// throws.
+    func approveSupporterRequest(requestId: UUID) async throws -> ApproveOutcome
+
+    /// `POST /api/v1/students/me/supporter-requests/{requestId}/decline`
+    /// (RFC 254). Every status but `204` and `404 supporter_request_not_found`
+    /// throws.
+    func declineSupporterRequest(requestId: UUID) async throws -> DeclineOutcome
 }
 
 class SupporterInviteClient: SupporterInviteClientProtocol, @unchecked Sendable {
@@ -85,6 +95,18 @@ class SupporterInviteClient: SupporterInviteClientProtocol, @unchecked Sendable 
         let (data, response) = try await apiClient.delete("/api/v1/students/me/supporters/\(linkId.uuidString)")
         return try apiClient.disconnectOutcome(data: data, response: response)
     }
+
+    func approveSupporterRequest(requestId: UUID) async throws -> ApproveOutcome {
+        logger.debug("Approving supporter request [\(requestId, privacy: .public)]")
+        let (data, response) = try await apiClient.post("/api/v1/students/me/supporter-requests/\(requestId.uuidString)/approve")
+        return try apiClient.approveOutcome(data: data, response: response)
+    }
+
+    func declineSupporterRequest(requestId: UUID) async throws -> DeclineOutcome {
+        logger.debug("Declining supporter request [\(requestId, privacy: .public)]")
+        let (data, response) = try await apiClient.post("/api/v1/students/me/supporter-requests/\(requestId.uuidString)/decline")
+        return try apiClient.declineOutcome(data: data, response: response)
+    }
 }
 
 /// The invite door's canvas double: one fixed minted link, no network. Declared
@@ -107,7 +129,8 @@ struct PreviewSupporterInviteClient: SupporterInviteClientProtocol {
     var supporters = StudentSupporters(
         supporters: [],
         ceiling: SupporterCeiling(canSee: [], staysPrivate: []),
-        costReportLinkLive: false
+        costReportLinkLive: false,
+        requests: []
     )
 
     func createInvite(relationship: SupporterRelationship?) async throws -> SupporterInviteResponse {
@@ -123,4 +146,14 @@ struct PreviewSupporterInviteClient: SupporterInviteClientProtocol {
     func fetchSupporters() async throws -> StudentSupporters { supporters }
 
     func disconnectSupporter(linkId: UUID) async throws -> DisconnectOutcome { .disconnected }
+
+    /// The canvas's approve connects the person who asked, under their name.
+    func approveSupporterRequest(requestId: UUID) async throws -> ApproveOutcome {
+        guard let request = supporters.requests.first(where: { $0.requestId == requestId }) else {
+            return .noLongerPending
+        }
+        return .connected(LinkedSupporter(linkId: UUID(), name: request.name))
+    }
+
+    func declineSupporterRequest(requestId: UUID) async throws -> DeclineOutcome { .declined }
 }

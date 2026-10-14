@@ -4,12 +4,14 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SupporterAlreadyExistsException
+import ed.unicoach.db.dao.SupporterLinkRequestsDao
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.models.LinkSide
 import ed.unicoach.db.models.LinkedStudent
 import ed.unicoach.db.models.LinkedSupporter
 import ed.unicoach.db.models.NewSupporter
+import ed.unicoach.db.models.PendingSupporterLinkRequest
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.Supporter
@@ -29,6 +31,8 @@ import org.slf4j.LoggerFactory
 data class SupporterHome(
   val supporter: Supporter,
   val students: List<SupportedStudent>,
+  /** How many of this supporter's requests to connect are still waiting on a student (RFC 254). */
+  val pendingRequests: Int,
 )
 
 /**
@@ -46,9 +50,13 @@ data class SupportedStudent(
  * 249): the adults, the ceiling in the student's voice, and whether the
  * student's Family Cost Report link is live — the one thing a disconnect does
  * NOT turn off, so the list says so exactly when it is true.
+ *
+ * [requests] are the pending requests to connect (RFC 254) the student can act
+ * on — from a live, verified claimant only — oldest first.
  */
 data class StudentSupporters(
   val supporters: List<LinkedSupporter>,
+  val requests: List<PendingSupporterLinkRequest>,
   val ceiling: CeilingStatement,
   val costReportLinkLive: Boolean,
 )
@@ -196,6 +204,7 @@ class SupporterService(
       database.withConnection { session ->
         StudentSupporters(
           supporters = SupporterStudentLinksDao.listActiveSupportersOf(session, studentId).getOrThrow(),
+          requests = SupporterLinkRequestsDao.listPendingVisibleToStudent(session, studentId).getOrThrow(),
           ceiling = SupporterCeiling.toStudent,
           costReportLinkLive = CostReportSharesDao.findLiveByStudent(session, studentId).getOrThrow() != null,
         )
@@ -287,6 +296,7 @@ class SupporterService(
     return SupporterHome(
       supporter = supporter,
       students = roster.map { SupportedStudent(it, others[it.studentId].orEmpty()) },
+      pendingRequests = SupporterLinkRequestsDao.countPendingForSupporter(session, supporter.id).getOrThrow(),
     )
   }
 

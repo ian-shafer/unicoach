@@ -128,7 +128,7 @@ class VerifyEmailRoutingTest {
         .create(sqlSession, NewVerificationToken(user.id, TokenHash.fromRawToken(raw), Instant.now().plus(1, ChronoUnit.DAYS)))
         .getOrThrow()
 
-      application { testPublicWebModule(DbEmailVerifier(database)) }
+      application { testPublicWebModule(DbEmailVerifier(database, WebAuthTestSupport.linkRequestService::releaseOnVerified)) }
 
       val response =
         formPost("/verify-email", parameters { append(TOKEN_FIELD, raw) })

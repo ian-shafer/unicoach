@@ -61,6 +61,8 @@ class NoUrlColumnOutsideExternalDocumentsTest {
       "external_documents.url" to "the one table every citation lives in (RFC 213)",
       "external_documents.url_status" to "the link-rot verdict that rides beside the url, on the same row",
       "external_documents.url_checked_on" to "the day the verdict was established, on the same row",
+      "supporter_link_requests.link_id" to
+        "a foreign key to the supporter_student_links row an approval made (RFC 254) -- a family link, not a web link",
     )
 
   /** Every public column whose name says url or link. */

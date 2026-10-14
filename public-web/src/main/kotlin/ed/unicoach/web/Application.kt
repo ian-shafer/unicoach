@@ -14,9 +14,13 @@ import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.UserId
 import ed.unicoach.family.LinkEndedNotice
+import ed.unicoach.family.LinkRequestedNotice
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
+import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
@@ -99,23 +103,23 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val supporterInviteConfig = SupporterInviteConfig.from(config).getOrThrow()
 
   val database = Database(databaseConfig)
-  val emailVerifier: EmailVerifier = DbEmailVerifier(database)
+  // The one writer of a `supporters` row (RFC 241), and the one writer of a
+  // parent's request to connect (RFC 254): the accept path, the report's
+  // claim, and the verify hook that releases a waiting request all go through
+  // these two.
+  val supporterService = SupporterService(database, LinkEndedNotice(QueueService(database)))
+  val linkRequestService = SupporterLinkRequestService(database, supporterService, LinkRequestedNotice(QueueService(database)))
+  val emailVerifier: EmailVerifier = DbEmailVerifier(database, linkRequestService::releaseOnVerified)
   val costReportSource: CostReportSource =
-    ServiceCostReportSource(database, CollegeCostService(database), SharingPermissionService(database))
+    ServiceCostReportSource(database, CollegeCostService(database), SharingPermissionService(database), linkRequestService)
   // RFC 230 assigned this construction site to `fafsa/04`: the public page and
   // the coach read ONE service, so the two doors cannot disagree about a date.
   val fafsaDeadlines: FafsaDeadlineSource = ServiceFafsaDeadlineSource(FafsaDeadlineService(database))
   // The accept path mints the recipient's `supporters` row, through the one
-  // writer of it (RFC 241) -- this process serves no supporter surface of its own.
-  val supporterInviteService =
-    SupporterInviteService(
-      database,
-      supporterInviteConfig,
-      TokenGenerator(),
-      SupporterService(database, LinkEndedNotice(QueueService(database))),
-    )
+  // writer of it (RFC 241).
+  val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator(), supporterService)
 
-  val authServices = WebAuthServices.build(emailVerificationConfig, database)
+  val authServices = WebAuthServices.build(emailVerificationConfig, database, linkRequestService::releaseOnVerified)
 
   val server =
     embeddedServer(Netty, port = publicWebConfig.port, host = publicWebConfig.host) {
@@ -133,6 +137,8 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         emailVerificationService = authServices.emailVerificationService,
         publicWebConfig = publicWebConfig,
         supporterInviteService = supporterInviteService,
+        supporterService = supporterService,
+        linkRequestService = linkRequestService,
       )
     }
 
@@ -174,6 +180,7 @@ private data class WebAuthServices(
     fun build(
       emailVerificationConfig: EmailVerificationConfig,
       database: Database,
+      afterVerified: (SqlSession, UserId) -> Unit,
     ): WebAuthServices {
       val tokenGenerator = TokenGenerator()
       val emailVerificationService =
@@ -192,6 +199,7 @@ private data class WebAuthServices(
             emailVerificationService,
             GoogleIdTokenVerifier(DisabledIdTokenVerifier),
             AppleIdTokenVerifier(DisabledIdTokenVerifier),
+            afterVerified,
           ),
         emailVerificationService = emailVerificationService,
       )
@@ -214,6 +222,8 @@ fun Application.publicWebModule(
   emailVerificationService: EmailVerificationService,
   publicWebConfig: PublicWebConfig,
   supporterInviteService: SupporterInviteService,
+  supporterService: SupporterService,
+  linkRequestService: SupporterLinkRequestService,
 ) {
   // READ the bundle name while the module installs (RFC 225). WebAssets is an
   // `object`, so its manifest refusals run at class-init — and nothing touched
@@ -257,5 +267,7 @@ fun Application.publicWebModule(
     emailVerificationService,
     publicWebConfig.session,
     supporterInviteService,
+    supporterService,
+    linkRequestService,
   )
 }

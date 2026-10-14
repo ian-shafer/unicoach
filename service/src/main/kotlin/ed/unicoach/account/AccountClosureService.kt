@@ -7,6 +7,7 @@ import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SupporterInvitesDao
+import ed.unicoach.db.dao.SupporterLinkRequestsDao
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.dao.UserAuthIdentitiesDao
@@ -33,9 +34,10 @@ sealed interface CloseAccountOutcome {
  * not erased: erasure is a later slice.
  *
  * Every write below names the closer's own keys in its WHERE, and a table
- * holding keys from both parties (today `supporter_student_links` and
- * `supporter_invites`) is written from the closer's side only. A new such
- * table needs the same treatment here; nothing checks for it.
+ * holding keys from both parties (today `supporter_student_links`,
+ * `supporter_invites` and `supporter_link_requests`) is written from the
+ * closer's side only. A new such table needs the same treatment here; nothing
+ * checks for it.
  *
  * Kept, on purpose: the closer's `subscriptions` row (Apple bills until the
  * person cancels; it rebinds if the same Apple ID subscribes on a new
@@ -84,12 +86,14 @@ class AccountClosureService(
         .severAll(session, LinkSide.Student(student.id))
         .getOrThrow()
         .forEach { linkEndedNotice.tellSupporter(session, it) }
+      SupporterLinkRequestsDao.cancelAllPendingFor(session, LinkSide.Student(student.id)).getOrThrow()
     }
     if (supporter != null) {
       SupporterStudentLinksDao
         .severAll(session, LinkSide.Supporter(supporter.id))
         .getOrThrow()
         .forEach { linkEndedNotice.tellStudent(session, it) }
+      SupporterLinkRequestsDao.cancelAllPendingFor(session, LinkSide.Supporter(supporter.id)).getOrThrow()
     }
   }
 

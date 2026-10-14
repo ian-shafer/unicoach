@@ -3,9 +3,10 @@ package ed.unicoach.auth
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
-import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.dao.VerificationTokensDao
+import ed.unicoach.db.dao.recordEmailVerified
 import ed.unicoach.db.models.TokenHash
+import ed.unicoach.db.models.UserId
 import java.time.Instant
 
 /**
@@ -14,13 +15,21 @@ import java.time.Instant
  * storage mirrors sessions — only the SHA-256 hash is persisted; the raw token
  * rides only in the email link. Depends on `db` alone (no email/queue/chat
  * graph), so any first-party service can compose it in-process.
+ *
+ * [afterVerified] runs inside the verifying transaction, after the address is
+ * marked verified (RFC 254): a parent's pending request to connect stays
+ * invisible to the student until the parent has proved their address, and this
+ * is the moment that proof arrives. It is a REQUIRED argument, not a default,
+ * so neither process that verifies can silently forget it — and a function, so
+ * `:auth` takes no dependency on `:service`.
  */
 class DbEmailVerifier(
   private val database: Database,
+  private val afterVerified: (SqlSession, UserId) -> Unit,
 ) : EmailVerifier {
   /**
    * Verifies an email in its own transaction: a compare-and-swap consume of the
-   * token, then [UsersDao.markEmailVerified], then burning sibling tokens. A
+   * token, then [recordEmailVerified] — mark, burn sibling tokens, hook. A
    * zero-row consume is classified via [VerificationTokensDao.findByTokenHash]
    * into [VerifyEmailResult.InvalidToken] / [VerifyEmailResult.Expired] /
    * [VerifyEmailResult.AlreadyConsumed].
@@ -39,9 +48,7 @@ class DbEmailVerifier(
         }
 
         val token = consumed.getOrThrow()
-        val user = UsersDao.markEmailVerified(session, token.userId).getOrThrow()
-        VerificationTokensDao.consumeAllForUser(session, token.userId).getOrThrow()
-        VerifyEmailResult.Success(user)
+        VerifyEmailResult.Success(recordEmailVerified(session, token.userId, afterVerified))
       }
     }
 

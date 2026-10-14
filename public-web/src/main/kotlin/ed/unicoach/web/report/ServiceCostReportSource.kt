@@ -2,16 +2,14 @@ package ed.unicoach.web.report
 
 import ed.unicoach.coaching.SharingPermissionService
 import ed.unicoach.coaching.costs.CollegeCostService
+import ed.unicoach.coaching.report.ReportShareLookup
+import ed.unicoach.coaching.report.ReportShares
 import ed.unicoach.coaching.report.ShareToken
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.CostReportSharesDao
-import ed.unicoach.db.dao.SqlSession
-import ed.unicoach.db.dao.StudentsDao
-import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.SharingPermission
-import ed.unicoach.db.models.SoftDeleteScope
-import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.TokenHash
+import ed.unicoach.db.models.UserId
+import ed.unicoach.family.SupporterLinkRequestService
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -46,15 +44,23 @@ import kotlinx.coroutines.CancellationException
  * in the same session, so the page never receives what it may not print. The
  * read is live per request, so a grant or a withdrawal reaches every link on
  * its next load, including links minted before it.
+ *
+ * What the page offers its reader after the report (RFC 254) is read in the
+ * same session too, from [SupporterLinkRequestService.claimView]: the viewer's
+ * own state, never a fact about the student.
  */
 class ServiceCostReportSource(
   private val database: Database,
   private val costs: CollegeCostService,
   private val permissions: SharingPermissionService,
+  private val linkRequests: SupporterLinkRequestService,
 ) : CostReportSource {
-  override suspend fun getByShareToken(rawToken: String): Result<CostReportOutcome> =
+  override suspend fun getByShareToken(
+    rawToken: String,
+    viewer: UserId?,
+  ): Result<CostReportOutcome> =
     try {
-      Result.success(getOutcome(rawToken))
+      Result.success(getOutcome(rawToken, viewer))
     } catch (e: CancellationException) {
       // The caller unwinding, never a read that failed: cancellation must keep
       // propagating rather than be reported as a database fault (the
@@ -76,7 +82,10 @@ class ServiceCostReportSource(
    * The gate is the MINT SHAPE, not "not blank": the previous underflow check
    * turned `?token=` plus a megabyte of newlines into real work.
    */
-  private suspend fun getOutcome(rawToken: String): CostReportOutcome {
+  private suspend fun getOutcome(
+    rawToken: String,
+    viewer: UserId?,
+  ): CostReportOutcome {
     // The port answers for ANY caller, not only the route that also checks: a
     // blank token is its own log reason (BLANK_TOKEN, a truncated URL), and the
     // shape gate below would otherwise report it as MALFORMED_TOKEN.
@@ -84,38 +93,20 @@ class ServiceCostReportSource(
     if (!ShareToken.isWellFormed(rawToken)) return CostReportOutcome.NotFound(MissReason.MALFORMED_TOKEN)
     val tokenHash = TokenHash.fromRawToken(rawToken)
     return database.withConnection { session ->
-      // Absence and revocation are ONE null from the DAO (a revoked row is
-      // invisible there), so this read cannot tell them apart even by accident.
-      // Any real fault is still a failed Result, never a dead link.
-      val share =
-        CostReportSharesDao
-          .findLiveByTokenHash(session, tokenHash)
-          .getOrThrow()
-          ?: return@withConnection CostReportOutcome.NotFound(MissReason.NO_LIVE_SHARE)
       // A closed account's report never renders, whatever path left the share
       // live (RFC 252): the close revokes it, and this read does not rely on that.
-      if (isAccountClosed(session, share.studentId)) {
-        return@withConnection CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED)
-      }
+      val share =
+        when (val lookup = ReportShares.lookup(session, tokenHash)) {
+          is ReportShareLookup.Open -> lookup.share
+          ReportShareLookup.NoLiveShare -> return@withConnection CostReportOutcome.NotFound(MissReason.NO_LIVE_SHARE)
+          ReportShareLookup.AccountClosed -> return@withConnection CostReportOutcome.NotFound(MissReason.ACCOUNT_CLOSED)
+        }
       val profile = costs.readInSession(session, share.studentId)
       val subjectsShown = permissions.isGranted(session, share.studentId, SharingPermission.INTENDED_SUBJECTS)
-      CostReportOutcome.Found(if (subjectsShown) profile else profile.copy(programReturn = null))
+      CostReportOutcome.Found(
+        profile = if (subjectsShown) profile else profile.copy(programReturn = null),
+        claim = linkRequests.claimView(session, viewer, share.studentId),
+      )
     }
-  }
-
-  /**
-   * Whether the account behind [studentId] is closed, in either of its two
-   * shapes: the `students` row, or the owning `users` row closed alone (the
-   * operator admin can close one without the other). Both reads are in ALL scope
-   * and test `deleted_at` here, so the check is visible in this function rather
-   * than in a DAO default; a missing row is corruption and fails the read.
-   */
-  private fun isAccountClosed(
-    session: SqlSession,
-    studentId: StudentId,
-  ): Boolean {
-    val student = StudentsDao.findById(session, studentId, SoftDeleteScope.ALL).getOrThrow()
-    if (student.deletedAt != null) return true
-    return UsersDao.findById(session, student.userId, SoftDeleteScope.ALL).getOrThrow().deletedAt != null
   }
 }

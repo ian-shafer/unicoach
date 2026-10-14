@@ -9,6 +9,7 @@ import ed.unicoach.web.render.FIELD_ERROR_CLASS
 import ed.unicoach.web.render.FORM_ERROR_CLASS
 import ed.unicoach.web.render.LINKLIKE_CLASS
 import ed.unicoach.web.render.NOTICE_CLASS
+import ed.unicoach.web.render.REPORT_CLAIM_CLASS
 import ed.unicoach.web.render.SIGN_OUT_FORM_CLASS
 import ed.unicoach.web.render.ShellWidth
 import ed.unicoach.web.render.siteLayout
@@ -377,6 +378,7 @@ class ShellMechanismTest {
         SIGN_OUT_FORM_CLASS,
         LINKLIKE_CLASS,
         ACCOUNT_CLASS,
+        REPORT_CLAIM_CLASS,
       )) {
         assertTrue(
           Regex("""\.$stateClass\b""").containsMatchIn(css),
@@ -401,6 +403,7 @@ class ShellMechanismTest {
       for (selector in listOf(
         ".$AUTH_FORM_CLASS input",
         ".$AUTH_FORM_CLASS button",
+        ".$REPORT_CLAIM_CLASS button",
         ".site-header .site-nav .$LINKLIKE_CLASS",
       )) {
         assertTrue(

@@ -7,9 +7,11 @@ import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.DuplicateEmailException
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SessionsDao
+import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UserAuthIdentitiesDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.dao.VerificationTokensDao
+import ed.unicoach.db.dao.recordEmailVerified
 import ed.unicoach.db.models.AuthProvider
 import ed.unicoach.db.models.LoginMethod
 import ed.unicoach.db.models.NewAuthIdentity
@@ -21,6 +23,7 @@ import ed.unicoach.db.models.Session
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
+import ed.unicoach.db.models.UserId
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
 import org.slf4j.LoggerFactory
@@ -36,6 +39,12 @@ data class AuthenticatedSession(
   val user: User,
 )
 
+/**
+ * [afterVerified] runs inside the transaction in which an SSO sign-in marks an
+ * address verified — the same hook `DbEmailVerifier` takes, for the same moment
+ * (RFC 254). It is required, not defaulted, so no process that builds this
+ * service can forget it.
+ */
 class AuthService(
   private val database: Database,
   private val argon2Hasher: Argon2Hasher,
@@ -43,6 +52,7 @@ class AuthService(
   private val emailVerificationService: EmailVerificationService,
   private val googleTokenVerifier: GoogleIdTokenVerifier,
   private val appleTokenVerifier: AppleIdTokenVerifier,
+  private val afterVerified: (SqlSession, UserId) -> Unit,
   private val validator: Validator<RegistrationInput> = RegistrationValidator(),
 ) {
   private val logger = LoggerFactory.getLogger(AuthService::class.java)
@@ -584,8 +594,9 @@ class AuthService(
    * the old address, so an unguarded mark here would verify an address nobody
    * just proved.
    *
-   * Verifying runs the same two steps `DbEmailVerifier.verify` does: mark, then
-   * burn the account's outstanding verification tokens in this transaction.
+   * Verifying is [recordEmailVerified], the sequence every verifying path runs
+   * — mark, burn the account's outstanding verification tokens, then
+   * [afterVerified] — in this transaction. The burn matters here because
    * [changeEmail] re-arms a token on every address change, so a user who moves
    * their address to their SSO address and then signs in with SSO would
    * otherwise leave that mailed link spendable for its full expiry against an
@@ -599,9 +610,7 @@ class AuthService(
     if (candidate.email != email || candidate.emailVerifiedAt != null) {
       return candidate
     }
-    val verified = UsersDao.markEmailVerified(session, candidate.id).getOrThrow()
-    VerificationTokensDao.consumeAllForUser(session, candidate.id).getOrThrow()
-    return verified
+    return recordEmailVerified(session, candidate.id, afterVerified)
   }
 
   /**
