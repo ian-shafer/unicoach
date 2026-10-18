@@ -81,6 +81,18 @@ class EntitlementTest {
   }
 
   @Test
+  fun `an admin-exemption entitlement reports no reset point`() {
+    val verdict =
+      Entitlement(
+        spent = Nanodollars.of(0),
+        allowance = Nanodollars.MAX_FOR_PERCENTAGE,
+        basis = EntitlementBasis.AdminExemption,
+      )
+    assertEquals(null, verdict.resetsAt)
+    assertFalse(verdict.exhausted)
+  }
+
+  @Test
   fun `a subscription entitlement reports its period end and derives unchanged`() {
     val verdict =
       Entitlement(

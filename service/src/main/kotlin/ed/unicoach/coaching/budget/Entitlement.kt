@@ -15,6 +15,9 @@ sealed interface EntitlementBasis {
   /** RFC 109's lifetime meter: one window over the account's whole history, so no reset point. */
   data object FreeAllowance : EntitlementBasis
 
+  /** RFC 255's operator exemption: the lifetime ledger against the percentage ceiling, so no reset point. */
+  data object AdminExemption : EntitlementBasis
+
   /** RFC 110's period meter, windowed over `[period_start, period_end)`. */
   data class Subscription(
     /** The period's end — where this meter resets, and the next window begins. */
@@ -41,14 +44,16 @@ class Entitlement(
 ) {
   /**
    * The meter's reset point, for the consumers that want it without unpacking
-   * [basis]: null on [EntitlementBasis.FreeAllowance], whose lifetime meter never
-   * resets. The exhaustive `when` is the point — a third basis is a compile error
-   * here, where a cast-and-null would quietly report "never resets" for it.
+   * [basis]: null on [EntitlementBasis.FreeAllowance] and
+   * [EntitlementBasis.AdminExemption], whose lifetime meters never reset. The
+   * exhaustive `when` is the point — a new basis is a compile error here, where a
+   * cast-and-null would quietly report "never resets" for it.
    */
   val resetsAt: Instant?
     get() =
       when (basis) {
         is EntitlementBasis.FreeAllowance -> null
+        is EntitlementBasis.AdminExemption -> null
         is EntitlementBasis.Subscription -> basis.resetsAt
       }
 

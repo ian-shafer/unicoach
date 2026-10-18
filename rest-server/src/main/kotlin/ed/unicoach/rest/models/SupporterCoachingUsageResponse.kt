@@ -29,16 +29,17 @@ data class CoachingCoverage(
 )
 
 /**
- * The closed wire vocabulary of [CoachingCoverage.kind], one member per
- * [EntitlementBasis] arm — Jackson serializes [wire] via its `@JsonValue`,
- * exactly as [SubscriptionStatusView] and [ErrorCode] do.
+ * The closed wire vocabulary of [CoachingCoverage.kind] — Jackson serializes
+ * [wire] via its `@JsonValue`, exactly as [SubscriptionStatusView] and
+ * [ErrorCode] do.
  *
  * TWO members, and the pair is the product decision (RFC 244): an account either
  * paid for itself or is on the one-time free allowance. There is deliberately no
  * "covered by somebody else" member — no account rides another's subscription —
  * so a third kind cannot be published by accident: [from] is exhaustive over
- * [EntitlementBasis], so a third arm there breaks the build here rather than
- * shipping a client that renders an unknown string.
+ * [EntitlementBasis], so a new arm there must be mapped here rather than shipping
+ * a client that renders an unknown string. RFC 255's operator exemption therefore
+ * reuses [FREE_ALLOWANCE] rather than adding a third member.
  */
 enum class CoachingCoverageKind(
   @get:JsonValue val wire: String,
@@ -55,7 +56,12 @@ enum class CoachingCoverageKind(
     fun from(basis: EntitlementBasis): CoachingCoverageKind =
       when (basis) {
         is EntitlementBasis.Subscription -> OWN_SUBSCRIPTION
+
         is EntitlementBasis.FreeAllowance -> FREE_ALLOWANCE
+
+        // RFC 255 keeps the wire vocabulary at two, so the operator's exemption
+        // is published as free_allowance.
+        is EntitlementBasis.AdminExemption -> FREE_ALLOWANCE
       }
   }
 }

@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.budget
 
+import ed.unicoach.common.money.Nanodollars
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.LlmCallRowFixture
@@ -97,11 +98,13 @@ class BudgetServiceTest {
   // Seeding
   // ---------------------------------------------------------------------------
 
-  private fun createStudent(): StudentId {
+  private fun createStudent(isAdmin: Boolean = false): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'bs-$userId@test.com', 'Budget User', 'ahash')")
+      stmt.execute(
+        "INSERT INTO users (id, email, name, password_hash, is_admin) VALUES ('$userId', 'bs-$userId@test.com', 'Budget User', 'ahash', $isAdmin)",
+      )
       StudentRowFixture.insert(connection, studentId, userId)
     }
     return StudentId(studentId)
@@ -221,10 +224,12 @@ class BudgetServiceTest {
     }
 
   /** An account with a `supporters` row and no student profile — a parent (RFC 241). */
-  private fun createSupporter(): SupporterId {
+  private fun createSupporter(isAdmin: Boolean = false): SupporterId {
     val userId = UUID.randomUUID()
     connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'bsp-$userId@test.com', 'Parent', 'ahash')")
+      stmt.execute(
+        "INSERT INTO users (id, email, name, password_hash, is_admin) VALUES ('$userId', 'bsp-$userId@test.com', 'Parent', 'ahash', $isAdmin)",
+      )
     }
     return SupportersDao.create(session, NewSupporter(UserId(userId))).getOrThrow().id
   }
@@ -658,5 +663,83 @@ class BudgetServiceTest {
     val result = entitlementOfSupporter(testBudgetService(closedDatabase, "5.00"), supporterId)
 
     assertTrue(result.isFailure, "an unreadable meter is coaching unavailability, not a free pass")
+  }
+
+  // ---------------------------------------------------------------------------
+  // The admin exemption (RFC 255): the operator's own account is never blocked
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `an admin account past the free allowance is still entitled`() {
+    val studentId = createStudent(isAdmin = true)
+    spend(studentId, 9_000_000_000)
+
+    val entitlement = testBudgetService(database, "5.00").entitlement(session, studentId).getOrThrow()
+
+    assertFalse(entitlement.exhausted)
+    assertEquals(0, entitlement.usedPercent)
+    assertEquals(Nanodollars.MAX_FOR_PERCENTAGE.value, entitlement.allowance.value)
+    assertEquals(EntitlementBasis.AdminExemption, entitlement.basis)
+    assertEquals(null, entitlement.resetsAt)
+  }
+
+  @Test
+  fun `an admin account's real spend is still reported`() {
+    val studentId = createStudent(isAdmin = true)
+    spend(studentId, 2_500_000_000)
+
+    val entitlement = testBudgetService(database, "5.00").entitlement(session, studentId).getOrThrow()
+
+    assertEquals(2_500_000_000L, entitlement.spent.value)
+    assertFalse(entitlement.exhausted)
+  }
+
+  @Test
+  fun `an admin holding a current subscription is still exempt`() {
+    val studentId = createStudent(isAdmin = true)
+    subscribe(studentId)
+    spend(studentId, periodBudget)
+
+    val entitlement = testBudgetService(database, "5.00").entitlement(session, studentId).getOrThrow()
+
+    assertFalse(entitlement.exhausted)
+    assertEquals(EntitlementBasis.AdminExemption, entitlement.basis)
+  }
+
+  @Test
+  fun `an admin is exempt through the supporter surface too`() {
+    val supporterId = createSupporter(isAdmin = true)
+    supporterSpend(supporterId, 9_000_000_000)
+
+    val entitlement = entitlementOfSupporter(testBudgetService(database, "5.00"), supporterId).getOrThrow()
+
+    assertFalse(entitlement.exhausted)
+    assertEquals(0, entitlement.usedPercent)
+  }
+
+  @Test
+  fun `a non-admin account with the same spend still exhausts`() {
+    val studentId = createStudent()
+    spend(studentId, 9_000_000_000)
+
+    val entitlement = testBudgetService(database, "5.00").entitlement(session, studentId).getOrThrow()
+
+    assertTrue(entitlement.exhausted)
+    assertEquals(100, entitlement.usedPercent)
+  }
+
+  @Test
+  fun `a soft-deleted admin account is not exempt`() {
+    val studentId = createStudent(isAdmin = true)
+    val userId = accountOf(studentId)
+    connection.createStatement().use { stmt ->
+      stmt.execute("UPDATE users SET deleted_at = now(), version = version + 1 WHERE id = '${userId.value}'")
+    }
+    spend(studentId, 9_000_000_000)
+
+    val entitlement = testBudgetService(database, "5.00").entitlement(session, studentId).getOrThrow()
+
+    assertTrue(entitlement.exhausted)
+    assertEquals(100, entitlement.usedPercent)
   }
 }

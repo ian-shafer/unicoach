@@ -28,6 +28,7 @@ fun budgetSkipMessage(
   val basis =
     when (entitlement.basis) {
       is EntitlementBasis.FreeAllowance -> "free_allowance"
+      is EntitlementBasis.AdminExemption -> "admin_exemption"
       is EntitlementBasis.Subscription -> "subscription"
     }
   // The operator's answer to "blocked until when": a subscription meter resets

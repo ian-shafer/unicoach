@@ -1,11 +1,13 @@
 package ed.unicoach.coaching.budget
 
+import ed.unicoach.common.money.Nanodollars
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AccountLlmCostDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SubscriptionsDao
+import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.Subscription
@@ -48,8 +50,9 @@ class UnknownBudgetSubjectException(
  * entitling subscription meters the lifetime ledger against the configured free
  * allowance; a current one meters `windowedCost` over its `[period_start,
  * period_end)` against the plan's `y × price` budget. A supporter takes the same
- * two branches with the same numbers — no supporter-specific allowance, and no
- * third [EntitlementBasis]. The gate never calls Apple — it reads only the local
+ * two branches with the same numbers — no supporter-specific allowance; RFC 255
+ * adds [EntitlementBasis.AdminExemption] for the operator's own account. The
+ * gate never calls Apple — it reads only the local
  * `subscriptions` row and the cost ledger, so gate latency and availability stay
  * DB-bound.
  *
@@ -159,14 +162,18 @@ class BudgetService(
     session: SqlSession,
     userId: UserId,
   ): Entitlement =
-    when (val subscription = SubscriptionsDao.findCurrent(session, userId).getOrThrow()) {
-      // Expired, revoked, billing-retry, and elapsed-window rows all land here:
-      // a lapsed subscriber meters as a (typically exhausted) free-tier account
-      // until a re-verify refreshes the row. So does every supporter today,
-      // since nothing sells a parent a subscription yet.
-      null -> freeBranch(session, userId)
+    if (UsersDao.findByIdOrNull(session, userId).getOrThrow()?.isAdmin == true) {
+      adminEntitlement(session, userId)
+    } else {
+      when (val subscription = SubscriptionsDao.findCurrent(session, userId).getOrThrow()) {
+        // Expired, revoked, billing-retry, and elapsed-window rows all land here:
+        // a lapsed subscriber meters as a (typically exhausted) free-tier account
+        // until a re-verify refreshes the row. So does every supporter today,
+        // since nothing sells a parent a subscription yet.
+        null -> freeBranch(session, userId)
 
-      else -> subscriptionBranch(session, userId, subscription)
+        else -> subscriptionBranch(session, userId, subscription)
+      }
     }
 
   /** The RFC 109 free branch: the lifetime ledger total against the configured free allowance. */
@@ -181,6 +188,28 @@ class BudgetService(
           spent = it.costNanodollars,
           allowance = config.freeAllowance,
           basis = EntitlementBasis.FreeAllowance,
+        )
+      }.getOrThrow()
+
+  /**
+   * An admin account is the operator of the product and is exempt from the
+   * student-facing meter (RFC 255): the lifetime ledger against
+   * [Nanodollars.MAX_FOR_PERCENTAGE], the ceiling every percentage-checked
+   * allowance already shares. The gate therefore never exhausts it, and
+   * [Entitlement.usedPercent] floors to 0 — "0% of an effectively unlimited
+   * allowance". The real spend is still reported, so the meter never lies.
+   */
+  private fun adminEntitlement(
+    session: SqlSession,
+    userId: UserId,
+  ): Entitlement =
+    AccountLlmCostDao
+      .lifetimeCost(session, userId)
+      .map {
+        Entitlement(
+          spent = it.costNanodollars,
+          allowance = Nanodollars.MAX_FOR_PERCENTAGE,
+          basis = EntitlementBasis.AdminExemption,
         )
       }.getOrThrow()
 
