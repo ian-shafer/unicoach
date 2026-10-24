@@ -87,8 +87,8 @@ anything new, find the closest existing home for the principle and sharpen _it_:
    keep the SRP; do not bundle unrelated rules into an existing lens just
    because it is nearby.
 3. **Create only when nothing fits.** Add a new `code-review-<name>` micro-skill
-   in the **house format** — copy a sibling (e.g. `code-review-constructor-di`)
-   exactly:
+   in the **house format** — copy a sibling (e.g.
+   `code-review-dry-abstractions`) exactly:
    - frontmatter: `name`, `description`, `implementation_summary`;
    - an adversarial reviewer body scoped to this **one** principle;
    - `## 🎯 Code Examples` with paired ❌ / ✅ snippets;

@@ -17,22 +17,6 @@ description: Global baseline philosophies for programming safety and data integr
   instantly rejected. Never check if an input is 'missing' (e.g., if count < 1).
   Instead, check if the input is 'exactly what is expected' (e.g., if count !=
   1), rejecting any unexpected surplus data.
-- **Dynamic Variable Formatting (Bracket Serialization)**: In non-end-user
-  output (logs, CLIs, internal exceptions), wrap a value in square brackets ([])
-  when its boundaries are not otherwise visible — user input, free text,
-  anything that can be empty or carry leading or trailing spaces. Example:
-  log-info "Rejected sign-in for [$EMAIL]." Do NOT bracket a self-delimiting
-  value: a number, a timestamp, a UUID, an enum constant, a boolean. Never use
-  single quotes as the delimiter.
-- **Avoid Metasyntactic Naming (Concrete Identifiers)**: Do not append ambiguous
-  filler words like State, Data, or Info onto entity names. Class and variable
-  constructs must evaluate clear structural bounds directly (e.g., use Session
-  instead of SessionState).
-- **Constructor Dependency Injection over Singletons**: IO, network, or
-  CPU-bound utilities (e.g., cryptography, hashers, API clients, databases) MUST
-  be instantiated as generic classes and passed via constructor parameters
-  structurally. NEVER use static singletons (like Kotlin object instances for
-  logic). This eliminates the ability to mock constraints in unit tests.
 - **Contextual Code Comments Over Dumb Restatements**: You MUST add clear code
   comments to any place where the implementation logic or design decision is not
   immediately obvious to a future developer. DO NOT add "dumb" comments that
@@ -164,11 +148,6 @@ description: Global baseline philosophies for programming safety and data integr
   pin against an immutable record, a derived store with a stated reason that is
   rebuilt wholesale, verbatim quotation of a binding text, or a cross-runtime
   duplicate whose removal costs more than its drift would.
-- **Use Standard Verbs**: Function names should be limited to domain nouns
-  (e.g., "user", "session") and standard, recognizable verbs like create,
-  decrypt, delete, encrypt, execute, generate, get, handle, list, map, set, or
-  update. Avoid creative or ambiguous verbs like "classify", "manage", or
-  "process".
 - **Structured Payloads over Strings**: Business logic must traffic in
   structured types (data classes, sealed classes, enums), not pre-formatted
   strings. Never eagerly format human-readable strings deep inside domain logic

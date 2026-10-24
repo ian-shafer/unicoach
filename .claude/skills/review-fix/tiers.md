@@ -46,7 +46,6 @@ callers depend on, or delete a speculative abstraction.
 | `design-review-solve-completely`   |
 | `design-review-domain-outcomes`    |
 | `code-review-dry-abstractions`     |
-| `code-review-constructor-di`       |
 | `code-review-execution-context`    |
 | `code-review-explicit-routing`     |
 
@@ -91,12 +90,9 @@ cosmetic; a tier whose rows are only ever about the text of a line has stopped
 meaning what this heading says. Triaged last because a Tier 1 fix routinely
 deletes the line a Tier 3 finding is about.
 
-| Skill                               |
-| ----------------------------------- |
-| `code-review-concrete-names`        |
-| `code-review-no-smurf-naming`       |
-| `code-review-standard-verbs`        |
-| `code-review-bracket-serialization` |
-| `code-review-semantic-output`       |
-| `code-review-contextual-comments`   |
-| `code-review-handle-return-values`  |
+| Skill                              |
+| ---------------------------------- |
+| `code-review-no-smurf-naming`      |
+| `code-review-semantic-output`      |
+| `code-review-contextual-comments`  |
+| `code-review-handle-return-values` |
