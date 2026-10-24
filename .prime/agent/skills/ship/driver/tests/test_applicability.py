@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 import fixtures
-from ship_driver.applicability import CODE_CLASSES, LENS_GROUP, RETIRED, allowed, classify, skip_reason
+from ship_driver.applicability import LENS_GROUP, allowed, classify, skip_reason
 
 TIERS_MD = fixtures.REPO_ROOT / ".claude" / "skills" / "review-fix" / "tiers.md"
 
@@ -34,7 +34,7 @@ class Applicability(unittest.TestCase):
         self.assertEqual(classes, {"shell"})
         self.assertTrue(allowed("code-review-semantic-output", classes, "none"))
         self.assertFalse(allowed("code-review-execution-context", classes, "none"))
-        self.assertFalse(allowed("code-review-constructor-di", classes, "none"))
+        self.assertFalse(allowed("code-review-immutable-returns", classes, "none"))
 
     def test_a_path_that_cannot_be_read_for_another_reason_than_being_deleted_is_not_classified(self):
         (self.root / "a-directory").mkdir()
@@ -46,13 +46,6 @@ class Applicability(unittest.TestCase):
         classes = classify(["rfc/1-x.md", "prompts/coach-system-prompt.md"], self.root)
         self.assertEqual(classes, {"markdown", "prompt"})
         self.assertEqual([lens for lens in LENS_GROUP if allowed(lens, classes, "rfc")], [])
-
-    def test_a_retired_lens_is_never_allowed(self):
-        every = CODE_CLASSES
-        self.assertEqual(len(RETIRED), 4)
-        for lens in RETIRED:
-            self.assertFalse(allowed(lens, every, "rfc"))
-            self.assertTrue(skip_reason(lens, every, "rfc").startswith("retired by RFC 256: "))
 
     def test_impl_review_needs_an_rfc(self):
         classes = frozenset({"kotlin"})

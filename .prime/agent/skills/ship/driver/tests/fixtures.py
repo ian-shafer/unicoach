@@ -44,7 +44,7 @@ TIER_LENSES = {
     0: ["impl-review-plan-followed"],
     1: ["code-review-dry-abstractions"],
     2: ["code-review-semantic-output", "code-review-immutable-returns"],
-    3: ["code-review-concrete-names"],
+    3: ["code-review-contextual-comments"],
 }
 
 STUBS = {

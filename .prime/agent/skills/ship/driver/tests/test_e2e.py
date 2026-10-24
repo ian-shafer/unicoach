@@ -104,7 +104,6 @@ class EndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(log), 12, "the feature budget is 12 judgement turns")
         rs = driver.run.rs
         ledger = (rs / "findings" / "lens-ledger.tsv").read_text()
-        self.assertIn("skip\t3\tcode-review-concrete-names\tretired by RFC 256", ledger)
         self.assertIn("skip\t2\tcode-review-immutable-returns\tno lens of the typed group", ledger)
         fix = [s for s in harness.spawned if " fix child of " in s["dispatch"]]
         self.assertEqual(len(fix), 1)

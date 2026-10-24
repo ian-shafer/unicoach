@@ -58,9 +58,8 @@ harness `harnesses=` names, or all of them when it says `ALL`. The map lives in
 `prompt` — by extension, or by shebang when there is none (otherwise `config`),
 and each lens names the classes it can fire on. Three shapes of row:
 
-- typed-language rules (`constructor-di`, `execution-context`,
-  `immutable-returns`, `structured-payloads`, `no-sentinels`, …) fire on kotlin,
-  swift, ts, python;
+- typed-language rules (`execution-context`, `immutable-returns`,
+  `structured-payloads`, `no-sentinels`, …) fire on kotlin, swift, ts, python;
 - `semantic-output` fires on shell only;
 - every other code and design lens fires on any code class; `impl-review-*` also
   needs `design=rfc`.
@@ -73,12 +72,9 @@ dispatched, and a test fails until the row is added.
 
 ## Retired lenses
 
-`RETIRED` in `applicability.py`, by Ian's decision at RFC 256's approval,
-skipped with `retired by RFC 256: <figure>`: `code-review-concrete-names`,
-`code-review-standard-verbs`, `code-review-bracket-serialization`,
-`code-review-constructor-di` — each with the lowest accepted fix-grade findings
-per dispatch in the archive (RFC 256 D4 has the figures).
-`code-review-execution-context` is kept. The rule files under `.claude/skills/`
-are untouched; removing them from the corpus is a `/principle` change.
-`ship_driver.rank_lenses(archive_dir)` regenerates the ranking from
-`.scratch/ship-archive`, so the next such decision reads fresh figures.
+A lens is retired in the corpus, by `/principle`: its directory and its
+`tiers.md` row are deleted, so `ship-lens missing` never names it and the driver
+never dispatches it. Its `LENS_GROUP` row in `applicability.py` is then deleted
+too; the map keeps no retired set. `ship_driver.rank_lenses(archive_dir)`
+regenerates the ranking from `.scratch/ship-archive`, so the next such decision
+reads fresh figures.
