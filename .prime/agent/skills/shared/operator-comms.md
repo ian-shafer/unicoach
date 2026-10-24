@@ -20,7 +20,7 @@ Three rules, in order of how often they are broken:
 
 ## 1. Expand an internal name once, then shorten it
 
-A bare identifier is not information. `D33`, `S4`, `tier 2`, `lane A`,
+A bare identifier is not information. `D33`, `S4`, `tier 2`, `scrutiny`,
 `BASE_SHA`, `the door` are all names for something Ian cannot look up from a
 chat message.
 
@@ -72,7 +72,9 @@ text. A decision Ian is asked to rely on is quoted, not cited.
 | `RFC 149`                    | the design doc for this change, number 149                                                                    |
 | tier 0 / 1 / 2 / 3           | review pass by size of fix: 0 = does the code match the design, 1 = structural, 2 = one file, 3 = a few lines |
 | lens                         | one review rule, run on its own                                                                               |
-| lane A / lane B              | lane A = needs a written design first; lane B = mechanical change                                             |
+| preset                       | mechanical = no design doc or review; bug fix = test first, light review; feature = design doc + approval     |
+| dial                         | one setting of a run: design doc, review depth, approval stop, which tests run                                |
+| the driver                   | the code that runs a /ship run between the decisions it brings to you                                         |
 | the hook / the gate          | the pre-commit check: the full test suite plus formatting                                                     |
 | `BASE_SHA`, fork point       | the commit this work started from                                                                             |
 | `db/schema/ORDER`            | the file that fixes the order database migrations run in                                                      |

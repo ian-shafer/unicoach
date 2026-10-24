@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ship-scripts-tests — shell assertions over the /ship scripts: ship-lock
 # (RFC 167), ship-land's refusal of a foreign lock holder, ship-order (RFC 180
-# D6), ship-lens (RFC 234), and ship-run (RFC 235, RFC 236). One
+# D6), ship-lens (RFC 234), ship-run (RFC 235, RFC 236), and the ship_driver
+# package's unit tests (RFC 256). One
 # harness, one temp-dir style; the sections below are banner-separated and each
 # names its own subject.
 #
@@ -29,7 +30,7 @@ ship-scripts-tests [options]
 
 Runs the shell assertions over .prime/agent/skills/ship/scripts/ship-lock (and
 ship-land's refusal of a foreign lock holder), ship-order, ship-lens and
-ship-run. Needs no database, no daemon and no worktree: each
+ship-run, then the ship_driver package's unit tests. Needs no database, no daemon and no worktree: each
 assertion runs against a throwaway git repo, run scratch and lens corpus under
 a temp dir.
 
@@ -3297,5 +3298,21 @@ grep -q "ship-run -s <run-scratch>" "$RUN_OUT" ||
   fail_test "-h did not print the usage line on stdout; said [$(cat "$RUN_OUT")]"
 [ ! -s "$RUN_ERR" ] || fail_test "-h wrote to stderr: [$(cat "$RUN_ERR")]"
 pass_test "-h prints help on stdout, nothing on stderr, and exits 0"
+
+# ── ship_driver: the /ship driver's own unit tests (RFC 256) ────────────────
+
+echo ""
+echo "==== ship_driver: the driver's unit tests (RFC 256) ===="
+
+# Stdlib unittest, no network, no Gradle, no Postgres: throwaway git repos, the
+# real ship-* scripts, and a fake of the agent primitives. Its own fixtures set
+# VAR_DIR, so no test here touches the real land lock.
+DRIVER_TESTS="$PROJECT_ROOT/.prime/agent/skills/ship/driver/tests"
+DRIVER_OUT="$FIXTURE_DIR/driver-tests.out"
+python3 -m unittest discover -s "$DRIVER_TESTS" > "$DRIVER_OUT" 2>&1 ||
+  fail_test "the ship_driver unit tests failed: [$(cat "$DRIVER_OUT")]"
+grep -qx "OK.*" "$DRIVER_OUT" ||
+  fail_test "the ship_driver unit tests did not report OK: [$(cat "$DRIVER_OUT")]"
+pass_test "the ship_driver unit tests pass ($(grep -E '^Ran [0-9]+ tests' "$DRIVER_OUT"))"
 
 end_tests

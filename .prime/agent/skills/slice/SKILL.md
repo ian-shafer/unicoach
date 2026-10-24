@@ -251,8 +251,8 @@ Build one /ship instruction from four sources. Nothing else belongs in it.
 3. **Live numbers** (below).
 4. **The gate answer** from phase 2, if a PREFER was overridden.
 
-State the expected lane (A — rfc for anything design-bearing; B — quick only for
-a genuinely mechanical slice) and let /ship veto it.
+State the expected /ship preset (feature for anything design-bearing; bug fix or
+mechanical only for a slice whose shape is already given) and let /ship veto it.
 
 #### Live numbers — claimed at run time, twice
 

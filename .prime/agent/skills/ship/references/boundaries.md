@@ -11,7 +11,7 @@ rejected: it makes another workflow's internals into this one's API, so any
 refactor there breaks this silently, and changes wanted here would perturb
 there. `ship` has its own plumbing in `../scripts/`.
 
-## Shared thing 1 — a git naming convention (lane A)
+## Shared thing 1 — a git naming convention (design=rfc)
 
 Coordination happens through **git**, not through shared code. `ship-claim`
 independently re-implements the same claim protocol:
@@ -33,8 +33,8 @@ already in flight.
 Degradation is graceful: if the conventions ever drift, the worst case is a
 failed `worktree add` and a bumped number — never a corrupted claim.
 
-Lane B uses `ship/<slug>`, disjoint from Claude Code's `quick/<slug>` and from
-`pipeline/rfc-*`, so it never contends at all.
+A `design=none` run uses `ship/<slug>`, disjoint from Claude Code's
+`quick/<slug>` and from `pipeline/rfc-*`, so it never contends at all.
 
 ## Shared thing 2 — the review-rule corpus
 
