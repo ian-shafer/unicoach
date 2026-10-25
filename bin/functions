@@ -644,6 +644,60 @@ database_exists() {
   printf '%s\n' "$out" | grep -qxF "$db_name"
 }
 
+# The test database ONE Gradle module's tests run against while bin/test runs
+# the modules in parallel (RFC 259): `unicoach-tNN-<checkout>`, NN being the
+# module's position in bin/test's MODULES. $1 is that position.
+#
+# Not `unicoach-test-<checkout>-<module>`: that would push past
+# POSTGRES_NAME_MAX_BYTES for checkout names RFC 174's budget already admits.
+# The 13-byte prefix is shorter than the CHECKOUT_NAME_PREFIX_MAX_BYTES the
+# budget is computed from, so every checkout name that is legal stays legal --
+# and the length is still checked HERE, at the one place the name is made,
+# because truncation would put two checkouts on one database without a sound.
+test_module_database_name() {
+  local index="${1:?test_module_database_name requires the MODULES position of the module}" name bytes
+  printf '%s' "$index" | LC_ALL=C grep -qE '^[0-9]+$' ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "test_module_database_name: position [$index] is not a non-negative integer"
+  [ "$index" -le 99 ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "test_module_database_name: position [$index] does not fit the two-digit NN; the name grammar caps bin/test at 100 modules"
+  name="$(printf 'unicoach-t%02d-%s' "$index" "$(checkout_name "$PROJECT_ROOT")")"
+  bytes="$(printf '%s' "$name" | LC_ALL=C wc -c | tr -d '[:space:]')"
+  [ "$bytes" -le "$POSTGRES_NAME_MAX_BYTES" ] ||
+    fatal "test_module_database_name: [$name] is [$bytes] bytes; PostgreSQL would truncate it at [$POSTGRES_NAME_MAX_BYTES]"
+  printf '%s\n' "$name"
+}
+
+# Replaces each named database with a fresh copy of $1, in ONE psql session.
+# A copy is a file-level clone of the template (CREATE DATABASE ... TEMPLATE), so
+# every module starts from exactly the state the template holds -- no migration
+# is re-run. A leftover copy from an interrupted run is dropped first.
+#
+# CREATE DATABASE refuses while anything is connected to the template. That is
+# reported, not worked around: falling back to a shared database is precisely
+# the cross-module interference the copies exist to prevent.
+test_module_databases_create() {
+  local template="${1:?test_module_databases_create requires the template database}" name script=""
+  shift
+  [ "$#" -gt 0 ] || return 0
+  for name in "$@"; do
+    script+="DROP DATABASE IF EXISTS \"$(sql_ident "$name")\";"$'\n'
+    script+="CREATE DATABASE \"$(sql_ident "$name")\" TEMPLATE \"$(sql_ident "$template")\";"$'\n'
+  done
+  printf '%s' "$script" | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}" > /dev/null
+}
+
+# Drops each named database if it exists, in ONE psql session. WITH (FORCE)
+# because a test JVM killed mid-run can leave a backend connected, and a copy
+# that survives its run is exactly the accumulation the copies must not cause.
+test_module_databases_drop() {
+  local name script=""
+  [ "$#" -gt 0 ] || return 0
+  for name in "$@"; do
+    script+="DROP DATABASE IF EXISTS \"$(sql_ident "$name")\" WITH (FORCE);"$'\n'
+  done
+  printf '%s' "$script" | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}" > /dev/null
+}
+
 # Echoes the value of the `<key>=` component of an xcodebuild -destination
 # string, or nothing when the destination carries none. $1 is the destination,
 # $2 the bare key (e.g. `name`, `id`). The match is anchored to a component

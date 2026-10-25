@@ -907,6 +907,32 @@ assert_success "checkout_block_base is deterministic and consistent with bin/che
 assert_success "checkout_block_base / checkout_name refuse an empty checkout root" test_checkout_derivations_refuse_an_empty_root
 assert_success "CHECKOUT_NAME_MAX_BYTES is 63 minus the longest prefix the dotenvs derive with" test_checkout_name_budget_matches_the_longest_prefix
 assert_success "checkout_name refuses a name PostgreSQL would truncate" test_checkout_name_refuses_a_truncating_name
+
+# The per-module test database name (RFC 259) must fit every checkout name the
+# budget above admits. A basename of exactly CHECKOUT_NAME_MAX_BYTES -- the
+# longest checkout_name accepts -- still yields a name PostgreSQL keeps whole.
+test_module_database_name_fits_the_longest_legal_checkout() {
+  local longest name
+  longest="$(printf 'a%.0s' $(seq 1 "$CHECKOUT_NAME_MAX_BYTES"))"
+  name="$(PROJECT_ROOT="/nonexistent/$longest" test_module_database_name 7)" ||
+    fail_test "test_module_database_name refused a checkout name checkout_name accepts"
+  [ "$name" = "unicoach-t07-$longest" ] || fail_test "got [$name], want [unicoach-t07-$longest]"
+  [ "${#name}" -le "$POSTGRES_NAME_MAX_BYTES" ] ||
+    fail_test "[$name] is ${#name} bytes, over PostgreSQL's $POSTGRES_NAME_MAX_BYTES"
+  return 0
+}
+test_module_database_name_is_per_checkout() {
+  local a b
+  a="$(PROJECT_ROOT="/x/unicoach-one" test_module_database_name 3)"
+  b="$(PROJECT_ROOT="/x/unicoach-two" test_module_database_name 3)"
+  [ "$a" = "unicoach-t03-unicoach-one" ] || fail_test "got [$a]"
+  [ "$a" != "$b" ] || fail_test "two checkouts derived the same module database [$a]"
+  return 0
+}
+assert_success "the per-module test database name fits the longest legal checkout name" test_module_database_name_fits_the_longest_legal_checkout
+assert_success "the per-module test database name differs per checkout" test_module_database_name_is_per_checkout
+assert_failure "test_module_database_name refuses a non-numeric position" bash -c 'source bin/common; test_module_database_name x'
+assert_failure "test_module_database_name refuses a position past two digits" bash -c 'source bin/common; test_module_database_name 100'
 assert_success "a listener on the dev half (+10) does not advance checkout-port" test_dev_half_listener_does_not_advance_checkout_port
 assert_success "two different checkout names derive disjoint dev port triples" test_two_checkouts_derive_disjoint_dev_port_triples
 assert_success "sourcing .env.dev yields SERVER_PORT == PORT == checkout_block_base + 10" test_env_dev_derives_port_and_server_port_from_the_block
@@ -2002,6 +2028,169 @@ for harness_path in "$PROJECT_ROOT"/bin/*scripts-tests; do
   list_contains "$harness" "${HARNESS_EXCLUSIONS[@]}" && continue
   assert_success "bin/shell-tests runs $harness" harness_in_shell_tests "$harness"
 done
+
+echo "==== Testing bin/shell-tests' concurrent lanes (RFC 259) ===="
+# The lanes are exercised the way gate-scope's sweep is: a COPY of
+# bin/shell-tests in a fixture checkout, beside copies of the two files it
+# sources and the dotenvs bin/common layers, with a FAKE harness under every real
+# harness name. The fakes record when they start and end, and do what a file
+# named after them says (fail with a status, sleep, read stdin). Nothing in
+# bin/shell-tests is changed to make it testable.
+st_harness_names() { sed -nE 's|^  bin/([a-z0-9-]*scripts-tests)$|\1|p' "$PROJECT_ROOT/bin/shell-tests"; }
+
+st_fixture() {
+  local root name
+  root="$(mktemp -d "${TMPDIR:-/tmp}/st-lanes.XXXXXX")"
+  mkdir -p "$root/bin" "$root/behave"
+  cp "$PROJECT_ROOT/bin/shell-tests" "$PROJECT_ROOT/bin/common" "$PROJECT_ROOT/bin/functions" "$root/bin/"
+  cp "$PROJECT_ROOT/.env" "$PROJECT_ROOT/.env.dev" "$PROJECT_ROOT/.env.test" "$root/"
+  # The harness list is read out of the real bin/shell-tests, so a harness added
+  # there gets a fake here with no edit to this test.
+  for name in $(st_harness_names); do
+    cat > "$root/bin/$name" << 'FAKE'
+#!/usr/bin/env bash
+name="$(basename "$0")"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+now() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
+printf 'start %s %s\n' "$name" "$(now)" >> "$root/events"
+echo "fake output of $name"
+kind=""; arg=""
+[ -f "$root/behave/$name" ] && read -r kind arg < "$root/behave/$name"
+case "$kind" in
+sleep) sleep "$arg" ;;
+sleepfail) sleep "${arg%% *}" ;;
+stdin) if IFS= read -r line; then printf 'stdin %s %s\n' "$name" "$line" >> "$root/events"; fi ;;
+esac
+printf 'end %s %s\n' "$name" "$(now)" >> "$root/events"
+case "$kind" in
+fail) exit "$arg" ;;
+sleepfail) exit "${arg##* }" ;;
+esac
+exit 0
+FAKE
+    chmod +x "$root/bin/$name"
+  done
+  printf '%s\n' "$root"
+}
+
+# st_behave ROOT HARNESS KIND [ARG...]: what that fake does on its next run.
+st_behave() { local root="$1" name="$2"; shift 2; printf '%s\n' "$*" > "$root/behave/$name"; }
+st_ran() { grep -q "^start $2 " "$1/events"; }
+st_time() { sed -nE "s/^$2 $3 //p" "$1/events"; }
+
+test_shell_tests_lanes_all_pass() {
+  local root out status=0 count expected
+  root="$(st_fixture)"
+  out="$("$root/bin/shell-tests" 2>&1)" || status=$?
+  [ "$status" -eq 0 ] || fail_test "all-passing fakes exited [$status]: $out"
+  expected="$(st_harness_names | wc -l | tr -d ' ')"
+  count="$(grep -c '^start ' "$root/events")"
+  [ "$count" = "$expected" ] || fail_test "[$count] of [$expected] harnesses ran"
+  echo "$out" | grep -q "in 3 lanes" || fail_test "the run did not report three lanes: $out"
+  echo "$out" | grep -q "fake output of scripts-tests" || fail_test "a harness's captured output was not replayed: $out"
+  rm -rf "$root"
+}
+
+# The lanes overlap, and the shared lane does not: db-scripts-tests (own
+# cluster) starts before ship-scripts-tests (cluster-free) ends, while
+# scripts-tests waits for q-scripts-tests, the two harnesses sharing this
+# checkout's test DB and daemons. scripts-tests is in `shared` by the map's
+# DEFAULT branch, so this also asserts the default is the serial lane.
+test_shell_tests_lanes_overlap_but_shared_is_serial() {
+  local root db_start ship_end q_end s_start
+  root="$(st_fixture)"
+  st_behave "$root" db-scripts-tests sleep 2
+  st_behave "$root" ship-scripts-tests sleep 2
+  st_behave "$root" q-scripts-tests sleep 2
+  "$root/bin/shell-tests" > /dev/null 2>&1 || fail_test "sleeping fakes failed"
+  db_start="$(st_time "$root" start db-scripts-tests)"
+  ship_end="$(st_time "$root" end ship-scripts-tests)"
+  q_end="$(st_time "$root" end q-scripts-tests)"
+  s_start="$(st_time "$root" start scripts-tests)"
+  perl -e "exit !($db_start < $ship_end)" ||
+    fail_test "own-cluster and cluster-free did not overlap: db start [$db_start], ship end [$ship_end]"
+  perl -e "exit !($s_start >= $q_end)" ||
+    fail_test "scripts-tests started [$s_start] before q-scripts-tests ended [$q_end]; the shared lane must be serial"
+  rm -rf "$root"
+}
+
+# A failure stops ITS lane only. The harness after it in the same lane is
+# reported as not run, the other lanes still run, the failing harness's log is
+# replayed, and the exit status is the failure's own.
+test_shell_tests_a_failure_stops_only_its_lane() {
+  local root out status=0
+  root="$(st_fixture)"
+  st_behave "$root" docs-scripts-tests fail 7
+  out="$("$root/bin/shell-tests" 2>&1)" || status=$?
+  [ "$status" -eq 7 ] || fail_test "exit status [$status], want the failing harness's [7]: $out"
+  if st_ran "$root" codebook-seed-scripts-tests; then
+    fail_test "codebook-seed-scripts-tests ran after docs-scripts-tests failed in the same lane"
+  fi
+  echo "$out" | grep -q "not run.*codebook-seed-scripts-tests" ||
+    fail_test "the unreached harness was not named as not run: $out"
+  st_ran "$root" scripts-tests || fail_test "the shared lane did not run after a cluster-free failure"
+  st_ran "$root" db-scripts-tests || fail_test "the own-cluster lane did not run after a cluster-free failure"
+  echo "$out" | grep -q "fake output of docs-scripts-tests" || fail_test "the failing harness's log was not replayed: $out"
+  echo "$out" | grep -q "FAILED: docs-scripts-tests" || fail_test "the failure was not named in the verdict: $out"
+  rm -rf "$root"
+}
+
+# Two failures in two lanes: BOTH are reported, and the exit status is the
+# first in the DECLARED order, not whichever lane finished first. scripts-tests
+# fails at once; ship-scripts-tests, declared first, fails a second later.
+test_shell_tests_exit_status_is_the_first_declared_failure() {
+  local root out status=0
+  root="$(st_fixture)"
+  st_behave "$root" ship-scripts-tests sleepfail 1 5
+  st_behave "$root" scripts-tests fail 9
+  out="$("$root/bin/shell-tests" 2>&1)" || status=$?
+  [ "$status" -eq 5 ] || fail_test "exit status [$status], want ship-scripts-tests' [5] (first in declared order): $out"
+  echo "$out" | grep -q "FAILED: ship-scripts-tests scripts-tests" ||
+    fail_test "both failures were not reported in declared order: $out"
+  rm -rf "$root"
+}
+
+# -n of one lane's harnesses runs in the foreground, output live on the
+# harness's own streams, with no replay header. Captured to variables rather
+# than piped into `grep -q`, whose early exit would SIGPIPE the run under test.
+test_shell_tests_one_lane_runs_live() {
+  local root stdout combined
+  root="$(st_fixture)"
+  stdout="$("$root/bin/shell-tests" -n scripts-tests 2> /dev/null)" ||
+    fail_test "a single passing harness failed"
+  echo "$stdout" | grep -q "fake output of scripts-tests" ||
+    fail_test "a single-lane run did not stream the harness's stdout live: [$stdout]"
+  combined="$("$root/bin/shell-tests" -n scripts-tests 2>&1)"
+  if echo "$combined" | grep -q "==== shell-tests:"; then
+    fail_test "a single-lane run replayed a captured log instead of running live"
+  fi
+  rm -rf "$root"
+}
+
+# Every harness reads /dev/null, in both the live and the laned path, whatever
+# the caller's stdin is. A harness that reads stdin (a confirmation prompt
+# reached by mistake) must see EOF, never the caller's input or a blocking pipe.
+test_shell_tests_harnesses_never_see_the_callers_stdin() {
+  local root
+  root="$(st_fixture)"
+  st_behave "$root" scripts-tests stdin
+  st_behave "$root" ship-scripts-tests stdin
+  printf 'leaked\n' | "$root/bin/shell-tests" -n scripts-tests > /dev/null 2>&1 ||
+    fail_test "the live run failed"
+  printf 'leaked\n' | "$root/bin/shell-tests" > /dev/null 2>&1 ||
+    fail_test "the laned run failed"
+  if grep -q '^stdin ' "$root/events"; then
+    fail_test "a harness read the caller's stdin: $(grep '^stdin ' "$root/events")"
+  fi
+  rm -rf "$root"
+}
+
+assert_success "bin/shell-tests runs every harness across three lanes" test_shell_tests_lanes_all_pass
+assert_success "bin/shell-tests overlaps its lanes but keeps the shared lane serial" test_shell_tests_lanes_overlap_but_shared_is_serial
+assert_success "a harness failure stops only its own lane and is replayed" test_shell_tests_a_failure_stops_only_its_lane
+assert_success "bin/shell-tests exits with the first failure in declared order" test_shell_tests_exit_status_is_the_first_declared_failure
+assert_success "a single-lane bin/shell-tests run streams live" test_shell_tests_one_lane_runs_live
+assert_success "no harness ever reads the caller's stdin" test_shell_tests_harnesses_never_see_the_callers_stdin
 
 # OpenTofu static validation of infra/ USED TO LIVE HERE, and was removed from
 # the gate by RFC 214 on an explicit operator decision. Two assertions --

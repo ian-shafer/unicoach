@@ -4,6 +4,8 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.models.NewCollegeIpeds
 import org.apache.commons.csv.CSVRecord
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import java.io.File
 import java.time.LocalDate
@@ -21,19 +23,37 @@ import kotlin.test.assertTrue
  * getting any of them wrong is a silent data lie rather than a crash.
  */
 class IpedsLoaderTest {
-  // The loader's mappers touch neither the DB nor the dispatcher; the instance
-  // exists only to reach them.
-  private val loader =
-    IpedsLoader(
-      Database(
-        DatabaseConfig
-          .from(
-            ed.unicoach.common.config.AppConfig
-              .load("common.conf", "db.conf")
-              .getOrThrow(),
-          ).getOrThrow(),
-      ),
-    )
+  companion object {
+    // The loader's mappers touch neither the DB nor the dispatcher; the instance
+    // exists only to reach them. It is still built on a real Database, whose pool
+    // opens its connections at construction -- so ONE per class, closed after
+    // it. As an instance field it was one pool per TEST (JUnit makes an instance
+    // per method): 30 pools never closed, holding 60 of the cluster's shared
+    // max_connections for a suite that runs no SQL (RFC 259).
+    private lateinit var database: Database
+    private lateinit var loader: IpedsLoader
+
+    @JvmStatic
+    @BeforeAll
+    fun setupAll() {
+      database =
+        Database(
+          DatabaseConfig
+            .from(
+              ed.unicoach.common.config.AppConfig
+                .load("common.conf", "db.conf")
+                .getOrThrow(),
+            ).getOrThrow(),
+        )
+      loader = IpedsLoader(database)
+    }
+
+    @JvmStatic
+    @AfterAll
+    fun teardownAll() {
+      if (::database.isInitialized) database.close()
+    }
+  }
 
   private fun fixture(name: String): File {
     val url = requireNotNull(this::class.java.classLoader.getResource(name)) { "missing fixture [$name]" }

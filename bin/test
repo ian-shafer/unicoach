@@ -17,8 +17,10 @@ help() {
 test [options] [module ...]
 
 Runs Gradle tests on the nix-provided host JVM. Resets this worktree's test
-database first (postgres-up -> db-reset -> db-tests), then runs the selected
-modules' test tasks. With no modules, runs every module.
+database first (postgres-up -> db-reset -> db-tests), then copies it once per
+selected module (unicoach-tNN-<checkout>, CREATE DATABASE ... TEMPLATE) and
+runs the modules' test tasks in parallel, each against its own copy (RFC 259).
+The copies are dropped on exit. With no modules, runs every module.
 
 Runs no shell script-test harnesses. bin/check -- what the pre-commit hook
 runs -- runs them first and then calls this script; `bin/shell-tests -h` lists
@@ -110,8 +112,42 @@ done
 "$PROJECT_ROOT/bin/db-reset"
 
 # Run the shell DB schema harnesses against the freshly migrated DB, sequentially
-# (never backgrounded) and before the terminal exec. Under set -e a non-zero exit
-# aborts the run; Postgres stays up so the subsequent Gradle suite sees the same DB.
+# (never backgrounded). Under set -e a non-zero exit aborts the run; Postgres
+# stays up so the copies below are taken of the same DB.
 "$PROJECT_ROOT/bin/db-tests"
 
-"$PROJECT_ROOT/gradlew" "${GRADLE_ARGS[@]}"
+# One database per selected module, so the modules' test tasks can run at once
+# (RFC 259). Each is a copy of this checkout's test DB AS db-tests LEFT IT -- the
+# exact state the serial suite used to start from -- so a module sees no
+# difference except that no other module is writing beside it.
+#
+# The copies are temporary. The shared cluster already carries hundreds of
+# per-checkout databases and nothing reaps them, so the trap drops these on every
+# exit, pass or fail; test_module_databases_create also drops a leftover first.
+MODULE_DATABASES=()
+MODULE_DATABASE_MAP=""
+for module in "${SELECTED[@]}"; do
+  for index in "${!MODULES[@]}"; do
+    [ "${MODULES[$index]}" = "$module" ] || continue
+    database="$(test_module_database_name "$index")"
+    MODULE_DATABASES+=("$database")
+    MODULE_DATABASE_MAP+="${MODULE_DATABASE_MAP:+,}$module=$database"
+  done
+done
+trap 'test_module_databases_drop "${MODULE_DATABASES[@]}" || log-warning "could not drop the per-module test databases: ${MODULE_DATABASES[*]}"' EXIT
+test_module_databases_create "$POSTGRES_DB" "${MODULE_DATABASES[@]}" ||
+  fatal "could not copy [$POSTGRES_DB] into the per-module test databases; if CREATE DATABASE said the template is being accessed, something is connected to this checkout's test DB"
+log-info "per-module test databases: $MODULE_DATABASE_MAP"
+
+# build.gradle.kts points each module's test JVM at its copy from this map, and
+# refuses to run a module the map does not name. A plain ./gradlew, with no map,
+# stays serial against the one shared test DB, as before: --parallel is only
+# ever passed here, beside the copies that make it safe.
+#
+# The worker cap bounds the test JVMs open at once. Every checkout on the
+# machine shares the cluster's max_connections (100), and each test JVM holds
+# connections for its whole run, so the cap is set from the MEASURED peak per JVM
+# (RFC 259), not from the core count.
+TEST_MAX_WORKERS=4
+export UNICOACH_TEST_DATABASES="$MODULE_DATABASE_MAP"
+"$PROJECT_ROOT/gradlew" --parallel --max-workers="$TEST_MAX_WORKERS" "${GRADLE_ARGS[@]}"

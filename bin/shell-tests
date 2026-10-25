@@ -14,10 +14,12 @@
 # EXIT trap (daemon identity hangs off bin/common's PROJECT_ROOT, so no other
 # worktree is touched). bin/check builds those artifacts before calling here.
 #
-# Each harness aborts on its first failure and this script runs them sequentially
-# under `set -e`, so it aborts non-zero on the first failing harness. Ordering is
-# cheapest-first: the ordering only changes how long a developer waits to learn
-# the tree is broken.
+# The harnesses run in three LANES at once (RFC 259), split by what each shares:
+# a private cluster, nothing at all, or this checkout's test DB and daemons. A
+# lane runs its harnesses in the declared order and stops at its first failure,
+# as the serial loop did; the other lanes run on, so one run reports every
+# failing harness. The lane map, below the harness list, is the only place a
+# harness is let out of the serial `shared` lane.
 # Layer `.env -> .env.dev -> .env.test` (RFC 95): the DB block and required-toggle
 # dev values live in .env.dev. ENV_FILES is a PATH-like ':'-separated string.
 # Under bin/test it is inherited (exported) across the process boundary; run
@@ -30,8 +32,23 @@ help() {
   cat << 'EOF'
 shell-tests [options]
 
-Runs the shell script-test harnesses sequentially, cheapest first, aborting on
-the first failure. With -n, runs only the named ones, still in this order:
+Runs the shell script-test harnesses in three concurrent lanes (RFC 259):
+
+  own-cluster   db-scripts-tests, on its own private cluster
+  cluster-free  the harnesses below that need no cluster
+  shared        q-scripts-tests then scripts-tests, which share this checkout's
+                test DB, ports and daemons -- and any harness not named in the
+                lane map, which is the safe default
+
+Inside a lane, harnesses run in the order below and the lane stops at its first
+failure. The other lanes run on, so every failure is reported. Each harness's
+output is captured and replayed to stderr in this order once all lanes finish;
+a one-line note is printed as each harness ends. The exit status is the first
+failing harness's, in this order. When only one lane has work (e.g. -n
+scripts-tests), it runs in the foreground with live output. Every harness gets
+/dev/null as stdin, as it does under git's hook.
+
+With -n, runs only the named ones, still in this order:
 
   ship-scripts-tests        the /ship land lock, no cluster at all
   prompt-seed-scripts-tests the coach prompt seed generator, no cluster at all
@@ -92,8 +109,9 @@ if [ "$#" -ne 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "Error: shell-tests accepts no positional arguments."
 fi
 
-# The harnesses, in the order they run: cheapest first, so a developer learns the
-# tree is broken as early as the ordering allows.
+# The harnesses, in the DECLARED order: the order each lane runs its own
+# harnesses in, the order the captured logs are replayed in, and the order that
+# decides which failure sets the exit status.
 #
 # ENTRIES ARE `bin/<name>`, NOT BARE NAMES, AND THAT IS LOAD-BEARING. The
 # anti-orphan sweep in bin/scripts-tests greps THIS FILE for the literal string
@@ -160,6 +178,45 @@ if [ "${#SELECTED[@]}" -gt 0 ]; then
   log-info "running only the requested harnesses: ${SELECTED[*]}"
 fi
 
+# Which harnesses may run beside which. A harness's LANE is decided by what it
+# shares, and only two lanes are named here:
+#
+#   own-cluster   db-scripts-tests provisions and tears down a PRIVATE cluster on
+#                 its own port, so it shares nothing with the other lanes.
+#   cluster-free  needs a temp directory and git, nothing else: no database, no
+#                 daemon, no var/ state, and no write into the checkout (each was
+#                 checked when this map was written, RFC 259).
+#
+# Everything else -- q-scripts-tests and scripts-tests, which share this
+# checkout's test DB, test ports and daemons, AND any harness added later -- is
+# in `shared`, the one lane that runs serially beside the database users. A new
+# harness is never given concurrency nobody reviewed it for: moving it out of
+# `shared` is a decision someone makes here, by name.
+harness_lane() {
+  case "$1" in
+  db-scripts-tests) echo own-cluster ;;
+  ship-scripts-tests | prompt-seed-scripts-tests | docs-scripts-tests | \
+    codebook-seed-scripts-tests | test-calendar-seed-scripts-tests | \
+    test-state-programme-seed-scripts-tests | fafsa-deadline-seed-scripts-tests | \
+    national-merit-seed-scripts-tests | gate-scope-scripts-tests | \
+    web-assets-scripts-tests) echo cluster-free ;;
+  *) echo shared ;;
+  esac
+}
+
+# stdin is /dev/null for every harness, which is what git already gives the hook,
+# so a direct run behaves the same and a confirmation prompt reached by mistake
+# fails instead of blocking a lane forever.
+run_harness() {
+  local name="$1"
+  case "$name" in
+  db-scripts-tests) env -u ENV_FILES "$PROJECT_ROOT/bin/$name" < /dev/null ;;
+  *) "$PROJECT_ROOT/bin/$name" < /dev/null ;;
+  esac
+}
+
+# The harnesses this run executes, in the declared order.
+TO_RUN=()
 for harness in "${HARNESSES[@]}"; do
   name="${harness#bin/}"
   if [ "${#SELECTED[@]}" -gt 0 ]; then
@@ -169,8 +226,109 @@ for harness in "${HARNESSES[@]}"; do
     done
     [ "$wanted" -eq 1 ] || continue
   fi
-  case "$name" in
-  db-scripts-tests) env -u ENV_FILES "$PROJECT_ROOT/$harness" ;;
-  *) "$PROJECT_ROOT/$harness" ;;
-  esac
+  TO_RUN+=("$name")
 done
+
+# The lanes that have work, each once, in the order they first appear.
+ACTIVE_LANES=()
+for name in "${TO_RUN[@]}"; do
+  lane="$(harness_lane "$name")"
+  list_has_lane=0
+  for active in ${ACTIVE_LANES[@]+"${ACTIVE_LANES[@]}"}; do
+    [ "$active" = "$lane" ] && list_has_lane=1 && break
+  done
+  [ "$list_has_lane" -eq 1 ] || ACTIVE_LANES+=("$lane")
+done
+
+# One lane: nothing to overlap, so run it as the serial loop always ran -- in
+# the foreground, output live, stopping at the first failure with its status.
+# This is the tight loop (`bin/shell-tests -n scripts-tests`), where a developer
+# watches the harness rather than waiting for a replay.
+if [ "${#ACTIVE_LANES[@]}" -le 1 ]; then
+  for name in "${TO_RUN[@]}"; do
+    run_harness "$name"
+  done
+  exit 0
+fi
+
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shell-tests.XXXXXX")"
+LANE_PIDS=()
+
+# On INT/TERM, stop the lanes' harnesses too: each harness's own trap then tears
+# down what it started (scripts-tests' daemons, db-scripts-tests' cluster).
+# Without this, an interrupted gate would leave three lanes running unseen.
+stop_lanes() {
+  local pid
+  for pid in ${LANE_PIDS[@]+"${LANE_PIDS[@]}"}; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+}
+trap 'rm -rf "$LOG_DIR"' EXIT
+trap 'stop_lanes; exit 130' INT TERM
+
+# A lane: its harnesses in the declared order, each captured to its own log, its
+# status recorded beside the log, stopping at the first failure. A harness with
+# no status file afterwards was never reached.
+run_lane() {
+  local lane="$1" name status started
+  for name in "${TO_RUN[@]}"; do
+    [ "$(harness_lane "$name")" = "$lane" ] || continue
+    started=$SECONDS
+    status=0
+    run_harness "$name" > "$LOG_DIR/$name.log" 2>&1 || status=$?
+    printf '%s\n' "$status" > "$LOG_DIR/$name.status"
+    if [ "$status" -eq 0 ]; then
+      log-info "[shell-tests] $name passed in $(( SECONDS - started ))s ($lane lane)"
+    else
+      log-error "[shell-tests] $name FAILED with status [$status] after $(( SECONDS - started ))s ($lane lane); the rest of the $lane lane is not run"
+      return 0
+    fi
+  done
+}
+
+log-info "[shell-tests] running ${#TO_RUN[@]} harness(es) in ${#ACTIVE_LANES[@]} lanes: ${ACTIVE_LANES[*]}"
+for lane in "${ACTIVE_LANES[@]}"; do
+  run_lane "$lane" &
+  LANE_PIDS+=("$!")
+done
+# A lane's own status is not the verdict -- the status files are -- so a lane
+# that died is not allowed to abort the replay here; its unreached harnesses
+# surface below as not run, and that alone fails the run.
+for pid in "${LANE_PIDS[@]}"; do
+  wait "$pid" || log-error "[shell-tests] a lane process exited with status [$?]"
+done
+
+# Replay every log in the declared order, then the verdict. The exit status is
+# the FIRST failure's in that order, so it does not depend on which lane happened
+# to finish first.
+FIRST_FAILURE_STATUS=0
+FAILED=()
+NOT_RUN=()
+for name in "${TO_RUN[@]}"; do
+  if [ ! -f "$LOG_DIR/$name.status" ]; then
+    NOT_RUN+=("$name")
+    continue
+  fi
+  log-info "==== shell-tests: $name ($(harness_lane "$name") lane) ===="
+  cat "$LOG_DIR/$name.log" >&2
+  status="$(cat "$LOG_DIR/$name.status")"
+  if [ "$status" -ne 0 ]; then
+    FAILED+=("$name")
+    [ "$FIRST_FAILURE_STATUS" -ne 0 ] || FIRST_FAILURE_STATUS="$status"
+  fi
+done
+
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  if [ "${#NOT_RUN[@]}" -gt 0 ]; then
+    log-error "[shell-tests] not run, because an earlier harness in their lane failed: ${NOT_RUN[*]}"
+  fi
+  log-error "[shell-tests] FAILED: ${FAILED[*]}"
+  exit "$FIRST_FAILURE_STATUS"
+fi
+# Unreached with nothing failed means a lane died between harnesses. A harness
+# nobody ran is never a pass.
+if [ "${#NOT_RUN[@]}" -gt 0 ]; then
+  fatal "[shell-tests] no harness failed, yet these were never run: ${NOT_RUN[*]}. A lane ended early; the gate cannot pass over tests that did not execute."
+fi
+log-info "[shell-tests] all ${#TO_RUN[@]} harness(es) passed."

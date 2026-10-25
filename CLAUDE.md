@@ -192,6 +192,13 @@ test. They are not what you verify a change with.
 create → migrate)`) — expected, non-destructive to anything
 but the test DB.
 
+It then **copies that database once per module** (`unicoach-tNN-<checkout>`, via
+`CREATE DATABASE … TEMPLATE`) and runs the modules' test tasks in parallel, each
+on its own copy, dropping the copies on exit (RFC 259). Two consequences: a
+plain `./gradlew` test run is serial and uses the one shared test DB, and a test
+that opens a connection pool must close it — every checkout shares the cluster's
+100 `max_connections`, and one leaked pool per test once held 60 of them.
+
 ### `bin/check` runs the shell harnesses
 
 `bin/check` — what the pre-commit hook runs, i.e. the gate on what reaches

@@ -2285,6 +2285,101 @@ test_db_migrate_refuses_a_session_that_ended_early() {
   return 0
 }
 
+# The per-module test databases (RFC 259) are copies of the migrated test DB.
+# A copy holds what the template held; making it again replaces it, discarding
+# whatever a previous run left in it; and dropping removes it.
+test_module_databases_copy_replace_and_drop() {
+  setup_migration_test
+  add_migration "0001.copy-source.sql" "CREATE TABLE copy_rows (val TEXT); INSERT INTO copy_rows VALUES ('from-template');"
+  if ! bin/db-migrate > /dev/null 2>&1; then
+    fail_test "could not migrate the copy template"
+    teardown_migration_test
+    return 1
+  fi
+
+  local copy_a="unicoach-db-scripts-test-copy-a" copy_b="unicoach-db-scripts-test-copy-b" copy got
+  if ! test_module_databases_create "$POSTGRES_DB" "$copy_a" "$copy_b"; then
+    fail_test "test_module_databases_create failed"
+    teardown_migration_test
+    return 1
+  fi
+  for copy in "$copy_a" "$copy_b"; do
+    got="$(bin/db-query -d "$copy" -r "SELECT val FROM copy_rows;" | tr -d '[:space:]')"
+    if [ "$got" != "from-template" ]; then
+      fail_test "copy [$copy] holds [$got], want the template's [from-template]"
+      teardown_migration_test
+      return 1
+    fi
+  done
+
+  bin/db-run -d "$copy_a" rw "INSERT INTO copy_rows VALUES ('left-by-a-run');" > /dev/null
+  if ! test_module_databases_create "$POSTGRES_DB" "$copy_a"; then
+    fail_test "re-creating an existing copy failed"
+    teardown_migration_test
+    return 1
+  fi
+  got="$(bin/db-query -d "$copy_a" -r "SELECT count(*) FROM copy_rows;" | tr -d '[:space:]')"
+  if [ "$got" != "1" ]; then
+    fail_test "a re-made copy kept a previous run's rows ($got rows, want 1)"
+    teardown_migration_test
+    return 1
+  fi
+
+  if ! test_module_databases_drop "$copy_a" "$copy_b"; then
+    fail_test "test_module_databases_drop failed"
+    teardown_migration_test
+    return 1
+  fi
+  for copy in "$copy_a" "$copy_b"; do
+    if database_exists "$copy"; then
+      fail_test "copy [$copy] survived test_module_databases_drop"
+      teardown_migration_test
+      return 1
+    fi
+  done
+  teardown_migration_test
+  return 0
+}
+
+# A copy is refused while something is connected to the template, and the
+# refusal is a failure -- never a silent fall back to sharing one database.
+test_module_databases_refuse_a_busy_template() {
+  setup_migration_test
+  bin/db-migrate > /dev/null 2>&1 || true
+  local holder copy="unicoach-db-scripts-test-copy-busy" status=0 attempt held=0
+  bin/db-run rw "SELECT pg_sleep(60);" > /dev/null 2>&1 &
+  holder=$!
+  # Wait for the holding session to be CONNECTED, not for a fixed delay: the
+  # background db-run sources bin/common and probes the cluster before it
+  # connects, which under a loaded gate takes longer than any guess.
+  for attempt in $(seq 1 50); do
+    if [ "$(bin/db-query -d "${POSTGRES_ADMIN_DB:-postgres}" -r "SELECT count(*) FROM pg_stat_activity WHERE datname = '$(sql_literal "$POSTGRES_DB")' AND query LIKE '%pg_sleep(60)%' AND pid <> pg_backend_pid();" | tr -d '[:space:]')" != "0" ]; then
+      held=1
+      break
+    fi
+    sleep 0.2
+  done
+  if [ "$held" -ne 1 ]; then
+    kill "$holder" 2> /dev/null || true
+    teardown_migration_test
+    fail_test "the holding connection never appeared in pg_stat_activity"
+    return 1
+  fi
+  test_module_databases_create "$POSTGRES_DB" "$copy" > /dev/null 2>&1 || status=$?
+  # End the holding session at the SERVER: killing the background db-run would
+  # leave its psql child connected for the rest of the minute, and the teardown's
+  # drop of this database would then wait on it.
+  bin/db-run -d "${POSTGRES_ADMIN_DB:-postgres}" rw "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$(sql_literal "$POSTGRES_DB")' AND query LIKE '%pg_sleep(60)%' AND pid <> pg_backend_pid();" > /dev/null 2>&1 || true
+  wait "$holder" 2> /dev/null || true
+  test_module_databases_drop "$copy" > /dev/null 2>&1 || true
+  teardown_migration_test
+  if [ "$status" -eq 0 ]; then
+    fail_test "a copy was made while the template had a connection"
+    return 1
+  fi
+  return 0
+}
+
 # The SCHEMA_ORDER_* globals are a SCAN's return channel. They used to default to
 # "" — a value, and a value answers questions: a reader called before any scan
 # was told the corpus is CLEAN, about a corpus nothing had read.
@@ -2315,6 +2410,8 @@ assert_success "db-migrate names a failing migration in the middle of the set an
 assert_success "db-migrate's single session does not leak one migration's SET into the next" test_db_migrate_session_state_does_not_leak_between_migrations
 assert_success "db-migrate names the migration whose unclosed \$\$ quote swallowed the rest" test_db_migrate_unclosed_dollar_quote_names_its_migration
 assert_success "db-migrate refuses a session that psql ended early with status 0" test_db_migrate_refuses_a_session_that_ended_early
+assert_success "per-module test database copies hold the template, are replaced when re-made, and drop" test_module_databases_copy_replace_and_drop
+assert_success "a per-module copy is refused while the template has a connection" test_module_databases_refuse_a_busy_template
 assert_success "bin/common's corpus readers refuse a call before any scan" test_schema_order_readers_refuse_an_unscanned_corpus
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-status -f with an empty value exits 22" bin/db-status -f ""
 assert_exit_code 0 "db-status accepts the explicit -f human format" bin/db-status -f human
