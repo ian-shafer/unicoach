@@ -6679,15 +6679,16 @@ newest and the first is a product decision, not a bug:**
 
 ## Kickoff prompts
 
-**The short form now works:** open a new Prime Agent session in
-`/Users/ian/Work/unicoach` and say _"start work on `money/02/component-split`"_,
-naming the **`slice`** skill. It resolves the ID in `spec.md`, checks the
+**The short form now works:** open a new Claude Code session in
+`/Users/ian/Work/unicoach` and say _"/slice start work on
+`money/02/component-split`"_. It resolves the ID in `spec.md`, checks the
 `Needs:` edges (BLOCKS refuses, PREFER asks you once, CONFLICTS only warns),
-claims the RFC and migration numbers live, runs /ship, and then updates the
-brief ledger and this file. Numbers are never copied from a doc — they move
-under you.
+hands /work the instruction with the standing product decisions, and then
+updates the brief ledger and this file. /work claims the RFC number live when
+its spec level needs one; numbers are never copied from a doc — they move under
+you. Product questions go to /chart.
 
-The long prompts below remain for context a spec cannot carry. Each /ship run
+The long prompts below remain for context a spec cannot carry. Each /work run
 claims its own worktree, so parallel runs are safe **within a wave**. YOU are
 the approval gate in each session.
 
@@ -6757,9 +6758,9 @@ has.
 ### Unicoach on the web (brief 0013) — START HERE
 
 Gates 1 and 2 closed 2026-09-14; twelve slices in `spec.md`. Start the first
-with the `slice` skill:
+with /slice:
 
-    start work on `web/01/the-shell`
+    /slice start work on `web/01/the-shell`
 
 Then, in wave order: `web/02/sign-in` and `web/03/the-typescript-rail` can run
 in parallel; `web/04/the-chat` and `web/05/session-form-state` next — **`web/04`
@@ -6918,7 +6919,7 @@ parent partner accounts are specced only after Beat 1 ships. It now has, so Beat
 It reads `share_events` (RFC 160) and reuses the report token as the claim
 credential.
 
-PASTE, to open that conversation: run /skill:chart on brief 0001 Beat 2 — parent
+PASTE, to open that conversation: run /chart on brief 0001 Beat 2 — parent
 partner accounts: claim-the-report onboarding, linked family, parent-side
 coaching seeded by the report. Beat 1 shipped complete on 2026-09-03; read the
 brief ledger and the RFC 155/160 entries in product/STATUS.md first, and note
