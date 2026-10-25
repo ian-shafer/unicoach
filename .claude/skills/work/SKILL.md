@@ -99,7 +99,10 @@ Record every phase boundary in the run record
    for spec 3–4 (claims the RFC number). Keep the printed `RUN_SCRATCH` (`<rs>`)
    and `CODEBASE_ROOT`. Record the dials with
    `$SHIP/ship-state -s <rs> set DIAL_SPEC <n>` (and `DIAL_SCRUTINY`,
-   `DIAL_APPROVAL`). Create `<rs>/record.md`.
+   `DIAL_APPROVAL`). Create `<rs>/record.md`. An instruction whose first line is
+   `Slice: <id>` was dispatched by /slice: also
+   `$SHIP/ship-state -s <rs> set SLICE <id>`, so `slice-board` lists the run as
+   IN FLIGHT for that slice instead of as unattributed.
 2. **Spec.** Level 0–1: nothing to write. Level 2: `<rs>/plan.md` with the four
    headings Tier 0 reads (`## Detailed Design`, `## Files Modified`,
    `## Implementation Plan`, `## Tests`), a few lines each. Level 3–4:
