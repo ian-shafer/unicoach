@@ -107,7 +107,10 @@ trap release_lock EXIT
 #
 # This runs BEFORE step 3a's rebase, and the order is load-bearing: the verified
 # tree is the PRE-REBASE tip's tree, and a replay does not preserve it.
-"$SCRIPT_DIR/ship-verified" assert "${DOC_ARGS[@]+"${DOC_ARGS[@]}"}"
+# -b lets a narrow-scope pass count (RFC 214's gates): only on a commit whose
+# parent is already on the base branch, which ship-squash's one commit on
+# BASE_SHA is. See ship-verified's header.
+"$SCRIPT_DIR/ship-verified" assert -b "$BASE_BRANCH" "${DOC_ARGS[@]+"${DOC_ARGS[@]}"}"
 
 # 3a. The docs-only fast path (RFC 193).
 #

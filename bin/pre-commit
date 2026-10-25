@@ -20,8 +20,9 @@ everything. bin/format -c runs on EVERY path -- it is the only Markdown gate in
 the repo.
 
 The chosen scope is logged to stderr by name, so two commits that ran different
-gates are distinguishable from the hook output alone. A commit that did not run
-the FULL gate records no ship-verified marker.
+gates are distinguishable from the hook output alone. Every passing commit
+records a ship-verified marker naming its scope; a narrow-scope marker counts
+at land only on top of the base branch.
 
 Options:
   -h: Help
@@ -259,23 +260,17 @@ fi
 # the commit sha, means an amend or a rebase that preserves content stays
 # verified while any content change does not. Inert for anything that does not
 # ask: the marker lives inside .git and nothing else reads it.
-# NOT recorded on ANY narrow scope -- only on `full` (RFC 194, widened by
-# RFC 214). The marker means "the full pre-commit gate passed on this tree";
-# recording it after skipping any part of the gate would put a lie in the one
-# file that stops unverified code landing, and a marker that can lie is worse
-# than no marker. The failure this accepts is the safe direction: a /ship run
-# whose branch TIP is a narrow-scope commit is refused at land, and one
-# re-commit fixes it. In practice a /ship run lands its code commit first and
-# its RFC Markdown second, and the second is already --no-verify.
-#
-# Keyed on scope=full, NOT on "did the test half run at all". A module-source
-# commit runs Gradle in full and one harness of nine; that is a real gate and a
-# useful one, and it is still not THE gate, so it records nothing.
+# Recorded on EVERY scope, with the scope named (RFC 214's narrow gates). A
+# narrow pass is a real verdict — the gate ran everything bin/gate-scope says
+# the diff can break — but a conditional one: green IF the parent was. So a
+# narrow marker carries the parent tree it was checked against, and ship-land
+# accepts it only when the commit's parent is that tree AND is already on the
+# base branch, where every commit passed the gate. A full marker means "the
+# whole gate passed on this tree" and carries no condition. ship-verified's
+# header has the format and the rules; this hook only reports what it ran.
 SHIP_VERIFIED="$PROJECT_ROOT/.prime/agent/skills/ship/scripts/ship-verified"
-if [ "$SCOPE" != "full" ]; then
-  log-info "scope [$SCOPE]: not recording a verified tree (the full gate did not run)."
-elif [ -x "$SHIP_VERIFIED" ]; then
-  "$SHIP_VERIFIED" record || log-info "warning: could not record verified tree (continuing)"
+if [ -x "$SHIP_VERIFIED" ]; then
+  "$SHIP_VERIFIED" record -s "$SCOPE" || log-info "warning: could not record verified tree (continuing)"
 fi
 
 log-info "Pre-commit checks passed."

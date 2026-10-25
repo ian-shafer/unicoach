@@ -54,7 +54,7 @@ STUBS = {
     "bin/shell-tests": "exit 0",
     "bin/gate-scope": 'echo "scope=full"; echo "gradle=${STUB_GRADLE:-yes}"; echo "harnesses=${STUB_HARNESSES:-}"',
     "hooks/pre-commit": f'[ "${{STUB_HOOK_EXIT:-0}}" = 0 ] || {{ echo "FAILED stub test"; exit 1; }}\n'
-                        f'"{REAL_SCRIPTS}/ship-verified" record',
+                        f'"{REAL_SCRIPTS}/ship-verified" record -s full',
 }
 
 

@@ -102,9 +102,13 @@ not name **fails the gate by name** rather than silently never running.
 
 That map is a correctness claim, not a config table, and it lives in ONE script
 with its own harness — never a second copy, because a wrong map that something
-downstream catches fails silently and a wrong map in the hook does not. **No
-commit that ran a narrow scope records a `ship-verified` marker**; only `full`
-does.
+downstream catches fails silently and a wrong map in the hook does not.
+
+**Every passing commit records a `ship-verified` marker naming its scope.** A
+narrow pass means "green if the parent was", so its marker carries the parent
+tree, and `ship-land` accepts it only on a commit whose parent is that tree and
+is already on `main`. That makes a `.prime/` script or `bin/` change land by the
+ordinary path, through the gate that change actually needs.
 
 **`infra/` is now ungated** (RFC 214). The `tofu fmt -check` / `validate` pair
 left `bin/scripts-tests` on an explicit decision — a commit gate should not
@@ -118,8 +122,8 @@ a build input at all** — no Gradle source set, resource, migration or script
 reads those files — so the test half cannot change its answer for such a commit,
 now or ever. It is an exemption from running the check, not from having passed
 it. `bin/format -c` still runs, because Markdown IS checked and that gate is the
-only thing that checks it. And because the full gate did not run, such a commit
-records no `ship-verified` marker.
+only thing that checks it. Its marker records the narrow scope it ran, like any
+other narrow commit.
 
 **Nothing is developed on `main`, and nothing is committed in the root
 checkout** (RFC 201). `bin/pre-commit` refuses both, before it starts any gate,

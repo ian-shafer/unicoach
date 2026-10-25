@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ship-scripts-tests — shell assertions over the /ship scripts: ship-lock
 # (RFC 167), ship-land's refusal of a foreign lock holder, ship-order (RFC 180
-# D6), ship-lens (RFC 234), ship-run (RFC 235, RFC 236), and the ship_driver
+# D6), ship-lens (RFC 234), ship-run (RFC 235, RFC 236), ship-verified's
+# narrow-scope markers, and the ship_driver
 # package's unit tests (RFC 256). One
 # harness, one temp-dir style; the sections below are banner-separated and each
 # names its own subject.
@@ -29,8 +30,8 @@ help() {
 ship-scripts-tests [options]
 
 Runs the shell assertions over .prime/agent/skills/ship/scripts/ship-lock (and
-ship-land's refusal of a foreign lock holder), ship-order, ship-lens and
-ship-run, then the ship_driver package's unit tests. Needs no database, no daemon and no worktree: each
+ship-land's refusal of a foreign lock holder), ship-order, ship-lens,
+ship-run and ship-verified, then the ship_driver package's unit tests. Needs no database, no daemon and no worktree: each
 assertion runs against a throwaway git repo, run scratch and lens corpus under
 a temp dir.
 
@@ -429,6 +430,13 @@ fast_path_fixture() {
 fast_path_verify_and_state() {
   local run_id="$1"
   git -C "$FP_WT" rev-parse 'HEAD^{tree}' >> "$FP_REPO/.git/ship-verified-trees"
+  fast_path_state "$run_id"
+}
+
+# fast_path_state — writes the run scratch alone, for a case whose marker comes
+# from the real `ship-verified record` rather than being appended by hand.
+fast_path_state() {
+  local run_id="$1"
   mkdir -p "$FP_RS"
   {
     echo "RUN_ID=$run_id"
@@ -3298,6 +3306,100 @@ grep -q "ship-run -s <run-scratch>" "$RUN_OUT" ||
   fail_test "-h did not print the usage line on stdout; said [$(cat "$RUN_OUT")]"
 [ ! -s "$RUN_ERR" ] || fail_test "-h wrote to stderr: [$(cat "$RUN_ERR")]"
 pass_test "-h prints help on stdout, nothing on stderr, and exits 0"
+
+# ── ship-verified: narrow-scope markers ─────────────────────────────────────
+
+echo ""
+echo "==== ship-verified: narrow-scope markers land on top of the base branch ===="
+
+# A narrow gate (RFC 214) proves "green IF the parent was". The marker carries
+# the parent tree, and assert -b accepts it only when the commit's parent IS
+# that tree and is already on the base branch. These cases drive the real
+# `record` against a real staged index, then the real assert and ship-land.
+SHIP_VERIFIED="$SHIP_SCRIPTS/ship-verified"
+sv_err="$FIXTURE_DIR/ship-verified.err"
+sv_status=0
+run_sv() { # run_sv <worktree> <ship-verified args...>
+  local wt="$1"
+  shift
+  sv_status=0
+  (cd "$wt" && "$SHIP_VERIFIED" "$@") > /dev/null 2> "$sv_err" || sv_status=$?
+}
+sv_markers() { cat "$FP_REPO/.git/ship-verified-trees" 2> /dev/null || true; }
+# sv_stage <file> — stage one new script in the run's worktree.
+sv_stage() {
+  echo "echo $1" > "$FP_WT/src/$1"
+  git -C "$FP_WT" add -A
+}
+
+# V1. -s is required: a caller that forgot to say must not be recorded as full.
+fast_path_fixture sv-noscope
+sv_stage a.sh
+run_sv "$FP_WT" record
+[ "$sv_status" -ne 0 ] || fail_test "record with no -s succeeded"
+[ -z "$(sv_markers)" ] || fail_test "record with no -s wrote a marker: [$(sv_markers)]"
+pass_test "record refuses without -s and writes nothing"
+
+# V2. The case this exists for: a narrow pass on one commit atop main.
+fast_path_fixture sv-narrow
+sv_stage b.sh
+run_sv "$FP_WT" record -s prime
+[ "$sv_status" -eq 0 ] || fail_test "record -s prime failed: $(cat "$sv_err")"
+git -C "$FP_WT" commit -q -m "feat: a narrow-scope change"
+expected="$(git -C "$FP_WT" rev-parse 'HEAD^{tree}') prime $(git -C "$FP_WT" rev-parse 'HEAD^^{tree}')"
+sv_markers | grep -qxF "$expected" ||
+  fail_test "the narrow marker is not <tree> <scope> <parent-tree>: [$(sv_markers)], wanted [$expected]"
+run_sv "$FP_WT" assert -b main
+[ "$sv_status" -eq 0 ] || fail_test "assert -b main refused a narrow pass atop main: $(cat "$sv_err")"
+run_sv "$FP_WT" assert
+[ "$sv_status" -ne 0 ] || fail_test "assert WITHOUT -b accepted a narrow marker"
+pass_test "a narrow marker atop main passes assert -b, and only with -b"
+
+# V3. ship-land lands it by the ordinary path.
+fast_path_state sv-narrow
+run_ship_land
+[ "$fp_status" -eq 0 ] || fail_test "ship-land refused a narrow-scope commit atop main: $(cat "$fp_err")"
+git -C "$FP_REPO" log --oneline main | grep -q "a narrow-scope change" ||
+  fail_test "ship-land exited 0 but main does not carry the narrow-scope commit"
+pass_test "ship-land lands a narrow-scope commit atop main"
+
+# V4. The hole a narrow marker must not open: an unverified checkpoint under it.
+# The narrow gate only looked at the last diff, so the checkpoint's content
+# never passed anything.
+fast_path_fixture sv-checkpoint
+sv_stage unverified.sh
+git -C "$FP_WT" commit -q --no-verify -m "wip: a checkpoint that ran no gate"
+sv_stage c.sh
+run_sv "$FP_WT" record -s prime
+git -C "$FP_WT" commit -q -m "feat: narrow pass on top of the checkpoint"
+run_sv "$FP_WT" assert -b main
+[ "$sv_status" -ne 0 ] ||
+  fail_test "assert -b main accepted a narrow marker whose parent is an unverified checkpoint"
+pass_test "a narrow marker over an unverified checkpoint is refused"
+
+# V5. --amend: the hook classified against HEAD, the commit gets HEAD^, so the
+# marker's parent is not the commit's parent.
+fast_path_fixture sv-amend
+sv_stage d.sh
+git -C "$FP_WT" commit -q --no-verify -m "wip"
+sv_stage e.sh
+run_sv "$FP_WT" record -s prime
+git -C "$FP_WT" commit -q --amend -m "feat: amended"
+[ "$(git -C "$FP_WT" rev-parse HEAD^)" = "$FP_BASE" ] || fail_test "fixture: the amend is not directly on main"
+run_sv "$FP_WT" assert -b main
+[ "$sv_status" -ne 0 ] || fail_test "assert -b main accepted a narrow marker recorded against the pre-amend parent"
+pass_test "a narrow marker recorded before an --amend is refused"
+
+# V6. A full marker needs no -b and no parent: unchanged behaviour.
+fast_path_fixture sv-full
+sv_stage f.sh
+run_sv "$FP_WT" record -s full
+git -C "$FP_WT" commit -q --no-verify -m "feat: a full-gate commit"
+[ "$(sv_markers)" = "$(git -C "$FP_WT" rev-parse 'HEAD^{tree}')" ] ||
+  fail_test "a full marker is not the bare tree: [$(sv_markers)]"
+run_sv "$FP_WT" assert
+[ "$sv_status" -eq 0 ] || fail_test "assert refused a full marker: $(cat "$sv_err")"
+pass_test "a full marker is the bare tree and passes assert without -b"
 
 # ── ship_driver: the /ship driver's own unit tests (RFC 256) ────────────────
 

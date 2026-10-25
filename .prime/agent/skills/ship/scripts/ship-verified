@@ -15,6 +15,25 @@
 # The file lives in the COMMON git dir, so every worktree shares one log, and
 # inside .git so it is never committed.
 #
+# FULL AND NARROW MARKERS. bin/gate-scope runs only the harnesses a diff can
+# break (RFC 214), so most commits outside Gradle code run a NARROW gate. A
+# narrow pass proves something different from a full one: not "this tree is
+# green", but "this tree is green IF its parent was" — the gate ran exactly what
+# the parent-to-tree diff can break. So the two are written differently:
+#
+#   <tree>                         full gate passed on <tree>
+#   <tree> <scope> <parent-tree>   <scope> gate passed on the diff
+#                                  <parent-tree> -> <tree>
+#
+# `check` and the walk in `assert` accept a bare line on its own. They accept a
+# narrow line only when the commit carrying <tree> has a parent whose tree IS
+# <parent-tree> and that parent is already on the base branch (`assert -b`).
+# The base branch is the one line of history every commit on which passed the
+# gate, so "green if the parent was" becomes "green". A narrow marker whose
+# parent is a --no-verify checkpoint, or that was recorded on an --amend (the
+# hook sees HEAD, the commit gets HEAD^), matches nothing and is refused: the
+# safe direction. Without -b, assert accepts full markers only.
+#
 # THE DOC EXCEPTION. rfc-pipeline commits the code first through the hook, then
 # the RFC markdown with --no-verify. So the tip's tree is legitimately NOT the
 # verified tree. `assert` therefore walks back to the nearest verified ancestor
@@ -25,10 +44,15 @@ fatal() { echo "[FATAL] $*" >&2; exit 1; }
 
 help() {
   cat << 'EOF'
-ship-verified record             record HEAD's staged tree (called by bin/pre-commit)
-ship-verified check <tree-sha>   exit 0 if that tree was validated
-ship-verified assert [-n depth] [-d doc-glob]...
+ship-verified record -s <scope>  record the staged tree (called by bin/pre-commit);
+                                 <scope> is bin/gate-scope's scope= answer
+ship-verified check <tree-sha>   exit 0 if that tree passed the FULL gate
+ship-verified assert [-n depth] [-d doc-glob]... [-b base-ref]
                                  assert HEAD is verified, modulo doc-only commits
+
+  -b   accept a narrow-scope marker on a commit whose parent is on <base-ref>
+       and is the tree the narrow gate ran against. Without it, only full
+       markers count.
 
 Default doc globs: rfc/*.md *.md
 EOF
@@ -44,6 +68,19 @@ marker_file() {
 cmd="${1:-}"; shift || true
 case "$cmd" in
   record)
+    SCOPE=""
+    while getopts ":s:h" opt; do
+      case "$opt" in
+        s) SCOPE="$OPTARG" ;;
+        h) help 0 ;;
+        \?) fatal "unknown option [-$OPTARG]" ;;
+        :) fatal "option [-$OPTARG] requires an argument" ;;
+      esac
+    done
+    # Required, never defaulted: a caller that forgot to say would otherwise be
+    # recorded as having run the full gate.
+    [ -n "$SCOPE" ] || fatal "record requires -s <scope>"
+    [[ "$SCOPE" =~ ^[a-z0-9-]+$ ]] || fatal "scope [$SCOPE] is not a gate-scope name"
     # The hook validates the WORKING TREE; the commit is built from the INDEX.
     # Normally identical. If not, we tested something other than what is being
     # committed, so record nothing and say so.
@@ -53,19 +90,32 @@ case "$cmd" in
     fi
     tree="$(git write-tree)"
     mf="$(marker_file)"
-    grep -qx "$tree" "$mf" 2>/dev/null || echo "$tree" >> "$mf"
-    echo "recorded verified tree $tree" >&2
+    if [ "$SCOPE" = "full" ]; then
+      line="$tree"
+    else
+      # gate-scope classified the index against HEAD, so HEAD's tree is the
+      # parent this narrow pass is conditional on. No HEAD (a root commit) has
+      # no parent to be conditional on: record nothing.
+      parent_tree="$(git rev-parse --verify -q 'HEAD^{tree}')" || {
+        echo "[warn] no HEAD to record a $SCOPE-scope pass against — not recording" >&2
+        exit 0
+      }
+      line="$tree $SCOPE $parent_tree"
+    fi
+    grep -qxF "$line" "$mf" 2>/dev/null || echo "$line" >> "$mf"
+    echo "recorded verified tree $tree (scope $SCOPE)" >&2
     ;;
   check)
     tree="${1:-}"; [ -n "$tree" ] || fatal "check requires a tree sha"
     grep -qx "$tree" "$(marker_file)" 2>/dev/null
     ;;
   assert)
-    DEPTH=10; DOC_GLOBS=()
-    while getopts ":n:d:h" opt; do
+    DEPTH=10; DOC_GLOBS=(); BASE_REF=""
+    while getopts ":n:d:b:h" opt; do
       case "$opt" in
         n) DEPTH="$OPTARG" ;;
         d) DOC_GLOBS+=("$OPTARG") ;;
+        b) BASE_REF="$OPTARG" ;;
         h) help 0 ;;
         \?) fatal "unknown option [-$OPTARG]" ;;
         :) fatal "option [-$OPTARG] requires an argument" ;;
@@ -74,15 +124,35 @@ case "$cmd" in
     [ "${#DOC_GLOBS[@]}" -gt 0 ] || DOC_GLOBS=('rfc/*.md' '*.md')
     mf="$(marker_file)"
     [ -s "$mf" ] || fatal "no verified trees recorded — has bin/pre-commit ever passed here?"
+    if [ -n "$BASE_REF" ]; then
+      git rev-parse --verify -q "$BASE_REF^{commit}" > /dev/null || fatal "base ref [$BASE_REF] does not resolve"
+    fi
+
+    # verified_how <rev> — print how <rev>'s tree passed the hook (`full`, or the
+    # narrow scope name), or nothing when it did not.
+    verified_how() {
+      local rev="$1" tree parent_tree scope
+      tree="$(git rev-parse "${rev}^{tree}")"
+      if grep -qx "$tree" "$mf" 2>/dev/null; then
+        echo full
+        return
+      fi
+      [ -n "$BASE_REF" ] || return 0
+      parent_tree="$(git rev-parse --verify -q "${rev}^^{tree}")" || return 0
+      git merge-base --is-ancestor "${rev}^" "$BASE_REF" 2>/dev/null || return 0
+      scope="$(awk -v t="$tree" -v p="$parent_tree" '$1 == t && NF == 3 && $3 == p { print $2; exit }' "$mf")"
+      [ -z "$scope" ] || echo "$scope"
+    }
 
     i=0
     while [ "$i" -le "$DEPTH" ]; do
       rev="HEAD~$i"
       git rev-parse --verify "$rev" >/dev/null 2>&1 || break
       tree="$(git rev-parse "${rev}^{tree}")"
-      if grep -qx "$tree" "$mf" 2>/dev/null; then
+      how="$(verified_how "$rev")"
+      if [ -n "$how" ]; then
         if [ "$i" -eq 0 ]; then
-          echo "verified: HEAD tree $tree passed the hook"
+          echo "verified: HEAD tree $tree passed the hook (scope $how)"
           exit 0
         fi
         bad=0
@@ -97,7 +167,7 @@ case "$cmd" in
         done < <(git diff --name-only "$rev" HEAD)
         [ "$bad" -eq 0 ] ||
           fatal "$bad non-doc path(s) added after the last verified tree — re-commit through the hook"
-        echo "verified: HEAD~$i tree $tree passed the hook; only doc paths added since"
+        echo "verified: HEAD~$i tree $tree passed the hook (scope $how); only doc paths added since"
         exit 0
       fi
       i=$((i + 1))
