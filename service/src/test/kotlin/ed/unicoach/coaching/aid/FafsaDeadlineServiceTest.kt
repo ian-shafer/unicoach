@@ -546,14 +546,14 @@ class FafsaDeadlineServiceTest {
    * The fault is injected at the STATEMENT, which is the only fault production
    * can actually produce here and the one that reaches the `getOrThrow()` on
    * the DAO's `Result.failure`: a clock that throws would never reach a
-   * statement at all. [withDeadlineTableHidden] owns the rename, its inverse
-   * and the two preconditions they depend on.
+   * statement at all. [CoachingTestDb.withTableHidden] owns the rename, its
+   * inverse and the two preconditions they depend on.
    */
   @Test
   fun `a failed statement is a Result failure`() =
     runTest {
       val service = serviceAt(AFTER_OCTOBER_2026)
-      withDeadlineTableHidden {
+      CoachingTestDb.withTableHidden("fafsa_filing_deadlines") {
         val result = service.get(ZONE)
 
         assertTrue(result.isFailure, "a read that could not run must be a Result.failure, not a throw")
@@ -568,72 +568,6 @@ class FafsaDeadlineServiceTest {
         assertTrue(chain.any { it is SQLException }, "the driver's own fault is carried, not swallowed: [$chain]")
       }
     }
-
-  /**
-   * Runs [block] with the deadline table renamed out from under the read, and
-   * puts it back whatever [block] does. THE ONE HOME for this suite's only DDL,
-   * so the rename and its inverse cannot be paired wrongly.
-   *
-   * IT ASSERTS BOTH PRECONDITIONS IT RESTS ON, because the rename is DDL
-   * against the SHARED test database:
-   *
-   * - the table is there to hide. The `finally` covers a failing assertion, but
-   *   not a JVM-level failure between the two renames -- and that would leave
-   *   every LATER suite in the run reading a table that is not there, for a
-   *   reason none of them mentions. Asserted here, a leak reports itself by
-   *   name, in the case that leaked it.
-   * - the connection is in AUTOCOMMIT. The rename runs on the shared
-   *   connection while `get` takes its own from the pool: inside an open
-   *   transaction the rename would hold its ACCESS EXCLUSIVE lock and the read
-   *   would BLOCK rather than fail -- a hang, not an assertion failure.
-   *
-   * Nothing runs beside it either (no `org.gradle.parallel`, no
-   * `maxParallelForks`, and no JUnit parallel execution, so one test JVM runs
-   * one test at a time) -- but that is a build setting no assertion here can
-   * see, which is why these two are asserted and that one is stated.
-   */
-  private inline fun <T> withDeadlineTableHidden(block: () -> T): T {
-    assertTrue(
-      CoachingTestDb.connection.autoCommit,
-      "the rename must commit before the read, or the read blocks on its ACCESS EXCLUSIVE lock",
-    )
-    assertTrue(
-      tableExists(TABLE),
-      "[$TABLE] is missing before this case runs -- an earlier run leaked the rename to [$HIDDEN_TABLE]",
-    )
-    renameDeadlineTable(TABLE, HIDDEN_TABLE)
-    // The restore is guarded, because an unguarded throw from it REPLACES the
-    // failure `block()` threw -- the assertion that actually diagnosed the bug,
-    // lost to the cleanup of the very situation this helper exists to survive.
-    // The primary failure still propagates; the restore fault rides with it.
-    var failure: Throwable? = null
-    try {
-      return block()
-    } catch (e: Throwable) {
-      failure = e
-      throw e
-    } finally {
-      try {
-        renameDeadlineTable(HIDDEN_TABLE, TABLE)
-      } catch (restoreFailure: Throwable) {
-        if (failure == null) throw restoreFailure
-        failure.addSuppressed(restoreFailure)
-      }
-    }
-  }
-
-  /** Whether [table] is a table this connection can see -- the precondition [withDeadlineTableHidden] asserts. */
-  private fun tableExists(table: String): Boolean =
-    CoachingTestDb.connection.prepareStatement("SELECT to_regclass(?::text) IS NOT NULL").use { stmt ->
-      stmt.setString(1, table)
-      stmt.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
-    }
-
-  /** The rename itself, one way; [withDeadlineTableHidden] is the only caller and owns the inverse. */
-  private fun renameDeadlineTable(
-    from: String,
-    to: String,
-  ) = CoachingTestDb.connection.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.executeUpdate() }
 
   /**
    * The service with today pinned -- an INSTANT with no zone on it, because the
@@ -726,11 +660,6 @@ class FafsaDeadlineServiceTest {
 
     /** The four jurisdictions the harvest could not verify (D9), and therefore the four this service names. */
     val ABSENT = setOf("AR", "DE", "NC", "NH")
-
-    /** The deadline table, and the name it wears while the fault case has it renamed out from under the read. */
-    const val TABLE = "fafsa_filing_deadlines"
-
-    const val HIDDEN_TABLE = "fafsa_filing_deadlines_hidden"
 
     /**
      * Noon UTC on [day] -- mid-day, so no US zone is on a different date than

@@ -84,6 +84,91 @@ object CoachingTestDb {
     }
   }
 
+  /**
+   * Runs [block] with [table] renamed to `<table>_hidden`, so every read of it
+   * fails, and renames it back whatever [block] does. The one home for the
+   * fault injection a "failed read" case needs, so the rename and its inverse
+   * cannot be paired wrongly.
+   *
+   * It checks both preconditions it rests on, because the rename is DDL
+   * against the SHARED test database:
+   *
+   * - the table is there to hide. The `finally` covers a failing assertion, but
+   *   not a JVM-level failure between the two renames -- and that would leave
+   *   every LATER suite in the run reading a table that is not there, for a
+   *   reason none of them mentions. Checked here, a leak reports itself by
+   *   name, in the case that leaked it.
+   * - the connection is in AUTOCOMMIT. The rename runs on [connection] while
+   *   the code under test takes its own from the pool: inside an open
+   *   transaction the rename would hold its ACCESS EXCLUSIVE lock and the read
+   *   would BLOCK rather than fail -- a hang, not an assertion failure.
+   *
+   * Nothing runs beside it either (no `org.gradle.parallel`, no
+   * `maxParallelForks`, and no JUnit parallel execution, so one test JVM runs
+   * one test at a time) -- but that is a build setting no check here can see,
+   * which is why these two are checked and that one is stated.
+   *
+   * The restore is guarded, because an unguarded throw from it REPLACES the
+   * failure [block] threw -- the assertion that actually diagnosed the bug,
+   * lost to the cleanup. The primary failure still propagates; the restore
+   * fault rides with it as a suppressed exception.
+   */
+  inline fun <T> withTableHidden(
+    table: String,
+    block: () -> T,
+  ): T {
+    val hidden = "${table}_hidden"
+    check(connection.autoCommit) {
+      "the rename must commit before the read, or the read blocks on its ACCESS EXCLUSIVE lock"
+    }
+    check(tableExists(table)) {
+      "[$table] is missing before this case runs -- an earlier run leaked the rename to [$hidden]"
+    }
+    renameTable(table, hidden)
+    var failure: Throwable? = null
+    try {
+      return block()
+    } catch (e: Throwable) {
+      failure = e
+      throw e
+    } finally {
+      try {
+        renameTable(hidden, table)
+      } catch (restoreFailure: Throwable) {
+        if (failure == null) throw restoreFailure
+        failure.addSuppressed(restoreFailure)
+      }
+    }
+  }
+
+  @PublishedApi
+  internal fun tableExists(table: String): Boolean =
+    connection.prepareStatement("SELECT to_regclass(?::text) IS NOT NULL").use { stmt ->
+      stmt.setString(1, table)
+      stmt.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
+    }
+
+  /** The rename itself, one way; [withTableHidden] is the only caller and owns the inverse. */
+  @PublishedApi
+  internal fun renameTable(
+    from: String,
+    to: String,
+  ) = connection.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.executeUpdate() }
+
+  /** The body of the coach prompt row [config] pins, from the migration-seeded catalog. */
+  fun pinnedPromptBody(config: CoachingConfig): String =
+    connection.prepareStatement("SELECT body FROM system_prompts WHERE name = ? AND version = ?").use { stmt ->
+      stmt.setString(1, config.systemPromptName)
+      stmt.setString(2, config.systemPromptVersion)
+      stmt.executeQuery().use { rs ->
+        check(rs.next()) {
+          "the pinned coach prompt row [${config.systemPromptName}/${config.systemPromptVersion}] " +
+            "must exist in the migration-seeded catalog"
+        }
+        rs.getString("body")
+      }
+    }
+
   /** A student and the user row it hangs off; [label] only distinguishes the seeded email. */
   fun createStudent(label: String): StudentId {
     val userId = UUID.randomUUID()

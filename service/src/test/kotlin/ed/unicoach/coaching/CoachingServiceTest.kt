@@ -10,6 +10,7 @@ import ed.unicoach.chat.LogOnlyChatProvider
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.exhaustedBudgetService
 import ed.unicoach.coaching.budget.generousBudgetService
+import ed.unicoach.coaching.collegelist.CollegeListBlock
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -125,10 +126,9 @@ class CoachingServiceTest {
   /**
    * The body of the coach prompt the runtime will actually resolve — the row
    * `service.conf` pins, read from the migration-seeded catalog rather than
-   * hard-coded (RFC 129), so a version bump costs no edit here. Lazy: the
-   * connection is only open once [setupAll] has run.
+   * hard-coded (RFC 129), so a version bump costs no edit here.
    */
-  private val pinnedCoachBody: String by lazy { coachPromptBody() }
+  private val pinnedCoachBody: String by lazy { CoachingTestDb.pinnedPromptBody(config) }
 
   private val sqlSession =
     object : SqlSession {
@@ -178,21 +178,36 @@ class CoachingServiceTest {
   }
 
   /**
+   * [below] -- the system text under the body -- with the college-list block
+   * (RFC 257) cut off its end, asserting that block is the empty-list line.
+   * Every student this file composes for has no list, and the block rides last,
+   * so what remains is everything a list-less student is told above it.
+   */
+  private fun withoutEmptyCollegeList(below: String): String {
+    val suffix = "\n\n" + CollegeListBlock.EMPTY_LINE
+    assertTrue(
+      below.endsWith(suffix),
+      "the college-list block rides last on every turn, and this student's list is empty (RFC 257): [$below]",
+    )
+    return below.removeSuffix(suffix)
+  }
+
+  /**
    * What `assertEquals(pinnedCoachBody, system)` used to say. RFC 186 replaced
    * the verbatim-body property with this one: the body is still there in full,
-   * and the ONLY thing below it is the date block -- no commitments, no fit
-   * suggestion, no money profile.
+   * and the ONLY things below it are the date block and the empty college-list
+   * line (RFC 257) -- no commitments, no fit suggestion, no money profile.
    */
-  private fun assertBodyThenDateBlockOnly(system: String?) {
+  private fun assertBodyThenDateBlockAndEmptyListOnly(system: String?) {
     // The WHOLE remainder, not a probe for the blocks that happen to exist
-    // today: a fourth block added to composeSystem would otherwise ride into
+    // today: a further block added to composeSystem would otherwise ride into
     // every one of these tests while their names still said nothing else was
     // there.
-    val below = systemTextBelowBody(system).trim().lines()
+    val below = withoutEmptyCollegeList(systemTextBelowBody(system)).trim().lines()
     assertEquals(
       2,
       below.size,
-      "below the body there must be the date block and NOTHING else, but this was composed in: $below",
+      "below the body there must be the date block, the empty list and NOTHING else, but this was composed in: $below",
     )
     assertTrue(below[0].startsWith("Today's date is "), "the date block rides every system text (RFC 186): [${below[0]}]")
     assertTrue(
@@ -752,19 +767,6 @@ class CoachingServiceTest {
       }
   }
 
-  /** The body of that same row. Backs [pinnedCoachBody]. */
-  private fun coachPromptBody(): String {
-    connection
-      .prepareStatement(
-        "SELECT body FROM system_prompts WHERE name='${config.systemPromptName}' AND version='${config.systemPromptVersion}'",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getString("body")
-        }
-      }
-  }
-
   @Test
   fun `startConvo derives the name and uses explicit name verbatim`() {
     runBlocking {
@@ -823,7 +825,7 @@ class CoachingServiceTest {
       assertEquals(ChatRole.ASSISTANT, req.messages[1].role)
       assertEquals(ChatRole.USER, req.messages[2].role)
       assertEquals("second", messageText(req.messages[2]))
-      assertBodyThenDateBlockOnly(req.system)
+      assertBodyThenDateBlockAndEmptyListOnly(req.system)
       assertEquals(config.maxTokens, req.maxTokens)
     }
 
@@ -1289,7 +1291,7 @@ class CoachingServiceTest {
       drain(started.reply)
 
       // Internal commitment is neither in the prompt nor marked fulfilled.
-      assertBodyThenDateBlockOnly(captured!!.system)
+      assertBodyThenDateBlockAndEmptyListOnly(captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(internalId))
     }
 
@@ -1309,7 +1311,7 @@ class CoachingServiceTest {
       val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
       drain(post.reply)
 
-      assertBodyThenDateBlockOnly(captured!!.system)
+      assertBodyThenDateBlockAndEmptyListOnly(captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
     }
 
@@ -1325,7 +1327,7 @@ class CoachingServiceTest {
       val started = noSurfaceService(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
       drain(started.reply)
 
-      assertBodyThenDateBlockOnly(captured!!.system)
+      assertBodyThenDateBlockAndEmptyListOnly(captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
     }
 
@@ -1412,7 +1414,7 @@ class CoachingServiceTest {
       val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
       drain(post.reply)
 
-      assertBodyThenDateBlockOnly(captured!!.system)
+      assertBodyThenDateBlockAndEmptyListOnly(captured!!.system)
       assertEquals(FitSuggestionStatus.OPEN, fitSuggestionStatus(suggestionId))
     }
 
@@ -2215,7 +2217,7 @@ class CoachingServiceTest {
     }
 
   @Test
-  fun `a student without a money profile gets the prompt body and the date block, and nothing else`() =
+  fun `a student without a money profile gets the prompt body, the date block and the empty list, and nothing else`() =
     runBlocking {
       val student = createStudent()
       var captured: ChatRequest? = null
@@ -2223,7 +2225,7 @@ class CoachingServiceTest {
         ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
       val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
       assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
-      assertBodyThenDateBlockOnly(captured!!.system)
+      assertBodyThenDateBlockAndEmptyListOnly(captured!!.system)
     }
 
   /**
@@ -2300,7 +2302,7 @@ class CoachingServiceTest {
         ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
       val started = serviceAt(instant, provider).startConvo(student, opener, null).getOrThrow() as StartConvoResult.Started
       assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
-      systemTextBelowBody(captured?.system)
+      withoutEmptyCollegeList(systemTextBelowBody(captured?.system))
     }
 
   /**

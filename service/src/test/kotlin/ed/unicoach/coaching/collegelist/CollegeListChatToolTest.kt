@@ -56,6 +56,18 @@ class CollegeListChatToolTest {
   private fun activeEntries(student: StudentId) = CollegeListEntriesDao.listActiveByStudent(CostsTestDb.sqlSession, student).getOrThrow()
 
   @Test
+  fun `neither the echo-failed nor the conflict error tells the coach to read a list it cannot read`() {
+    // RFC 257 D5: there is no list-read tool. The block on the next turn is the
+    // read, and a conflict is fixed by calling this tool again.
+    val readVerb = Regex("""\bread\b""")
+    for (reason in listOf(CollegeListChatTool.ECHO_FAILED_REASON, CollegeListChatTool.CONFLICT_REASON)) {
+      assertFalse(readVerb.containsMatchIn(reason), "[$reason] points at a read that does not exist")
+    }
+    assertTrue(CollegeListChatTool.ECHO_FAILED_REASON.contains("the change is saved"), "the coach must know the write held")
+    assertTrue(CollegeListChatTool.CONFLICT_REASON.contains("call the tool again"), "a plain retry is the fix")
+  }
+
+  @Test
   fun `the definition carries the name, the enums, and the legend`() {
     assertEquals("update_college_list", tool.name)
     assertEquals("update_college_list", tool.definition["name"]!!.jsonPrimitive.content)
@@ -65,10 +77,7 @@ class CollegeListChatToolTest {
     // prompt, and asserted there against the SERVED body.
     val description = tool.definition["description"]!!.jsonPrimitive.content
     assertTrue(description.contains("Maintain the student's college list"), "the legend says what the tool does")
-    assertTrue(
-      description.contains("Keyed by college_id exactly as a college lookup, search or cost result gives it"),
-      "the legend says where the id comes from",
-    )
+    assertTrue(description.contains("Keyed by college_id."), "the legend says which id the tool is keyed by")
     assertTrue(
       description.contains("Every input field is described in the schema below"),
       "the legend points at the per-parameter descriptions rather than restating them",
@@ -82,6 +91,12 @@ class CollegeListChatToolTest {
       tool.definition["input_schema"]!!
         .jsonObject["properties"]!!
         .jsonObject
+    assertTrue(
+      properties["college_id"]!!.jsonObject["description"]!!.jsonPrimitive.content.contains(
+        "a college lookup, search or cost result, or of the college list in your system text",
+      ),
+      "the schema, the one home for it, says where the id comes from",
+    )
     assertEquals(
       listOf("add", "update", "remove"),
       properties["action"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content },

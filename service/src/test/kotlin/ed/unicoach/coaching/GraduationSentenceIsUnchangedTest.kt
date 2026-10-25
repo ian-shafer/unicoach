@@ -7,6 +7,7 @@ import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.generousBudgetService
+import ed.unicoach.coaching.collegelist.CollegeListBlock
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.PartialDate
@@ -129,9 +130,12 @@ class GraduationSentenceIsUnchangedTest {
       val started = service.startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
       started.reply.toList()
       val system = assertNotNull(captured?.system, "the provider must have been given a system text")
-      val body = coachPromptBody()
+      val body = CoachingTestDb.pinnedPromptBody(config)
       assertTrue(system.startsWith(body), "the pinned prompt body must still open the system text, in full and verbatim")
-      system.removePrefix(body)
+      // The college-list block rides last (RFC 257); this student has no list.
+      val listSuffix = "\n\n" + CollegeListBlock.EMPTY_LINE
+      assertTrue(system.endsWith(listSuffix), "the empty college-list line must close the system text: [$system]")
+      system.removePrefix(body).removeSuffix(listSuffix)
     }
 
   private val config =
@@ -141,19 +145,6 @@ class GraduationSentenceIsUnchangedTest {
           .load("service.conf")
           .getOrThrow(),
       ).getOrThrow()
-
-  private fun coachPromptBody(): String =
-    CoachingTestDb.connection
-      .prepareStatement(
-        "SELECT body FROM system_prompts WHERE name = ? AND version = ?",
-      ).use { stmt ->
-        stmt.setString(1, config.systemPromptName)
-        stmt.setString(2, config.systemPromptVersion)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "the pinned coach prompt row must exist in the migration-seeded catalog")
-          rs.getString("body")
-        }
-      }
 
   private fun createStudent(graduation: PartialDate): StudentId {
     val userId = java.util.UUID.randomUUID()

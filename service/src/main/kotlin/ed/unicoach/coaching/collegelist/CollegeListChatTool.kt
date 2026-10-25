@@ -60,8 +60,8 @@ class CollegeListChatTool(
         put("type", "string")
         put(
           "description",
-          "The college's identifier: the `college_id` field of a college search result or a college cost " +
-            "result, copied verbatim. Never construct or guess one.",
+          "The college's identifier: the `college_id` field of a college lookup, search or cost result, " +
+            "or of the college list in your system text, copied verbatim. Never construct or guess one.",
         )
       }
       putJsonObject("status") {
@@ -549,8 +549,8 @@ class CollegeListChatTool(
     // prompt, stated once.
     const val DESCRIPTION =
       "Maintain the student's college list - the schools they are considering, applying to, " +
-        "admitted to, or rejected from. Keyed by college_id exactly as a college lookup, search or cost " +
-        "result gives it. Every input field is described in the schema below. living_plan is this " +
+        "admitted to, or rejected from. Keyed by college_id. Every input field is described in " +
+        "the schema below. living_plan is this " +
         "school's OWN plan and wins over the student's usual plan; living_plan_clear drops it and goes " +
         "back to that usual plan, which ${MoneyProfileChatTool.TOOL_NAME} records. The result echoes the " +
         "full list after the write."
@@ -558,8 +558,9 @@ class CollegeListChatTool(
     private const val NOT_ON_LIST_REASON = "that school is not on the list; use action [add] to add it"
     private const val WRITE_FAILED_REASON = "college list write failed"
     private const val READ_FAILED_REASON = "college list read failed"
-    private const val ECHO_FAILED_REASON = "the write succeeded, but reading the list back failed; read the list again"
-    private const val CONFLICT_REASON = "the list changed underneath this call; read it again and retry"
+    internal const val ECHO_FAILED_REASON =
+      "the write succeeded, but reading the list back failed; the change is saved and the next turn's college list will show it"
+    internal const val CONFLICT_REASON = "the list changed underneath this call; call the tool again"
 
     // Mirrors the `college_list_entries_reasons_length_check` /
     // `_not_empty_check` DB CHECKs (db/schema/0024): non-empty, at most

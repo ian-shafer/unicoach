@@ -9,6 +9,9 @@ import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.ToolRegistry
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
+import ed.unicoach.coaching.collegelist.CollegeListBlock
+import ed.unicoach.coaching.collegelist.EntryWithCollegeName
+import ed.unicoach.coaching.collegelist.readActiveListInSession
 import ed.unicoach.coaching.testing.TestScoreCopy
 import ed.unicoach.coaching.testing.TestScores
 import ed.unicoach.coaching.testing.readTestScoresInSession
@@ -292,12 +295,13 @@ class CoachingService(
           val pendingFits = openFitSuggestions(session, studentId)
           val moneyProfile = activeMoneyProfile(session, studentId)
           val testScores = activeTestScores(session, studentId)
+          val collegeList = readActiveListInSession(session, studentId)
           val graduation = graduationDate(session, studentId)
           PreFlight.Ready(
             Prepared(
               convo,
               prompt,
-              composeSystem(prompt, graduation, pending, pendingFits, moneyProfile, testScores),
+              composeSystem(prompt, graduation, pending, pendingFits, moneyProfile, testScores, collegeList),
               messages,
               pending.map { it.id },
               pendingFits.map { it.id },
@@ -361,6 +365,9 @@ class CoachingService(
           // The scores block rides every turn too (RFC 207): what she told us a
           // week ago is still what she told us, and a decline is never re-asked.
           val testScores = activeTestScores(session, studentId)
+          // The college list rides every turn (RFC 257): a school added or
+          // dropped between turns is in the next turn's system text.
+          val collegeList = readActiveListInSession(session, studentId)
           // The date block rides every turn, not only the opener (RFC 186): a
           // conversation that ran past midnight, or one resumed a week later,
           // must not be answered against the date it opened on.
@@ -369,7 +376,7 @@ class CoachingService(
             Prepared(
               owned,
               prompt,
-              composeSystem(prompt, graduation, emptyList(), emptyList(), moneyProfile, testScores),
+              composeSystem(prompt, graduation, emptyList(), emptyList(), moneyProfile, testScores, collegeList),
               messages,
               emptyList(),
               emptyList(),
@@ -909,7 +916,9 @@ class CoachingService(
    * Composes the outgoing system text: the prompt body, then the date block
    * (RFC 186), then a rendered reflection block when the coach has commitments
    * (RFC 93) or fit-lens suggestions (RFC 98) to raise in its first reply, then
-   * the money-profile block (RFC 134) once a profile row exists.
+   * the money-profile block (RFC 134) once a profile row exists, then the
+   * test-scores block (RFC 207), then the college-list block (RFC 257) --
+   * last, and on every turn, empty list included.
    *
    * The date block is UNCONDITIONAL, and the early return that used to hand
    * back [SystemPrompt.body] verbatim when nothing was pending is gone with it.
@@ -924,8 +933,9 @@ class CoachingService(
     graduation: PartialDate,
     pending: List<Commitment>,
     pendingFits: List<FitSuggestionForOpener>,
-    moneyProfile: MoneyProfile? = null,
-    testScores: TestScores = TestScores(status = AnswerStatus.UNANSWERED, scores = emptyList()),
+    moneyProfile: MoneyProfile?,
+    testScores: TestScores,
+    collegeList: List<EntryWithCollegeName>,
   ): String {
     val block =
       buildString {
@@ -1007,6 +1017,8 @@ class CoachingService(
             throw nonMoneyAnswerStatus(AnswerStatus.UNDECIDED, location = "admission test scores block")
           }
         }
+        appendLine()
+        appendLine(CollegeListBlock.render(collegeList))
       }
     return block.trimEnd()
   }

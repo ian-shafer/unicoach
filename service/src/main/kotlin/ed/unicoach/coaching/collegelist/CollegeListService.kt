@@ -21,6 +21,35 @@ import ed.unicoach.db.models.StudentId
 import java.time.Instant
 
 /**
+ * The student's active list with each college's name, on [session], in the
+ * order the student added each school (`created_at, id`). Names come from one
+ * batch read. The one home of this read: every surface that needs the named
+ * active list calls it rather than re-joining the DAO and [CollegesDao].
+ *
+ * Throws on a failed read, so a caller's `withConnection` block rolls back and
+ * a DB outage fails the turn rather than reading as an empty list.
+ */
+fun readActiveListInSession(
+  session: SqlSession,
+  studentId: StudentId,
+): List<EntryWithCollegeName> {
+  val entries = CollegeListEntriesDao.listActiveByStudent(session, studentId).getOrThrow()
+  val names =
+    CollegesDao
+      .listByIds(session, entries.map { it.collegeId })
+      .getOrThrow()
+      .associate { it.id to it.name }
+  return entries.map { entry ->
+    // FK-guaranteed present; a miss is corruption worth naming.
+    val name =
+      checkNotNull(names[entry.collegeId]) {
+        "college [${entry.collegeId.value}] missing for active list entry [${entry.id.value}]"
+      }
+    EntryWithCollegeName(entry, name)
+  }
+}
+
+/**
  * One entry of a student's list as a linked adult sees it (RFC 250): the
  * school, where the student stands with it, and the school's own living plan.
  *
@@ -108,7 +137,7 @@ class CollegeListService(
    */
   suspend fun listActiveWithNames(studentId: StudentId): Result<List<EntryWithCollegeName>> =
     try {
-      Result.success(database.withConnection { session -> activeWithNames(session, studentId) })
+      Result.success(database.withConnection { session -> readActiveListInSession(session, studentId) })
     } catch (e: Exception) {
       Result.failure(e)
     }
@@ -128,7 +157,7 @@ class CollegeListService(
     session: SqlSession,
     studentId: StudentId,
   ): List<SharedCollegeListEntry> =
-    activeWithNames(session, studentId).map { (entry, collegeName) ->
+    readActiveListInSession(session, studentId).map { (entry, collegeName) ->
       SharedCollegeListEntry(
         collegeId = entry.collegeId,
         collegeName = collegeName,
@@ -137,27 +166,6 @@ class CollegeListService(
         updatedAt = entry.updatedAt,
       )
     }
-
-  /** The active list with each college's name, on [session]. Throws on a failed read. */
-  private fun activeWithNames(
-    session: SqlSession,
-    studentId: StudentId,
-  ): List<EntryWithCollegeName> {
-    val entries = CollegeListEntriesDao.listActiveByStudent(session, studentId).getOrThrow()
-    val names =
-      CollegesDao
-        .listByIds(session, entries.map { it.collegeId })
-        .getOrThrow()
-        .associate { it.id to it.name }
-    return entries.map { entry ->
-      // FK-guaranteed present; a miss is corruption worth naming.
-      val name =
-        checkNotNull(names[entry.collegeId]) {
-          "college [${entry.collegeId.value}] missing for active list entry [${entry.id.value}]"
-        }
-      EntryWithCollegeName(entry, name)
-    }
-  }
 
   suspend fun getForStudent(
     studentId: StudentId,
