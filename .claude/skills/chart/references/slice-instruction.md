@@ -9,16 +9,16 @@ its own dials from it. What it contains, in order:
     <brief>/<milestone>.<step>/<name>        e.g. search/04/similar-colleges
 
 The heading is `###`<id>`` (an old letter may follow in parentheses: `(S4)`).
-Brief handles map to directories — `first-value` = 0001, `deletion` = 0002,
-`money` = 0003, `search` = 0004, `shape` = 0006, `profile` = 0007, `soft` =
-0008, `concise` = 0009, `test` = 0010, `beyond` = 0011, `fafsa` = 0012, `web` =
-0013, `family` = 0014 — and a new brief declares its handle in its `Status:`
-block. Two digits so listings sort. An ID is assigned once and **never
-renumbered**: a slice inserted later takes a decimal step (`money/01.2`); a
-slice split during /work's spec phase takes a letter (`family/04a`); a slice
-whose scope changes that much is a new slice, not a renamed one. **Adjacency in
-an ID never grants or denies permission to start** — `03` following `02` is a
-plan, not a dependency.
+The brief handle (`family`, `search`, `price`, …) is declared once, in the brief
+(`Handle:` in its `Status:` block; briefs 0001–0004 predate the line, and their
+spec headings are the declaration). No list of handles lives anywhere else,
+because a copy goes stale the day a brief is opened. To find a slice,
+`grep -rn '<id>' product/*/spec.md`. Two digits so listings sort. An ID is
+assigned once and **never renumbered**: a slice inserted later takes a decimal
+step (`money/01.2`); a slice split during /work's spec phase takes a letter
+(`family/04a`); a slice whose scope changes that much is a new slice, not a
+renamed one. **Adjacency in an ID never grants or denies permission to start** —
+`03` following `02` is a plan, not a dependency.
 
 ## 2. A `Needs:` line, with a KIND and a REASON on every edge
 

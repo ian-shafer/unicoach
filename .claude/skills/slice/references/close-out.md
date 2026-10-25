@@ -10,7 +10,7 @@ One command before anything else in this phase, and one after (RFC 201):
     # ... write a, b and c below in the worktree it prints as CODEBASE_ROOT ...
     nix develop -c bin/format
     nix develop -c git commit -m "docs: close out <slice-id> (RFC <n>)"
-    nix develop -c $DOCS/docs-land -s <RUN_SCRATCH>    # prints the doc SHA
+    nix develop -c $DOCS/docs-land -s <RUN_SCRATCH>    # prints the landed SHA
 
 The slug is free-form kebab-case. `rfc-<n>-docs` is the convention for one slice
 with an RFC; a slice that landed without one uses its /work run id
@@ -22,9 +22,9 @@ gate (RFC 194): it costs the format check, not a full test run.
 ## a. The brief's ledger
 
 `product/NNNN-*/brief.md`, one appended line in the house format — slice ID, old
-letter if any, what it landed as, code SHA + doc SHA, date, one-line what:
+letter if any, what it landed as, the code SHA, date, one-line what:
 
-    search/04/similar-colleges (S4) LANDED as RFC 149 (main@<code> + <doc>,
+    search/04/similar-colleges (S4) LANDED as RFC 149 (main@<code>,
       2026-08-31) — query-time similar_colleges tool: weighted distance over
       the index percentile columns, axes and constraints named in every
       response.
@@ -33,16 +33,16 @@ A slice /work landed at spec 0–2 has no RFC. Say so, naming the run instead, s
 the ledger never implies a design doc that does not exist:
 
     money/01.2/the-label LANDED without an RFC (/work ship-the-label, spec 2,
-      main@<code> + <doc>, 2026-10-25) — one-line what.
+      main@<code>, 2026-10-25) — one-line what.
 
 `slice-board` reads `LANDED` and the ID; the RFC number is optional to it.
 Append; never edit a landed line. Record a PREFER override here too.
 
-The doc SHA is only known after `docs-land`, so the ledger line is written with
-the code SHA and the doc SHA is recorded by the NEXT docs commit that touches
-the brief — the pattern `main`'s history shows as "docs: record the RFC <n>
-close-out doc SHA in the brief <NNNN> ledger". Do that in the same session,
-right after the land, as a second small claim.
+The close-out commit's own SHA is deliberately NOT in the line. It is only known
+after `docs-land`, so recording it took a second docs commit per slice (11 of
+the 14 close-outs before 2026-10-25 carry one), and git already holds it:
+`git log -- product/NNNN-*/brief.md`. Older lines that carry
+`main@<code> + <doc>` are left as they are.
 
 ## b. `product/STATUS.md` — five edits, all of them
 

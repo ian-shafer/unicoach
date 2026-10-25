@@ -11,7 +11,7 @@ one cause: two writers in one tree. So each writer gets its own tree. `$DOCS` is
     nix develop -c $DOCS/docs-claim -s <slug>          # from the ROOT checkout
     # ... write product/** in the worktree it prints as CODEBASE_ROOT ...
     nix develop -c git commit -m "docs: ..."           # the hook, in that worktree
-    nix develop -c $DOCS/docs-land -s <RUN_SCRATCH>    # prints the doc SHA on stdout
+    nix develop -c $DOCS/docs-land -s <RUN_SCRATCH>    # prints the landed SHA on stdout
 
 `-s <slug>` is the brief directory for a chart phase (`0011-beyond-money`) or
 `rfc-<n>-docs` for a /slice close-out. The branch is `docs/<slug>` and the

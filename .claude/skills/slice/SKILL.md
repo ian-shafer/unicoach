@@ -142,7 +142,7 @@ no live run on the other slice, say "clear to run — rebase risk only".
 
 ### 3. ASSEMBLE
 
-Build one /work instruction from three sources. Nothing else belongs in it.
+Build one /work instruction from four sources. Nothing else belongs in it.
 
 1. **A first line `Slice: <id>`**, so /work stamps its run with the ID at claim
    time (that is what makes `$BOARD` say IN FLIGHT instead of listing an
@@ -205,14 +205,14 @@ slices), write the ledger line and `STATUS.md` in that worktree, commit,
 - [ ] Run stamped: `ship-state get SLICE` printed the ID while the run was live.
 - [ ] /work landed: code SHA in hand, `PHASE=complete`, its `DONE` report seen.
 - [ ] Close-out written in a claimed `docs/` worktree, not the root checkout.
-- [ ] `docs-land` run: doc SHA in hand, worktree and branch gone.
+- [ ] `docs-land` run: landed SHA printed, worktree and branch gone.
 - [ ] Brief ledger line appended, in the house format.
 - [ ] `product/STATUS.md`: TL;DR, `Updated:` line, work table, user-manual entry
       with its door, wave board.
 - [ ] Next slice re-checked against what landed; drift reported to /chart.
 - [ ] Report to Ian: opens with `DONE` and one sentence a non-engineer could
-      repeat, then slice ID, RFC number (or "no RFC, spec N"), both SHAs, gate
-      answers, open items, and the archive paths
+      repeat, then slice ID, RFC number (or "no RFC, spec N"), the code and docs
+      SHAs, gate answers, open items, and the archive paths
       (`.scratch/ship-archive/<run-id>/`, `.scratch/docs-archive/<run-id>/`).
 
 Any unchecked box means the run is still open. Say so plainly rather than

@@ -100,10 +100,14 @@ every committed decision gets a short label.
 
 Number = max existing + 1, zero-padded to four digits. The brief opens with a
 `Status:` block that is the run's state on disk — phase, gate outcomes, and the
-**ledger**: one line per landed slice mapping it to its RFC and SHAs, e.g.
+**ledger**: one line per landed slice mapping it to its RFC and code SHA, e.g.
 
-    family/10/claim-from-the-report LANDED as RFC 254 (main@0c9bfb73 + 3f53ae15,
+    family/10/claim-from-the-report LANDED as RFC 254 (main@0c9bfb73,
       2026-10-11) — one-line what.
+
+The close-out commit's own SHA is not in the line — git already records it
+(`git log -- product/NNNN-*/brief.md`), and writing it needed a second commit
+per slice.
 
 /slice appends the ledger line after each run lands. **Resume a brief by reading
 `Status:`, never from session memory** — after compaction or a restart, read
