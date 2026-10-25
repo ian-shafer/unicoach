@@ -2141,6 +2141,150 @@ test_db_migrate_failure_states_what_was_committed() {
   return 0
 }
 
+# The pending set is applied in ONE psql session, so the halt message can no
+# longer come from knowing which call failed: it is read back from
+# schema_migrations. A failure in the MIDDLE, with good migrations after it, is
+# the case that tells a correct read-back from an off-by-one: exactly the ones
+# before it committed, the failing one is named, and the ones after never ran.
+test_db_migrate_mid_set_failure_names_the_failing_migration() {
+  setup_migration_test
+  add_migration "0001.mid-first.sql" "CREATE TABLE mid_first (id INT);"
+  add_migration "0002.mid-second.sql" "CREATE TABLE mid_second (id INT);"
+  add_migration "0003.mid-bad.sql" "GARBAGE SQL SYNTAX;"
+  add_migration "0004.mid-after.sql" "CREATE TABLE mid_after (id INT);"
+  add_migration "0005.mid-last.sql" "CREATE TABLE mid_last (id INT);"
+
+  local out status=0 recorded
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "db-migrate did not fail on broken SQL in the middle of the set. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -qF -- "Migration failed: [0003.mid-bad.sql]"; then
+    fail_test "the halt message did not name the failing middle migration. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -qF -- "[2] of [5] pending migration(s) already COMMITTED; [2] not attempted"; then
+    fail_test "the halt message miscounted a middle failure. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  recorded="$(bin/db-query -r "SELECT string_agg(filename, ',' ORDER BY filename) FROM schema_migrations;" | tr -d '[:space:]')"
+  if [ "$recorded" != "0001.mid-first.sql,0002.mid-second.sql" ]; then
+    fail_test "schema_migrations after a middle failure is [$recorded], want the two before it"
+    teardown_migration_test
+    return 1
+  fi
+  if bin/db-query "SELECT * FROM mid_after;" >/dev/null 2>&1; then
+    fail_test "a migration AFTER the failing one ran: mid_after exists"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# One session for the whole set means session state outlives a migration's
+# COMMIT. A plain SET (not SET LOCAL) persists past COMMIT, and this one bites
+# only the NEXT transaction: the migration that sets it still records itself, and
+# without the DISCARD ALL between blocks every migration after it would start
+# read-only. A connection per migration gave that isolation for free; this
+# asserts the single session still does.
+test_db_migrate_session_state_does_not_leak_between_migrations() {
+  setup_migration_test
+  add_migration "0001.leak-set.sql" "SET default_transaction_read_only = on; CREATE TABLE leak_first (id INT);"
+  add_migration "0002.leak-after.sql" "CREATE TABLE leak_after (id INT);"
+
+  local out status=0
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -ne 0 ]; then
+    fail_test "a SET in one migration broke the next one (exit $status): $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! bin/db-query "SELECT * FROM leak_after;" >/dev/null 2>&1; then
+    fail_test "the migration after a session-level SET did not create leak_after"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# A migration whose text never closes a $$ quote swallows every block after it
+# into one unterminated string. psql fails it at end of input; the read-back must
+# still name THAT migration, and nothing after it may commit, although its
+# COMMIT lines were sent.
+test_db_migrate_unclosed_dollar_quote_names_its_migration() {
+  setup_migration_test
+  add_migration "0001.dq-first.sql" "CREATE TABLE dq_first (id INT);"
+  add_migration "0002.dq-unclosed.sql" "CREATE FUNCTION dq_f() RETURNS INT AS \$\$ SELECT 1;"
+  add_migration "0003.dq-after.sql" "CREATE TABLE dq_after (id INT);"
+
+  local out status=0 count
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "db-migrate accepted an unclosed \$\$ quote. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -qF -- "Migration failed: [0002.dq-unclosed.sql]"; then
+    fail_test "the halt message did not name the migration with the unclosed quote. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  count="$(bin/db-query -r "SELECT count(*) FROM schema_migrations;" | tr -d '[:space:]')"
+  if [ "$count" != "1" ]; then
+    fail_test "[$count] migrations recorded after an unclosed quote in #2 of 3, want 1"
+    teardown_migration_test
+    return 1
+  fi
+  if bin/db-query "SELECT * FROM dq_after;" >/dev/null 2>&1; then
+    fail_test "a migration swallowed by the unclosed quote was applied: dq_after exists"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
+# psql's exit status is not trusted on the success path either. `\q` inside a
+# migration ends the session with status 0, skipping its own COMMIT and every
+# block after it. Reported as success, that is a database db-status calls behind
+# while the run said it was current.
+test_db_migrate_refuses_a_session_that_ended_early() {
+  setup_migration_test
+  add_migration "0001.q-first.sql" "CREATE TABLE q_first (id INT);"
+  add_migration "0002.q-quits.sql" '\q'
+  add_migration "0003.q-after.sql" "CREATE TABLE q_after (id INT);"
+
+  local out status=0
+  out=$(bin/db-migrate 2>&1) || status=$?
+  if [ "$status" -eq 0 ]; then
+    fail_test "db-migrate reported success for a session that ended early. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -qF -- "[0002.q-quits.sql]"; then
+    fail_test "the early-end refusal did not name the migration that ended the session. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$out" | grep -qF -- "[1] of [3] pending migration(s) COMMITTED"; then
+    fail_test "the early-end refusal did not state what committed. Got: $out"
+    teardown_migration_test
+    return 1
+  fi
+
+  teardown_migration_test
+  return 0
+}
+
 # The SCHEMA_ORDER_* globals are a SCAN's return channel. They used to default to
 # "" — a value, and a value answers questions: a reader called before any scan
 # was told the corpus is CLEAN, about a corpus nothing had read.
@@ -2167,6 +2311,10 @@ assert_success "db-migrate refuses an illegally named file on disk" test_db_migr
 assert_success "db-migrate's refusals name the ORDER line number" test_db_migrate_refusals_name_the_order_line_number
 assert_success "db-migrate refuses an ORDER that is a directory or unreadable" test_db_migrate_refuses_an_unusable_order_file
 assert_success "db-migrate's halt states what committed and what was not attempted" test_db_migrate_failure_states_what_was_committed
+assert_success "db-migrate names a failing migration in the middle of the set and runs nothing after it" test_db_migrate_mid_set_failure_names_the_failing_migration
+assert_success "db-migrate's single session does not leak one migration's SET into the next" test_db_migrate_session_state_does_not_leak_between_migrations
+assert_success "db-migrate names the migration whose unclosed \$\$ quote swallowed the rest" test_db_migrate_unclosed_dollar_quote_names_its_migration
+assert_success "db-migrate refuses a session that psql ended early with status 0" test_db_migrate_refuses_a_session_that_ended_early
 assert_success "bin/common's corpus readers refuse a call before any scan" test_schema_order_readers_refuse_an_unscanned_corpus
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-status -f with an empty value exits 22" bin/db-status -f ""
 assert_exit_code 0 "db-status accepts the explicit -f human format" bin/db-status -f human

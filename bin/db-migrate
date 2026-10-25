@@ -67,47 +67,95 @@ if [ "${#pending_files[@]}" -eq 0 ]; then
   exit 0
 fi
 
-# One migration, in one transaction: its SQL and the row that records it commit
-# together or not at all. Extracted so the walk below reads as the ORDER walk it
-# is, instead of inlining a BEGIN/cat/INSERT/COMMIT pipeline inside a loop.
-apply_migration() {
-  local base="${1:?apply_migration requires a migration filename as an argument}"
+# One migration as a block of the session's script: its SQL and the row that
+# records it commit together or not at all, exactly as when each migration had a
+# psql of its own. Extracted so the walk below reads as the ORDER walk it is.
+#
+# DISCARD ALL after the COMMIT is what a fresh connection per migration used to
+# give for free: a SET, a temp table or a prepared statement in one migration
+# cannot leak into the next. It must follow the COMMIT — it refuses to run inside
+# a transaction block.
+#
+# \warn writes the progress line to psql's stderr, so it appears as the file
+# STARTS, the same moment and stream as the log-info it replaces.
+migration_block() {
+  local base="${1:?migration_block requires a migration filename as an argument}"
   local file="$DB_SCHEMA_DIR/$base"
 
   # A cheap assertion, not the check: the corpus validator above already refused
-  # every illegal name. It stays because the next line interpolates $base into
-  # SQL, and an interpolation site should not have to trust a caller three
-  # functions away.
+  # every illegal name. It stays because the lines below interpolate $base into
+  # SQL and a psql meta-command, and an interpolation site should not have to
+  # trust a caller three functions away.
   schema_filename_is_valid "$base" \
     || fatal "Invalid migration filename [$base] reached the apply loop; the corpus check in bin/common should have refused it."
 
-  log-info "Migrating: [$base]"
-
-  (
-    echo "BEGIN;"
-    cat "$file"
-    echo ""
-    echo "INSERT INTO schema_migrations (filename) VALUES ('$base');"
-    echo "COMMIT;"
-  ) | "$PROJECT_ROOT/bin/db-write"
+  echo "\\warn 'Migrating: [$base]'"
+  echo "BEGIN;"
+  cat "$file"
+  echo ""
+  echo "INSERT INTO schema_migrations (filename) VALUES ('$base');"
+  echo "COMMIT;"
+  echo "DISCARD ALL;"
 }
 
-# Each migration is its OWN transaction, so a failure at pending #5 of 12 leaves
-# four COMMITTED and seven unattempted. The old message named the failing file
-# and nothing else, so the state of the database after the halt — the one thing
-# an operator needs — was stated nowhere. db-write's status is carried too:
-# collapsing it to fatal's flat 1 made an unreachable cluster
-# (EXIT_POSTGRES_UNREACHABLE) indistinguishable from bad SQL in a migration.
-committed=0
+# The whole pending set is ONE psql session. A process chain per
+# migration -- db-write and db-run each sourcing bin/common, then a psql and a
+# fresh connection -- cost ~0.2s, which over 162 migrations was 35s of a 35.4s
+# db-reset; the SQL itself applies in under half a second. db-run's ON_ERROR_STOP
+# stops the session at the first error, so nothing after a failing migration
+# runs, and the failing one's open transaction dies with the connection.
+#
+# Every block is validated BEFORE any SQL is sent: the script is built in full
+# first, so a refusal from migration_block never leaves a half-sent session.
 total="${#pending_files[@]}"
-for index in "${!pending_files[@]}"; do
-  base="${pending_files[$index]}"
-  status=0
-  apply_migration "$base" || status=$?
-  if [ "$status" -ne 0 ]; then
-    fatal -s "$status" "Migration failed: [$base]. Halting. [$committed] of [$total] pending migration(s) already COMMITTED; [$(( total - index - 1 ))] not attempted. The committed ones are recorded in schema_migrations, so re-running bin/db-migrate after fixing [$base] resumes from it."
-  fi
+script=""
+for base in "${pending_files[@]}"; do
+  script+="$(migration_block "$base")"$'\n' || exit $?
+done
+
+status=0
+printf '%s' "$script" | "$PROJECT_ROOT/bin/db-write" || status=$?
+
+# What the session committed is read back from schema_migrations on BOTH paths,
+# never inferred from psql's exit status or parsed out of its output. On failure
+# that is the only place the answer lives: one session does not know which block
+# it died in. On success it is the check that the status told the truth: a
+# migration containing `\q` ends the session with status 0 and skips every block
+# after it. A session per migration confined that to one file; one session for
+# the whole set would otherwise report it as a clean run.
+#
+# When the database cannot be asked, the counts are unknown, and the message says
+# that instead of guessing. db-write's status is carried throughout: collapsing it
+# to fatal's flat 1 made an unreachable cluster (EXIT_POSTGRES_UNREACHABLE)
+# indistinguishable from bad SQL in a migration.
+applied_status=0
+applied="$(schema_applied_files)" || applied_status=$?
+if [ "$applied_status" -ne 0 ]; then
+  fatal -s "$(( status != 0 ? status : applied_status ))" "Migration run ended with status [$status], and schema_migrations could not be read afterwards (status [$applied_status]), so which migrations committed is UNKNOWN. Run bin/db-status once the database is reachable; re-running bin/db-migrate resumes from the first unrecorded migration."
+fi
+
+committed=0
+for base in "${pending_files[@]}"; do
+  schema_file_is_applied "$base" "$applied" || break
   committed=$(( committed + 1 ))
 done
 
-log-info "All [$total] migration(s) applied successfully."
+if [ "$status" -eq 0 ] && [ "$committed" -eq "$total" ]; then
+  log-info "All [$total] migration(s) applied successfully."
+  exit 0
+fi
+
+if [ "$committed" -eq "$total" ]; then
+  fatal -s "$status" "Migration run failed (status [$status]) after all [$total] pending migration(s) COMMITTED; the failure was outside any migration. bin/db-status shows the recorded state."
+fi
+
+# Each migration is its OWN transaction, so a failure at pending #5 of 12 leaves
+# four COMMITTED and seven unattempted, and the halt message has to say so. The
+# failing migration is the FIRST pending one the database does not record. That
+# holds even when a migration's own text swallows the ones after it (an unclosed
+# $$ quote): nothing past it can commit.
+failed="${pending_files[$committed]}"
+if [ "$status" -eq 0 ]; then
+  fatal "Migration run ended early: psql reported success, but [$failed] and every migration after it are NOT recorded in schema_migrations ([$committed] of [$total] pending migration(s) COMMITTED). A meta-command such as \\q in [$failed] ends the session; remove it and re-run bin/db-migrate, which resumes from [$failed]."
+fi
+fatal -s "$status" "Migration failed: [$failed]. Halting. [$committed] of [$total] pending migration(s) already COMMITTED; [$(( total - committed - 1 ))] not attempted. The committed ones are recorded in schema_migrations, so re-running bin/db-migrate after fixing [$failed] resumes from it."
