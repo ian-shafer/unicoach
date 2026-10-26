@@ -2753,11 +2753,25 @@ codebook_data_checksum() {
 }
 
 test_migration_alone_holds_codebooks_and_keys() {
-  local counts orphans before after
+  local counts orphans before after applied tables
 
   # A clean database, built by migration alone: no ingest, no fixture.
-  bin/db-drop >/dev/null 2>&1 || true
+  #
+  # -y, and no `|| true`. Without -y, db-drop stops at its confirmation prompt:
+  # under git's hook stdin is /dev/null, so the prompt read EOF and refused, the
+  # `|| true` hid the refusal, and this test ran on whatever database the
+  # earlier sections had left -- never the clean one it describes. db-drop -y is
+  # idempotent (DROP DATABASE IF EXISTS), so a failure here is real.
+  bin/db-drop -y >/dev/null
   bin/db-create >/dev/null
+
+  # Assert the clean start rather than assume it: the drop above was a silent
+  # no-op for as long as this test existed.
+  applied="$(bin/db-run -r ro "SELECT count(*) FROM schema_migrations;")"
+  tables="$(bin/db-run -r ro "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'schema_migrations';")"
+  [ "$applied" = "0" ] && [ "$tables" = "0" ] ||
+    fail_test "the database was not clean before migrating: [$applied] migrations recorded, [$tables] tables besides schema_migrations"
+
   bin/db-migrate >/dev/null
 
   counts="$(bin/db-run -r ro "SELECT (SELECT count(*) FROM us_states) || ',' || (SELECT count(*) FROM ipeds_regions) || ',' || (SELECT count(*) FROM nces_locales) || ',' || (SELECT count(*) FROM cip_codes) || ',' || (SELECT count(*) FROM codebook_sources);")"
