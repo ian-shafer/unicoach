@@ -185,6 +185,7 @@ final class SupporterHomeWireTests: XCTestCase {
             supporterClient: SupporterClient(apiClient: apiClient),
             collegeListClient: CollegeListClient(apiClient: apiClient),
             supporterCoachingUsageClient: SupporterCoachingUsageClient(apiClient: apiClient),
+            supporterConversationClient: SupporterConversationClient(apiClient: apiClient),
             subjectStore: MockSupporterSubjectStore(),
             // The roster refresh is `AppViewModel`'s and is tested there; what
             // this test is about is what the SCENE itself asks for.

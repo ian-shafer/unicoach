@@ -118,6 +118,31 @@ class ConvosResourceTest {
     }
 
   @Test
+  fun `GET convo shows a supporter conversation with its party, and the student panel omits it`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val student = AdminTestSupport.seedStudent(AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail()).id)
+      val supporter = AdminTestSupport.seedSupporter(AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail()).id)
+      val name = "PARENT_CONVO_${UUID.randomUUID()}"
+      val convo =
+        AdminTestSupport.seedConvo(
+          student.id,
+          name,
+          ed.unicoach.db.models.ConvoParty
+            .Supporter(supporter),
+        )
+
+      val detail = client().get("/convo/${convo.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(detail.contains("Party"), "the detail page labels the party")
+      assertTrue(detail.contains("supporter"), "and names it")
+      assertTrue(client().get("/convo") { header(HttpHeaders.Cookie, cookie) }.bodyAsText().contains(name), "the global list holds it")
+
+      val studentPage = client().get("/student/${student.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertFalse(studentPage.contains(name), "the student's own conversation panel is the student party only")
+    }
+
+  @Test
   fun `GET convo id renders fields and turns panel`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

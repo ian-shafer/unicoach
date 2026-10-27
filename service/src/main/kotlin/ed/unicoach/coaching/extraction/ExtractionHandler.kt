@@ -64,6 +64,13 @@ class ExtractionHandler(
         JobResult.Success
       }
 
+      // Terminal success: retrying would refuse again, identically. Logged so a
+      // stray job against a parent's conversation is visible to the operator.
+      is ExtractionResult.SupporterConversation -> {
+        logger.info("extraction skipped: convo=[{}] is a supporter's conversation, never distilled", result.convoId.asString)
+        JobResult.Success
+      }
+
       is ExtractionResult.TransientFailure -> {
         JobResult.RetriableFailure(result.message, result.cause)
       }

@@ -51,7 +51,8 @@ class SubjectSeamRouteSweepTest {
      * The writes a linked parent may make, because each writes the CALLER's own
      * account and never another person's: auth, becoming a student or a
      * supporter, updating the caller's own student row, the invite doors,
-     * subscriptions, and the supporter's own disconnect. Any answer is allowed.
+     * subscriptions, the supporter's own disconnect, and the supporter's own
+     * coach conversations. Any answer is allowed.
      */
     private val OWN_ACCOUNT_WRITES: Set<Pair<HttpMethod, String>> =
       setOf(
@@ -70,6 +71,12 @@ class SubjectSeamRouteSweepTest {
         HttpMethod.Post to "/api/v1/supporter-invites/accept",
         HttpMethod.Post to "/api/v1/subscriptions/verify",
         HttpMethod.Delete to "/api/v1/supporters/me/students/{linkId}",
+        // The supporter's own coach (RFC 258): both write the CALLER's own
+        // conversations and never the student's data. The subject is a body
+        // field on the start and the conversation row on a turn, re-checked
+        // against a live link either way; the sweep's `{}` body reads as a 400.
+        HttpMethod.Post to "/api/v1/supporters/me/conversations/stream",
+        HttpMethod.Post to "/api/v1/supporters/me/conversations/{conversationId}/messages/stream",
       )
 
     /**

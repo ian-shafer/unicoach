@@ -1,11 +1,8 @@
 package ed.unicoach.coaching
 
-import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatMessage
-import ed.unicoach.chat.ChatRequest
-import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ChatRole
-import ed.unicoach.chat.ContentDelta
+import ed.unicoach.chat.ChatTool
 import ed.unicoach.chat.ToolRegistry
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
@@ -24,7 +21,6 @@ import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.MoneyProfilesDao
-import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.dao.nonMoneyAnswerStatus
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.ArchiveScope
@@ -33,15 +29,13 @@ import ed.unicoach.db.models.CommitmentId
 import ed.unicoach.db.models.Convo
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
+import ed.unicoach.db.models.ConvoParty
 import ed.unicoach.db.models.ConvoRequest
-import ed.unicoach.db.models.ConvoRequestKind
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.FitSuggestionForOpener
 import ed.unicoach.db.models.FitSuggestionId
-import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.NewConvo
-import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
@@ -49,15 +43,7 @@ import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.SystemPromptId
 import ed.unicoach.db.models.usDate
 import ed.unicoach.error.FieldError
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import org.slf4j.LoggerFactory
 import java.time.InstantSource
 import java.time.LocalDate
 
@@ -71,13 +57,12 @@ import java.time.LocalDate
  * owned by another student is the not-found outcome — existence is never
  * leaked). Archived convos remain fetchable and writable.
  *
- * A turn brackets one un-transacted provider call (the connection is never held
- * across the stream): tx-1 validates and snapshots replay history; the provider
- * call flows through [LlmCallLog.recordStreaming], which logs the request, hands
- * back the log-owned `llm_request_id`, and writes the terminal response row
- * itself; this service stamps a `convo_requests` extension row carrying that id
- * before collecting the [ReplyEvent] flow. The response side of the log is owned
- * entirely by [LlmCallLog] (RFC 106); this service never writes a response row.
+ * A turn's synchronous pre-flight transaction validates, gates and snapshots
+ * replay history; the provider calls themselves run in [CoachTurnLoop] (RFC 258,
+ * shared with the supporter's coach), which this service drives with a
+ * [StudentTurnParty]. The response side of the log is owned entirely by
+ * [LlmCallLog] (RFC 106); neither this service nor the loop writes a response
+ * row.
  *
  * The unit of budget admission is the TURN, not the individual provider call
  * (RFC 109): [budgetService] is consulted once in each turn's pre-flight
@@ -88,7 +73,7 @@ import java.time.LocalDate
  */
 class CoachingService(
   private val database: Database,
-  private val llmCallLog: LlmCallLog,
+  llmCallLog: LlmCallLog,
   private val config: CoachingConfig,
   private val budgetService: BudgetService,
   private val tools: ToolRegistry = ToolRegistry(emptyList()),
@@ -105,21 +90,16 @@ class CoachingService(
   // claimed. A type that carries no zone cannot be read that way.
   private val clock: InstantSource = InstantSource.system(),
 ) {
-  private val logger = LoggerFactory.getLogger(CoachingService::class.java)
+  // The provider loop, shared with the supporter's coach (RFC 258): this class
+  // decides WHAT a student turn is (ownership, budget, the composed system
+  // text) and the loop runs it.
+  private val loop = CoachTurnLoop(database, llmCallLog, TurnSettings(config.model, config.maxTokens, config.maxToolRounds))
 
   companion object {
     const val MESSAGE_MAX_LENGTH = 100_000
     const val NAME_DERIVATION_MAX = 80
-    private const val MESSAGE_FIELD = "message"
+    internal const val MESSAGE_FIELD = "message"
     private const val NAME_FIELD = "name"
-
-    private const val COACH_UNAVAILABLE_REASON = "transient"
-    private const val COACH_FAILED_REASON = "permanent"
-
-    // Fixed tool-dispatch failure-kind markers sent to the model in an is_error
-    // tool_result. Raw throwable messages never cross this boundary.
-    private const val TOOL_FAILURE_UNKNOWN = "unknown_tool"
-    private const val TOOL_FAILURE_THREW = "tool_threw"
   }
 
   // ---------------------------------------------------------------------------
@@ -143,7 +123,7 @@ class CoachingService(
     runCatching {
       database.withConnection { session ->
         val listing = ConvosDao.findByIdWithActivity(session, convoId).getOrNull()
-        if (listing == null || listing.convo.studentId != studentId) {
+        if (listing == null || !isStudentsOwn(listing.convo, studentId)) {
           GetConvoResult.NotFound
         } else {
           GetConvoResult.Found(listing)
@@ -251,7 +231,7 @@ class CoachingService(
     message: String,
     name: String?,
   ): Result<StartConvoResult> {
-    val messageError = validateMessage(message)
+    val messageError = coachMessageError(message)
     if (messageError != null) {
       return Result.success(StartConvoResult.ValidationFailure(listOf(messageError)))
     }
@@ -267,7 +247,7 @@ class CoachingService(
           }
         }
       } else {
-        deriveName(message)
+        convoNameFrom(message)
       }
 
     return runCatching {
@@ -285,8 +265,8 @@ class CoachingService(
             // as "allowed to spend". Do not collapse it back to an `is` check.
             BudgetVerdict.Entitled -> {}
           }
-          val prompt = resolveSystemPrompt(session)
-          val convo = ConvosDao.create(session, NewConvo(studentId, resolvedName)).getOrThrow()
+          val prompt = pinnedSystemPrompt(session, config.systemPromptName, config.systemPromptVersion)
+          val convo = ConvosDao.create(session, NewConvo(studentId, resolvedName, ConvoParty.Student)).getOrThrow()
           val messages = visibleHistory(session, convo.id) + ChatMessage.text(ChatRole.USER, message)
           // Next-session opener: compose open explicit commitments (RFC 93) and
           // open fit-lens suggestions (RFC 98) into the coach prompt so the coach
@@ -298,13 +278,12 @@ class CoachingService(
           val collegeList = readActiveListInSession(session, studentId)
           val graduation = graduationDate(session, studentId)
           PreFlight.Ready(
-            Prepared(
+            PreparedTurn(
               convo,
               prompt,
               composeSystem(prompt, graduation, pending, pendingFits, moneyProfile, testScores, collegeList),
               messages,
-              pending.map { it.id },
-              pendingFits.map { it.id },
+              StudentTurnParty(convo.id, studentId, pending.map { it.id }, pendingFits.map { it.id }),
             ),
           )
         }
@@ -314,11 +293,11 @@ class CoachingService(
         }
 
         is PreFlight.Ready -> {
-          val opener = openUserTurn(preFlight.prepared)
+          val opener = loop.openUserTurn(preFlight.turn)
           StartConvoResult.Started(
-            convo = preFlight.prepared.convo,
+            convo = preFlight.turn.convo,
             userTurn = opener.request,
-            reply = buildReplyFlow(preFlight.prepared, opener, isFirstTurn = true),
+            reply = loop.buildReplyFlow(preFlight.turn, opener, isFirstTurn = true),
           )
         }
       }
@@ -330,7 +309,7 @@ class CoachingService(
     convoId: ConvoId,
     message: String,
   ): Result<PostTurnResult> {
-    val messageError = validateMessage(message)
+    val messageError = coachMessageError(message)
     if (messageError != null) {
       return Result.success(PostTurnResult.ValidationFailure(listOf(messageError)))
     }
@@ -354,7 +333,7 @@ class CoachingService(
             // as "allowed to spend". Do not collapse it back to an `is` check.
             BudgetVerdict.Entitled -> {}
           }
-          val prompt = resolveSystemPrompt(session)
+          val prompt = pinnedSystemPrompt(session, config.systemPromptName, config.systemPromptVersion)
           val messages = visibleHistory(session, convoId) + ChatMessage.text(ChatRole.USER, message)
           // postTurn never surfaces commitments or fit suggestions: only a new
           // conversation opens with reflection, so an insight is not re-raised
@@ -373,13 +352,12 @@ class CoachingService(
           // must not be answered against the date it opened on.
           val graduation = graduationDate(session, studentId)
           PreFlight.Ready(
-            Prepared(
+            PreparedTurn(
               owned,
               prompt,
               composeSystem(prompt, graduation, emptyList(), emptyList(), moneyProfile, testScores, collegeList),
               messages,
-              emptyList(),
-              emptyList(),
+              StudentTurnParty(owned.id, studentId, emptyList(), emptyList()),
             ),
           )
         }
@@ -389,11 +367,11 @@ class CoachingService(
         }
 
         is PreFlight.Ready -> {
-          val opener = openUserTurn(preFlight.prepared)
+          val opener = loop.openUserTurn(preFlight.turn)
           PostTurnResult.Started(
-            convo = preFlight.prepared.convo,
+            convo = preFlight.turn.convo,
             userTurn = opener.request,
-            reply = buildReplyFlow(preFlight.prepared, opener, isFirstTurn = false),
+            reply = loop.buildReplyFlow(preFlight.turn, opener, isFirstTurn = false),
           )
         }
       }
@@ -401,410 +379,38 @@ class CoachingService(
   }
 
   /**
-   * What a turn's synchronous pre-flight transaction decided: either the turn is
-   * [Ready] to run, or the pre-flight already [Refused] it and carries the exact
-   * caller-facing outcome ([StartConvoResult] or [PostTurnResult]). Each method's
-   * refusals are then just its own result type's arms, so neither path needs a
-   * null standing in for one of several distinct reasons.
+   * The student side of a turn (RFC 258's [TurnParty]): the student's own
+   * registry, each [StudentScopedChatTool] handed the convo's student (RFC 134),
+   * nothing written beside a request row, and — on a successful terminal — the
+   * opener's disclosed commitments (RFC 93) and surfaced fit suggestions (RFC 98)
+   * marked against the convo. Both lists are empty for postTurn and when
+   * nothing was pending.
    */
-  private sealed interface PreFlight<out R> {
-    class Ready(
-      val prepared: Prepared,
-    ) : PreFlight<Nothing>
+  private inner class StudentTurnParty(
+    private val convoId: ConvoId,
+    private val studentId: StudentId,
+    private val disclosedCommitmentIds: List<CommitmentId>,
+    private val surfacedFitSuggestionIds: List<FitSuggestionId>,
+  ) : TurnParty {
+    override val tools: ToolRegistry get() = this@CoachingService.tools
 
-    class Refused<R>(
-      val result: R,
-    ) : PreFlight<R>
-  }
-
-  private class Prepared(
-    val convo: Convo,
-    val prompt: SystemPrompt,
-    // The outgoing system text: the prompt body, optionally with open explicit
-    // commitments (RFC 93) composed in for the next-session opener.
-    val system: String,
-    // Visible prior turns (USER/ASSISTANT pairs) plus this turn's new user message.
-    val messages: List<ChatMessage>,
-    // Open explicit commitments surfaced in this turn's opener; marked fulfilled
-    // on a successful terminal. Empty for postTurn and when nothing is pending.
-    val disclosedCommitmentIds: List<CommitmentId>,
-    // Open fit-lens suggestions (RFC 98) surfaced in this turn's opener; marked
-    // surfaced on a successful terminal. Empty for postTurn and when none pending.
-    val surfacedFitSuggestionIds: List<FitSuggestionId>,
-  )
-
-  /**
-   * One provider call whose request has already been logged and whose
-   * `convo_requests` extension row has been stamped: the [request] row (carrying
-   * the log-owned `llm_request_id`, minted or shared `turn_id`, and `kind`) and
-   * the cold [events] flow from [LlmCallLog.recordStreaming] that, on collection,
-   * relays provider events and writes the terminal response row. The single unit
-   * both the opener and each tool continuation are built as.
-   */
-  private class OpenedCall(
-    val request: ConvoRequest,
-    val events: kotlinx.coroutines.flow.Flow<ChatEvent>,
-  )
-
-  /**
-   * Opens the turn's `kind = 'user'` call: logs the opener [ChatRequest] via
-   * [LlmCallLog.recordStreaming], mints a fresh `turn_id`, and stamps the opener
-   * `convo_requests` row referencing the returned `llm_request_id`. The row is
-   * written before the [OpenedCall.events] flow is collected (RFC 106), so the
-   * route can render the user message from [OpenedCall.request] up front.
-   */
-  private suspend fun openUserTurn(prepared: Prepared): OpenedCall {
-    val request = buildCallRequest(prepared, prepared.messages, forceNoTools = false)
-    val call = llmCallLog.recordStreaming(request) // commits the opener's llm_requests row
-    try {
-      val turnId = database.withConnection { session -> ConvosDao.nextTurnId(session).getOrThrow() }
-      val row = appendRequestRow(prepared, call.llmRequestId, turnId, ConvoRequestKind.USER)
-      return OpenedCall(row, call.events)
-    } catch (cancellation: kotlinx.coroutines.CancellationException) {
-      // The opener's request row is committed, but its cold events flow will
-      // never be collected — whether the client disconnected (cancellation) or a
-      // defect (e.g. a DB error on nextTurnId / appendRequestRow) interrupted us
-      // here, before buildReplyFlow ever runs. Mirror recordStreaming's own in-flow
-      // handler: write the missing response row now, where call.llmRequestId is in
-      // scope, then rethrow — otherwise the just-committed request would dangle with
-      // no llm_responses row.
-      llmCallLog.writeCancelledIfAbsent(call.llmRequestId)
-      throw cancellation
-    } catch (defect: Exception) {
-      // The request row is committed but its cold flow will never be collected;
-      // a defect (e.g. a DB error on appendRequestRow) interrupted us. Record the
-      // internal_error response so the request isn't orphaned, then rethrow.
-      llmCallLog.writeInternalErrorIfAbsent(call.llmRequestId, defect)
-      throw defect
-    }
-  }
-
-  /**
-   * Opens a `kind = 'tool_result'` continuation call for [messages]: logs the
-   * continuation [ChatRequest] via [LlmCallLog.recordStreaming] and stamps a
-   * `convo_requests` row sharing the excursion's [turnId] and referencing the
-   * returned `llm_request_id`.
-   */
-  private suspend fun openContinuation(
-    prepared: Prepared,
-    messages: List<ChatMessage>,
-    turnId: ed.unicoach.db.models.ConvoTurnId,
-    forceNoTools: Boolean,
-  ): OpenedCall {
-    val request = buildCallRequest(prepared, messages, forceNoTools)
-    val call = llmCallLog.recordStreaming(request) // commits the continuation's llm_requests row
-    try {
-      val row = appendRequestRow(prepared, call.llmRequestId, turnId, ConvoRequestKind.TOOL_RESULT)
-      return OpenedCall(row, call.events)
-    } catch (cancellation: kotlinx.coroutines.CancellationException) {
-      // The continuation's request row is committed, but its cold events flow is
-      // returned uncollected — an interruption in appendRequestRow (after the
-      // llm_requests commit, before collection begins) means the flow never runs
-      // and no response row is ever written for it, whether the client disconnected
-      // (cancellation) or a defect struck. Mirror recordStreaming's own in-flow
-      // handler: write the missing response row now, where call.llmRequestId is in
-      // scope, then rethrow — this closes the orphaned-continuation window
-      // buildReplyFlow's loop catch cannot (there currentCall still points at the
-      // previous, already-responded call).
-      llmCallLog.writeCancelledIfAbsent(call.llmRequestId)
-      throw cancellation
-    } catch (defect: Exception) {
-      // The request row is committed but its cold flow will never be collected;
-      // a defect (e.g. a DB error on appendRequestRow) interrupted us. Record the
-      // internal_error response so the request isn't orphaned, then rethrow.
-      llmCallLog.writeInternalErrorIfAbsent(call.llmRequestId, defect)
-      throw defect
-    }
-  }
-
-  /** Stamps one `convo_requests` extension row referencing [llmRequestId], in its own transaction. */
-  private suspend fun appendRequestRow(
-    prepared: Prepared,
-    llmRequestId: LlmRequestId,
-    turnId: ed.unicoach.db.models.ConvoTurnId,
-    kind: ConvoRequestKind,
-  ): ConvoRequest =
-    database.withConnection { session ->
-      ConvosDao
-        .appendRequest(
-          session,
-          NewConvoRequest(
-            convoId = prepared.convo.id,
-            systemPromptId = prepared.prompt.id,
-            llmRequestId = llmRequestId,
-            turnId = turnId,
-            kind = kind,
-          ),
-        ).getOrThrow()
-    }
-
-  /**
-   * The cold reply flow: the bounded chat tool-use loop (RFC 94). Collecting it
-   * runs one or more provider calls on the request coroutine, streaming text
-   * deltas across every call so the user sees one continuous reply. Each call
-   * persists its own `convo_requests` + `convo_responses` pair — no billed call
-   * goes unrecorded. A `tool_use` terminal dispatches the tools, appends a
-   * `kind = tool_result` continuation request, extends the running message list,
-   * and iterates; a non-`tool_use` terminal is the final answer.
-   *
-   * Cleanup is exchange-level: on the first turn, if the exchange terminates
-   * without a successful final response (whether the first call or a
-   * continuation failed, or the collector cancelled), the just-created convo is
-   * deleted so no orphan remains. A non-first-turn failure leaves the convo with
-   * the exchange non-visible, exactly as a failed postTurn does.
-   *
-   * `maxToolRounds` bounds tool-dispatch rounds; on reaching it while the model
-   * still returns `tool_use`, the loop makes one final continuation with
-   * `tools = emptyList()`, forcing a text answer.
-   */
-  private fun buildReplyFlow(
-    prepared: Prepared,
-    opener: OpenedCall,
-    isFirstTurn: Boolean,
-  ): Flow<ReplyEvent> =
-    flow {
-      val messages = prepared.messages.toMutableList()
-      // The already-opened call whose events this iteration collects: the opener
-      // on the first pass, a fresh tool_result continuation thereafter. Its
-      // request row and llm_request are already logged; LlmCallLog owns the
-      // response-row write when its events terminate.
-      var currentCall = opener
-      var toolRounds = 0
-      var succeeded = false
-
-      try {
-        loop@ while (true) {
-          val forceNoTools = toolRounds >= config.maxToolRounds
-          val terminal = collectCall(currentCall.events) { delta -> emit(ReplyEvent.Delta(delta)) }
-
-          when (terminal) {
-            is ChatEvent.Rejected -> {
-              emit(failedEvent(retriable = false, reason = terminal.reason))
-              break@loop
-            }
-
-            is ChatEvent.TransientFailure -> {
-              emit(failedEvent(retriable = true, reason = terminal.reason))
-              break@loop
-            }
-
-            is ChatEvent.Completed -> {
-              val chatResponse = terminal.response
-              val toolUses = dispatchableToolUses(chatResponse, forceNoTools)
-
-              if (toolUses.isEmpty()) {
-                // Final answer (a plain end_turn, the forced no-tools call, or a
-                // malformed tool_use with no dispatchable block).
-                // A successful turn surfaced any disclosed commitments (RFC 93):
-                // mark them fulfilled against this convo. Bound to success — a
-                // failed turn soft-deletes the convo, so they stay open to
-                // re-surface next session.
-                markDisclosedCommitmentsFulfilled(prepared)
-                markSurfacedFitSuggestions(prepared)
-                succeeded = true
-                emit(
-                  ReplyEvent.Completed(
-                    convoRequest = currentCall.request,
-                    content = chatResponse.content,
-                    createdAt = currentCall.request.createdAt,
-                  ),
-                )
-                break@loop
-              }
-
-              // Dispatch every requested tool, then continue the loop with the
-              // assistant's verbatim tool_use message and one tool_result answer.
-              val toolResultContent = ConvoContent.blockArray(dispatchTools(toolUses, prepared.convo.studentId))
-              messages.appendToolRound(chatResponse.content, toolResultContent)
-              currentCall = openContinuation(prepared, messages, currentCall.request.turnId, toolRounds + 1 >= config.maxToolRounds)
-              toolRounds++
-            }
-          }
-        }
-      } catch (cancellation: kotlinx.coroutines.CancellationException) {
-        // Client disconnected mid-loop. By the time this catch runs, currentCall's
-        // response row has always already been written, so there is nothing to
-        // repair here — only rethrow (after the finally's first-turn cleanup). The
-        // per-opened-call cancellation guarantee is owned at the source: openUserTurn
-        // and openContinuation each write their own request's cancelled row if a
-        // disconnect strikes after recordStreaming commits its llm_requests row but
-        // before its cold events flow is collected; and recordStreaming itself owns
-        // the in-flight write when the disconnect lands WHILE currentCall.events is
-        // being collected (its own NonCancellable catch). A writeCancelledIfAbsent
-        // for currentCall here would be dead: currentCall never points at an
-        // uncollected, unresponded request when this catch fires — the opener/
-        // continuation guard would have already handled that request before it ever
-        // became currentCall.
-        throw cancellation
-      } catch (defect: Exception) {
-        // A non-cancellation exception escaping the loop is a provider defect. Its
-        // response row is written by LlmCallLog as internal_error before the
-        // exception reaches here (the stream flow catches and records it); the port
-        // contract says treat it as transient to the client.
-        logger.warn(
-          "coach loop defect for convo=[{}] request=[{}]: [{}]",
-          prepared.convo.id.asString,
-          currentCall.request.id.asString,
-          defect.message,
-          defect,
-        )
-        emit(failedEvent(retriable = true, reason = "provider defect: ${defect.message}"))
-      } finally {
-        // Exchange-level first-turn cleanup: a first turn that never produced a
-        // successful final response leaves no orphan convo behind.
-        if (isFirstTurn && !succeeded) {
-          withContext(NonCancellable) { deleteConvoQuietly(prepared.convo.id) }
-        }
+    override suspend fun dispatch(
+      tool: ChatTool,
+      input: JsonObject,
+    ): JsonObject =
+      when (tool) {
+        is StudentScopedChatTool -> tool.execute(studentId, input)
+        else -> tool.execute(input)
       }
-    }
 
-  /**
-   * Assembles the wire-shape [ChatRequest] for one loop iteration. On the cap
-   * round ([forceNoTools]) the tool set is empty, forcing the model to a text
-   * answer; otherwise it advertises the full registry.
-   */
-  private fun buildCallRequest(
-    prepared: Prepared,
-    messages: List<ChatMessage>,
-    forceNoTools: Boolean,
-  ): ChatRequest =
-    ChatRequest(
-      model = config.model,
-      system = prepared.system,
-      messages = messages,
-      maxTokens = config.maxTokens,
-      tools = if (forceNoTools) emptyList() else tools.definitions(),
-    )
+    override fun onRequestAppended(
+      session: ed.unicoach.db.dao.SqlSession,
+      request: ConvoRequest,
+    ) {}
 
-  /**
-   * The `tool_use` blocks the loop must dispatch this round: the response's tool
-   * uses when the model terminated on [ConvoProjection.TOOL_USE_STOP_REASON] and
-   * this is not the forced no-tools cap round; empty otherwise (a plain answer,
-   * the forced final call, or a malformed terminal with no dispatchable block).
-   */
-  private fun dispatchableToolUses(
-    chatResponse: ChatResponse,
-    forceNoTools: Boolean,
-  ): List<ConvoContent.ToolUse> =
-    if (!forceNoTools && chatResponse.stopReason == ConvoProjection.TOOL_USE_STOP_REASON) {
-      ConvoContent.toolUses(chatResponse.content)
-    } else {
-      emptyList()
-    }
-
-  /**
-   * Extends the running message list for the next continuation call: the
-   * assistant's verbatim [assistantContent] (carrying the `tool_use` blocks
-   * Anthropic requires echoed back) then the [toolResultContent] user message.
-   */
-  private fun MutableList<ChatMessage>.appendToolRound(
-    assistantContent: JsonElement,
-    toolResultContent: JsonElement,
-  ) {
-    add(ChatMessage(ChatRole.ASSISTANT, assistantContent))
-    add(ChatMessage(ChatRole.USER, toolResultContent))
-  }
-
-  /**
-   * Collects one call's already-logged event flow (from [OpenedCall.events]),
-   * relaying text deltas via [onDelta] and returning the provider terminal. The
-   * response row is written by [LlmCallLog] when the flow terminates; this only
-   * reads the terminal to drive the loop. A stream that ends without a terminal
-   * is a provider-contract defect.
-   */
-  private suspend fun collectCall(
-    events: Flow<ChatEvent>,
-    onDelta: suspend (String) -> Unit,
-  ): ChatEvent.Terminal {
-    var terminal: ChatEvent.Terminal? = null
-    events.collect { event ->
-      when (event) {
-        is ChatEvent.ContentBlockDelta -> {
-          val delta = event.delta
-          if (delta is ContentDelta.Text) onDelta(delta.text)
-        }
-
-        is ChatEvent.Terminal -> {
-          terminal = event
-        }
-
-        else -> {}
-      }
-    }
-    return terminal
-      ?: throw IllegalStateException("chat provider [${llmCallLog.providerId}] stream completed without a terminal event")
-  }
-
-  /**
-   * Dispatches every requested tool in order, answering each with one
-   * `tool_result` block (`tool_use_id` matched). A tool that returns an object
-   * is a normal result the model reads (`is_error` unset), even its own
-   * `{ "error": ... }` domain error. An unknown tool name (model hallucination)
-   * or a throwing tool yields an `is_error` result with a structured failure
-   * object, so the model can recover — a tool defect is never a turn failure.
-   *
-   * A [StudentScopedChatTool] receives the turn's [studentId] (RFC 134) so it
-   * writes the owning student's data without the model ever seeing or
-   * supplying an id; a plain [ed.unicoach.chat.ChatTool] is dispatched
-   * unchanged.
-   *
-   * The failure that is sent to (and persisted for) the model is squashed to a
-   * fixed failure-kind marker; the throwable's message and type — which may
-   * carry internals — stay in the log only. `ChatTool.execute` is total by
-   * contract, so a throw is an exceptional defect worth a full stack trace.
-   */
-  private suspend fun dispatchTools(
-    toolUses: List<ConvoContent.ToolUse>,
-    studentId: StudentId,
-  ): List<JsonObject> =
-    toolUses.map { toolUse ->
-      val tool = tools.get(toolUse.name)
-      if (tool == null) {
-        logger.warn("chat requested unknown tool name=[{}] id=[{}]", toolUse.name, toolUse.id)
-        return@map ConvoContent.toolResultBlock(
-          toolUse.id,
-          toolFailure(toolUse.name, TOOL_FAILURE_UNKNOWN),
-          isError = true,
-        )
-      }
-      try {
-        val result =
-          when (tool) {
-            is StudentScopedChatTool -> tool.execute(studentId, toolUse.input)
-            else -> tool.execute(toolUse.input)
-          }
-        ConvoContent.toolResultBlock(toolUse.id, result, isError = false)
-      } catch (e: Throwable) {
-        logger.warn("tool [{}] threw during dispatch id=[{}] input=[{}]", toolUse.name, toolUse.id, toolUse.input, e)
-        ConvoContent.toolResultBlock(
-          toolUse.id,
-          toolFailure(toolUse.name, TOOL_FAILURE_THREW),
-          isError = true,
-        )
-      }
-    }
-
-  /**
-   * A structured tool-dispatch failure sent to the model: the tool [name] and a
-   * fixed [failureKind] marker, never the raw throwable message (which may carry
-   * internals). The model reads these fields to recover; root-cause detail is in
-   * the log.
-   */
-  private fun toolFailure(
-    name: String,
-    failureKind: String,
-  ): JsonObject =
-    buildJsonObject {
-      put("tool", name)
-      put("failure", failureKind)
-    }
-
-  /** Soft-deletes the convo, swallowing (bracketed-logging) any failure — cleanup must not mask the turn outcome. */
-  private suspend fun deleteConvoQuietly(convoId: ConvoId) {
-    try {
-      database.withConnection { session -> ConvosDao.delete(session, convoId).getOrThrow() }
-    } catch (e: Exception) {
-      logger.error("first-turn cleanup delete failed for convo=[{}]: [{}]", convoId.asString, e.message)
+    override suspend fun onSucceeded() {
+      markDisclosedCommitmentsFulfilled(convoId, disclosedCommitmentIds)
+      markSurfacedFitSuggestions(convoId, surfacedFitSuggestionIds)
     }
   }
 
@@ -819,18 +425,25 @@ class CoachingService(
     studentId: StudentId,
   ): Convo? {
     val convo = ConvosDao.findById(session, convoId, SoftDeleteScope.ACTIVE).getOrNull() ?: return null
-    return if (convo.studentId == studentId) convo else null
+    return if (isStudentsOwn(convo, studentId)) convo else null
   }
 
-  private fun resolveSystemPrompt(session: ed.unicoach.db.dao.SqlSession): SystemPrompt {
-    val result = SystemPromptsDao.findByNameAndVersion(session, config.systemPromptName, config.systemPromptVersion)
-    return result.getOrElse {
-      throw IllegalStateException(
-        "system prompt not found for name=[${config.systemPromptName}] version=[${config.systemPromptVersion}]",
-        it,
-      )
-    }
-  }
+  /**
+   * Whether [convo] is [studentId]'s OWN conversation: about them AND with them
+   * (RFC 258). A supporter's conversation about the student matches on
+   * `student_id` alone, and is the parent's words, so it is not the student's
+   * to read, rename, archive, delete or continue -- it answers exactly as a
+   * conversation that does not exist.
+   */
+  private fun isStudentsOwn(
+    convo: Convo,
+    studentId: StudentId,
+  ): Boolean =
+    convo.studentId == studentId &&
+      when (convo.party) {
+        ConvoParty.Student -> true
+        is ConvoParty.Supporter -> false
+      }
 
   /**
    * The student's open explicit commitments for the next-session opener (RFC 93),
@@ -1024,63 +637,6 @@ class CoachingService(
   }
 
   /**
-   * The date block every system text carries (RFC 186): today, the student's
-   * expected high-school graduation date at the precision it was recorded, and
-   * the year of school those two work out to.
-   *
-   * Two lines with no trailing terminator, like every other block here -- the
-   * assembler owns the blank line that separates them.
-   *
-   * Both dates are written in the ONE shape a human reads (RFC 227, brief 0010
-   * D21). Today used to be ISO here, deliberately, so the model had one
-   * unambiguous form to repeat. RFC 227 changes it: the prompt now TELLS the
-   * coach to say "Sep 12, 2026", and a block that states a rule and then
-   * demonstrates the opposite two lines above is the self-contradicting copy
-   * RFC 187's review caught. One shape in the prompt prose; the tool payloads
-   * keep ISO on the wire, and the prompt says so.
-   */
-  private fun renderDateBlock(
-    today: LocalDate,
-    graduation: PartialDate,
-  ): String =
-    "Today's date is ${UsDate.of(today)} ($COACH_ZONE_LABEL — the timezone College Board and ACT publish and " +
-      "enforce their deadlines in).\n" +
-      "The student expects to finish high school ${renderGraduationPhrase(graduation)}; ${HighSchoolYear.of(today, graduation).clause}"
-
-  /**
-   * The stored graduation date in words, at its STORED precision, saying so
-   * when it is short (RFC 186): a month we never recorded is a month the coach
-   * must never state, and the surest way to stop it inventing one is to tell it
-   * the month is not there.
-   *
-   * RFC 186 wrote this day before month ("on 15 June 2028") to avoid a "06/15"
-   * the model could read either way. RFC 227 (brief 0010 D21) replaces it with
-   * "on Jun 15, 2028": a named month is just as unambiguous as a leading day,
-   * and it is the shape a US family writes. The SHAPE now comes from the one
-   * seam, [PartialDate.usDate]; the WORDS below stay here, because "the day is
-   * not recorded" is a claim about OUR gap and the seam renders dates, not
-   * claims.
-   */
-  private fun renderGraduationPhrase(graduation: PartialDate): String =
-    // On the SEALED type, not on its nullable month/day projections: the
-    // precision cases and the type's variants are the same three cases, so the
-    // compiler is what refuses a fourth precision that silently rendered as
-    // "only the year is recorded".
-    when (graduation) {
-      is PartialDate.FullDate -> {
-        "on ${graduation.usDate()}"
-      }
-
-      is PartialDate.YearAndMonth -> {
-        "in ${graduation.usDate()} (the day is not recorded)"
-      }
-
-      is PartialDate.YearOnly -> {
-        "in ${graduation.usDate()} (only the year is recorded — no month, no day)"
-      }
-    }
-
-  /**
    * Today, as a date (RFC 186, brief 0010 D15) -- [coachToday], which is now the
    * one home for the rule that the zone is OURS and never the injected clock's.
    * It moved out of this class with [COACH_ZONE] when a second coach-facing date
@@ -1111,11 +667,14 @@ class CoachingService(
    * commitments open to re-surface next session. Empty for postTurn and when
    * nothing was pending, so this is a no-op on the common path.
    */
-  private suspend fun markDisclosedCommitmentsFulfilled(prepared: Prepared) {
-    if (prepared.disclosedCommitmentIds.isEmpty()) return
+  private suspend fun markDisclosedCommitmentsFulfilled(
+    convoId: ConvoId,
+    disclosedCommitmentIds: List<CommitmentId>,
+  ) {
+    if (disclosedCommitmentIds.isEmpty()) return
     database.withConnection { session ->
-      for (commitmentId in prepared.disclosedCommitmentIds) {
-        CommitmentsDao.markFulfilled(session, commitmentId, prepared.convo.id).getOrThrow()
+      for (commitmentId in disclosedCommitmentIds) {
+        CommitmentsDao.markFulfilled(session, commitmentId, convoId).getOrThrow()
       }
     }
   }
@@ -1127,62 +686,15 @@ class CoachingService(
    * suggestions open to re-surface next session. Empty for postTurn and when
    * nothing was pending, so this is a no-op on the common path.
    */
-  private suspend fun markSurfacedFitSuggestions(prepared: Prepared) {
-    if (prepared.surfacedFitSuggestionIds.isEmpty()) return
-    database.withConnection { session ->
-      for (suggestionId in prepared.surfacedFitSuggestionIds) {
-        FitSuggestionsDao.markSurfaced(session, suggestionId, prepared.convo.id).getOrThrow()
-      }
-    }
-  }
-
-  /**
-   * Visible exchanges as ordered chat messages: USER then ASSISTANT per
-   * exchange, text-only. Cross-turn replay stays text-only (thinking and tool
-   * plumbing are not replayed); a tool excursion collapses to its user text and
-   * final answer via [ConvoProjection.visibleExchanges]. Both content sides come
-   * from the joined generic call log (RFC 106): the user input from
-   * [VisibleExchange.userContent], the coach answer from [VisibleExchange.finalContent].
-   */
-  private fun visibleHistory(
-    session: ed.unicoach.db.dao.SqlSession,
+  private suspend fun markSurfacedFitSuggestions(
     convoId: ConvoId,
-  ): List<ChatMessage> {
-    val exchanges = ConvoProjection.visibleExchanges(ConvosDao.listTurns(session, convoId).getOrThrow())
-    return buildList {
-      for (exchange in exchanges) {
-        add(ChatMessage.text(ChatRole.USER, ConvoContent.renderText(exchange.userContent)))
-        add(ChatMessage.text(ChatRole.ASSISTANT, ConvoContent.renderText(exchange.finalContent)))
+    surfacedFitSuggestionIds: List<FitSuggestionId>,
+  ) {
+    if (surfacedFitSuggestionIds.isEmpty()) return
+    database.withConnection { session ->
+      for (suggestionId in surfacedFitSuggestionIds) {
+        FitSuggestionsDao.markSurfaced(session, suggestionId, convoId).getOrThrow()
       }
-    }
-  }
-
-  private fun failedEvent(
-    retriable: Boolean,
-    reason: String,
-  ): ReplyEvent.Failed {
-    logger.warn("coach turn failed retriable=[{}] reason=[{}]", retriable, reason)
-    return ReplyEvent.Failed(retriable = retriable, reason = if (retriable) COACH_UNAVAILABLE_REASON else COACH_FAILED_REASON)
-  }
-
-  private fun validateMessage(message: String): FieldError? {
-    val trimmed = message.trim()
-    return when {
-      trimmed.isBlank() -> FieldError(MESSAGE_FIELD, "Message must not be blank")
-      message.length > MESSAGE_MAX_LENGTH -> FieldError(MESSAGE_FIELD, "Message exceeds $MESSAGE_MAX_LENGTH characters")
-      else -> null
-    }
-  }
-
-  /** Derives a name from the first message: collapse whitespace, truncate to NAME_DERIVATION_MAX, trim. */
-  private fun deriveName(message: String): ConvoName {
-    val collapsed = message.trim().replace(Regex("\\s+"), " ")
-    val truncated = collapsed.take(NAME_DERIVATION_MAX).trim()
-    return when (val result = ConvoName.create(truncated)) {
-      is ValidationResult.Valid -> result.value
-
-      // A non-blank message always yields a valid name; defensive fallback.
-      is ValidationResult.Invalid -> (ConvoName.create("Conversation") as ValidationResult.Valid).value
     }
   }
 

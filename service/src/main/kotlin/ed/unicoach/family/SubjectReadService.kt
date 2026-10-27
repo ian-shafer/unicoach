@@ -1,11 +1,15 @@
 package ed.unicoach.family
 
+import ed.unicoach.coaching.Residency
 import ed.unicoach.coaching.SharingPermissionService
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.collegelist.SharedCollegeListEntry
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.CollegeCostService
+import ed.unicoach.coaching.moneyprofile.GetMoneyProfileResult
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.MoneyProfilesDao
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.models.SharingPermission
@@ -76,9 +80,13 @@ sealed interface SharedCostPicture {
  * Family Cost Report's rule. Nothing is cached, so a severed link refuses the
  * very next call.
  *
- * Both methods are reads and both hand back projections. There is no write
+ * Every method is a read and hands back a projection. There is no write
  * here, and there must not be one: a linked adult views a student's data and
  * never changes it.
+ *
+ * The `*InSession` forms (RFC 258) run on a caller's session, so a caller that
+ * authorises and then reads more than one thing — the supporter coach's
+ * pre-flight — does it all in one transaction.
  */
 class SubjectReadService(
   private val database: Database,
@@ -91,6 +99,48 @@ class SubjectReadService(
     viewer: UserId,
     studentId: StudentId,
   ): Result<SubjectRead<List<SharedCollegeListEntry>>> = readLinked(viewer, studentId, collegeLists::listShared)
+
+  /**
+   * [collegeList] on the caller's [session], for a caller composing several
+   * reads into one transaction. The link check is still this method's own.
+   */
+  fun collegeListInSession(
+    session: SqlSession,
+    viewer: UserId,
+    studentId: StudentId,
+  ): SubjectRead<List<SharedCollegeListEntry>> = readLinkedInSession(session, viewer, studentId, collegeLists::listShared)
+
+  /**
+   * The linked student's state of residency (RFC 258), for the supporter's
+   * `fafsa_deadlines`: the family's own state's FAFSA dates are the student's
+   * state's. It is already visible to a parent inside the cost picture's money
+   * echo, so this shows nothing new — it only saves the coach reading it out
+   * of a different payload.
+   *
+   * The profile is read on the link's session; what the profile ANSWERS is
+   * resolved by [Residency.forStudent], the one home of that ladder, so a
+   * declined or corrupt residency degrades here exactly as it does for the
+   * student's own tool.
+   */
+  suspend fun residency(
+    viewer: UserId,
+    studentId: StudentId,
+  ): Result<SubjectRead<Residency>> =
+    readLinked(viewer, studentId, ::moneyProfileOf).map { read ->
+      when (read) {
+        SubjectRead.NotFound -> SubjectRead.NotFound
+        is SubjectRead.Found -> SubjectRead.Found(Residency.forStudent(studentId, RESIDENCY_CALLER) { Result.success(read.value) })
+      }
+    }
+
+  private fun moneyProfileOf(
+    session: SqlSession,
+    studentId: StudentId,
+  ): GetMoneyProfileResult =
+    MoneyProfilesDao.findActiveByStudent(session, studentId).fold(
+      onSuccess = { GetMoneyProfileResult.Found(it) },
+      onFailure = { e -> if (e is NotFoundException) GetMoneyProfileResult.NotFound else throw e },
+    )
 
   /**
    * The derived cost picture — the computation the Family Cost Report shows a
@@ -121,16 +171,27 @@ class SubjectReadService(
     read: (SqlSession, StudentId) -> T,
   ): Result<SubjectRead<T>> =
     try {
-      Result.success(
-        database.withConnection { session ->
-          SupporterStudentLinksDao.findLiveForUser(session, viewer, studentId).getOrThrow()
-            ?: return@withConnection SubjectRead.NotFound
-          SubjectRead.Found(read(session, studentId))
-        },
-      )
+      Result.success(database.withConnection { session -> readLinkedInSession(session, viewer, studentId, read) })
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       Result.failure(e)
     }
+
+  /** The live-link check, then [read] on the SAME session: what was authorised is what is read. */
+  private fun <T> readLinkedInSession(
+    session: SqlSession,
+    viewer: UserId,
+    studentId: StudentId,
+    read: (SqlSession, StudentId) -> T,
+  ): SubjectRead<T> {
+    SupporterStudentLinksDao.findLiveForUser(session, viewer, studentId).getOrThrow()
+      ?: return SubjectRead.NotFound
+    return SubjectRead.Found(read(session, studentId))
+  }
+
+  private companion object {
+    /** The door named in a degraded-residency log line: the seam, on a supporter's behalf. */
+    const val RESIDENCY_CALLER = "SubjectReadService.residency"
+  }
 }

@@ -33,6 +33,8 @@ class AppViewModel: ObservableObject {
     /// caller-scoped to the two roles, and a supporter reading the student one
     /// could only be refused.
     let supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol
+    /// The parent's own coach conversations (RFC 258).
+    let supporterConversationClient: SupporterConversationClientProtocol
     /// The working-student selection (RFC 241). Held at the composition root
     /// like every other dependency, so a test substitutes it by conforming to
     /// the protocol rather than by reaching into `UserDefaults`.
@@ -120,6 +122,7 @@ class AppViewModel: ObservableObject {
         supporterInviteClient: SupporterInviteClientProtocol? = nil,
         supporterClient: SupporterClientProtocol? = nil,
         supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol? = nil,
+        supporterConversationClient: SupporterConversationClientProtocol? = nil,
         supporterSubjectStore: SupporterSubjectStore? = nil,
         appleNameStore: AppleNameStore = UserDefaultsAppleNameStore(),
         subscriptionClient: SubscriptionClientProtocol? = nil,
@@ -141,6 +144,8 @@ class AppViewModel: ObservableObject {
         self.supporterClient = supporterClient ?? SupporterClient(apiClient: apiClient)
         self.supporterCoachingUsageClient = supporterCoachingUsageClient
             ?? SupporterCoachingUsageClient(apiClient: apiClient)
+        self.supporterConversationClient = supporterConversationClient
+            ?? SupporterConversationClient(apiClient: apiClient)
         self.supporterSubjectStore = supporterSubjectStore ?? UserDefaultsSupporterSubjectStore()
         self.appleNameStore = appleNameStore
         self.googleSignInProvider = googleSignInProvider

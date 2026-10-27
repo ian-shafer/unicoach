@@ -235,6 +235,7 @@ class AppleNotificationRoutingTest {
             notificationVerifier,
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
+            supporterCoachingConfigFrom(config),
           )
         }
       server.start(wait = false)

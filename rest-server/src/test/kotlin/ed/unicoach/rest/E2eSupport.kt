@@ -15,6 +15,7 @@ import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ScriptedAnthropicTransport
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.LlmPriceBook
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.db.Database
@@ -282,6 +283,7 @@ fun startAppModuleServer(
   budgetConfig: BudgetConfig,
   appStore: AppStoreTransport,
   provider: ChatProvider,
+  priceBook: LlmPriceBook = LlmPriceBook.EMPTY,
 ): EmbeddedServer<*, *> {
   val server =
     embeddedServer(Netty, port = 0, host = "127.0.0.1") {
@@ -290,7 +292,7 @@ fun startAppModuleServer(
         database,
         SessionConfig.from(config).getOrThrow(),
         RequestSizeConfig.from(config).getOrThrow(),
-        LlmCallLog(provider, database),
+        LlmCallLog(provider, database, priceBook),
         CoachingConfig.from(config).getOrThrow(),
         ClientKeyGateConfig.from(config).getOrThrow(),
         EmailVerificationConfig.from(config).getOrThrow(),
@@ -305,6 +307,7 @@ fun startAppModuleServer(
         testAppleNotificationVerifier(),
         costReportConfigFrom(config),
         supporterInviteConfigFrom(config),
+        supporterCoachingConfigFrom(config),
       )
     }
   server.start(wait = false)

@@ -28,7 +28,7 @@ struct RegisterResponse: Codable {
 /// derives this copy — so the server may publish a fifth word before this app
 /// is rebuilt. Decoding is therefore LENIENT (see `init(from:)`): a word this
 /// client does not know decodes as [unrecognised], which carries it verbatim.
-enum SupporterRelationship: Codable, Equatable, Sendable {
+enum SupporterRelationship: Codable, Equatable, Hashable, Sendable {
     case parent
     case guardian
     case grandparent
@@ -148,7 +148,7 @@ struct PublicSupporter: Codable, Equatable, Sendable {
 /// `Identifiable` by the LINK, not by the student: the link is what a later
 /// slice unlinks and what a later read authorises against, and two links to one
 /// student would otherwise collide in a `ForEach`.
-struct LinkedStudent: Codable, Equatable, Identifiable, Sendable {
+struct LinkedStudent: Codable, Equatable, Hashable, Identifiable, Sendable {
     let linkId: UUID
     let studentId: UUID
     let name: String
@@ -343,6 +343,15 @@ enum ServerErrorCode: String {
     /// `approveStudentSupporterRequest` in `api-specs/openapi.yaml`. From a
     /// list that showed the request, it means the list is out of date.
     case supporterRequestNotFound = "supporter_request_not_found"
+    /// The 404 the parent's coach doors answer for a caller with no
+    /// `supporters` row (RFC 258) — the same answer the supporter home gives
+    /// for the same absence.
+    case supporterNotFound = "supporter_not_found"
+    /// The 404 the subject seam answers when the caller's connection to the
+    /// student is not live: never linked, disconnected, or a closed student —
+    /// one code for all (RFC 250). On the parent's coach (RFC 258) it means the
+    /// connection ended, so the thread stops taking turns.
+    case studentNotFound = "student_not_found"
     case timeout = "TIMEOUT"
     case networkError = "NETWORK_ERROR"
     case serverError = "SERVER_ERROR"
@@ -1049,6 +1058,39 @@ struct CreateConversationRequest: Codable, Sendable {
 }
 
 struct PostMessageRequest: Codable, Sendable {
+    let message: String
+}
+
+// MARK: - The parent's coach (RFC 258)
+
+/// One of a parent's own coach conversations, from
+/// `GET /api/v1/supporters/me/conversations`: which student it is about, so the
+/// coach screen can show the conversations about the student the parent has
+/// selected. No archive field — the parent surface has none.
+struct SupporterConversation: Codable, Sendable, Identifiable, Equatable, Hashable {
+    let id: UUID
+    let studentId: UUID
+    let name: String
+    let createdAt: Date
+    let updatedAt: Date
+
+    /// The thread's own view of this conversation: the student's `Conversation`
+    /// shape, which is what `ConversationViewModel` re-enters with. A parent's
+    /// conversation is never archived, and its recency is not this read's.
+    var asConversation: Conversation {
+        Conversation(id: id, name: name, createdAt: createdAt, updatedAt: updatedAt, lastActivityAt: nil, archivedAt: nil)
+    }
+}
+
+struct SupporterConversationListResponse: Codable, Sendable {
+    let conversations: [SupporterConversation]
+}
+
+/// `POST /api/v1/supporters/me/conversations/stream`: the student is named in
+/// the body on the one call that creates, and comes from the conversation row
+/// on every turn after it.
+struct CreateSupporterConversationRequest: Codable, Sendable {
+    let studentId: UUID
     let message: String
 }
 

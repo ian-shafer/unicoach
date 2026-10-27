@@ -18,8 +18,9 @@ import java.time.Instant
  * an account: every account pays for itself, and one human may hold BOTH a
  * `students` row and a `supporters` row — that person has ONE subscription, so
  * their spend on both sides is ONE total. Neither owner-side view is rewritten, so
- * a student's number is the number it always was: `supporter_llm_costs` has no
- * writer yet, so the union's second arm is empty for every account alive today.
+ * a student's number is the number it always was: `supporter_llm_costs` is
+ * written only for a supporter's own coach calls (RFC 258), which the student
+ * spine never counted.
  *
  * Both owner-side views are read THROUGH this one door, so the projection, the
  * window and the reading policy below exist once rather than once per spine. A

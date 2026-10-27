@@ -8,10 +8,12 @@ import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.moneyprofile.GetMoneyProfileResult
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.noArgumentToolDefinition
+import ed.unicoach.coaching.toolErrorObject
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AidDeadlineEvent
 import ed.unicoach.db.models.PublishedDeadline
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.UserId
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -152,310 +154,336 @@ class FafsaDeadlineChatTool(
     input: JsonObject,
   ): JsonObject {
     unknownFieldsReason(input, emptySet())?.let { return errorObject(it) }
-
-    val deadlines =
-      readDeadlines(COACH_ZONE)
-        .getOrElse { e ->
-          logger.warn("tool [{}] {} for student=[{}]", TOOL_NAME, READ_FAILED_REASON, studentId.value, e)
-          return errorObject(READ_FAILED_REASON)
-        }
-
-    return when (deadlines) {
-      // The residency is read on the ANSWERING arm only. A refusal carries no
-      // state at all, so a profile read on that path would buy a fact the
-      // payload has nowhere to put.
-      is FafsaDeadlines.NoDeadlines -> refusalObject(deadlines)
-
-      is FafsaDeadlines.Resolved -> deadlinesObject(deadlines, Residency.forStudent(studentId, TOOL_NAME, readProfile))
-    }
-  }
-
-  /**
-   * The refusal: which of the three reasons it is, the cycles we hold, and the
-   * sentence that says it.
-   *
-   * IT CARRIES NO DATE AT ALL -- not an expiry, not even today. The service
-   * already withholds them (RFC 230: "a refusal exists to withhold dates"), and
-   * this door keeps that: a refusal to name dates with a date in it invites the
-   * model to compute from the one it was given, and the coach is told today's
-   * date in its system prompt anyway. `held_award_years` stays, because a cycle
-   * label is the publisher's name for what we hold and is not a day anybody can
-   * act on.
-   */
-  private fun refusalObject(refused: FafsaDeadlines.NoDeadlines): JsonObject =
-    buildJsonObject {
-      put(NO_DEADLINES_KEY, true)
-      put(REASON_KEY, reasonCodeOf(refused.reason))
-      putJsonArray(HELD_AWARD_YEARS_KEY) { refused.heldAwardYears.forEach { add(JsonPrimitive(it.label)) } }
-      put(REFUSAL_KEY, refusalFor(refused.reason))
-    }
-
-  /**
-   * The answer: today, the cycle being filed, the federal rows every family is
-   * bound by, this family's own state's rows where we hold them, and -- where we
-   * do not -- which kind of gap that is.
-   *
-   * THE FEDERAL ROWS ARE SERVED BEFORE ANYTHING IS ASKED FOR. They bind every
-   * family, so no arm of [stateAnswerOf] withholds them and no arm fails the tool:
-   * the state half is guided, never gated.
-   */
-  private fun deadlinesObject(
-    resolved: FafsaDeadlines.Resolved,
-    residency: Residency,
-  ): JsonObject {
-    val stateBlock = stateBlockOf(stateAnswerOf(resolved, residency))
-    val federalEventsAbsent = federalEventsAbsentFrom(resolved.federal)
-    return buildJsonObject {
-      put(AS_OF_KEY, resolved.asOf.toString())
-      // The zone rides beside the date, from the one constant that owns it: a
-      // date with no zone beside it is a date in whatever zone the reader assumes.
-      put(AS_OF_ZONE_KEY, COACH_ZONE_LABEL)
-      put(FILING_YEAR_KEY, resolved.filingYear.label)
-      // Explicit nulls, never omitted keys: an absent key reads as a field the
-      // tool forgot, and every one of these three is an answer.
-      //
-      // The CODE rides from the residency itself, not from the block below: a
-      // state on file with a gap beside it is still a state we hold, and the
-      // code identifies it either way.
-      put(STATE_KEY, residency.familyResidencyState?.let(::JsonPrimitive) ?: JsonNull)
-      // The state's own NAME is the service's, attached to a SERVED state and
-      // nowhere else: naming a state we hold no rows for would need a second
-      // read of the codebook, and a second read is a second answer waiting to
-      // disagree with this one.
-      //
-      // The name, the gap and the rows are read off the ONE [StateBlock] above,
-      // so a name without rows, or a gap beside rows, is not a payload this file
-      // can build.
-      put(STATE_NAME_KEY, stateBlock.name?.let(::JsonPrimitive) ?: JsonNull)
-      put(STATE_GAP_KEY, stateBlock.gap?.value?.let(::JsonPrimitive) ?: JsonNull)
-      putJsonArray(FEDERAL_DEADLINES_KEY) { resolved.federal.forEach { add(deadlineObject(it, resolved.filingYear)) } }
-      // The federal absence, NAMED. The array is short whenever we hold no live
-      // row for one of the events a family actually asks about, and a silently
-      // short array is the one thing this tool cannot afford: "when is the FAFSA
-      // due" answered by omission reads as an answer.
-      putJsonArray(FEDERAL_EVENTS_ABSENT_KEY) { federalEventsAbsent.forEach { add(JsonPrimitive(it.value)) } }
-      putJsonArray(STATE_DEADLINES_KEY) { stateBlock.deadlines.forEach { add(deadlineObject(it, resolved.filingYear)) } }
-      put(SOURCE_NOTE_KEY, SOURCE_NOTE)
-    }
-  }
-
-  /**
-   * One row of the service's answer, field for field: its own cycle, the program
-   * as its publisher names it, what kind of date it is, the day where there is
-   * one, the publisher's own words for it, and the citation that proves a human
-   * read it.
-   *
-   * `as_published` RIDES ON EVERY ROW, including a dated one: a `DATE` cannot
-   * hold "11:59 p.m. Pacific", which is what the state actually enforces, and a
-   * family shown only our parse would attribute OUR reading to the publisher.
-   * The day is present ONLY on the arm that has one, so [KIND_KEY] is what the
-   * model branches on and [DATE_KEY] is never a silent null.
-   */
-  private fun deadlineObject(
-    deadline: FafsaDeadline,
-    filingYear: AcademicYear,
-  ): JsonObject =
-    buildJsonObject {
-      put(AWARD_YEAR_KEY, deadline.awardYear.label)
-      // The cycle is not left as two labels for the model to compare: the live
-      // set is the newest cycle PER JURISDICTION, so a row from another cycle is
-      // the normal answer rather than the edge, and it rides with the code and
-      // the sentence that say so (the [FederalAidPolicyChatTool] convention).
-      // The statement is an explicit null on a current row rather than an
-      // omitted key, because every other key on this row is.
-      put(AWARD_YEAR_STATUS_KEY, if (deadline.awardYear == filingYear) CYCLE_CURRENT else CYCLE_OTHER_CYCLE)
-      put(
-        AWARD_YEAR_STATEMENT_KEY,
-        if (deadline.awardYear == filingYear) JsonNull else JsonPrimitive(otherCycleStatement(deadline.awardYear, filingYear)),
-      )
-      put(PROGRAM_KEY, deadline.program)
-      put(EVENT_KEY, deadline.event.value)
-      put(KIND_KEY, kindCodeOf(deadline.deadline))
-      put(DATE_KEY, dayOf(deadline.deadline)?.toString()?.let(::JsonPrimitive) ?: JsonNull)
-      put(AS_PUBLISHED_KEY, deadline.deadline.deadlineAsPublished)
-      // The citation is PER ROW and not per answer: fifty agencies publish fifty
-      // pages, and a family checking one date needs the page that date came from.
-      put(PUBLISHER_KEY, deadline.publisher)
-      put(SOURCE_URL_KEY, deadline.sourceUrl)
-      // AN ARCHIVED ADDRESS WE RECORDED AS A GRAVE IS NOT OFFERED, and the
-      // question is ASKED and never re-spelled: the one home for "may this
-      // address still be pointed at" is [SourceUrlStatus.rendersAsAnchor], so a
-      // status added later is answered there rather than inheriting "yes" from a
-      // `!= NOT_FOUND` written here. Handing the model a url we know answers 404
-      // is the same harm as an anchor onto one -- the coach reads it aloud -- and
-      // the key is already an explicit null for a row that was read through no
-      // archive at all, so a withheld address needs no new vocabulary.
-      put(
-        ARCHIVE_URL_KEY,
-        deadline.archive
-          ?.takeIf { it.urlStatus.rendersAsAnchor }
-          ?.url
-          ?.let(::JsonPrimitive) ?: JsonNull,
-      )
-      put(CHECKED_ON_KEY, deadline.checkedOn.toString())
-    }
-
-  /**
-   * What this family is told about their OWN state: the rows we hold for it, or
-   * WHICH gap stands in their place. Never both and never neither.
-   *
-   * ONE VALUE, ONE DECISION. `state_name`, `state_gap` and `state_deadlines` are
-   * three faces of the same answer, so a renderer that worked each of them out
-   * for itself could name a gap beside the rows that fill it.
-   */
-  private sealed interface StateAnswer {
-    /** That state's rows were served, and the name the service already read for it. */
-    data class Served(
-      val state: StateDeadlines,
-    ) : StateAnswer
-
-    /**
-     * No rows, and WHY -- the gap as the typed vocabulary that owns its own wire
-     * code, so a gap this file can build is a gap the legend explains.
-     */
-    data class Gap(
-      val gap: StateGap,
-    ) : StateAnswer
-  }
-
-  /**
-   * The state half of the answer as the payload writes it: that state's name,
-   * the gap standing in its rows' place, and the rows themselves.
-   *
-   * Resolved from [StateAnswer] in ONE exhaustive `when`, and never by a safe
-   * cast at each key: a cast that misses folds into a null, and
-   * `state_gap: null` beside an empty `state_deadlines` is the one payload the
-   * legend cannot describe -- it tells the model that state's rows WERE served.
-   * The three keys are not adjacent on the wire, so the builder reads them off
-   * this one value rather than writing them together.
-   */
-  private data class StateBlock(
-    val name: String?,
-    val gap: StateGap?,
-    val deadlines: List<FafsaDeadline>,
-  )
-
-  private fun stateBlockOf(answer: StateAnswer): StateBlock =
-    when (answer) {
-      is StateAnswer.Served -> StateBlock(answer.state.name, null, answer.state.deadlines)
-      is StateAnswer.Gap -> StateBlock(null, answer.gap, emptyList())
-    }
-
-  /**
-   * The federal events we hold NO live row for, out of the ones a federal
-   * publisher issues at all.
-   *
-   * NAMED rather than derived inside the array it fills: "when is the FAFSA
-   * due" answered by a silently short array reads as an answer, so which events
-   * are missing is a decision with a name of its own -- the shape
-   * [FafsaDeadlineService] already gives the jurisdiction half as
-   * `missingJurisdictions`.
-   */
-  private fun federalEventsAbsentFrom(federal: List<FafsaDeadline>): List<AidDeadlineEvent> {
-    val held = federal.mapTo(mutableSetOf()) { it.event }
-    return FEDERAL_EVENTS.filter { it !in held }
-  }
-
-  /**
-   * WHETHER this family's state was served, and when it was not, WHY.
-   *
-   * A ROUTER and nothing else: exhaustive over [Residency] with no `else`, so a
-   * fourth residency arm has to decide what a family is told rather than
-   * defaulting into one of these, and each branch is a NAME you open for its own
-   * detail rather than a lookup inlined in a routing table.
-   */
-  private fun stateAnswerOf(
-    resolved: FafsaDeadlines.Resolved,
-    residency: Residency,
-  ): StateAnswer =
-    when (residency) {
-      // No profile at all, or the question never put: the one arm the ask
-      // belongs in, and the prompt is where the asking is stated.
-      Residency.NotAsked -> StateAnswer.Gap(StateGap.NOT_ASKED)
-
-      is Residency.Unavailable -> gapForUnusableResidency(residency.cause)
-
-      is Residency.OnFile -> stateAnswerForStateOnFile(resolved, residency.familyResidencyState)
-    }
-
-  /**
-   * A decision the family made, or a fault of ours -- NAMED apart, because "they
-   * chose not to say" and "we could not read it" are different facts and only
-   * one of them is theirs.
-   */
-  private fun gapForUnusableResidency(cause: Residency.Cause): StateAnswer.Gap =
-    when (cause) {
-      Residency.Cause.DECLINED -> StateAnswer.Gap(StateGap.DECLINED)
-      Residency.Cause.READ_FAILED, Residency.Cause.CORRUPT_PROFILE -> StateAnswer.Gap(StateGap.UNAVAILABLE)
-    }
-
-  /**
-   * A state we hold on file: its own rows where this read served them, and
-   * otherwise WHICH gap stands in their place.
-   *
-   * The `not_verified` list is the service's own
-   * [FafsaDeadlines.Resolved.missingJurisdictions] and is never re-derived here
-   * (D9); what this door says about it is that we hold no verified deadline, and
-   * never the agency that value may name ([StateGap.NOT_VERIFIED]), so it is
-   * never "we went to their page and were blocked". [StateGap.NOT_SERVED] is a claim about the FAMILY's
-   * jurisdiction rather than about our data, so it is the one arm that has to be
-   * TESTED before it is said.
-   */
-  private fun stateAnswerForStateOnFile(
-    resolved: FafsaDeadlines.Resolved,
-    familyResidencyState: String,
-  ): StateAnswer {
-    resolved.states
-      .firstOrNull { it.jurisdiction.uspsCode == familyResidencyState }
-      ?.let { return StateAnswer.Served(it) }
-    // WHAT THIS READ COVERS AT ALL (D13): the jurisdictions it served, plus the
-    // served jurisdictions it holds nothing for. Both halves are the service's
-    // own answer, and neither is a second list of ours waiting to disagree with
-    // the codebook.
-    val coveredJurisdictions =
-      resolved.states.mapTo(mutableSetOf()) { it.jurisdiction.uspsCode } +
-        resolved.missingJurisdictions.map { it.jurisdiction.uspsCode }
-    return when {
-      // Covered, and we hold no live row for it (D9): we hold no deadline for
-      // that state that a human has verified. It is NOT a claim that anybody
-      // went to that agency's page and was blocked; nothing in the data records
-      // an attempt.
-      familyResidencyState in coveredJurisdictions -> {
-        StateAnswer.Gap(StateGap.NOT_VERIFIED)
-      }
-
-      // D13, TESTED and not inferred. The read names every served jurisdiction
-      // exactly once across the two halves of its answer, so a code it names
-      // nowhere is outside the corpus -- but ONLY if the read was COMPLETE,
-      // which is the one thing an `else` cannot know. Reached by elimination,
-      // this arm is also what a Californian would hear the day `us_states` lost
-      // a row: that their state is not one of the fifty.
-      coveredJurisdictions.size == SERVED_JURISDICTIONS -> {
-        StateAnswer.Gap(StateGap.NOT_SERVED)
-      }
-
-      // The read did not account for the 50 states and DC, so we cannot say
-      // where this family's jurisdiction stands. That is OUR gap and never a
-      // claim about them, and it is logged with both counts because nothing else
-      // records that a family was served a degraded answer.
-      else -> {
-        logger.error(
-          "tool [{}]: residency [{}] is named neither among the [{}] served states nor the [{}] gaps, so " +
-            "this read did not account for the 50 states and DC (D13) -- serving the federal rows with " +
-            "gap [{}] rather than a claim about that jurisdiction",
-          TOOL_NAME,
-          familyResidencyState,
-          resolved.states.size,
-          resolved.missingJurisdictions.size,
-          StateGap.NOT_VERIFIED.value,
-        )
-        StateAnswer.Gap(StateGap.NOT_VERIFIED)
-      }
+    return answer(readDeadlines, studentId, viewer = null) {
+      Residency.forStudent(studentId, TOOL_NAME, readProfile)
     }
   }
 
   companion object {
     private val logger = LoggerFactory.getLogger(FafsaDeadlineChatTool::class.java)
+
+    /**
+     * The whole answer, over a deadline read and a RESIDENCY read (RFC 258): the
+     * one function the student's tool and the supporter's subject tool both call,
+     * so the two coaches cannot tell one family two different FAFSA stories.
+     * Only where the residency comes from differs -- the student's own money
+     * profile, or the linked student's read through the subject seam.
+     *
+     * [readResidency] runs on the ANSWERING arm only. A refusal carries no state
+     * at all, so a profile read on that path would buy a fact the payload has
+     * nowhere to put. [studentId] and [viewer] name whose call faulted in the
+     * log line: [viewer] is the supporter reading about the student, null on the
+     * student's own door, where the student is the only party.
+     */
+    suspend fun answer(
+      readDeadlines: suspend (ZoneId) -> Result<FafsaDeadlines>,
+      studentId: StudentId,
+      viewer: UserId?,
+      readResidency: suspend () -> Residency,
+    ): JsonObject {
+      val deadlines =
+        readDeadlines(COACH_ZONE)
+          .getOrElse { e ->
+            logger.warn(
+              "tool [{}] {} for viewer=[{}] student=[{}]",
+              TOOL_NAME,
+              READ_FAILED_REASON,
+              viewer?.asString,
+              studentId.asString,
+              e,
+            )
+            return toolErrorObject(READ_FAILED_REASON)
+          }
+
+      return when (deadlines) {
+        is FafsaDeadlines.NoDeadlines -> refusalObject(deadlines)
+        is FafsaDeadlines.Resolved -> deadlinesObject(deadlines, readResidency())
+      }
+    }
+
+    /**
+     * The refusal: which of the three reasons it is, the cycles we hold, and the
+     * sentence that says it.
+     *
+     * IT CARRIES NO DATE AT ALL -- not an expiry, not even today. The service
+     * already withholds them (RFC 230: "a refusal exists to withhold dates"), and
+     * this door keeps that: a refusal to name dates with a date in it invites the
+     * model to compute from the one it was given, and the coach is told today's
+     * date in its system prompt anyway. `held_award_years` stays, because a cycle
+     * label is the publisher's name for what we hold and is not a day anybody can
+     * act on.
+     */
+    private fun refusalObject(refused: FafsaDeadlines.NoDeadlines): JsonObject =
+      buildJsonObject {
+        put(NO_DEADLINES_KEY, true)
+        put(REASON_KEY, reasonCodeOf(refused.reason))
+        putJsonArray(HELD_AWARD_YEARS_KEY) { refused.heldAwardYears.forEach { add(JsonPrimitive(it.label)) } }
+        put(REFUSAL_KEY, refusalFor(refused.reason))
+      }
+
+    /**
+     * The answer: today, the cycle being filed, the federal rows every family is
+     * bound by, this family's own state's rows where we hold them, and -- where we
+     * do not -- which kind of gap that is.
+     *
+     * THE FEDERAL ROWS ARE SERVED BEFORE ANYTHING IS ASKED FOR. They bind every
+     * family, so no arm of [stateAnswerOf] withholds them and no arm fails the tool:
+     * the state half is guided, never gated.
+     */
+    private fun deadlinesObject(
+      resolved: FafsaDeadlines.Resolved,
+      residency: Residency,
+    ): JsonObject {
+      val stateBlock = stateBlockOf(stateAnswerOf(resolved, residency))
+      val federalEventsAbsent = federalEventsAbsentFrom(resolved.federal)
+      return buildJsonObject {
+        put(AS_OF_KEY, resolved.asOf.toString())
+        // The zone rides beside the date, from the one constant that owns it: a
+        // date with no zone beside it is a date in whatever zone the reader assumes.
+        put(AS_OF_ZONE_KEY, COACH_ZONE_LABEL)
+        put(FILING_YEAR_KEY, resolved.filingYear.label)
+        // Explicit nulls, never omitted keys: an absent key reads as a field the
+        // tool forgot, and every one of these three is an answer.
+        //
+        // The CODE rides from the residency itself, not from the block below: a
+        // state on file with a gap beside it is still a state we hold, and the
+        // code identifies it either way.
+        put(STATE_KEY, residency.familyResidencyState?.let(::JsonPrimitive) ?: JsonNull)
+        // The state's own NAME is the service's, attached to a SERVED state and
+        // nowhere else: naming a state we hold no rows for would need a second
+        // read of the codebook, and a second read is a second answer waiting to
+        // disagree with this one.
+        //
+        // The name, the gap and the rows are read off the ONE [StateBlock] above,
+        // so a name without rows, or a gap beside rows, is not a payload this file
+        // can build.
+        put(STATE_NAME_KEY, stateBlock.name?.let(::JsonPrimitive) ?: JsonNull)
+        put(STATE_GAP_KEY, stateBlock.gap?.value?.let(::JsonPrimitive) ?: JsonNull)
+        putJsonArray(FEDERAL_DEADLINES_KEY) { resolved.federal.forEach { add(deadlineObject(it, resolved.filingYear)) } }
+        // The federal absence, NAMED. The array is short whenever we hold no live
+        // row for one of the events a family actually asks about, and a silently
+        // short array is the one thing this tool cannot afford: "when is the FAFSA
+        // due" answered by omission reads as an answer.
+        putJsonArray(FEDERAL_EVENTS_ABSENT_KEY) { federalEventsAbsent.forEach { add(JsonPrimitive(it.value)) } }
+        putJsonArray(STATE_DEADLINES_KEY) { stateBlock.deadlines.forEach { add(deadlineObject(it, resolved.filingYear)) } }
+        put(SOURCE_NOTE_KEY, SOURCE_NOTE)
+      }
+    }
+
+    /**
+     * One row of the service's answer, field for field: its own cycle, the program
+     * as its publisher names it, what kind of date it is, the day where there is
+     * one, the publisher's own words for it, and the citation that proves a human
+     * read it.
+     *
+     * `as_published` RIDES ON EVERY ROW, including a dated one: a `DATE` cannot
+     * hold "11:59 p.m. Pacific", which is what the state actually enforces, and a
+     * family shown only our parse would attribute OUR reading to the publisher.
+     * The day is present ONLY on the arm that has one, so [KIND_KEY] is what the
+     * model branches on and [DATE_KEY] is never a silent null.
+     */
+    private fun deadlineObject(
+      deadline: FafsaDeadline,
+      filingYear: AcademicYear,
+    ): JsonObject =
+      buildJsonObject {
+        put(AWARD_YEAR_KEY, deadline.awardYear.label)
+        // The cycle is not left as two labels for the model to compare: the live
+        // set is the newest cycle PER JURISDICTION, so a row from another cycle is
+        // the normal answer rather than the edge, and it rides with the code and
+        // the sentence that say so (the [FederalAidPolicyChatTool] convention).
+        // The statement is an explicit null on a current row rather than an
+        // omitted key, because every other key on this row is.
+        put(AWARD_YEAR_STATUS_KEY, if (deadline.awardYear == filingYear) CYCLE_CURRENT else CYCLE_OTHER_CYCLE)
+        put(
+          AWARD_YEAR_STATEMENT_KEY,
+          if (deadline.awardYear == filingYear) JsonNull else JsonPrimitive(otherCycleStatement(deadline.awardYear, filingYear)),
+        )
+        put(PROGRAM_KEY, deadline.program)
+        put(EVENT_KEY, deadline.event.value)
+        put(KIND_KEY, kindCodeOf(deadline.deadline))
+        put(DATE_KEY, dayOf(deadline.deadline)?.toString()?.let(::JsonPrimitive) ?: JsonNull)
+        put(AS_PUBLISHED_KEY, deadline.deadline.deadlineAsPublished)
+        // The citation is PER ROW and not per answer: fifty agencies publish fifty
+        // pages, and a family checking one date needs the page that date came from.
+        put(PUBLISHER_KEY, deadline.publisher)
+        put(SOURCE_URL_KEY, deadline.sourceUrl)
+        // AN ARCHIVED ADDRESS WE RECORDED AS A GRAVE IS NOT OFFERED, and the
+        // question is ASKED and never re-spelled: the one home for "may this
+        // address still be pointed at" is [SourceUrlStatus.rendersAsAnchor], so a
+        // status added later is answered there rather than inheriting "yes" from a
+        // `!= NOT_FOUND` written here. Handing the model a url we know answers 404
+        // is the same harm as an anchor onto one -- the coach reads it aloud -- and
+        // the key is already an explicit null for a row that was read through no
+        // archive at all, so a withheld address needs no new vocabulary.
+        put(
+          ARCHIVE_URL_KEY,
+          deadline.archive
+            ?.takeIf { it.urlStatus.rendersAsAnchor }
+            ?.url
+            ?.let(::JsonPrimitive) ?: JsonNull,
+        )
+        put(CHECKED_ON_KEY, deadline.checkedOn.toString())
+      }
+
+    /**
+     * What this family is told about their OWN state: the rows we hold for it, or
+     * WHICH gap stands in their place. Never both and never neither.
+     *
+     * ONE VALUE, ONE DECISION. `state_name`, `state_gap` and `state_deadlines` are
+     * three faces of the same answer, so a renderer that worked each of them out
+     * for itself could name a gap beside the rows that fill it.
+     */
+    private sealed interface StateAnswer {
+      /** That state's rows were served, and the name the service already read for it. */
+      data class Served(
+        val state: StateDeadlines,
+      ) : StateAnswer
+
+      /**
+       * No rows, and WHY -- the gap as the typed vocabulary that owns its own wire
+       * code, so a gap this file can build is a gap the legend explains.
+       */
+      data class Gap(
+        val gap: StateGap,
+      ) : StateAnswer
+    }
+
+    /**
+     * The state half of the answer as the payload writes it: that state's name,
+     * the gap standing in its rows' place, and the rows themselves.
+     *
+     * Resolved from [StateAnswer] in ONE exhaustive `when`, and never by a safe
+     * cast at each key: a cast that misses folds into a null, and
+     * `state_gap: null` beside an empty `state_deadlines` is the one payload the
+     * legend cannot describe -- it tells the model that state's rows WERE served.
+     * The three keys are not adjacent on the wire, so the builder reads them off
+     * this one value rather than writing them together.
+     */
+    private data class StateBlock(
+      val name: String?,
+      val gap: StateGap?,
+      val deadlines: List<FafsaDeadline>,
+    )
+
+    private fun stateBlockOf(answer: StateAnswer): StateBlock =
+      when (answer) {
+        is StateAnswer.Served -> StateBlock(answer.state.name, null, answer.state.deadlines)
+        is StateAnswer.Gap -> StateBlock(null, answer.gap, emptyList())
+      }
+
+    /**
+     * The federal events we hold NO live row for, out of the ones a federal
+     * publisher issues at all.
+     *
+     * NAMED rather than derived inside the array it fills: "when is the FAFSA
+     * due" answered by a silently short array reads as an answer, so which events
+     * are missing is a decision with a name of its own -- the shape
+     * [FafsaDeadlineService] already gives the jurisdiction half as
+     * `missingJurisdictions`.
+     */
+    private fun federalEventsAbsentFrom(federal: List<FafsaDeadline>): List<AidDeadlineEvent> {
+      val held = federal.mapTo(mutableSetOf()) { it.event }
+      return FEDERAL_EVENTS.filter { it !in held }
+    }
+
+    /**
+     * WHETHER this family's state was served, and when it was not, WHY.
+     *
+     * A ROUTER and nothing else: exhaustive over [Residency] with no `else`, so a
+     * fourth residency arm has to decide what a family is told rather than
+     * defaulting into one of these, and each branch is a NAME you open for its own
+     * detail rather than a lookup inlined in a routing table.
+     */
+    private fun stateAnswerOf(
+      resolved: FafsaDeadlines.Resolved,
+      residency: Residency,
+    ): StateAnswer =
+      when (residency) {
+        // No profile at all, or the question never put: the one arm the ask
+        // belongs in, and the prompt is where the asking is stated.
+        Residency.NotAsked -> StateAnswer.Gap(StateGap.NOT_ASKED)
+
+        is Residency.Unavailable -> gapForUnusableResidency(residency.cause)
+
+        is Residency.OnFile -> stateAnswerForStateOnFile(resolved, residency.familyResidencyState)
+      }
+
+    /**
+     * A decision the family made, or a fault of ours -- NAMED apart, because "they
+     * chose not to say" and "we could not read it" are different facts and only
+     * one of them is theirs.
+     */
+    private fun gapForUnusableResidency(cause: Residency.Cause): StateAnswer.Gap =
+      when (cause) {
+        Residency.Cause.DECLINED -> StateAnswer.Gap(StateGap.DECLINED)
+        Residency.Cause.READ_FAILED, Residency.Cause.CORRUPT_PROFILE -> StateAnswer.Gap(StateGap.UNAVAILABLE)
+      }
+
+    /**
+     * A state we hold on file: its own rows where this read served them, and
+     * otherwise WHICH gap stands in their place.
+     *
+     * The `not_verified` list is the service's own
+     * [FafsaDeadlines.Resolved.missingJurisdictions] and is never re-derived here
+     * (D9); what this door says about it is that we hold no verified deadline, and
+     * never the agency that value may name ([StateGap.NOT_VERIFIED]), so it is
+     * never "we went to their page and were blocked". [StateGap.NOT_SERVED] is a claim about the FAMILY's
+     * jurisdiction rather than about our data, so it is the one arm that has to be
+     * TESTED before it is said.
+     */
+    private fun stateAnswerForStateOnFile(
+      resolved: FafsaDeadlines.Resolved,
+      familyResidencyState: String,
+    ): StateAnswer {
+      resolved.states
+        .firstOrNull { it.jurisdiction.uspsCode == familyResidencyState }
+        ?.let { return StateAnswer.Served(it) }
+      // WHAT THIS READ COVERS AT ALL (D13): the jurisdictions it served, plus the
+      // served jurisdictions it holds nothing for. Both halves are the service's
+      // own answer, and neither is a second list of ours waiting to disagree with
+      // the codebook.
+      val coveredJurisdictions =
+        resolved.states.mapTo(mutableSetOf()) { it.jurisdiction.uspsCode } +
+          resolved.missingJurisdictions.map { it.jurisdiction.uspsCode }
+      return when {
+        // Covered, and we hold no live row for it (D9): we hold no deadline for
+        // that state that a human has verified. It is NOT a claim that anybody
+        // went to that agency's page and was blocked; nothing in the data records
+        // an attempt.
+        familyResidencyState in coveredJurisdictions -> {
+          StateAnswer.Gap(StateGap.NOT_VERIFIED)
+        }
+
+        // D13, TESTED and not inferred. The read names every served jurisdiction
+        // exactly once across the two halves of its answer, so a code it names
+        // nowhere is outside the corpus -- but ONLY if the read was COMPLETE,
+        // which is the one thing an `else` cannot know. Reached by elimination,
+        // this arm is also what a Californian would hear the day `us_states` lost
+        // a row: that their state is not one of the fifty.
+        coveredJurisdictions.size == SERVED_JURISDICTIONS -> {
+          StateAnswer.Gap(StateGap.NOT_SERVED)
+        }
+
+        // The read did not account for the 50 states and DC, so we cannot say
+        // where this family's jurisdiction stands. That is OUR gap and never a
+        // claim about them, and it is logged with both counts because nothing else
+        // records that a family was served a degraded answer.
+        else -> {
+          logger.error(
+            "tool [{}]: residency [{}] is named neither among the [{}] served states nor the [{}] gaps, so " +
+              "this read did not account for the 50 states and DC (D13) -- serving the federal rows with " +
+              "gap [{}] rather than a claim about that jurisdiction",
+            TOOL_NAME,
+            familyResidencyState,
+            resolved.states.size,
+            resolved.missingJurisdictions.size,
+            StateGap.NOT_VERIFIED.value,
+          )
+          StateAnswer.Gap(StateGap.NOT_VERIFIED)
+        }
+      }
+    }
 
     const val TOOL_NAME = "fafsa_deadlines"
 

@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.extraction
 
 import ed.unicoach.coaching.budget.Entitlement
+import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.StudentId
 
 /**
@@ -11,6 +12,8 @@ import ed.unicoach.db.models.StudentId
  *   no-op).
  * - [SkippedBudgetExhausted] → `JobResult.Success` (named pre-LLM skip: no
  *   spend, no run row, no retry).
+ * - [SupporterConversation] → `JobResult.Success` (named pre-LLM skip: a
+ *   supporter's conversation is never distilled onto the student's record).
  * - [TransientFailure] → `JobResult.RetriableFailure` (provider error,
  *   unparseable output, stale claim target, or a transient DB error); retried up
  *   to `maxAttempts`, then dead-lettered.
@@ -28,6 +31,17 @@ sealed interface ExtractionResult {
   data class SkippedBudgetExhausted(
     val studentId: StudentId,
     val entitlement: Entitlement,
+  ) : ExtractionResult
+
+  /**
+   * The conversation is a supporter's own (RFC 258), ABOUT the student but not
+   * the student's: distilling it would write the parent's words into the
+   * student's claims and observations. The pass made no LLM call and wrote no
+   * row. No parent turn enqueues extraction, so reaching this is a stray job;
+   * the skip is the backstop that makes the cut point hold anyway.
+   */
+  data class SupporterConversation(
+    val convoId: ConvoId,
   ) : ExtractionResult
 
   data class TransientFailure(

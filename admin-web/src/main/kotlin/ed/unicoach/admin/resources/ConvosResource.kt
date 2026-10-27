@@ -13,10 +13,12 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.models.ConvoId
+import ed.unicoach.db.models.ConvoParty
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.db.models.kind
 import ed.unicoach.queue.ExtractionPayload
 import ed.unicoach.queue.JobType
 import ed.unicoach.queue.QueueService
@@ -59,6 +61,11 @@ class ConvosResource(
     listOf(
       AdminField("id", "ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "convo"),
       AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
+      // Who the conversation is WITH (RFC 258): the student, or a supporter
+      // talking to their own coach about that student. This global view lists
+      // both, so the party is what tells them apart.
+      AdminField("party", "Party", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("supporterId", "Supporter ID", FieldType.UUID, editable = false, sensitive = false),
       AdminField("name", "Name", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("lastActivityAt", "Last Activity", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
@@ -85,6 +92,12 @@ class ConvosResource(
       "studentId" to
         row.convo.studentId.value
           .toString(),
+      "party" to row.convo.party.kind.value,
+      "supporterId" to
+        when (val party = row.convo.party) {
+          ConvoParty.Student -> ""
+          is ConvoParty.Supporter -> party.supporterId.asString
+        },
       "name" to row.convo.name.value,
       "lastActivityAt" to (row.lastActivityAt?.toString() ?: ""),
       "createdAt" to row.convo.createdAt.toString(),

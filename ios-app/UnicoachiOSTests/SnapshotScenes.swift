@@ -377,6 +377,7 @@ enum SnapshotSeed {
             // The section reads on its own `.task`, which the harness's settle
             // lets through — the `ConversationView` history-load precedent.
             supporterCoachingUsageClient: PreviewSupporterCoachingUsageClient(),
+            supporterConversationClient: PreviewSupporterConversationClient(),
             // An in-memory store, so a scene never inherits a selection a
             // previous run of the host app left in `UserDefaults` — the same
             // hazard the appearance segment is pinned against below.
@@ -565,6 +566,44 @@ enum SnapshotSeed {
             state: "SC"
         ),
     ]
+
+    // MARK: - The parent's coach (RFC 258)
+
+    /// A parent's first exchange: the starter, and an answer in the shape the
+    /// parent prompt asks for — the cost, then the parent's own next step.
+    static let parentThread: [Message] = [
+        Message(id: "u_1", role: .user, content: "What would Ava Carter's list cost our family?",
+                createdAt: SnapshotClock.agoHours(1)),
+        Message(id: "c_2", role: .coach,
+                content: "For the two schools on Ava's list, your family would pay about **$18,400** a year at "
+                    + "State University after grants and scholarships, and about **$31,900** at Lakeside College "
+                    + "(College Scorecard).\n\nYour next step: the FAFSA opens October 1 — put it in your calendar.",
+                createdAt: SnapshotClock.agoHours(1)),
+    ]
+
+    /// A re-entered parent thread over [history], loaded — and, when [then] is
+    /// given, with one more turn sent and refused with it, so the scene shows
+    /// what that refusal leaves on screen.
+    static func supporterThread(history: [Message], then refusal: ErrorResponse? = nil) async -> ConversationViewModel {
+        let client = MockSupporterConversationClient()
+        client.history = history
+        if let refusal {
+            client.scripts = [.init(events: [], terminalError: refusal)]
+        }
+        let viewModel = ConversationViewModel(
+            conversation: conversation(name: "Costs", hoursAgo: 1),
+            conversationClient: SupporterThreadClient(client: client, studentId: oneLinkedStudent[0].studentId),
+            onProfileRequired: {},
+            onBudgetExhausted: {},
+            onTurnFinished: {}
+        )
+        await viewModel.loadHistory()
+        if refusal != nil {
+            viewModel.messageText = "And what about the FAFSA?"
+            await viewModel.send()
+        }
+        return viewModel
+    }
 
     static let thread: [Message] = [
         Message(id: "u1", role: .user, content: "Where do I start with my personal statement?",
@@ -1014,6 +1053,79 @@ enum SnapshotCatalogue {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .background(Color.dsBackground)
                 )
+            },
+
+            // --- The parent's coach (RFC 258).
+            //
+            // The home with the door: one selected student, so the entry
+            // "Talk to your coach about Ava Carter" sits above college search.
+            SnapshotScene(name: "supporter-home-coach-entry") {
+                AnyView(SnapshotSeed.supporterHome(students: SnapshotSeed.oneLinkedStudent))
+            },
+            // A first session: no conversation about this student yet, so the
+            // coach opens on the empty thread and its one starter.
+            SnapshotScene(name: "supporter-coach-starter") {
+                let coaching = await SnapshotSeed.supporterCoaching(
+                    kind: .freeAllowance,
+                    usage: CoachingUsage(usedPercent: 0, exhausted: false, resetsAt: nil)
+                )
+                let client = MockSupporterConversationClient()
+                return AnyView(NavigationStack {
+                    SupporterCoachView(student: SnapshotSeed.oneLinkedStudent[0], client: client, coaching: coaching)
+                })
+            },
+            // The list read failed: the starter thread is still offered, under
+            // a notice that earlier conversations could not be loaded.
+            SnapshotScene(name: "supporter-coach-list-unavailable") {
+                let coaching = await SnapshotSeed.supporterCoaching(
+                    kind: .freeAllowance,
+                    usage: CoachingUsage(usedPercent: 0, exhausted: false, resetsAt: nil)
+                )
+                let client = MockSupporterConversationClient()
+                client.listError = URLError(.notConnectedToInternet)
+                return AnyView(NavigationStack {
+                    SupporterCoachView(student: SnapshotSeed.oneLinkedStudent[0], client: client, coaching: coaching)
+                })
+            },
+            SnapshotScene(name: "supporter-coach-thread") {
+                let coaching = await SnapshotSeed.supporterCoaching(
+                    kind: .freeAllowance,
+                    usage: CoachingUsage(usedPercent: 12, exhausted: false, resetsAt: nil)
+                )
+                let viewModel = await SnapshotSeed.supporterThread(history: SnapshotSeed.parentThread)
+                return AnyView(NavigationStack {
+                    SupporterThreadView(student: SnapshotSeed.oneLinkedStudent[0], coaching: coaching, viewModel: viewModel)
+                })
+            },
+            // The parent's own allowance is spent: the refused turn shows the
+            // parent's coaching block, never the student paywall.
+            SnapshotScene(name: "supporter-coach-blocked") {
+                let coaching = await SnapshotSeed.supporterCoaching(
+                    kind: .freeAllowance,
+                    usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil)
+                )
+                let viewModel = await SnapshotSeed.supporterThread(
+                    history: SnapshotSeed.parentThread,
+                    then: ErrorResponse(code: "coaching_budget_exhausted", message: "Coaching allowance exhausted", fieldErrors: nil, status: 402)
+                )
+                return AnyView(NavigationStack {
+                    SupporterThreadView(student: SnapshotSeed.oneLinkedStudent[0], coaching: coaching, viewModel: viewModel)
+                })
+            },
+            // The connection ended between turns: the conversation stays, the
+            // composer is disabled, and the screen says who by name.
+            SnapshotScene(name: "supporter-coach-disconnected") {
+                let coaching = await SnapshotSeed.supporterCoaching(
+                    kind: .freeAllowance,
+                    usage: CoachingUsage(usedPercent: 12, exhausted: false, resetsAt: nil)
+                )
+                let viewModel = await SnapshotSeed.supporterThread(
+                    history: SnapshotSeed.parentThread,
+                    then: ErrorResponse(code: "student_not_found", message: "No such student", fieldErrors: nil, status: 404)
+                )
+                return AnyView(NavigationStack {
+                    SupporterThreadView(student: SnapshotSeed.oneLinkedStudent[0], coaching: coaching, viewModel: viewModel)
+                })
             },
 
             // --- The one invented primitive, at its three interesting readings.

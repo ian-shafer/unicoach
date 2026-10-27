@@ -25,6 +25,8 @@ struct SupporterHomeView: View {
     /// The supporter doors — here for the disconnect Settings offers (RFC 249).
     let supporterClient: SupporterClientProtocol
     let collegeListClient: CollegeListClientProtocol
+    /// The parent's own coach conversations (RFC 258).
+    let supporterConversationClient: SupporterConversationClientProtocol
     let subjectStore: SupporterSubjectStore
     /// Re-reads the roster from `GET /api/v1/supporters/me` and hands it to the
     /// root state machine (`AppViewModel.refreshSupporterHome`).
@@ -40,10 +42,12 @@ struct SupporterHomeView: View {
     let onLogout: () async -> Void
     let onDeleteAccount: () async -> Bool
 
-    /// Destinations pushed from the home. Two, and both are student-free:
-    /// college lookup reads `GET /api/v1/colleges`, and Settings for a
-    /// supporter carries no subscription rail.
+    /// Destinations pushed from the home. College lookup reads
+    /// `GET /api/v1/colleges`, and Settings for a supporter carries no
+    /// subscription rail. The coach (RFC 258) carries the student it is about,
+    /// because the subject travels with the screen and never lives server-side.
     private enum Destination: Hashable {
+        case coach(LinkedStudent)
         case collegeSearch
         case settings
     }
@@ -75,6 +79,7 @@ struct SupporterHomeView: View {
         supporterClient: SupporterClientProtocol,
         collegeListClient: CollegeListClientProtocol,
         supporterCoachingUsageClient: SupporterCoachingUsageClientProtocol,
+        supporterConversationClient: SupporterConversationClientProtocol,
         subjectStore: SupporterSubjectStore,
         switcherOpenOnAppear: Bool = false,
         refreshHome: @escaping () async -> Void,
@@ -88,6 +93,7 @@ struct SupporterHomeView: View {
         self.supporterInviteClient = supporterInviteClient
         self.supporterClient = supporterClient
         self.collegeListClient = collegeListClient
+        self.supporterConversationClient = supporterConversationClient
         self.subjectStore = subjectStore
         self.switcherOpenOnAppear = switcherOpenOnAppear
         _coachingViewModel = StateObject(
@@ -235,10 +241,23 @@ struct SupporterHomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The three things this home always offers, linked or not.
+    /// What this home offers: the invite, the coach about the selected
+    /// student (only when there is one, RFC 258), college lookup and Settings.
     private var actions: some View {
         VStack(alignment: .leading, spacing: DSSpacing.md) {
             SupporterInviteControl(role: .supporter, client: supporterInviteClient)
+
+            // The door to the parent's coach, above college search: the beat
+            // this home exists for. Every conversation is about one student,
+            // so it is offered only once one is selected.
+            if let subject, let title = SupporterCoachEntry.title(for: subject) {
+                DSTextButton(
+                    title,
+                    accessibilityIdentifier: "supporterCoachButton",
+                    accessibilityLabel: title,
+                    action: { path.append(.coach(subject)) }
+                )
+            }
 
             // The control reads the destination's OWN name rather than
             // transcribing it, so the button and the screen it pushes cannot
@@ -264,6 +283,8 @@ struct SupporterHomeView: View {
     @ViewBuilder
     private func destination(_ destination: Destination) -> some View {
         switch destination {
+        case .coach(let student):
+            SupporterCoachView(student: student, client: supporterConversationClient, coaching: coachingViewModel)
         case .collegeSearch:
             // The SAME search the add sheet runs, browse-only: a supporter has
             // no college list of their own to add to, and nothing here sends a
@@ -356,6 +377,7 @@ private struct SupporterHomePreviewSubjectStore: SupporterSubjectStore {
         supporterClient: PreviewSupporterClient(),
         collegeListClient: SupporterHomePreviewCollegeListClient(),
         supporterCoachingUsageClient: PreviewSupporterCoachingUsageClient(),
+        supporterConversationClient: PreviewSupporterConversationClient(),
         subjectStore: SupporterHomePreviewSubjectStore(),
         refreshHome: {},
         onEmailChanged: { _ in },

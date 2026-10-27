@@ -105,13 +105,18 @@ final class ConversationViewModel: ObservableObject {
     /// The initial history-fetch state for a re-entered conversation. `.ready` on
     /// a fresh VM (no fetch happens); `.loading` until a seeded VM's fetch lands.
     @Published private(set) var historyLoad: HistoryLoad = .ready
+    /// The parent's coach only (RFC 258): the connection to the student this
+    /// conversation is about has ended, so the thread is read-only from here —
+    /// the view says so and disables the composer. Never true on the student's
+    /// own coach, whose turns cannot answer `student_not_found`.
+    @Published private(set) var isDisconnected: Bool = false
 
     /// The first turn's conversation, stashed until `.completed` establishes it.
     /// A first turn that fails server-side soft-deletes the conversation, so it is
     /// committed only on the terminal success frame — never on the opener.
     private var pendingConversation: Conversation?
 
-    private let conversationClient: ConversationClientProtocol
+    private let conversationClient: ConversationThreadClient
     private let logger = Logger.unicoach(category: "ConversationViewModel")
     private let onProfileRequired: () -> Void
     /// Reported upward on a 402, mirroring `onProfileRequired`'s shape — but it
@@ -141,7 +146,7 @@ final class ConversationViewModel: ObservableObject {
     /// Fresh conversation (Start Coaching / compose): no established conversation
     /// and no history to fetch, so `historyLoad` starts `.ready` and `stream()`
     /// routes the first turn to `streamConversation`.
-    init(conversationClient: ConversationClientProtocol,
+    init(conversationClient: ConversationThreadClient,
          onProfileRequired: @escaping () -> Void,
          onBudgetExhausted: @escaping () async -> Void,
          onTurnFinished: @escaping () async -> Void) {
@@ -155,7 +160,7 @@ final class ConversationViewModel: ObservableObject {
     /// routes to `postMessage`) and sets `historyLoad = .loading` until
     /// `loadHistory()` (driven by the view's `.task`) rebuilds the thread.
     init(conversation: Conversation,
-         conversationClient: ConversationClientProtocol,
+         conversationClient: ConversationThreadClient,
          onProfileRequired: @escaping () -> Void,
          onBudgetExhausted: @escaping () async -> Void,
          onTurnFinished: @escaping () async -> Void) {
@@ -180,12 +185,13 @@ final class ConversationViewModel: ObservableObject {
     /// empty/length guards remain the authoritative defense.
     var canSend: Bool {
         !isStreaming
+            && !isDisconnected
             && !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func send() async {
-        // One turn in flight at a time.
-        if isStreaming {
+        // One turn in flight at a time, and none once the connection has ended.
+        if isStreaming || isDisconnected {
             return
         }
 
@@ -351,6 +357,14 @@ final class ConversationViewModel: ObservableObject {
             )
             setFailure(.blocked, turnId: turnId)
             return .budgetExhausted
+        case .studentNotFound:
+            // The parent's coach (RFC 258): the connection to the student ended
+            // between turns. Every later turn would be refused the same way, so
+            // the thread becomes read-only — the view names who they are no
+            // longer connected to — and the refused message is dropped rather
+            // than offered for a Retry that can only be refused again.
+            isDisconnected = true
+            turns.removeAll { $0.id == turnId }
         case .timeout:
             setFailure(.infrastructure(.timeout), turnId: turnId)
         case .networkError:
@@ -362,7 +376,7 @@ final class ConversationViewModel: ObservableObject {
              .subscriptionNotFound, .subscriptionOwnedByOtherAccount,
              .validationFailed, .payloadTooLarge, .decodeError,
              .versionConflict, .conflict, .notFound, .ageRequirementNotMet,
-             .supporterLinkNotFound, .supporterRequestNotFound, nil:
+             .supporterLinkNotFound, .supporterRequestNotFound, .supporterNotFound, nil:
             setFailure(.server(error), turnId: turnId)
         }
         return nil

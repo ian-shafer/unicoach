@@ -124,6 +124,7 @@ class EmailSendE2eTest {
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
+            supporterCoachingConfigFrom(config),
           )
         }
 

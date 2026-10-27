@@ -275,10 +275,26 @@ object AdminTestSupport {
   fun seedConvo(
     studentId: StudentId,
     name: String = "Test Convo",
+    party: ed.unicoach.db.models.ConvoParty = ed.unicoach.db.models.ConvoParty.Student,
   ): Convo =
     runBlocking {
       val convoName = (ConvoName.create(name) as ValidationResult.Valid).value
-      database.withConnection { session -> ConvosDao.create(session, NewConvo(studentId, convoName)) }.getOrThrow()
+      database.withConnection { session -> ConvosDao.create(session, NewConvo(studentId, convoName, party)) }.getOrThrow()
+    }
+
+  /** A live supporters row for [userId] (RFC 241), the author a supporter-party convo names. */
+  fun seedSupporter(userId: UserId): ed.unicoach.db.models.SupporterId =
+    runBlocking {
+      database
+        .withConnection { session ->
+          ed.unicoach.db.dao.SupportersDao
+            .create(
+              session,
+              ed.unicoach.db.models
+                .NewSupporter(userId),
+            )
+        }.getOrThrow()
+        .id
     }
 
   /**

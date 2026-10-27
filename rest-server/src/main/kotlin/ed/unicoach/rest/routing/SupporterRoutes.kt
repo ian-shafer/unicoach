@@ -17,6 +17,7 @@ import ed.unicoach.rest.models.toCoachingUsage
 import ed.unicoach.rest.models.toResponse
 import ed.unicoach.rest.pathId
 import ed.unicoach.rest.rejectUnsupportedMethods
+import ed.unicoach.rest.respondSupporterNotFound
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -184,20 +185,6 @@ class SupporterRoutes(
    */
   private suspend fun RoutingContext.respondSupporterHome(home: SupporterHome) {
     call.respond(HttpStatusCode.OK, home.toResponse())
-  }
-
-  /**
-   * The mirror of `GET /api/v1/students/me`'s `404 student_not_found`: the same
-   * "you do not have one of these" fact, in the same shape, on the parallel
-   * route. It is not a 409 `student_profile_required` — that refusal tells a
-   * caller to go and make a STUDENT, which is the wrong instruction here and the
-   * one the client is being taught to stop obeying.
-   */
-  private suspend fun RoutingContext.respondSupporterNotFound() {
-    call.respond(
-      HttpStatusCode.NotFound,
-      ErrorResponse(ErrorCode.SUPPORTER_NOT_FOUND, "No supporter profile for the current user"),
-    )
   }
 
   /**

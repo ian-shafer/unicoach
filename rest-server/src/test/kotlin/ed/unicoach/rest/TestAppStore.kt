@@ -12,6 +12,7 @@ import ed.unicoach.appstore.AppStoreTestFixtures
 import ed.unicoach.appstore.AppleJwsVerifier
 import ed.unicoach.appstore.AppleNotificationVerifier
 import ed.unicoach.coaching.report.CostReportConfig
+import ed.unicoach.family.SupporterCoachingConfig
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.subscriptions.SubscriptionPlans
 import java.security.cert.X509Certificate
@@ -53,6 +54,9 @@ fun costReportConfigFrom(config: Config): CostReportConfig = CostReportConfig.fr
  * each suite that boots the module.
  */
 fun supporterInviteConfigFrom(config: Config): SupporterInviteConfig = SupporterInviteConfig.from(config).getOrThrow()
+
+/** The supporter coach's config block (RFC 258), the same mechanical `appModule` ripple. */
+fun supporterCoachingConfigFrom(config: Config): SupporterCoachingConfig = SupporterCoachingConfig.from(config).getOrThrow()
 
 /**
  * A minted root nothing in the suite holds the signing key for — the anchor a

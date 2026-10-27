@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.LlmCostAggregate
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewSupporter
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SupporterId
@@ -17,6 +18,7 @@ import java.time.temporal.ChronoUnit
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * Real-DB coverage for [AccountLlmCostDao] over the `account_llm_cost` spine
@@ -138,7 +140,7 @@ class AccountLlmCostDaoTest {
     createdAt: Instant? = null,
   ) {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name) VALUES (?, ?, 'Convo')").use { stmt ->
+    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')").use { stmt ->
       stmt.setObject(1, convoId)
       stmt.setObject(2, studentId.value)
       stmt.executeUpdate()
@@ -245,6 +247,70 @@ class AccountLlmCostDaoTest {
         assertEquals(0L, rs.getLong("cost"), "and it is on no student's meter")
       }
     }
+  }
+
+  /**
+   * A parent-coach call exactly as RFC 258 writes it: a `supporter` party convo
+   * ABOUT [studentId], its `convo_requests` row, and the owner row through
+   * [SupporterLlmCostsDao.insert] -- the table's first production writer.
+   */
+  private fun supporterConvoSpend(
+    supporterId: SupporterId,
+    studentId: StudentId,
+    costNanodollars: Long,
+  ) {
+    val convoId = UUID.randomUUID()
+    connection
+      .prepareStatement("INSERT INTO convos (id, student_id, name, party, supporter_id) VALUES (?, ?, 'Parent', 'supporter', ?)")
+      .use { stmt ->
+        stmt.setObject(1, convoId)
+        stmt.setObject(2, studentId.value)
+        stmt.setObject(3, supporterId.value)
+        stmt.executeUpdate()
+      }
+    val requestId = appendCall(costNanodollars, false)
+    connection
+      .prepareStatement(
+        """
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+        VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
+        """.trimIndent(),
+      ).use { stmt ->
+        stmt.setObject(1, convoId)
+        stmt.setObject(2, createSystemPrompt())
+        stmt.setLong(3, requestId)
+        stmt.executeUpdate()
+      }
+    SupporterLlmCostsDao.insert(session, LlmRequestId(requestId), supporterId).getOrThrow()
+  }
+
+  @Test
+  fun `a parent-coach call about a student is billed to the parent's account and to no student`() {
+    val studentUser = createUser()
+    val studentId = createStudent(studentUser)
+    val parentUser = createUser()
+    val supporterId = createSupporter(parentUser)
+    studentSpend(studentId, 1_000)
+    supporterConvoSpend(supporterId, studentId, 400)
+
+    assertEquals(400L, lifetime(parentUser).costNanodollars.value, "the parent pays for their own coach")
+    assertEquals(1_000L, lifetime(studentUser).costNanodollars.value, "the student's meter is untouched by it")
+    assertEquals(
+      1_000L,
+      spineTotal("student_llm_cost", "student_id", studentId.value).costNanodollars.value,
+      "the convo is ABOUT the student, but student_llm_cost counts only the student's own party",
+    )
+  }
+
+  @Test
+  fun `SupporterLlmCostsDao refuses to attribute one call twice`() {
+    val supporterId = createSupporter(createUser())
+    val requestId = LlmRequestId(appendCall(10, false))
+    SupporterLlmCostsDao.insert(session, requestId, supporterId).getOrThrow()
+
+    val second = SupporterLlmCostsDao.insert(session, requestId, supporterId)
+
+    assertTrue(second.exceptionOrNull() is ConstraintViolationException, "got ${second.exceptionOrNull()}")
   }
 
   // ---------------------------------------------------------------------------

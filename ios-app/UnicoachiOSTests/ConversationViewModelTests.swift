@@ -276,6 +276,55 @@ final class ConversationViewModelTests: XCTestCase {
 
     // MARK: - student_profile_required
 
+    // MARK: - The parent's coach arms (RFC 258)
+
+    private func refusal(_ code: String, status: Int = 404) -> ErrorResponse {
+        ErrorResponse(code: code, message: "No such student", fieldErrors: nil, status: status)
+    }
+
+    /// A severed connection answers `student_not_found`: the thread becomes
+    /// read-only, the refused turn is dropped rather than offered a Retry that
+    /// can only be refused again, and later sends do nothing.
+    func testStudentNotFoundDisconnectsTheThreadAndDropsTheTurn() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.scripts = [startScript(conversation: convo), .init(events: [], terminalError: refusal("student_not_found"))]
+        let viewModel = makeViewModel(mock)
+        viewModel.messageText = "What would it cost?"
+        await viewModel.send()
+        XCTAssertFalse(viewModel.isDisconnected)
+
+        viewModel.messageText = "And the FAFSA?"
+        await viewModel.send()
+
+        XCTAssertTrue(viewModel.isDisconnected)
+        XCTAssertEqual(viewModel.turns.count, 1, "the earlier, answered turn stays; the refused one is dropped")
+        XCTAssertNil(viewModel.turns[0].failure)
+        XCTAssertEqual(profileRequiredCount, 0)
+        XCTAssertEqual(budgetExhaustedCount, 0)
+
+        viewModel.messageText = "Hello?"
+        XCTAssertFalse(viewModel.canSend, "a disconnected thread takes no turn")
+        await viewModel.send()
+        XCTAssertEqual(mock.postMessageRequests.count, 1, "no request leaves after the disconnect")
+    }
+
+    /// `supporter_not_found` has no screen behaviour of its own: the turn is
+    /// kept with the server's words, like every other unhandled code.
+    func testSupporterNotFoundKeepsTheTurnWithTheServersMessage() async {
+        let mock = MockConversationClient()
+        let error = refusal("supporter_not_found")
+        mock.scripts = [.init(events: [], terminalError: error)]
+        let viewModel = makeViewModel(mock)
+        viewModel.messageText = "Hi"
+
+        await viewModel.send()
+
+        XCTAssertEqual(viewModel.turns.count, 1)
+        XCTAssertEqual(viewModel.turns[0].failure, .server(error))
+        XCTAssertFalse(viewModel.isDisconnected)
+    }
+
     func testStudentProfileRequiredInvokesCallbackAndRemovesTurn() async {
         let mock = MockConversationClient()
         mock.scripts = [MockConversationClient.Script(

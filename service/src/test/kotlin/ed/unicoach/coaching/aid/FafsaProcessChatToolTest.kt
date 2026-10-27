@@ -11,7 +11,6 @@ import ed.unicoach.coaching.aid.FafsaProcessChatTool.Companion.TOPICS_KEY
 import ed.unicoach.coaching.aid.FafsaProcessChatTool.Companion.TOPIC_KEY
 import ed.unicoach.coaching.aid.FafsaProcessChatTool.Companion.URL_KEY
 import ed.unicoach.coaching.aid.FafsaProcessCopy.FafsaProcessTopic
-import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -21,7 +20,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.Test
 import java.time.LocalDate
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -41,9 +39,7 @@ import kotlin.test.assertTrue
 class FafsaProcessChatToolTest {
   private val tool = FafsaProcessChatTool()
 
-  private val student = StudentId(UUID.randomUUID())
-
-  private fun execute(input: JsonObject = buildJsonObject {}): JsonObject = runBlocking { tool.execute(student, input) }
+  private fun execute(input: JsonObject = buildJsonObject {}): JsonObject = runBlocking { tool.execute(input) }
 
   /** Every rule of the payload, flattened, paired with the topic group it was emitted under. */
   private fun servedRules(): List<Pair<String, JsonObject>> =
@@ -214,11 +210,13 @@ class FafsaProcessChatToolTest {
   }
 
   @Test
-  fun `the unscoped ChatTool execute is a structured error`() =
-    runBlocking {
-      val result = (tool as ed.unicoach.chat.ChatTool).execute(buildJsonObject {})
-      assertTrue(result["error"]!!.jsonPrimitive.content.contains("student-scoped"), "got $result")
-    }
+  fun `it takes no subject, so a read-only supporter registry can carry it`() {
+    // RFC 258: the rulebook never read the student id it used to be handed, so
+    // it is a plain ChatTool and not a StudentScopedChatTool -- the one base the
+    // supporter registry refuses at construction.
+    assertTrue(tool !is ed.unicoach.coaching.StudentScopedChatTool)
+    assertTrue(execute()[TOPICS_KEY] != null, "the plain dispatch answers the whole rulebook")
+  }
 
   @Test
   fun `no bare source code reaches the payload`() {

@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.budget
 
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.UserId
 
 /**
  * The one line every coaching pass logs when it declines to run because the
@@ -21,6 +22,23 @@ fun budgetSkipMessage(
   passName: String,
   studentId: StudentId,
   entitlement: Entitlement,
+): String = budgetSkipLine(passName, "student=[${studentId.asString}]", entitlement)
+
+/**
+ * The same line for a pass whose budget subject is an ACCOUNT rather than a
+ * student (RFC 258): the supporter's coach meters the parent's own account.
+ */
+fun budgetSkipMessage(
+  passName: String,
+  account: UserId,
+  entitlement: Entitlement,
+): String = budgetSkipLine(passName, "account=[${account.asString}]", entitlement)
+
+/** The one format both subjects share; [subject] is already rendered as `kind=[id]`. */
+private fun budgetSkipLine(
+  passName: String,
+  subject: String,
+  entitlement: Entitlement,
 ): String {
   // The operator-facing name of each basis, spelled out here rather than
   // reflected off the type, so renaming the Kotlin declaration cannot silently
@@ -34,6 +52,6 @@ fun budgetSkipMessage(
   // The operator's answer to "blocked until when": a subscription meter resets
   // at its period_end; the lifetime free allowance never resets.
   val resetsAt = entitlement.resetsAt?.let { ", resets at [$it]" } ?: ""
-  return "Skipping [$passName] for student=[${studentId.asString}]: coaching budget exhausted " +
+  return "Skipping [$passName] for $subject: coaching budget exhausted " +
     "(basis=[$basis], spent=[${entitlement.spent.toUsdString()}] of allowance=[${entitlement.allowance.toUsdString()}] USD$resetsAt)"
 }

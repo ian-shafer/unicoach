@@ -1,12 +1,13 @@
 package ed.unicoach.coaching.aid
 
-import ed.unicoach.coaching.StudentScopedChatTool
+import ed.unicoach.coaching.ReadOnlyChatTool
 import ed.unicoach.coaching.aid.FafsaProcessCopy.FafsaProcessTopic
 import ed.unicoach.coaching.aid.FafsaProcessCopy.FafsaRule
 import ed.unicoach.coaching.costs.AidPolicyWire
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.noArgumentToolDefinition
-import ed.unicoach.db.models.StudentId
+import ed.unicoach.coaching.toolErrorObject
+import ed.unicoach.coaching.unknownToolFieldsReason
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -32,20 +33,21 @@ import kotlinx.serialization.json.putJsonArray
  *
  * Read -> render and nothing else: every rule and every citation lives in
  * [FafsaProcessCopy], and every behavioural rule -- what to SAY to a family --
- * lives in the coach system prompt.
+ * lives in the coach system prompt. It takes no subject and writes nothing, so
+ * it is a [ReadOnlyChatTool].
  */
-class FafsaProcessChatTool : StudentScopedChatTool() {
+class FafsaProcessChatTool : ReadOnlyChatTool {
   override val name: String = TOOL_NAME
 
   override val definition: JsonObject = noArgumentToolDefinition(TOOL_NAME, DESCRIPTION)
 
-  override suspend fun execute(
-    studentId: StudentId,
-    input: JsonObject,
-  ): JsonObject {
-    if (input.isNotEmpty()) {
-      return errorObject(unknownFieldsReason(input, emptySet())!!)
-    }
+  /**
+   * A plain [ReadOnlyChatTool] (RFC 258): the rulebook is the same for every family and
+   * the tool never read the student id it used to be handed, so it takes no
+   * subject — which is what lets a supporter's read-only registry carry it.
+   */
+  override suspend fun execute(input: JsonObject): JsonObject {
+    unknownToolFieldsReason(input, emptySet())?.let { return toolErrorObject(it) }
     return rulebook()
   }
 

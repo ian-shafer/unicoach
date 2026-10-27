@@ -236,6 +236,38 @@ class LlmRequestsResourceTest {
   }
 
   @Test
+  fun `unlinked-call anti-join excludes an old call a supporter_llm_costs row owns`() {
+    // RFC 258: a parent-coach call is owned by its supporter_llm_costs row, so it
+    // is attributed, not an orphan, even with no other owner row beside it.
+    val owned = seedOldUnlinkedCall(ageHours = 3)
+    val parent = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+    runBlocking {
+      AdminTestSupport.database
+        .withConnection { session ->
+          val supporter =
+            ed.unicoach.db.dao.SupportersDao
+              .create(
+                session,
+                ed.unicoach.db.models
+                  .NewSupporter(parent.id),
+              ).getOrThrow()
+          ed.unicoach.db.dao.SupporterLlmCostsDao
+            .insert(session, owned, supporter.id)
+        }.getOrThrow()
+    }
+
+    val ids =
+      runBlocking {
+        AdminTestSupport.database
+          .withConnection { session ->
+            LlmCallsDao.listUnlinkedCalls(session, Duration.ofHours(1), limit = 200, offset = 0)
+          }.getOrThrow()
+      }.map { it.request.id }
+
+    assertFalse(ids.contains(owned), "A call attributed to a supporter must be excluded")
+  }
+
+  @Test
   fun `the unlinked-call route renders the old orphan and links to its detail`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

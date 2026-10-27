@@ -23,7 +23,13 @@
 		EF2444000000000000000B01 /* SupporterCoachingUsageClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */; };
 		EF2444000000000000000B02 /* SupporterCoachingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F02 /* SupporterCoachingViewModel.swift */; };
 		EF2444000000000000000B03 /* SupporterCoachingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F03 /* SupporterCoachingSection.swift */; };
+		EF25800000000000000000B3 /* SupporterCoachView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF25800000000000000000F3 /* SupporterCoachView.swift */; };
+		EF25800000000000000000B2 /* SupporterConversationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF25800000000000000000F2 /* SupporterConversationClient.swift */; };
+		EF25800000000000000000B1 /* ChatThreadViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF25800000000000000000F1 /* ChatThreadViews.swift */; };
 		EF2444000000000000000B04 /* SupporterCoachingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F04 /* SupporterCoachingViewModelTests.swift */; };
+		EF25800000000000000000B6 /* SupporterCoachTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF25800000000000000000F6 /* SupporterCoachTests.swift */; };
+		EF25800000000000000000B5 /* MockSupporterConversationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF25800000000000000000F5 /* MockSupporterConversationClient.swift */; };
+		EF25800000000000000000B4 /* SupporterConversationClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF25800000000000000000F4 /* SupporterConversationClientTests.swift */; };
 		EF2444000000000000000B05 /* SupporterCoachingUsageClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */; };
 		CC20500000000000000009B /* YourDetailsSubjectsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000009F /* YourDetailsSubjectsTests.swift */; };
 		CC20500000000000000008B /* SubjectsClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC20500000000000000008F /* SubjectsClientTests.swift */; };
@@ -194,7 +200,13 @@
 		EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingUsageClient.swift; sourceTree = "<group>"; };
 		EF2444000000000000000F02 /* SupporterCoachingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingViewModel.swift; sourceTree = "<group>"; };
 		EF2444000000000000000F03 /* SupporterCoachingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingSection.swift; sourceTree = "<group>"; };
+		EF25800000000000000000F3 /* SupporterCoachView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachView.swift; sourceTree = "<group>"; };
+		EF25800000000000000000F2 /* SupporterConversationClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterConversationClient.swift; sourceTree = "<group>"; };
+		EF25800000000000000000F1 /* ChatThreadViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatThreadViews.swift; sourceTree = "<group>"; };
 		EF2444000000000000000F04 /* SupporterCoachingViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingViewModelTests.swift; sourceTree = "<group>"; };
+		EF25800000000000000000F6 /* SupporterCoachTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachTests.swift; sourceTree = "<group>"; };
+		EF25800000000000000000F5 /* MockSupporterConversationClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockSupporterConversationClient.swift; sourceTree = "<group>"; };
+		EF25800000000000000000F4 /* SupporterConversationClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterConversationClientTests.swift; sourceTree = "<group>"; };
 		EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SupporterCoachingUsageClientTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000009F /* YourDetailsSubjectsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YourDetailsSubjectsTests.swift; sourceTree = "<group>"; };
 		CC20500000000000000008F /* SubjectsClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubjectsClientTests.swift; sourceTree = "<group>"; };
@@ -387,6 +399,9 @@
 				EF2444000000000000000F01 /* SupporterCoachingUsageClient.swift */,
 				EF2444000000000000000F02 /* SupporterCoachingViewModel.swift */,
 				EF2444000000000000000F03 /* SupporterCoachingSection.swift */,
+				EF25800000000000000000F3 /* SupporterCoachView.swift */,
+				EF25800000000000000000F2 /* SupporterConversationClient.swift */,
+				EF25800000000000000000F1 /* ChatThreadViews.swift */,
 				CC20500000000000000004F /* SubjectPickerSheet.swift */,
 				CC20500000000000000003F /* SubjectPickerViewModel.swift */,
 				CC20500000000000000002F /* IntendedSubjectsClient.swift */,
@@ -496,6 +511,9 @@
 				EF2410000000000000000F07 /* SupporterSubjectStoreTests.swift */,
 				EF2410000000000000000F09 /* SupporterClientTests.swift */,
 				EF2444000000000000000F04 /* SupporterCoachingViewModelTests.swift */,
+				EF25800000000000000000F6 /* SupporterCoachTests.swift */,
+				EF25800000000000000000F5 /* MockSupporterConversationClient.swift */,
+				EF25800000000000000000F4 /* SupporterConversationClientTests.swift */,
 				EF2444000000000000000F05 /* SupporterCoachingUsageClientTests.swift */,
 				CC20500000000000000009F /* YourDetailsSubjectsTests.swift */,
 				CC20500000000000000008F /* SubjectsClientTests.swift */,
@@ -697,6 +715,9 @@
 				EF2444000000000000000B01 /* SupporterCoachingUsageClient.swift in Sources */,
 				EF2444000000000000000B02 /* SupporterCoachingViewModel.swift in Sources */,
 				EF2444000000000000000B03 /* SupporterCoachingSection.swift in Sources */,
+				EF25800000000000000000B3 /* SupporterCoachView.swift in Sources */,
+				EF25800000000000000000B2 /* SupporterConversationClient.swift in Sources */,
+				EF25800000000000000000B1 /* ChatThreadViews.swift in Sources */,
 				EF2410000000000000000B02 /* SupporterSubjectStore.swift in Sources */,
 				EF2410000000000000000B03 /* SupporterInviteControl.swift in Sources */,
 				EF2410000000000000000B04 /* RoleChoiceView.swift in Sources */,
@@ -796,6 +817,9 @@
 				EF2490000000000000000B04 /* StudentSupportersClientTests.swift in Sources */,
 				EF2490000000000000000B03 /* FamilyConnectionsViewModelTests.swift in Sources */,
 				EF2444000000000000000B04 /* SupporterCoachingViewModelTests.swift in Sources */,
+				EF25800000000000000000B6 /* SupporterCoachTests.swift in Sources */,
+				EF25800000000000000000B5 /* MockSupporterConversationClient.swift in Sources */,
+				EF25800000000000000000B4 /* SupporterConversationClientTests.swift in Sources */,
 				EF2444000000000000000B05 /* SupporterCoachingUsageClientTests.swift in Sources */,
 				EF2410000000000000000B07 /* SupporterSubjectStoreTests.swift in Sources */,
 				EF2410000000000000000B09 /* SupporterClientTests.swift in Sources */,

@@ -1,13 +1,23 @@
 import Foundation
 import os
 
-protocol ConversationClientProtocol: Sendable {
+/// The three calls ONE conversation thread makes — start it, continue it, and
+/// read it back — and all `ConversationViewModel` needs (RFC 258). Split out of
+/// `ConversationClientProtocol` so the parent's coach can drive the same view
+/// model through `SupporterThreadClient` without pretending to the student's
+/// list, delete and archive doors, which a parent's conversations do not have.
+protocol ConversationThreadClient: Sendable {
     func streamConversation(request: CreateConversationRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error>
     func postMessage(conversationId: UUID, request: PostMessageRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error>
-    func listConversations() async throws -> [Conversation]
     func fetchMessages(conversationId: UUID) async throws -> [Message]
+}
+
+/// The student's conversation doors: a thread's three calls plus the list and
+/// the two row actions the conversation list offers.
+protocol ConversationClientProtocol: ConversationThreadClient {
+    func listConversations() async throws -> [Conversation]
     func deleteConversation(conversationId: UUID) async throws
     func setArchived(conversationId: UUID, archived: Bool) async throws
 }
@@ -17,28 +27,22 @@ protocol ConversationClientProtocol: Sendable {
 /// does not construct `URLRequest`s, own a `URLSession`, or configure transport.
 final class ConversationClient: ConversationClientProtocol, @unchecked Sendable {
     private let apiClient: APIClient
+    private let streams: ConversationStreams
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "ConversationClient")
 
     init(apiClient: APIClient = APIClient()) {
         self.apiClient = apiClient
-    }
-
-    /// The opener frame an endpoint may legally emit. The follow-up endpoint opens
-    /// with `user_message`; the start endpoint opens with `conversation`. A frame
-    /// matching the other endpoint's opener is off-contract → `SERVER_ERROR`.
-    private enum Opener {
-        case conversation
-        case userMessage
+        self.streams = ConversationStreams(apiClient: apiClient)
     }
 
     func streamConversation(request: CreateConversationRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
-        runStream(path: "/api/v1/conversations/stream", body: request, opener: .conversation)
+        streams.run(path: "/api/v1/conversations/stream", body: request, opener: .conversation)
     }
 
     func postMessage(conversationId: UUID, request: PostMessageRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
-        runStream(
+        streams.run(
             path: "/api/v1/conversations/\(conversationId.uuidString)/messages/stream",
             body: request,
             opener: .userMessage
@@ -95,11 +99,31 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
         )
         try apiClient.expect(data: data, response: response, expectedStatus: 200)
     }
+}
 
-    /// Shared SSE pump for both endpoints: opens the stream, splits lines, assembles
-    /// frames, decodes them (gated by the endpoint's legal `opener`), and finishes
-    /// on the terminal frame. Only the path, request body, and accepted opener differ.
-    private func runStream<B: Encodable & Sendable>(
+/// The conversation SSE plumbing every coach door shares (RFC 258): open the
+/// stream, split lines, assemble frames, decode them (gated by the endpoint's
+/// legal `opener`), and finish on the terminal frame. The student's
+/// `ConversationClient` and the parent's `SupporterConversationClient` both run
+/// their streams through this ONE decoder, because the server streams both
+/// coaches through one writer and one set of frames.
+///
+/// It owns only what is SSE-specific; it does not construct `URLRequest`s, own a
+/// `URLSession`, or configure transport — that is the injected `APIClient`'s.
+struct ConversationStreams: Sendable {
+    let apiClient: APIClient
+
+    /// The opener frame an endpoint may legally emit. The follow-up endpoint opens
+    /// with `user_message`; the start endpoint opens with `conversation`. A frame
+    /// matching the other endpoint's opener is off-contract → `SERVER_ERROR`.
+    enum Opener: Sendable {
+        case conversation
+        case userMessage
+    }
+
+    /// Shared SSE pump for every streaming endpoint. Only the path, request body,
+    /// and accepted opener differ.
+    func run<B: Encodable & Sendable>(
         path: String,
         body: B,
         opener: Opener
@@ -107,7 +131,7 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await self.pump(path: path, body: body, opener: opener, continuation: continuation)
+                    try await pump(path: path, body: body, opener: opener, continuation: continuation)
                 } catch let error as ErrorResponse {
                     continuation.finish(throwing: error)
                 } catch is CancellationError {
@@ -116,7 +140,7 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
                     // A failure thrown mid-iteration by `AsyncBytes` (idle timeout,
                     // connection loss) occurs outside `APIClient.stream()`, so map it
                     // through the shared transport vocabulary here.
-                    continuation.finish(throwing: self.apiClient.transportError(error))
+                    continuation.finish(throwing: apiClient.transportError(error))
                 }
             }
             continuation.onTermination = { _ in

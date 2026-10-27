@@ -37,6 +37,7 @@ import ed.unicoach.db.models.ClaimSubject
 import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
 import ed.unicoach.db.models.ConvoId
+import ed.unicoach.db.models.ConvoParty
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ExtractionOutcome
@@ -113,6 +114,10 @@ open class ExtractionService(
         ExtractionResult.SkippedBudgetExhausted(readout.studentId, readout.entitlement)
       }
 
+      is ReadPhase.SupporterConversation -> {
+        ExtractionResult.SupporterConversation(convoId)
+      }
+
       // The window carries the effective through-request id: when the safety cap
       // trimmed the range, this is the last distilled turn, not the requested
       // target, so the watermark advances only over what was distilled.
@@ -134,6 +139,17 @@ open class ExtractionService(
       val convo = ConvosDao.findById(session, convoId, SoftDeleteScope.ALL).getOrThrow()
       // Soft-deleted conversation: skip as a no-op success (no run appended).
       if (convo.deletedAt != null) return@withConnection ReadPhase.NoOp
+      // A supporter's own conversation (RFC 258) is ABOUT the student and never
+      // the student's: its words must not become the student's claims. Decided
+      // before the student is read, the lock taken or the budget consulted, so
+      // nothing about the student is touched on its behalf.
+      when (convo.party) {
+        is ConvoParty.Supporter -> {
+          return@withConnection ReadPhase.SupporterConversation
+        }
+
+        ConvoParty.Student -> {}
+      }
 
       val studentId = convo.studentId
       // A closed student's turn, queued just before the close, must not run and
@@ -724,6 +740,8 @@ open class ExtractionService(
 
   private sealed interface ReadPhase {
     data object NoOp : ReadPhase
+
+    data object SupporterConversation : ReadPhase
 
     data class BudgetExhausted(
       val studentId: StudentId,

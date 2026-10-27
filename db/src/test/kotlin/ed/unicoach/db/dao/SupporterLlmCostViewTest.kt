@@ -34,11 +34,10 @@ import kotlin.test.assertTrue
  * `created_at` as the window key — so each of those is re-pinned here on the
  * supporter side rather than assumed from the student side's tests.
  *
- * Nothing in the product writes `supporter_llm_costs` yet
- * (`family/06/the-parent-coach` is the first writer), so every row below is
- * inserted by hand. That is what these tests are FOR: the shape has to be right
- * before the writer exists, because the first writer will believe whatever the
- * meter tells it.
+ * Every row below is inserted by hand, directly against the tables: these
+ * tests pin the shape of the meter independent of its writer
+ * ([SupporterLlmCostsDao]), because the writer and the budget gate both believe
+ * whatever the meter tells them.
  *
  * The [StudentLlmCostViewTest] pattern: one connection in `@BeforeAll`, a
  * truncate before each test, and [LlmCallRowFixture] for the call itself.

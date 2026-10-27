@@ -115,14 +115,26 @@ class BudgetService(
    * There is no supporter-keyed entry. A supporter's spend reaches this answer
    * through `account_llm_cost`, which re-keys the supporter spine onto the
    * account, so the only thing a `SupporterId` would add here is a `supporters`
-   * read for a `user_id` every caller of this already has. `family/06` adds a
-   * role-keyed gate with the call it gates, which is also where its refusal
-   * shape is decided.
+   * read for a `user_id` every caller of this already has. The role-keyed gate
+   * `family/06` added with the call it gates is [verdictForAccount].
    */
   suspend fun entitlement(userId: UserId): Result<Entitlement> =
     runCatching {
       database.withConnection { session -> entitlementForAccount(session, userId) }
     }
+
+  /**
+   * The role-keyed gate (RFC 258): the verdict for an ACCOUNT, for a caller
+   * that holds the account and a session already — the supporter's coach, whose
+   * subject is the parent's own account and never the student's. The same
+   * [entitlementForAccount] core [entitlement] reads, so a parent is refused
+   * on exactly the meter their usage bar renders. Each caller wraps a
+   * [BudgetVerdict.Exhausted] in its own refusal.
+   */
+  fun verdictForAccount(
+    session: SqlSession,
+    userId: UserId,
+  ): Result<BudgetVerdict> = runCatching { entitlementForAccount(session, userId) }.map(::verdictOf)
 
   private fun verdictOf(entitlement: Entitlement): BudgetVerdict =
     if (entitlement.exhausted) BudgetVerdict.Exhausted(entitlement) else BudgetVerdict.Entitled

@@ -69,7 +69,7 @@ pass_test "fixture user + student created (student_id=$STUDENT_ID)"
 # A committed convo owned by the fixture student, reused by log cases that need
 # a real convo_id. Likewise a committed request/response for response/raw cases.
 CONVO_ID=$(
-  echo "INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Fixture convo') RETURNING id;" \
+  echo "INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', 'Fixture convo') RETURNING id;" \
     | bin/db-run -r rw | grep -E '^[0-9a-f-]{36}$'
 )
 if [ -z "$CONVO_ID" ]; then
@@ -123,7 +123,7 @@ pass_test "fixture convo_request created (request_id=$REQUEST_ID)"
 # aborts the raising statement's whole script, so the reject and the survival
 # check cannot share one psql invocation.
 CASCADE_CONVO_ID=$(
-  echo "INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Cascade convo') RETURNING id;" \
+  echo "INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', 'Cascade convo') RETURNING id;" \
     | bin/db-run -r rw | grep -E '^[0-9a-f-]{36}$'
 )
 CASCADE_REQUEST_ID=$(
@@ -143,7 +143,7 @@ echo "==== convos (entity) ===="
 test_convos_minimal_insert_no_name_rejected() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (student_id) VALUES ('$STUDENT_ID');
+    INSERT INTO convos (party, student_id) VALUES ('student', '$STUDENT_ID');
 EOF
   )
   echo "$out" | grep -qi 'null value in column "name"' || { echo "output was: $out"; return 1; }
@@ -153,7 +153,7 @@ assert_success "convos: insert with only student_id (no name) rejected (NOT NULL
 test_convos_minimal_insert_with_name() {
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Calc help')
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', 'Calc help')
     RETURNING (id IS NOT NULL)
       || '|' || (created_at IS NOT NULL)
       || '|' || (row_created_at IS NOT NULL)
@@ -169,7 +169,7 @@ assert_success "convos: minimal insert with student_id + name takes defaults" te
 test_convos_bad_student_fk() {
   local out
   out=$(run_test_sql << 'EOF'
-    INSERT INTO convos (student_id, name) VALUES ('00000000-0000-0000-0000-000000000000', 'Orphan');
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '00000000-0000-0000-0000-000000000000', 'Orphan');
 EOF
   )
   echo "$out" | grep -q 'violates foreign key constraint' || { echo "output was: $out"; return 1; }
@@ -179,7 +179,7 @@ assert_success "convos: non-existent student_id rejected (FK)" test_convos_bad_s
 test_convos_name_null_rejected() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', NULL);
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', NULL);
 EOF
   )
   echo "$out" | grep -qi 'null value in column "name"' || { echo "output was: $out"; return 1; }
@@ -189,8 +189,8 @@ assert_success "convos: NULL name rejected (NOT NULL, 23502)" test_convos_name_n
 test_convos_name_too_long() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (student_id, name)
-    VALUES ('$STUDENT_ID', repeat('a', 256));
+    INSERT INTO convos (party, student_id, name)
+    VALUES ('student', '$STUDENT_ID', repeat('a', 256));
 EOF
   )
   echo "$out" | grep -q 'convos_name_length_check' || { echo "output was: $out"; return 1; }
@@ -200,7 +200,7 @@ assert_success "convos: 256-char name rejected (length check)" test_convos_name_
 test_convos_name_blank() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', '   ');
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', '   ');
 EOF
   )
   echo "$out" | grep -q 'convos_name_not_empty_check' || { echo "output was: $out"; return 1; }
@@ -210,7 +210,7 @@ assert_success "convos: whitespace-only name rejected (not-empty check)" test_co
 test_convos_name_untrimmed() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', ' Calc ');
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', ' Calc ');
 EOF
   )
   echo "$out" | grep -q 'convos_name_trimmed_check' || { echo "output was: $out"; return 1; }
@@ -220,7 +220,7 @@ assert_success "convos: leading/trailing-whitespace name rejected (trimmed check
 test_convos_name_valid() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'My College Plan');
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', 'My College Plan');
 EOF
   )
   echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
@@ -231,8 +231,8 @@ assert_success "convos: valid name accepted" test_convos_name_valid
 test_convos_update_name_bumps_timestamps() {
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (id, student_id, name, created_at, updated_at, row_updated_at)
-    VALUES (uuidv7(), '$STUDENT_ID', 'Original',
+    INSERT INTO convos (party, id, student_id, name, created_at, updated_at, row_updated_at)
+    VALUES ('student', uuidv7(), '$STUDENT_ID', 'Original',
             '2020-01-01T00:00:00Z'::timestamptz,
             '2020-01-01T00:00:00Z'::timestamptz,
             '2020-01-01T00:00:00Z'::timestamptz)
@@ -250,7 +250,7 @@ assert_success "convos: UPDATE name advances updated_at and row_updated_at" test
 test_convos_immutable_id() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (id, student_id, name) VALUES (uuidv7(), '$STUDENT_ID', 'Immutable id') RETURNING id \\gset
+    INSERT INTO convos (party, id, student_id, name) VALUES ('student', uuidv7(), '$STUDENT_ID', 'Immutable id') RETURNING id \\gset
     UPDATE convos SET id = uuidv7() WHERE id = :'id';
 EOF
   )
@@ -261,7 +261,7 @@ assert_success "convos: UPDATE of id rejected (prevent_immutable_updates)" test_
 test_convos_immutable_created_at() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (id, student_id, name) VALUES (uuidv7(), '$STUDENT_ID', 'Immutable created_at') RETURNING id \\gset
+    INSERT INTO convos (party, id, student_id, name) VALUES ('student', uuidv7(), '$STUDENT_ID', 'Immutable created_at') RETURNING id \\gset
     UPDATE convos SET created_at = '2020-01-01T00:00:00Z'::timestamptz WHERE id = :'id';
 EOF
   )
@@ -272,7 +272,7 @@ assert_success "convos: UPDATE of created_at rejected (prevent_immutable_updates
 test_convos_immutable_row_created_at() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (id, student_id, name) VALUES (uuidv7(), '$STUDENT_ID', 'Immutable row_created_at') RETURNING id \\gset
+    INSERT INTO convos (party, id, student_id, name) VALUES ('student', uuidv7(), '$STUDENT_ID', 'Immutable row_created_at') RETURNING id \\gset
     UPDATE convos SET row_created_at = '2020-01-01T00:00:00Z'::timestamptz WHERE id = :'id';
 EOF
   )
@@ -283,7 +283,7 @@ assert_success "convos: UPDATE of row_created_at rejected (prevent_immutable_upd
 test_convos_physical_delete_blocked() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convos (id, student_id, name) VALUES (uuidv7(), '$STUDENT_ID', 'Delete blocked') RETURNING id \\gset
+    INSERT INTO convos (party, id, student_id, name) VALUES ('student', uuidv7(), '$STUDENT_ID', 'Delete blocked') RETURNING id \\gset
     DELETE FROM convos WHERE id = :'id';
 EOF
   )
@@ -294,7 +294,7 @@ assert_success "convos: physical DELETE rejected (prevent_physical_delete)" test
 test_convos_soft_delete_excluded_by_partial_index() {
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (id, student_id, name) VALUES (uuidv7(), '$STUDENT_ID', 'Soft delete') RETURNING id \\gset
+    INSERT INTO convos (party, id, student_id, name) VALUES ('student', uuidv7(), '$STUDENT_ID', 'Soft delete') RETURNING id \\gset
     UPDATE convos SET deleted_at = NOW() WHERE id = :'id';
     SELECT count(*) FROM convos WHERE id = :'id' AND deleted_at IS NULL;
 EOF
@@ -306,8 +306,8 @@ assert_success "convos: soft-deleted row excluded by active predicate" test_conv
 test_convos_timestamp_bypass() {
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (id, student_id, name, created_at, updated_at, row_updated_at)
-    VALUES (uuidv7(), '$STUDENT_ID', 'Bypass',
+    INSERT INTO convos (party, id, student_id, name, created_at, updated_at, row_updated_at)
+    VALUES ('student', uuidv7(), '$STUDENT_ID', 'Bypass',
             '2020-01-01T00:00:00Z'::timestamptz,
             '2020-01-01T00:00:00Z'::timestamptz,
             '2020-01-01T00:00:00Z'::timestamptz)
@@ -442,7 +442,7 @@ echo "==== Ordered replay ===="
 test_replay_insertion_order() {
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Replay order') RETURNING id AS cid \\gset
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', 'Replay order') RETURNING id AS cid \\gset
     INSERT INTO convo_requests (turn_id, convo_id, system_prompt_id, llm_request_id)
     VALUES (1001, :'cid', '$SYSTEM_PROMPT_ID', $FIXTURE_LLM_REQUEST_ID);
     INSERT INTO convo_requests (turn_id, convo_id, system_prompt_id, llm_request_id)
@@ -462,7 +462,7 @@ test_replay_full_turn_join() {
   # llm_responses_raw), reconstructing the full turn from the generic call log.
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Replay join') RETURNING id AS cid \\gset
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', 'Replay join') RETURNING id AS cid \\gset
     INSERT INTO llm_requests (provider, model_requested, content, max_tokens)
     VALUES ('anthropic', 'claude-opus-4-8', '[{"q":"hi"}]'::jsonb, 100) RETURNING id AS lrid \\gset
     INSERT INTO convo_requests (turn_id, convo_id, system_prompt_id, llm_request_id)
@@ -534,7 +534,7 @@ test_convos_archived_at_exists_nullable_default_null() {
   # nullable, and defaults NULL.
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Archive default')
+    INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', 'Archive default')
     RETURNING (archived_at IS NULL);
 EOF
   )
@@ -547,7 +547,7 @@ test_convos_archive_round_trip() {
   # a guarded entity (prevent_immutable_updates does not cover it).
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convos (id, student_id, name) VALUES (uuidv7(), '$STUDENT_ID', 'Archive trip')
+    INSERT INTO convos (party, id, student_id, name) VALUES ('student', uuidv7(), '$STUDENT_ID', 'Archive trip')
     RETURNING id \\gset
     UPDATE convos SET archived_at = NOW() WHERE id = :'id';
     UPDATE convos SET archived_at = NULL WHERE id = :'id';

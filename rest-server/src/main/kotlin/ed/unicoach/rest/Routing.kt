@@ -18,6 +18,7 @@ import ed.unicoach.rest.routing.StudentSupporterRouteHandler
 import ed.unicoach.rest.routing.SubjectRoutes
 import ed.unicoach.rest.routing.SubjectsRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
+import ed.unicoach.rest.routing.SupporterConvoRoutes
 import ed.unicoach.rest.routing.SupporterInviteRoutes
 import ed.unicoach.rest.routing.SupporterRoutes
 import ed.unicoach.rest.routing.VocabularyRouteHandler
@@ -42,24 +43,71 @@ suspend fun RoutingContext.respondValidationFailed(fieldErrors: List<FieldError>
 }
 
 /**
- * The path parameter [name] as a typed id, or null when it is absent or not a
- * canonical UUID. Read from the route's path only: in `call.parameters` a query
- * parameter of the same name wins over the path, so `?linkId=` could redirect a
- * DELETE. `UUID.fromString` also accepts short groups (`1-2-3-4-5`), so only a
- * value that prints back as itself is an id.
+ * [raw] as a UUID iff it is a canonical one, or null. `UUID.fromString` also
+ * accepts short groups (`1-2-3-4-5`), so only a value that prints back as itself
+ * is an id. The one rule for every id a route reads, from the path ([pathId]) or
+ * from a body field.
  */
-fun <T> RoutingContext.pathId(
-  name: String,
-  wrap: (UUID) -> T,
-): T? {
-  val raw = call.pathParameters[name] ?: return null
+fun canonicalUuidOrNull(raw: String): UUID? {
   val id =
     try {
       UUID.fromString(raw)
     } catch (_: IllegalArgumentException) {
       return null
     }
-  return if (id.toString() == raw.lowercase()) wrap(id) else null
+  return id.takeIf { it.toString() == raw.lowercase() }
+}
+
+/**
+ * The path parameter [name] as a typed id, or null when it is absent or not a
+ * canonical UUID ([canonicalUuidOrNull]). Read from the route's path only: in
+ * `call.parameters` a query parameter of the same name wins over the path, so
+ * `?linkId=` could redirect a DELETE.
+ */
+fun <T> RoutingContext.pathId(
+  name: String,
+  wrap: (UUID) -> T,
+): T? = call.pathParameters[name]?.let(::canonicalUuidOrNull)?.let(wrap)
+
+/**
+ * `404 supporter_not_found`: the caller has no supporter profile — the mirror of
+ * `GET /api/v1/students/me`'s `404 student_not_found`, the same "you do not have
+ * one of these" fact in the same shape. It is not a 409
+ * `student_profile_required`: that refusal tells a caller to go and make a
+ * STUDENT, which is the wrong instruction here. Shared by every door a
+ * supporter reaches, so they cannot drift on the body.
+ */
+suspend fun RoutingContext.respondSupporterNotFound() {
+  call.respond(
+    HttpStatusCode.NotFound,
+    ErrorResponse(ErrorCode.SUPPORTER_NOT_FOUND, "No supporter profile for the current user"),
+  )
+}
+
+/**
+ * `404 student_not_found` for a student the caller reaches through the subject
+ * seam: one body for every refusal — never linked, severed, or closed — so the
+ * caller learns nothing about which.
+ */
+suspend fun RoutingContext.respondNoSuchStudent() {
+  call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.STUDENT_NOT_FOUND, "No such student"))
+}
+
+/** `404 not_found` for a conversation that is missing, deleted, or not the caller's (no existence leak). */
+suspend fun RoutingContext.respondConvoNotFound() {
+  call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.NOT_FOUND, "No such conversation"))
+}
+
+/**
+ * `402 coaching_budget_exhausted`, answered as plain JSON before any stream
+ * opens. The body names no dollars, tokens, or provider; the caller logs the
+ * deciding entitlement itself, keyed by its own budget subject.
+ */
+suspend fun RoutingContext.respondCoachingBudgetExhausted() {
+  call.respond(
+    HttpStatusCode.PaymentRequired,
+    ErrorResponse(ErrorCode.COACHING_BUDGET_EXHAUSTED, "Coaching allowance exhausted"),
+  )
 }
 
 fun Route.rejectUnsupportedMethods(vararg methods: HttpMethod) {
@@ -97,6 +145,7 @@ fun Application.configureRouting(
   accountClosureService: ed.unicoach.account.AccountClosureService,
   subjectReadService: ed.unicoach.family.SubjectReadService,
   supporterLinkRequestService: ed.unicoach.family.SupporterLinkRequestService,
+  supporterCoachingService: ed.unicoach.family.SupporterCoachingService,
 ) {
   val authRouteHandler =
     AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier, accountClosureService)
@@ -130,6 +179,7 @@ fun Application.configureRouting(
   val studentSupporterRouteHandler =
     StudentSupporterRouteHandler(authService, studentService, supporterService, supporterLinkRequestService, sessionConfig)
   val subjectRouteHandler = SubjectRoutes(authService, sessionConfig, subjectReadService)
+  val supporterConvoRouteHandler = SupporterConvoRoutes(authService, sessionConfig, supporterCoachingService)
   routing {
     route("/healthz") {
       get {
@@ -157,5 +207,6 @@ fun Application.configureRouting(
     supporterRouteHandler.registerRoutes(this)
     studentSupporterRouteHandler.registerRoutes(this)
     subjectRouteHandler.registerRoutes(this)
+    supporterConvoRouteHandler.registerRoutes(this)
   }
 }

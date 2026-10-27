@@ -39,7 +39,7 @@ abstract class StudentScopedChatTool : ChatTool {
   final override suspend fun execute(input: JsonObject): JsonObject = errorObject("tool [$name] requires a student-scoped dispatch")
 
   /** The structured error object the [ChatTool] total contract requires — malformed input never throws. */
-  protected fun errorObject(reason: String): JsonObject = buildJsonObject { put(ERROR_KEY, reason) }
+  protected fun errorObject(reason: String): JsonObject = toolErrorObject(reason)
 
   /**
    * The result a LINK door returns when it minted NO link: [LINK_CREATED_KEY]
@@ -66,11 +66,7 @@ abstract class StudentScopedChatTool : ChatTool {
   protected fun unknownFieldsReason(
     input: JsonObject,
     known: Set<String>,
-  ): String? {
-    val unknown = input.keys - known
-    if (unknown.isEmpty()) return null
-    return "unknown field(s): ${unknown.sorted().joinToString(", ") { "[$it]" }}"
-  }
+  ): String? = unknownToolFieldsReason(input, known)
 
   /**
    * A read of one optional input field: the value, an explicit absence, or a
@@ -251,6 +247,25 @@ abstract class StudentScopedChatTool : ChatTool {
 
     internal val COLLEGE_IDS_FIELDS = setOf(COLLEGE_IDS_FIELD)
   }
+}
+
+/**
+ * The structured `{ "error": reason }` object every coach tool answers a refusal
+ * with, whatever it is scoped to: the student-scoped family above, the
+ * subject-scoped family a supporter's coach dispatches (RFC 258), and a plain
+ * tool that takes no subject at all. ONE envelope, so
+ * [StudentScopedChatTool.isToolRefusal] recognises every one of them.
+ */
+internal fun toolErrorObject(reason: String): JsonObject = buildJsonObject { put(StudentScopedChatTool.ERROR_KEY, reason) }
+
+/** The rejection reason for input keys outside [known], or null when the input is clean — one wording for every tool. */
+internal fun unknownToolFieldsReason(
+  input: JsonObject,
+  known: Set<String>,
+): String? {
+  val unknown = input.keys - known
+  if (unknown.isEmpty()) return null
+  return "unknown field(s): ${unknown.sorted().joinToString(", ") { "[$it]" }}"
 }
 
 /**

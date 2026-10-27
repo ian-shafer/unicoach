@@ -161,6 +161,7 @@ class ConvoExtractionEnqueueTest {
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
+            supporterCoachingConfigFrom(config),
           )
         }
       enabledServer.start(wait = false)
@@ -194,6 +195,7 @@ class ConvoExtractionEnqueueTest {
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
+            supporterCoachingConfigFrom(config),
           )
         }
       disabledServer.start(wait = false)

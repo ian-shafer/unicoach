@@ -15,6 +15,7 @@ import ed.unicoach.db.models.PendingSupporterLinkRequest
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.Supporter
+import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SupporterStudentLinkId
 import ed.unicoach.db.models.UnlinkOutcome
 import ed.unicoach.db.models.UserId
@@ -178,6 +179,31 @@ class SupporterService(
     runCatching {
       database.withConnection { session -> SupportersDao.findByUserId(session, userId).getOrThrow() }
     }
+
+  /**
+   * [find] on the caller's [session] (RFC 258): the supporter coach resolves the
+   * caller's row inside the one transaction its pre-flight runs in.
+   */
+  fun findInSession(
+    session: SqlSession,
+    userId: UserId,
+  ): Supporter? = SupportersDao.findByUserId(session, userId).getOrThrow()
+
+  /**
+   * One student on [supporterId]'s live roster — their display name and the
+   * relationship word — or `null` when that student is not on it (RFC 258). The
+   * roster read the home is built from, narrowed to one student, so the coach
+   * names the student exactly as the home does.
+   */
+  fun rosterEntryInSession(
+    session: SqlSession,
+    supporterId: SupporterId,
+    studentId: StudentId,
+  ): LinkedStudent? =
+    SupporterStudentLinksDao
+      .listActiveLinkedStudents(session, supporterId)
+      .getOrThrow()
+      .firstOrNull { it.studentId == studentId }
 
   /**
    * [userId]'s home, or `null` when they hold no `supporters` row — the read

@@ -4,6 +4,8 @@ import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.Convo
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
+import ed.unicoach.db.models.ConvoParty
+import ed.unicoach.db.models.ConvoPartyKind
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoRequestKind
@@ -16,7 +18,9 @@ import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SystemPromptId
+import ed.unicoach.db.models.kind
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -46,12 +50,52 @@ object ConvosDao :
     Convo(
       id = ConvoId(UUID.fromString(rs.getString("id"))),
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
+      party = parseParty(rs),
       name = parseConvoName(rs.getString("name")),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
       deletedAt = rs.getInstantOrNull("deleted_at"),
       archivedAt = rs.getInstantOrNull("archived_at"),
     )
+
+  /**
+   * Reconstructs who the conversation is with from the stored pair (RFC 258) —
+   * the ONE place `party` and `supporter_id` are read, so no caller sees the
+   * redundant shape. The two CHECKs guarantee a valid kind and that an author
+   * is present exactly on a supporter row, so either failure here is row
+   * corruption, surfaced as a [SQLException] naming the row.
+   */
+  private fun parseParty(rs: ResultSet): ConvoParty {
+    val rowId = rs.getString("id")
+    val raw = rs.getString("party")
+    val supporterId = rs.getString("supporter_id")?.let { SupporterId(UUID.fromString(it)) }
+    return when (ConvoPartyKind.fromValue(raw)) {
+      ConvoPartyKind.STUDENT -> {
+        if (supporterId != null) {
+          throw SQLException("Persisted student convo [$rowId] carries a supporter_id [${supporterId.asString}]")
+        }
+        ConvoParty.Student
+      }
+
+      ConvoPartyKind.SUPPORTER -> {
+        ConvoParty.Supporter(
+          supporterId ?: throw SQLException("Persisted supporter convo [$rowId] carries no supporter_id"),
+        )
+      }
+
+      null -> {
+        throw SQLException("Persisted convos.party is not a valid value for row id=[$rowId]: [$raw]")
+      }
+    }
+  }
+
+  /**
+   * The predicate every student-side list carries (RFC 258): a supporter's
+   * conversation about the student is ABOUT them but is not THEIRS, so it is
+   * never listed, read or extracted as the student's own. A fixed fragment
+   * over the enum's own value; no caller data.
+   */
+  private fun studentPartyPredicate(column: String): String = "$column = '${ConvoPartyKind.STUDENT.value}'"
 
   /**
    * Reconstructs the persisted name. The DB checks already guarantee a valid,
@@ -151,7 +195,7 @@ object ConvosDao :
     val sql =
       """
       SELECT * FROM convos
-      WHERE student_id = ? AND ${scope.predicate("deleted_at")}
+      WHERE student_id = ? AND ${studentPartyPredicate("party")} AND ${scope.predicate("deleted_at")}
       ORDER BY created_at, id
       """.trimIndent()
     return session.queryList(
@@ -171,6 +215,13 @@ object ConvosDao :
         linkedMapOf<String, Bind>(
           "student_id" to { stmt, i -> stmt.setObject(i, input.studentId.value) },
           "name" to { stmt, i -> stmt.setString(i, input.name.value) },
+          "party" to { stmt, i -> stmt.setString(i, input.party.kind.value) },
+          "supporter_id" to { stmt, i ->
+            when (val party = input.party) {
+              ConvoParty.Student -> stmt.setNull(i, java.sql.Types.OTHER)
+              is ConvoParty.Supporter -> stmt.setObject(i, party.supporterId.value)
+            }
+          },
         ),
       map = ::mapConvo,
       mapError = ::mapConvoError,
@@ -307,6 +358,7 @@ object ConvosDao :
       FROM convos c
       LEFT JOIN convo_requests r ON r.convo_id = c.id
       WHERE c.student_id = ?
+        AND ${studentPartyPredicate("c.party")}
         AND ${scope.predicate("c.deleted_at")}
         AND ${archivePredicate(archive, "c.archived_at")}
       GROUP BY c.id
@@ -322,6 +374,37 @@ object ConvosDao :
           it.setInt(3, offset)
         }
       },
+      map = ::mapConvoWithActivity,
+    )
+  }
+
+  /**
+   * A supporter's OWN conversations (RFC 258), every student they are about,
+   * each with its derived `lastActivityAt`, most-recent activity first — the
+   * read behind `GET /api/v1/supporters/me/conversations`. Active rows only and
+   * every archive state: the parent surface has no archive.
+   *
+   * It is keyed on the author alone, never on a student, so a conversation
+   * about a student this supporter is no longer linked to stays listed: those
+   * are the supporter's own words.
+   */
+  fun listBySupporterWithActivity(
+    session: SqlSession,
+    supporterId: SupporterId,
+  ): Result<List<ConvoWithActivity>> {
+    val sql =
+      """
+      SELECT c.*, MAX(r.created_at) AS last_activity_at
+      FROM convos c
+      LEFT JOIN convo_requests r ON r.convo_id = c.id
+      WHERE c.supporter_id = ?
+        AND ${SoftDeleteScope.ACTIVE.predicate("c.deleted_at")}
+      GROUP BY c.id
+      ORDER BY MAX(r.created_at) DESC NULLS LAST, c.created_at DESC, c.id
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = { it.setObject(1, supporterId.value) },
       map = ::mapConvoWithActivity,
     )
   }
@@ -608,6 +691,7 @@ object ConvosDao :
         val message = e.message ?: ""
         when {
           message.contains("convos_student_id_fkey") -> NotFoundException("Owning student not found")
+          message.contains("convos_supporter_id_fkey") -> NotFoundException("Owning supporter not found")
           message.contains("convo_requests_convo_id_fkey") -> NotFoundException("Convo not found")
           message.contains("convo_requests_system_prompt_id_fkey") -> NotFoundException("System prompt not found")
           message.contains("convo_requests_llm_request_id_fkey") -> NotFoundException("LLM request not found")

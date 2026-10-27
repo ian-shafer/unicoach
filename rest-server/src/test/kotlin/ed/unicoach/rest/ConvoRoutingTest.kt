@@ -320,6 +320,128 @@ class ConvoRoutingTest {
       assertEquals(random.second, foreign.second)
     }
 
+  // ---------------------------------------------------------------------------
+  // The supporter party is never the student's (RFC 258)
+  // ---------------------------------------------------------------------------
+
+  /** The caller's own student id, from `GET /api/v1/students/me`: whom a seeded parent convo is about. */
+  private suspend fun studentIdOf(cookie: String): java.util.UUID {
+    val (status, body) = get("/api/v1/students/me", cookie)
+    assertEquals(HttpStatusCode.OK, status, body)
+    return java.util.UUID.fromString(mapper.readTree(body)["student"]["id"].asText())
+  }
+
+  /**
+   * A supporter's own conversation ABOUT [studentId], authored by a fresh
+   * supporter row on [supporterUserId] (a new user when null), written straight
+   * to the table: the parent routes are not what this suite is about.
+   */
+  private fun seedSupporterConvo(
+    studentId: java.util.UUID,
+    supporterUserId: java.util.UUID? = null,
+  ): String {
+    val userId = supporterUserId ?: java.util.UUID.randomUUID()
+    if (supporterUserId == null) {
+      dbConnection
+        .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Parent', 'ahash')")
+        .use { stmt ->
+          stmt.setObject(1, userId)
+          stmt.setString(2, "parent-$userId@company.com")
+          stmt.executeUpdate()
+        }
+    }
+    val supporterId =
+      dbConnection
+        .prepareStatement(
+          "INSERT INTO supporters (user_id) VALUES (?) ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING id",
+        ).use { stmt ->
+          stmt.setObject(1, userId)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            rs.getObject(1, java.util.UUID::class.java)
+          }
+        }
+    return dbConnection
+      .prepareStatement(
+        "INSERT INTO convos (student_id, name, party, supporter_id) VALUES (?, 'The parent''s conversation', 'supporter', ?) RETURNING id",
+      ).use { stmt ->
+        stmt.setObject(1, studentId)
+        stmt.setObject(2, supporterId)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getString(1)
+        }
+      }
+  }
+
+  private fun userIdOfStudent(studentId: java.util.UUID): java.util.UUID =
+    dbConnection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
+      stmt.setObject(1, studentId)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getObject(1, java.util.UUID::class.java)
+      }
+    }
+
+  @Test
+  fun `a user holding both a student and a supporter row sees only their student conversations`() {
+    runBlocking {
+      val cookie = registerWithStudent()
+      val studentId = studentIdOf(cookie)
+      val own = createConvo(cookie, "my own question")["conversation"]["id"].asText()
+      // The SAME account's supporter row authors a conversation about the same student.
+      val parents = seedSupporterConvo(studentId, supporterUserId = userIdOfStudent(studentId))
+
+      val (status, body) = get("/api/v1/conversations", cookie)
+
+      assertEquals(HttpStatusCode.OK, status, body)
+      val ids = mapper.readTree(body)["conversations"].map { it["id"].asText() }
+      assertEquals(listOf(own), ids, "only the student-party conversation is listed, never [$parents]")
+    }
+  }
+
+  @Test
+  fun `a supporter's conversation about the student answers 404 on every student route`() {
+    runBlocking {
+      val cookie = registerWithStudent()
+      val parents = seedSupporterConvo(studentIdOf(cookie))
+      val notFound = get("/api/v1/conversations/${java.util.UUID.randomUUID()}", cookie)
+
+      val getOne = get("/api/v1/conversations/$parents", cookie)
+      val messages = get("/api/v1/conversations/$parents/messages", cookie)
+      val patch =
+        client.patch(buildUrl("/api/v1/conversations/$parents")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(UpdateConversationRequest(name = "mine now", archived = null)))
+        }
+      val delete = client.delete(buildUrl("/api/v1/conversations/$parents")) { header(HttpHeaders.Cookie, cookie) }
+      val post =
+        client.post(buildUrl("/api/v1/conversations/$parents/messages")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(PostMessageRequest("hello")))
+        }
+      val stream = sse("/api/v1/conversations/$parents/messages/stream", cookie, PostMessageRequest("hello"))
+
+      assertEquals(HttpStatusCode.NotFound, getOne.first, getOne.second)
+      assertEquals(notFound.second, getOne.second, "the same body as a convo that does not exist")
+      assertEquals(HttpStatusCode.NotFound, messages.first, messages.second)
+      assertEquals(HttpStatusCode.NotFound, patch.status, patch.bodyAsText())
+      assertEquals(HttpStatusCode.NotFound, delete.status, delete.bodyAsText())
+      assertEquals(HttpStatusCode.NotFound, post.status, post.bodyAsText())
+      assertEquals(HttpStatusCode.NotFound, stream.first, stream.third)
+      dbConnection.prepareStatement("SELECT name, deleted_at IS NULL FROM convos WHERE id = ?::uuid").use { stmt ->
+        stmt.setString(1, parents)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          assertEquals("The parent's conversation", rs.getString(1), "the student could not rename it")
+          assertTrue(rs.getBoolean(2), "the student could not delete it")
+        }
+      }
+    }
+  }
+
   @Test
   fun `413 override on convo POST paths and default elsewhere`() =
     runBlocking {

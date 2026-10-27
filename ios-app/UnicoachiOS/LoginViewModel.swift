@@ -225,6 +225,8 @@ class LoginViewModel: ObservableObject {
              .ageRequirementNotMet,
              .supporterLinkNotFound,
              .supporterRequestNotFound,
+             .supporterNotFound,
+             .studentNotFound,
              .coachingBudgetExhausted,
              .decodeError,
              .none:

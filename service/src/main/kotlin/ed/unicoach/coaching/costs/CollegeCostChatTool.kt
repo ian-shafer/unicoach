@@ -72,1392 +72,1401 @@ class CollegeCostChatTool(
           return errorObject("college cost read failed")
         }
 
-    return profileObject(profile)
-  }
-
-  /** The full structured result: one cost object per college, the money-profile echo, and the attribution. */
-  private fun profileObject(profile: CollegeCostProfile): JsonObject =
-    buildJsonObject {
-      putJsonArray("colleges") { profile.colleges.forEach { add(collegeObject(profile, it)) } }
-      // The major answer (RFC 231): absent, never empty, when the intended
-      // subjects are unanswered, declined or undecided. Present it is the
-      // colleges re-keyed by subject and then by matched program --
-      // subject_slug -> colleges -> programs -> figures.
-      profile.programReturn?.let { put(PROGRAM_RETURN_KEY, programReturnArray(it)) }
-      put("count", profile.colleges.size)
-      if (profile.unknownCollegeIds.isNotEmpty()) {
-        putJsonArray("unknown_college_ids") {
-          profile.unknownCollegeIds.forEach { add(JsonPrimitive(it.value.toString())) }
-        }
-      }
-      put("money_profile", moneyProfileObject(profile.moneyProfile))
-      // The comparison contract (RFC 151), present only when the answer carries
-      // two or more colleges -- an absent key, never an empty object, so its
-      // mere presence tells the model a side-by-side is being made.
-      profile.comparisonBasis?.let { put(COMPARISON_BASIS_KEY, comparisonBasisObject(it)) }
-      // ABSENT, never empty, exactly like every other key here: a payload with
-      // no money figure on it has no publisher to name, and the constant this
-      // replaced named one anyway (RFC 177).
-      MoneySourceCopy.spokenListOf(profile.moneySources)?.let { put(SOURCE_KEY, it) }
-    }
-
-  /**
-   * The `program_return` array (RFC 231), in the stored answer's own order: one
-   * entry per subject, then one entry per selected college, then one entry per
-   * matched program in CIP order, then the figures in [ProgramMoneyMeasure]
-   * declaration order.
-   */
-  private fun programReturnArray(section: ProgramReturn): JsonArray = JsonArray(section.subjects.map(::programReturnSubjectObject))
-
-  private fun programReturnSubjectObject(subject: ProgramReturnSubject): JsonObject =
-    buildJsonObject {
-      put(PROGRAM_SUBJECT_SLUG_KEY, subject.subjectSlug)
-      put(PROGRAM_SUBJECT_NAME_KEY, subject.subjectName)
-      putJsonArray(PROGRAM_COLLEGES_KEY) { subject.colleges.forEach { add(programReturnCollegeObject(it)) } }
-    }
-
-  /**
-   * One college's slice: its matched programs, or the ONE sentence that says no
-   * program matched -- never an empty `programs` array.
-   */
-  private fun programReturnCollegeObject(college: ProgramReturnCollege): JsonObject =
-    buildJsonObject {
-      put(COLLEGE_ID_KEY, college.collegeId.value.toString())
-      put(COLLEGE_NAME_KEY, college.name)
-      when (college) {
-        is ProgramReturnCollege.WithPrograms -> {
-          putJsonArray(PROGRAM_PROGRAMS_KEY) { college.programs.forEach { add(programObject(it)) } }
-        }
-
-        // No matched bachelor's program: the name and the sentence, never an
-        // empty programs array.
-        is ProgramReturnCollege.NoProgram -> {
-          putJsonObject(PROGRAM_AVAILABILITY_KEY) {
-            put(BASIS_KEY, PROGRAM_NO_PROGRAM_BASIS)
-            put(STATEMENT_KEY, ProgramReturnCopy.NO_PROGRAM_STATEMENT)
-          }
-        }
-      }
-    }
-
-  /**
-   * One matched program, keyed by the CIP code the publisher publishes at: its
-   * figures, or the sentence that says we hold none of them.
-   *
-   * The code rides on EVERY entry, including the no-figures one, because it is
-   * the program's identity: a college running two programs one subject reaches
-   * carries two entries, and an entry with no code would leave a family unable
-   * to tell which major it is about (RFC 231).
-   */
-  private fun programObject(program: ProgramReturnProgram): JsonObject =
-    buildJsonObject {
-      put(PROGRAM_CIP_CODE_KEY, program.cipCode.value)
-      put(PROGRAM_TITLE_KEY, program.title)
-      when (program) {
-        is ProgramReturnProgram.WithFigures -> {
-          putJsonArray(PROGRAM_FIGURES_KEY) { program.figures.forEach { add(programReturnFigureObject(it)) } }
-        }
-
-        // The school RUNS the program and the publisher gave us nothing for it
-        // -- its own basis, so it can never be read as the school not running
-        // it and never as a publisher's suppression.
-        is ProgramReturnProgram.NoPublishedFigures -> {
-          putJsonObject(PROGRAM_FIGURES_AVAILABILITY_KEY) {
-            put(BASIS_KEY, PROGRAM_NO_PUBLISHED_FIGURES_BASIS)
-            put(STATEMENT_KEY, ProgramReturnCopy.NO_PUBLISHED_FIGURES_STATEMENT)
-          }
-        }
-      }
-    }
-
-  /**
-   * One measure's entry. EVERY measure gets one, so a measure we hold no row for
-   * says so in its own words rather than leaving a short array a reader has to
-   * diff against the measure list to notice.
-   */
-  private fun programReturnFigureObject(figure: ProgramReturnFigure): JsonObject =
-    buildJsonObject {
-      put(PROGRAM_MEASURE_KEY, figure.measure.value)
-      when (figure) {
-        is ProgramReturnFigure.Held -> {
-          putHeldProgramFigure(figure)
-        }
-
-        is ProgramReturnFigure.NoFigure -> {
-          putJsonObject(PROGRAM_MEASURE_AVAILABILITY_KEY) {
-            put(BASIS_KEY, PROGRAM_NO_FIGURE_BASIS)
-            put(STATEMENT_KEY, ProgramReturnCopy.NO_FIGURE_STATEMENT)
-          }
-        }
-      }
-    }
-
-  /**
-   * A figure we hold a row for: its status, its number where the status bears
-   * one, and its provenance.
-   *
-   * The status is the ARM's own ([ProgramReturnFigure.Held.status]), so no
-   * silence can be stamped with another's code. The `when` is exhaustive with no
-   * `else` over the whole `figure_statuses` vocabulary, because the amount rides
-   * on exactly the two value-bearing statuses and a seventh status must be
-   * decided here before it compiles -- the seam that once threw for three of the
-   * six legal values and took the whole cost answer down with it.
-   */
-  private fun JsonObjectBuilder.putHeldProgramFigure(figure: ProgramReturnFigure.Held) {
-    when (figure) {
-      is ProgramReturnFigure.Valued -> {
-        put(PROGRAM_AMOUNT_USD_KEY, figure.amountUsd)
-      }
-
-      is ProgramReturnFigure.Suppressed,
-      is ProgramReturnFigure.NotReported,
-      is ProgramReturnFigure.NotApplicable,
-      is ProgramReturnFigure.NotCollectedByUs,
-      -> {
-        Unit
-      }
-    }
-    put(PROGRAM_STATUS_KEY, figure.status.value)
-    put(PROGRAM_PUBLISHER_KEY, figure.provenance.publisher)
-    put(PROGRAM_COHORT_FIRST_YEAR_KEY, figure.provenance.cohortFirstYear.firstCalendarYear)
-    put(PROGRAM_COHORT_LAST_YEAR_KEY, figure.provenance.cohortLastYear.firstCalendarYear)
-    put(PROGRAM_COHORT_SENTENCE_KEY, figure.provenance.cohortSentence)
-    figure.provenance.inflationBaseYear?.let { put(PROGRAM_INFLATION_BASE_YEAR_KEY, it.year) }
-  }
-
-  /**
-   * The five facts a side-by-side holds constant (RFC 151), each rendered as a
-   * stable code AND the sentence the coach may say for it.
-   *
-   * A renderer and nothing else: every code and every statement is read off the
-   * [ComparisonBasis] the service assembled, so this file cannot state a basis
-   * the domain did not decide.
-   */
-  private fun comparisonBasisObject(basis: ComparisonBasis): JsonObject =
-    buildJsonObject {
-      putJsonObject("population") {
-        put(BASIS_KEY, basis.population.code)
-        put(STATEMENT_KEY, basis.population.statement)
-      }
-      put("residency", residencyBasisObject(basis.residency))
-      // The SIXTH fact (RFC 157 D-C), emitted directly after the residency fact
-      // it completes: the residency line is about the tuition and fees column,
-      // and this one says which residency the two blended figures are on and
-      // which schools here they therefore do not describe.
-      put(BLENDED_FIGURE_BASIS_KEY, blendedFigureBasisObject(basis.blendedFigures))
-      put("living_arrangement", arrangementBasisObject(basis.livingArrangement))
-      // Absent, never empty -- the same convention `comparable` and
-      // `incomplete_by_college` follow below, and the one D-B gates the whole
-      // object on. A call whose schools report only undated figures (median
-      // debt, median earnings) dates nothing, and an empty array would read as
-      // a year list nobody could name.
-      if (basis.academicYears.isNotEmpty()) {
-        putJsonArray("academic_years") { basis.academicYears.forEach { add(datedFiguresObject(it)) } }
-      }
-      putJsonObject("aid") {
-        put(BASIS_KEY, basis.aid.code)
-        put(STATEMENT_KEY, basis.aid.statement)
-      }
-    }
-
-  /**
-   * The residency held constant, and the one per-school element inside the
-   * per-call object (RFC 151 D-A): the state rides only when it is answered,
-   * exactly as the money-profile echo renders it.
-   */
-  private fun residencyBasisObject(residency: ResidencyBasis): JsonObject =
-    // WHICH schools here charge by residency: the decision the statement speaks,
-    // shipped as a code beside it (D-D), so no reader parses the sentence to
-    // learn whether this table is all-public, mixed, or none.
-    residencyAnsweredBasisObject(
-      scope = residency.scope.value,
-      answer = residency.answer,
-      statement = residency.statement,
-      namedPerCollege = residency.namedPerCollege,
-      objectOfEntry = ::collegeResidencyObject,
-    )
-
-  /**
-   * The shape EVERY residency-answered per-call fact rides in (RFC 151 D-D):
-   * the scope code, the family's own answer, the sentence the coach may say, and
-   * -- only where a school is not fully described by that sentence (RFC 189 D2)
-   * -- one entry per such school.
-   *
-   * Written ONCE, so a key added here reaches the residency fact and the
-   * blended-figure fact together rather than being remembered for one of them.
-   */
-  private fun <T> residencyAnsweredBasisObject(
-    scope: String,
-    answer: ComparedResidency,
-    statement: String,
-    namedPerCollege: List<T>,
-    objectOfEntry: (T) -> JsonObject,
-  ): JsonObject =
-    buildJsonObject {
-      put(BASIS_KEY, scope)
-      put(STATUS_KEY, answer.status.value)
-      // The state rides on the answered case and nowhere else, and EXHAUSTIVELY
-      // so: a case added to [ComparedResidency] must fail to compile here rather
-      // than silently ship without the state it carries.
-      when (answer) {
-        is ComparedResidency.Answered -> put("residency_state", answer.state)
-        ComparedResidency.Unanswered, ComparedResidency.Declined -> Unit
-      }
-      put(STATEMENT_KEY, statement)
-      // CONDITIONAL, the same rule [CHOSEN_BY_COLLEGE_KEY] has carried for the
-      // same shape (RFC 189 D2): the array is written only where a school is not
-      // fully described by the sentence above it. With every school on one
-      // basis, an unconditional array stated the one fact 1 + N times and
-      // invited the coach to narrate a difference there is none of. The DOMAIN
-      // decides which schools those are ([ResidencyBasis.namedPerCollege],
-      // [BlendedFigureBasis.namedPerCollege]), so the renderer never re-derives
-      // the condition -- absent, never empty, like every other list here.
-      if (namedPerCollege.isNotEmpty()) {
-        putJsonArray(BY_COLLEGE_KEY) { namedPerCollege.forEach { add(objectOfEntry(it)) } }
-      }
-    }
-
-  /**
-   * One school's residency line inside the per-call object: WHICH published
-   * tuition figure this comparison holds constant there.
-   *
-   * [TUITION_BASIS_KEY] is its own key with its own five-code vocabulary, not
-   * the per-college `tuition_applicable`: that one is the public-only
-   * in-state/out-of-state/unknown fact, while this one also answers what kind of
-   * school it is.
-   */
-  private fun collegeResidencyObject(college: CollegeResidencyBasis): JsonObject =
-    buildJsonObject {
-      put(COLLEGE_ID_KEY, college.collegeId.value.toString())
-      put(COLLEGE_NAME_KEY, college.name)
-      put(TUITION_BASIS_KEY, college.tuition.code)
-      // The raw control code that defeated the residency line, beside the
-      // failure it caused: an operator reading this entry never has to open the
-      // row to learn WHICH value we could not place.
-      when (val tuition = college.tuition) {
-        is ComparedTuition.PublishedPriceUnknown -> put(SOURCE_CONTROL_KEY, tuition.sourceControl.label)
-        is ComparedTuition.Public, ComparedTuition.SinglePublishedPrice -> Unit
-      }
-      put(STATEMENT_KEY, college.statement)
-    }
-
-  /**
-   * Which residency the published price and the price after a financial aid
-   * offer are on, and which schools in this call they do not describe (RFC 157
-   * D-C).
-   *
-   * The same shape as every other basis fact: a [BASIS_KEY] code, the family's
-   * own answer echoed, the [STATEMENT_KEY] the coach may say, and -- where the
-   * sentence is not the whole truth about a school -- that school's own entry,
-   * so a reader never has to work out from an absent figure that a figure was
-   * withheld.
-   */
-  private fun blendedFigureBasisObject(basis: BlendedFigureBasis): JsonObject =
-    residencyAnsweredBasisObject(
-      scope = basis.scope.value,
-      answer = basis.answer,
-      statement = basis.statement,
-      namedPerCollege = basis.namedPerCollege,
-      objectOfEntry = ::collegeBlendedFigureObject,
-    )
-
-  /**
-   * One school's blended-figure line: the code, whether the two figures are this
-   * family's, and the sentence. [putBlendedFiguresApply] owns the known-only
-   * rule for [APPLIES_KEY] and says why.
-   */
-  private fun collegeBlendedFigureObject(college: CollegeBlendedFigureBasis): JsonObject =
-    buildJsonObject {
-      put(COLLEGE_ID_KEY, college.collegeId.value.toString())
-      put(COLLEGE_NAME_KEY, college.name)
-      put(BASIS_KEY, college.code.value)
-      putBlendedFiguresApply(college.applies)
-      put(STATEMENT_KEY, college.statement)
-    }
-
-  /**
-   * Whether the two blended figures are this family's at one school, on the wire
-   * in ONE form wherever it is said (RFC 157 D-B).
-   *
-   * TWO keys, and both are load-bearing. [APPLIES_BASIS_KEY] carries the state
-   * itself and is always written, so the payload is self-describing and no
-   * reader infers an outcome from a key that is not there. [APPLIES_KEY] stays
-   * the known-only boolean -- the `offers_on_campus_housing` convention (RFC 149
-   * D-B) -- because an open residency question is not a `false`, and writing one
-   * would tell the coach these figures are somebody else's when all we know is
-   * that we have not asked.
-   *
-   * Exhaustive, so a fourth outcome must say what boolean it ships rather than
-   * falling through to silence.
-   */
-  private fun JsonObjectBuilder.putBlendedFiguresApply(applies: BlendedFigureApplicability) {
-    // The state ITSELF, always present: three outcomes cannot ride on a boolean
-    // plus an absence, and an absent key has two causes (an open residency
-    // question, an unrecognised control) that a reader cannot tell apart.
-    put(APPLIES_BASIS_KEY, applies.value)
-    when (applies) {
-      BlendedFigureApplicability.APPLIES -> put(APPLIES_KEY, true)
-      BlendedFigureApplicability.WITHHELD -> put(APPLIES_KEY, false)
-      BlendedFigureApplicability.BASIS_STATED -> Unit
-    }
-  }
-
-  /**
-   * The living arrangement held constant (RFC 151 D-E, RFC 152 D5): what the
-   * family answered, what each school resolved to, the arrangements every
-   * school in the call is priced for, and the schools that lack one another
-   * school has.
-   *
-   * The lists are emitted only when they carry something -- the payload's
-   * absent-never-empty convention -- and the statement says which case it is in
-   * words, beside the [BASIS_KEY] code that says it as a fact, so an absent
-   * list is never read as a fact nobody stated.
-   *
-   * [CHOSEN_BY_COLLEGE_KEY] is emitted only when the schools are NOT all on one
-   * plan or one of them is not priced for it: with one plan everywhere, the
-   * statement and the per-college keys already say it, and a second per-school
-   * list would invite the coach to narrate a difference there is none of.
-   */
-  private fun arrangementBasisObject(arrangement: ArrangementBasis): JsonObject =
-    buildJsonObject {
-      put(BASIS_KEY, arrangement.scope.value)
-      putComparedLivingPlan(arrangement.answer)
-      if (arrangement.planNamedPerCollege.isNotEmpty()) {
-        putJsonArray(CHOSEN_BY_COLLEGE_KEY) {
-          arrangement.planNamedPerCollege.forEach { add(collegeLivingPlanObject(it)) }
-        }
-      }
-      if (arrangement.comparable.isNotEmpty()) {
-        putJsonArray("comparable") { arrangement.comparable.forEach { add(JsonPrimitive(it.value)) } }
-      }
-      if (arrangement.incompleteByCollege.isNotEmpty()) {
-        putJsonArray("incomplete_by_college") {
-          arrangement.incompleteByCollege.forEach { add(incompleteArrangementObject(it)) }
-        }
-      }
-      put(STATEMENT_KEY, arrangement.statement)
-    }
-
-  /**
-   * One school's resolved plan inside the comparison: which way of living it is
-   * quoted at, where that plan came from, and -- when the school is not priced
-   * for it -- the reason, never a substitute.
-   *
-   * A school with no plan resolved carries its identity and the
-   * [LivingPlanPricing.NOT_CHOSEN] code, so "nothing is on file for it" is
-   * stated rather than left to be noticed in an absent key.
-   */
-  private fun collegeLivingPlanObject(row: CollegeLivingPlan): JsonObject =
-    buildJsonObject {
-      put(COLLEGE_ID_KEY, row.collegeId.value.toString())
-      put(COLLEGE_NAME_KEY, row.name)
-      putChosenLivingPlan(row.chosen)
-    }
-
-  /**
-   * The resolved plan itself: which way of living, in the student's words,
-   * where the plan came from -- and the reason when this school is not priced
-   * for it, never a substitute.
-   *
-   * ONE emitter for the two places the sub-object appears (the per-college
-   * answer and the comparison's [CHOSEN_BY_COLLEGE_KEY]), so the coach can never
-   * meet two spellings of one shape.
-   *
-   * Every case writes its own [PRICING_KEY] code (RFC 152): the three shapes
-   * used to be told apart only by which sibling keys were absent, which made the
-   * coach infer a fact from a silence -- the very thing a code exists to
-   * prevent. A school with no plan resolved now says so as a code too, instead
-   * of being an identity-only row.
-   */
-  private fun JsonObjectBuilder.putChosenLivingPlan(chosen: ChosenLivingPlan) {
-    when (chosen) {
-      is ChosenLivingPlan.Priced -> {
-        put(ARRANGEMENT_KEY, chosen.plan.value)
-        put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
-        put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
-        put(PRICING_KEY, chosen.pricing.value)
-      }
-
-      is ChosenLivingPlan.NoTotalHere -> {
-        put(ARRANGEMENT_KEY, chosen.plan.value)
-        put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
-        put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
-        put(PRICING_KEY, chosen.pricing.value)
-        // OUR vocabulary, never the school's: two of this reason's three causes
-        // are gaps of ours, so it rides under its own key and never under the
-        // one that says what the school published.
-        put(NO_TOTAL_REASON_KEY, chosen.reason.value)
-      }
-
-      is ChosenLivingPlan.NotPricedHere -> {
-        put(ARRANGEMENT_KEY, chosen.plan.value)
-        put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
-        put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
-        put(PRICING_KEY, chosen.pricing.value)
-        // A reason code, never a substituted arrangement and never a
-        // neighbour's figure. No total, because there is none to give.
-        put(ARRANGEMENT_REASON_KEY, chosen.reason.value)
-      }
-
-      // No plan, so no arrangement to name -- but the code is written, so a row
-      // with nothing on file states that rather than leaving it to be noticed.
-      ChosenLivingPlan.NotChosen -> {
-        put(PRICING_KEY, chosen.pricing.value)
-      }
-    }
-  }
-
-  /**
-   * One school's gap in the arrangements the other schools are priced for: the
-   * arrangements it lacks, and the one reason they are missing for (RFC 151
-   * D-E). A school with two kinds of gap is two entries, so one entry is always
-   * "these arrangements, for this reason".
-   */
-  private fun incompleteArrangementObject(entry: IncompleteArrangement): JsonObject =
-    buildJsonObject {
-      put(COLLEGE_ID_KEY, entry.collegeId.value.toString())
-      put(COLLEGE_NAME_KEY, entry.name)
-      putJsonArray("missing") { entry.missing.forEach { add(JsonPrimitive(it.value)) } }
-      put("reason", entry.reason.value)
-    }
-
-  /**
-   * One academic year in the call, the schools it is true of, and the figures it
-   * dates -- the same `{academic_year, figures}` shape the per-college vintage
-   * labels carry, so the model reads one convention rather than two.
-   *
-   * [DATED_COLLEGES_KEY] is the subject, and it is not decoration: since RFC 166
-   * the year is a fact about ONE SCHOOL, so a comparison of a Scorecard-only
-   * school and an IC_AY school carries TWO of these objects. Without the schools
-   * named, the model is handed the same figure names under two different years
-   * and no way to tell which is which -- while this tool's own description tells
-   * it to quote a number with the year of the key that lists it.
-   *
-   * Each subject is emitted as `{college_id, name}`, the shape every other
-   * school reference in this payload uses, rather than a bare name: names
-   * collide in the corpus, and the model is asked here to MATCH the subject
-   * against the colleges it was given. Matching on display copy is how the
-   * wrong year gets attached to a column of dollars.
-   */
-  private fun datedFiguresObject(dated: DatedFigures): JsonObject =
-    buildJsonObject {
-      put(BASIS_KEY, dated.basis)
-      put(ACADEMIC_YEAR_KEY, dated.academicYear)
-      putJsonArray(DATED_COLLEGES_KEY) {
-        dated.colleges.forEach {
-          add(
-            buildJsonObject {
-              put(COLLEGE_ID_KEY, it.collegeId.value.toString())
-              put(COLLEGE_NAME_KEY, it.name)
-            },
-          )
-        }
-      }
-      putJsonArray(DATED_FIGURES_KEY) { dated.figures.forEach { add(JsonPrimitive(it.wireName)) } }
-      put(STATEMENT_KEY, dated.statement)
-    }
-
-  private fun collegeObject(
-    profile: CollegeCostProfile,
-    cost: CollegeCost,
-  ): JsonObject {
-    // The vintage labels are derived from what this object ACTUALLY carries.
-    // Every step below that emits a money figure RETURNS the fields it emitted
-    // and the record is built HERE from those results, so the emit and the
-    // record are one expression: a second list restating the same emit
-    // conditions is how a figure comes to be labelled with a year no key beside
-    // it describes, or to lose its label entirely -- and nothing would fail for
-    // it.
-    val emitted = mutableSetOf<CostField>()
-
-    return buildJsonObject {
-      put(COLLEGE_ID_KEY, cost.collegeId.value.toString())
-      put(COLLEGE_NAME_KEY, cost.name)
-      put("city", cost.city)
-      put("state", cost.state)
-      put("control", cost.control.label)
-      put("list_status", cost.listStatus.value)
-      emitted += putFigure(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, cost.stickerCostOfAttendancePerYearUsd)
-      emitted += putTuitionTiers(cost)
-      emitted += putFeesOnly(cost)
-      putResidencyTiers(cost)
-      // Present only on the public case; the model makes the distinction
-      // uncarryable by a private college, so it cannot be misread onto one.
-      (cost.control as? CollegeControl.Public)?.let { put("tuition_applicable", it.tuitionApplicable.value) }
-      emitted += putNetPrice(cost.netPrice)
-      putPrecisionOffers(profile, cost)
-      emitted += putFigure(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, cost.medianDebtAtCompletionUsd)
-      emitted += putFigure(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, cost.medianEarnings10yAfterEntryUsd)
-      // The published price split by living arrangement (RFC 149). Absent, not
-      // empty, when this school reports no component at all. Its lines are
-      // recorded here, at the one place they are rendered.
-      cost.breakdown?.let { emitted += putBreakdown(it) }
-      // AFTER the breakdown and BEFORE putVintageLabels, and that ordering is
-      // load-bearing (RFC 152). It re-keys a figure the breakdown already
-      // emitted -- the resolved arrangement's total -- so it must sit above the
-      // vintage labels for the rule "the keys after it emit no CostField" to
-      // stay true; and it sits below the breakdown because it names one of the
-      // arrangements that object rendered, so a reader meets the three before
-      // being told which one to lead with.
-      putChosenLivingArrangement(cost.chosen)
-      putOffersOnCampusHousing(cost)
-      // LAST of the figure-bearing keys, and it must stay there: it reads the
-      // [emitted] set the steps above returned into, so a figure emitted BELOW
-      // this line would ride with no academic year beside it and nothing -- no
-      // type, no test -- would fail for it. The keys after it emit no CostField,
-      // which is the only reason they may sit where they do.
-      putVintageLabels(cost, emitted)
-      // Purely additive (RFC 148 D7): present only when the school reports it,
-      // and carrying its OWN citation, because merit aid is not a Scorecard
-      // fact and must never fold into the payload's Scorecard `source` string.
-      cost.meritAid?.let { put(MeritAidWire.KEY, MeritAidWire.objectOf(it)) }
-      // The RFC 170 aid-policy section, additive in exactly the same way, and
-      // with the coverage-honest line when the corpus carries no filing for
-      // this school: silence about a school's aid policy is a fact about OUR
-      // corpus, and leaving it unsaid invites the model to fill it.
-      putAidPolicy(cost)
-      putBorrowing(cost)
-      putFieldsWithNoAmount(cost)
-      putWithheldFigures(cost)
-      putFigureStatuses(cost)
-      // The blended-figure basis for THIS school, stated per college as well as
-      // in COMPARISON_BASIS_KEY: that fact needs two colleges, and a one-college
-      // result is exactly where the basis would otherwise go unsaid (RFC 157
-      // D-B).
-      putBlendedFiguresApply(cost.blendedFiguresApply)
-    }
-  }
-
-  /**
-   * One scalar money figure, RETURNING the field it emitted so the caller's
-   * record of what this payload carries IS this function's result rather than a
-   * side-effect on a set it was handed. An absent amount writes no key and
-   * returns nothing: a key with no number is what `data_availability` and
-   * `figure_statuses` are for.
-   */
-  private fun JsonObjectBuilder.putFigure(
-    field: CostField,
-    amountUsd: Int?,
-  ): Set<CostField> {
-    if (amountUsd == null) return emptySet()
-    put(field.wireName, amountUsd)
-    return setOf(field)
-  }
-
-  /**
-   * The tuition tiers, in declaration order, from the ONE derivation of which of
-   * them this school publishes ([CollegeCost.publishedTuitionTiers], RFC 166 §4)
-   * -- including the third tier, which no consumer surface showed before this
-   * RFC. Iterated rather than hand-listed so the payload cannot disagree with
-   * `residency_tiers` beside it, and so a fourth tier is emitted without a
-   * second list saying it should be. A school with no value-bearing figure at a
-   * tier emits no key for it at all, which is how the in-district tier stays
-   * silent at the ~2,300 institutions whose publisher never separated one.
-   */
-  private fun JsonObjectBuilder.putTuitionTiers(cost: CollegeCost): Set<CostField> =
-    cost.publishedTuitionTiers.flatMapTo(mutableSetOf()) { putFigure(it, cost.publishedAmountOf(it)) }
-
-  /**
-   * The fees split (RFC 166 §5): the fees PART of the combined tuition figure,
-   * never a cost beside it. It is deliberately not a component of any
-   * arrangement -- adding it to one would count fees twice inside every total --
-   * and the description says so in words.
-   *
-   * ITERATED over [CostField.FEES_ONLY_FIELDS], for the reason the tuition tiers above are
-   * iterated: three hand-written call sites are three places a fourth fees tier
-   * would not reach.
-   */
-  private fun JsonObjectBuilder.putFeesOnly(cost: CollegeCost): Set<CostField> =
-    CostField.FEES_ONLY_FIELDS.flatMapTo(mutableSetOf()) { putFigure(it, cost.publishedAmountOf(it)) }
-
-  /**
-   * WHICH tuition tiers this school publishes, as a code and the domain's own
-   * sentence ([ResidencyTierBasis], RFC 166 §4), on every college.
-   *
-   * Emits no [CostField]: it names the tuition keys beside it and adds no figure
-   * of its own, so it takes no part in the vintage labels.
-   */
-  private fun JsonObjectBuilder.putResidencyTiers(cost: CollegeCost) {
-    // The ONE emitter, beside the vocabulary in `:db` (RFC 169, brief 0006 D19):
-    // college search reports the same fact about the same school, and a second
-    // writer here would be a second way to spell one payload.
-    putResidencyTierPair(cost.residencyTiers)
-  }
-
-  /**
-   * The one figure that is not a bare scalar: it keys an OBJECT (the amount, its
-   * basis, and the reason when we hold it back), so it cannot go through
-   * [putFigure]. Its emit and its record sit in one function all the same --
-   * they used to be two statements in the orchestrator, the only place the
-   * record was maintained by hand.
-   */
-  private fun JsonObjectBuilder.putNetPrice(netPrice: NetPrice): Set<CostField> {
-    put(CostField.NET_PRICE.wireName, netPriceObject(netPrice))
-    return if (netPrice.amount == null) emptySet() else setOf(CostField.NET_PRICE)
-  }
-
-  /**
-   * The upgrade invitations for this college: emitted only when there is
-   * something to offer -- an absent key, never an empty array, so its mere
-   * presence stays meaningful to the model.
-   */
-  private fun JsonObjectBuilder.putPrecisionOffers(
-    profile: CollegeCostProfile,
-    cost: CollegeCost,
-  ) {
-    val offers = profile.precisionOffersFor(cost)
-    if (offers.isNotEmpty()) {
-      putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it, cost)) } }
-    }
-  }
-
-  /**
-   * The aid-policy section, or the one sentence saying why there is none (RFC
-   * 170, D11).
-   *
-   * The absence line is NOT a [DATA_AVAILABILITY_KEY] entry: that list speaks
-   * the [CostField] vocabulary, which means "this college does not report this
-   * SCORECARD cost field", and the Common Data Set is a different publisher
-   * with its own silences (the rule [CollegeCost.meritAid] already states).
-   * Mixing them would misattribute whose silence it is. So the sentence keys
-   * itself, and says which of the two silences this is: we hold no filing for
-   * the school, rather than the school having reported nothing.
-   */
-  private fun JsonObjectBuilder.putAidPolicy(cost: CollegeCost) {
-    val policy = cost.aidPolicy
-    when {
-      // Two silences, two sentences. "We hold no filing" said about a school
-      // whose filing we DO hold is a false statement about our own coverage,
-      // and it is the one the model would repeat to a family.
-      policy == null -> put(AID_POLICY_AVAILABILITY_KEY, AID_POLICY_NO_FILING)
-
-      !policy.hasFact -> put(AID_POLICY_AVAILABILITY_KEY, AID_POLICY_NO_FACT_IN_FILING)
-
-      else -> put(AidPolicyWire.KEY, AidPolicyWire.objectOf(policy))
-    }
-  }
-
-  /**
-   * The borrowing section, or the one sentence saying why there is none (RFC
-   * 175) -- [putAidPolicy]'s arms plus a fourth, because there are THREE
-   * silences here and D7 turns on whose each one is: no filing, a filing with
-   * no borrowing block (the school's silence), and a filing whose borrowing
-   * cells we could not read (OURS). Speaking the third as the second tells a
-   * family this school does not report a figure it does report.
-   *
-   * The four states arrive already told apart, as [BorrowingCoverage], so this
-   * `when` is exhaustive over a sealed type rather than a ladder whose ARM
-   * ORDER decided whose silence a filing's was. A partly unread filing is
-   * [BorrowingCoverage.Reported] and says both things.
-   *
-   * None of the three silences is a [DATA_AVAILABILITY_KEY] entry: that list
-   * speaks the [CostField] vocabulary and means "this college does not report
-   * this SCORECARD cost field". The federal-only median debt figure elsewhere
-   * in this result belongs to that list; these sentences are about a different
-   * publisher's silence, and folding them together would misattribute it.
-   */
-  private fun JsonObjectBuilder.putBorrowing(cost: CollegeCost) {
-    when (val borrowing = cost.borrowing) {
-      BorrowingCoverage.NoFiling -> {
-        putBorrowingAvailability(BORROWING_NO_FILING_BASIS, BORROWING_NO_FILING)
-      }
-
-      is BorrowingCoverage.NoBlock -> {
-        // WHICH silence this filing's empty block is. A publisher that withheld
-        // the cells, or a source that says the question does not apply, is not
-        // the school declining to report -- and the plain sentence would say it
-        // was.
-        val withheld = borrowing.gapStatuses.any { FigureStatusCopy.ownerOf(it) == FigureGapOwner.PUBLISHER }
-        val notApplicable = borrowing.gapStatuses.contains(FigureStatus.NOT_APPLICABLE)
-        when {
-          // OURS first, as [BorrowingCoverage.of] already puts OUR unread cells
-          // ahead of the other silences: a filing whose cells we hold and could
-          // not reconcile (D6) has ANSWERED, so every sentence below would say
-          // someone else's silence about a school that reported two figures.
-          borrowing.contradicted.isNotEmpty() -> {
-            putBorrowingAvailability(BORROWING_NOT_RECONCILED_BY_US_BASIS, BORROWING_NOT_RECONCILED_BY_US)
-          }
-
-          withheld -> {
-            putBorrowingAvailability(BORROWING_WITHHELD_BASIS, BORROWING_WITHHELD_BY_PUBLISHER)
-          }
-
-          notApplicable -> {
-            putBorrowingAvailability(BORROWING_NOT_APPLICABLE_BASIS, BORROWING_NOT_APPLICABLE_IN_FILING)
-          }
-
-          else -> {
-            putBorrowingAvailability(BORROWING_NO_FACT_IN_FILING_BASIS, BORROWING_NO_FACT_IN_FILING)
-          }
-        }
-      }
-
-      BorrowingCoverage.NotReadByUs -> {
-        putBorrowingAvailability(BORROWING_NOT_READ_BY_US_BASIS, BORROWING_NOT_READ_BY_US)
-      }
-
-      // The section, WITH the value-less columns of the same filing said inside
-      // it per loan type ([BorrowingWire.gapKey]). A partly readable filing is
-      // a filing with figures, so it renders them and explains its own gaps.
-      is BorrowingCoverage.Reported -> {
-        put(BorrowingWire.KEY, BorrowingWire.objectOf(borrowing))
-      }
-    }
-  }
-
-  /**
-   * WHY there is no borrowing section, as a CODE and the sentence to say it in
-   * -- the [RESIDENCY_TIERS_KEY] convention this file already follows
-   * everywhere else.
-   *
-   * The code is the load-bearing half: whose silence this is (D7) is the fact
-   * the whole borrowing surface turns on, and emitted as a bare sentence it was
-   * readable only by matching English copy.
-   */
-  private fun JsonObjectBuilder.putBorrowingAvailability(
-    basis: String,
-    statement: String,
-  ) {
-    putJsonObject(BORROWING_AVAILABILITY_KEY) {
-      put(BASIS_KEY, basis)
-      put(STATEMENT_KEY, statement)
-    }
-  }
-
-  /**
-   * The figures the coach has NO number for here, whichever of the two reasons
-   * it is: the school did not report it, or it is not a figure for this family
-   * (RFC 157 D-A).
-   *
-   * ONE list, because the instruction it drives is one instruction -- say so
-   * plainly, never estimate -- and a field withheld from a list called
-   * `data_availability` would be a silence with nothing said about it. WHICH
-   * reason applies is [putWithheldFigures]' to say, with the words for it.
-   *
-   * The union is the DOMAIN's ([CollegeCost.fieldsWithNoAmount]), already in
-   * enum declaration order: this writer spells out a set the cost answer names,
-   * and never derives a third field category the page and the service cannot
-   * share.
-   *
-   * ABSENT, never empty -- the payload's own convention, the one
-   * [putWithheldFigures] follows and the one every other list here follows. An
-   * empty array would say "we checked" in a shape a reader has to open to learn
-   * it says nothing.
-   */
-  private fun JsonObjectBuilder.putFieldsWithNoAmount(cost: CollegeCost) {
-    if (cost.fieldsWithNoAmount.isEmpty()) return
-    putJsonArray(DATA_AVAILABILITY_KEY) { cost.fieldsWithNoAmount.forEach { add(JsonPrimitive(it.wireName)) } }
-  }
-
-  /**
-   * The figures we hold and are not showing this family, each with its reason
-   * (RFC 157 D-A).
-   *
-   * Absent, never empty. Its presence means exactly one thing: a
-   * `data_availability` entry here is OURS rather than the school's silence.
-   */
-  private fun JsonObjectBuilder.putWithheldFigures(cost: CollegeCost) {
-    if (cost.withheld.isEmpty()) return
-    putJsonArray(WITHHELD_FIGURES_KEY) { cost.withheld.forEach { add(withheldFigureObject(it)) } }
-  }
-
-  /**
-   * WHY a figure carries no number, in the store's own six statuses (RFC 166
-   * §6) -- the reason BESIDE [DATA_AVAILABILITY_KEY], never inside it.
-   *
-   * `data_availability` keeps its exact shape (a bare list of wire names,
-   * absent when empty): it answers WHICH figures are blank, and every reader of
-   * it -- the prompt, the report page, this tool's own description -- reads that
-   * one shape. This key answers WHY, in the `withheld_figures` shape the payload
-   * already uses, so the coach meets one convention rather than two.
-   *
-   * A figure the publisher ESTIMATED is here as well as shown: it is a number,
-   * and a family reading the publisher's estimate as the school's own figure
-   * would be reading it wrong.
-   *
-   * Absent, never empty -- this payload's convention everywhere.
-   *
-   * It writes TWO keys since RFC 189 D1, and they are one fact: the pair most of
-   * this college's figures are on ([FIGURE_PROVENANCE_KEY]) and the fields that
-   * have something of their own to say ([FIGURE_STATUSES_KEY]). One function,
-   * because "an exception can never exist without a default" is the invariant
-   * the compression rests on, and two emitters would be two places for the
-   * default to go missing.
-   */
-  private fun JsonObjectBuilder.putFigureStatuses(cost: CollegeCost) {
-    // The default and the exceptions ride in ONE type, and the default field is
-    // non-null (RFC 189 D1), so this is the only branch there is: either both
-    // keys' subject exists or neither does. A payload carrying an exception with
-    // no default is a state the domain cannot build.
-    val provenance = cost.figureProvenance ?: return
-    put(FIGURE_PROVENANCE_KEY, figureProvenanceObject(provenance.default))
-    if (provenance.exceptions.isEmpty()) return
-    putJsonArray(FIGURE_STATUSES_KEY) { provenance.exceptions.forEach { add(figureStatusObject(it)) } }
-  }
-
-  /**
-   * The (tier, publisher) pair most of this college's figures are on, said ONCE
-   * (RFC 189 D1) -- the default every [FIGURE_STATUSES_KEY] entry resolves its
-   * unstated provenance keys against.
-   *
-   * ALL THREE KEYS, always, where an entry carries only the ones it differs on:
-   * the default is what the resolution rule falls back to, so a key missing here
-   * would leave a figure with nowhere to resolve from. The tier and its sentence
-   * come off ONE value ([SpokenAssurance]), so this object cannot name a tier
-   * the sentence beside it does not say; and that sentence is
-   * [AssuranceTierCopy]'s own, never re-worded here and never ranked or scored
-   * (RFC 179 D10).
-   */
-  private fun figureProvenanceObject(default: FigureProvenanceDefault): JsonObject =
-    buildJsonObject {
-      put(ASSURANCE_KEY, default.assurance.tier.value)
-      put(ASSURANCE_STATEMENT_KEY, default.assurance.statement)
-      put(FIGURE_SOURCE_KEY, default.source.value)
-    }
-
-  /**
-   * One field's status: the field, the code, and the DOMAIN's own sentence for
-   * it ([FigureStatusCopy]), never re-worded here -- the `income_band` +
-   * `income_band_label` convention (RFC 151 D-D) applied to the six statuses.
-   *
-   * An entry exists only for a field with something of its OWN to say (RFC 189
-   * D1), and it repeats a provenance key only where THAT KEY differs from the
-   * default: three keys stated once per college replaced three keys stated once
-   * per field, and the facts are the same ones because each of the two -- the
-   * tier and the publisher -- resolves as "this entry's own value, else the
-   * default's".
-   *
-   * WHICH keys differ is the DOMAIN's answer ([FigureProvenanceException]), not
-   * a comparison redone here: the exception carries the overrides already
-   * narrowed, so this writer cannot disagree with the summary about what the
-   * default is.
-   */
-  private fun figureStatusObject(exception: FigureProvenanceException): JsonObject =
-    buildJsonObject {
-      val note = exception.note
-      put("field", note.field.wireName)
-      put(STATUS_KEY, note.status.value)
-      // ABSENT rather than empty where the note has no status sentence -- a
-      // shown, plainly reported figure (RFC 179 D6). Absence has ONE
-      // representation on this payload, and an empty string would be a second.
-      note.statement?.let { put(STATEMENT_KEY, it) }
-      // What KIND of number this figure is, as a CODE and as the sentence to say
-      // it in (RFC 179 D7) -- the `income_band` + `income_band_label`
-      // convention a third time. A reader must not have to parse our English to
-      // learn which tier a figure is on, and the two keys are read as a PAIR
-      // with `status`: an imputed IPEDS cell and a self-reported one are soft in
-      // different ways.
-      //
-      // PER KEY (RFC 189 D1): an entry carries a provenance key only where it
-      // DIFFERS from [FIGURE_PROVENANCE_KEY], and a key it does not carry IS the
-      // default's. The two facts resolve independently because they vary
-      // independently -- the Scorecard relays IPEDS cells (the same tier, a
-      // different publisher) and also originates federal administrative records
-      // (a different tier, the same publisher).
-      //
-      // The tier's two keys cannot split: they are read off ONE
-      // [SpokenAssurance], whose sentence is derived from its own code, so a
-      // code with no sentence is not a state this writer can be handed.
-      exception.assurance?.let {
-        put(ASSURANCE_KEY, it.tier.value)
-        put(ASSURANCE_STATEMENT_KEY, it.statement)
-      }
-      // The publisher whose row won this cell, as a CODE beside the sentence
-      // (RFC 177 D4). `imputed_by_publisher` and `suppressed_by_publisher` are
-      // acts of a publisher, so a reader that needs to know which one acted must
-      // not have to re-parse [STATEMENT_KEY]'s English to find out.
-      exception.source?.let { put(FIGURE_SOURCE_KEY, it.value) }
-      // A YEAR GAP: this school DID publish the figure, at a year that is not
-      // the one its price is quoted at. Absent on every other note, so its
-      // PRESENCE is the fact -- `status` cannot carry it, because a year gap and
-      // a cell we have never collected are both `not_collected_by_us`. Read off
-      // [FigureStatusNote.heldAcademicYear] rather than off the sentence, which
-      // is the whole point of the field: the year travels as data.
-      note.heldAcademicYear?.let { put(HELD_ACADEMIC_YEAR_KEY, it) }
-    }
-
-  /**
-   * One withheld figure: which field, the reason code, and the sentence that
-   * both names the reason and points at the figures that ARE this family's (RFC
-   * 157 D-A).
-   *
-   * The statement is the [WithheldReason]'s own, never re-worded HERE, so the
-   * coach explains the blank in the domain's words. The report page prints the
-   * same reason in [WithheldReason.cellPhrase], the short form beside this one,
-   * with its own pointer at the table the reader is looking at (RFC 157 D-A):
-   * one vocabulary, two lengths, and neither file invents a third.
-   */
-  private fun withheldFigureObject(withheld: WithheldFigure): JsonObject =
-    buildJsonObject {
-      put("field", withheld.field.wireName)
-      put(WITHHELD_REASON_KEY, withheld.reason.value)
-      put(STATEMENT_KEY, withheld.reason.statement)
-    }
-
-  /**
-   * The per-arrangement split, RETURNING the fields it rendered so the vintage
-   * labels below follow exactly what this object carries.
-   *
-   * It returns them rather than writing into a set the caller passes in: the
-   * emit set decides which figures get an `academic_year` stamped on them, and a
-   * `Unit`-returning function that reaches into the caller's own collection is
-   * how a figure comes to be rendered without being recorded -- said to a family
-   * with no year beside it, with no type and no test failing for it.
-   */
-  private fun JsonObjectBuilder.putBreakdown(breakdown: CostBreakdown): Set<CostField> {
-    put(BREAKDOWN_KEY, breakdownObject(breakdown))
-    // The COMPONENTS, not `lines`: since RFC 189 D3 this object no longer writes
-    // the tuition figure, it NAMES the top-level key that carries it, and that
-    // key was recorded by [putTuitionTiers] above. Returning the tuition field
-    // from here would have the vintage labels date a figure written by another
-    // step, which is the drift the record-what-you-emit rule exists against.
-    return breakdown.arrangements.flatMap { it.componentLines }.mapTo(mutableSetOf()) { it.field }
-  }
-
-  /**
-   * The way of living this answer LEADS with (RFC 152), when the family has
-   * said where they plan to live.
-   *
-   * ABSENT, never null, when nothing is resolved: the plan is unanswered or
-   * declined and this school carries no plan of its own, so the answer is
-   * exactly what it was before this key existed -- all three arrangements, each
-   * named and labelled (D3).
-   *
-   * It never narrows the breakdown beside it (D2): the other ways of living
-   * stay in the payload as true facts, and a "what if we lived at home
-   * instead?" stays answerable from the same result.
-   *
-   * The key emits no CostField into [emitted] because it emits no NEW figure:
-   * the total it carries is the one the breakdown already rendered for the same
-   * arrangement, already dated by the vintage labels below.
-   */
-  private fun JsonObjectBuilder.putChosenLivingArrangement(chosen: ChosenLivingPlan) {
-    // Exhaustive with no `else`: a fourth case would otherwise fall silently
-    // out of the payload, and this key is the whole of what the coach leads
-    // with.
-    when (chosen) {
-      is ChosenLivingPlan.Priced -> {
-        putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
-          putChosenLivingPlan(chosen)
-          // Always present on this case: a plan is only PRICED when this school
-          // prices it, which means it carries a total (RFC 152 D2a). An
-          // arrangement this school shows but cannot total is emitted as
-          // no_total_here with its reason instead, so this key never ships
-          // without a number or a reason.
-          put(TOTAL_KEY, chosen.totalPerYearUsd)
-          put(STATEMENT_KEY, statementOf(chosen))
-        }
-      }
-
-      is ChosenLivingPlan.NoTotalHere -> {
-        putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
-          putChosenLivingPlan(chosen)
-          // No total, because this school has none for it -- and the statement
-          // says so, so the key never ships a plan with a silent blank where
-          // its number should be.
-          put(STATEMENT_KEY, statementOf(chosen))
-        }
-      }
-
-      is ChosenLivingPlan.NotPricedHere -> {
-        putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
-          putChosenLivingPlan(chosen)
-          put(STATEMENT_KEY, statementOf(chosen))
-        }
-      }
-
-      ChosenLivingPlan.NotChosen -> {}
-    }
-  }
-
-  /**
-   * The sentence for a resolved, priced plan. [LivingPlanSource] decides which
-   * one: a per-college plan is something the family SAID about this school, and
-   * their usual plan is an ASSUMPTION being made here -- which the coach must
-   * name in the same breath, because `with_family` is never inferred by us
-   * (RFC 152 D2a).
-   */
-  private fun statementOf(chosen: ChosenLivingPlan.Priced): String =
-    when (chosen.source) {
-      LivingPlanSource.PER_COLLEGE -> {
-        "The student said they plan on ${chosen.plan.label} at this school, so lead with that way of " +
-          "living and name it. The other ways of living are still here and still true if they ask."
-      }
-
-      LivingPlanSource.PROFILE_DEFAULT -> {
-        "${chosen.plan.label.replaceFirstChar { it.uppercase() }} is the student's usual plan, assumed " +
-          "for this school - say the assumption in the same breath as the number, and if they correct it, " +
-          "record it as this school's own plan. The other ways of living are still here and still true."
-      }
-    }
-
-  /**
-   * The sentence for a resolved plan this school shows but cannot total.
-   *
-   * One sentence per [NoTotalReason], because the causes are not one fact: a gap
-   * of OURS says so and says what would close it, and only the school's own
-   * silence is stated as the school's. Saying "this school has no total for that
-   * way of living" because WE have not asked which state the student lives in
-   * would blame a price list for our own question (RFC 149 D-B).
-   *
-   * Every case ends the same way: quote the parts that are here, and never add
-   * up what is there and call it the total.
-   */
-  private fun statementOf(chosen: ChosenLivingPlan.NoTotalHere): String =
-    when (chosen.reason) {
-      NoTotalReason.AWAITING_RESIDENCY_ANSWER -> {
-        "The student plans on ${chosen.plan.label}, and this school's published price depends on which state " +
-          "the student is a resident of - which we have not been told, so the gap is ours and not this " +
-          "school's. Ask where the student is a resident and the total follows; meanwhile quote the parts " +
-          "that are here and never add up what is there and call it the total."
-      }
-
-      NoTotalReason.TUITION_APPLICABILITY_UNKNOWN -> {
-        "The student plans on ${chosen.plan.label}, but we cannot tell which of this school's published " +
-          "prices applies to this student, so the missing total is ours and not this school's. Quote the " +
-          "parts that are here and never add up what is there and call it the total."
-      }
-
-      NoTotalReason.PART_NOT_PUBLISHED -> {
-        "The student plans on ${chosen.plan.label}, but this school does not publish every part of what that " +
-          "way of living costs, so there is no total for it. Quote the parts of it that are here, say which " +
-          "part is missing, and never add up what is there and call it the total."
-      }
-
-      // OURS. The school is not named, because it may publish the part
-      // perfectly well and we are the ones who do not hold it for the year the
-      // rest of this school's price is quoted at (RFC 166 §3, §6).
-      NoTotalReason.PART_NOT_COLLECTED_BY_US -> {
-        "The student plans on ${chosen.plan.label}, but we have not collected every part of what that way of " +
-          "living costs at this school, so there is no total for it. The gap is ours, not this school's - " +
-          "never say the school does not publish it. Quote the parts of it that are here and never add up " +
-          "what is there and call it the total."
-      }
-    }
-
-  /**
-   * The sentence for a resolved plan this school is not priced for. Two
-   * reasons, two sentences (the [ArrangementGap] split RFC 151 landed): a
-   * school with no residence halls has ANSWERED, and a school that published no
-   * figure has stayed silent. Neither becomes a substituted arrangement.
-   */
-  private fun statementOf(chosen: ChosenLivingPlan.NotPricedHere): String {
-    // The gap's own spoken phrase ([ArrangementGap.phrase]), never a second
-    // wording of it: the comparison says the same silence the same way.
-    return "The student plans on ${chosen.plan.label}, but this school has ${chosen.reason.phrase}. Say that " +
-      "plainly, and never quote another way of living in its place or carry a figure across from another school."
-  }
-
-  /**
-   * The no-dorms answer (RFC 149 D-B), emitted whenever IPEDS ANSWERED -- true
-   * as well as false.
-   *
-   * `false` is "this school has no residence halls"; `true` is the reported
-   * fact that an absent `on_campus` arrangement is this school's silence about
-   * its components rather than its having no dorms. A rendered arrangement is
-   * NOT a surrogate for the flag: a school with dorms that publishes no
-   * on-campus figure carries no arrangement, so the two are different facts and
-   * collapsing them left the model unable to tell a known fact from a gap.
-   *
-   * Only an unknown flag is absent -- no IPEDS row is not evidence either way.
-   * The key rides even when the school publishes on-campus figures in spite of
-   * a `false` flag (D-B): both facts are true and the coach is owed both.
-   *
-   * Exhaustive on the nullable, so a future fourth state cannot fall through
-   * this branch silently.
-   */
-  private fun JsonObjectBuilder.putOffersOnCampusHousing(cost: CollegeCost) {
-    when (cost.offersOnCampusHousing) {
-      true -> put(OFFERS_ON_CAMPUS_HOUSING_KEY, true)
-      false -> put(OFFERS_ON_CAMPUS_HOUSING_KEY, false)
-      null -> Unit
-    }
-  }
-
-  /**
-   * One object per vintage this college actually carries a figure of (RFC 149
-   * D-E): the academic year, and the wire names that year dates.
-   *
-   * The year NAMES ITS FIGURES rather than sitting beside the college as a bare
-   * label. Membership -- "the components are the published price, the sticker
-   * and the net price are the blend" -- otherwise lived only in
-   * `CostField.figureGroup` and in prose, so a reader that did not carry the
-   * convention could attach either year to any figure, and the prompt's
-   * instruction to quote the year beside a figure had no year beside any
-   * figure.
-   *
-   * Both the key and its [DATED_FIGURES_KEY] list are read off the SAME
-   * recorded [emitted] set, so the label can never date a figure this payload
-   * did not render. A field whose vintage is null appears under no key and is
-   * therefore said with no year at all.
-   *
-   * MUST be called AFTER every figure this object emits. [emitted] is complete
-   * only because each `put*` above it recorded into it; a figure put after this
-   * call is a figure said with no academic year, and neither the types nor a
-   * test would notice.
-   */
-  private fun JsonObjectBuilder.putVintageLabels(
-    cost: CollegeCost,
-    emitted: Set<CostField>,
-  ) {
-    FigureGroup.entries.forEach { group ->
-      val dated = emitted.filter { it.figureGroup == group }
-      // The year is THIS school's, read off the rows it served (RFC 166 §3
-      // rule 4) rather than off a Kotlin constant: a school served from the
-      // Scorecard says 2024-25 where a school served from IC_AY says 2023-24
-      // (RFC 183), and one constant could only ever have said one of them. A group can carry figures and NO year: two
-      // blended rows at different vintages resolve to null rather than to the
-      // newer one (RFC 166 §8), and then the figures ride with no label instead
-      // of a wrong one.
-      val academicYear = cost.academicYearOf(group)
-      if (dated.isNotEmpty() && academicYear != null) {
-        putJsonObject(group.wireName) {
-          put(ACADEMIC_YEAR_KEY, academicYear)
-          // Enum declaration order, not the order they happened to be emitted
-          // in: the list is a fact about the payload, so it must not depend on
-          // set iteration.
-          putJsonArray(DATED_FIGURES_KEY) {
-            CostField.listInDeclarationOrder(dated).forEach { add(JsonPrimitive(it.wireName)) }
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * The `cost_by_living_arrangement` object: one entry per arrangement this
-   * school can be priced for, keyed by the arrangement's wire name.
-   *
-   * The component keys inside are [CostField] wire names -- identical to the
-   * column names -- so the JSON, `data_availability` and the schema all speak
-   * one vocabulary. They look redundant nested inside an arrangement object on
-   * purpose: the alternative is a second set of arrangement-local names that
-   * nothing else shares, and a `data_availability` entry no key in the payload
-   * matches.
-   */
-  private fun breakdownObject(breakdown: CostBreakdown): JsonObject =
-    buildJsonObject {
-      // The ONE tuition figure every total in this object includes, named rather
-      // than repeated (RFC 189 D3). It used to be written inside all three
-      // arrangement objects AND as the top-level tuition-tier key -- the same
-      // residency-selected figure under the same wire key four times. The figure
-      // stays exactly where [putTuitionTiers] already writes it and the
-      // composition of each total stays derivable: total = this key's amount
-      // plus the components listed beside it.
-      //
-      // MANDATORY whenever any arrangement carries a total: a total is null
-      // unless the tuition line is present ([ArrangementCost.totalPerYearUsd]),
-      // so a total with no tuition field named is a state the domain cannot
-      // build.
-      putTuitionFieldInTotals(breakdown)
-      breakdown.arrangements.forEach { arrangement ->
-        putJsonObject(arrangement.arrangement.value) {
-          // The arrangement's OWN parts. The tuition line is excluded by reading
-          // [ArrangementCost.componentLines] rather than by filtering
-          // `lines` against a field list: the type is what decides which line is
-          // the tuition line, and a filter here would be a second answer.
-          arrangement.componentLines.forEach { put(it.field.wireName, it.amountUsd) }
-          // Absent whenever any part is missing (RFC 149 D-C): a partial sum is
-          // not a total, and neither is a sum that guessed at the student's
-          // residency.
-          arrangement.totalPerYearUsd?.let { put(TOTAL_KEY, it) }
-          putAssumedByUnicoach(arrangement)
-        }
-      }
-    }
-
-  /**
-   * The top-level tuition key whose amount every total in this breakdown
-   * includes (RFC 189 D3), or nothing when no arrangement here has a tuition
-   * line at all -- and then no arrangement has a total either.
-   *
-   * ONE key for the whole object, not one per arrangement: [CostBreakdown] is
-   * built from a single tuition line ([tuitionLineOf]), the figure the family's
-   * own residency answer selected, so three copies of the name could only ever
-   * have said the same thing three times.
-   */
-  private fun JsonObjectBuilder.putTuitionFieldInTotals(breakdown: CostBreakdown) {
-    val field = breakdown.arrangements.firstNotNullOfOrNull { it.tuitionLine }?.field ?: return
-    put(TUITION_FIELD_IN_TOTALS_KEY, field.wireName)
-  }
-
-  /**
-   * WHICH lines in this arrangement carry an amount of OURS rather than the
-   * school's (RFC 166 §7, gate-2 D17).
-   *
-   * Read off [CostLine.origin], never a hand-written list: the type is what
-   * decides whose a number is, and a second list here would be a chance for the
-   * wire to attribute to a school a figure the domain says is ours. Today that
-   * is exactly the at-home `$0` food-and-housing line, so the key appears on
-   * `with_family` and nowhere else -- absent, never empty, like every other list
-   * in this payload.
-   *
-   * It is the wire half of the sentence the basis facts carry
-   * ([AT_HOME_ASSUMPTION_STATEMENT]): a model reading this payload can never
-   * report the zero as something the school published or failed to publish.
-   */
-  private fun JsonObjectBuilder.putAssumedByUnicoach(arrangement: ArrangementCost) {
-    val assumed = arrangement.lines.filter { it.origin == LineOrigin.ASSUMED_BY_UNICOACH }
-    if (assumed.isEmpty()) return
-    putJsonArray(ASSUMED_BY_UNICOACH_KEY) { assumed.forEach { add(JsonPrimitive(it.field.wireName)) } }
-  }
-
-  /** One invitation: the money-profile field it would fill, and the sentence the coach may say for it. */
-  private fun precisionOfferObject(
-    offer: PrecisionOffer,
-    cost: CollegeCost,
-  ): JsonObject =
-    buildJsonObject {
-      put("field", offer.field)
-      put("offer", offerCopy(offer, cost))
-    }
-
-  /**
-   * The sentence the coach may say for one offer. Exhaustive on purpose: a new
-   * [PrecisionOffer] member must fail to compile here — the one site that owes
-   * it copy — rather than ship an invitation with no words in it.
-   *
-   * The residency invitation has TWO wordings and the SCHOOL decides which (RFC
-   * 166 §4). The two-price copy is wrong at a community college, where there are
-   * three; the three-tier copy is wrong everywhere else, where it would name a
-   * district price the school does not publish. So the renderer READS the
-   * domain's decision ([ResidencyTierBasis], the same code and sentence this
-   * payload carries under `residency_tiers`) rather than re-deriving the tier
-   * shape from one amount: the second derivation promised three prices at a
-   * school whose own statement in the same object said it does not publish all
-   * three, and named an out-of-state price that does not exist.
-   *
-   * Exhaustive on the basis with no `else`, exactly as it is on [PrecisionOffer]:
-   * a SEVENTH basis must decide its own invitation before it compiles.
-   */
-  private fun offerCopy(
-    offer: PrecisionOffer,
-    cost: CollegeCost,
-  ): String =
-    when (offer) {
-      PrecisionOffer.RESIDENCY -> {
-        when (cost.residencyTiers) {
-          ResidencyTierBasis.THREE_TIERS_PUBLISHED -> RESIDENCY_OFFER_THREE_TIERS
-
-          // Every other basis publishes at most two tuition prices, so the
-          // three-tier words would name a tier this payload carries no key for.
-          ResidencyTierBasis.TWO_TIERS_PUBLISHED,
-          ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT,
-          ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER,
-          ResidencyTierBasis.SINGLE_PUBLISHED_PRICE,
-          -> RESIDENCY_OFFER
-
-          // Its own arm, and not folded in above: the reason the others share
-          // is "at most two prices", and this school publishes NONE, so the
-          // general copy is chosen here for a different reason. The offer
-          // cannot reach it today -- [PrecisionOffer.RESIDENCY] is admitted
-          // only where [CollegeCost.reportsPublishedTuition], which reads the
-          // same tier list this basis is derived from and is false exactly when
-          // it is empty -- and if that gate ever widens, the general invitation
-          // promises which price applies rather than naming a tier we hold no
-          // key for.
-          ResidencyTierBasis.NO_PUBLISHED_TUITION -> RESIDENCY_OFFER
-        }
-      }
-
-      PrecisionOffer.INCOME_BAND -> {
-        INCOME_BAND_OFFER
-      }
-
-      PrecisionOffer.LIVING_PLAN -> {
-        LIVING_PLAN_OFFER
-      }
-    }
-
-  /**
-   * The `net_price` sub-object: `amount_usd` when reported, the basis label, the
-   * band's code and its spoken dollar range on a band-specific basis
-   * (`IncomeBand.bracket`, RFC 142), and — when we hold the figure back — the
-   * reason and the words for it. The label rides beside the code so the model
-   * never has to invent a phrase for the bucket it is naming aloud.
-   *
-   * A withheld figure SAYS SO HERE, and not only in [WITHHELD_FIGURES_KEY]: an
-   * object carrying a basis and no amount is otherwise indistinguishable from
-   * the school's own silence, which is the very conflation the domain type
-   * removed.
-   */
-  private fun netPriceObject(netPrice: NetPrice): JsonObject =
-    buildJsonObject {
-      netPrice.amount?.let { put("amount_usd", it) }
-      put("basis", netPrice.basis)
-      // Exhaustive on purpose: an overall average deliberately emits no
-      // qualifier, and a future NetPrice case must fail to compile here rather
-      // than ship an unlabeled basis. Do not collapse this to an `if`.
-      when (netPrice) {
-        is NetPrice.BandSpecific -> {
-          putIncomeBand(netPrice.band)
-        }
-
-        is NetPrice.OverallAverage -> {}
-
-        // The basis the family's own answer selected rides above, so the label
-        // that basis PROMISES rides with it -- a `your_income_band` object with
-        // no band label would break an invariant the prompt states. Only the
-        // amount is withheld, and the reason for that is said right here.
-        is NetPrice.Withheld -> {
-          putBasisLabel(netPrice.publishedBasis)
-          put(WITHHELD_REASON_KEY, netPrice.reason.value)
-          put(STATEMENT_KEY, netPrice.reason.statement)
-        }
-      }
-    }
-
-  /**
-   * The qualifier one net-price BASIS owes, whether or not an amount came with
-   * it: the band's code and spoken range on the band-specific basis, nothing on
-   * the all-family average.
-   *
-   * Exhaustive, so a basis added to the vocabulary must say what label it ships.
-   */
-  private fun JsonObjectBuilder.putBasisLabel(basis: NetPriceBasis) {
-    when (basis) {
-      is NetPriceBasis.YourIncomeBand -> putIncomeBand(basis.band)
-      NetPriceBasis.OverallAverage -> Unit
-    }
-  }
-
-  /**
-   * The money-profile echo: all three field statuses, values only when answered.
-   * An answered band carries its spoken dollar range alongside its code
-   * (`IncomeBand.bracket`, RFC 142); an unanswered or declined band carries
-   * neither.
-   */
-  private fun moneyProfileObject(profile: MoneyProfileStatuses): JsonObject =
-    buildJsonObject {
-      put("income_band_status", profile.incomeBandStatus.value)
-      profile.incomeBand?.let { putIncomeBand(it) }
-      put("residency_status", profile.residencyStatus.value)
-      profile.residencyState?.let { put("residency_state", it) }
-      putComparedLivingPlan(profile.living)
-    }
-
-  /**
-   * The living-plan answer as the coach reads it: the status always, and the
-   * plan itself only on the answered case.
-   *
-   * One emitter for the two objects that echo it (the money-profile block and
-   * the comparison's arrangement basis), and exhaustive with no `else`, so the
-   * plan is reachable only through [ComparedLivingPlan.Answered] -- which is the
-   * whole reason that type is sealed.
-   */
-  private fun JsonObjectBuilder.putComparedLivingPlan(answer: ComparedLivingPlan) {
-    put("living_plan_status", answer.status.value)
-    when (answer) {
-      is ComparedLivingPlan.Answered -> {
-        putLivingPlan(answer.plan)
-      }
-
-      ComparedLivingPlan.Unanswered, ComparedLivingPlan.Declined -> {}
-    }
+    return payloadOf(profile)
   }
 
   companion object {
     private val logger = LoggerFactory.getLogger(CollegeCostChatTool::class.java)
+
+    /**
+     * The full structured result: one cost object per college, the money-profile
+     * echo, and the attribution.
+     *
+     * THE payload builder for a cost picture (RFC 258): `college_cost_profile`
+     * renders the student's own picture through it, and the supporter's
+     * `family_cost_picture` renders the linked student's shared picture through
+     * it, so both coaches read the same keys and the same words. It reads no
+     * instance state, which is why it lives here and not on the tool.
+     */
+    fun payloadOf(profile: CollegeCostProfile): JsonObject =
+      buildJsonObject {
+        putJsonArray("colleges") { profile.colleges.forEach { add(collegeObject(profile, it)) } }
+        // The major answer (RFC 231): absent, never empty, when the intended
+        // subjects are unanswered, declined or undecided. Present it is the
+        // colleges re-keyed by subject and then by matched program --
+        // subject_slug -> colleges -> programs -> figures.
+        profile.programReturn?.let { put(PROGRAM_RETURN_KEY, programReturnArray(it)) }
+        put("count", profile.colleges.size)
+        if (profile.unknownCollegeIds.isNotEmpty()) {
+          putJsonArray("unknown_college_ids") {
+            profile.unknownCollegeIds.forEach { add(JsonPrimitive(it.value.toString())) }
+          }
+        }
+        put("money_profile", moneyProfileObject(profile.moneyProfile))
+        // The comparison contract (RFC 151), present only when the answer carries
+        // two or more colleges -- an absent key, never an empty object, so its
+        // mere presence tells the model a side-by-side is being made.
+        profile.comparisonBasis?.let { put(COMPARISON_BASIS_KEY, comparisonBasisObject(it)) }
+        // ABSENT, never empty, exactly like every other key here: a payload with
+        // no money figure on it has no publisher to name, and the constant this
+        // replaced named one anyway (RFC 177).
+        MoneySourceCopy.spokenListOf(profile.moneySources)?.let { put(SOURCE_KEY, it) }
+      }
+
+    /**
+     * The `program_return` array (RFC 231), in the stored answer's own order: one
+     * entry per subject, then one entry per selected college, then one entry per
+     * matched program in CIP order, then the figures in [ProgramMoneyMeasure]
+     * declaration order.
+     */
+    private fun programReturnArray(section: ProgramReturn): JsonArray = JsonArray(section.subjects.map(::programReturnSubjectObject))
+
+    private fun programReturnSubjectObject(subject: ProgramReturnSubject): JsonObject =
+      buildJsonObject {
+        put(PROGRAM_SUBJECT_SLUG_KEY, subject.subjectSlug)
+        put(PROGRAM_SUBJECT_NAME_KEY, subject.subjectName)
+        putJsonArray(PROGRAM_COLLEGES_KEY) { subject.colleges.forEach { add(programReturnCollegeObject(it)) } }
+      }
+
+    /**
+     * One college's slice: its matched programs, or the ONE sentence that says no
+     * program matched -- never an empty `programs` array.
+     */
+    private fun programReturnCollegeObject(college: ProgramReturnCollege): JsonObject =
+      buildJsonObject {
+        put(COLLEGE_ID_KEY, college.collegeId.value.toString())
+        put(COLLEGE_NAME_KEY, college.name)
+        when (college) {
+          is ProgramReturnCollege.WithPrograms -> {
+            putJsonArray(PROGRAM_PROGRAMS_KEY) { college.programs.forEach { add(programObject(it)) } }
+          }
+
+          // No matched bachelor's program: the name and the sentence, never an
+          // empty programs array.
+          is ProgramReturnCollege.NoProgram -> {
+            putJsonObject(PROGRAM_AVAILABILITY_KEY) {
+              put(BASIS_KEY, PROGRAM_NO_PROGRAM_BASIS)
+              put(STATEMENT_KEY, ProgramReturnCopy.NO_PROGRAM_STATEMENT)
+            }
+          }
+        }
+      }
+
+    /**
+     * One matched program, keyed by the CIP code the publisher publishes at: its
+     * figures, or the sentence that says we hold none of them.
+     *
+     * The code rides on EVERY entry, including the no-figures one, because it is
+     * the program's identity: a college running two programs one subject reaches
+     * carries two entries, and an entry with no code would leave a family unable
+     * to tell which major it is about (RFC 231).
+     */
+    private fun programObject(program: ProgramReturnProgram): JsonObject =
+      buildJsonObject {
+        put(PROGRAM_CIP_CODE_KEY, program.cipCode.value)
+        put(PROGRAM_TITLE_KEY, program.title)
+        when (program) {
+          is ProgramReturnProgram.WithFigures -> {
+            putJsonArray(PROGRAM_FIGURES_KEY) { program.figures.forEach { add(programReturnFigureObject(it)) } }
+          }
+
+          // The school RUNS the program and the publisher gave us nothing for it
+          // -- its own basis, so it can never be read as the school not running
+          // it and never as a publisher's suppression.
+          is ProgramReturnProgram.NoPublishedFigures -> {
+            putJsonObject(PROGRAM_FIGURES_AVAILABILITY_KEY) {
+              put(BASIS_KEY, PROGRAM_NO_PUBLISHED_FIGURES_BASIS)
+              put(STATEMENT_KEY, ProgramReturnCopy.NO_PUBLISHED_FIGURES_STATEMENT)
+            }
+          }
+        }
+      }
+
+    /**
+     * One measure's entry. EVERY measure gets one, so a measure we hold no row for
+     * says so in its own words rather than leaving a short array a reader has to
+     * diff against the measure list to notice.
+     */
+    private fun programReturnFigureObject(figure: ProgramReturnFigure): JsonObject =
+      buildJsonObject {
+        put(PROGRAM_MEASURE_KEY, figure.measure.value)
+        when (figure) {
+          is ProgramReturnFigure.Held -> {
+            putHeldProgramFigure(figure)
+          }
+
+          is ProgramReturnFigure.NoFigure -> {
+            putJsonObject(PROGRAM_MEASURE_AVAILABILITY_KEY) {
+              put(BASIS_KEY, PROGRAM_NO_FIGURE_BASIS)
+              put(STATEMENT_KEY, ProgramReturnCopy.NO_FIGURE_STATEMENT)
+            }
+          }
+        }
+      }
+
+    /**
+     * A figure we hold a row for: its status, its number where the status bears
+     * one, and its provenance.
+     *
+     * The status is the ARM's own ([ProgramReturnFigure.Held.status]), so no
+     * silence can be stamped with another's code. The `when` is exhaustive with no
+     * `else` over the whole `figure_statuses` vocabulary, because the amount rides
+     * on exactly the two value-bearing statuses and a seventh status must be
+     * decided here before it compiles -- the seam that once threw for three of the
+     * six legal values and took the whole cost answer down with it.
+     */
+    private fun JsonObjectBuilder.putHeldProgramFigure(figure: ProgramReturnFigure.Held) {
+      when (figure) {
+        is ProgramReturnFigure.Valued -> {
+          put(PROGRAM_AMOUNT_USD_KEY, figure.amountUsd)
+        }
+
+        is ProgramReturnFigure.Suppressed,
+        is ProgramReturnFigure.NotReported,
+        is ProgramReturnFigure.NotApplicable,
+        is ProgramReturnFigure.NotCollectedByUs,
+        -> {
+          Unit
+        }
+      }
+      put(PROGRAM_STATUS_KEY, figure.status.value)
+      put(PROGRAM_PUBLISHER_KEY, figure.provenance.publisher)
+      put(PROGRAM_COHORT_FIRST_YEAR_KEY, figure.provenance.cohortFirstYear.firstCalendarYear)
+      put(PROGRAM_COHORT_LAST_YEAR_KEY, figure.provenance.cohortLastYear.firstCalendarYear)
+      put(PROGRAM_COHORT_SENTENCE_KEY, figure.provenance.cohortSentence)
+      figure.provenance.inflationBaseYear?.let { put(PROGRAM_INFLATION_BASE_YEAR_KEY, it.year) }
+    }
+
+    /**
+     * The five facts a side-by-side holds constant (RFC 151), each rendered as a
+     * stable code AND the sentence the coach may say for it.
+     *
+     * A renderer and nothing else: every code and every statement is read off the
+     * [ComparisonBasis] the service assembled, so this file cannot state a basis
+     * the domain did not decide.
+     */
+    private fun comparisonBasisObject(basis: ComparisonBasis): JsonObject =
+      buildJsonObject {
+        putJsonObject("population") {
+          put(BASIS_KEY, basis.population.code)
+          put(STATEMENT_KEY, basis.population.statement)
+        }
+        put("residency", residencyBasisObject(basis.residency))
+        // The SIXTH fact (RFC 157 D-C), emitted directly after the residency fact
+        // it completes: the residency line is about the tuition and fees column,
+        // and this one says which residency the two blended figures are on and
+        // which schools here they therefore do not describe.
+        put(BLENDED_FIGURE_BASIS_KEY, blendedFigureBasisObject(basis.blendedFigures))
+        put("living_arrangement", arrangementBasisObject(basis.livingArrangement))
+        // Absent, never empty -- the same convention `comparable` and
+        // `incomplete_by_college` follow below, and the one D-B gates the whole
+        // object on. A call whose schools report only undated figures (median
+        // debt, median earnings) dates nothing, and an empty array would read as
+        // a year list nobody could name.
+        if (basis.academicYears.isNotEmpty()) {
+          putJsonArray("academic_years") { basis.academicYears.forEach { add(datedFiguresObject(it)) } }
+        }
+        putJsonObject("aid") {
+          put(BASIS_KEY, basis.aid.code)
+          put(STATEMENT_KEY, basis.aid.statement)
+        }
+      }
+
+    /**
+     * The residency held constant, and the one per-school element inside the
+     * per-call object (RFC 151 D-A): the state rides only when it is answered,
+     * exactly as the money-profile echo renders it.
+     */
+    private fun residencyBasisObject(residency: ResidencyBasis): JsonObject =
+      // WHICH schools here charge by residency: the decision the statement speaks,
+      // shipped as a code beside it (D-D), so no reader parses the sentence to
+      // learn whether this table is all-public, mixed, or none.
+      residencyAnsweredBasisObject(
+        scope = residency.scope.value,
+        answer = residency.answer,
+        statement = residency.statement,
+        namedPerCollege = residency.namedPerCollege,
+        objectOfEntry = ::collegeResidencyObject,
+      )
+
+    /**
+     * The shape EVERY residency-answered per-call fact rides in (RFC 151 D-D):
+     * the scope code, the family's own answer, the sentence the coach may say, and
+     * -- only where a school is not fully described by that sentence (RFC 189 D2)
+     * -- one entry per such school.
+     *
+     * Written ONCE, so a key added here reaches the residency fact and the
+     * blended-figure fact together rather than being remembered for one of them.
+     */
+    private fun <T> residencyAnsweredBasisObject(
+      scope: String,
+      answer: ComparedResidency,
+      statement: String,
+      namedPerCollege: List<T>,
+      objectOfEntry: (T) -> JsonObject,
+    ): JsonObject =
+      buildJsonObject {
+        put(BASIS_KEY, scope)
+        put(STATUS_KEY, answer.status.value)
+        // The state rides on the answered case and nowhere else, and EXHAUSTIVELY
+        // so: a case added to [ComparedResidency] must fail to compile here rather
+        // than silently ship without the state it carries.
+        when (answer) {
+          is ComparedResidency.Answered -> put("residency_state", answer.state)
+          ComparedResidency.Unanswered, ComparedResidency.Declined -> Unit
+        }
+        put(STATEMENT_KEY, statement)
+        // CONDITIONAL, the same rule [CHOSEN_BY_COLLEGE_KEY] has carried for the
+        // same shape (RFC 189 D2): the array is written only where a school is not
+        // fully described by the sentence above it. With every school on one
+        // basis, an unconditional array stated the one fact 1 + N times and
+        // invited the coach to narrate a difference there is none of. The DOMAIN
+        // decides which schools those are ([ResidencyBasis.namedPerCollege],
+        // [BlendedFigureBasis.namedPerCollege]), so the renderer never re-derives
+        // the condition -- absent, never empty, like every other list here.
+        if (namedPerCollege.isNotEmpty()) {
+          putJsonArray(BY_COLLEGE_KEY) { namedPerCollege.forEach { add(objectOfEntry(it)) } }
+        }
+      }
+
+    /**
+     * One school's residency line inside the per-call object: WHICH published
+     * tuition figure this comparison holds constant there.
+     *
+     * [TUITION_BASIS_KEY] is its own key with its own five-code vocabulary, not
+     * the per-college `tuition_applicable`: that one is the public-only
+     * in-state/out-of-state/unknown fact, while this one also answers what kind of
+     * school it is.
+     */
+    private fun collegeResidencyObject(college: CollegeResidencyBasis): JsonObject =
+      buildJsonObject {
+        put(COLLEGE_ID_KEY, college.collegeId.value.toString())
+        put(COLLEGE_NAME_KEY, college.name)
+        put(TUITION_BASIS_KEY, college.tuition.code)
+        // The raw control code that defeated the residency line, beside the
+        // failure it caused: an operator reading this entry never has to open the
+        // row to learn WHICH value we could not place.
+        when (val tuition = college.tuition) {
+          is ComparedTuition.PublishedPriceUnknown -> put(SOURCE_CONTROL_KEY, tuition.sourceControl.label)
+          is ComparedTuition.Public, ComparedTuition.SinglePublishedPrice -> Unit
+        }
+        put(STATEMENT_KEY, college.statement)
+      }
+
+    /**
+     * Which residency the published price and the price after a financial aid
+     * offer are on, and which schools in this call they do not describe (RFC 157
+     * D-C).
+     *
+     * The same shape as every other basis fact: a [BASIS_KEY] code, the family's
+     * own answer echoed, the [STATEMENT_KEY] the coach may say, and -- where the
+     * sentence is not the whole truth about a school -- that school's own entry,
+     * so a reader never has to work out from an absent figure that a figure was
+     * withheld.
+     */
+    private fun blendedFigureBasisObject(basis: BlendedFigureBasis): JsonObject =
+      residencyAnsweredBasisObject(
+        scope = basis.scope.value,
+        answer = basis.answer,
+        statement = basis.statement,
+        namedPerCollege = basis.namedPerCollege,
+        objectOfEntry = ::collegeBlendedFigureObject,
+      )
+
+    /**
+     * One school's blended-figure line: the code, whether the two figures are this
+     * family's, and the sentence. [putBlendedFiguresApply] owns the known-only
+     * rule for [APPLIES_KEY] and says why.
+     */
+    private fun collegeBlendedFigureObject(college: CollegeBlendedFigureBasis): JsonObject =
+      buildJsonObject {
+        put(COLLEGE_ID_KEY, college.collegeId.value.toString())
+        put(COLLEGE_NAME_KEY, college.name)
+        put(BASIS_KEY, college.code.value)
+        putBlendedFiguresApply(college.applies)
+        put(STATEMENT_KEY, college.statement)
+      }
+
+    /**
+     * Whether the two blended figures are this family's at one school, on the wire
+     * in ONE form wherever it is said (RFC 157 D-B).
+     *
+     * TWO keys, and both are load-bearing. [APPLIES_BASIS_KEY] carries the state
+     * itself and is always written, so the payload is self-describing and no
+     * reader infers an outcome from a key that is not there. [APPLIES_KEY] stays
+     * the known-only boolean -- the `offers_on_campus_housing` convention (RFC 149
+     * D-B) -- because an open residency question is not a `false`, and writing one
+     * would tell the coach these figures are somebody else's when all we know is
+     * that we have not asked.
+     *
+     * Exhaustive, so a fourth outcome must say what boolean it ships rather than
+     * falling through to silence.
+     */
+    private fun JsonObjectBuilder.putBlendedFiguresApply(applies: BlendedFigureApplicability) {
+      // The state ITSELF, always present: three outcomes cannot ride on a boolean
+      // plus an absence, and an absent key has two causes (an open residency
+      // question, an unrecognised control) that a reader cannot tell apart.
+      put(APPLIES_BASIS_KEY, applies.value)
+      when (applies) {
+        BlendedFigureApplicability.APPLIES -> put(APPLIES_KEY, true)
+        BlendedFigureApplicability.WITHHELD -> put(APPLIES_KEY, false)
+        BlendedFigureApplicability.BASIS_STATED -> Unit
+      }
+    }
+
+    /**
+     * The living arrangement held constant (RFC 151 D-E, RFC 152 D5): what the
+     * family answered, what each school resolved to, the arrangements every
+     * school in the call is priced for, and the schools that lack one another
+     * school has.
+     *
+     * The lists are emitted only when they carry something -- the payload's
+     * absent-never-empty convention -- and the statement says which case it is in
+     * words, beside the [BASIS_KEY] code that says it as a fact, so an absent
+     * list is never read as a fact nobody stated.
+     *
+     * [CHOSEN_BY_COLLEGE_KEY] is emitted only when the schools are NOT all on one
+     * plan or one of them is not priced for it: with one plan everywhere, the
+     * statement and the per-college keys already say it, and a second per-school
+     * list would invite the coach to narrate a difference there is none of.
+     */
+    private fun arrangementBasisObject(arrangement: ArrangementBasis): JsonObject =
+      buildJsonObject {
+        put(BASIS_KEY, arrangement.scope.value)
+        putComparedLivingPlan(arrangement.answer)
+        if (arrangement.planNamedPerCollege.isNotEmpty()) {
+          putJsonArray(CHOSEN_BY_COLLEGE_KEY) {
+            arrangement.planNamedPerCollege.forEach { add(collegeLivingPlanObject(it)) }
+          }
+        }
+        if (arrangement.comparable.isNotEmpty()) {
+          putJsonArray("comparable") { arrangement.comparable.forEach { add(JsonPrimitive(it.value)) } }
+        }
+        if (arrangement.incompleteByCollege.isNotEmpty()) {
+          putJsonArray("incomplete_by_college") {
+            arrangement.incompleteByCollege.forEach { add(incompleteArrangementObject(it)) }
+          }
+        }
+        put(STATEMENT_KEY, arrangement.statement)
+      }
+
+    /**
+     * One school's resolved plan inside the comparison: which way of living it is
+     * quoted at, where that plan came from, and -- when the school is not priced
+     * for it -- the reason, never a substitute.
+     *
+     * A school with no plan resolved carries its identity and the
+     * [LivingPlanPricing.NOT_CHOSEN] code, so "nothing is on file for it" is
+     * stated rather than left to be noticed in an absent key.
+     */
+    private fun collegeLivingPlanObject(row: CollegeLivingPlan): JsonObject =
+      buildJsonObject {
+        put(COLLEGE_ID_KEY, row.collegeId.value.toString())
+        put(COLLEGE_NAME_KEY, row.name)
+        putChosenLivingPlan(row.chosen)
+      }
+
+    /**
+     * The resolved plan itself: which way of living, in the student's words,
+     * where the plan came from -- and the reason when this school is not priced
+     * for it, never a substitute.
+     *
+     * ONE emitter for the two places the sub-object appears (the per-college
+     * answer and the comparison's [CHOSEN_BY_COLLEGE_KEY]), so the coach can never
+     * meet two spellings of one shape.
+     *
+     * Every case writes its own [PRICING_KEY] code (RFC 152): the three shapes
+     * used to be told apart only by which sibling keys were absent, which made the
+     * coach infer a fact from a silence -- the very thing a code exists to
+     * prevent. A school with no plan resolved now says so as a code too, instead
+     * of being an identity-only row.
+     */
+    private fun JsonObjectBuilder.putChosenLivingPlan(chosen: ChosenLivingPlan) {
+      when (chosen) {
+        is ChosenLivingPlan.Priced -> {
+          put(ARRANGEMENT_KEY, chosen.plan.value)
+          put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
+          put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
+          put(PRICING_KEY, chosen.pricing.value)
+        }
+
+        is ChosenLivingPlan.NoTotalHere -> {
+          put(ARRANGEMENT_KEY, chosen.plan.value)
+          put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
+          put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
+          put(PRICING_KEY, chosen.pricing.value)
+          // OUR vocabulary, never the school's: two of this reason's three causes
+          // are gaps of ours, so it rides under its own key and never under the
+          // one that says what the school published.
+          put(NO_TOTAL_REASON_KEY, chosen.reason.value)
+        }
+
+        is ChosenLivingPlan.NotPricedHere -> {
+          put(ARRANGEMENT_KEY, chosen.plan.value)
+          put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
+          put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
+          put(PRICING_KEY, chosen.pricing.value)
+          // A reason code, never a substituted arrangement and never a
+          // neighbour's figure. No total, because there is none to give.
+          put(ARRANGEMENT_REASON_KEY, chosen.reason.value)
+        }
+
+        // No plan, so no arrangement to name -- but the code is written, so a row
+        // with nothing on file states that rather than leaving it to be noticed.
+        ChosenLivingPlan.NotChosen -> {
+          put(PRICING_KEY, chosen.pricing.value)
+        }
+      }
+    }
+
+    /**
+     * One school's gap in the arrangements the other schools are priced for: the
+     * arrangements it lacks, and the one reason they are missing for (RFC 151
+     * D-E). A school with two kinds of gap is two entries, so one entry is always
+     * "these arrangements, for this reason".
+     */
+    private fun incompleteArrangementObject(entry: IncompleteArrangement): JsonObject =
+      buildJsonObject {
+        put(COLLEGE_ID_KEY, entry.collegeId.value.toString())
+        put(COLLEGE_NAME_KEY, entry.name)
+        putJsonArray("missing") { entry.missing.forEach { add(JsonPrimitive(it.value)) } }
+        put("reason", entry.reason.value)
+      }
+
+    /**
+     * One academic year in the call, the schools it is true of, and the figures it
+     * dates -- the same `{academic_year, figures}` shape the per-college vintage
+     * labels carry, so the model reads one convention rather than two.
+     *
+     * [DATED_COLLEGES_KEY] is the subject, and it is not decoration: since RFC 166
+     * the year is a fact about ONE SCHOOL, so a comparison of a Scorecard-only
+     * school and an IC_AY school carries TWO of these objects. Without the schools
+     * named, the model is handed the same figure names under two different years
+     * and no way to tell which is which -- while this tool's own description tells
+     * it to quote a number with the year of the key that lists it.
+     *
+     * Each subject is emitted as `{college_id, name}`, the shape every other
+     * school reference in this payload uses, rather than a bare name: names
+     * collide in the corpus, and the model is asked here to MATCH the subject
+     * against the colleges it was given. Matching on display copy is how the
+     * wrong year gets attached to a column of dollars.
+     */
+    private fun datedFiguresObject(dated: DatedFigures): JsonObject =
+      buildJsonObject {
+        put(BASIS_KEY, dated.basis)
+        put(ACADEMIC_YEAR_KEY, dated.academicYear)
+        putJsonArray(DATED_COLLEGES_KEY) {
+          dated.colleges.forEach {
+            add(
+              buildJsonObject {
+                put(COLLEGE_ID_KEY, it.collegeId.value.toString())
+                put(COLLEGE_NAME_KEY, it.name)
+              },
+            )
+          }
+        }
+        putJsonArray(DATED_FIGURES_KEY) { dated.figures.forEach { add(JsonPrimitive(it.wireName)) } }
+        put(STATEMENT_KEY, dated.statement)
+      }
+
+    private fun collegeObject(
+      profile: CollegeCostProfile,
+      cost: CollegeCost,
+    ): JsonObject {
+      // The vintage labels are derived from what this object ACTUALLY carries.
+      // Every step below that emits a money figure RETURNS the fields it emitted
+      // and the record is built HERE from those results, so the emit and the
+      // record are one expression: a second list restating the same emit
+      // conditions is how a figure comes to be labelled with a year no key beside
+      // it describes, or to lose its label entirely -- and nothing would fail for
+      // it.
+      val emitted = mutableSetOf<CostField>()
+
+      return buildJsonObject {
+        put(COLLEGE_ID_KEY, cost.collegeId.value.toString())
+        put(COLLEGE_NAME_KEY, cost.name)
+        put("city", cost.city)
+        put("state", cost.state)
+        put("control", cost.control.label)
+        put("list_status", cost.listStatus.value)
+        emitted += putFigure(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, cost.stickerCostOfAttendancePerYearUsd)
+        emitted += putTuitionTiers(cost)
+        emitted += putFeesOnly(cost)
+        putResidencyTiers(cost)
+        // Present only on the public case; the model makes the distinction
+        // uncarryable by a private college, so it cannot be misread onto one.
+        (cost.control as? CollegeControl.Public)?.let { put("tuition_applicable", it.tuitionApplicable.value) }
+        emitted += putNetPrice(cost.netPrice)
+        putPrecisionOffers(profile, cost)
+        emitted += putFigure(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, cost.medianDebtAtCompletionUsd)
+        emitted += putFigure(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, cost.medianEarnings10yAfterEntryUsd)
+        // The published price split by living arrangement (RFC 149). Absent, not
+        // empty, when this school reports no component at all. Its lines are
+        // recorded here, at the one place they are rendered.
+        cost.breakdown?.let { emitted += putBreakdown(it) }
+        // AFTER the breakdown and BEFORE putVintageLabels, and that ordering is
+        // load-bearing (RFC 152). It re-keys a figure the breakdown already
+        // emitted -- the resolved arrangement's total -- so it must sit above the
+        // vintage labels for the rule "the keys after it emit no CostField" to
+        // stay true; and it sits below the breakdown because it names one of the
+        // arrangements that object rendered, so a reader meets the three before
+        // being told which one to lead with.
+        putChosenLivingArrangement(cost.chosen)
+        putOffersOnCampusHousing(cost)
+        // LAST of the figure-bearing keys, and it must stay there: it reads the
+        // [emitted] set the steps above returned into, so a figure emitted BELOW
+        // this line would ride with no academic year beside it and nothing -- no
+        // type, no test -- would fail for it. The keys after it emit no CostField,
+        // which is the only reason they may sit where they do.
+        putVintageLabels(cost, emitted)
+        // Purely additive (RFC 148 D7): present only when the school reports it,
+        // and carrying its OWN citation, because merit aid is not a Scorecard
+        // fact and must never fold into the payload's Scorecard `source` string.
+        cost.meritAid?.let { put(MeritAidWire.KEY, MeritAidWire.objectOf(it)) }
+        // The RFC 170 aid-policy section, additive in exactly the same way, and
+        // with the coverage-honest line when the corpus carries no filing for
+        // this school: silence about a school's aid policy is a fact about OUR
+        // corpus, and leaving it unsaid invites the model to fill it.
+        putAidPolicy(cost)
+        putBorrowing(cost)
+        putFieldsWithNoAmount(cost)
+        putWithheldFigures(cost)
+        putFigureStatuses(cost)
+        // The blended-figure basis for THIS school, stated per college as well as
+        // in COMPARISON_BASIS_KEY: that fact needs two colleges, and a one-college
+        // result is exactly where the basis would otherwise go unsaid (RFC 157
+        // D-B).
+        putBlendedFiguresApply(cost.blendedFiguresApply)
+      }
+    }
+
+    /**
+     * One scalar money figure, RETURNING the field it emitted so the caller's
+     * record of what this payload carries IS this function's result rather than a
+     * side-effect on a set it was handed. An absent amount writes no key and
+     * returns nothing: a key with no number is what `data_availability` and
+     * `figure_statuses` are for.
+     */
+    private fun JsonObjectBuilder.putFigure(
+      field: CostField,
+      amountUsd: Int?,
+    ): Set<CostField> {
+      if (amountUsd == null) return emptySet()
+      put(field.wireName, amountUsd)
+      return setOf(field)
+    }
+
+    /**
+     * The tuition tiers, in declaration order, from the ONE derivation of which of
+     * them this school publishes ([CollegeCost.publishedTuitionTiers], RFC 166 §4)
+     * -- including the third tier, which no consumer surface showed before this
+     * RFC. Iterated rather than hand-listed so the payload cannot disagree with
+     * `residency_tiers` beside it, and so a fourth tier is emitted without a
+     * second list saying it should be. A school with no value-bearing figure at a
+     * tier emits no key for it at all, which is how the in-district tier stays
+     * silent at the ~2,300 institutions whose publisher never separated one.
+     */
+    private fun JsonObjectBuilder.putTuitionTiers(cost: CollegeCost): Set<CostField> =
+      cost.publishedTuitionTiers.flatMapTo(mutableSetOf()) { putFigure(it, cost.publishedAmountOf(it)) }
+
+    /**
+     * The fees split (RFC 166 §5): the fees PART of the combined tuition figure,
+     * never a cost beside it. It is deliberately not a component of any
+     * arrangement -- adding it to one would count fees twice inside every total --
+     * and the description says so in words.
+     *
+     * ITERATED over [CostField.FEES_ONLY_FIELDS], for the reason the tuition tiers above are
+     * iterated: three hand-written call sites are three places a fourth fees tier
+     * would not reach.
+     */
+    private fun JsonObjectBuilder.putFeesOnly(cost: CollegeCost): Set<CostField> =
+      CostField.FEES_ONLY_FIELDS.flatMapTo(mutableSetOf()) { putFigure(it, cost.publishedAmountOf(it)) }
+
+    /**
+     * WHICH tuition tiers this school publishes, as a code and the domain's own
+     * sentence ([ResidencyTierBasis], RFC 166 §4), on every college.
+     *
+     * Emits no [CostField]: it names the tuition keys beside it and adds no figure
+     * of its own, so it takes no part in the vintage labels.
+     */
+    private fun JsonObjectBuilder.putResidencyTiers(cost: CollegeCost) {
+      // The ONE emitter, beside the vocabulary in `:db` (RFC 169, brief 0006 D19):
+      // college search reports the same fact about the same school, and a second
+      // writer here would be a second way to spell one payload.
+      putResidencyTierPair(cost.residencyTiers)
+    }
+
+    /**
+     * The one figure that is not a bare scalar: it keys an OBJECT (the amount, its
+     * basis, and the reason when we hold it back), so it cannot go through
+     * [putFigure]. Its emit and its record sit in one function all the same --
+     * they used to be two statements in the orchestrator, the only place the
+     * record was maintained by hand.
+     */
+    private fun JsonObjectBuilder.putNetPrice(netPrice: NetPrice): Set<CostField> {
+      put(CostField.NET_PRICE.wireName, netPriceObject(netPrice))
+      return if (netPrice.amount == null) emptySet() else setOf(CostField.NET_PRICE)
+    }
+
+    /**
+     * The upgrade invitations for this college: emitted only when there is
+     * something to offer -- an absent key, never an empty array, so its mere
+     * presence stays meaningful to the model.
+     */
+    private fun JsonObjectBuilder.putPrecisionOffers(
+      profile: CollegeCostProfile,
+      cost: CollegeCost,
+    ) {
+      val offers = profile.precisionOffersFor(cost)
+      if (offers.isNotEmpty()) {
+        putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it, cost)) } }
+      }
+    }
+
+    /**
+     * The aid-policy section, or the one sentence saying why there is none (RFC
+     * 170, D11).
+     *
+     * The absence line is NOT a [DATA_AVAILABILITY_KEY] entry: that list speaks
+     * the [CostField] vocabulary, which means "this college does not report this
+     * SCORECARD cost field", and the Common Data Set is a different publisher
+     * with its own silences (the rule [CollegeCost.meritAid] already states).
+     * Mixing them would misattribute whose silence it is. So the sentence keys
+     * itself, and says which of the two silences this is: we hold no filing for
+     * the school, rather than the school having reported nothing.
+     */
+    private fun JsonObjectBuilder.putAidPolicy(cost: CollegeCost) {
+      val policy = cost.aidPolicy
+      when {
+        // Two silences, two sentences. "We hold no filing" said about a school
+        // whose filing we DO hold is a false statement about our own coverage,
+        // and it is the one the model would repeat to a family.
+        policy == null -> put(AID_POLICY_AVAILABILITY_KEY, AID_POLICY_NO_FILING)
+
+        !policy.hasFact -> put(AID_POLICY_AVAILABILITY_KEY, AID_POLICY_NO_FACT_IN_FILING)
+
+        else -> put(AidPolicyWire.KEY, AidPolicyWire.objectOf(policy))
+      }
+    }
+
+    /**
+     * The borrowing section, or the one sentence saying why there is none (RFC
+     * 175) -- [putAidPolicy]'s arms plus a fourth, because there are THREE
+     * silences here and D7 turns on whose each one is: no filing, a filing with
+     * no borrowing block (the school's silence), and a filing whose borrowing
+     * cells we could not read (OURS). Speaking the third as the second tells a
+     * family this school does not report a figure it does report.
+     *
+     * The four states arrive already told apart, as [BorrowingCoverage], so this
+     * `when` is exhaustive over a sealed type rather than a ladder whose ARM
+     * ORDER decided whose silence a filing's was. A partly unread filing is
+     * [BorrowingCoverage.Reported] and says both things.
+     *
+     * None of the three silences is a [DATA_AVAILABILITY_KEY] entry: that list
+     * speaks the [CostField] vocabulary and means "this college does not report
+     * this SCORECARD cost field". The federal-only median debt figure elsewhere
+     * in this result belongs to that list; these sentences are about a different
+     * publisher's silence, and folding them together would misattribute it.
+     */
+    private fun JsonObjectBuilder.putBorrowing(cost: CollegeCost) {
+      when (val borrowing = cost.borrowing) {
+        BorrowingCoverage.NoFiling -> {
+          putBorrowingAvailability(BORROWING_NO_FILING_BASIS, BORROWING_NO_FILING)
+        }
+
+        is BorrowingCoverage.NoBlock -> {
+          // WHICH silence this filing's empty block is. A publisher that withheld
+          // the cells, or a source that says the question does not apply, is not
+          // the school declining to report -- and the plain sentence would say it
+          // was.
+          val withheld = borrowing.gapStatuses.any { FigureStatusCopy.ownerOf(it) == FigureGapOwner.PUBLISHER }
+          val notApplicable = borrowing.gapStatuses.contains(FigureStatus.NOT_APPLICABLE)
+          when {
+            // OURS first, as [BorrowingCoverage.of] already puts OUR unread cells
+            // ahead of the other silences: a filing whose cells we hold and could
+            // not reconcile (D6) has ANSWERED, so every sentence below would say
+            // someone else's silence about a school that reported two figures.
+            borrowing.contradicted.isNotEmpty() -> {
+              putBorrowingAvailability(BORROWING_NOT_RECONCILED_BY_US_BASIS, BORROWING_NOT_RECONCILED_BY_US)
+            }
+
+            withheld -> {
+              putBorrowingAvailability(BORROWING_WITHHELD_BASIS, BORROWING_WITHHELD_BY_PUBLISHER)
+            }
+
+            notApplicable -> {
+              putBorrowingAvailability(BORROWING_NOT_APPLICABLE_BASIS, BORROWING_NOT_APPLICABLE_IN_FILING)
+            }
+
+            else -> {
+              putBorrowingAvailability(BORROWING_NO_FACT_IN_FILING_BASIS, BORROWING_NO_FACT_IN_FILING)
+            }
+          }
+        }
+
+        BorrowingCoverage.NotReadByUs -> {
+          putBorrowingAvailability(BORROWING_NOT_READ_BY_US_BASIS, BORROWING_NOT_READ_BY_US)
+        }
+
+        // The section, WITH the value-less columns of the same filing said inside
+        // it per loan type ([BorrowingWire.gapKey]). A partly readable filing is
+        // a filing with figures, so it renders them and explains its own gaps.
+        is BorrowingCoverage.Reported -> {
+          put(BorrowingWire.KEY, BorrowingWire.objectOf(borrowing))
+        }
+      }
+    }
+
+    /**
+     * WHY there is no borrowing section, as a CODE and the sentence to say it in
+     * -- the [RESIDENCY_TIERS_KEY] convention this file already follows
+     * everywhere else.
+     *
+     * The code is the load-bearing half: whose silence this is (D7) is the fact
+     * the whole borrowing surface turns on, and emitted as a bare sentence it was
+     * readable only by matching English copy.
+     */
+    private fun JsonObjectBuilder.putBorrowingAvailability(
+      basis: String,
+      statement: String,
+    ) {
+      putJsonObject(BORROWING_AVAILABILITY_KEY) {
+        put(BASIS_KEY, basis)
+        put(STATEMENT_KEY, statement)
+      }
+    }
+
+    /**
+     * The figures the coach has NO number for here, whichever of the two reasons
+     * it is: the school did not report it, or it is not a figure for this family
+     * (RFC 157 D-A).
+     *
+     * ONE list, because the instruction it drives is one instruction -- say so
+     * plainly, never estimate -- and a field withheld from a list called
+     * `data_availability` would be a silence with nothing said about it. WHICH
+     * reason applies is [putWithheldFigures]' to say, with the words for it.
+     *
+     * The union is the DOMAIN's ([CollegeCost.fieldsWithNoAmount]), already in
+     * enum declaration order: this writer spells out a set the cost answer names,
+     * and never derives a third field category the page and the service cannot
+     * share.
+     *
+     * ABSENT, never empty -- the payload's own convention, the one
+     * [putWithheldFigures] follows and the one every other list here follows. An
+     * empty array would say "we checked" in a shape a reader has to open to learn
+     * it says nothing.
+     */
+    private fun JsonObjectBuilder.putFieldsWithNoAmount(cost: CollegeCost) {
+      if (cost.fieldsWithNoAmount.isEmpty()) return
+      putJsonArray(DATA_AVAILABILITY_KEY) { cost.fieldsWithNoAmount.forEach { add(JsonPrimitive(it.wireName)) } }
+    }
+
+    /**
+     * The figures we hold and are not showing this family, each with its reason
+     * (RFC 157 D-A).
+     *
+     * Absent, never empty. Its presence means exactly one thing: a
+     * `data_availability` entry here is OURS rather than the school's silence.
+     */
+    private fun JsonObjectBuilder.putWithheldFigures(cost: CollegeCost) {
+      if (cost.withheld.isEmpty()) return
+      putJsonArray(WITHHELD_FIGURES_KEY) { cost.withheld.forEach { add(withheldFigureObject(it)) } }
+    }
+
+    /**
+     * WHY a figure carries no number, in the store's own six statuses (RFC 166
+     * §6) -- the reason BESIDE [DATA_AVAILABILITY_KEY], never inside it.
+     *
+     * `data_availability` keeps its exact shape (a bare list of wire names,
+     * absent when empty): it answers WHICH figures are blank, and every reader of
+     * it -- the prompt, the report page, this tool's own description -- reads that
+     * one shape. This key answers WHY, in the `withheld_figures` shape the payload
+     * already uses, so the coach meets one convention rather than two.
+     *
+     * A figure the publisher ESTIMATED is here as well as shown: it is a number,
+     * and a family reading the publisher's estimate as the school's own figure
+     * would be reading it wrong.
+     *
+     * Absent, never empty -- this payload's convention everywhere.
+     *
+     * It writes TWO keys since RFC 189 D1, and they are one fact: the pair most of
+     * this college's figures are on ([FIGURE_PROVENANCE_KEY]) and the fields that
+     * have something of their own to say ([FIGURE_STATUSES_KEY]). One function,
+     * because "an exception can never exist without a default" is the invariant
+     * the compression rests on, and two emitters would be two places for the
+     * default to go missing.
+     */
+    private fun JsonObjectBuilder.putFigureStatuses(cost: CollegeCost) {
+      // The default and the exceptions ride in ONE type, and the default field is
+      // non-null (RFC 189 D1), so this is the only branch there is: either both
+      // keys' subject exists or neither does. A payload carrying an exception with
+      // no default is a state the domain cannot build.
+      val provenance = cost.figureProvenance ?: return
+      put(FIGURE_PROVENANCE_KEY, figureProvenanceObject(provenance.default))
+      if (provenance.exceptions.isEmpty()) return
+      putJsonArray(FIGURE_STATUSES_KEY) { provenance.exceptions.forEach { add(figureStatusObject(it)) } }
+    }
+
+    /**
+     * The (tier, publisher) pair most of this college's figures are on, said ONCE
+     * (RFC 189 D1) -- the default every [FIGURE_STATUSES_KEY] entry resolves its
+     * unstated provenance keys against.
+     *
+     * ALL THREE KEYS, always, where an entry carries only the ones it differs on:
+     * the default is what the resolution rule falls back to, so a key missing here
+     * would leave a figure with nowhere to resolve from. The tier and its sentence
+     * come off ONE value ([SpokenAssurance]), so this object cannot name a tier
+     * the sentence beside it does not say; and that sentence is
+     * [AssuranceTierCopy]'s own, never re-worded here and never ranked or scored
+     * (RFC 179 D10).
+     */
+    private fun figureProvenanceObject(default: FigureProvenanceDefault): JsonObject =
+      buildJsonObject {
+        put(ASSURANCE_KEY, default.assurance.tier.value)
+        put(ASSURANCE_STATEMENT_KEY, default.assurance.statement)
+        put(FIGURE_SOURCE_KEY, default.source.value)
+      }
+
+    /**
+     * One field's status: the field, the code, and the DOMAIN's own sentence for
+     * it ([FigureStatusCopy]), never re-worded here -- the `income_band` +
+     * `income_band_label` convention (RFC 151 D-D) applied to the six statuses.
+     *
+     * An entry exists only for a field with something of its OWN to say (RFC 189
+     * D1), and it repeats a provenance key only where THAT KEY differs from the
+     * default: three keys stated once per college replaced three keys stated once
+     * per field, and the facts are the same ones because each of the two -- the
+     * tier and the publisher -- resolves as "this entry's own value, else the
+     * default's".
+     *
+     * WHICH keys differ is the DOMAIN's answer ([FigureProvenanceException]), not
+     * a comparison redone here: the exception carries the overrides already
+     * narrowed, so this writer cannot disagree with the summary about what the
+     * default is.
+     */
+    private fun figureStatusObject(exception: FigureProvenanceException): JsonObject =
+      buildJsonObject {
+        val note = exception.note
+        put("field", note.field.wireName)
+        put(STATUS_KEY, note.status.value)
+        // ABSENT rather than empty where the note has no status sentence -- a
+        // shown, plainly reported figure (RFC 179 D6). Absence has ONE
+        // representation on this payload, and an empty string would be a second.
+        note.statement?.let { put(STATEMENT_KEY, it) }
+        // What KIND of number this figure is, as a CODE and as the sentence to say
+        // it in (RFC 179 D7) -- the `income_band` + `income_band_label`
+        // convention a third time. A reader must not have to parse our English to
+        // learn which tier a figure is on, and the two keys are read as a PAIR
+        // with `status`: an imputed IPEDS cell and a self-reported one are soft in
+        // different ways.
+        //
+        // PER KEY (RFC 189 D1): an entry carries a provenance key only where it
+        // DIFFERS from [FIGURE_PROVENANCE_KEY], and a key it does not carry IS the
+        // default's. The two facts resolve independently because they vary
+        // independently -- the Scorecard relays IPEDS cells (the same tier, a
+        // different publisher) and also originates federal administrative records
+        // (a different tier, the same publisher).
+        //
+        // The tier's two keys cannot split: they are read off ONE
+        // [SpokenAssurance], whose sentence is derived from its own code, so a
+        // code with no sentence is not a state this writer can be handed.
+        exception.assurance?.let {
+          put(ASSURANCE_KEY, it.tier.value)
+          put(ASSURANCE_STATEMENT_KEY, it.statement)
+        }
+        // The publisher whose row won this cell, as a CODE beside the sentence
+        // (RFC 177 D4). `imputed_by_publisher` and `suppressed_by_publisher` are
+        // acts of a publisher, so a reader that needs to know which one acted must
+        // not have to re-parse [STATEMENT_KEY]'s English to find out.
+        exception.source?.let { put(FIGURE_SOURCE_KEY, it.value) }
+        // A YEAR GAP: this school DID publish the figure, at a year that is not
+        // the one its price is quoted at. Absent on every other note, so its
+        // PRESENCE is the fact -- `status` cannot carry it, because a year gap and
+        // a cell we have never collected are both `not_collected_by_us`. Read off
+        // [FigureStatusNote.heldAcademicYear] rather than off the sentence, which
+        // is the whole point of the field: the year travels as data.
+        note.heldAcademicYear?.let { put(HELD_ACADEMIC_YEAR_KEY, it) }
+      }
+
+    /**
+     * One withheld figure: which field, the reason code, and the sentence that
+     * both names the reason and points at the figures that ARE this family's (RFC
+     * 157 D-A).
+     *
+     * The statement is the [WithheldReason]'s own, never re-worded HERE, so the
+     * coach explains the blank in the domain's words. The report page prints the
+     * same reason in [WithheldReason.cellPhrase], the short form beside this one,
+     * with its own pointer at the table the reader is looking at (RFC 157 D-A):
+     * one vocabulary, two lengths, and neither file invents a third.
+     */
+    private fun withheldFigureObject(withheld: WithheldFigure): JsonObject =
+      buildJsonObject {
+        put("field", withheld.field.wireName)
+        put(WITHHELD_REASON_KEY, withheld.reason.value)
+        put(STATEMENT_KEY, withheld.reason.statement)
+      }
+
+    /**
+     * The per-arrangement split, RETURNING the fields it rendered so the vintage
+     * labels below follow exactly what this object carries.
+     *
+     * It returns them rather than writing into a set the caller passes in: the
+     * emit set decides which figures get an `academic_year` stamped on them, and a
+     * `Unit`-returning function that reaches into the caller's own collection is
+     * how a figure comes to be rendered without being recorded -- said to a family
+     * with no year beside it, with no type and no test failing for it.
+     */
+    private fun JsonObjectBuilder.putBreakdown(breakdown: CostBreakdown): Set<CostField> {
+      put(BREAKDOWN_KEY, breakdownObject(breakdown))
+      // The COMPONENTS, not `lines`: since RFC 189 D3 this object no longer writes
+      // the tuition figure, it NAMES the top-level key that carries it, and that
+      // key was recorded by [putTuitionTiers] above. Returning the tuition field
+      // from here would have the vintage labels date a figure written by another
+      // step, which is the drift the record-what-you-emit rule exists against.
+      return breakdown.arrangements.flatMap { it.componentLines }.mapTo(mutableSetOf()) { it.field }
+    }
+
+    /**
+     * The way of living this answer LEADS with (RFC 152), when the family has
+     * said where they plan to live.
+     *
+     * ABSENT, never null, when nothing is resolved: the plan is unanswered or
+     * declined and this school carries no plan of its own, so the answer is
+     * exactly what it was before this key existed -- all three arrangements, each
+     * named and labelled (D3).
+     *
+     * It never narrows the breakdown beside it (D2): the other ways of living
+     * stay in the payload as true facts, and a "what if we lived at home
+     * instead?" stays answerable from the same result.
+     *
+     * The key emits no CostField into [emitted] because it emits no NEW figure:
+     * the total it carries is the one the breakdown already rendered for the same
+     * arrangement, already dated by the vintage labels below.
+     */
+    private fun JsonObjectBuilder.putChosenLivingArrangement(chosen: ChosenLivingPlan) {
+      // Exhaustive with no `else`: a fourth case would otherwise fall silently
+      // out of the payload, and this key is the whole of what the coach leads
+      // with.
+      when (chosen) {
+        is ChosenLivingPlan.Priced -> {
+          putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
+            putChosenLivingPlan(chosen)
+            // Always present on this case: a plan is only PRICED when this school
+            // prices it, which means it carries a total (RFC 152 D2a). An
+            // arrangement this school shows but cannot total is emitted as
+            // no_total_here with its reason instead, so this key never ships
+            // without a number or a reason.
+            put(TOTAL_KEY, chosen.totalPerYearUsd)
+            put(STATEMENT_KEY, statementOf(chosen))
+          }
+        }
+
+        is ChosenLivingPlan.NoTotalHere -> {
+          putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
+            putChosenLivingPlan(chosen)
+            // No total, because this school has none for it -- and the statement
+            // says so, so the key never ships a plan with a silent blank where
+            // its number should be.
+            put(STATEMENT_KEY, statementOf(chosen))
+          }
+        }
+
+        is ChosenLivingPlan.NotPricedHere -> {
+          putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
+            putChosenLivingPlan(chosen)
+            put(STATEMENT_KEY, statementOf(chosen))
+          }
+        }
+
+        ChosenLivingPlan.NotChosen -> {}
+      }
+    }
+
+    /**
+     * The sentence for a resolved, priced plan. [LivingPlanSource] decides which
+     * one: a per-college plan is something the family SAID about this school, and
+     * their usual plan is an ASSUMPTION being made here -- which the coach must
+     * name in the same breath, because `with_family` is never inferred by us
+     * (RFC 152 D2a).
+     */
+    private fun statementOf(chosen: ChosenLivingPlan.Priced): String =
+      when (chosen.source) {
+        LivingPlanSource.PER_COLLEGE -> {
+          "The student said they plan on ${chosen.plan.label} at this school, so lead with that way of " +
+            "living and name it. The other ways of living are still here and still true if they ask."
+        }
+
+        LivingPlanSource.PROFILE_DEFAULT -> {
+          "${chosen.plan.label.replaceFirstChar { it.uppercase() }} is the student's usual plan, assumed " +
+            "for this school - say the assumption in the same breath as the number, and if they correct it, " +
+            "record it as this school's own plan. The other ways of living are still here and still true."
+        }
+      }
+
+    /**
+     * The sentence for a resolved plan this school shows but cannot total.
+     *
+     * One sentence per [NoTotalReason], because the causes are not one fact: a gap
+     * of OURS says so and says what would close it, and only the school's own
+     * silence is stated as the school's. Saying "this school has no total for that
+     * way of living" because WE have not asked which state the student lives in
+     * would blame a price list for our own question (RFC 149 D-B).
+     *
+     * Every case ends the same way: quote the parts that are here, and never add
+     * up what is there and call it the total.
+     */
+    private fun statementOf(chosen: ChosenLivingPlan.NoTotalHere): String =
+      when (chosen.reason) {
+        NoTotalReason.AWAITING_RESIDENCY_ANSWER -> {
+          "The student plans on ${chosen.plan.label}, and this school's published price depends on which state " +
+            "the student is a resident of - which we have not been told, so the gap is ours and not this " +
+            "school's. Ask where the student is a resident and the total follows; meanwhile quote the parts " +
+            "that are here and never add up what is there and call it the total."
+        }
+
+        NoTotalReason.TUITION_APPLICABILITY_UNKNOWN -> {
+          "The student plans on ${chosen.plan.label}, but we cannot tell which of this school's published " +
+            "prices applies to this student, so the missing total is ours and not this school's. Quote the " +
+            "parts that are here and never add up what is there and call it the total."
+        }
+
+        NoTotalReason.PART_NOT_PUBLISHED -> {
+          "The student plans on ${chosen.plan.label}, but this school does not publish every part of what that " +
+            "way of living costs, so there is no total for it. Quote the parts of it that are here, say which " +
+            "part is missing, and never add up what is there and call it the total."
+        }
+
+        // OURS. The school is not named, because it may publish the part
+        // perfectly well and we are the ones who do not hold it for the year the
+        // rest of this school's price is quoted at (RFC 166 §3, §6).
+        NoTotalReason.PART_NOT_COLLECTED_BY_US -> {
+          "The student plans on ${chosen.plan.label}, but we have not collected every part of what that way of " +
+            "living costs at this school, so there is no total for it. The gap is ours, not this school's - " +
+            "never say the school does not publish it. Quote the parts of it that are here and never add up " +
+            "what is there and call it the total."
+        }
+      }
+
+    /**
+     * The sentence for a resolved plan this school is not priced for. Two
+     * reasons, two sentences (the [ArrangementGap] split RFC 151 landed): a
+     * school with no residence halls has ANSWERED, and a school that published no
+     * figure has stayed silent. Neither becomes a substituted arrangement.
+     */
+    private fun statementOf(chosen: ChosenLivingPlan.NotPricedHere): String {
+      // The gap's own spoken phrase ([ArrangementGap.phrase]), never a second
+      // wording of it: the comparison says the same silence the same way.
+      return "The student plans on ${chosen.plan.label}, but this school has ${chosen.reason.phrase}. Say that " +
+        "plainly, and never quote another way of living in its place or carry a figure across from another school."
+    }
+
+    /**
+     * The no-dorms answer (RFC 149 D-B), emitted whenever IPEDS ANSWERED -- true
+     * as well as false.
+     *
+     * `false` is "this school has no residence halls"; `true` is the reported
+     * fact that an absent `on_campus` arrangement is this school's silence about
+     * its components rather than its having no dorms. A rendered arrangement is
+     * NOT a surrogate for the flag: a school with dorms that publishes no
+     * on-campus figure carries no arrangement, so the two are different facts and
+     * collapsing them left the model unable to tell a known fact from a gap.
+     *
+     * Only an unknown flag is absent -- no IPEDS row is not evidence either way.
+     * The key rides even when the school publishes on-campus figures in spite of
+     * a `false` flag (D-B): both facts are true and the coach is owed both.
+     *
+     * Exhaustive on the nullable, so a future fourth state cannot fall through
+     * this branch silently.
+     */
+    private fun JsonObjectBuilder.putOffersOnCampusHousing(cost: CollegeCost) {
+      when (cost.offersOnCampusHousing) {
+        true -> put(OFFERS_ON_CAMPUS_HOUSING_KEY, true)
+        false -> put(OFFERS_ON_CAMPUS_HOUSING_KEY, false)
+        null -> Unit
+      }
+    }
+
+    /**
+     * One object per vintage this college actually carries a figure of (RFC 149
+     * D-E): the academic year, and the wire names that year dates.
+     *
+     * The year NAMES ITS FIGURES rather than sitting beside the college as a bare
+     * label. Membership -- "the components are the published price, the sticker
+     * and the net price are the blend" -- otherwise lived only in
+     * `CostField.figureGroup` and in prose, so a reader that did not carry the
+     * convention could attach either year to any figure, and the prompt's
+     * instruction to quote the year beside a figure had no year beside any
+     * figure.
+     *
+     * Both the key and its [DATED_FIGURES_KEY] list are read off the SAME
+     * recorded [emitted] set, so the label can never date a figure this payload
+     * did not render. A field whose vintage is null appears under no key and is
+     * therefore said with no year at all.
+     *
+     * MUST be called AFTER every figure this object emits. [emitted] is complete
+     * only because each `put*` above it recorded into it; a figure put after this
+     * call is a figure said with no academic year, and neither the types nor a
+     * test would notice.
+     */
+    private fun JsonObjectBuilder.putVintageLabels(
+      cost: CollegeCost,
+      emitted: Set<CostField>,
+    ) {
+      FigureGroup.entries.forEach { group ->
+        val dated = emitted.filter { it.figureGroup == group }
+        // The year is THIS school's, read off the rows it served (RFC 166 §3
+        // rule 4) rather than off a Kotlin constant: a school served from the
+        // Scorecard says 2024-25 where a school served from IC_AY says 2023-24
+        // (RFC 183), and one constant could only ever have said one of them. A group can carry figures and NO year: two
+        // blended rows at different vintages resolve to null rather than to the
+        // newer one (RFC 166 §8), and then the figures ride with no label instead
+        // of a wrong one.
+        val academicYear = cost.academicYearOf(group)
+        if (dated.isNotEmpty() && academicYear != null) {
+          putJsonObject(group.wireName) {
+            put(ACADEMIC_YEAR_KEY, academicYear)
+            // Enum declaration order, not the order they happened to be emitted
+            // in: the list is a fact about the payload, so it must not depend on
+            // set iteration.
+            putJsonArray(DATED_FIGURES_KEY) {
+              CostField.listInDeclarationOrder(dated).forEach { add(JsonPrimitive(it.wireName)) }
+            }
+          }
+        }
+      }
+    }
+
+    /**
+     * The `cost_by_living_arrangement` object: one entry per arrangement this
+     * school can be priced for, keyed by the arrangement's wire name.
+     *
+     * The component keys inside are [CostField] wire names -- identical to the
+     * column names -- so the JSON, `data_availability` and the schema all speak
+     * one vocabulary. They look redundant nested inside an arrangement object on
+     * purpose: the alternative is a second set of arrangement-local names that
+     * nothing else shares, and a `data_availability` entry no key in the payload
+     * matches.
+     */
+    private fun breakdownObject(breakdown: CostBreakdown): JsonObject =
+      buildJsonObject {
+        // The ONE tuition figure every total in this object includes, named rather
+        // than repeated (RFC 189 D3). It used to be written inside all three
+        // arrangement objects AND as the top-level tuition-tier key -- the same
+        // residency-selected figure under the same wire key four times. The figure
+        // stays exactly where [putTuitionTiers] already writes it and the
+        // composition of each total stays derivable: total = this key's amount
+        // plus the components listed beside it.
+        //
+        // MANDATORY whenever any arrangement carries a total: a total is null
+        // unless the tuition line is present ([ArrangementCost.totalPerYearUsd]),
+        // so a total with no tuition field named is a state the domain cannot
+        // build.
+        putTuitionFieldInTotals(breakdown)
+        breakdown.arrangements.forEach { arrangement ->
+          putJsonObject(arrangement.arrangement.value) {
+            // The arrangement's OWN parts. The tuition line is excluded by reading
+            // [ArrangementCost.componentLines] rather than by filtering
+            // `lines` against a field list: the type is what decides which line is
+            // the tuition line, and a filter here would be a second answer.
+            arrangement.componentLines.forEach { put(it.field.wireName, it.amountUsd) }
+            // Absent whenever any part is missing (RFC 149 D-C): a partial sum is
+            // not a total, and neither is a sum that guessed at the student's
+            // residency.
+            arrangement.totalPerYearUsd?.let { put(TOTAL_KEY, it) }
+            putAssumedByUnicoach(arrangement)
+          }
+        }
+      }
+
+    /**
+     * The top-level tuition key whose amount every total in this breakdown
+     * includes (RFC 189 D3), or nothing when no arrangement here has a tuition
+     * line at all -- and then no arrangement has a total either.
+     *
+     * ONE key for the whole object, not one per arrangement: [CostBreakdown] is
+     * built from a single tuition line ([tuitionLineOf]), the figure the family's
+     * own residency answer selected, so three copies of the name could only ever
+     * have said the same thing three times.
+     */
+    private fun JsonObjectBuilder.putTuitionFieldInTotals(breakdown: CostBreakdown) {
+      val field = breakdown.arrangements.firstNotNullOfOrNull { it.tuitionLine }?.field ?: return
+      put(TUITION_FIELD_IN_TOTALS_KEY, field.wireName)
+    }
+
+    /**
+     * WHICH lines in this arrangement carry an amount of OURS rather than the
+     * school's (RFC 166 §7, gate-2 D17).
+     *
+     * Read off [CostLine.origin], never a hand-written list: the type is what
+     * decides whose a number is, and a second list here would be a chance for the
+     * wire to attribute to a school a figure the domain says is ours. Today that
+     * is exactly the at-home `$0` food-and-housing line, so the key appears on
+     * `with_family` and nowhere else -- absent, never empty, like every other list
+     * in this payload.
+     *
+     * It is the wire half of the sentence the basis facts carry
+     * ([AT_HOME_ASSUMPTION_STATEMENT]): a model reading this payload can never
+     * report the zero as something the school published or failed to publish.
+     */
+    private fun JsonObjectBuilder.putAssumedByUnicoach(arrangement: ArrangementCost) {
+      val assumed = arrangement.lines.filter { it.origin == LineOrigin.ASSUMED_BY_UNICOACH }
+      if (assumed.isEmpty()) return
+      putJsonArray(ASSUMED_BY_UNICOACH_KEY) { assumed.forEach { add(JsonPrimitive(it.field.wireName)) } }
+    }
+
+    /** One invitation: the money-profile field it would fill, and the sentence the coach may say for it. */
+    private fun precisionOfferObject(
+      offer: PrecisionOffer,
+      cost: CollegeCost,
+    ): JsonObject =
+      buildJsonObject {
+        put("field", offer.field)
+        put("offer", offerCopy(offer, cost))
+      }
+
+    /**
+     * The sentence the coach may say for one offer. Exhaustive on purpose: a new
+     * [PrecisionOffer] member must fail to compile here — the one site that owes
+     * it copy — rather than ship an invitation with no words in it.
+     *
+     * The residency invitation has TWO wordings and the SCHOOL decides which (RFC
+     * 166 §4). The two-price copy is wrong at a community college, where there are
+     * three; the three-tier copy is wrong everywhere else, where it would name a
+     * district price the school does not publish. So the renderer READS the
+     * domain's decision ([ResidencyTierBasis], the same code and sentence this
+     * payload carries under `residency_tiers`) rather than re-deriving the tier
+     * shape from one amount: the second derivation promised three prices at a
+     * school whose own statement in the same object said it does not publish all
+     * three, and named an out-of-state price that does not exist.
+     *
+     * Exhaustive on the basis with no `else`, exactly as it is on [PrecisionOffer]:
+     * a SEVENTH basis must decide its own invitation before it compiles.
+     */
+    private fun offerCopy(
+      offer: PrecisionOffer,
+      cost: CollegeCost,
+    ): String =
+      when (offer) {
+        PrecisionOffer.RESIDENCY -> {
+          when (cost.residencyTiers) {
+            ResidencyTierBasis.THREE_TIERS_PUBLISHED -> RESIDENCY_OFFER_THREE_TIERS
+
+            // Every other basis publishes at most two tuition prices, so the
+            // three-tier words would name a tier this payload carries no key for.
+            ResidencyTierBasis.TWO_TIERS_PUBLISHED,
+            ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT,
+            ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER,
+            ResidencyTierBasis.SINGLE_PUBLISHED_PRICE,
+            -> RESIDENCY_OFFER
+
+            // Its own arm, and not folded in above: the reason the others share
+            // is "at most two prices", and this school publishes NONE, so the
+            // general copy is chosen here for a different reason. The offer
+            // cannot reach it today -- [PrecisionOffer.RESIDENCY] is admitted
+            // only where [CollegeCost.reportsPublishedTuition], which reads the
+            // same tier list this basis is derived from and is false exactly when
+            // it is empty -- and if that gate ever widens, the general invitation
+            // promises which price applies rather than naming a tier we hold no
+            // key for.
+            ResidencyTierBasis.NO_PUBLISHED_TUITION -> RESIDENCY_OFFER
+          }
+        }
+
+        PrecisionOffer.INCOME_BAND -> {
+          INCOME_BAND_OFFER
+        }
+
+        PrecisionOffer.LIVING_PLAN -> {
+          LIVING_PLAN_OFFER
+        }
+      }
+
+    /**
+     * The `net_price` sub-object: `amount_usd` when reported, the basis label, the
+     * band's code and its spoken dollar range on a band-specific basis
+     * (`IncomeBand.bracket`, RFC 142), and — when we hold the figure back — the
+     * reason and the words for it. The label rides beside the code so the model
+     * never has to invent a phrase for the bucket it is naming aloud.
+     *
+     * A withheld figure SAYS SO HERE, and not only in [WITHHELD_FIGURES_KEY]: an
+     * object carrying a basis and no amount is otherwise indistinguishable from
+     * the school's own silence, which is the very conflation the domain type
+     * removed.
+     */
+    private fun netPriceObject(netPrice: NetPrice): JsonObject =
+      buildJsonObject {
+        netPrice.amount?.let { put("amount_usd", it) }
+        put("basis", netPrice.basis)
+        // Exhaustive on purpose: an overall average deliberately emits no
+        // qualifier, and a future NetPrice case must fail to compile here rather
+        // than ship an unlabeled basis. Do not collapse this to an `if`.
+        when (netPrice) {
+          is NetPrice.BandSpecific -> {
+            putIncomeBand(netPrice.band)
+          }
+
+          is NetPrice.OverallAverage -> {}
+
+          // The basis the family's own answer selected rides above, so the label
+          // that basis PROMISES rides with it -- a `your_income_band` object with
+          // no band label would break an invariant the prompt states. Only the
+          // amount is withheld, and the reason for that is said right here.
+          is NetPrice.Withheld -> {
+            putBasisLabel(netPrice.publishedBasis)
+            put(WITHHELD_REASON_KEY, netPrice.reason.value)
+            put(STATEMENT_KEY, netPrice.reason.statement)
+          }
+        }
+      }
+
+    /**
+     * The qualifier one net-price BASIS owes, whether or not an amount came with
+     * it: the band's code and spoken range on the band-specific basis, nothing on
+     * the all-family average.
+     *
+     * Exhaustive, so a basis added to the vocabulary must say what label it ships.
+     */
+    private fun JsonObjectBuilder.putBasisLabel(basis: NetPriceBasis) {
+      when (basis) {
+        is NetPriceBasis.YourIncomeBand -> putIncomeBand(basis.band)
+        NetPriceBasis.OverallAverage -> Unit
+      }
+    }
+
+    /**
+     * The money-profile echo: all three field statuses, values only when answered.
+     * An answered band carries its spoken dollar range alongside its code
+     * (`IncomeBand.bracket`, RFC 142); an unanswered or declined band carries
+     * neither.
+     */
+    private fun moneyProfileObject(profile: MoneyProfileStatuses): JsonObject =
+      buildJsonObject {
+        put("income_band_status", profile.incomeBandStatus.value)
+        profile.incomeBand?.let { putIncomeBand(it) }
+        put("residency_status", profile.residencyStatus.value)
+        profile.residencyState?.let { put("residency_state", it) }
+        putComparedLivingPlan(profile.living)
+      }
+
+    /**
+     * The living-plan answer as the coach reads it: the status always, and the
+     * plan itself only on the answered case.
+     *
+     * One emitter for the two objects that echo it (the money-profile block and
+     * the comparison's arrangement basis), and exhaustive with no `else`, so the
+     * plan is reachable only through [ComparedLivingPlan.Answered] -- which is the
+     * whole reason that type is sealed.
+     */
+    private fun JsonObjectBuilder.putComparedLivingPlan(answer: ComparedLivingPlan) {
+      put("living_plan_status", answer.status.value)
+      when (answer) {
+        is ComparedLivingPlan.Answered -> {
+          putLivingPlan(answer.plan)
+        }
+
+        ComparedLivingPlan.Unanswered, ComparedLivingPlan.Declined -> {}
+      }
+    }
 
     const val TOOL_NAME = "college_cost_profile"
 
@@ -2105,11 +2114,23 @@ class CollegeCostChatTool(
     // Not `const`: the example band range is rendered from IncomeBand.bracket,
     // the one home for that copy (RFC 142), so the description can never quote
     // a range the results themselves no longer carry.
-    val DESCRIPTION =
+    val DESCRIPTION by lazy {
       "Real cost facts for the colleges on the student's list: sticker cost, tuition and fees, the net " +
         "price their family would actually pay, median debt, median earnings. A legend of the payload's " +
         "keys follows, in the order they appear.\n" +
-        "$SOURCE_KEY - the publishers this payload's own figures came from.\n" +
+        PAYLOAD_LEGEND
+    }
+
+    /**
+     * The legend of [payloadOf]'s keys, in the order they appear — the part of
+     * [DESCRIPTION] that describes the PAYLOAD rather than this tool. Split out
+     * (RFC 258) because `family_cost_picture` returns the same payload to a
+     * supporter's coach, which never sees this tool's description, so it must
+     * carry the same legend; one copy, so the two cannot describe one key two
+     * ways. [DESCRIPTION] is byte-identical to what it was before the split.
+     */
+    val PAYLOAD_LEGEND =
+      "$SOURCE_KEY - the publishers this payload's own figures came from.\n" +
         "$DATA_AVAILABILITY_KEY - fields with no number in this result (the college does not report it, or " +
         "it is a figure that does not describe this family and was withheld).\n" +
         "$WITHHELD_FIGURES_KEY - the entry naming and explaining a withheld figure.\n" +

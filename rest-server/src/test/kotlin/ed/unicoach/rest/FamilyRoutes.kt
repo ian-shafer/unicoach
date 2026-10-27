@@ -292,8 +292,14 @@ class FamilyRoutes private constructor(
     val NON_ID_PATH_VALUES = mapOf("permission" to SharingPermission.INTENDED_SUBJECTS.value)
 
     /** A server on a free port, a client, and a test-DB connection. */
-    fun start(): FamilyRoutes {
-      val server = startServer(wait = false, port = 0)
+    fun start(): FamilyRoutes = over(startServer(wait = false, port = 0))
+
+    /**
+     * The same fixtures over a server the suite booted itself — a suite that
+     * needs its own wiring (a scripted chat provider, RFC 258) still makes its
+     * families through the doors. [close] stops that server too.
+     */
+    fun over(server: EmbeddedServer<*, *>): FamilyRoutes {
       val dbConfig = DatabaseConfig.from(AppConfig.load("common.conf", "db.conf").getOrThrow()).getOrThrow()
       return FamilyRoutes(
         server,

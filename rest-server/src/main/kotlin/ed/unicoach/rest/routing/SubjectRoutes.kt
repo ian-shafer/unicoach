@@ -7,12 +7,11 @@ import ed.unicoach.error.FieldError
 import ed.unicoach.family.SubjectRead
 import ed.unicoach.family.SubjectReadService
 import ed.unicoach.rest.auth.SessionConfig
-import ed.unicoach.rest.models.ErrorCode
-import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.models.SharedCollegeListResponse
 import ed.unicoach.rest.models.toResponse
 import ed.unicoach.rest.pathId
 import ed.unicoach.rest.rejectUnsupportedMethods
+import ed.unicoach.rest.respondNoSuchStudent
 import ed.unicoach.rest.respondValidationFailed
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -76,9 +75,5 @@ class SubjectRoutes(
   /** `400` — a malformed id names no student, so saying so reveals nothing. */
   private suspend fun RoutingContext.respondNotAStudentId() {
     respondValidationFailed(listOf(FieldError(STUDENT_ID_PARAM, "Not a student id: [${call.pathParameters[STUDENT_ID_PARAM]}]")))
-  }
-
-  private suspend fun RoutingContext.respondNoSuchStudent() {
-    call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.STUDENT_NOT_FOUND, "No such student"))
   }
 }

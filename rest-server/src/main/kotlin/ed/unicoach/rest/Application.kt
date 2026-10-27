@@ -49,10 +49,13 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.family.LinkEndedNotice
 import ed.unicoach.family.LinkRequestedNotice
+import ed.unicoach.family.SupporterCoachingConfig
+import ed.unicoach.family.SupporterCoachingService
 import ed.unicoach.family.SupporterInviteConfig
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
+import ed.unicoach.family.SupporterToolRegistry
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
@@ -156,6 +159,11 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
+  val supporterCoachingConfig =
+    SupporterCoachingConfig
+      .from(config)
+      .getOrThrow()
+
   val googleTokenVerifier =
     IdTokenVerifierFactory
       .googleFromConfig(SsoProviderConfig.from(config, "auth.google").getOrThrow())
@@ -177,7 +185,7 @@ fun startServer(
       .from(config)
       .getOrThrow()
   priceBook
-    .requireExplicitlyPriced(listOf(coachingConfig.model))
+    .requireExplicitlyPriced(listOf(coachingConfig.model, supporterCoachingConfig.model))
     .getOrThrow()
 
   // The raw ChatProvider is named only here, wrapped immediately in the
@@ -268,6 +276,7 @@ fun startServer(
             appleNotificationVerifier,
             costReportConfig,
             supporterInviteConfig,
+            supporterCoachingConfig,
           )
 
           install(SessionExpiryPlugin) {
@@ -315,6 +324,7 @@ fun Application.appModule(
   appleNotificationVerifier: AppleNotificationVerifier,
   costReportConfig: CostReportConfig,
   supporterInviteConfig: SupporterInviteConfig,
+  supporterCoachingConfig: SupporterCoachingConfig,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -418,6 +428,11 @@ fun Application.appModule(
     )
   }
   val costReportShareService = CostReportShareService(database, costReportConfig, shareTokenDeriver)
+  // One FAFSA calendar read behind both coaches' `fafsa_deadlines` (RFC 237,
+  // RFC 258), so the student and the parent are told the same dates.
+  val fafsaDeadlineService =
+    ed.unicoach.coaching.aid
+      .FafsaDeadlineService(database)
   val toolRegistry =
     ToolRegistry(
       listOf(
@@ -480,11 +495,7 @@ fun Application.appModule(
         // production reads the real one through the InstantSource.system()
         // default, and only a test pins it.
         ed.unicoach.coaching.aid
-          .FafsaDeadlineChatTool(
-            ed.unicoach.coaching.aid
-              .FafsaDeadlineService(database),
-            moneyProfileService,
-          ),
+          .FafsaDeadlineChatTool(fafsaDeadlineService, moneyProfileService),
         // The share door reads the student's sharing permission and subjects
         // answer (RFC 251), so the reach sentence it hands over is true for
         // this student, and the coach knows whether to ask once.
@@ -551,6 +562,23 @@ fun Application.appModule(
   // verdict a student is blocked on is the verdict their usage bar renders.
   val budgetService = BudgetService(database, budgetConfig, subscriptionPlans)
   val coachingService = CoachingService(database, llmCallLog, coachingConfig, budgetService, toolRegistry)
+  // The supporter's own coach (RFC 258): the same loop and call log, its own
+  // read-only registry (a SEPARATE instance, brief 0014 D15 -- nothing in it
+  // writes), its own prompt, and the parent's own account as its budget subject.
+  val supporterCoachingService =
+    SupporterCoachingService(
+      database,
+      llmCallLog,
+      supporterCoachingConfig,
+      budgetService,
+      subjectReadService,
+      supporterService,
+      SupporterToolRegistry.standard(
+        subjectReadService,
+        fafsaDeadlineService,
+        ed.unicoach.college.FindCollegeTool(collegeSearchService),
+      ),
+    )
   val subscriptionService = SubscriptionService(database, appStoreServerApi, subscriptionPlans)
   // The served vocabularies (RFC 165): one registry behind
   // GET /api/v1/vocabularies, built from the very enum and validator set the
@@ -585,5 +613,6 @@ fun Application.appModule(
     accountClosureService,
     subjectReadService,
     supporterLinkRequestService,
+    supporterCoachingService,
   )
 }

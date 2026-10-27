@@ -168,6 +168,7 @@ class OfflineCoachingE2eTest {
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
+            supporterCoachingConfigFrom(config),
           )
         }
       server.start(wait = false)

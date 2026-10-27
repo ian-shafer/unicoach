@@ -265,7 +265,7 @@ class ExtractionServiceTest {
 
   private fun createConvo(studentId: UUID): UUID {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name) VALUES (?, ?, 'Convo')").use { stmt ->
+    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')").use { stmt ->
       stmt.setObject(1, convoId)
       stmt.setObject(2, studentId)
       stmt.executeUpdate()
@@ -1256,6 +1256,51 @@ class ExtractionServiceTest {
       assertEquals(0L, watermark(convo), "the watermark does not advance over turns that were never distilled")
       assertEquals(0, countObservations(student))
     }
+
+  // ---------------------------------------------------------------------------
+  // The supporter party (RFC 258, cut point 4's backstop)
+  // ---------------------------------------------------------------------------
+
+  /** A supporter's own conversation ABOUT [studentId]: the parent's words, never the student's. */
+  private fun createSupporterConvo(studentId: UUID): UUID {
+    val userId = UUID.randomUUID()
+    val supporterId = UUID.randomUUID()
+    val convoId = UUID.randomUUID()
+    connection.createStatement().use { stmt ->
+      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sup-$userId@test.com', 'Sup', 'ahash')")
+      stmt.execute("INSERT INTO supporters (id, user_id) VALUES ('$supporterId', '$userId')")
+    }
+    connection
+      .prepareStatement("INSERT INTO convos (id, student_id, name, party, supporter_id) VALUES (?, ?, 'Parent', 'supporter', ?)")
+      .use { stmt ->
+        stmt.setObject(1, convoId)
+        stmt.setObject(2, studentId)
+        stmt.setObject(3, supporterId)
+        stmt.executeUpdate()
+      }
+    return convoId
+  }
+
+  @Test
+  fun `a supporter's conversation is never extracted onto the student's record`() {
+    runBlocking {
+      val student = createStudent()
+      val convo = createSupporterConvo(student)
+      val req = appendUserTurn(convo, "My daughter wants to study computer science")
+      val llmRequestsBefore = countAllLlmRequests()
+
+      val result =
+        service(JsonProvider(jsonDoc = newClaimDoc(req, "The student wants to study computer science")))
+          .extract(ConvoId(convo), ConvoRequestId(req))
+
+      assertTrue(result is ExtractionResult.SupporterConversation, "got $result")
+      assertEquals(ConvoId(convo), result.convoId, "the skip names the conversation it was decided for")
+      assertEquals(llmRequestsBefore, countAllLlmRequests(), "a supporter conversation makes no provider call")
+      assertEquals(0, countWhere("extraction_runs", "convo_id", convo), "and writes no run row")
+      assertEquals(0, countObservations(student), "and no observation lands on the student")
+      assertEquals(0, countWhere("claims", "student_id", student), "and no claim lands on the student")
+    }
+  }
 
   private fun countAllLlmRequests(): Int =
     connection.prepareStatement("SELECT COUNT(*) FROM llm_requests").use { stmt ->

@@ -4,6 +4,7 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
+import ed.unicoach.db.models.ConvoParty
 import ed.unicoach.db.models.ConvoRequestKind
 import ed.unicoach.db.models.ConvoTurnId
 import ed.unicoach.db.models.LlmCallOutcome
@@ -12,9 +13,12 @@ import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewLlmRequest
 import ed.unicoach.db.models.NewLlmResponse
+import ed.unicoach.db.models.NewSupporter
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.SupporterId
 import ed.unicoach.db.models.SystemPromptId
+import ed.unicoach.db.models.UserId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -123,7 +127,7 @@ class ConvosDaoTest {
   private fun newConvo(
     studentId: StudentId,
     nameStr: String = "A conversation",
-  ): NewConvo = NewConvo(studentId, name(nameStr))
+  ): NewConvo = NewConvo(studentId, name(nameStr), ConvoParty.Student)
 
   private fun json(raw: String): JsonElement = Json.parseToJsonElement(raw)
 
@@ -1071,5 +1075,183 @@ class ConvosDaoTest {
     // A later request on a different convo has a higher global id but must not be returned.
     appendRequestFor(other.id)
     assertEquals(targetReq.id, ConvosDao.findLatestRequestIdForConvo(session, target.id).getOrThrow())
+  }
+
+  // ---------------------------------------------------------------------------
+  // Party (RFC 258)
+  // ---------------------------------------------------------------------------
+
+  /** A live supporters row on a fresh user, the author a supporter convo names. */
+  private fun createSupporter(): SupporterId {
+    val userId = UUID.randomUUID()
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sup-$userId@test.com', 'Sup User', 'ahash')",
+      )
+    }
+    return SupportersDao.create(session, NewSupporter(UserId(userId))).getOrThrow().id
+  }
+
+  private fun supporterConvo(
+    studentId: StudentId,
+    supporterId: SupporterId,
+    nameStr: String = "A parent conversation",
+  ): NewConvo = NewConvo(studentId, name(nameStr), ConvoParty.Supporter(supporterId))
+
+  /** Runs raw SQL expecting it to FAIL, and returns the Postgres message it failed with. */
+  private fun sqlFailure(
+    sql: String,
+    bind: (PreparedStatement) -> Unit,
+  ): String {
+    val error =
+      assertFailsWith<java.sql.SQLException> {
+        connection.prepareStatement(sql).use { stmt ->
+          bind(stmt)
+          stmt.executeUpdate()
+        }
+      }
+    return error.message ?: ""
+  }
+
+  @Test
+  fun `create round-trips a student party`() {
+    val student = createStudent()
+
+    val created = ConvosDao.create(session, newConvo(student)).getOrThrow()
+
+    assertEquals(ConvoParty.Student, created.party)
+    assertEquals(ConvoParty.Student, ConvosDao.findById(session, created.id, SoftDeleteScope.ACTIVE).getOrThrow().party)
+  }
+
+  @Test
+  fun `create round-trips a supporter party with its author`() {
+    val student = createStudent()
+    val supporter = createSupporter()
+
+    val created = ConvosDao.create(session, supporterConvo(student, supporter)).getOrThrow()
+
+    assertEquals(ConvoParty.Supporter(supporter), created.party)
+    assertEquals(student, created.studentId, "student_id keeps its meaning of whom the conversation is about")
+    assertEquals(
+      ConvoParty.Supporter(supporter),
+      ConvosDao.findById(session, created.id, SoftDeleteScope.ACTIVE).getOrThrow().party,
+    )
+  }
+
+  @Test
+  fun `the party CHECK refuses a supporter party with no author`() {
+    val student = createStudent()
+
+    val message =
+      sqlFailure("INSERT INTO convos (student_id, name, party) VALUES (?, 'x', 'supporter')") {
+        it.setObject(1, student.value)
+      }
+
+    assertTrue(message.contains("convos_party_author_check"), message)
+  }
+
+  @Test
+  fun `the party CHECK refuses a student party with an author`() {
+    val student = createStudent()
+    val supporter = createSupporter()
+
+    val message =
+      sqlFailure("INSERT INTO convos (student_id, name, party, supporter_id) VALUES (?, 'x', 'student', ?)") {
+        it.setObject(1, student.value)
+        it.setObject(2, supporter.value)
+      }
+
+    assertTrue(message.contains("convos_party_author_check"), message)
+  }
+
+  @Test
+  fun `an insert that names no party is refused, because the backfill default was dropped`() {
+    val student = createStudent()
+
+    val message = sqlFailure("INSERT INTO convos (student_id, name) VALUES (?, 'x')") { it.setObject(1, student.value) }
+
+    assertTrue(message.contains("null value in column \"party\""), message)
+  }
+
+  @Test
+  fun `the trigger refuses an update to party`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val supporter = createSupporter()
+
+    // party and supporter_id together, so the CHECK is satisfied and only the trigger can refuse.
+    val message =
+      sqlFailure("UPDATE convos SET party = 'supporter', supporter_id = ? WHERE id = ?") {
+        it.setObject(1, supporter.value)
+        it.setObject(2, convo.id.value)
+      }
+
+    assertTrue(message.contains("The party field is immutable."), message)
+  }
+
+  @Test
+  fun `the trigger refuses an update to supporter_id`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, supporterConvo(student, createSupporter())).getOrThrow()
+    val other = createSupporter()
+
+    val message =
+      sqlFailure("UPDATE convos SET supporter_id = ? WHERE id = ?") {
+        it.setObject(1, other.value)
+        it.setObject(2, convo.id.value)
+      }
+
+    assertTrue(message.contains("The supporter_id field is immutable."), message)
+  }
+
+  @Test
+  fun `the trigger refuses an update to student_id`() {
+    val convo = ConvosDao.create(session, newConvo(createStudent())).getOrThrow()
+    val other = createStudent()
+
+    val message =
+      sqlFailure("UPDATE convos SET student_id = ? WHERE id = ?") {
+        it.setObject(1, other.value)
+        it.setObject(2, convo.id.value)
+      }
+
+    assertTrue(message.contains("The student_id field is immutable."), message)
+  }
+
+  @Test
+  fun `listByStudent and listByStudentWithActivity omit supporter conversations about the student`() {
+    val student = createStudent()
+    val own = ConvosDao.create(session, newConvo(student, "own")).getOrThrow()
+    ConvosDao.create(session, supporterConvo(student, createSupporter(), "the parent's")).getOrThrow()
+
+    assertEquals(listOf(own.id), ConvosDao.listByStudent(session, student).getOrThrow().map { it.id })
+    assertEquals(
+      listOf(own.id),
+      ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL).getOrThrow().map { it.convo.id },
+    )
+  }
+
+  @Test
+  fun `listBySupporterWithActivity returns only that supporter's conversations`() {
+    val student = createStudent()
+    val supporter = createSupporter()
+    val mine = ConvosDao.create(session, supporterConvo(student, supporter, "mine")).getOrThrow()
+    ConvosDao.create(session, supporterConvo(student, createSupporter(), "another parent's")).getOrThrow()
+    ConvosDao.create(session, newConvo(student, "the student's")).getOrThrow()
+
+    val listed = ConvosDao.listBySupporterWithActivity(session, supporter).getOrThrow()
+
+    assertEquals(listOf(mine.id), listed.map { it.convo.id })
+    assertEquals(ConvoParty.Supporter(supporter), listed.single().convo.party)
+  }
+
+  @Test
+  fun `listBySupporterWithActivity excludes a soft-deleted conversation`() {
+    val student = createStudent()
+    val supporter = createSupporter()
+    val gone = ConvosDao.create(session, supporterConvo(student, supporter)).getOrThrow()
+    ConvosDao.delete(session, gone.id).getOrThrow()
+
+    assertEquals(emptyList(), ConvosDao.listBySupporterWithActivity(session, supporter).getOrThrow())
   }
 }

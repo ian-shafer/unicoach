@@ -2370,6 +2370,246 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/supporters/me/conversations:
+    get:
+      summary: List the supporter's own coach conversations
+      description: >
+        The caller's own conversations with their coach (RFC 258), about every
+        student they support, most recent activity first. A conversation about a
+        student the caller is no longer connected to stays listed: it is the
+        caller's own words. The client filters by studentId.
+      operationId: listSupporterConversations
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The caller's conversations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupporterConversationListResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The caller has no supporter profile (supporter_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/supporters/me/conversations/stream:
+    post:
+      summary: Start a coach conversation about a linked student and stream the first reply
+      description: >
+        The supporter's coach (RFC 258). Names the student the conversation is
+        about in the body; the link is checked live. Streams the reply as
+        Server-Sent Events with the same frames as streamConversation: a
+        conversation event, delta events, then a single message or error event.
+        Every refusal is answered before the stream opens. The coach reads the
+        student's shared college list and cost picture and never writes the
+        student's data.
+      operationId: streamSupporterConversation
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSupporterConversationRequest'
+      responses:
+        '200':
+          description: SSE stream of the first turn
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/StreamEvent'
+        '400':
+          description: Validation failure, or the student id is not a UUID (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: The caller's own coaching allowance is exhausted (coaching_budget_exhausted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No supporter profile (supporter_not_found), or no live connection to the student (student_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/supporters/me/conversations/{conversationId}/messages:
+    parameters:
+      - in: path
+        name: conversationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: List the visible messages of one of the supporter's conversations
+      description: >
+        Readable after the caller's connection to the student ends: the
+        conversation is the caller's own.
+      operationId: listSupporterConversationMessages
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The visible messages, oldest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+        '400':
+          description: The conversation id is not a UUID (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No supporter profile (supporter_not_found), or no such conversation of the caller's (not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/supporters/me/conversations/{conversationId}/messages/stream:
+    parameters:
+      - in: path
+        name: conversationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Post a message to one of the supporter's conversations and stream the reply
+      description: >
+        As streamMessage, for the supporter's coach (RFC 258). The student is the
+        one the conversation is about; the link is re-checked on every turn, so
+        a severed connection refuses the next message with student_not_found.
+      operationId: streamSupporterMessage
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostMessageRequest'
+      responses:
+        '200':
+          description: SSE stream of the turn
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/StreamEvent'
+        '400':
+          description: Validation failure, or the conversation id is not a UUID (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: The caller's own coaching allowance is exhausted (coaching_budget_exhausted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller's email is not verified (email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No supporter profile (supporter_not_found), no such conversation of the caller's (not_found), or no live connection to the student (student_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -3344,6 +3584,50 @@ components:
           $ref: '#/components/schemas/Message'
         coachMessage:
           $ref: '#/components/schemas/Message'
+    SupporterConversation:
+      type: object
+      additionalProperties: false
+      required: [id, studentId, name, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        studentId:
+          type: string
+          format: uuid
+          description: The student the conversation is about.
+        name:
+          type: string
+          maxLength: 255
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    SupporterConversationListResponse:
+      type: object
+      additionalProperties: false
+      required: [conversations]
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupporterConversation'
+    CreateSupporterConversationRequest:
+      type: object
+      additionalProperties: false
+      required: [studentId, message]
+      properties:
+        studentId:
+          type: string
+          format: uuid
+          description: The linked student the conversation is about.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: The first message; the conversation name is derived from it.
     MessageListResponse:
       type: object
       required: [messages]

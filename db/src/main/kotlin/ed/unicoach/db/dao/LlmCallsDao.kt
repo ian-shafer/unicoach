@@ -401,8 +401,8 @@ object LlmCallsDao {
    * Logged calls that no domain row references — the operator's unlinked-call
    * report for the best-effort call↔domain-row linkage (RFC 106). A single
    * anti-join returns calls older than [olderThan] that no `convo_requests`,
-   * `extraction_runs`, `synthesis_runs`, or `fit_lens_runs` (its two ids) row
-   * points at. Orphans are rare and permanent (only a hard crash between the
+   * `extraction_runs`, `synthesis_runs`, `supporter_llm_costs` (RFC 258), or
+   * `fit_lens_runs` (its two ids) row points at. Orphans are rare and permanent (only a hard crash between the
    * `llm_responses` write and the domain-row write produces one), so the query
    * runs only on demand; [limit] bounds the page and the age threshold is
    * parameterized (not a magic literal). Ordered most-recent first.
@@ -422,6 +422,7 @@ object LlmCallsDao {
         AND NOT EXISTS (SELECT 1 FROM convo_requests cq WHERE cq.llm_request_id = r.id)
         AND NOT EXISTS (SELECT 1 FROM extraction_runs er WHERE er.llm_request_id = r.id)
         AND NOT EXISTS (SELECT 1 FROM synthesis_runs sr WHERE sr.llm_request_id = r.id)
+        AND NOT EXISTS (SELECT 1 FROM supporter_llm_costs slc WHERE slc.llm_request_id = r.id)
         AND NOT EXISTS (
           SELECT 1 FROM fit_lens_runs flr
           WHERE flr.query_llm_request_id = r.id OR flr.reason_llm_request_id = r.id

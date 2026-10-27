@@ -176,9 +176,11 @@ struct ConversationView: View {
     private var threadArea: some View {
         switch viewModel.historyLoad {
         case .loading:
-            historyLoadingView
+            ChatHistoryLoading()
         case .failed(let error):
-            historyFailedView(error)
+            ChatHistoryFailed(error: error) {
+                Task { await viewModel.loadHistory() }
+            }
         case .ready:
             if viewModel.turns.isEmpty {
                 emptyThread
@@ -203,178 +205,14 @@ struct ConversationView: View {
             .accessibilityIdentifier("conversationEmpty")
     }
 
-    private var historyLoadingView: some View {
-        VStack(spacing: DSSpacing.sm) {
-            ProgressView()
-                .progressViewStyle(.circular)
-                .tint(Color.dsTextPrimary)
-            Text("Loading conversation…")
-                .font(.dsCaption)
-                .foregroundStyle(Color.dsTextSecondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityIdentifier("historyLoadingIndicator")
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Loading conversation")
-    }
-
-    private func historyFailedView(_ error: ErrorResponse) -> some View {
-        VStack(spacing: DSSpacing.md) {
-            FormErrorBanner(error.message)
-            Button("Retry") {
-                Task { await viewModel.loadHistory() }
-            }
-            .font(.dsButton)
-            .foregroundStyle(Color.dsTextPrimary)
-            .accessibilityIdentifier("historyRetryButton")
-            .accessibilityLabel("Retry")
-        }
-        .padding(DSSpacing.md)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    }
-
     // MARK: - Thread
 
+    /// The shared thread (`ChatThread`, RFC 258) with this screen's own failure
+    /// view: the paywall's "See options" is the student's, not the thread's.
     private var thread: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: DSSpacing.md) {
-                    ForEach(viewModel.turns) { turn in
-                        turnView(turn)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(DSSpacing.md)
-            }
-            // The platform gesture: drag the thread and the keyboard follows
-            // your finger down. Interactive rather than `.immediately` because
-            // a thread you are only skimming should not lose the keyboard the
-            // instant you touch it.
-            .scrollDismissesKeyboard(.interactively)
-            .onChange(of: scrollAnchor) { _, _ in
-                guard let lastId = viewModel.turns.last?.id else { return }
-                withAnimation { proxy.scrollTo(lastId, anchor: .bottom) }
-            }
+        ChatThread(turns: viewModel.turns, isStreaming: viewModel.isStreaming) { failure, turnId in
+            failureView(failure, turnId: turnId)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// A value that changes whenever new content lands at the bottom of the
-    /// thread, driving auto-scroll: turn count, the active turn's streaming
-    /// length, and its terminal/failure state.
-    private var scrollAnchor: String {
-        guard let last = viewModel.turns.last else { return "" }
-        return "\(viewModel.turns.count)-\(last.coachStreamingText.count)-\(last.coachMessage != nil)-\(last.failure != nil)"
-    }
-
-    @ViewBuilder
-    private func turnView(_ turn: ChatTurn) -> some View {
-        VStack(alignment: .leading, spacing: DSSpacing.md) {
-            // The student's turn is an **utterance**: plain `Text`, inset.
-            // Rendering it as Markdown would silently eat the `*` in "should I
-            // apply *early*?" and reflow the line breaks they typed, which is a
-            // bug rather than a feature (RFC 118).
-            // That is also why it is an `.utterance` to copy: nothing to render,
-            // so nothing to choose between.
-            messageBubble(
-                isUser: true,
-                identifier: "userBubble",
-                menu: .utterance(text: turn.userMessage.content)
-            ) {
-                Text(turn.userMessage.content)
-                    .font(.dsBody)
-                    .foregroundStyle(Color.dsTextPrimary)
-            }
-
-            if turn.coachMessage != nil || !turn.coachStreamingText.isEmpty {
-                // The coach's turn is a **document** — it may carry a heading, a
-                // table, a code block — and is rendered Markdown at full width.
-                // The same string feeds the renderer and both copy actions, so
-                // "copy as Markdown" is by construction the exact source the
-                // bubble drew — including mid-stream, where copying half a
-                // reply is the student's own choice.
-                let source = turn.coachMessage?.content ?? turn.coachStreamingText
-                messageBubble(
-                    isUser: false,
-                    identifier: "coachBubble",
-                    menu: .document(source: source)
-                ) {
-                    MarkdownView(source: source)
-                }
-            }
-
-            if isActiveStreamingTurn(turn) {
-                streamingIndicator
-            }
-
-            if let failure = turn.failure {
-                failureView(failure, turnId: turn.id)
-            }
-        }
-        .id(turn.id)
-    }
-
-    /// The streaming indicator shows on the in-flight turn (the last one) while a
-    /// stream is active and no coach reply has completed yet.
-    private func isActiveStreamingTurn(_ turn: ChatTurn) -> Bool {
-        viewModel.isStreaming && turn.coachMessage == nil && turn.id == viewModel.turns.last?.id
-    }
-
-    /// Bubbles are **outlined, never filled** (DESIGN.md §8 extrapolation): a
-    /// saturated user bubble is exactly the large brand-coloured surface §6
-    /// rules out, and this design carries depth by border alone. The user's turn
-    /// is distinguished by border weight — a darkened `TextPrimary` hairline
-    /// against the coach's `FieldBorder` one — not by colour.
-    ///
-    /// **The coach's bubble takes the full content width unconditionally**; the
-    /// student's keeps its leading spacer and stays inset (Ian's call, RFC
-    /// 118). Unconditional rather than "wide when the content is wide" because
-    /// a content-conditional width resizes the bubble *mid-stream*: the reply
-    /// would open as a paragraph at inset width and jump wider the moment a
-    /// table's delimiter row arrived three deltas later.
-    ///
-    /// **Generic in its content.** The bubble used to take `isUser` *and*
-    /// `rendersMarkdown` — two booleans that are always exact inverses — and
-    /// switch on the second internally, which let a caller write the meaningless
-    /// `(isUser: true, rendersMarkdown: true)`. Chrome is the primitive here;
-    /// what goes inside a turn is the caller's business, so that combination now
-    /// has no spelling at all.
-    private func messageBubble(
-        isUser: Bool,
-        identifier: String,
-        menu: CopyMenu,
-        @ViewBuilder content: () -> some View
-    ) -> some View {
-        // `spacing: 0` because the inset is the student's `Spacer` and nothing
-        // else: the default HStack gap would sit outside the coach's
-        // `.infinity` frame and quietly make "full width" full width minus 8pt.
-        HStack(spacing: 0) {
-            if isUser { Spacer(minLength: DSSpacing.xl) }
-            content()
-                .padding(DSSpacing.md)
-                .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
-                .background(Color.dsSurface)
-                .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                        .stroke(isUser ? Color.dsTextPrimary : Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
-                )
-                .accessibilityIdentifier(identifier)
-                .copyMenu(menu)
-        }
-    }
-
-    private var streamingIndicator: some View {
-        HStack(spacing: DSSpacing.sm) {
-            ProgressView()
-                .progressViewStyle(.circular)
-                .tint(Color.dsTextPrimary)
-            Text("Coach is typing…")
-                .font(.dsCaption)
-                .foregroundStyle(Color.dsTextSecondary)
-        }
-        .accessibilityIdentifier("streamingIndicator")
-        .accessibilityLabel("Coach is responding")
     }
 
     // MARK: - Per-turn failure
@@ -397,18 +235,7 @@ struct ConversationView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("turnBlocked")
             case .infrastructure(let infra):
-                HStack(alignment: .firstTextBaseline, spacing: DSSpacing.sm) {
-                    Image(systemName: infra.systemImage)
-                    VStack(alignment: .leading, spacing: DSSpacing.xs) {
-                        Text(infra.title)
-                            .font(.dsLabel)
-                        Text(infra.description)
-                            .font(.dsCaption)
-                    }
-                }
-                .foregroundStyle(Color.dsError)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
+                TurnInfrastructureNotice(infra: infra)
             }
 
             // A `.blocked` turn offers Retry again the moment the meter reports
@@ -419,13 +246,9 @@ struct ConversationView: View {
             case .seeOptions:
                 seeOptionsButton(identifier: "turnSeeOptionsButton")
             case .retry:
-                Button("Retry") {
+                ChatRetryButton {
                     Task { await viewModel.retry(turnId) }
                 }
-                .font(.dsButton)
-                .foregroundStyle(Color.dsTextPrimary)
-                .accessibilityIdentifier("retryButton")
-                .accessibilityLabel("Retry")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -483,82 +306,26 @@ struct ConversationView: View {
 
     // MARK: - Composer
 
-    /// One outlined box containing a text field **above a control row** (RFC
-    /// 123) — the shape the composer was already imitating. It keeps its
-    /// `DSRadius.control` corners, its 1pt `dsFieldBorder` hairline and its 20pt
-    /// leading inset, so it is still a `LabeledField` in everything but name.
+    /// The shared composer box (`ChatComposer`, RFC 258) with the student's
+    /// coaching-budget control on the left of its control row.
     ///
-    /// The box replaces a `TextField` with the send button `.overlay`-ed at
-    /// `.bottomTrailing` and the text inset out of its way by a
-    /// `SendButtonWidthKey` preference measured at runtime. That geometry hack
-    /// existed only to fake the row this now actually has, so it — the
-    /// preference key, the `@State` width, the trailing padding and the
-    /// `onPreferenceChange` — is gone. The composer is **taller**, which is the
-    /// accepted cost of the row.
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: DSSpacing.sm) {
-            messageField
-
-            controlRow
-        }
-        .padding(.horizontal, DSControl.textInset)
-        .padding(.vertical, DSSpacing.md)
-        .frame(minHeight: DSControl.height)
-        .background(Color.dsSurface)
-        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
-        )
-        .padding(DSSpacing.md)
-        .background(Color.dsBackground)
-    }
-
-    /// The turn itself. Named rather than inlined so the box's two children —
-    /// this and `controlRow` — read at the same altitude: one named child
-    /// beside seven stacked modifiers hides the shape the box exists to state.
-    ///
-    /// `axis: .vertical` is what makes it grow with the message; disabling
-    /// follows `isComposerDisabled` (blocked or streaming), which the budget
-    /// control deliberately does not.
-    private var messageField: some View {
-        TextField("Message", text: $viewModel.messageText, axis: .vertical)
-            .font(.dsBody)
-            .foregroundStyle(Color.dsTextPrimary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .focused($isComposerFocused)
-            .disabled(isComposerDisabled)
-            .accessibilityIdentifier("messageField")
-            .accessibilityLabel("Message")
-    }
-
-    /// The budget on the left, the send button on the right.
-    ///
-    /// The budget control is **not** disabled with the composer: a student who
-    /// has just been blocked needs exactly that door, and the sheet is a
+    /// The field's disabling follows `isComposerDisabled` (blocked or
+    /// streaming), which the budget control deliberately does not: a student
+    /// who has just been blocked needs exactly that door, and the sheet is a
     /// read-only explanation the rest of the time (RFC 123).
-    ///
-    /// `Spacer(minLength:)` and the send button's `layoutPriority` are what make
-    /// the budget label yield first under large Dynamic Type — the send control
-    /// is the one thing on this row that must never be squeezed.
-    private var controlRow: some View {
-        HStack(spacing: DSSpacing.sm) {
+    private var composer: some View {
+        ChatComposer(
+            text: $viewModel.messageText,
+            isFocused: $isComposerFocused,
+            isFieldDisabled: isComposerDisabled,
+            isSending: viewModel.isStreaming,
+            canSend: viewModel.canSend && !isBlocked,
+            send: send
+        ) {
             CoachingBudgetButton(
                 viewModel: subscriptionViewModel,
                 action: paywallGate.presentExplanation
             )
-
-            Spacer(minLength: DSSpacing.sm)
-
-            CircularIconButton(
-                systemImage: "arrow.up",
-                isLoading: viewModel.isStreaming,
-                accessibilityIdentifier: "sendButton",
-                accessibilityLabel: "Send",
-                action: send
-            )
-            .disabled(!viewModel.canSend || isBlocked)
-            .layoutPriority(1)
         }
     }
 

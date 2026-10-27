@@ -131,7 +131,8 @@ actor TransactionRecorder: TransactionRecording {
              .accountDisabled, .serviceUnavailable, .studentAlreadyExists,
              .studentProfileRequired, .subscriptionNotFound, .payloadTooLarge,
              .versionConflict, .conflict, .notFound, .ageRequirementNotMet,
-             .supporterLinkNotFound, .supporterRequestNotFound, .timeout,
+             .supporterLinkNotFound, .supporterRequestNotFound, .supporterNotFound,
+             .studentNotFound, .timeout,
              .networkError, .serverError:
             return false
         case .coachingBudgetExhausted:

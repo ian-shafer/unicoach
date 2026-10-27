@@ -119,6 +119,7 @@ class ConvoStreamErrorRoutingTest {
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
+            supporterCoachingConfigFrom(config),
           )
         }
       testServer.start(wait = false)

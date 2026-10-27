@@ -43,6 +43,8 @@ import ed.unicoach.rest.models.UpdateConversationRequest
 import ed.unicoach.rest.models.UserMessageEvent
 import ed.unicoach.rest.pathId
 import ed.unicoach.rest.rejectUnsupportedMethods
+import ed.unicoach.rest.respondCoachingBudgetExhausted
+import ed.unicoach.rest.respondConvoNotFound
 import ed.unicoach.rest.respondValidationFailed
 import ed.unicoach.student.StudentService
 import io.ktor.http.ContentType
@@ -77,15 +79,6 @@ class ConvoRouteHandler(
 ) : CallerResolution by SessionCallerResolution(authService, studentService, sessionConfig) {
   private val logger = org.slf4j.LoggerFactory.getLogger(ConvoRouteHandler::class.java)
 
-  // SSE mapper: like configureSerialization but INDENT_OUTPUT must be off (a
-  // multi-line data: payload breaks SSE framing).
-  private val sseMapper: ObjectMapper =
-    ObjectMapper()
-      .registerKotlinModule()
-      .registerModule(JavaTimeModule())
-      .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-      .disable(SerializationFeature.INDENT_OUTPUT)
-
   fun registerRoutes(route: Route) {
     route.route("/api/v1/conversations") {
       route("") {
@@ -113,10 +106,6 @@ class ConvoRouteHandler(
         rejectUnsupportedMethods(HttpMethod.Post)
       }
     }
-  }
-
-  private suspend fun RoutingContext.respondNotFound() {
-    call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.NOT_FOUND, "No such conversation"))
   }
 
   private fun RoutingContext.pathConvoId(): ConvoId? = pathId("conversationId", ::ConvoId)
@@ -154,7 +143,7 @@ class ConvoRouteHandler(
           }
 
           is ReplyEvent.Failed -> {
-            call.respond(HttpStatusCode.InternalServerError, failedError(terminal))
+            call.respond(HttpStatusCode.InternalServerError, coachFailedError(terminal))
           }
         }
       }
@@ -172,54 +161,54 @@ class ConvoRouteHandler(
 
   private suspend fun RoutingContext.handleGet() {
     val user = resolveUser() ?: return respondUnauthorized()
-    val student = resolveStudent(user) ?: return respondNotFound()
-    val convoId = pathConvoId() ?: return respondNotFound()
+    val student = resolveStudent(user) ?: return respondConvoNotFound()
+    val convoId = pathConvoId() ?: return respondConvoNotFound()
 
     when (val outcome = coachingService.getConvo(student.id, convoId).getOrThrow()) {
       is GetConvoResult.Found -> call.respond(HttpStatusCode.OK, ConversationResponse(conversationOf(outcome.listing)))
-      GetConvoResult.NotFound -> respondNotFound()
+      GetConvoResult.NotFound -> respondConvoNotFound()
     }
   }
 
   private suspend fun RoutingContext.handleUpdate() {
     val user = resolveUser() ?: return respondUnauthorized()
-    val student = resolveStudent(user) ?: return respondNotFound()
-    val convoId = pathConvoId() ?: return respondNotFound()
+    val student = resolveStudent(user) ?: return respondConvoNotFound()
+    val convoId = pathConvoId() ?: return respondConvoNotFound()
     val request = call.receive<UpdateConversationRequest>()
 
     when (val outcome = coachingService.updateConvo(student.id, convoId, ConvoUpdate(request.name, request.archived)).getOrThrow()) {
       is UpdateConvoResult.Success -> call.respond(HttpStatusCode.OK, ConversationResponse(conversationOf(outcome.listing)))
       is UpdateConvoResult.ValidationFailure -> call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
-      UpdateConvoResult.NotFound -> respondNotFound()
+      UpdateConvoResult.NotFound -> respondConvoNotFound()
     }
   }
 
   private suspend fun RoutingContext.handleDelete() {
     val user = resolveUser() ?: return respondUnauthorized()
-    val student = resolveStudent(user) ?: return respondNotFound()
-    val convoId = pathConvoId() ?: return respondNotFound()
+    val student = resolveStudent(user) ?: return respondConvoNotFound()
+    val convoId = pathConvoId() ?: return respondConvoNotFound()
 
     when (coachingService.deleteConvo(student.id, convoId).getOrThrow()) {
       DeleteConvoResult.Success -> call.respond(HttpStatusCode.NoContent)
-      DeleteConvoResult.NotFound -> respondNotFound()
+      DeleteConvoResult.NotFound -> respondConvoNotFound()
     }
   }
 
   private suspend fun RoutingContext.handleListMessages() {
     val user = resolveUser() ?: return respondUnauthorized()
-    val student = resolveStudent(user) ?: return respondNotFound()
-    val convoId = pathConvoId() ?: return respondNotFound()
+    val student = resolveStudent(user) ?: return respondConvoNotFound()
+    val convoId = pathConvoId() ?: return respondConvoNotFound()
 
     when (val outcome = coachingService.listTurns(student.id, convoId).getOrThrow()) {
       is ListTurnsResult.Found -> call.respond(HttpStatusCode.OK, MessageListResponse(messagesOf(outcome.exchanges)))
-      ListTurnsResult.NotFound -> respondNotFound()
+      ListTurnsResult.NotFound -> respondConvoNotFound()
     }
   }
 
   private suspend fun RoutingContext.handlePostMessage() {
     val user = resolveUser() ?: return respondUnauthorized()
-    val student = resolveStudent(user) ?: return respondNotFound()
-    val convoId = pathConvoId() ?: return respondNotFound()
+    val student = resolveStudent(user) ?: return respondConvoNotFound()
+    val convoId = pathConvoId() ?: return respondConvoNotFound()
     val request = call.receive<PostMessageRequest>()
 
     when (val outcome = coachingService.postTurn(student.id, convoId, request.message).getOrThrow()) {
@@ -228,7 +217,7 @@ class ConvoRouteHandler(
       }
 
       PostTurnResult.NotFound -> {
-        respondNotFound()
+        respondConvoNotFound()
       }
 
       is PostTurnResult.BudgetExhausted -> {
@@ -249,7 +238,7 @@ class ConvoRouteHandler(
           }
 
           is ReplyEvent.Failed -> {
-            call.respond(HttpStatusCode.InternalServerError, failedError(terminal))
+            call.respond(HttpStatusCode.InternalServerError, coachFailedError(terminal))
           }
         }
       }
@@ -291,8 +280,8 @@ class ConvoRouteHandler(
 
   private suspend fun RoutingContext.handleStreamMessage() {
     val user = resolveUser() ?: return respondUnauthorized()
-    val student = resolveStudent(user) ?: return respondNotFound()
-    val convoId = pathConvoId() ?: return respondNotFound()
+    val student = resolveStudent(user) ?: return respondConvoNotFound()
+    val convoId = pathConvoId() ?: return respondConvoNotFound()
     val request = call.receive<PostMessageRequest>()
 
     when (val outcome = coachingService.postTurn(student.id, convoId, request.message).getOrThrow()) {
@@ -301,7 +290,7 @@ class ConvoRouteHandler(
       }
 
       PostTurnResult.NotFound -> {
-        respondNotFound()
+        respondConvoNotFound()
       }
 
       is PostTurnResult.BudgetExhausted -> {
@@ -317,47 +306,17 @@ class ConvoRouteHandler(
   }
 
   /**
-   * Opens the SSE response, writes the opening event, relays deltas, then exactly
-   * one terminal frame. On a successful terminal ([ReplyEvent.Completed]) it
-   * enqueues the extraction job after the frame is written — never on a failed
-   * one (RFC 66) — with the final response's request id, so the watermark
-   * advances over any tool excursion in one pass (RFC 94).
+   * The shared stream ([streamConversationReply]) with this door's one addition:
+   * on a successful terminal it enqueues the extraction job after the frame is
+   * written — never on a failed one (RFC 66) — with the final response's request
+   * id, so the watermark advances over any tool excursion in one pass (RFC 94).
    */
   private suspend fun RoutingContext.streamReply(
     reply: Flow<ReplyEvent>,
     convoId: ConvoId,
     writeOpening: suspend (ByteWriteChannel) -> Unit,
   ) {
-    call.response.header(HttpHeaders.CacheControl, "no-store")
-    call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
-      writeOpening(this)
-      reply.collect { event ->
-        when (event) {
-          is ReplyEvent.Delta -> {
-            writeSseEvent(this, "delta", MessageDeltaEvent(text = event.text))
-          }
-
-          is ReplyEvent.Completed -> {
-            writeSseEvent(this, "message", MessageCompletedEvent(message = coachMessageOf(event)))
-            enqueueExtraction(convoId, event.convoRequest.id)
-          }
-
-          is ReplyEvent.Failed -> {
-            writeSseEvent(this, "error", StreamErrorEvent(error = failedError(event)))
-          }
-        }
-      }
-    }
-  }
-
-  private suspend fun writeSseEvent(
-    writer: ByteWriteChannel,
-    event: String,
-    payload: Any,
-  ) {
-    val data = sseMapper.writeValueAsString(payload)
-    writer.writeStringUtf8("event: $event\ndata: $data\n\n")
-    writer.flush()
+    streamConversationReply(reply, writeOpening) { completed -> enqueueExtraction(convoId, completed.convoRequest.id) }
   }
 
   // ---------------------------------------------------------------------------
@@ -381,10 +340,7 @@ class ConvoRouteHandler(
     entitlement: Entitlement,
   ) {
     logger.info(budgetSkipMessage("chat", studentId, entitlement))
-    call.respond(
-      HttpStatusCode.PaymentRequired,
-      ErrorResponse(ErrorCode.COACHING_BUDGET_EXHAUSTED, "Coaching allowance exhausted"),
-    )
+    respondCoachingBudgetExhausted()
   }
 
   /** Single-field convenience over the shared [ed.unicoach.rest.respondValidationFailed]. */
@@ -397,13 +353,6 @@ class ConvoRouteHandler(
 
   private fun validationError(fieldErrors: List<ed.unicoach.error.FieldError>): ErrorResponse =
     ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", fieldErrors)
-
-  private fun failedError(failed: ReplyEvent.Failed): ErrorResponse =
-    if (failed.retriable) {
-      ErrorResponse(ErrorCode.COACH_UNAVAILABLE, "The coach is temporarily unavailable — try again.")
-    } else {
-      ErrorResponse(ErrorCode.COACH_FAILED, "The coach could not respond to this message.")
-    }
 
   private fun RoutingContext.archiveScopeFromQuery(): ArchiveScope? =
     when (call.request.queryParameters["status"]) {
@@ -462,57 +411,4 @@ class ConvoRouteHandler(
   // ---------------------------------------------------------------------------
 
   private fun conversationOf(listing: ConvoWithActivity): Conversation = conversationOf(listing.convo, listing.lastActivityAt)
-
-  private fun conversationOf(
-    convo: ed.unicoach.db.models.Convo,
-    lastActivityAt: Instant?,
-  ): Conversation =
-    Conversation(
-      id = convo.id.asString,
-      name = convo.name.value,
-      createdAt = convo.createdAt,
-      updatedAt = convo.updatedAt,
-      lastActivityAt = lastActivityAt,
-      archivedAt = convo.archivedAt,
-    )
-
-  /**
-   * The user message for a just-opened turn. Since RFC 106 the user's text is not
-   * stored on `convo_requests`; the route has it from the request body, so it is
-   * passed in as [text] and the id/createdAt come from the opener [request] row.
-   */
-  private fun userMessageOf(
-    request: ConvoRequest,
-    text: String,
-  ): Message =
-    Message(
-      id = "u_${request.id.value}",
-      role = "user",
-      content = text,
-      createdAt = request.createdAt,
-    )
-
-  /** The coach message for a completed reply terminal (RFC 106: content comes from the terminal, not a response row). */
-  private fun coachMessageOf(terminal: ReplyEvent.Completed): Message =
-    Message(
-      id = "c_${terminal.convoRequest.id.value}",
-      role = "coach",
-      content = ConvoContent.renderText(terminal.content),
-      createdAt = terminal.createdAt,
-    )
-
-  private fun messagesOf(exchanges: List<ed.unicoach.coaching.VisibleExchange>): List<Message> =
-    buildList {
-      for (exchange in exchanges) {
-        add(userMessageOf(exchange.userRequest, ConvoContent.renderText(exchange.userContent)))
-        add(
-          Message(
-            id = "c_${exchange.finalResponse.requestId.value}",
-            role = "coach",
-            content = ConvoContent.renderText(exchange.finalContent),
-            createdAt = exchange.finalResponse.createdAt,
-          ),
-        )
-      }
-    }
 }

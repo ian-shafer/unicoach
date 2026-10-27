@@ -112,7 +112,7 @@ class FitSuggestionsDaoTest {
 
   private fun createConvo(studentId: StudentId): ConvoId {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name) VALUES (?, ?, 'A convo')").use { stmt ->
+    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'A convo', 'student')").use { stmt ->
       stmt.setObject(1, convoId)
       stmt.setObject(2, studentId.value)
       stmt.executeUpdate()

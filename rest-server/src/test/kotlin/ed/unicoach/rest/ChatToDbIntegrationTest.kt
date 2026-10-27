@@ -124,6 +124,7 @@ class ChatToDbIntegrationTest {
             testAppleNotificationVerifier(),
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
+            supporterCoachingConfigFrom(config),
           )
         }
       server.start(wait = false)
