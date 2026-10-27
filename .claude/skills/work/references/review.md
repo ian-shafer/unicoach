@@ -24,10 +24,12 @@ fixes the nit. Lenses within a tier run in parallel. Tier 0 runs at spec 2–4.
 
 ## One tier
 
-1. **Materialize the context once**: write `<rs>/findings/tier<N>-context.md`
+1. **Materialize the context once**: write `<rs>/review/tier<N>-context.md`
    holding `git diff <BASE_SHA>` from `CODEBASE_ROOT`, then the full contents of
    each changed non-test file, and at Tier 0 the spec. Every reviewer in the
-   tier reads this one file.
+   tier reads this one file. Not in `<rs>/findings/`: `ship-lens missing` reads
+   every `tier<N>-*.md` there that no `start` line names as an `UNDECLARED`
+   report, so the tier could never close.
 2. **The dispatch set**: `nix develop -c $SHIP/ship-lens -s <rs> missing -t <N>`
    lists every lens the tier assigns. Skip the ones the applicability table in
    [`dials.md`](dials.md) rules out:
@@ -41,7 +43,7 @@ fixes the nit. Lenses within a tier run in parallel. Tier 0 runs at spec 2–4.
    ```text
    SKILL: <lens>
    Invoke the Skill tool with exactly that name first; judge against its loaded text.
-   Review context: <rs>/findings/tier<N>-context.md (the diff, changed files, and at Tier 0 the spec).
+   Review context: <rs>/review/tier<N>-context.md (the diff, changed files, and at Tier 0 the spec).
    Open further files ONLY when your rule genuinely requires context beyond it, and say how many you opened.
    Read-only: never edit the code tree, never run tests or start services.
    Write your report to <rs>/findings/tier<N>-<lens>.md.

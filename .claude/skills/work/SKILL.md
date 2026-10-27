@@ -93,6 +93,12 @@ instead, labelled `YOUR DECISION REQUIRED` (sent once the spec is written).
 
 Record every phase boundary in the run record
 ([`references/record.md`](references/record.md)) as it happens, not afterwards.
+Record it in the run state too, on entering the phase:
+`$SHIP/ship-state -s <rs> set PHASE <value>`, with `designing` (spec),
+`approved` (once Ian approves), `implementing`, `reviewing`, `verifying` and
+`landing`. `ship-claim` writes `claimed`, and `ship-land` writes `complete` at
+the fast-forward; never set those two yourself. `ship-status` and `slice-board`
+show `PHASE`, and a resumed session re-enters at the `PHASE` on disk.
 
 1. **Claim.** From the original checkout:
    `nix develop -c $SHIP/ship-claim -l quick -s <slug>` for spec 0–2, `-l rfc`

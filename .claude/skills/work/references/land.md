@@ -13,8 +13,9 @@ from `CODEBASE_ROOT` unless noted, all scripts through `nix develop -c`:
     $SHIP/ship-squash -s <rs>
     bin/format
     git add -A
+    $SHIP/ship-lock   -s <rs> -t 1s acquire # refresh the hold; fails if the lock was lost
     git commit -F <rs>/commit-msg.txt       # ONE commit, spec included, full hook
-    $SHIP/ship-land   -s <rs>               # ff main, archive <rs>, remove worktree, release
+    $SHIP/ship-land   -s <rs>               # ff main, PHASE=complete, archive <rs>, remove worktree, release
 
 Re-read `BASE_SHA` with `ship-state get` after the rebase; it moves.
 
@@ -22,14 +23,20 @@ Why this order:
 
 - The lock brackets rebase through fast-forward: the hook's verdict is valid
   only for the base it ran on.
+- The second `acquire`, just before the commit, restarts the hold so the full
+  `ship-lock` hold covers the hook however long the steps before it took. It is
+  idempotent for this run. `-t 1s` makes it a check, not a wait: if another run
+  took the lock meanwhile it fails at once and land restarts at the first
+  `acquire`, instead of queueing and then spending the hook on a base that run
+  is about to move.
 - `prompt-seed` and `ship-order` run after the final rebase, so they read the
   base as landed, and before the squash, so what they write lands inside the
   hook-verified tree. `ship-land` re-checks both dry.
 - `bin/format` then `git add -A` re-stages what the formatter rewrote; without
   it the commit gets no verified marker and `ship-land` refuses after the gate.
-- Finish `record.md` before `ship-land`: it archives `<rs>` to
-  `.scratch/ship-archive/<run-id>/` and deletes the worktree. Append the landed
-  SHA to the archived copy afterwards.
+- Finish `record.md` before `ship-land`: it records `PHASE=complete`, archives
+  `<rs>` to `.scratch/ship-archive/<run-id>/` and deletes the worktree. Append
+  the landed SHA to the archived copy afterwards.
 
 **The commit message**: a subject naming the change, a body of two or three
 sentences on why, then the attribution line the session's instructions give.

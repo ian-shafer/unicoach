@@ -20,7 +20,7 @@
 # lock in $VAR_DIR/run/ship-land.lock and an inherited VAR_DIR wins, so this
 # harness exports a temp VAR_DIR before the first ship-* call. That export is what
 # keeps it off the REAL lock — a test that acquired that one would silently gate
-# every live /ship run on this machine for 15 minutes.
+# every live /ship run on this machine for a full hold.
 export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
@@ -125,6 +125,18 @@ assert_success "acquire on a free lock exits 0" \
 [ "$(holder)" = "run-a" ] || fail_test "acquire wrote op=[$(holder)], expected [run-a]"
 pass_test "acquire records op = RUN_ID"
 
+# 1b. The hold outlasts a real gate, with room. The lock brackets the full-scope
+# pre-commit hook, and an expiry INSIDE it lets a queued run break the lock and
+# land first — this run's whole gate spent for a refusal. That happened: RFC
+# 249's hook took 1,150s against a 15m hold, and its own re-acquire afterwards
+# found the lock stale. The requirement is twice the longest measured
+# full-scope hook, the same doubling ship-lock's comment argues for.
+LONGEST_MEASURED_HOOK_SECONDS=1150
+REQUIRED_HOLD_SECONDS=$((2 * LONGEST_MEASURED_HOOK_SECONDS))
+[ "$(cat "$LOCK_DIR/expires-at")" -ge "$(( $(date +%s) + REQUIRED_HOLD_SECONDS ))" ] ||
+  fail_test "a fresh hold expires at $(cat "$LOCK_DIR/expires-at"), under ${REQUIRED_HOLD_SECONDS}s from now ($(date +%s)) — it can lapse inside a full-scope hook"
+pass_test "a fresh hold lasts at least twice the longest measured full-scope hook (${REQUIRED_HOLD_SECONDS}s)"
+
 # 2. THE ONE THAT MATTERS. A second, DIFFERENT run must be blocked. If ship-lock
 # ever passed a fixed -o, file-lock would answer 3 ("held by a matching
 # operation"), and a caller copying daemon-up's reading of 3 would call that
@@ -150,9 +162,9 @@ pass_test "ship-lock without VAR_DIR resolves the lock from .env.dev's VAR_DIR"
 echo "$(( $(date +%s) + 30 ))" > "$LOCK_DIR/expires-at"
 assert_success "the SAME run re-acquiring is a no-op success" \
   "$SHIP_LOCK" -s "$RS_A" acquire
-[ "$(cat "$LOCK_DIR/expires-at")" -gt "$(( $(date +%s) + 600 ))" ] ||
-  fail_test "re-acquire did not refresh the hold (expires-at=$(cat "$LOCK_DIR/expires-at"), now=$(date +%s))"
-pass_test "re-acquire refreshes the hold to the full 15m"
+[ "$(cat "$LOCK_DIR/expires-at")" -ge "$(( $(date +%s) + REQUIRED_HOLD_SECONDS ))" ] ||
+  fail_test "re-acquire did not refresh the hold to a full one (expires-at=$(cat "$LOCK_DIR/expires-at"), now=$(date +%s))"
+pass_test "re-acquire refreshes the hold to a full one"
 
 echo ""
 echo "==== ship-lock: release ===="
@@ -512,6 +524,19 @@ fp_note fp-docs | grep -q "docs-only" ||
   fail_test "land-fast-path.md does not classify the commits it skipped the gate for"
 pass_test "the fast path records its verdict and the commits it classified"
 
+# 2b. A landed run's archived state says it finished. ship-land is the one step
+# that knows the land happened, and the archive is the only state left once the
+# worktree is gone — rfc-258 was archived reading PHASE=claimed because no step
+# ever advanced it, and /slice's close-out checks for PHASE=complete. Exactly
+# one PHASE line, or a sourced state file answers with whichever comes last.
+[ -f "$FP_REPO/.scratch/ship-archive/fp-docs/state" ] ||
+  fail_test "the landed run was not archived at [$FP_REPO/.scratch/ship-archive/fp-docs/state]"
+[ "$(grep -c '^PHASE=' "$FP_REPO/.scratch/ship-archive/fp-docs/state")" -eq 1 ] ||
+  fail_test "the archived state does not carry exactly one PHASE line: $(fp_state fp-docs)"
+grep -qx "PHASE=complete" "$FP_REPO/.scratch/ship-archive/fp-docs/state" ||
+  fail_test "the archived state of a landed run does not say PHASE=complete: $(fp_state fp-docs)"
+pass_test "a landed run is archived with PHASE=complete"
+
 # 3. THE TRAP, driven in the exact order that springs it: docs -> code -> docs.
 # The advance has a docs-only TIP and is not docs-only. A check that looked at
 # the tip, or at the cumulative diff, sleeps through exactly this case — the same
@@ -535,6 +560,10 @@ fp_state fp-mixed | grep -qx "LAND_FAST_PATH=none" ||
 fp_note fp-mixed | grep -q "not-docs (src/theirs.txt)" ||
   fail_test "the classification does not name the commit that made the advance mixed"
 pass_test "docs -> code -> docs REFUSES, and the record names the code path that decided it"
+# And the other half of 2b: a run that did NOT land must not claim it finished.
+fp_state fp-mixed | grep -qx "PHASE=landing" ||
+  fail_test "a refused land changed PHASE: $(fp_state fp-mixed)"
+pass_test "a refused land leaves PHASE as the run left it"
 
 # 4. Three advances that are NOT this predicate, each one a way a wider or lazier
 # test would wrongly qualify. rfc/**, deliberately excluded so the day a test

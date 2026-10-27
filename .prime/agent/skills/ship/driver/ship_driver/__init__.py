@@ -22,7 +22,7 @@ from .dials import Dials, derive_approval, paths_named
 from .harness import LiveHarness
 from .ranking import rank_lenses
 from .run import (APPROVED_PHASE_VALUE, DRIVER_DIR, PHASE_VALUE, Run, ScriptFailed, Toolchain, archive_root,
-                  parse_assignments, read_record, sh)
+                  parse_assignments, read_jsonl, sh)
 
 __all__ = ["start", "resume", "watchdog", "rank_lenses", "Driver", "Dials", "Toolchain"]
 
@@ -40,9 +40,15 @@ PREVIOUS = {"design": ("claim",), "approve": ("claim", "design"), "implement": (
             "verify": ("implement",), "land": ("verify",), "report": ("land",)}
 
 
+# The PHASE ship-land itself writes on a successful fast-forward, before it archives the run scratch.
+LANDED_PHASE_VALUE = PHASE_VALUE["complete"]
+
+
 def _leaves(phase) -> set:
-    """The PHASE values a phase can leave in the state file: its own, and approve()'s from inside approve/implement."""
-    return {PHASE_VALUE[phase]} | ({APPROVED_PHASE_VALUE} if phase in ("approve", "implement") else set())
+    """The PHASE values a phase can leave in the state file: its own, approve()'s from inside approve/implement, and
+    ship-land's from inside land."""
+    return ({PHASE_VALUE[phase]} | ({APPROVED_PHASE_VALUE} if phase in ("approve", "implement") else set())
+            | ({LANDED_PHASE_VALUE} if phase == "land" else set()))
 
 
 # The PHASE values the state file may hold while the journal has this phase open: a phase is entered (journal) just
@@ -110,9 +116,15 @@ def _dials_from_state(run) -> Dials:
 NO_LIVE_RUNS = "no live ship runs found"
 
 
+def _finished(rs) -> bool:
+    """The driver journalled `complete`. Not PHASE=complete: ship-land writes that at the fast-forward, while the
+    driver still has the landed report and the announcement to do."""
+    return any(event.get("ev") == "complete" for event in read_jsonl(rs / "driver" / "journal.jsonl"))
+
+
 async def _live_scratches(tools) -> list:
-    """Run scratches with a driver journal and a PHASE that is not complete: live worktrees, then landed runs not
-    yet announced."""
+    """Run scratches with a driver journal the driver has not finished: live worktrees, then landed runs not yet
+    announced."""
     argv = [tools.scripts / "ship-status", "-p"]
     proc = await sh(argv, cwd=tools.original)
     if proc.code != 0 and NO_LIVE_RUNS not in proc.err:
@@ -120,7 +132,7 @@ async def _live_scratches(tools) -> list:
     scratches = [Path(line) for line in proc.out.splitlines() if line.strip()]
     scratches += [p.parent.parent for p in archive_root(tools.original).glob("*/driver/journal.jsonl")]
     return [rs for rs in scratches
-            if (rs / "driver" / "journal.jsonl").exists() and read_record(rs / "state").get("PHASE") != "complete"]
+            if (rs / "driver" / "journal.jsonl").exists() and not _finished(rs)]
 
 
 async def _own_live_scratches(harness, tools) -> list:

@@ -54,16 +54,29 @@ EXIT_MISSING_REQUIRED_ARG=21
 EXIT_INVALID_ARG_VALUE=22
 
 # How long the lock is HELD once taken, and how long `acquire` WAITS for it.
-# From a measurement: `nix develop -c bin/check` in a fresh worktree took
-# 440s (7m20s) on 2026-09-06. The hold is double that, so a live gate is never
-# broken under it; the wait is two full gates, so a run can queue behind two
-# others instead of timing out into the collision it was avoiding. file-lock's
-# expiry is time-based, not liveness-based — an early expiry is a DEGRADATION,
-# not a corruption, because ship-land refuses a foreign holder and the loser
-# simply re-runs its gate. Revisit both numbers if the gate crosses ~7m.
-MAX_HOLD="15m"
-DEFAULT_TIMEOUT="30m"
-# wait-for's default period is 1s, which over a 30m wait is 1800 attempts and
+#
+# The hold must outlast the gate it brackets, with room to spare. It was 15m,
+# set from a 440s `bin/check` measured on 2026-09-06, and the gate has since
+# more than doubled: the full-scope pre-commit hook took 1,135s on RFC 241 and
+# 1,150s on RFC 249 (~19m), so a 15m hold expired INSIDE a normal hook and a
+# queued run could break it, take it, and land first — this run's whole gate
+# spent for a refusal. 45m keeps the original rule, about double the measured
+# gate, plus the rebase/squash/format steps before the commit.
+#
+# The wait must outlast the HOLD, not just the gate: a lock abandoned by a
+# killed session is broken only by expiry, so a waiter whose timeout is shorter
+# than the hold times out behind a dead holder instead of taking over. 60m is
+# one abandoned hold plus margin, or about three live gates in a queue.
+#
+# file-lock's expiry is time-based, not liveness-based — an early expiry is a
+# DEGRADATION, not a corruption, because ship-land refuses a foreign holder and
+# the fast-forward refuses a moved base, so the loser simply re-runs its gate.
+# The cost of a long hold is the other direction: a killed session wedges every
+# lander for up to 45m, which `ship-lock -s <rs> release -f` clears by hand.
+# Revisit both numbers if the full-scope hook crosses ~22m.
+MAX_HOLD="45m"
+DEFAULT_TIMEOUT="60m"
+# wait-for's default period is 1s, which over a 60m wait is 3600 attempts and
 # 1800 progress dots. 15s is the right granularity for a wait measured in
 # minutes. bin/file-lock's own -t path is left alone: it is tuned for
 # daemon-up's 16-second case.
@@ -78,16 +91,18 @@ OWN_CHECKOUT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
 FILE_LOCK="$OWN_CHECKOUT/bin/file-lock"
 WAIT_FOR="$OWN_CHECKOUT/bin/wait-for"
 
+# Unquoted heredoc so the durations are the constants above, not a copy of them
+# that goes stale; every other `$` in the text is escaped.
 help() {
-  cat << 'EOF'
+  cat << EOF
 ship-lock [-s <run-scratch>] [-t <timeout>] [-f] acquire|release|status
 ship-lock acquire|release|status [-s <run-scratch>] [-t <timeout>] [-f]
 
 The repo-wide /ship land gate. One lock for every worktree of this repo, at
-$VAR_DIR/run/ship-land.lock, held under this run's RUN_ID. VAR_DIR is read from
+\$VAR_DIR/run/ship-land.lock, held under this run's RUN_ID. VAR_DIR is read from
 this script's own checkout (.env.dev) unless the environment already sets it.
 
-  acquire   Wait for the lock, then hold it for at most 15m. Silent on stdout.
+  acquire   Wait for the lock, then hold it for at most $MAX_HOLD. Silent on stdout.
             Idempotent: a lock this run already holds is refreshed, not refused.
   release   Drop a lock this run holds. Silent on stdout.
   status    Print the holder and its remaining time to stdout. Exits 0 whether
@@ -95,7 +110,7 @@ this script's own checkout (.env.dev) unless the environment already sets it.
 
   -s   run-scratch directory; its state file supplies RUN_ID and the repo.
        Required by acquire and release. Optional for status.
-  -t   how long acquire waits (default 30m). Ignored by release and status.
+  -t   how long acquire waits (default $DEFAULT_TIMEOUT). Ignored by release and status.
   -f   release: break a lock held by ANOTHER run, warning about it. For a
        human unwedging the repo, never for a script.
   -h   this help
@@ -248,7 +263,7 @@ case "$COMMAND" in
     # is the reading this script never performs.
     #
     # The refresh is the load-bearing half: a resumed run may find 40s left on a
-    # 15m hold, and a silent success there would hand it a lock about to be
+    # full hold, and a silent success there would hand it a lock about to be
     # broken under its own gate.
     if [ "$(holder_of)" = "$RUN_ID" ]; then
       echo "$(($(date +%s) + $(duration_seconds "$MAX_HOLD")))" > "$LOCK_DIR/expires-at"
@@ -285,7 +300,7 @@ case "$COMMAND" in
     #
     # RFC 167 also makes the expired state ROUTINE rather than exceptional: a
     # queue of waiters polls every 15s, so several converge on the instant a
-    # 15m hold lapses. Confirming the holder after the fact costs one read and
+    # hold lapses. Confirming the holder after the fact costs one read and
     # can only fail SAFE — a spurious refusal sends the run back round, where a
     # missed one silently puts two runs inside the gate.
     if [ "$(cat "$LOCK_DIR/op" 2>/dev/null || true)" != "$RUN_ID" ]; then

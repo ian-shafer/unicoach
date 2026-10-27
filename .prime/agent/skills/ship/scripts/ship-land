@@ -66,8 +66,8 @@ git diff --quiet && git diff --cached --quiet ||
 #
 # A foreign holder is a REFUSAL, not a queue: another run is inside its gate on
 # a base it is about to move, so this run's hook result is already invalid and
-# waiting 30m for the lock would only delay that news. A free lock is taken
-# here, with a short 60s timeout — the gate is already spent by this point, so a
+# waiting out ship-lock's full wait would only delay that news. A free lock is
+# taken here, with a short 60s timeout — the gate is already spent by this point, so a
 # long wait buys nothing — which is what makes correctness independent of phase
 # 6 remembering to bracket itself. A lock this run ALREADY holds is the normal
 # case: phase 6 acquired it before ship-rebase.
@@ -90,16 +90,16 @@ if [ -n "$LOCK_HOLDER" ] && [ "$LOCK_HOLDER" != "$RUN_ID" ]; then
   fatal "the land lock is held by [$LOCK_HOLDER] — that run is landing on a base this one was not tested against; wait for it, then rebase and re-run the gate"
 fi
 # Unconditionally, even when this run already holds it: ship-lock's self-held
-# branch is idempotent and REFRESHES the hold to a full 15m. Phase 6 is
+# branch is idempotent and REFRESHES the hold to its full MAX_HOLD. Phase 6 is
 # acquire -> rebase -> squash -> format -> hook -> commit -> here, driven by an
-# agent, so the elapsed time includes turnaround and not only the measured 440s
-# gate — arriving with seconds left on the hold is reachable, and a hold that
+# agent, so the elapsed time includes turnaround and not only the hook itself —
+# arriving with seconds left on the hold is reachable, and a hold that
 # lapses during the assert and the fast-forward lets another run in. Acquiring
 # here also removes the status-then-acquire window above.
 "$SCRIPT_DIR/ship-lock" -s "$RUN_SCRATCH" -t 60s acquire
 LOCK_HELD=1
 # EXIT, so every fatal after this point drops the lock rather than parking it
-# for 15m. The happy path releases explicitly at the fast-forward and clears
+# for a full hold. The happy path releases explicitly at the fast-forward and clears
 # LOCK_HELD, so this is a no-op there.
 trap release_lock EXIT
 
@@ -474,7 +474,21 @@ landed="$(git rev-parse "$BASE_BRANCH")"
 # step 6 removes.
 release_lock
 
-# 5. Archive the run scratch out of the worktree before it is removed.
+# 5. Record the land, then archive the run scratch out of the worktree before it
+# is removed.
+#
+# PHASE=complete is written HERE because this is the one step that knows the
+# land happened: the fast-forward above is verified, and nothing after it can
+# un-land the run. Every other phase boundary is the orchestrator's to record,
+# and an orchestrator that forgets this last one archives a run that claims it
+# never finished — /slice's close-out and slice-board read PHASE, and the
+# archived copy is the only state left once the worktree is gone. BEFORE the
+# copy, so the archive carries it. A failure here is reported, not swallowed:
+# the code is already on the base branch, so the message says so, and the
+# worktree and scratch are left in place for the state to be fixed by hand.
+"$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set PHASE complete ||
+  fatal "landed [$RUN_ID] onto [$BASE_BRANCH] at $TIP, but could not record PHASE=complete in [$RUN_SCRATCH/state]; the worktree and run scratch are left in place, unarchived"
+
 archive="$ORIGINAL_CHECKOUT/.scratch/ship-archive/$RUN_ID"
 mkdir -p "$(dirname "$archive")"
 rm -rf "$archive"
