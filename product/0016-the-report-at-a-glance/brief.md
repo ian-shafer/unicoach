@@ -4,11 +4,15 @@
 
 ## Status
 
-- **Phase:** PRIORITISE — FRAME written 2026-10-25; three research reports
-  **delivered** 2026-10-25; gate 1 **presented** 2026-10-25, awaiting Ian.
-- **Gate 1 (prioritisation):** PRESENTED 2026-10-25 — D1-D8 below, defaults
+- **Phase:** SPEC & SLICE — gate 1 passed 2026-10-26; DISCOVER folded into the
+  three research reports (every claim `path:line`); `spec.md` written and gate 2
+  presented 2026-10-26, awaiting Ian.
+- **Gate 1 (prioritisation):** **PASSED 2026-10-26 — Ian approved all eight
+  defaults, verbatim: "approve all"**, after two questions and one amendment
+  recorded under D3 below. D1-D8 stand as written. D8 is `standing` for the
+  Family Cost Report.
+- **Gate 2 (spec):** PRESENTED 2026-10-26 — D9-D13 in `spec.md`, defaults
   pre-chosen; Ian's answer not yet recorded.
-- **Gate 2 (spec):** PENDING
 - **Research:** 3 parallel reports delivered 2026-10-25 —
   `research/table-anatomy.md` (802 lines, external, every fetch and failure
   listed in its METHOD), `research/row-shaped-seams.md` (1,125 lines, internal,
@@ -209,10 +213,24 @@ second place saying every figure, which 0009 D8 (say it once, standing) forbids.
 4. **Constraint 6's R2 rule is already green** (finding 3). D3 below strengthens
    it to a rule the page fails today.
 
-## Gate 1 decisions (PRESENTED 2026-10-25, awaiting Ian)
+## Gate 1 decisions (APPROVED 2026-10-26)
 
-Labels per the chart convention; the full text under each label is binding. Each
-default is what the run takes if Ian says only "approve".
+_Approved by Ian 2026-10-26, verbatim: "approve all"._ Before approving, Ian
+asked two questions, both answered in the conversation and recorded here because
+one changed a default:
+
+1. Of D3's original second rule, "no paragraph with three or more dollar
+   figures": _"This does not seem like a good rule. Why would we keep it?"_
+   Answer: it was kept only because the kickoff named it; today's page already
+   passes it everywhere except the program paragraph, which D3's stronger rule
+   also catches. **D3's default was amended before approval to drop it** (the
+   text below is the amended, approved text).
+2. Of D1: _"I do not understand what is being proposed here."_ Answered with a
+   before-and-after of one school's section, then a side-by-side page for every
+   decision (today's render, verbatim, beside the proposed shape). Ian approved
+   on that page. No decision text changed.
+
+Labels per the chart convention; the full text under each label is binding.
 
 **D1 — scope: the blocks, plus two top-of-page defects.** _Default:_ **candidate
 B plus finding 8's two defects.** Every per-school block after the price table
@@ -248,9 +266,10 @@ outside the price table is a total ("total", "all", "combined", "sum"), no
 `<tfoot>`; (d) no table's text contains both "College Scorecard" and "Common
 Data Set". Printed and never asserted, beside the existing `[MEASURE]` line: the
 prose share and the per-school word count.** The brief's original R2 ("no
-paragraph with 3+ currency figures") stays as a second asserted rule for the
-program paragraph. _Alternative:_ R2 alone — it is green today and would assert
-nothing about this brief's work.
+paragraph with 3+ currency figures") is **dropped** (Ian, 2026-10-26: "This does
+not seem like a good rule"): the page already passes it everywhere but the
+program paragraph, which rule (a) catches too. _Alternative:_ R2 alone — it is
+green today and would assert nothing about this brief's work.
 
 **D4 — the federal debt figure stays a sentence.** _Default:_ **one figure, one
 sentence** ("The U.S. Department of Education College Scorecard reports that
