@@ -4,15 +4,15 @@
 
 ## Status
 
-- **Phase:** SPEC & SLICE — gate 1 passed 2026-10-26; DISCOVER folded into the
-  three research reports (every claim `path:line`); `spec.md` written and gate 2
-  presented 2026-10-26, awaiting Ian.
+- **Phase:** EXECUTE — gates 1 and 2 passed 2026-10-26; five slices in
+  `spec.md`; `glance/01/borrowing-and-merit-in-rows` is the first to start,
+  alone (D12). /slice appends the ledger below after each land.
 - **Gate 1 (prioritisation):** **PASSED 2026-10-26 — Ian approved all eight
   defaults, verbatim: "approve all"**, after two questions and one amendment
   recorded under D3 below. D1-D8 stand as written. D8 is `standing` for the
   Family Cost Report.
-- **Gate 2 (spec):** PRESENTED 2026-10-26 — D9-D13 in `spec.md`, defaults
-  pre-chosen; Ian's answer not yet recorded.
+- **Gate 2 (spec):** **PASSED 2026-10-26 — "approve"**; D9-D13 in `spec.md`, all
+  defaults.
 - **Research:** 3 parallel reports delivered 2026-10-25 —
   `research/table-anatomy.md` (802 lines, external, every fetch and failure
   listed in its METHOD), `research/row-shaped-seams.md` (1,125 lines, internal,

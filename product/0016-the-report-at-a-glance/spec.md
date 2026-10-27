@@ -444,9 +444,10 @@ the two loan rows at a glance, without a card per row.
 
 ---
 
-## Gate 2 decisions
+## Gate 2 decisions (APPROVED 2026-10-26)
 
-Defaults pre-chosen; "approve" takes all of them.
+_Approved by Ian 2026-10-26, verbatim: "approve"._ All five defaults stand as
+written; D9-D13 are binding on every `glance` slice.
 
 **D9 — the rule lands first, with a shrinking exemption set.** _Default:_
 **`glance/01` lands the asserted rule with a named set of the three unconverted
