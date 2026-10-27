@@ -377,6 +377,70 @@ Status:
     same-origin guard in a real browser. Supersedes the referrer-policy part of
     D-H; D-F upheld. 84 files; the hook ran full scope; 4,373 server + 807 iOS
     tests green; fuzz 3,676/3,676.
+  - `family/06/the-parent-coach` LANDED as RFC 258 (`main@7481b7c0`, 2026-10-26)
+    — a linked parent now has a coach of their own. Door: the iPhone parent home
+    → "Talk to your coach about <name>" (shown once a student is selected) → a
+    "Coach" screen listing that parent's conversations about that student,
+    opening straight onto a thread with one tappable starter, "What would
+    <name>'s list cost our family?", when there are none. The coach reads the
+    student's college list in its system text and the cost picture, the FAFSA
+    dates and the FAFSA rules through four read-only tools
+    (`family_cost_picture`, `fafsa_deadlines`, `fafsa_process`, `find_college`);
+    the subject is injected by the dispatcher and the live link is re-checked on
+    every turn (D14, D15). A new prompt name `parent-coach` v1
+    (`prompts/parent-coach-system-prompt.md`, hand-written seed
+    `seed-parent-coach-system-prompt-v1.sql`) coaches the inversion with its two
+    sources and closes the first answer with the parent's own next step.
+    **Schema (Ian's gate, all seven defaults):** `convos` gains `party`
+    (`student` | `supporter`) and `supporter_id`, tied by a CHECK and frozen by
+    a trigger; `student_llm_cost` is narrowed to student-party conversations, so
+    a parent's spend is never the student's; each parent call writes
+    `supporter_llm_costs` (its first production writer) and the parent is gated
+    on their OWN account (402 `coaching_budget_exhausted`). No new table.
+    Migration `convos-party.sql`. **All four cut points hold and each has a
+    failing-first test:** no student conversation and no coaching memory reaches
+    the parent's coach; a parent turn writes no student-owned row; no extraction
+    runs on a parent turn. Every student-side read of `convos` (both list
+    queries, ownership, extraction, the cost view, the unlinked-call report) is
+    narrowed to the student party. The parent registry is an allowlist by type
+    (`SubjectScopedChatTool` or `ReadOnlyChatTool`) behind a private constructor
+    the service requires. After a disconnect the parent's old chats stay
+    readable and a new turn answers `student_not_found`, the same body for every
+    cause, with the real reason logged server-side. Four REST routes under
+    `/api/v1/supporters/me/conversations`, both POSTs classified as own-account
+    writes in `SubjectSeamRouteSweepTest`. Review: 37 lenses over four tiers;
+    the real catches were an e2e harness that priced no call (every cost
+    assertion had passed on zero), a read-only guarantee that was only a boot
+    check a test already bypassed, and a tool denylist. Gate: full scope on the
+    third attempt (the first two failed on environment only — a floating
+    `hypothesis` dependency in the fuzz venv, then a sleeping machine); the
+    passing hook ran 413s; 4,455 server and 824 iOS tests green, 128 snapshot
+    scenes with 0 moved, fuzz 3,524/3,524. Rollback: revert; the migration is
+    additive.
+- **Next slices re-checked against RFC 258 (2026-10-26).** The code wins over
+  the slice text; nothing below rewrites a slice.
+  - `family/07/the-money-plan` is now unblocked (its BLOCKS edge was this slice;
+    its PREFER edge, `family/04`, landed as RFC 249). What it will find: the
+    parent's registry admits only subject-scoped reads and tools marked
+    `ReadOnlyChatTool`, so a plan that is "retrievable afterwards" as anything
+    other than the conversation itself needs a deliberately new tool kind that
+    writes the PARENT's own state — the allowlist refuses it by design, and the
+    slice must say so (and, if it adds a table, present the DDL, standing D10).
+    There is no parent coaching memory (Ian's decision 5), so "retrievable"
+    today means the conversation. "Field starting salary" reaches the parent
+    only through the cost picture's program return, which is present only when
+    the student granted `intended_subjects`. A parent prompt change needs a new
+    hand-written seed (`bin/prompt-seed` handles only the student coach) until
+    that script is generalised.
+  - The two student-side gaps the earlier re-checks pointed here were excluded
+    by Ian's decision 7 and remain open for /chart: the coach's spoken ceiling
+    still lacks "Other supporters connected to this student will see your
+    name.", and the RFC 240 invite nudge still does not see pending link
+    requests.
+  - The erasure slice (unwritten) inherits one more fact: `convos.student_id` is
+    `ON DELETE CASCADE`, so physically erasing a student would erase the
+    parent's conversations about them, against D9. Inert while physical delete
+    is refused.
 - **Next slices re-checked against RFC 250 (2026-10-11).**
   `family/06/the-parent-coach` is now READY (both BLOCKS edges met, its PREFER
   edge met by RFC 244). What it will find: its tools call
