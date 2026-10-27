@@ -1,0 +1,20 @@
+# The fuzz harness's Python tooling (bin/test-fuzz). Schemathesis is not
+# packaged in nixpkgs, so uv installs it from the committed uv.lock -- every
+# transitive package at an exact version with its file hashes -- into each
+# checkout's var/fuzz/venv, on the dev shell's python3. Change a version here,
+# then run `nix develop -c uv lock --project tools/fuzz --python "$(command -v python3)"`
+# and commit both files.
+[project]
+name = "unicoach-fuzz"
+version = "0"
+requires-python = ">=3.13"
+dependencies = ["schemathesis==4.21.5"]
+
+[tool.uv]
+package = false
+# hypothesis_jsonschema 0.23.1 (schemathesis's generator) cannot drive later
+# hypothesis releases: on 6.170.12 every fuzzed operation dies with
+# "AttributeError: 'many' object has no attribute 'more'", which bin/test-fuzz
+# reports as contract drift. 6.155.2 is the newest release known to work; the
+# cap keeps a `uv lock --upgrade` from re-admitting a broken one.
+constraint-dependencies = ["hypothesis==6.155.2"]

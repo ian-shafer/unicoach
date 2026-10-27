@@ -29,6 +29,11 @@
             # Python 3 — required to run schemathesis (replaces schemathesis:stable image).
             pkgs.python3
 
+            # uv — installs schemathesis (not packaged in nixpkgs) from the
+            # hash-pinned tools/fuzz/uv.lock into each checkout's fuzz venv,
+            # on the python3 above. See bin/test-fuzz.
+            pkgs.uv
+
             # Deno — replaces node:20-alpine + npx prettier for Markdown formatting.
             pkgs.deno
 

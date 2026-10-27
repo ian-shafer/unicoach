@@ -9,10 +9,6 @@
 export ENV_FILES=".env.dev:.env.fuzz"
 source "$(dirname "$0")/common"
 
-# Pinned Schemathesis release. Provisioned into a gitignored pip venv on the
-# flake's python3 (schemathesis is not packaged in nixpkgs). Bump deliberately.
-SCHEMATHESIS_VERSION="4.21.5"
-
 help() {
   local exit_code=0
   if [ "$#" -gt 0 ]; then
@@ -27,12 +23,12 @@ Schemathesis contract-referee fuzzing against the committed
 api-specs/openapi.yaml. A runtime-registered session cookie is injected into
 every request, so the authenticated surface is validated rather than 401-ing.
 
-Lifecycle (under set -e): provision a pinned Schemathesis venv, refuse to run
-if the fuzz port is already served, ensure postgres is up, reset the fuzz DB,
-build and boot the rest-server, register a user and capture its session cookie,
-then run Schemathesis over the 7 implemented, non-destructive operations. The
-rest-server this harness starts is torn down via an EXIT/INT/TERM trap; the
-shared PostgreSQL cluster is never stopped.
+Lifecycle (under set -e): sync the Schemathesis venv to tools/fuzz/uv.lock,
+refuse to run if the fuzz port is already served, ensure postgres is up, reset
+the fuzz DB, build and boot the rest-server, register a user and capture its
+session cookie, then run Schemathesis over the 7 implemented, non-destructive
+operations. The rest-server this harness starts is torn down via an
+EXIT/INT/TERM trap; the shared PostgreSQL cluster is never stopped.
 
 Excluded from every run:
   - /api/v1/conversations* (9 operations; routes unregistered in Routing.kt)
@@ -70,6 +66,7 @@ fi
 
 FUZZ_DIR="$WORKTREE_VAR_DIR/fuzz"
 VENV_DIR="$FUZZ_DIR/venv"
+FUZZ_PROJECT_DIR="$PROJECT_ROOT/tools/fuzz"
 SCHEMATHESIS_BIN="$VENV_DIR/bin/schemathesis"
 REPORT_PATH="$FUZZ_DIR/report.xml"
 SPEC_PATH="$PROJECT_ROOT/api-specs/openapi.yaml"
@@ -83,21 +80,20 @@ trap '"$PROJECT_ROOT/bin/rest-server-down" >/dev/null 2>&1 || true' EXIT INT TER
 
 mkdir -p "$FUZZ_DIR"
 
-# 1. Provision Schemathesis. Idempotent: reuse the venv when the pinned version
-#    already matches, otherwise recreate it from scratch.
+# 1. Provision Schemathesis: sync this checkout's venv to tools/fuzz/uv.lock,
+#    which pins every transitive package by version and file hash. uv compares
+#    what the venv holds against the lock and installs or removes only the
+#    difference, so a matching venv is reused (no network), a lock change
+#    re-provisions, and a hand-installed package is reverted. --locked refuses a
+#    lock that no longer matches tools/fuzz/pyproject.toml rather than
+#    installing it anyway. The interpreter is the dev shell's python3, named by
+#    path because uv otherwise prefers a uv-managed python it finds installed;
+#    UV_PYTHON_DOWNLOADS=never stops it fetching one.
 provision_schemathesis() {
-  local current=""
-  if [ -x "$SCHEMATHESIS_BIN" ]; then
-    current="$("$SCHEMATHESIS_BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-  fi
-  if [ "$current" = "$SCHEMATHESIS_VERSION" ]; then
-    log-info "Reusing Schemathesis venv ($SCHEMATHESIS_VERSION) at [$VENV_DIR]."
-    return 0
-  fi
-  log-info "Provisioning Schemathesis $SCHEMATHESIS_VERSION into [$VENV_DIR]..."
-  rm -rf "$VENV_DIR"
-  python3 -m venv "$VENV_DIR"
-  "$VENV_DIR/bin/pip" install --quiet "schemathesis==$SCHEMATHESIS_VERSION"
+  log-info "Syncing the Schemathesis venv at [$VENV_DIR] to [$FUZZ_PROJECT_DIR/uv.lock]..."
+  UV_PROJECT_ENVIRONMENT="$VENV_DIR" UV_PYTHON_DOWNLOADS=never \
+    uv sync --locked --project "$FUZZ_PROJECT_DIR" --python "$(command -v python3)" \
+    || fatal "Could not sync [$VENV_DIR] to [$FUZZ_PROJECT_DIR/uv.lock] (uv exit $?; its error is above). A lock that no longer matches pyproject.toml is re-locked as that file's header says."
 }
 provision_schemathesis
 
