@@ -311,13 +311,13 @@ committed.
 
 ```sh
 bin/build-ios            # builds + signs the `local` target
-bin/install-ios --launch # installs to the device and launches it
+bin/install-ios -l       # installs to the device and launches it
 ```
 
 `bin/install-ios` selects the target device from `UNICOACH_DEVICE` when set;
 otherwise it auto-detects the single connected device (and fails fast if zero or
-more than one is connected — set `UNICOACH_DEVICE` to disambiguate). The
-`--launch` flag additionally starts the app on the device (fire-and-forget).
+more than one is connected — set `UNICOACH_DEVICE` to disambiguate). The `-l`
+flag additionally starts the app on the device (fire-and-forget).
 
 On the first device build, `-allowProvisioningUpdates` lets `xcodebuild`
 register the device and create or refresh the managed provisioning profile
@@ -337,7 +337,7 @@ ALB, no port). The prod domain is set once in `.env.prod`. Both omit
 
   ```sh
   bin/build-ios prod              # builds + signs against the deployment
-  bin/install-ios --launch prod   # installs to the device and launches it
+  bin/install-ios -l prod         # installs to the device and launches it
   ```
 
 - **`prod-simulator`** — simulator target
@@ -387,15 +387,23 @@ Xcode**, not the Nix dev shell (same dev-shell guard).
 
 ```sh
 bin/release-ios                  # archive + upload `prod` to App Store Connect
-bin/release-ios --no-upload      # archive + export a signed .ipa, then stop
+bin/release-ios -n               # archive + export a signed .ipa, then stop
+bin/release-ios -f               # skip the main-only readiness check
 bin/release-ios <target>         # release a different device target
 ```
 
 It reuses the named-target model: it sources `ios-app/env/<target>.env` for the
 destination and the honor-if-set `UNICOACH_BACKEND_URL` exactly as
 `bin/build-ios` does, but it **defaults to the `prod` target** (a release goes
-against the live backend) and differs in three deliberate ways:
+against the live backend) and differs in four deliberate ways:
 
+- **Main only.** Before any env, signing or archive work it checks the checkout
+  is on `main`, clean, and equal to `origin/main` after a fresh fetch (the same
+  `assert_release_ready` guard `bin/deploy` runs), refusing otherwise with the
+  condition and the fixing command. A release ships `main`, and main-only is
+  what keeps the commit-count build number below monotonic. `-f` skips the check
+  and logs the short SHA being shipped; a duplicate build number is then yours
+  to avoid (`UNICOACH_BUILD_NUMBER`).
 - **Always Release, always signed.** The target's `UNICOACH_CONFIGURATION` is
   ignored (a release is built `Release`), and a **simulator target is rejected**
   — distribution requires a signed device build. Signing is mandatory:
@@ -415,8 +423,12 @@ against the live backend) and differs in three deliberate ways:
 - **API-key upload.** The default path uploads straight from `xcodebuild` using
   an **App Store Connect API key** — no Apple-ID password, no keychain prompt,
   CI-friendly. Credentials live in the gitignored `ios-app/env/appstore.env`
-  (the secret bucket, alongside `UNICOACH_CLIENT_KEY`). `--no-upload` skips this
-  entirely and just leaves a signed `.ipa` under `ios-app/build/export/`.
+  (the secret bucket, alongside `UNICOACH_CLIENT_KEY`). `-n` skips this entirely
+  and just leaves a signed `.ipa` under `ios-app/build/export/`.
+
+The one-phrase path is the `/deploy` Claude Code skill
+(`.claude/skills/deploy/SKILL.md`), which runs `bin/deploy prod` and then this
+script, backend first.
 
 ### First-time TestFlight setup
 
@@ -815,20 +827,21 @@ store rather than a launch argument for a catalogue nobody injected.
   `bin/ios-device` prints.
 - **TestFlight upload rejected: duplicate build number.** App Store Connect
   already has a build with that `CFBundleVersion`. `bin/release-ios` derives the
-  build number from the HEAD commit count, so commit first (or pass a higher
-  `UNICOACH_BUILD_NUMBER`) and re-run.
+  build number from the HEAD commit count, so land a commit on `main` and push
+  it first (the readiness guard refuses a commit on a branch), or pass a higher
+  `UNICOACH_BUILD_NUMBER`, and re-run.
 - **TestFlight upload fails to authenticate.** Check `appstore.env`: the Key ID,
   Issuer ID, and the `AuthKey_<id>.p8` at `UNICOACH_ASC_KEY_PATH` must match a
-  current App Store Connect API key with the App Manager role. Use `--no-upload`
-  to confirm the archive/export succeeds independently of the upload.
+  current App Store Connect API key with the App Manager role. Use `-n` to
+  confirm the archive/export succeeds independently of the upload.
 
 ## Manual on-device smoke test
 
 Set `APP_DOMAIN` once in `.env` and bounce the server, then `bin/build-ios`
-followed by `bin/install-ios --launch`: register or log in on the device against
-the Tailscale backend, then force-quit and relaunch the app and confirm the
-session survived. This validates that the single `APP_DOMAIN` drives both the
-baked backend host and the issued cookie `Domain`.
+followed by `bin/install-ios -l`: register or log in on the device against the
+Tailscale backend, then force-quit and relaunch the app and confirm the session
+survived. This validates that the single `APP_DOMAIN` drives both the baked
+backend host and the issued cookie `Domain`.
 
 ## Manual Sign in with Apple pass
 

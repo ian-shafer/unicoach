@@ -29,10 +29,12 @@ rests on. Full design:
     `require_env_vars` fatals on the laptop before build. `POSTGRES_DB` is one
     of those keys since RFC 156 — `.env.prod` sets it explicitly to `unicoach`,
     which must match `infra/rds.tf`'s `db_name` literal.
-  - **`.env.deploy.<env>`** — deploy-control only (`AWS_ACCOUNT_ID`, `REGION`,
-    and the `AWS_REGION` derivation). Sourced by
+  - **`.env.deploy.<env>`** — deploy-control only (`AWS_ACCOUNT_ID`, the
+    `AWS_PROFILE` derivation — the CLI profile that reaches that account; an
+    exported `AWS_PROFILE` still wins, and the account assertion remains the
+    guard — `REGION`, and the `AWS_REGION` derivation). Sourced by
     `bin/deploy`/`bin/remote`/`bin/infra-*` to reach the right AWS
-    account/region; never shipped to the instance.
+    account/profile/region; never shipped to the instance.
   - **SSM `/unicoach/<env>`** — the two Terraform-owned classes only: secrets
     (SecureStrings) and RDS identity (`PGHOST`/`DATABASE_HOST`/`POSTGRES_USER`/
     `DATABASE_USER`).

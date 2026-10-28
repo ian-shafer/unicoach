@@ -47,7 +47,9 @@ Options:
 Exit codes:
   Usage errors (band 10-29): a malformed -f, an undeclared @name, or env=local.
   Operational trigger failures (band 1-9): an S3 upload or send-command failure.
-  Otherwise, the triggered tool's own ResponseCode is propagated as this exit.
+  Otherwise, the triggered tool's own ResponseCode is propagated as this exit;
+  a terminal status other than Success with ResponseCode 0 (a Cancelled command
+  that never ran) exits 1.
 EOF
   exit 0
 }
@@ -322,8 +324,8 @@ upload_inputs() {
   URI_NAMES=()
   URI_VALUES=()
   UPLOADED_URIS=()
-  # Scratch file for capturing a failed poll's stderr (see await_terminal_status),
-  # removed by the same EXIT trap that deletes the uploads.
+  # Scratch file for capturing a failed poll's stderr (see ssm_await_terminal_status
+  # in bin/functions), removed by the same EXIT trap that deletes the uploads.
   RESOLVE_POLL_ERR="$(mktemp)"
   trap 'delete_uploads; rm -f "$RESOLVE_POLL_ERR"' EXIT
 
@@ -414,84 +416,24 @@ send_ssm_command() {
   [ -n "$COMMAND_ID" ] || fatal "send-command returned no CommandId."
 }
 
-# Poll get-command-invocation to a terminal status. A call legitimately fails for
-# a beat right after send-command (InvocationDoesNotExist, until the invocation
-# registers), so a single failure is treated as "still pending". But a real API
-# failure — auth expiry, throttle, a deleted command — would otherwise be folded
-# into that same pending branch and poll forever with no diagnostic. So: capture
-# stderr, log-warning it with the command/instance context on each failed poll,
-# and cap consecutive failures (independent of SSM's own -t timeout) so a
-# sustained failure fatals loudly instead of spinning. A very small or zero -p
-# poll interval polls aggressively and can trip SSM throttling, which counts
-# toward max_failures — the operator's explicit choice.
-await_terminal_status() {
-  local max_failures=10
-  local consecutive_failures=0 poll_err status
-  log-info "SSM command [$COMMAND_ID] dispatched; polling for completion..."
-  while true; do
-    poll_err=""
-    if status="$(aws ssm get-command-invocation \
-      --region "$AWS_REGION" \
-      --command-id "$COMMAND_ID" \
-      --instance-id "$INSTANCE_ID" \
-      --query "Status" \
-      --output text 2>"$RESOLVE_POLL_ERR")"; then
-      consecutive_failures=0
-    else
-      poll_err="$(cat "$RESOLVE_POLL_ERR")"
-      consecutive_failures=$((consecutive_failures + 1))
-      log-warning "poll of command [$COMMAND_ID] on [$INSTANCE_ID] failed (attempt $consecutive_failures/$max_failures): [$poll_err]"
-      if [ "$consecutive_failures" -ge "$max_failures" ]; then
-        fatal "giving up: [$max_failures] consecutive get-command-invocation failures for command [$COMMAND_ID] on [$INSTANCE_ID]; last error: [$poll_err]"
-      fi
-      status="Pending"
-    fi
-    case "$status" in
-    Success | Cancelled | TimedOut | Failed) break ;;
-    *) sleep "$POLL_INTERVAL_SECONDS" ;;
-    esac
-  done
-}
-
-# Print the tool's captured stdout/stderr via --query/--output text (no jq: the
-# dev shell provides awscli2, not jq). StandardOutputContent/StandardErrorContent
-# are capped at ~24KB by SSM; the CloudWatch Logs stream holds the untruncated
-# record.
-print_command_output() {
-  aws ssm get-command-invocation \
-    --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-    --query "StandardOutputContent" --output text
-  aws ssm get-command-invocation \
-    --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-    --query "StandardErrorContent" --output text >&2
-  log-info "Output above is capped at ~24KB by SSM; the full record is in CloudWatch log group [$OPS_LOG_GROUP]."
-}
-
-# Read the tool's own exit code into RESPONSE_CODE. A failure to READ the
-# ResponseCode is bin/remote's own operational failure, NOT the tool's exit: fatal
-# (band 1-9) with context rather than folding it into a bare `exit 1` that would
-# be indistinguishable from the tool genuinely exiting 1. SSM reports -1 when it
-# never captured the tool's exit (e.g. the command timed out or the agent went
-# away before the script returned); normalize any -1/non-numeric value to 1 so
-# bin/remote still exits non-zero — the Status line and printed output above
-# already explain why.
-read_response_code() {
-  if ! RESPONSE_CODE="$(aws ssm get-command-invocation \
-    --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-    --query "ResponseCode" --output text 2>"$RESOLVE_POLL_ERR")"; then
-    fatal "could not read ResponseCode for command [$COMMAND_ID] on [$INSTANCE_ID]: [$(cat "$RESOLVE_POLL_ERR")]"
-  fi
-  if [[ ! "$RESPONSE_CODE" =~ ^-?[0-9]+$ ]] || [ "$RESPONSE_CODE" -lt 0 ]; then
-    RESPONSE_CODE=1
-  fi
-}
-
-# Send the command, await completion, print output, and capture the exit code.
+# The await / print-output / read-exit-code / exit-code steps live in
+# bin/functions (ssm_await_terminal_status, ssm_print_command_output,
+# ssm_read_response_code, ssm_exit_code), shared with bin/deploy; each takes the
+# command/instance/region as arguments and answers on stdout, so the `|| exit $?`
+# on each captured read is what turns a fatal inside the command substitution
+# into this script's exit. The scratch stderr file is this script's
+# (RESOLVE_POLL_ERR, removed by the EXIT trap registered in upload_inputs). The
+# CloudWatch log group is passed so the capped-output note says where the
+# untruncated record is. A failure to read the ResponseCode fatals in band 1-9 as
+# bin/remote's own operational failure; otherwise the tool's exit code is
+# propagated as this script's exit — through ssm_exit_code, so a terminal status
+# other than Success never exits 0 even when SSM reports ResponseCode 0.
 dispatch_and_await() {
   send_ssm_command
-  await_terminal_status
-  print_command_output
-  read_response_code
+  SSM_STATUS="$(ssm_await_terminal_status "$COMMAND_ID" "$INSTANCE_ID" "$AWS_REGION" "$POLL_INTERVAL_SECONDS" "$RESOLVE_POLL_ERR")" || exit $?
+  ssm_print_command_output "$COMMAND_ID" "$INSTANCE_ID" "$AWS_REGION" "$OPS_LOG_GROUP"
+  RESPONSE_CODE="$(ssm_read_response_code "$COMMAND_ID" "$INSTANCE_ID" "$AWS_REGION" "$RESOLVE_POLL_ERR")" || exit $?
+  RESPONSE_CODE="$(ssm_exit_code "$SSM_STATUS" "$RESPONSE_CODE")"
 }
 
 # ── Top-level flow ────────────────────────────────────────────────────────────

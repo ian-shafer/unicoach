@@ -42,6 +42,33 @@ checkout_derivation_prefix() {
   sed -nE 's/^'"$key"'=(.*)\$\(checkout_name "\$PROJECT_ROOT"\)$/\1/p' "$file"
 }
 
+# Build "a release-ready repository" under <dir>: a bare origin at
+# <dir>/origin.git and a clone of it at <dir>/repo on main, identity set, one
+# commit, pushed — the state assert_release_ready requires — so a case starts
+# from "ready" and moves it off itself. Quiet. Runs under strip_git_hook_env
+# (bin/functions, which every caller sources before this file): a harness run
+# by the pre-commit hook inherits an exported GIT_DIR that would otherwise make
+# each `git -C <fixture>` answer for the repository being committed. The clone
+# creates main itself (`checkout -b` on the unborn branch), so it does not
+# depend on init.defaultBranch; a SECOND clone of origin.git does, and must
+# pass `-b main`.
+make_release_ready_repo() {
+  local dir="$1"
+  (
+    strip_git_hook_env
+    mkdir -p "$dir"
+    git init -q --bare "$dir/origin.git"
+    git clone -q "$dir/origin.git" "$dir/repo"
+    git -C "$dir/repo" config user.email "tests@example.com"
+    git -C "$dir/repo" config user.name "tests"
+    git -C "$dir/repo" checkout -q -b main
+    printf 'one\n' > "$dir/repo/file"
+    git -C "$dir/repo" add -A
+    git -C "$dir/repo" commit -qm one
+    git -C "$dir/repo" push -q origin main
+  ) >/dev/null 2>&1
+}
+
 assert_success() {
   local msg="$1"
   shift

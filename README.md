@@ -329,17 +329,40 @@ like the Route53 zone).
 
 ```sh
 bin/deploy prod
+bin/deploy prod -f      # skip the release-readiness check (logged with the SHA)
 ```
 
-`bin/deploy <env>` builds all deployable `installDist` distributions
-(`bin/build`), bundles them with `db/schema/` and the migration scripts, uploads
-the bundle to the env's artifacts bucket, and issues an SSM Run Command. On the
-instance the deploy step refreshes `/etc/unicoach/env` from `/unicoach/<env>/*`
-SSM, runs `db-create-role → db-create → db-migrate` against RDS, then repoints
-`/opt/unicoach/current` and restarts every service unit. A failed migration
-leaves the previous release serving (the symlink swaps only after migrations
-succeed); a single-instance restart implies brief downtime per deploy, accepted
-at this scale.
+`bin/deploy <env>` first checks the checkout is **on `main`, clean, and equal to
+`origin/main`** after a fresh fetch — a release ships `main` only — and refuses
+otherwise, naming the condition and the fixing command (`git switch main`,
+`git stash`, `git pull --ff-only`, `git push origin main`); `-f` skips that
+check and logs the short SHA being shipped instead. It then builds all
+deployable `installDist` distributions (`bin/build`), bundles them with
+`db/schema/` and the migration scripts, uploads the bundle to the env's
+artifacts bucket, and issues an SSM Run Command whose comment names the bundle
+id and the SHA. On the instance the deploy step refreshes `/etc/unicoach/env`
+from `/unicoach/<env>/*` SSM, runs `db-create-role → db-create → db-migrate`
+against RDS, then repoints `/opt/unicoach/current` and restarts every service
+unit. A failed migration leaves the previous release serving (the symlink swaps
+only after migrations succeed); a single-instance restart implies brief downtime
+per deploy, accepted at this scale.
+
+The script does not return at dispatch: it polls the command to a terminal
+status, prints the captured on-instance output, and **exits with the on-instance
+exit code** when the status is not `Success`. It then polls `/healthz` on each
+public URL the env's OpenTofu outputs publish — `app_url`, `public_web_url` and
+`admin_web_url` in `infra/outputs.tf`, the API, public-web and admin-web hosts —
+until each answers 200 (bounded; the URL that never answers is named), and
+closes with one line naming the bundle id, the SHA and the three URLs. The
+hostnames come from the infra outputs that own them (read before the command is
+dispatched, so a missing output fails first), never from a literal or a
+re-derivation of `APP_DOMAIN`.
+
+The one-phrase path is the `/deploy` Claude Code skill
+(`.claude/skills/deploy/SKILL.md`): "deploy the backend and iOS" runs this
+script and then `bin/release-ios prod` (see
+[`ios-app/DEPLOY.md`](ios-app/DEPLOY.md)), backend first, stopping at the first
+failure, and reports the verified result.
 
 ### Add an environment
 
@@ -350,8 +373,10 @@ A second cloud environment needs no code change — only two new dotenv files (t
    `GOOGLE_CLIENT_IDS`, the `0.0.0.0` bind hosts, the cookie/provider toggles,
    the derived email values, and — for a subdomain env — `HOSTED_ZONE_NAME` =
    the parent zone. (See `.env.template` for the full `DEPLOY_VAR_NAMES` set.)
-2. Author `.env.deploy.<env>` — deploy-control only: `AWS_ACCOUNT_ID`, `REGION`,
-   and the `AWS_REGION` derivation.
+2. Author `.env.deploy.<env>` — deploy-control only: `AWS_ACCOUNT_ID`, the
+   `AWS_PROFILE` derivation (the CLI profile that reaches that account; an
+   exported `AWS_PROFILE` still wins, and the account assertion remains the
+   guard), `REGION`, and the `AWS_REGION` derivation.
 3. `bin/infra-apply <env>` — stands up the full env (`0 to destroy`).
 4. Seed the operator secrets into `/unicoach/<env>/*`
    (`aws ssm put-parameter … --type SecureString`).

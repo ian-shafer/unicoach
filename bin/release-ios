@@ -20,10 +20,15 @@ source "$PROJECT_ROOT/bin/ios-url-functions"
 
 help() {
   cat << 'EOF'
-release-ios [-n] [target]
+release-ios [-n] [-f] [target]
 
 Archives UnicoachiOS for App Store distribution and uploads it to App Store
 Connect for TestFlight. Runs under system Xcode, not the Nix dev shell.
+
+Before any env, signing or archive work, the checkout must be ON main, CLEAN,
+and EQUAL to origin/main (after a fresh fetch) — a release ships main only, and
+main-only is what keeps the commit-count build number monotonic. Each refusal
+names the condition and the fixing command; -f skips the check.
 
   target       Target name (default: prod). Sources ios-app/env/<target>.env for
                UNICOACH_DESTINATION and the honor-if-set UNICOACH_BACKEND_URL,
@@ -61,16 +66,20 @@ Connect → Users and Access → Integrations → App Store Connect API). Copy
 ios-app/env/appstore.env.example to fill it in.
 
 Options:
+  -f           Force — skip the release-readiness check (ship this checkout as
+               it stands, logged with its short SHA).
   -h           Help
 EOF
   exit 0
 }
 
 UPLOAD=1
-while getopts ":hn" opt; do
+FORCE=""
+while getopts ":hnf" opt; do
   case "$opt" in
   h) help ;;
   n) UPLOAD=0 ;;
+  f) FORCE=1 ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
   :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
@@ -90,6 +99,19 @@ ENV_NAME="${1:-prod}"
 if [ "$#" -gt 1 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "release-ios accepts at most one positional argument (target): $*"
 fi
+
+# The repository whose state is released: its readiness is asserted here and its
+# commit count is the build number below, so the two read ONE repository.
+# PROJECT_ROOT by default; UNICOACH_RELEASE_REPO overrides it (used by
+# bin/ios-scripts-tests to point at a fixture repository, so the suite's answer
+# does not depend on the branch of the checkout it happens to run in).
+RELEASE_REPO="${UNICOACH_RELEASE_REPO:-$PROJECT_ROOT}"
+
+# Release-readiness (bin/functions assert_release_ready): on main, clean, equal
+# to origin/main — before any env/signing/credential/archive work, so a refusal
+# costs nothing and a build number is never derived from a tree that is not
+# main's. `${FORCE:+-f}` expands to -f only when -f was passed.
+assert_release_ready ${FORCE:+-f} "$RELEASE_REPO"
 
 # ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
 # (used by bin/ios-scripts-tests to point at a temp fixture dir).
@@ -159,7 +181,7 @@ fi
 # CURRENT_PROJECT_VERSION, which Info.plist resolves into CFBundleVersion.
 BUILD_NUMBER="${UNICOACH_BUILD_NUMBER:-}"
 if [ -z "$BUILD_NUMBER" ]; then
-  BUILD_NUMBER="$(git -C "$PROJECT_ROOT" rev-list --count HEAD 2>/dev/null || true)"
+  BUILD_NUMBER="$(git -C "$RELEASE_REPO" rev-list --count HEAD 2>/dev/null || true)"
 fi
 if [ -z "$BUILD_NUMBER" ]; then
   fatal "Could not determine a build number: UNICOACH_BUILD_NUMBER is unset and 'git rev-list --count HEAD' produced nothing. Set UNICOACH_BUILD_NUMBER to a value App Store Connect has not seen."

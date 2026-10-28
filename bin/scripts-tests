@@ -34,6 +34,18 @@ fi
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
+# No case in this harness may reach real AWS. Several drive bin/remote and
+# bin/deploy past their option parse, relying on the AWS account guard
+# (assert_aws_account) to stop them; .env.deploy.<env> now pins AWS_PROFILE to
+# the env's real profile when none is exported, so on an operator's machine
+# that guard would PASS and the case would run on — one run of this harness
+# dispatched a real `bin/remote prod -- ingest-colleges` to the prod instance
+# that way. A profile that does not exist makes `aws sts get-caller-identity`
+# fail, so every such case stops at the guard (exit 1, band 1-9) wherever the
+# harness runs; the exported value wins over the deploy-control derivation. The
+# aws-shim cases below put a fake `aws` on PATH and never consult a profile.
+export AWS_PROFILE="unicoach-scripts-tests-no-such-profile"
+
 # Bounded-poll knobs, named once (50 x 0.1s = ~5s ceiling).
 PORT_POLL_ATTEMPTS=50
 PORT_POLL_INTERVAL=0.1
@@ -2261,6 +2273,16 @@ test_remote_t_duration_accepted() {
   [ "$rc" -lt 10 ] || [ "$rc" -gt 29 ]
 }
 assert_success "remote -t 30m is accepted past the option parse (not a usage-band reject)" test_remote_t_duration_accepted
+# The hermetic proof of the AWS_PROFILE pin above: a run that passes the option
+# parse stops at the account guard, naming the unresolved account — never at
+# tofu, S3 or SSM.
+test_remote_stops_at_the_account_guard() {
+  local out rc=0
+  out="$(bin/remote prod -t 30m -- ingest-colleges 2>&1)" || rc=$?
+  [ "$rc" -eq 1 ] || { echo "exit [$rc]: $out"; return 1; }
+  echo "$out" | grep -qF "Could not resolve the active AWS account" || { echo "did not stop at the account guard: $out"; return 1; }
+}
+assert_success "remote prod stops at the AWS account guard (no real AWS reached from this harness)" test_remote_stops_at_the_account_guard
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -t badval is rejected (band 22)" bin/remote prod -t badval -- ingest-colleges
 test_remote_p_duration_accepted() {
   local rc=0
@@ -7296,6 +7318,279 @@ test_json_string_roundtrips_multiline() {
   [ "$decoded" = "$out" ] || { echo "json round-trip mismatch"; return 1; }
 }
 assert_success "json_string round-trips the multi-line deploy script through JSON" test_json_string_roundtrips_multiline
+
+# ── Release path hardening: assert_release_ready, the SSM trio, the health wait ─
+# bin/deploy's end-to-end path needs live AWS; what CAN run hermetically is each
+# shared bin/functions step it is built from, driven exactly as bin/deploy and
+# bin/remote drive them: a fixture repository for the readiness guard, an `aws`
+# shim for the SSM trio (the account-guard pattern above), and this suite's
+# scratch port + bin/test-tcp-listener for the health wait.
+echo ""
+echo "==== Testing assert_release_ready ===="
+
+# A fresh scratch dir holding make_release_ready_repo's origin.git + repo (a
+# clone on main, clean and pushed — the state a release requires); prints the
+# dir. strip_git_hook_env in every subshell that touches the fixture afterwards:
+# this harness runs under the pre-commit hook, whose exported GIT_DIR would
+# otherwise make each `git -C <fixture>` answer for the repository being
+# committed.
+release_fixture() {
+  local work
+  work="$(mktemp -d)"
+  make_release_ready_repo "$work"
+  printf '%s\n' "$work"
+}
+release_git() { # <repo> <git args...>
+  local repo="$1"
+  shift
+  ( strip_git_hook_env; git -C "$repo" "$@" ) >/dev/null 2>&1
+}
+# The guard fatals, so it runs in a subshell; only its stderr (the message) is
+# captured, since the message is what the operator acts on.
+release_check() { ( strip_git_hook_env; assert_release_ready "$@" ) 2>&1 >/dev/null; }
+
+test_release_ready_passes_on_pushed_main() {
+  local work rc=0
+  work="$(release_fixture)"
+  release_check "$work/repo" >/dev/null || rc=$?
+  rm -rf "$work"
+  [ "$rc" -eq 0 ]
+}
+assert_success "assert_release_ready passes on main, clean, equal to origin/main" test_release_ready_passes_on_pushed_main
+
+test_release_ready_refuses_off_main() {
+  local work out rc=0
+  work="$(release_fixture)"
+  release_git "$work/repo" checkout -q -b feature
+  out="$(release_check "$work/repo")" || rc=$?
+  rm -rf "$work"
+  [ "$rc" -ne 0 ] || { echo "passed off main"; return 1; }
+  echo "$out" | grep -qF "on branch [feature], not main" || { echo "message does not name the branch: $out"; return 1; }
+  echo "$out" | grep -qF "git switch main" || { echo "message does not name the fix: $out"; return 1; }
+}
+assert_success "assert_release_ready refuses a non-main branch, naming it and 'git switch main'" test_release_ready_refuses_off_main
+
+test_release_ready_refuses_dirty_tree() {
+  local work out rc=0
+  work="$(release_fixture)"
+  printf 'two\n' >> "$work/repo/file"
+  out="$(release_check "$work/repo")" || rc=$?
+  rm -rf "$work"
+  [ "$rc" -ne 0 ] || { echo "passed with a dirty tree"; return 1; }
+  echo "$out" | grep -qF "uncommitted changes" || { echo "message does not name the condition: $out"; return 1; }
+  echo "$out" | grep -qF "git stash" || { echo "message does not name the fix: $out"; return 1; }
+}
+assert_success "assert_release_ready refuses a dirty tree, naming 'git stash'" test_release_ready_refuses_dirty_tree
+
+test_release_ready_refuses_ahead_of_origin() {
+  local work out rc=0
+  work="$(release_fixture)"
+  release_git "$work/repo" commit -q --allow-empty -m two
+  out="$(release_check "$work/repo")" || rc=$?
+  rm -rf "$work"
+  [ "$rc" -ne 0 ] || { echo "passed with an unpushed commit"; return 1; }
+  echo "$out" | grep -qF "AHEAD of origin/main" || { echo "message does not name the condition: $out"; return 1; }
+  echo "$out" | grep -qF "git push origin main" || { echo "message does not name the fix: $out"; return 1; }
+}
+assert_success "assert_release_ready refuses an unpushed commit (ahead), naming 'git push origin main'" test_release_ready_refuses_ahead_of_origin
+
+test_release_ready_refuses_behind_origin() {
+  local work out rc=0
+  work="$(release_fixture)"
+  # Advance origin from a second clone, so the fixture repo is behind after fetch.
+  # -b main: the bare origin's HEAD may name a branch that does not exist (it
+  # depends on init.defaultBranch), and a clone left on an unborn branch would
+  # push an unrelated root commit that origin rejects — leaving the fixture
+  # not behind at all, and this case passing while testing nothing.
+  (
+    strip_git_hook_env
+    git clone -q -b main "$work/origin.git" "$work/other"
+    git -C "$work/other" config user.email "tests@example.com"
+    git -C "$work/other" config user.name "scripts-tests"
+    git -C "$work/other" commit -q --allow-empty -m three
+    git -C "$work/other" push -q origin HEAD:main
+  ) >/dev/null 2>&1
+  out="$(release_check "$work/repo")" || rc=$?
+  rm -rf "$work"
+  [ "$rc" -ne 0 ] || { echo "passed while behind origin/main"; return 1; }
+  echo "$out" | grep -qF "BEHIND origin/main" || { echo "message does not name the condition: $out"; return 1; }
+  echo "$out" | grep -qF "git pull --ff-only" || { echo "message does not name the fix: $out"; return 1; }
+}
+assert_success "assert_release_ready refuses a stale checkout (behind), naming 'git pull --ff-only'" test_release_ready_refuses_behind_origin
+
+# -f skips every condition and WARNS with the short SHA being shipped: the
+# operator's explicit choice must be traceable, never silent.
+test_release_ready_force_warns_with_sha() {
+  local work out sha rc=0
+  work="$(release_fixture)"
+  release_git "$work/repo" checkout -q -b feature
+  sha="$( ( strip_git_hook_env; git -C "$work/repo" rev-parse --short HEAD ) )"
+  out="$(release_check -f "$work/repo")" || rc=$?
+  rm -rf "$work"
+  [ "$rc" -eq 0 ] || { echo "-f still refused: $out"; return 1; }
+  echo "$out" | grep -qF "[WARNING]" || { echo "-f did not warn: $out"; return 1; }
+  echo "$out" | grep -qF "[$sha]" || { echo "warning does not name the SHA [$sha]: $out"; return 1; }
+}
+assert_success "assert_release_ready -f skips the check and warns naming the short SHA" test_release_ready_force_warns_with_sha
+
+# The positional is allowlisted to exactly one non-empty <repo>: `git -C ""` is a
+# no-op, so a missing or empty argument would silently judge the caller's own
+# checkout. No fixture needed for the missing case — the refusal precedes any git.
+test_release_ready_refuses_missing_repo() {
+  local out rc=0
+  out="$(release_check)" || rc=$?
+  [ "$rc" -ne 0 ] || { echo "accepted a missing <repo>"; return 1; }
+  echo "$out" | grep -qF "expected exactly one argument, <repo>; got [0]" || { echo "message does not say what was expected and received: $out"; return 1; }
+}
+assert_success "assert_release_ready refuses a missing <repo>, naming what was expected and what was received" test_release_ready_refuses_missing_repo
+
+test_release_ready_refuses_empty_repo() {
+  local out rc=0
+  out="$(release_check "")" || rc=$?
+  [ "$rc" -ne 0 ] || { echo "accepted an empty <repo>"; return 1; }
+  echo "$out" | grep -qF "<repo> must not be empty" || { echo "message does not name the empty <repo>: $out"; return 1; }
+}
+assert_success "assert_release_ready refuses an empty <repo>" test_release_ready_refuses_empty_repo
+
+test_release_ready_refuses_surplus_argument() {
+  local work out rc=0
+  work="$(release_fixture)"
+  out="$(release_check "$work/repo" surplus)" || rc=$?
+  rm -rf "$work"
+  [ "$rc" -ne 0 ] || { echo "accepted a surplus argument"; return 1; }
+  echo "$out" | grep -qF "expected exactly one argument, <repo>; got [2]" || { echo "message does not say what was expected and received: $out"; return 1; }
+}
+assert_success "assert_release_ready refuses a surplus argument even on a release-ready repo" test_release_ready_refuses_surplus_argument
+
+echo ""
+echo "==== Testing the shared SSM wait (ssm_await_terminal_status / ssm_read_response_code) ===="
+
+# An `aws` shim modelling get-command-invocation: InProgress for the first
+# SSM_SHIM_PENDING polls (a counter file, since each poll is a fresh process),
+# then SSM_SHIM_STATUS; ResponseCode answers SSM_SHIM_CODE; SSM_SHIM_ERROR makes
+# every call fail the way an expired session does. Keyed on --query, which is
+# how the real calls are shaped.
+SSM_SHIM_DIR="$(mktemp -d)"
+SSM_SHIM_COUNT="$SSM_SHIM_DIR/polls"
+cat > "$SSM_SHIM_DIR/aws" <<'SHIM'
+#!/usr/bin/env bash
+if [ -n "${SSM_SHIM_ERROR:-}" ]; then
+  echo "An error occurred (ExpiredTokenException) when calling the GetCommandInvocation operation" >&2
+  exit 254
+fi
+query=""
+for ((i = 1; i <= $#; i++)); do
+  if [ "${!i}" = "--query" ]; then j=$((i + 1)); query="${!j}"; fi
+done
+case "$query" in
+Status)
+  n=$(( $(cat "$SSM_SHIM_COUNT" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$SSM_SHIM_COUNT"
+  if [ "$n" -le "${SSM_SHIM_PENDING:-0}" ]; then echo InProgress; else echo "${SSM_SHIM_STATUS:-Success}"; fi
+  ;;
+StandardOutputContent) echo "remote stdout" ;;
+StandardErrorContent) echo "remote stderr" ;;
+ResponseCode) echo "${SSM_SHIM_CODE:-0}" ;;
+*) echo "aws shim: unexpected query [$query]" >&2; exit 1 ;;
+esac
+SHIM
+chmod +x "$SSM_SHIM_DIR/aws"
+export SSM_SHIM_COUNT
+
+# Run one shared function under the shim, in a subshell (a fatal must not take
+# the harness down), with stderr discarded to stdout's capture being the answer.
+with_ssm_shim() { rm -f "$SSM_SHIM_COUNT"; ( PATH="$SSM_SHIM_DIR:$PATH"; hash -r; "$@" ); }
+
+test_ssm_await_reaches_success_after_pending_polls() {
+  local status
+  status="$(SSM_SHIM_PENDING=3 with_ssm_shim ssm_await_terminal_status cmd-1 i-1 us-east-1 0 "$SSM_SHIM_DIR/err" 2>/dev/null)" || return 1
+  [ "$status" = "Success" ] || { echo "status [$status]"; return 1; }
+  [ "$(cat "$SSM_SHIM_COUNT")" -eq 4 ] || { echo "polled $(cat "$SSM_SHIM_COUNT") times, expected 4"; return 1; }
+}
+assert_success "ssm_await_terminal_status polls through InProgress to Success" test_ssm_await_reaches_success_after_pending_polls
+
+# Failed + ResponseCode 3: the status comes back as Failed and the exit code as
+# 3 — the pair bin/deploy and bin/remote turn into their own exit 3.
+test_ssm_failed_status_propagates_response_code() {
+  local status code
+  status="$(SSM_SHIM_STATUS=Failed with_ssm_shim ssm_await_terminal_status cmd-2 i-1 us-east-1 0 "$SSM_SHIM_DIR/err" 2>/dev/null)" || return 1
+  [ "$status" = "Failed" ] || { echo "status [$status]"; return 1; }
+  code="$(SSM_SHIM_CODE=3 with_ssm_shim ssm_read_response_code cmd-2 i-1 us-east-1 "$SSM_SHIM_DIR/err" 2>/dev/null)" || return 1
+  [ "$code" = "3" ] || { echo "code [$code]"; return 1; }
+}
+assert_success "a Failed command's ResponseCode 3 is read back as 3" test_ssm_failed_status_propagates_response_code
+
+test_ssm_response_code_minus_one_normalises_to_one() {
+  local code
+  code="$(SSM_SHIM_CODE=-1 with_ssm_shim ssm_read_response_code cmd-3 i-1 us-east-1 "$SSM_SHIM_DIR/err" 2>/dev/null)" || return 1
+  [ "$code" = "1" ] || { echo "code [$code]"; return 1; }
+  code="$(SSM_SHIM_CODE=None with_ssm_shim ssm_read_response_code cmd-3 i-1 us-east-1 "$SSM_SHIM_DIR/err" 2>/dev/null)" || return 1
+  [ "$code" = "1" ] || { echo "code [$code]"; return 1; }
+}
+assert_success "ssm_read_response_code normalises -1 and a non-numeric value to 1" test_ssm_response_code_minus_one_normalises_to_one
+
+# The exit code both callers hand to `exit`: the ResponseCode as read, except
+# that a non-Success status with code 0 (a Cancelled command that never ran) is
+# 1. One function, so bin/deploy and bin/remote cannot answer differently.
+test_ssm_exit_code_rule() {
+  local code
+  code="$(ssm_exit_code Success 0)"
+  [ "$code" = "0" ] || { echo "Success/0 gave [$code]"; return 1; }
+  code="$(ssm_exit_code Failed 3)"
+  [ "$code" = "3" ] || { echo "Failed/3 gave [$code]"; return 1; }
+  code="$(ssm_exit_code Cancelled 0)"
+  [ "$code" = "1" ] || { echo "Cancelled/0 gave [$code]"; return 1; }
+}
+assert_success "ssm_exit_code: Success/0 -> 0, Failed/3 -> 3, Cancelled/0 -> 1" test_ssm_exit_code_rule
+
+# Every poll failing trips the consecutive-failure cap: a fatal naming the cap
+# and the last error, not an endless pending loop. The cap is lowered for the
+# test so it runs in milliseconds; it is a default, not a literal in the loop.
+test_ssm_await_gives_up_after_consecutive_failures() {
+  local out rc=0
+  out="$( ( PATH="$SSM_SHIM_DIR:$PATH"; hash -r; export SSM_SHIM_ERROR=1; SSM_POLL_MAX_FAILURES=3; ssm_await_terminal_status cmd-4 i-1 us-east-1 0 "$SSM_SHIM_DIR/err" ) 2>&1 >/dev/null)" || rc=$?
+  [ "$rc" -ne 0 ] || { echo "did not fail"; return 1; }
+  echo "$out" | grep -qF "giving up: [3] consecutive get-command-invocation failures for command [cmd-4] on [i-1]" || { echo "no cap fatal: $out"; return 1; }
+  echo "$out" | grep -qF "ExpiredTokenException" || { echo "last error not quoted: $out"; return 1; }
+  [ "$(echo "$out" | grep -cF "[WARNING] poll of command [cmd-4]")" -eq 3 ] || { echo "expected 3 warnings: $out"; return 1; }
+}
+assert_success "ssm_await_terminal_status fatals after the consecutive-failure cap, quoting the last error" test_ssm_await_gives_up_after_consecutive_failures
+
+rm -rf "$SSM_SHIM_DIR"
+
+echo ""
+echo "==== Testing wait_for_http_ok (the deploy health wait) ===="
+# Bounded and fast: 2 attempts 0.1s apart against this suite's scratch port.
+HTTP_OK_TEST_ATTEMPTS=2
+HTTP_OK_TEST_INTERVAL=0.1
+
+if ! wait_for_port_free "$PORT_HTTP"; then fail_test "port $PORT_HTTP not released before the health-wait cases"; fi
+test_wait_for_http_ok_closed_port_fails_naming_url() {
+  local url="http://127.0.0.1:$PORT_HTTP/healthz" out rc=0
+  out="$(wait_for_http_ok "$url" "$HTTP_OK_TEST_ATTEMPTS" "$HTTP_OK_TEST_INTERVAL" 2>&1 >/dev/null)" || rc=$?
+  [ "$rc" -ne 0 ] || { echo "returned 0 against a closed port"; return 1; }
+  echo "$out" | grep -qF "[$url] did not answer HTTP 200 within $HTTP_OK_TEST_ATTEMPTS attempts" || { echo "message does not name the URL and attempts: $out"; return 1; }
+  # curl's own reason survives: exit 7 is "failed to connect", and its text names
+  # the refusal (the wording differs across curl versions).
+  echo "$out" | grep -qE "last curl error \[curl exit 7: .*(Failed to connect|Connection refused)" || { echo "message does not quote curl's error: $out"; return 1; }
+}
+assert_success "wait_for_http_ok fails against a closed port, naming the URL after the bounded attempts and quoting curl's error" test_wait_for_http_ok_closed_port_fails_naming_url
+
+start_healthy_foreign_listener "$PORT_HTTP" || fail_test "could not bind healthy listener on $PORT_HTTP"
+hw_listener="$FOREIGN_LISTENER_PID"
+test_wait_for_http_ok_passes_on_200() {
+  wait_for_http_ok "http://127.0.0.1:$PORT_HTTP/healthz" "$HTTP_OK_TEST_ATTEMPTS" "$HTTP_OK_TEST_INTERVAL" 2>/dev/null
+}
+hw_rc=0; test_wait_for_http_ok_passes_on_200 || hw_rc=$?
+stop_foreign_listener "$hw_listener"
+[ "$hw_rc" -eq 0 ] || fail_test "wait_for_http_ok did not return 0 against a listener answering 200"
+pass_test "wait_for_http_ok returns 0 once the URL answers 200"
+
+echo ""
+echo "==== Testing bin/deploy option parsing ===="
+test_deploy_help_mentions_force() { bin/deploy -h 2>/dev/null | grep -qE '^\s+-f:'; }
+assert_success "deploy -h exits 0 and documents -f" test_deploy_help_mentions_force
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "deploy rejects an unknown option (10)" bin/deploy -x prod
 
 # state-apply must TERMINATE, not merely succeed. Argon2 hashing runs on
 # Dispatchers.Crypto's pool; when those threads were non-daemon they kept the JVM

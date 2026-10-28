@@ -5,7 +5,13 @@
 #   2. assemble a bundle   — tarball preserving repo-relative paths.
 #   3. upload to S3        — the artifacts bucket (OpenTofu output).
 #   4. SSM Run Command     — install this release's deploy-managed scripts/units
-#                            on the host, then run deploy-on-instance (output id).
+#                            on the host, then run deploy-on-instance.
+#   5. wait + verify       — poll the command to a terminal status, print its
+#                            output, exit with its own code on failure, then
+#                            wait for /healthz on each public URL the env's
+#                            OpenTofu outputs publish to answer 200.
+# Before any of that, the release-readiness check (bin/functions
+# assert_release_ready): on main, clean, equal to origin/main — or -f.
 source "$(dirname "$0")/common"
 
 help() {
@@ -13,19 +19,91 @@ help() {
 deploy <env> [options]
 
 Builds, bundles, uploads, and triggers an on-instance deploy via SSM Run Command
-for one environment (<env>, e.g. prod). Requires an active AWS session and a
-completed `bin/infra-apply <env>` (reads the artifacts bucket and instance id
-from that env's OpenTofu outputs).
+for one environment (<env>, e.g. prod), then waits for it to finish and verifies
+the result. Requires an active AWS session and a completed `bin/infra-apply
+<env>` (reads the artifacts bucket, the instance id and the public URLs from
+that env's OpenTofu outputs).
+
+Before building, the checkout must be ON main, CLEAN, and EQUAL to origin/main
+(after a fresh fetch); each refusal names the condition and the fixing command.
+After dispatch, the SSM command is polled to a terminal status and its captured
+output printed; a status other than Success exits with the on-instance exit
+code. Then /healthz on each public URL the env's OpenTofu outputs publish
+(app_url, public_web_url, admin_web_url: the API, public-web and admin-web
+hosts) is polled until it answers 200, and the closing summary names the bundle
+id, the SHA shipped, and the three URLs.
 
 Options:
+  -f: Force — skip the release-readiness check (ship this checkout as it stands,
+      logged with its short SHA). The rest of the run is unchanged.
   -h: Help
 EOF
   exit 0
 }
 
-while getopts ":h" opt; do
+# ── Step helpers (called from steps 4 and 5 below) ────────────────────────────
+
+# Read the public URLs the health wait (step 5) polls into HEALTH_URLS from this
+# env's OpenTofu outputs: infra/ owns which hostnames exist (infra/locals.tf) and
+# publishes them as app_url, public_web_url and admin_web_url (infra/outputs.tf),
+# so a renamed subdomain reaches this script without an edit here — never a
+# literal, never a re-derivation from APP_DOMAIN. Each read fatals on empty so a
+# missing/renamed output surfaces loudly.
+read_health_urls() {
+  local output_name url
+  HEALTH_URLS=()
+  for output_name in app_url public_web_url admin_web_url; do
+    url="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw "$output_name")"
+    [ -n "$url" ] || fatal "Could not read [$output_name] from OpenTofu outputs."
+    HEALTH_URLS+=("$url")
+  done
+}
+
+# Poll the dispatched SSM command (COMMAND_ID on INSTANCE_ID) to a terminal
+# status, print its captured output, and fatal with the on-instance exit code
+# unless that status is Success; sets SSM_STATUS. The SSM steps are the shared
+# bin/functions ones (also bin/remote's). The poll scratch file lives in
+# GEN_STAGE so the existing EXIT trap removes it. A terminal status other than
+# Success exits with the on-instance exit code (-1/non-numeric normalised to 1
+# by ssm_read_response_code; 0 under a non-Success status to 1 by
+# ssm_exit_code), after the captured output has been printed so the failing
+# step is on screen. The `|| exit $?` is what turns a fatal inside the command
+# substitution into this script's exit.
+await_on_instance_deploy() {
+  local poll_err="$GEN_STAGE/ssm-poll-err" response_code
+  SSM_STATUS="$(ssm_await_terminal_status "$COMMAND_ID" "$INSTANCE_ID" "$AWS_REGION" "$DEPLOY_SSM_POLL_INTERVAL_SECONDS" "$poll_err")" || exit $?
+  ssm_print_command_output "$COMMAND_ID" "$INSTANCE_ID" "$AWS_REGION"
+  response_code="$(ssm_read_response_code "$COMMAND_ID" "$INSTANCE_ID" "$AWS_REGION" "$poll_err")" || exit $?
+  response_code="$(ssm_exit_code "$SSM_STATUS" "$response_code")"
+  if [ "$SSM_STATUS" != "Success" ]; then
+    # Which release is serving depends on WHERE deploy-on-instance stopped, and
+    # only its printed output says: before the symlink swap (render-env, the
+    # migrations) the previous release still serves; after it (a service restart)
+    # the new one is current. So the message points at the output, not at a
+    # state it cannot know.
+    fatal -s "$response_code" "On-instance deploy of bundle [$BUNDLE_ID] ($RELEASE_SHA) ended with status [$SSM_STATUS] (exit $response_code) on [$INSTANCE_ID]. The output above shows the step that failed: a failure before the symlink swap leaves the previous release serving; a failure after it (a service restart) does not."
+  fi
+}
+
+# Wait for /healthz on each HEALTH_URLS entry (read from the env's OpenTofu
+# outputs before dispatch, step 4) to answer 200, fataling on the first that
+# never does; sets HEALTH_SUMMARY to the comma-joined list of URLs that did.
+verify_public_urls() {
+  local url
+  HEALTH_SUMMARY=""
+  for url in "${HEALTH_URLS[@]}"; do
+    log-info "Waiting for $url/healthz..."
+    wait_for_http_ok "$url/healthz" "$DEPLOY_HEALTH_ATTEMPTS" "$DEPLOY_HEALTH_INTERVAL_SECONDS" \
+      || fatal "Deploy of bundle [$BUNDLE_ID] ($RELEASE_SHA) finished on the instance but [$url/healthz] never answered 200 (see the ALB target health and 'journalctl -u unicoach-*' on [$INSTANCE_ID])."
+    HEALTH_SUMMARY="${HEALTH_SUMMARY:+$HEALTH_SUMMARY, }$url/healthz OK"
+  done
+}
+
+FORCE=""
+while getopts ":hf" opt; do
   case "$opt" in
   h) help ;;
+  f) FORCE=1 ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
   :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
@@ -40,7 +118,7 @@ if [ "$#" -gt 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "deploy accepts only an environment argument: $*"
 fi
 
-# Deploy-control config (AWS account/region) comes from .env.deploy.<env>, sourced
+# Deploy-control config (AWS account/region/profile) comes from .env.deploy.<env>, sourced
 # over the base bin/common already loaded. bin/deploy itself reads only the
 # account/region and the <env> argument; the app config it forwards to
 # gen-deployed-env, which resolves its own ENV_FILE=.env.<env> (base -> .env.<env>,
@@ -52,7 +130,25 @@ fi
 # AWS_ACCOUNT_ID before any tofu output read, build, upload, or SSM call, so a stray
 # ambient AWS profile fails loudly instead of shipping a release to the wrong account.
 unicoach_env_file "$UNICOACH_ENV" >/dev/null
+
+# The release-readiness check comes before any AWS or build work: a refusal here
+# costs nothing, and what is shipped is pinned (the SHA in the SSM comment and the
+# summary below) before the bundle is built. `${FORCE:+-f}` expands to -f only
+# when -f was passed.
+assert_release_ready ${FORCE:+-f} "$PROJECT_ROOT"
+RELEASE_SHA="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD)"
+
 load_deploy_control_env "$UNICOACH_ENV"
+
+# How the post-dispatch wait is bounded. The SSM poll interval feeds
+# ssm_await_terminal_status; the health wait polls each public URL up to
+# DEPLOY_HEALTH_ATTEMPTS times, DEPLOY_HEALTH_INTERVAL_SECONDS apart (the
+# services restart one by one behind the ALB, and a JVM takes tens of seconds to
+# come up), and each probe is itself bounded by HTTP_OK_MAX_TIME inside
+# wait_for_http_ok.
+DEPLOY_SSM_POLL_INTERVAL_SECONDS=5
+DEPLOY_HEALTH_ATTEMPTS=30
+DEPLOY_HEALTH_INTERVAL_SECONDS=5
 
 # Point this run's OpenTofu reads at <env>'s disjoint state (TF_DATA_DIR) and init
 # the partial backend with its state key. The init is not optional: an output read
@@ -194,6 +290,11 @@ aws s3 cp --region "$AWS_REGION" "$BUNDLE_PATH" "$BUNDLE_S3_URI"
 INSTANCE_ID="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw instance_id)"
 [ -n "$INSTANCE_ID" ] || fatal "Could not read [instance_id] from OpenTofu outputs."
 
+# The public URLs the health wait (step 5) polls come from the same outputs
+# (read_health_urls above). Read before send-command, so a missing output fails
+# before a deploy is dispatched.
+read_health_urls
+
 # build_deploy_command (bin/functions) builds the remote script transmitted here:
 # it installs this release's render-env / deploy-on-instance / units from the bundle
 # and only THEN invokes the now-current deploy-on-instance, so a plain `bin/deploy`
@@ -210,10 +311,19 @@ COMMAND_ID="$(aws ssm send-command \
   --region "$AWS_REGION" \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
-  --comment "unicoach deploy $BUNDLE_ID" \
+  --comment "unicoach deploy $BUNDLE_ID $RELEASE_SHA" \
   --parameters "$(ssm_shell_command_parameters "$REMOTE_DEPLOY_SCRIPT")" \
   --query "Command.CommandId" \
   --output text)"
+[ -n "$COMMAND_ID" ] || fatal "send-command returned no CommandId."
 
 log-info "SSM command [$COMMAND_ID] dispatched. Tail with:"
 log-info "  aws ssm get-command-invocation --region $AWS_REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
+
+# ── 5. Wait for the on-instance deploy, then verify the URLs ──────────────────
+# Both helpers are defined above: the first sets SSM_STATUS (and exits with the
+# on-instance code unless Success), the second HEALTH_SUMMARY.
+await_on_instance_deploy
+verify_public_urls
+
+log-info "Deployed bundle [$BUNDLE_ID] ($RELEASE_SHA) to [$UNICOACH_ENV]: SSM [$SSM_STATUS]; $HEALTH_SUMMARY."

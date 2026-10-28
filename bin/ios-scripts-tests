@@ -508,6 +508,18 @@ EOF
 RELEASE_BUILD_DIR="$WORK/iosbuild"
 EXPORT_OPTIONS_PLIST="$RELEASE_BUILD_DIR/export/ExportOptions.plist"
 
+# The repository release-ios's readiness guard reads (UNICOACH_RELEASE_REPO):
+# make_release_ready_repo's clone of a bare origin, on main, clean and pushed —
+# the state a release requires — so every case below starts from "ready" and
+# the refusal cases put it off main themselves. Without this seam the guard
+# would read the checkout this harness happens to run in, and the suite's
+# answer would depend on which branch that is. The build number is derived from
+# this repo too (one commit).
+make_release_ready_repo "$WORK/release"
+RELEASE_REPO="$WORK/release/repo"
+# Put the fixture repo back on main: the refusal cases leave it on a branch.
+release_repo_on_main() { git -C "$RELEASE_REPO" checkout -q main; }
+
 # Two-device devicectl output fixture for the ambiguous-device case.
 TWO_DEVICES="$WORK/two-devices.txt"
 cat > "$TWO_DEVICES" <<'EOF'
@@ -867,6 +879,7 @@ run_release() {
     UNICOACH_ENV_DIR="$ENV_DIR" \
     UNICOACH_DOTENV="$DOTENV" \
     UNICOACH_BUILD_DIR="$RELEASE_BUILD_DIR" \
+    UNICOACH_RELEASE_REPO="$RELEASE_REPO" \
     UNICOACH_BUILD_NUMBER="${RELEASE_BUILD_NUMBER-7}" \
     ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/release-ios" "$@"
@@ -2170,6 +2183,42 @@ test_release_automatic_signing_default() {
   export_option_has "<string>automatic</string>" || return 1
   if export_option_has "<key>provisioningProfiles</key>"; then return 1; fi
   return 0
+}
+
+# The readiness guard (bin/functions assert_release_ready): a release ships main
+# only, so a fixture repo on a branch is refused before any env or tool work —
+# the message names main and the fixing command, and no xcodebuild runs.
+test_release_refuses_off_main() {
+  write_signing_env
+  write_appstore_env
+  git -C "$RELEASE_REPO" checkout -q -b feature
+  local out rc=0
+  out="$(run_release explicit-device 2>&1)" || rc=$?
+  release_repo_on_main
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -qF "on branch [feature], not main" || return 1
+  echo "$out" | grep -qF "git switch main" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# -f bypasses the guard with a warning naming the short SHA, and the release
+# proceeds to the (shimmed) archive.
+test_release_force_bypasses_guard_with_warning() {
+  write_signing_env
+  write_appstore_env
+  git -C "$RELEASE_REPO" checkout -q -b feature
+  local out rc=0 sha
+  sha="$(git -C "$RELEASE_REPO" rev-parse --short HEAD)"
+  out="$(run_release -f explicit-device 2>&1)" || rc=$?
+  release_repo_on_main
+  [ "$rc" -eq 0 ] || { echo "$out"; return 1; }
+  echo "$out" | grep -qF "[WARNING] -f: skipping the release-readiness check" || return 1
+  echo "$out" | grep -qF "[$sha]" || return 1
+  log_has "archive"
+}
+
+test_release_help_mentions_force() {
+  run_release -h 2>/dev/null | grep -qE '^\s+-f\s'
 }
 
 # ========================== screenshot-ios tests =============================
@@ -4111,6 +4160,9 @@ assert_success "build-ios/release-ios: one dotenv derives ONE local URL for both
 assert_success "build-ios/release-ios: one dotenv derives ONE deploy URL for both" test_build_and_release_derive_the_same_deploy_url
 assert_success "release-ios: manual signing when a provisioning profile is named" test_release_manual_signing_with_profile
 assert_success "release-ios: automatic signing by default (no profile)" test_release_automatic_signing_default
+assert_success "release-ios: refuses a checkout that is off main, naming main and the fix" test_release_refuses_off_main
+assert_success "release-ios: -f bypasses the readiness guard with a warning and reaches the archive" test_release_force_bypasses_guard_with_warning
+assert_success "release-ios: -h documents -f" test_release_help_mentions_force
 
 # ios-device
 assert_success "ios-device: prints the existing per-checkout UDID, creates nothing" test_ios_device_prints_existing_udid

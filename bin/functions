@@ -958,8 +958,11 @@ assert_aws_account() {
 
 # Load a cloud env's deploy-control config and assert the AWS account, in one
 # step. $1 is the cloud-env selector (UNICOACH_ENV, e.g. prod). Resolves
-# $PROJECT_ROOT/.env.deploy.<env> (deploy-control only: AWS_ACCOUNT_ID / REGION /
-# the AWS_REGION derivation), fatals (bracketed path) if it is absent, sources it
+# $PROJECT_ROOT/.env.deploy.<env> (deploy-control only: AWS_ACCOUNT_ID, the
+# AWS_PROFILE derivation, REGION, and the AWS_REGION derivation; the AWS_PROFILE
+# one names the CLI profile that reaches that account — an exported AWS_PROFILE
+# still wins, and the account assertion below remains the guard), fatals
+# (bracketed path) if it is absent, sources it
 # under `set -a` so its keys export, then calls assert_aws_account with the sourced
 # AWS_ACCOUNT_ID so a stray ambient profile fails loudly before any tofu/aws action.
 # The single owner of the deploy-control bootstrap shared by bin/deploy,
@@ -975,6 +978,80 @@ load_deploy_control_env() {
   set +a
 
   assert_aws_account "${AWS_ACCOUNT_ID:-}"
+}
+
+# Release-readiness guard shared by bin/deploy and bin/release-ios: a release
+# ships exactly what `main` holds, so the checkout at <repo> must be ON main,
+# CLEAN, and EQUAL to origin/main (after a fresh `git fetch origin main`). Each
+# refusal fatals naming the condition and the command that fixes it, so the
+# operator never has to work out what "not ready" meant. With -f the check is
+# skipped and a warning names the short SHA that is being shipped instead — the
+# operator's explicit choice, logged so the release can be traced to it.
+#
+#   assert_release_ready [-f] <repo>
+#
+# The branch a release ships from is PROTECTED_COMMIT_BRANCH (this file), read
+# rather than retyped so the trunk is named once.
+# Takes the repository as an argument rather than reading PROJECT_ROOT because
+# bin/release-ios (which does not source bin/common) and the test harnesses point
+# it at a fixture; bin/deploy passes PROJECT_ROOT. Why equality with origin/main
+# and not merely "on main": an unpushed local commit would ship a build nobody
+# else can reproduce, and a stale checkout would ship an old one with a build
+# number that has already been used (bin/release-ios derives it from the commit
+# count). A caller running under a git hook must strip_git_hook_env first, as
+# with every other `git -C` reader in this file.
+assert_release_ready() {
+  local force=0
+  local OPTIND OPTARG opt
+  while getopts ":f" opt; do
+    case "$opt" in
+    f) force=1 ;;
+    *) fatal "assert_release_ready: unknown option [-$OPTARG]" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  # Exactly one non-empty <repo>: `git -C ""` is a no-op, so an empty or missing
+  # argument would silently judge whichever checkout the caller is standing in.
+  [ "$#" -eq 1 ] || fatal "assert_release_ready: expected exactly one argument, <repo>; got [$#]: [$*]."
+  [ -n "$1" ] || fatal "assert_release_ready: <repo> must not be empty (git -C \"\" would silently read the current directory)."
+  local repo="$1"
+
+  if [ "$force" -eq 1 ]; then
+    log-warning "-f: skipping the release-readiness check (on $PROTECTED_COMMIT_BRANCH, clean, equal to origin/$PROTECTED_COMMIT_BRANCH); shipping [$(git -C "$repo" rev-parse --short HEAD)] as it stands."
+    return 0
+  fi
+
+  local branch
+  branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD)" \
+    || fatal "Release check: [$repo] is not a git checkout (or HEAD is unborn)."
+  if [ "$branch" != "$PROTECTED_COMMIT_BRANCH" ]; then
+    fatal "Release check: [$repo] is on branch [$branch], not $PROTECTED_COMMIT_BRANCH. A release ships $PROTECTED_COMMIT_BRANCH only. Fix: git switch $PROTECTED_COMMIT_BRANCH (or pass -f to ship this branch deliberately)."
+  fi
+  # Captured with its exit status: a `git status` that itself fails prints
+  # nothing, which an inline `[ -n "$(...)" ]` would read as a clean tree.
+  local porcelain
+  porcelain="$(git -C "$repo" status --porcelain)" \
+    || fatal "Release check: could not read the working-tree status of [$repo]."
+  if [ -n "$porcelain" ]; then
+    fatal "Release check: [$repo] has uncommitted changes; a release ships a clean tree. Fix: commit them, or git stash (see git status)."
+  fi
+  local fetch_err
+  if ! fetch_err="$(git -C "$repo" fetch origin "$PROTECTED_COMMIT_BRANCH" 2>&1 >/dev/null)"; then
+    fatal "Release check: could not fetch origin $PROTECTED_COMMIT_BRANCH in [$repo]: [$fetch_err]. Fix the remote or the network, then retry."
+  fi
+  local head upstream
+  head="$(git -C "$repo" rev-parse HEAD)"
+  upstream="$(git -C "$repo" rev-parse "origin/$PROTECTED_COMMIT_BRANCH")"
+  if [ "$head" = "$upstream" ]; then
+    return 0
+  fi
+  if git -C "$repo" merge-base --is-ancestor "$head" "$upstream"; then
+    fatal "Release check: [$repo] is BEHIND origin/$PROTECTED_COMMIT_BRANCH (HEAD $(git -C "$repo" rev-parse --short "$head"), origin/$PROTECTED_COMMIT_BRANCH $(git -C "$repo" rev-parse --short "$upstream")). Fix: git pull --ff-only."
+  fi
+  if git -C "$repo" merge-base --is-ancestor "$upstream" "$head"; then
+    fatal "Release check: [$repo] is AHEAD of origin/$PROTECTED_COMMIT_BRANCH (HEAD $(git -C "$repo" rev-parse --short "$head"), origin/$PROTECTED_COMMIT_BRANCH $(git -C "$repo" rev-parse --short "$upstream")); a release ships only what is pushed. Fix: git push origin $PROTECTED_COMMIT_BRANCH."
+  fi
+  fatal "Release check: [$repo] has DIVERGED from origin/$PROTECTED_COMMIT_BRANCH (HEAD $(git -C "$repo" rev-parse --short "$head"), origin/$PROTECTED_COMMIT_BRANCH $(git -C "$repo" rev-parse --short "$upstream")). Fix: git pull --ff-only after reconciling the local commits."
 }
 
 # Encode a string as a complete JSON string literal (surrounding quotes included),
@@ -1014,6 +1091,172 @@ ssm_shell_command_parameters() {
     return 0
   fi
   printf '{"commands":[%s]}' "$(json_string "$1")"
+}
+
+# ── SSM Run Command: await, print, read the exit code ─────────────────────────
+# The steps every SSM dispatch needs after send-command — await the terminal
+# status, print the captured output, read the ResponseCode, and turn status +
+# code into the exit code — shared by bin/remote (ops tools) and bin/deploy (the
+# release). Each takes its inputs as arguments — command id, instance id, region
+# — rather than reading a caller's globals, and each writes its answer to
+# stdout, so a caller captures it with `x="$(...)" || exit $?` (a fatal inside a
+# command substitution exits only the subshell; the `|| exit` is what stops the
+# caller). Diagnostics go to stderr.
+
+# Consecutive get-command-invocation failures tolerated before giving up. A
+# default, not a literal in the loop, so a caller can widen it.
+: "${SSM_POLL_MAX_FAILURES:=10}"
+
+# Poll get-command-invocation to a terminal status and print that status
+# (Success | Cancelled | TimedOut | Failed). A call legitimately fails for a beat
+# right after send-command (InvocationDoesNotExist, until the invocation
+# registers), so a single failure is treated as "still pending". But a real API
+# failure — auth expiry, throttle, a deleted command — would otherwise be folded
+# into that same pending branch and poll forever with no diagnostic. So: capture
+# stderr, log-warning it with the command/instance context on each failed poll,
+# and cap consecutive failures (independent of SSM's own -t timeout) so a
+# sustained failure fatals loudly instead of spinning. A very small or zero poll
+# interval polls aggressively and can trip SSM throttling, which counts toward
+# the cap — the operator's explicit choice.
+#
+#   ssm_await_terminal_status <command-id> <instance-id> <region> <poll-interval-seconds> <poll-err-file>
+#
+# <poll-err-file> is a scratch file the CALLER owns (and removes in its EXIT trap)
+# for capturing a failed poll's stderr; a function cannot register a trap without
+# clobbering the caller's.
+ssm_await_terminal_status() {
+  local command_id="$1" instance_id="$2" region="$3" poll_interval="$4" poll_err_file="$5"
+  local consecutive_failures=0 poll_err status
+  log-info "SSM command [$command_id] dispatched; polling for completion..."
+  while true; do
+    poll_err=""
+    if status="$(aws ssm get-command-invocation \
+      --region "$region" \
+      --command-id "$command_id" \
+      --instance-id "$instance_id" \
+      --query "Status" \
+      --output text 2>"$poll_err_file")"; then
+      consecutive_failures=0
+    else
+      poll_err="$(cat "$poll_err_file")"
+      consecutive_failures=$((consecutive_failures + 1))
+      log-warning "poll of command [$command_id] on [$instance_id] failed (attempt $consecutive_failures/$SSM_POLL_MAX_FAILURES): [$poll_err]"
+      if [ "$consecutive_failures" -ge "$SSM_POLL_MAX_FAILURES" ]; then
+        fatal "giving up: [$SSM_POLL_MAX_FAILURES] consecutive get-command-invocation failures for command [$command_id] on [$instance_id]; last error: [$poll_err]"
+      fi
+      status="Pending"
+    fi
+    case "$status" in
+    Success | Cancelled | TimedOut | Failed) break ;;
+    *) sleep "$poll_interval" ;;
+    esac
+  done
+  echo "$status"
+}
+
+# Print the command's captured stdout (to stdout) and stderr (to stderr) via
+# --query/--output text (no jq: the dev shell provides awscli2, not jq).
+# StandardOutputContent/StandardErrorContent are capped at ~24KB by SSM; when the
+# caller sent the command with CloudWatch output enabled it passes the log group
+# as $4 and the closing note says where the untruncated record is.
+#
+#   ssm_print_command_output <command-id> <instance-id> <region> [<cloudwatch-log-group>]
+ssm_print_command_output() {
+  local command_id="$1" instance_id="$2" region="$3" log_group="${4:-}"
+  aws ssm get-command-invocation \
+    --region "$region" --command-id "$command_id" --instance-id "$instance_id" \
+    --query "StandardOutputContent" --output text
+  aws ssm get-command-invocation \
+    --region "$region" --command-id "$command_id" --instance-id "$instance_id" \
+    --query "StandardErrorContent" --output text >&2
+  if [ -n "$log_group" ]; then
+    log-info "Output above is capped at ~24KB by SSM; the full record is in CloudWatch log group [$log_group]."
+  else
+    log-info "Output above is capped at ~24KB by SSM."
+  fi
+}
+
+# Print the command's own exit code (ResponseCode). A failure to READ it is the
+# caller's own operational failure, NOT the command's exit: fatal (band 1-9) with
+# context rather than folding it into a bare `exit 1` that would be
+# indistinguishable from the command genuinely exiting 1. SSM reports -1 when it
+# never captured the exit (e.g. the command timed out or the agent went away
+# before the script returned); any -1/non-numeric value is normalised to 1 so the
+# caller still exits non-zero — the Status line and printed output already
+# explain why.
+#
+#   ssm_read_response_code <command-id> <instance-id> <region> <poll-err-file>
+ssm_read_response_code() {
+  local command_id="$1" instance_id="$2" region="$3" poll_err_file="$4"
+  local response_code
+  if ! response_code="$(aws ssm get-command-invocation \
+    --region "$region" --command-id "$command_id" --instance-id "$instance_id" \
+    --query "ResponseCode" --output text 2>"$poll_err_file")"; then
+    fatal "could not read ResponseCode for command [$command_id] on [$instance_id]: [$(cat "$poll_err_file")]"
+  fi
+  if [[ ! "$response_code" =~ ^-?[0-9]+$ ]] || [ "$response_code" -lt 0 ]; then
+    response_code=1
+  fi
+  echo "$response_code"
+}
+
+# Print the exit code a caller should exit with, given the terminal status and
+# the ResponseCode already read: the code itself, except that a status other
+# than Success with a 0 ResponseCode (a Cancelled command that never ran)
+# becomes 1. "A command that did not succeed never exits 0" is one rule for both
+# callers, so it lives here rather than in either of them.
+#
+#   ssm_exit_code <status> <response-code>
+ssm_exit_code() {
+  local status="$1" code="$2"
+  if [ "$status" != "Success" ] && [ "$code" -eq 0 ]; then
+    code=1
+  fi
+  echo "$code"
+}
+
+# ── HTTP health wait ──────────────────────────────────────────────────────────
+# Per-probe curl bounds: a wedged server that accepts and never answers would
+# otherwise hold one attempt forever. Defaults, so a caller can tune them.
+: "${HTTP_OK_CONNECT_TIMEOUT:=5}"
+: "${HTTP_OK_MAX_TIME:=10}"
+
+# Poll `GET <url>` until it answers HTTP 200, at most <attempts> times <interval>
+# seconds apart; 0 once it does, 1 (after a log-error naming the URL, the
+# attempts spent, the last status and the last curl error) when the attempts run
+# out. Attempts and interval are the CALLER's named values — bin/deploy's health
+# wait after a restart — not literals in this loop. Exactly 200, not curl's -f
+# (any 2xx/3xx): a health endpoint that redirects or answers 204 is not the
+# "serving" this asserts. curl's stderr (-S: DNS failure, refused, TLS error,
+# timeout) is kept per probe in a scratch file this function owns and removes,
+# because that text is the only thing that says WHY a URL never answered.
+#
+#   wait_for_http_ok <url> <attempts> <interval-seconds>
+wait_for_http_ok() {
+  local url="$1" attempts="$2" interval="$3"
+  local attempt code curl_rc curl_err_file last_err=""
+  curl_err_file="$(mktemp)"
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    curl_rc=0
+    code="$(curl -sS -o /dev/null -w '%{http_code}' \
+      --connect-timeout "$HTTP_OK_CONNECT_TIMEOUT" --max-time "$HTTP_OK_MAX_TIME" \
+      "$url" 2> "$curl_err_file")" || { curl_rc=$?; code=""; }
+    if [ "$curl_rc" -eq 0 ]; then
+      last_err=""
+    else
+      last_err="curl exit $curl_rc: $(cat "$curl_err_file")"
+    fi
+    if [ "$code" = "200" ]; then
+      rm -f "$curl_err_file"
+      return 0
+    fi
+    if [ "$attempt" -lt "$attempts" ]; then
+      sleep "$interval"
+    fi
+  done
+  rm -f "$curl_err_file"
+  log-error "[$url] did not answer HTTP 200 within $attempts attempts ($interval s apart); last status [${code:-no response}]; last curl error [${last_err:-none}]."
+  return 1
 }
 
 # Build the remote install-then-deploy script that bin/deploy transmits via SSM
