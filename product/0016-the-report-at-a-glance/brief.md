@@ -5,8 +5,9 @@
 ## Status
 
 - **Phase:** EXECUTE — gates 1 and 2 passed 2026-10-26; five slices in
-  `spec.md`; `glance/01/borrowing-and-merit-in-rows` is the first to start,
-  alone (D12). /slice appends the ledger below after each land.
+  `spec.md`; `glance/01` LANDED (RFC 260), so `glance/02`, `glance/03`,
+  `glance/04` and `glance/05` are unblocked (D12). /slice appends the ledger
+  below after each land.
 - **Gate 1 (prioritisation):** **PASSED 2026-10-26 — Ian approved all eight
   defaults, verbatim: "approve all"**, after two questions and one amendment
   recorded under D3 below. D1-D8 stand as written. D8 is `standing` for the
@@ -18,7 +19,25 @@
   listed in its METHOD), `research/row-shaped-seams.md` (1,125 lines, internal,
   every claim `path:line`), `research/page-inventory.md` (961 lines, measured on
   62 distinct real renders of `main`, mocks with information-loss checklists).
-- **Ledger:** (empty — no slice has landed)
+- **Ledger:**
+  - `glance/01/borrowing-and-merit-in-rows` LANDED as RFC 260 (`main@135fc796`,
+    2026-10-27) — on the Family Cost Report each school's merit aid is now a
+    two-row table and its graduates' borrowing a table with one row per loan
+    type, each captioned once with a link to the school's own Common Data Set
+    filing. The hedges every school repeated are said once per page in "What
+    kind of numbers these are" (K1 merit is a grant, K2 the borrowing cohort, K3
+    the Scorecard debt is undated), and the merit figures now get their
+    self-report kind sentence (D10). The federal median debt stays one sentence
+    (D4). Lands the conventions every later `glance` slice inherits: a
+    `<caption>` and `data-publisher` on every report table, and an asserted
+    shape rule (`CostReportShapeTest`) with two shrinking exemption sets — the
+    unconverted blocks (award grid, National Merit, program returns) and the
+    still-uncaptioned price and summary tables. The coach is untouched (D8).
+    Measured, not asserted: the three-school page went from 1,404 visible words
+    (214 in tables) to 1,299 (423 in tables). Spec drift found: the caption rule
+    needed its own exemption set (`UNCAPTIONED_TABLES`, RFC 260 D-B) until
+    `glance/02` captions those two tables. 36 lenses, 12 should-fix findings
+    fixed; full-scope hook passed.
 
 ## The question
 
