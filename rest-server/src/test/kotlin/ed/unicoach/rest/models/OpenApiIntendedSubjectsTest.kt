@@ -13,7 +13,8 @@ import kotlin.test.assertTrue
  * actually applies.
  *
  * Nothing else in the default gate opens openapi.yaml for these two operations
- * (`bin/test-fuzz` runs only when the spec is staged), so without this guard a
+ * (`bin/test-fuzz` runs only when one of its inputs is staged, never for a
+ * Kotlin-only change; see bin/gate-scope's FUZZ_INPUTS), so without this guard a
  * bump of [SubjectVocabularyService.MAX_QUERY_LENGTH] or
  * [IntendedSubjectsDao.MAX_SUBJECTS] leaves the published contract quietly
  * stale — a document that states a bound the server no longer enforces.

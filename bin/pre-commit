@@ -146,11 +146,13 @@ GATE_SCOPE_OUT="$("$PROJECT_ROOT/bin/gate-scope")" || {
 SCOPE=""
 GRADLE=""
 HARNESSES=""
+FUZZ=""
 while IFS='=' read -r key value; do
   case "$key" in
   scope) SCOPE="$value" ;;
   gradle) GRADLE="$value" ;;
   harnesses) HARNESSES="$value" ;;
+  fuzz) FUZZ="$value" ;;
   # A line gate-scope grew that this reader does not know is a contract change
   # between two files that must agree. Refusing beats ignoring: ignoring would
   # run the old gate shape against a new answer and say nothing.
@@ -161,6 +163,10 @@ done <<< "$GATE_SCOPE_OUT"
 if [ -z "$SCOPE" ] || [ -z "$GRADLE" ]; then
   fatal "bin/gate-scope did not report a scope and a gradle decision"
 fi
+case "$FUZZ" in
+yes | no) ;;
+*) fatal "bin/gate-scope reported fuzz=[$FUZZ]; expected yes or no" ;;
+esac
 
 # Two concurrent gates: the test half, and the format/lint check. ktlint lives
 # only in bin/format (no Gradle ktlint plugin), so `bin/format -c` is the single
@@ -236,21 +242,22 @@ if [ "$FAILED" -ne 0 ]; then
   exit 2
 fi
 
-# Fuzz the committed REST contract only when this commit changes it. test-fuzz
-# boots a freshly-built rest-server and runs Schemathesis against
-# api-specs/openapi.yaml — too heavy to run on every commit, so it is gated on
-# the spec being staged. It runs sequentially, after the concurrent checks pass,
-# so a commit already destined to fail does not pay the multi-minute fuzz cost
-# and so two gradle builds (bin/check, build-rest-server) never contend.
-SPEC_REL_PATH="api-specs/openapi.yaml"
-if git -C "$PROJECT_ROOT" diff --cached --name-only --diff-filter=ACMR -- "$SPEC_REL_PATH" | grep -q .; then
-  log-info "[$SPEC_REL_PATH] is staged; running bin/test-fuzz against the REST contract..."
+# Fuzz the committed REST contract only when this commit changes one of the
+# fuzz harness's inputs -- the contract, the harness, or the tooling it installs.
+# Which paths those are is gate-scope's answer (fuzz=), for the same reason the
+# test half is: one map, in one tested place. test-fuzz boots a freshly-built
+# rest-server and runs Schemathesis -- too heavy to run on every commit. It runs
+# sequentially, after the concurrent checks pass, so a commit already destined
+# to fail does not pay the multi-minute fuzz cost and so two gradle builds
+# (bin/check, build-rest-server) never contend.
+if [ "$FUZZ" = "yes" ]; then
+  log-info "bin/gate-scope says a contract-fuzzing input is staged; running bin/test-fuzz..."
   if ! "$PROJECT_ROOT/bin/test-fuzz"; then
     log-info "Contract fuzzing failed. Pre-commit checks failed."
     exit 2
   fi
 else
-  log-info "[$SPEC_REL_PATH] unchanged; skipping contract fuzzing."
+  log-info "No contract-fuzzing input is staged; skipping contract fuzzing."
 fi
 
 # Record the tree this run validated, as the local stand-in for CI (there is

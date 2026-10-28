@@ -7,7 +7,7 @@
 # the one failure mode nobody sees. So these assertions come in two kinds.
 #
 #  * CLASSIFICATION. Throwaway `git init` repos with a known staged set, run
-#    through the REAL bin/gate-scope, asserting its three stdout lines. Every row
+#    through the REAL bin/gate-scope, asserting its four stdout lines. Every row
 #    of the table, plus the five fail-closed directions the header of
 #    bin/gate-scope names: unrecognised path, mixed set, empty index, a rename
 #    across a scope boundary, and an undeclared harness.
@@ -126,20 +126,27 @@ gs_classify() { # <repo>
   GS_SCOPE="$(sed -n 's/^scope=//p' "$GS_OUT")"
   GS_GRADLE="$(sed -n 's/^gradle=//p' "$GS_OUT")"
   GS_HARNESSES="$(sed -n 's/^harnesses=//p' "$GS_OUT")"
+  GS_FUZZ="$(sed -n 's/^fuzz=//p' "$GS_OUT")"
 }
 
-# The whole contract of one run: exit 0, exactly the three key=value lines on
-# stdout and nothing else, and the three values.
+# The whole contract of one run: exit 0, exactly the four key=value lines on
+# stdout and nothing else, a yes|no fuzz value, and the three scope values. The
+# fuzz VALUE is asserted by gs_fuzz_case below, so the scope rows need not each
+# restate it.
 gs_expect() { # <repo> <scope> <gradle> <harnesses>
   local lines
   gs_classify "$1"
   [ "$GS_STATUS" -eq 0 ] ||
     { log-error "gate-scope exited [$GS_STATUS]: [$(head -3 "$GS_ERR")]"; return 1; }
   lines="$(wc -l < "$GS_OUT" | tr -d ' ')"
-  [ "$lines" -eq 3 ] ||
-    { log-error "expected 3 stdout lines, got [$lines]: [$(cat "$GS_OUT")]"; return 1; }
-  grep -qvE '^(scope|gradle|harnesses)=' "$GS_OUT" &&
+  [ "$lines" -eq 4 ] ||
+    { log-error "expected 4 stdout lines, got [$lines]: [$(cat "$GS_OUT")]"; return 1; }
+  grep -qvE '^(scope|gradle|harnesses|fuzz)=' "$GS_OUT" &&
     { log-error "stdout carries a non key=value line: [$(cat "$GS_OUT")]"; return 1; }
+  case "$GS_FUZZ" in
+  yes | no) ;;
+  *) log-error "fuzz=[$GS_FUZZ], expected yes or no"; return 1 ;;
+  esac
   [ "$GS_SCOPE" = "$2" ] ||
     { log-error "scope=[$GS_SCOPE], expected [$2] (reason: $(cat "$GS_ERR"))"; return 1; }
   [ "$GS_GRADLE" = "$3" ] ||
@@ -522,6 +529,40 @@ test_declarations_were_read() {
 assert_success "the three declarations are readable out of bin/gate-scope" \
   test_declarations_were_read
 
+# FUZZ_INPUTS mirrors bin/test-fuzz by hand, so hold it to the real tree from
+# both sides that can be derived. An entry that no longer exists is a rename the
+# list missed (that path's successor would fuzz nowhere). An env layer the
+# harness names in ENV_FILES, plus the .env bin/common always reads, that the
+# list lacks is a config change that lands unfuzzed.
+DECLARED_FUZZ=()
+while IFS= read -r line; do
+  [ -n "$line" ] && DECLARED_FUZZ+=("$line")
+done < <(declared_array FUZZ_INPUTS)
+
+test_every_fuzz_input_exists() {
+  local entry missing=()
+  [ "${#DECLARED_FUZZ[@]}" -ge 2 ] || { log-error "could not read FUZZ_INPUTS out of bin/gate-scope"; return 1; }
+  for entry in "${DECLARED_FUZZ[@]}"; do
+    [ -e "$PROJECT_ROOT/$entry" ] || missing+=("$entry")
+  done
+  [ "${#missing[@]}" -eq 0 ] ||
+    { log-error "FUZZ_INPUTS names path(s) absent from this checkout: ${missing[*]}"; return 1; }
+}
+assert_success "every FUZZ_INPUTS entry exists in this checkout" test_every_fuzz_input_exists
+
+test_every_fuzz_env_layer_is_an_input() {
+  local env_files layer missing=()
+  env_files="$(sed -n 's/^export ENV_FILES="\(.*\)"$/\1/p' "$PROJECT_ROOT/bin/test-fuzz")"
+  [ -n "$env_files" ] || { log-error "could not read ENV_FILES out of bin/test-fuzz"; return 1; }
+  for layer in .env ${env_files//:/ }; do
+    list_contains "$layer" "${DECLARED_FUZZ[@]}" || missing+=("$layer")
+  done
+  [ "${#missing[@]}" -eq 0 ] ||
+    { log-error "env layer(s) bin/test-fuzz reads but FUZZ_INPUTS lacks: ${missing[*]}"; return 1; }
+}
+assert_success "every env layer bin/test-fuzz reads is a FUZZ_INPUTS entry" \
+  test_every_fuzz_env_layer_is_an_input
+
 # The sweep gate-scope's own comment describes: by literal `.prime/` MENTION, not
 # by resolved path, because ship- and docs-scripts-tests compose their targets
 # through a variable ("$SHIP_SCRIPTS/ship-lock") and an exact-path map would not
@@ -592,6 +633,94 @@ test_every_real_harness_is_known() {
 assert_success "every bin/*scripts-tests except ios-scripts-tests is in KNOWN_HARNESSES" \
   test_every_real_harness_is_known
 
+echo "==== contract fuzzing: fuzz= says whether bin/test-fuzz must run ===="
+
+# Classify <repo> and expect this fuzz answer. The scope is not asserted here --
+# the rows above own it -- only that the run exited 0 and fuzz= is <want>, with
+# the exit status and gate-scope's own reason in the failure message.
+gs_expect_fuzz() { # <repo> <yes|no>
+  gs_classify "$1"
+  [ "$GS_STATUS" -eq 0 ] ||
+    { log-error "gate-scope exited [$GS_STATUS]: [$(head -3 "$GS_ERR")]"; return 1; }
+  [ "$GS_FUZZ" = "$2" ] ||
+    { log-error "fuzz=[$GS_FUZZ], expected [$2] (stderr: $(cat "$GS_ERR"))"; return 1; }
+}
+
+# Stage these paths in a fresh repo and expect this fuzz answer.
+gs_fuzz_case() { # <yes|no> <relpath...>
+  local want="$1" repo
+  shift
+  repo="$(gs_repo)"
+  gs_modules "$repo"
+  gs_stage "$repo" "$@"
+  gs_expect_fuzz "$repo" "$want"
+}
+
+assert_success "the REST contract alone fuzzes" gs_fuzz_case yes "api-specs/openapi.yaml"
+assert_success "bin/test-fuzz alone fuzzes" gs_fuzz_case yes "bin/test-fuzz"
+assert_success "tools/fuzz/uv.lock alone fuzzes" gs_fuzz_case yes "tools/fuzz/uv.lock"
+assert_success "tools/fuzz/pyproject.toml alone fuzzes" gs_fuzz_case yes "tools/fuzz/pyproject.toml"
+assert_success "schemathesis.toml alone fuzzes" gs_fuzz_case yes "schemathesis.toml"
+assert_success ".env.fuzz alone fuzzes" gs_fuzz_case yes ".env.fuzz"
+assert_success ".env.dev alone fuzzes" gs_fuzz_case yes ".env.dev"
+assert_success ".env alone fuzzes" gs_fuzz_case yes ".env"
+assert_success ".env.test (not a layer bin/test-fuzz reads) does not fuzz" gs_fuzz_case no ".env.test"
+assert_success "one fuzz input in a mixed set fuzzes" \
+  gs_fuzz_case yes "service/src/main/kotlin/A.kt" "CLAUDE.md" "tools/fuzz/uv.lock"
+
+# The near misses: a sibling of an exact entry, a prefix of the directory entry,
+# and the directory entry's name as a file. Each would fuzz under a sloppier
+# match, and each costs a multi-minute run it cannot need.
+assert_success "another bin/ script does not fuzz" gs_fuzz_case no "bin/test"
+assert_success "bin/test-fuzz-notes (a longer name) does not fuzz" gs_fuzz_case no "bin/test-fuzz-notes"
+assert_success "tools/fuzzer/x (a prefix of tools/fuzz/) does not fuzz" gs_fuzz_case no "tools/fuzzer/x"
+assert_success "a Kotlin route change does not fuzz" \
+  gs_fuzz_case no "rest-server/src/main/kotlin/Routing.kt"
+assert_success "a Markdown change does not fuzz" gs_fuzz_case no "CLAUDE.md"
+
+test_empty_index_does_not_fuzz() {
+  local repo
+  repo="$(gs_repo)"
+  gs_expect "$repo" full yes ALL || return 1
+  gs_expect_fuzz "$repo" no
+}
+assert_success "an empty index does not fuzz (nothing staged can change the answer)" \
+  test_empty_index_does_not_fuzz
+
+# Deleting the lock breaks fuzzing, so a delete-only diff must fuzz.
+test_deleted_lock_fuzzes() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "tools/fuzz/uv.lock"
+  gs_commit "$repo" base
+  git -C "$repo" rm -q -- "tools/fuzz/uv.lock"
+  gs_expect_fuzz "$repo" yes
+}
+assert_success "deleting tools/fuzz/uv.lock fuzzes" test_deleted_lock_fuzzes
+
+# A rename OUT of tools/fuzz/ counts on its source side (--no-renames).
+test_rename_out_of_fuzz_fuzzes() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "tools/fuzz/pyproject.toml"
+  gs_commit "$repo" base
+  git -C "$repo" mv -- "tools/fuzz/pyproject.toml" "tools/pyproject.toml"
+  gs_expect_fuzz "$repo" yes
+}
+assert_success "a rename out of tools/fuzz/ fuzzes" test_rename_out_of_fuzz_fuzzes
+
+# The decision reaches stderr by name, so a hook log says why fuzzing ran.
+test_fuzz_reason_on_stderr() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" "bin/test-fuzz"
+  gs_classify "$repo"
+  grep -q 'contract fuzzing: yes -- \[bin/test-fuzz\]' "$GS_ERR" ||
+    { log-error "stderr does not name the fuzz input: [$(cat "$GS_ERR")]"; return 1; }
+}
+assert_success "the fuzz decision and the input that caused it are logged to stderr" \
+  test_fuzz_reason_on_stderr
+
 echo "==== the grammar and the streams ===="
 
 USAGE_REPO="$(gs_repo)"
@@ -633,9 +762,9 @@ test_streams_are_separated() {
   [ -s "$GS_ERR" ] || { log-error "no reason was written to stderr"; return 1; }
   grep -q 'gate scope: ios-app' "$GS_ERR" ||
     { log-error "stderr does not carry the reason: [$(cat "$GS_ERR")]"; return 1; }
-  grep -q 'ios-app' "$GS_OUT" && [ "$(wc -l < "$GS_OUT" | tr -d ' ')" -eq 3 ]
+  grep -q 'ios-app' "$GS_OUT" && [ "$(wc -l < "$GS_OUT" | tr -d ' ')" -eq 4 ]
 }
-assert_success "a normal run writes only the three key=value lines to stdout, the reason to stderr" \
+assert_success "a normal run writes only the four key=value lines to stdout, the reason to stderr" \
   test_streams_are_separated
 
 end_tests

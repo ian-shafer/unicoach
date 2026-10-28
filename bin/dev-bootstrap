@@ -59,7 +59,8 @@ cat > "$HOOK_DIR/pre-commit" << 'HOOK'
 #!/usr/bin/env bash
 # Installed by bin/dev-bootstrap. Delegates to the committed gate script so the
 # hook never drifts from bin/pre-commit. bin/pre-commit runs bin/test-fuzz when
-# api-specs/openapi.yaml is staged. Commit from inside `nix develop` so the
+# bin/gate-scope reports a contract-fuzzing input staged (fuzz=yes). Commit from
+# inside `nix develop` so the
 # toolchain is on PATH.
 "$(git rev-parse --show-toplevel)/bin/pre-commit"
 HOOK

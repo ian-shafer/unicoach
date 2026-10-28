@@ -9,9 +9,10 @@ import kotlin.test.assertEquals
  * Enforces the openapi.yaml <-> college-search coupling (RFC 137): the
  * published `q` bound, `limit` default, and clamp range must equal the
  * constants the server actually applies. Nothing else in the default gate
- * opens openapi.yaml for this operation (`bin/test-fuzz` runs only when the
- * spec is staged), so without this guard a bump of either side leaves the
- * other quietly stale.
+ * opens openapi.yaml for this operation (`bin/test-fuzz` runs only when one of
+ * its inputs is staged, never for a Kotlin-only change; see bin/gate-scope's
+ * FUZZ_INPUTS), so without this guard a bump of either side leaves the other
+ * quietly stale.
  */
 class OpenApiCollegeSearchTest {
   @Test

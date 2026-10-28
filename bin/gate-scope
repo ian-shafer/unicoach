@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The single path-to-harness map (RFC 214). Given a repository's STAGED set, says
-# what the commit gate must run: whether Gradle is needed, and which of the shell
-# harnesses in bin/shell-tests can observe those paths.
+# what the commit gate must run: whether Gradle is needed, which of the shell
+# harnesses in bin/shell-tests can observe those paths, and whether contract
+# fuzzing (bin/test-fuzz) must run.
 #
 # THIS IS A CORRECTNESS CLAIM, NOT A CONFIGURATION TABLE. If a row here is wrong,
 # a defect reaches main and the gate reports green -- the worst failure this repo
@@ -36,7 +37,7 @@ gate-scope [options]
 Classifies a repository's STAGED set and prints what the commit gate must run.
 bin/pre-commit is its caller.
 
-Writes exactly three key=value lines to stdout:
+Writes exactly four key=value lines to stdout:
 
   scope=<name>              full | markdown-docs | product-docs | prime-scripts
                             | ios-app | module-source
@@ -45,6 +46,10 @@ Writes exactly three key=value lines to stdout:
                             "whatever bin/shell-tests runs", so a newly added
                             harness is covered with no edit here; an empty value
                             means none
+  fuzz=yes|no               whether bin/test-fuzz must run: yes when any staged
+                            path is one of its inputs (the REST contract, the
+                            harness, its uv project, its config). Independent of
+                            scope.
 
 The reason for the classification is written to stderr, in words.
 
@@ -165,6 +170,33 @@ PRIME_HARNESSES="ship-scripts-tests docs-scripts-tests db-scripts-tests"
 # psql and never starts the JVM.
 MODULE_SOURCE_HARNESSES="scripts-tests web-assets-scripts-tests"
 
+# Contract fuzzing's inputs: the paths whose change can change bin/test-fuzz's
+# answer without any Kotlin changing. The contract it fuzzes, the harness itself,
+# the uv project that pins Schemathesis and everything beneath it, the check
+# config it passes Schemathesis (schemathesis.toml), and the three env layers it
+# runs on (.env, which bin/common always reads, and the .env.dev:.env.fuzz pair
+# its ENV_FILES line names). A lock bump that re-admits a broken hypothesis release is
+# the failure this catches: without it the bump lands green and the next spec
+# change fails as "contract drift" (a8567607). A directory entry ends in `/` and
+# matches everything under it; any other entry is an exact path.
+#
+# This list mirrors bin/test-fuzz by hand, so bin/gate-scope-scripts-tests holds
+# it to the real tree: every entry must exist, and every env layer bin/test-fuzz
+# names in ENV_FILES must be listed.
+#
+# Kotlin is deliberately absent: a route change can drift from the contract too,
+# but fuzzing every module-source commit is the multi-minute cost the spec-only
+# trigger was chosen to avoid. That trade is unchanged here.
+FUZZ_INPUTS=(
+  api-specs/openapi.yaml
+  bin/test-fuzz
+  tools/fuzz/
+  schemathesis.toml
+  .env
+  .env.dev
+  .env.fuzz
+)
+
 # ---------------------------------------------------------------------------
 # Rule 5: the anti-orphan sweep. Runs BEFORE any classification, so a repository
 # with an undeclared harness fails whatever the diff is -- including a `full`
@@ -236,12 +268,42 @@ is_module_source() {
   return 1
 }
 
+# Is $1 one of FUZZ_INPUTS?
+is_fuzz_input() {
+  local path="$1" input
+  for input in "${FUZZ_INPUTS[@]}"; do
+    case "$input" in
+    */) case "$path" in "$input"*) return 0 ;; esac ;;
+    *) [ "$path" = "$input" ] && return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Fuzzing runs when ANY staged path is an input -- the opposite quantifier to the
+# scope rows, which need EVERY path to qualify, and for the same fail-closed
+# reason: one input in a mixed set is enough to change the fuzz answer. Deletes
+# count (deleting uv.lock breaks fuzzing), and --no-renames above means a rename
+# into or out of tools/fuzz/ counts on both sides. An empty index stages nothing
+# that could change the answer, so it is `no`.
+FUZZ=no
+FUZZ_REASON="no staged path is a contract-fuzzing input"
+for staged_path in ${STAGED[@]+"${STAGED[@]}"}; do
+  if is_fuzz_input "$staged_path"; then
+    FUZZ=yes
+    FUZZ_REASON="[$staged_path] is a contract-fuzzing input"
+    break
+  fi
+done
+
 emit() {
   local scope="$1" gradle="$2" harnesses="$3" reason="$4"
   log-info "gate scope: $scope -- $reason"
+  log-info "contract fuzzing: $FUZZ -- $FUZZ_REASON"
   echo "scope=$scope"
   echo "gradle=$gradle"
   echo "harnesses=$harnesses"
+  echo "fuzz=$FUZZ"
   exit 0
 }
 
