@@ -2,6 +2,7 @@ package ed.unicoach.web.render
 
 import ed.unicoach.coaching.admissions.CdsCitation
 import ed.unicoach.coaching.admissions.MeritAidWire
+import ed.unicoach.coaching.admissions.MeritPractice
 import ed.unicoach.coaching.costs.ArrangementCost
 import ed.unicoach.coaching.costs.BorrowingCoverage
 import ed.unicoach.coaching.costs.BorrowingWire
@@ -15,8 +16,10 @@ import ed.unicoach.coaching.costs.ComponentRole
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.CostLine
 import ed.unicoach.coaching.costs.LineOrigin
+import ed.unicoach.coaching.costs.LoanRow
 import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.NetPrice
+import ed.unicoach.coaching.costs.OwedAverage
 import ed.unicoach.coaching.costs.ProgramReturnCollege
 import ed.unicoach.coaching.costs.ProgramReturnCopy
 import ed.unicoach.coaching.costs.ProgramReturnProgram
@@ -30,8 +33,11 @@ import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.AssuranceTierGrouping
 import ed.unicoach.coaching.costs.canonical.CoveredFigure
 import ed.unicoach.coaching.costs.canonical.FigureIdentity
+import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.FilingLink
+import ed.unicoach.coaching.costs.canonical.MeritMeasure
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
+import ed.unicoach.coaching.costs.canonical.SpokenTierGroup
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
 import ed.unicoach.coaching.testing.CorruptAwardResidencyBasisException
 import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
@@ -39,6 +45,7 @@ import ed.unicoach.coaching.testing.PublishedPackage
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.common.util.PublishedGpa
 import ed.unicoach.common.util.UsDate
+import ed.unicoach.common.util.WholeCount
 import ed.unicoach.db.models.ApplyDeadline
 import ed.unicoach.db.models.AutomaticAward
 import ed.unicoach.db.models.AutomaticAwardBand
@@ -70,6 +77,7 @@ import kotlinx.html.ThScope
 import kotlinx.html.a
 import kotlinx.html.aside
 import kotlinx.html.button
+import kotlinx.html.caption
 import kotlinx.html.div
 import kotlinx.html.form
 import kotlinx.html.h1
@@ -203,6 +211,87 @@ internal const val NOT_REPORTED = "Not reported by this school"
 
 /** The blank for a public school's tuition when the family's state is not on file. */
 private const val TUITION_WITHHELD = "Not shown \u2014 the state the family lives in is not on file"
+
+/**
+ * The blank for a Common Data Set cell this filing simply lacks -- a merit
+ * measure the school did not report, or a loan type's average with no status
+ * beside it (RFC 260 D-A).
+ *
+ * The TABLE's own absence words, because a merit figure carries no
+ * [FigureStatus] to speak through [FigureStatusCopy]: `MeritPractice` holds a
+ * measure or null. It says what the FILING does not carry and nothing about
+ * why, which is all the row knows. `internal` for [NOT_REPORTED]'s reason: the
+ * tests assert on this string, not on a copy of it.
+ */
+internal const val NOT_IN_FILING = "Not in this filing."
+
+/**
+ * The borrowed cell for a loan type whose average is shown and whose counted
+ * pair is not (RFC 260 D-A).
+ *
+ * NEUTRAL ON PURPOSE. A missing pair is one of three facts -- the school's
+ * silence, our own unread denominator, or the school's own contradiction (D6)
+ * -- and D6 says the contradiction is never spoken, so a cell that named any
+ * one of them would be wrong for the other two. The gap paragraphs under the
+ * table say whose silence it is where that is ours or the publisher's to say.
+ */
+internal const val NO_SHARE_SHOWN = "No share is shown here."
+
+/**
+ * The attribute every report table names its publisher in (RFC 260): the
+ * `MoneySource.value` of the one publisher of this table's figures.
+ *
+ * Machine-readable, never rendered: it is what the shape rule
+ * (`CostReportShapeTest`) reads to prove every table says whose figures it
+ * holds, so a table added without a publisher fails a test rather than reading
+ * as the page's own numbers.
+ */
+internal const val DATA_PUBLISHER = "data-publisher"
+
+// The merit table's words (RFC 260, brief 0016). The caption names the filing
+// and the cohort once; the column and row headers carry what the two sentences
+// used to restate per school. "Non-need (merit) aid" and never "award" (RFC
+// 141's glossary); "received", because it is a grant and not an offer.
+private const val MERIT_CAPTION_TAIL = ", about last year's full-time freshmen."
+private const val MERIT_MEASURE_COLUMN = "Non-need (merit) aid"
+private const val MERIT_COHORT_COLUMN = "Last year's full-time freshmen"
+private const val MERIT_SHARE_ROW = "Share who received it"
+private const val MERIT_AVERAGE_ROW = "Average received"
+
+// The borrowing table's words (RFC 260). The caption says the cohort in the
+// filing's own terms -- the students who graduated that year -- once above the
+// rows; the two negative hedges the header used to carry are said once per
+// page in the kinds section ([BORROWING_KIND_SENTENCE]).
+private const val BORROWING_CAPTION_TAIL = ", about what the students who graduated from it that year borrowed."
+private const val LOAN_TYPE_COLUMN = "Loan type"
+private const val BORROWED_COLUMN = "Borrowed"
+private const val OWED_COLUMN = "Owed on average at graduation"
+
+/**
+ * K1 (RFC 260): what non-need aid IS, said once for the page. It used to ride
+ * inside every school's average sentence ("a grant the student never pays
+ * back", brief 0016 D7); the fact is about the kind of money, not about one
+ * school's figure, so it belongs in the one section that says what kind of
+ * numbers these are.
+ */
+private const val MERIT_KIND_SENTENCE = "Non-need (merit) aid is a grant the student never pays back."
+
+/**
+ * K2 (RFC 260): the cohort every borrowing table is over, and what it is NOT.
+ * The two hedges are [BorrowingWire.COHORT_HEDGES] -- the same constant
+ * [BorrowingWire.HEADER_TAIL] ends on -- said once for the page rather than in
+ * every school's header, so the page and the coach cannot come to disagree
+ * about who the cohort excludes; the coach's own header is unchanged.
+ */
+private const val BORROWING_KIND_SENTENCE =
+  "The borrowing figures describe the students who graduated from a school in the year of its filing -- " +
+    BorrowingWire.COHORT_HEDGES + "."
+
+/**
+ * K3 (RFC 260): the federal median debt is undated by its source. Said once for
+ * the page, where it used to follow every school's figure.
+ */
+private const val DEBT_YEAR_KIND_SENTENCE = "The source publishes no year for the median federal loan debt."
 
 /**
  * The blank for a blended figure this school publishes for in-state students
@@ -940,7 +1029,10 @@ private fun FlowContent.priceTable(
 ) {
   val arrangements = cost.breakdown?.arrangements.orEmpty()
   val columnCount = if (arrangements.isEmpty()) SINGLE_COLUMN_COUNT else arrangements.size
-  table("$DATA_TABLE_CLASS report-table") {
+  // Its own class so the caption rule can name it (RFC 260): this is the one
+  // table on the page that carries a total row, and until `glance/02` captions
+  // it, the one the rule exempts by name.
+  table("$DATA_TABLE_CLASS report-table report-price-table") {
     thead { priceTableHeaderRow(arrangements) }
     tbody {
       tuitionRow(cost, arrangements)
@@ -1378,6 +1470,41 @@ private fun TR.valueCell(
 }
 
 /**
+ * One value cell whose content is already WORDS: a share with its sign, a
+ * count beside its share, or a labelled blank (RFC 260). The same class and the
+ * same phone label as [valueCell], because a reader and the stylesheet treat
+ * the two alike; only the body differs, and a [SchoolFigure] is the wrong type
+ * for a cell that holds a percentage.
+ *
+ * A blank keeps the one styled shape every blank on this page has
+ * ([figureBody]'s `report-blank` span), so a missing merit measure and a
+ * missing price are quiet in the same way.
+ */
+private fun TR.textValueCell(
+  columnLabel: String,
+  cell: TextCell,
+) {
+  td("report-value") {
+    attributes[DATA_LABEL] = columnLabel
+    when (cell) {
+      is TextCell.Figure -> +cell.text
+      is TextCell.Blank -> span("report-blank") { +cell.label }
+    }
+  }
+}
+
+/** What a [textValueCell] holds: a figure said in words, or the labelled blank that stands where one is not. */
+private sealed interface TextCell {
+  data class Figure(
+    val text: String,
+  ) : TextCell
+
+  data class Blank(
+    val label: String,
+  ) : TextCell
+}
+
+/**
  * THE renderer for a figure, and the only one: the dollars, or the labelled
  * blank that says why there are none.
  *
@@ -1414,37 +1541,95 @@ private fun FlowContent.figureBody(figure: SchoolFigure) {
  * the reason the borrowing header is one -- the claimant is stated before the
  * figures it covers, and every sentence below it comes from that one filing.
  *
- * A citation with no fact under it is not data. [MeritPractice][ed.unicoach.coaching.admissions.MeritPractice]
- * already refuses to exist without a measure, but it can hold recipients with no
- * freshman headcount to make a share out of and no average -- which renders a
- * heading and a source line with nothing between them. That is a section
- * claiming a school reported something while showing nothing it reported, so
- * this returns before opening it.
+ * A citation with no fact under it is not data. [MeritPractice] already refuses
+ * to exist without a measure, but it can hold recipients with no freshman
+ * headcount to make a share out of and no average -- which renders a heading
+ * and a caption with nothing under them. That is a section claiming a school
+ * reported something while showing nothing it reported, so [shownMeritOf]
+ * answers null and nothing is opened.
+ *
+ * ONE TABLE, TWO ROWS (RFC 260, brief 0016 D1). The two sentences each school
+ * repeated -- the 17-word hedge included -- become a share cell and an average
+ * cell under the filing's caption; what the hedge said about the KIND of money
+ * is said once per page in the kinds section (K1), and "not an offer to this
+ * student" is already the sources section's. Both rows always print when the
+ * table does (D-A): a dropped row would hide that the school filed half the
+ * section, so a missing measure is a labelled blank, [NOT_IN_FILING].
  */
 private fun FlowContent.meritBlock(cost: CollegeCost) {
-  val merit = cost.meritAid ?: return
-  val share = merit.shareOfAllFullTimeFreshmen
-  val average = merit.averageNonNeedAid
-  if (share == null && average == null) return
+  val merit = shownMeritOf(cost) ?: return
   section("report-merit") {
     h3 { +"Money this school gives for something other than financial need" }
-    // The claimant FIRST, under the heading, and not again at the foot (RFC
-    // 190): the same string, said before the figures it covers rather than
-    // after them, so the block is scoped by its attribution.
-    //
-    // AND IT IS A LINK (RFC 196). The url was already in hand here and was
-    // thrown away at the point of render, while `AssuranceTierCopy`'s
-    // voluntary-self-report sentence says, in our own words, "We link to the
-    // college's own file so you can see it". The link TEXT is the citation's
-    // own `citedAs` -- never the url, which runs to 1,744 characters in our own
-    // corpus -- so the page gains a link and no words.
-    p("report-source") {
-      +"Source: "
-      sourceLink(merit.source)
-      +"."
+    table("$DATA_TABLE_CLASS report-table report-merit-table") {
+      // WHOSE figures these are, as data: the one publisher of every cell in
+      // this table (RFC 260).
+      attributes[DATA_PUBLISHER] = MoneySource.COMMON_DATA_SET.value
+      // The claimant FIRST, as the table's caption, and not again at the foot
+      // (RFC 190): said before the figures it covers, so the table is scoped by
+      // its attribution. AND IT IS A LINK (RFC 196) -- the one place this table
+      // links the filing; `AssuranceTierCopy`'s voluntary-self-report sentence
+      // promises it, in our own words, in the kinds section.
+      caption {
+        sourceLink(merit.source)
+        +MERIT_CAPTION_TAIL
+      }
+      thead {
+        tr {
+          th(scope = ThScope.col) { +MERIT_MEASURE_COLUMN }
+          th(scope = ThScope.col) { +MERIT_COHORT_COLUMN }
+        }
+      }
+      tbody {
+        tr {
+          rowHeader(MERIT_SHARE_ROW)
+          textValueCell(MERIT_COHORT_COLUMN, filingCellOf(merit.shareOfAllFullTimeFreshmen?.spokenPercent()))
+        }
+        tr {
+          rowHeader(MERIT_AVERAGE_ROW)
+          textValueCell(MERIT_COHORT_COLUMN, filingCellOf(merit.averageNonNeedAid?.let(WholeDollars::spoken)))
+        }
+      }
     }
-    share?.let { p { +"${MeritAidWire.shareLabel(it)}." } }
-    average?.let { p { +"${MeritAidWire.averageLabel(it)}." } }
+  }
+}
+
+/**
+ * This school's merit practice WHERE THE PAGE SHOWS IT, or null: the one
+ * decision, asked by [meritBlock] to open the table and by [tierKindsSection]
+ * to cover its figures and say K1. A second rule in either place would be free
+ * to state a tier for a table the page does not print, or print one it never
+ * states a tier for.
+ */
+private fun shownMeritOf(cost: CollegeCost): MeritPractice? {
+  val merit = cost.meritAid ?: return null
+  if (merit.shareOfAllFullTimeFreshmen == null && merit.averageNonNeedAid == null) return null
+  return merit
+}
+
+/** A Common Data Set cell as words, or the filing's own absence blank where the measure is null (RFC 260 D-A). */
+private fun filingCellOf(spoken: String?): TextCell = spoken?.let { TextCell.Figure(it) } ?: TextCell.Blank(NOT_IN_FILING)
+
+/**
+ * The merit figures this school's table shows, for the kinds section (RFC 260,
+ * brief 0016 D10): one [CoveredFigure] per shown measure, on the tier
+ * [MeritAidWire.ASSURANCE] reads off the Common Data Set cell. Derived from
+ * the same [shownMeritOf] decision the table renders on, so the covered set
+ * cannot name a figure the page does not print.
+ *
+ * A measure the filing lacks is NOT here, for [blankFiguresOf]'s reason: a
+ * figure with no number is not a kind of number, and its cell says so itself.
+ */
+private fun meritFiguresOf(cost: CollegeCost): List<CoveredFigure> {
+  val merit = shownMeritOf(cost) ?: return emptyList()
+  return listOfNotNull(
+    merit.shareOfAllFullTimeFreshmen?.let { MeritMeasure.SHARE },
+    merit.averageNonNeedAid?.let { MeritMeasure.AVERAGE },
+  ).map {
+    CoveredFigure(
+      collegeName = cost.name,
+      figure = FigureIdentity.MeritAid(it),
+      assurance = SpokenAssurance(MeritAidWire.ASSURANCE),
+    )
   }
 }
 
@@ -1946,10 +2131,11 @@ private fun baseRateSentenceOf(rows: List<PrintableMeritRow>): String {
  * honest, and they are stated here because they are the whole reason the two
  * paragraphs are allowed to share a section:
  *
- * - The Scorecard sentence keeps saying "federal loans" and keeps saying that
- *   the source publishes no year for it.
- * - The CDS sentences name the SCHOOL as the claimant and carry its filing
- *   year, because these are self-reported survey answers (D10).
+ * - The Scorecard sentence keeps saying "federal loans"; that the source
+ *   publishes no year for it is said once for the page, in the kinds section
+ *   (RFC 260 K3).
+ * - The CDS table names the SCHOOL as the claimant and carries its filing
+ *   year, in its caption, because these are self-reported survey answers (D10).
  * - The two are never summed, never differenced and never presented as one debt
  *   number. Nothing here adds them, and nothing may.
  * - Where the school filed no private figure, this says so, rather than leaving
@@ -1959,14 +2145,14 @@ private fun baseRateSentenceOf(rows: List<PrintableMeritRow>): String {
  * one (brief 0003).
  *
  * The figures by field of study (RFC 251) sit BETWEEN the two: every one of
- * them names its own publisher, and after the borrowing header they would read
+ * them names its own publisher, and after the borrowing caption they would read
  * as the school's own Common Data Set figures.
  */
 private fun FlowContent.debtBlock(
   cost: CollegeCost,
   subjects: List<CollegeSubjectReturn>,
 ) {
-  val debt = cost.medianDebtAtCompletionUsd
+  val debt = shownDebtOf(cost)
   section("report-debt") {
     if (debt == null) {
       // The Scorecard suppresses this figure for privacy more often than it
@@ -1980,10 +2166,13 @@ private fun FlowContent.debtBlock(
         )
       }
     } else {
-      p { +shownDebtSentence(cost, debt) }
+      // The rule's one permanent named exemption (RFC 260, brief 0016 D4): one
+      // figure, one sentence, and it stays prose because a one-cell table says
+      // less than the sentence does.
+      p("report-debt-federal") { +shownDebtSentence(cost, debt) }
     }
     programReturnBlocks(subjects)
-    borrowingParagraphs(cost)
+    borrowingBlock(cost)
   }
 }
 
@@ -2053,9 +2242,10 @@ private fun shownDebtSentence(
   cost: CollegeCost,
   debt: Int,
 ): String {
-  val figure =
-    "students who finished here carried a median of ${WholeDollars.spoken(debt)} in federal loans. " +
-      "The source publishes no year for this figure."
+  // The figure alone. "The source publishes no year for this figure" used to
+  // follow it at every school; it is a fact about the measure, not about one
+  // school's number, and is said once for the page as K3 (RFC 260).
+  val figure = "students who finished here carried a median of ${WholeDollars.spoken(debt)} in federal loans."
   // UNREACHABLE for a shown debt figure, and provably so: [CollegeCost.medianDebtAtCompletionUsd]
   // and this note read the SAME cohort row -- a value here means that row exists, and a row with
   // provenance always yields a note (RFC 179 D6). It stays because the note list is assembled by
@@ -2082,20 +2272,37 @@ private fun shownDebtSentence(
  * naming a figure the page does not print, which is the header-covers-the-wrong-
  * figure failure this block exists to avoid.
  *
- * Table cells are NOT here on purpose. A blank cell still says its own status
- * sentence with its own tier beside it ([blankFor]), because a figure with no
- * number is not a kind of number -- the exclusion RFC 189 wrote into the tool
- * description, on this surface. A shown cell states no tier today and states
- * none after this RFC; that gap is RFC 191's open item, not a thing this
- * function may quietly close.
+ * Price-table cells are NOT here on purpose. A blank cell still says its own
+ * status sentence with its own tier beside it ([blankFor]), because a figure
+ * with no number is not a kind of number -- the exclusion RFC 189 wrote into
+ * the tool description, on this surface. A shown price cell states no tier
+ * today and states none after RFC 260; that gap is RFC 191's open item, not a
+ * thing this function may quietly close. The MERIT table's shown cells are the
+ * one exception, by decision (brief 0016 D10) and in [meritFiguresOf]: the
+ * kinds section is where a Common Data Set figure's kind is said once.
  */
 private fun proseFiguresOf(
   cost: CollegeCost,
   subjects: List<CollegeSubjectReturn>,
 ): List<CoveredFigure> = listOfNotNull(debtFigureOf(cost)) + programFiguresOf(cost, subjects)
 
+/** Every figure this school's section states a kind for in the kinds block: its prose figures and its merit table's. */
+private fun coveredFiguresOf(
+  cost: CollegeCost,
+  subjects: List<CollegeSubjectReturn>,
+): List<CoveredFigure> = proseFiguresOf(cost, subjects) + meritFiguresOf(cost)
+
+/**
+ * The federal median debt WHERE THE PAGE SHOWS IT, or null: the one decision
+ * [debtBlock] prints the figure on, [debtFigureOf] covers its tier on, and
+ * [pageKindsOf] says K3 on, for [shownMeritOf]'s reason -- a second rule in any
+ * of them would be free to say the figure is undated under no figure, or state
+ * a tier for a sentence the page does not print.
+ */
+private fun shownDebtOf(cost: CollegeCost): Int? = cost.medianDebtAtCompletionUsd
+
 private fun debtFigureOf(cost: CollegeCost): CoveredFigure? {
-  if (cost.medianDebtAtCompletionUsd == null) return null
+  if (shownDebtOf(cost) == null) return null
   val note = cost.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD) ?: return null
   return CoveredFigure(
     collegeName = cost.name,
@@ -2162,101 +2369,247 @@ private fun FlowContent.tierKindsSection(
   programSlices: Map<CollegeId, List<CollegeSubjectReturn>>,
   printsAProgram: Boolean,
 ) {
-  val proseFigures = colleges.flatMap { proseFiguresOf(it, programSlices.getValue(it.collegeId)) }
-  val groups =
-    AssuranceTierGrouping.groupsOf(
-      figures = proseFigures,
-      spokenElsewhere = colleges.flatMap { blankFiguresOf(it) },
-    )
-  // WHETHER ANY GRID IS PRINTED, asked of the one function that decides it
-  // ([printableGridOf]) rather than re-derived from the answer arms here: a
-  // second rule would be free to say the sentence on a page that shows no grid,
-  // or stay silent on one that does.
-  val printsAGrid = colleges.any { cost -> cost.automaticAwards.any { printableGridOf(it) != null } }
-  // The same rule for National Merit rows (RFC 247 D3, D8), asked of
-  // [printableMeritRowOf] -- and the base rate is read off these same rows.
-  val meritRows = colleges.flatMap { cost -> cost.nationalMerit.mapNotNull { printableMeritRowOf(it) } }
-  if (groups.isEmpty() && !printsAGrid && meritRows.isEmpty() && !printsAProgram) return
+  val kinds = pageKindsOf(colleges, programSlices, printsAProgram)
+  if (kinds.isEmpty) return
   section("report-kinds") {
     h2 { +KINDS_HEADING }
-    groups.forEach { group ->
+    kinds.groups.forEach { group ->
       p("report-kind") {
         // Two sentences, never one: the scope names the figures and the tier
         // sentence is [AssuranceTierCopy]'s, byte for byte, never re-worded here
-        // (RFC 179). No count, no rank, no score sits beside either.
+        // (RFC 179). No count, no rank, no score sits beside either. Asked of
+        // the copy seam WITH the page's link answer rather than read off the
+        // group, because the group's sentence always keeps the self-report
+        // promise and this page does not always keep it (RFC 200).
         span("report-kind-scope") { +group.scope }
         +" "
-        +group.statement
+        +AssuranceTierCopy.statementOf(group.tier, kinds.coveredFilingLink)
       }
     }
     // ONCE FOR THE PAGE (RFC 191), here and never inside a school's block: a
     // family reading ten schools is told once what kind of number a published
     // grid is, in the one section that exists to say what kind of numbers these
     // are.
-    if (printsAGrid) p("report-kind") { +AWARD_KIND_SENTENCE }
-    if (meritRows.isNotEmpty()) {
+    if (kinds.printsAGrid) p("report-kind") { +AWARD_KIND_SENTENCE }
+    if (kinds.meritRows.isNotEmpty()) {
       p("report-kind") { +NATIONAL_MERIT_KIND_SENTENCE }
-      p("report-kind report-merit-base-rate") { +baseRateSentenceOf(meritRows) }
+      p("report-kind report-merit-base-rate") { +baseRateSentenceOf(kinds.meritRows) }
     }
     // Once for the page, like the two above (brief 0011 D19). It leans on the
     // administrative-record kind sentence for "only students who got federal
     // aid", which every printed program's figures are grouped under above.
-    if (printsAProgram) p("report-kind report-program-coverage") { +ProgramReturnCopy.COVERAGE_SENTENCE }
+    if (kinds.printsAProgram) p("report-kind report-program-coverage") { +ProgramReturnCopy.COVERAGE_SENTENCE }
+    // K1-K3 (RFC 260): the three hedges the merit and borrowing blocks and the
+    // debt paragraph used to repeat at every school, each said once for the
+    // page, each only when a block it is about is on the page.
+    if (kinds.printsAMeritTable) p("report-kind report-kind-merit") { +MERIT_KIND_SENTENCE }
+    if (kinds.printsABorrowingTable) p("report-kind report-kind-borrowing") { +BORROWING_KIND_SENTENCE }
+    if (kinds.showsADebtFigure) p("report-kind report-kind-debt-year") { +DEBT_YEAR_KIND_SENTENCE }
   }
 }
 
 /**
- * What this school says its own graduates borrowed, by loan type.
+ * Everything the kinds section says, decided ONCE for the page (RFC 260):
+ * which tier groups, which once-per-page sentences, and whether the one tier
+ * sentence that promises a link may make the promise.
  *
- * Every sentence comes from [BorrowingWire], the one home of this copy, so the
- * page and the coach say a borrowing figure with the same words, the same
- * cohort and the same attribution -- and a change to either lands in both.
+ * A value rather than locals in [tierKindsSection], so "is this sentence on the
+ * page" is stated in one place and both the section's absence ([isEmpty]) and
+ * each paragraph read that one statement. Before it, every sentence was decided
+ * twice -- in the early return and in the body -- and a sentence added to one
+ * and not the other was silently never printed, or printed under a heading the
+ * gate had already decided not to open.
+ */
+private data class PageKinds(
+  val groups: List<SpokenTierGroup>,
+  /**
+   * Whether the covered figures' filings are all LINKED on this page, the
+   * answer the self-report tier sentence is said under (RFC 200). The only
+   * filing-backed figures the covered set holds are the merit tables', so it
+   * is asked of exactly those; every other tier's sentence promises no link
+   * and reads the same either way.
+   */
+  val coveredFilingLink: FilingLink,
+  val printsAGrid: Boolean,
+  val meritRows: List<PrintableMeritRow>,
+  val printsAProgram: Boolean,
+  val printsAMeritTable: Boolean,
+  val printsABorrowingTable: Boolean,
+  val showsADebtFigure: Boolean,
+) {
+  /** True when the page shows nothing whose kind this section states, so no heading is opened over nothing. */
+  val isEmpty: Boolean
+    get() =
+      groups.isEmpty() &&
+        !printsAGrid &&
+        meritRows.isEmpty() &&
+        !printsAProgram &&
+        !printsAMeritTable &&
+        !printsABorrowingTable &&
+        !showsADebtFigure
+}
+
+/**
+ * The page's [PageKinds], each fact asked of the one function its table or
+ * paragraph renders on, never re-derived from the data here: a second rule
+ * would be free to say a sentence about a block the page does not print, or
+ * stay silent about one it does.
+ */
+private fun pageKindsOf(
+  colleges: List<CollegeCost>,
+  programSlices: Map<CollegeId, List<CollegeSubjectReturn>>,
+  printsAProgram: Boolean,
+): PageKinds {
+  val shownMerit = colleges.mapNotNull { shownMeritOf(it) }
+  return PageKinds(
+    groups =
+      AssuranceTierGrouping.groupsOf(
+        figures = colleges.flatMap { coveredFiguresOf(it, programSlices.getValue(it.collegeId)) },
+        spokenElsewhere = colleges.flatMap { blankFiguresOf(it) },
+      ),
+    // EVERY shown merit filing, not any: one sentence covers all of their
+    // figures, so it may promise the link only where every one of them keeps
+    // it. Asked of [CdsCitation.linksToFile], the one place that question is
+    // answered -- the same predicate [sourceLink] drops the anchor on. A page
+    // with no merit table holds no filing here, and LINKED is then the
+    // [FilingLink] rule for a caller holding none.
+    coveredFilingLink = if (shownMerit.all { it.source.linksToFile }) FilingLink.LINKED else FilingLink.NOT_LINKED,
+    // WHETHER ANY GRID IS PRINTED, asked of [printableGridOf] rather than
+    // re-derived from the answer arms here.
+    printsAGrid = colleges.any { cost -> cost.automaticAwards.any { printableGridOf(it) != null } },
+    // The same rule for National Merit rows (RFC 247 D3, D8), asked of
+    // [printableMeritRowOf] -- and the base rate is read off these same rows.
+    meritRows = colleges.flatMap { cost -> cost.nationalMerit.mapNotNull { printableMeritRowOf(it) } },
+    printsAProgram = printsAProgram,
+    // And K1-K3 (RFC 260): [shownMeritOf], [reportedBorrowingOf] and
+    // [shownDebtOf], the decisions the merit table, the borrowing table and
+    // the debt paragraph print on.
+    printsAMeritTable = shownMerit.isNotEmpty(),
+    printsABorrowingTable = colleges.any { reportedBorrowingOf(it) != null },
+    showsADebtFigure = colleges.any { shownDebtOf(it) != null },
+  )
+}
+
+/**
+ * What this school says its own graduates borrowed, by loan type -- as ROWS
+ * (RFC 260, brief 0016 D1).
+ *
+ * Every row and every sentence comes from [BorrowingWire.rowsOf], the row
+ * reading of the one home of this copy, so the page and the coach narrate a
+ * filing from the same figures, in the same order, with the same absences said
+ * aloud -- `BorrowingWireTest` holds the rows to the sentences the coach reads.
  * Nothing is rendered for a school with no filing: the page is not the place to
  * explain our own corpus coverage.
  *
- * ATTRIBUTED ONCE, IN THE HEADER (RFC 190, superseding RFC 175 D10's
- * per-sentence rule): the block header names the school, its cycle and its
- * Common Data Set, and every sentence below it is a figure from that one
- * filing. The header cannot be dropped -- [BorrowingWire.blockOf] hands it out
- * with the sentences as one value -- and no figure from another publisher is
- * rendered under it: the federal median debt above names its own publisher
- * ([shownDebtSentence]).
+ * ATTRIBUTED ONCE, IN THE CAPTION (RFC 190, superseding RFC 175 D10's
+ * per-sentence rule): the caption names the school, its cycle and its Common
+ * Data Set, as a link (RFC 196), and every cell below it is a figure from that
+ * one filing. The caption cannot be dropped -- the rows and their citation are
+ * one value -- and no figure from another publisher is rendered under it: the
+ * federal median debt above names its own publisher ([shownDebtSentence]).
+ *
+ * The two hedges the block header used to carry ("not this year's freshmen,
+ * and not all its undergraduates") are said once for the page, in the kinds
+ * section (K2); [BorrowingWire.HEADER_TAIL] itself is unchanged for the coach.
+ *
+ * NO TOTAL ROW AND NO `tfoot`: the loan types overlap and are never added
+ * together (RFC 175 D3). The gap sentences -- our unread cell, the publisher's
+ * withholding, the private absence -- render as one `<p>` each under the table,
+ * verbatim with the page's trailing period, exactly as before.
  */
-private fun FlowContent.borrowingParagraphs(cost: CollegeCost) {
-  // Exhaustive over the four states, not a pair of early returns: the page
-  // says nothing about our own corpus coverage, and an arm that fell through
-  // by accident would print a school's section under another school's rule.
-  val coverage =
-    when (val reported = cost.borrowing) {
-      // Three silences, all of them about which filing WE hold. The parent
-      // artifact is not the place to explain our corpus, so the section is
-      // simply absent -- the coach payload is where each silence is spoken.
-      BorrowingCoverage.NoFiling, is BorrowingCoverage.NoBlock, BorrowingCoverage.NotReadByUs -> return
-
-      is BorrowingCoverage.Reported -> reported
+private fun FlowContent.borrowingBlock(cost: CollegeCost) {
+  val coverage = reportedBorrowingOf(cost) ?: return
+  val rows = BorrowingWire.rowsOf(coverage)
+  val borrowedColumn = borrowedColumnOf(rows.graduatingClass)
+  div("report-borrowing") {
+    table("$DATA_TABLE_CLASS report-table report-borrowing-table") {
+      attributes[DATA_PUBLISHER] = MoneySource.COMMON_DATA_SET.value
+      caption {
+        sourceLink(rows.citation)
+        +BORROWING_CAPTION_TAIL
+      }
+      thead {
+        tr {
+          th(scope = ThScope.col) { +LOAN_TYPE_COLUMN }
+          th(scope = ThScope.col) { +borrowedColumn }
+          th(scope = ThScope.col) { +OWED_COLUMN }
+        }
+      }
+      tbody {
+        rows.rows.forEach { row ->
+          tr {
+            rowHeader(rowLabelOf(row))
+            textValueCell(borrowedColumn, borrowedCellOf(row))
+            textValueCell(OWED_COLUMN, owedCellOf(row))
+          }
+        }
+      }
     }
-  // The HEADER first, then the figures it covers: the block is attributed
-  // once, above the sentences, and never again beneath them (RFC 190). The
-  // trailing "Source: <cited as>." line this used to close with printed the
-  // same `citedAs` the header now opens with -- and nothing else, no url and
-  // no document date -- so removing it loses no reachable fact.
-  val block = BorrowingWire.blockOf(coverage)
-  // The claimant, as a LINK to the school's own filing, and the rest of the
-  // same sentence after it (RFC 196). Both halves are [BorrowingWire]'s --
-  // `HEADER_TAIL` is the tail of the string `blockHeader` is built from -- so
-  // this composes no sentence of its own, and `BorrowingBlock` now carries the
-  // CITATION rather than prose flattened from it, which is what makes the link
-  // reachable here at all.
-  p {
-    sourceLink(block.citation)
-    +"${BorrowingWire.HEADER_TAIL}."
+    rows.gaps.forEach { gap -> p("report-borrowing-gap") { +(BorrowingWire.sentenceOf(gap, rows.citation) + ".") } }
   }
-  // WHICH loan types are spoken, in what order, and when an absence is said
-  // out loud, all come from [BorrowingWire.blockOf] -- the one home of this
-  // policy. A second list here is how the page and the coach came to narrate
-  // the same filing in two different orders.
-  block.sentences.forEach { sentence -> p { +"$sentence." } }
 }
+
+/**
+ * The borrowed column's header. It carries the class every share divides by,
+ * once, where a reader looks for it; with no class on file the column is headed
+ * by the bare verb, and every cell under it is then [NO_SHARE_SHOWN].
+ */
+private fun borrowedColumnOf(graduatingClass: Int?): String =
+  graduatingClass?.let { "$BORROWED_COLUMN, of the ${WholeCount.spoken(it)} who graduated" } ?: BORROWED_COLUMN
+
+/**
+ * A row's header: the wire's own words for the loan type, sentence-initial. The
+ * wire hands them out in mid-sentence form, the form its sentences need, so the
+ * table capitalises them here rather than keeping a second copy of the words.
+ */
+private fun rowLabelOf(row: LoanRow): String = row.spokenLoanType.replaceFirstChar { it.uppercase() }
+
+/**
+ * This school's borrowing filing WHERE THE PAGE SHOWS IT, or null: the one
+ * decision [borrowingBlock] opens the table on and [tierKindsSection] says K2
+ * on, for [shownMeritOf]'s reason.
+ *
+ * Exhaustive over the four states, not a pair of early returns: the page says
+ * nothing about our own corpus coverage, and an arm that fell through by
+ * accident would print a school's section under another school's rule. The
+ * three silences are all about which filing WE hold; the coach payload is where
+ * each one is spoken.
+ */
+private fun reportedBorrowingOf(cost: CollegeCost): BorrowingCoverage.Reported? =
+  when (val coverage = cost.borrowing) {
+    BorrowingCoverage.NoFiling, is BorrowingCoverage.NoBlock, BorrowingCoverage.NotReadByUs -> null
+    is BorrowingCoverage.Reported -> coverage
+  }
+
+/**
+ * The borrowed cell: the count and its share, from the one CONSISTENT pair the
+ * row carries, or the neutral blank (RFC 260 D-A). The share is never shown
+ * without the count it is derived from, and the count never without the class
+ * in the column header above it -- [BorrowedShare] cannot hold one without the
+ * other.
+ */
+private fun borrowedCellOf(row: LoanRow): TextCell {
+  val borrowed = row.borrowed ?: return TextCell.Blank(NO_SHARE_SHOWN)
+  return TextCell.Figure("${WholeCount.spoken(borrowed.borrowers)} (${borrowed.share.spokenPercent()})")
+}
+
+/**
+ * The owed cell: the average, or -- where the filing answers the column and no
+ * figure is shown -- the frozen status sentence for WHOSE silence that is
+ * ([OwedAverage.Withheld], the same words the gap paragraph under the table
+ * frames), else the filing's own absence blank.
+ *
+ * Agentless on purpose (RFC 177), with the publisher in hand: the caption above
+ * already names the school's Common Data Set, so a sentence naming it again
+ * would say the same document twice in one table. The sentence was resolved
+ * when the row was built ([BorrowingWire.rowsOf]), so this is layout only.
+ */
+private fun owedCellOf(row: LoanRow): TextCell =
+  when (val owed = row.averageOwed) {
+    is OwedAverage.Shown -> TextCell.Figure(WholeDollars.spoken(owed.usd))
+    is OwedAverage.Withheld -> TextCell.Blank(owed.statement)
+    OwedAverage.NotInFiling -> TextCell.Blank(NOT_IN_FILING)
+  }
 
 /**
  * One CDS filing, said as a LINK to the college's own file (RFC 196, brief 0009

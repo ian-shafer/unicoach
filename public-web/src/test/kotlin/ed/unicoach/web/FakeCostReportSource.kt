@@ -14,8 +14,14 @@ import ed.unicoach.coaching.costs.CostBreakdown
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.MoneyProfileStatuses
 import ed.unicoach.coaching.costs.NetPrice
+import ed.unicoach.coaching.costs.ProgramFigureProvenance
 import ed.unicoach.coaching.costs.ProgramReturn
+import ed.unicoach.coaching.costs.ProgramReturnCollege
+import ed.unicoach.coaching.costs.ProgramReturnFigure
+import ed.unicoach.coaching.costs.ProgramReturnProgram
+import ed.unicoach.coaching.costs.ProgramReturnSubject
 import ed.unicoach.coaching.costs.ScorecardVariableNames
+import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.applicableTuitionFor
 import ed.unicoach.coaching.costs.canonical.CollegeFigures
 import ed.unicoach.coaching.costs.canonical.FigureAddress
@@ -28,22 +34,43 @@ import ed.unicoach.coaching.costs.reportedOf
 import ed.unicoach.coaching.costs.tuitionLineOf
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
 import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
+import ed.unicoach.coaching.testing.PublishedBaseRate
+import ed.unicoach.college.ScorecardFieldOfStudyColumns
+import ed.unicoach.college.ScorecardFieldOfStudyColumns.FieldOfStudyVariable
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.AnswerStatus
+import ed.unicoach.db.models.AutomaticAward
+import ed.unicoach.db.models.AutomaticAwardBand
+import ed.unicoach.db.models.AutomaticAwardBandId
+import ed.unicoach.db.models.AutomaticAwardId
+import ed.unicoach.db.models.AutomaticAwardKind
+import ed.unicoach.db.models.AwardGuarantee
+import ed.unicoach.db.models.BandScoreAxis
 import ed.unicoach.db.models.BorrowerCounts
+import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.CohortMoneyStat
 import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
+import ed.unicoach.db.models.FirstChoiceRule
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.LoanTypeBorrowing
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NationalMeritAward
+import ed.unicoach.db.models.NationalMeritAwardId
+import ed.unicoach.db.models.NationalMeritClaim
+import ed.unicoach.db.models.NationalMeritFunnel
 import ed.unicoach.db.models.PriceFigure
 import ed.unicoach.db.models.PublishedCell
+import ed.unicoach.db.models.QualifyingStanding
+import ed.unicoach.db.models.ResidencyBasis
+import ed.unicoach.db.models.ScholarshipSuperscoreRule
+import ed.unicoach.db.models.ScoreRequirement
 import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.UserId
 import ed.unicoach.db.models.ValueBearingStatus
@@ -51,8 +78,15 @@ import ed.unicoach.family.ClaimView
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.MissReason
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.testing.testApplication
+import java.math.BigDecimal
+import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.test.assertEquals
 
 /** The raw token the fake treats as live; every other token is simply not found. */
 const val TEST_LIVE_TOKEN = "live-share-token"
@@ -137,6 +171,37 @@ class FakeCostReportSource(
       }
     }
   }
+}
+
+/**
+ * The Family Cost Report for [profile] as the live route serves it: the
+ * status and the body (RFC 260).
+ *
+ * One home for "boot the app, open the share link, read the page", beside the
+ * fixtures it renders, so every page test reads the page the same way and a
+ * change to how the route is reached is made once. The status is kept for the
+ * tests of a page that must refuse itself.
+ */
+fun reportResponseOf(profile: CollegeCostProfile): Pair<HttpStatusCode, String> {
+  lateinit var result: Pair<HttpStatusCode, String>
+  testApplication {
+    application { testPublicWebModule(costReportSource = FakeCostReportSource(FakeReportAnswer.Live(profile))) }
+    val response = client.get("/report?token=$TEST_LIVE_TOKEN")
+    result = response.status to response.bodyAsText()
+  }
+  return result
+}
+
+/**
+ * The page body alone, for the tests that read a page that rendered -- and the
+ * status ASSERTED, not dropped: an error page's body would otherwise reach a
+ * test as "the report", and an absence assertion over it would pass for the
+ * wrong reason.
+ */
+fun renderedReportOf(profile: CollegeCostProfile): String {
+  val (status, body) = reportResponseOf(profile)
+  assertEquals(HttpStatusCode.OK, status, "the report did not render: [$body]")
+  return body
 }
 
 /** A money profile with nothing answered — the tri-state floor every student starts at. */
@@ -695,4 +760,309 @@ fun borrowingFixture(
     gapStatusByLoanType =
       gapStatusByLoanType + notReadLoanTypes.associateWith { FigureStatus.NOT_COLLECTED_BY_US },
     graduatingClassGapStatus = graduatingClassGapStatus,
+  )
+
+// -----------------------------------------------------------------------------
+// The three verbose schools: every repeating block the page can print
+// -----------------------------------------------------------------------------
+
+/**
+ * The three schools the word budget is measured over: every one of them
+ * priced for all three ways of living, with a merit filing and a borrowing
+ * filing, so the fixture carries every repeating block the page can print.
+ *
+ * Shared by `CostReportPageTest` and `CostReportShapeTest` (RFC 260), so the
+ * page measured and the page asserted on are one fixture.
+ */
+fun verboseState(): CollegeCost =
+  costFixture(
+    name = "Lakeshore State University",
+    control = CollegeControl.Public(TuitionApplicable.IN_STATE),
+    tuitionInState = 12000,
+    tuitionOutOfState = 34000,
+    publishedPrice = 28000,
+    netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 15000),
+    housingAndFoodOnCampus = 11000,
+    housingAndFoodOffCampus = 13000,
+    booksAndSupplies = 1200,
+    otherExpensesOnCampus = 2500,
+    otherExpensesOffCampus = 2800,
+    otherExpensesWithFamily = 3000,
+    medianDebt = 21000,
+    offersOnCampusHousing = true,
+    meritAid = meritFixture("Lakeshore State University"),
+    borrowing = borrowingFixture("Lakeshore State University"),
+  )
+
+fun verboseCampus(): CollegeCost =
+  costFixture(
+    name = "Eastbrook University",
+    tuitionInState = 30000,
+    publishedPrice = 52000,
+    netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+    housingAndFoodOnCampus = 10000,
+    housingAndFoodOffCampus = 12000,
+    booksAndSupplies = 1000,
+    otherExpensesOnCampus = 2000,
+    otherExpensesOffCampus = 2400,
+    otherExpensesWithFamily = 2600,
+    medianDebt = 24000,
+    offersOnCampusHousing = true,
+    meritAid = meritFixture("Eastbrook University"),
+    borrowing = borrowingFixture("Eastbrook University"),
+  )
+
+fun verbosePrivate(): CollegeCost =
+  costFixture(
+    name = "Wynnford College",
+    tuitionInState = 41000,
+    publishedPrice = 60000,
+    netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 25000),
+    housingAndFoodOnCampus = 12000,
+    housingAndFoodOffCampus = 14000,
+    booksAndSupplies = 1100,
+    otherExpensesOnCampus = 2200,
+    otherExpensesOffCampus = 2600,
+    otherExpensesWithFamily = 2900,
+    medianDebt = 27000,
+    offersOnCampusHousing = true,
+    meritAid = meritFixture("Wynnford College"),
+    borrowing = borrowingFixture("Wynnford College"),
+  )
+
+// -----------------------------------------------------------------------------
+// RFC 239: a school's published automatic-scholarship grid
+// -----------------------------------------------------------------------------
+
+/** The day we read the school's scholarship page -- the read date every grid block cites. */
+val GRID_READ_ON: LocalDate = LocalDate.of(2026, 8, 1)
+
+/** The day official scores must be with the school, rendered through the one date seam as `Dec 4, 2026`. */
+val GRID_DEADLINE: LocalDate = LocalDate.of(2026, 12, 4)
+
+/** The school's OWN sentence about submitting a score; the page quotes it and composes none of its own. */
+const val GRID_REQUIREMENT = "A test score is required for scholarship consideration."
+
+/** Who published the grid, as a family would recognise them on the page. */
+const val GRID_PUBLISHER = "Riverside State University Office of Admissions"
+
+/** A band on the SAT's own published scale -- the axis most cases are not about. */
+fun sat(
+  low: Int,
+  high: Int,
+): BandScoreAxis = BandScoreAxis.Range(test = AdmissionTest.SAT, low = low, high = high)
+
+/**
+ * One published cell. The award id is a placeholder: [gridAward] re-keys every
+ * band to the row it hangs off, exactly as the read hands them out, so no test
+ * can build a grid whose cells belong to another school's row.
+ */
+fun gridBand(
+  awardName: String = "Presidential",
+  score: BandScoreAxis = sat(1200, 1250),
+  gpaLow: BigDecimal? = null,
+  gpaHigh: BigDecimal? = null,
+  awardPerYearUsd: Int? = 6000,
+  awardAsPublished: String? = null,
+): AutomaticAwardBand =
+  AutomaticAwardBand(
+    id = AutomaticAwardBandId(UUID.randomUUID()),
+    awardId = AutomaticAwardId(UUID.randomUUID()),
+    awardName = awardName,
+    score = score,
+    gpaLow = gpaLow,
+    gpaHigh = gpaHigh,
+    awardPerYearUsd = awardPerYearUsd,
+    awardAsPublished = awardAsPublished,
+  )
+
+/** One school's published grid for one entry year and one residency basis, with its cells. */
+fun gridAward(
+  collegeId: CollegeId,
+  bands: List<AutomaticAwardBand> = listOf(gridBand()),
+  residencyBasis: ResidencyBasis = ResidencyBasis.NOT_APPLICABLE,
+  awardKind: AutomaticAwardKind = AutomaticAwardKind.SCORE_GRID,
+  scoreDeadline: LocalDate? = GRID_DEADLINE,
+  scoreDeadlineAsPublished: String? = "Official test scores must be received by December 4.",
+): AutomaticAward {
+  val id = AutomaticAwardId(UUID.randomUUID())
+  return AutomaticAward(
+    id = id,
+    collegeId = collegeId,
+    entryYear = AcademicYear(2027),
+    residencyBasis = residencyBasis,
+    awardKind = awardKind,
+    scoreRequirement = ScoreRequirement.REQUIRED,
+    scoreRequirementAsPublished = GRID_REQUIREMENT,
+    superscoreRule = ScholarshipSuperscoreRule.SINGLE_SITTING_ONLY,
+    superscoreAsPublished = "Scholarship awards are based on a single test administration.",
+    scoreDeadline = scoreDeadline,
+    scoreDeadlineAsPublished = scoreDeadlineAsPublished,
+    lastSittingConsidered = null,
+    publisher = GRID_PUBLISHER,
+    sourceUrl = "https://example.test/riverside-scholarships",
+    archiveUrl = null,
+    checkedOn = GRID_READ_ON,
+    expiresOn = LocalDate.of(2027, 6, 30),
+    bands = bands.map { it.copy(awardId = id) },
+  )
+}
+
+/**
+ * The answer the report actually receives: a score grid, which is what
+ * `AutomaticAwardService`'s student-free door returns.
+ *
+ * IT CANNOT BE HANDED A STANDING AT ALL. It used to take one, so that a test
+ * could prove the page printed nothing from a full one; the standing now lives
+ * on the student-scoped `StudentAwardAnswer` that only the chat door builds,
+ * so the privacy ruling is a property of the TYPE this page is handed rather
+ * than of this renderer's restraint.
+ */
+fun scoreBands(award: AutomaticAward): AutomaticAwardAnswer =
+  AutomaticAwardAnswer.ScoreBands(
+    collegeId = award.collegeId,
+    award = award,
+    lastUsableSitting = null,
+    boundBy = emptySet(),
+    closedSittings = emptyList(),
+    quotedCutOff = null,
+  )
+
+// -----------------------------------------------------------------------------
+// RFC 247: the National Merit scholarships a school publishes
+// -----------------------------------------------------------------------------
+
+/** Who published a school's National Merit row, and the day we read it, rendered as `Sep 25, 2026`. */
+const val MERIT_PUBLISHER = "Riverside State University Office of Scholarships"
+val MERIT_READ_ON: LocalDate = LocalDate.of(2026, 9, 25)
+
+/** Who published the base rate, and the day we read it, rendered as `Sep 1, 2026` -- a different day, so neither date can pass for the other. */
+const val MERIT_SPONSOR = "Example Merit Corporation"
+val MERIT_BASE_RATE_READ_ON: LocalDate = LocalDate.of(2026, 9, 1)
+
+/** The first-choice deadline, rendered through the date seam as `May 1, 2027`. */
+val MERIT_FIRST_CHOICE_BY: LocalDate = LocalDate.of(2027, 5, 1)
+const val MERIT_FIRST_CHOICE_WORDS = "Name us your first choice with NMSC."
+
+/** A school's own sentence for what it pays, in figures. */
+const val MERIT_WORDS = "Finalists receive \$17,500 a year for four years."
+
+/** The base rate every priced row in one read carries: 15,000 of 1,200,000 entrants, said as 1.3%. */
+val meritBaseRate: PublishedBaseRate =
+  PublishedBaseRate(
+    competitionYear = 2028,
+    funnel =
+      NationalMeritFunnel(
+        testTakers = 3_500_000,
+        metEntryRequirements = 1_200_000,
+        highScorersScreened = 50_000,
+        commended = 34_000,
+        semifinalists = 16_000,
+        finalists = 15_000,
+        winners = 6_700,
+        asPublished = "About 1.2 million entrants; some 15,000 reach Finalist.",
+      ),
+    publisher = MERIT_SPONSOR,
+    checkedOn = MERIT_BASE_RATE_READ_ON,
+  )
+
+/** One school's paying claim, with the shape most of the corpus's rows take. */
+fun payingClaim(
+  guarantee: AwardGuarantee = AwardGuarantee.AUTOMATIC,
+  standing: QualifyingStanding = QualifyingStanding.FINALIST,
+  asPublished: String = MERIT_WORDS,
+  awardName: String? = null,
+  perYearUsd: Int? = 17_500,
+  totalUsd: Int? = 70_000,
+  years: Int? = 4,
+  firstChoice: FirstChoiceRule? = FirstChoiceRule.Required(deadline = MERIT_FIRST_CHOICE_BY, asPublished = MERIT_FIRST_CHOICE_WORDS),
+): NationalMeritClaim.Paying =
+  NationalMeritClaim.Paying(
+    guarantee = guarantee,
+    standing = standing,
+    asPublished = asPublished,
+    awardName = awardName,
+    perYearUsd = perYearUsd,
+    totalUsd = totalUsd,
+    years = years,
+    firstChoice = firstChoice,
+    applyDeadline = null,
+  )
+
+/** One stored row, built in memory exactly as `NationalMeritAwardsDao` hands it out. */
+fun meritAward(
+  collegeId: CollegeId,
+  claim: NationalMeritClaim = payingClaim(),
+  residencyBasis: ResidencyBasis = ResidencyBasis.NOT_APPLICABLE,
+): NationalMeritAward =
+  NationalMeritAward(
+    id = NationalMeritAwardId(UUID.randomUUID()),
+    collegeId = collegeId,
+    entryYear = AcademicYear(2027),
+    residencyBasis = residencyBasis,
+    claim = claim,
+    publisher = MERIT_PUBLISHER,
+    sourceUrl = "https://example.test/riverside-national-merit",
+    archiveUrl = null,
+    checkedOn = MERIT_READ_ON,
+    expiresOn = LocalDate.of(2027, 7, 31),
+  )
+
+/**
+ * The answer the report receives for one stored row, decided by
+ * [NationalMeritPublishedAnswer.of] -- the one home of the arm rule -- so the
+ * page is only ever tested on answers the service can produce. By default on
+ * the day the row was read, inside its belief window, and priced with
+ * [meritBaseRate]; a null [baseRate] withholds the price.
+ */
+fun meritAnswer(
+  award: NationalMeritAward,
+  today: LocalDate = award.checkedOn,
+  baseRate: PublishedBaseRate? = meritBaseRate,
+): NationalMeritPublishedAnswer = NationalMeritPublishedAnswer.of(award, today, baseRate)
+
+// -----------------------------------------------------------------------------
+// RFC 251: the figures by field of study woven into the report
+// -----------------------------------------------------------------------------
+
+/** One Scorecard field-of-study variable's provenance, with the cohort it publishes for. */
+fun fieldOfStudyProvenance(variable: FieldOfStudyVariable): ProgramFigureProvenance =
+  requireNotNull(ProgramFigureProvenance.ofAgreeingCohort(variable, variable.cohortFirstYear, variable.cohortLastYear))
+
+/** One matched program with the figures it holds, by measure. */
+fun programFixture(
+  cip: String,
+  title: String,
+  vararg held: ProgramReturnFigure.Held,
+): ProgramReturnProgram = ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode(cip), title, held.associateBy { it.measure })
+
+/** One school's slice of a subject: its matched programs, or none. */
+fun programsAt(
+  college: CollegeCost,
+  vararg programs: ProgramReturnProgram,
+): ProgramReturnCollege =
+  if (programs.isEmpty()) {
+    ProgramReturnCollege.NoProgram(college.collegeId, college.name)
+  } else {
+    ProgramReturnCollege.WithPrograms(college.collegeId, college.name, programs.first(), programs.drop(1))
+  }
+
+/** One stored subject across the schools on the page. */
+fun subjectFixture(
+  name: String,
+  vararg colleges: ProgramReturnCollege,
+): ProgramReturnSubject = ProgramReturnSubject(name.lowercase(), name, colleges.first(), colleges.drop(1))
+
+/** The major answer (RFC 231) over [subjects], as the report source hands it to the page. */
+fun programReturnOf(vararg subjects: ProgramReturnSubject): ProgramReturn = ProgramReturn(subjects.first(), subjects.drop(1))
+
+/** A matched program every one of whose figures the publisher withheld. */
+fun allWithheldProgram(
+  cip: String,
+  title: String,
+): ProgramReturnProgram =
+  programFixture(
+    cip,
+    title,
+    *ScorecardFieldOfStudyColumns.VARIABLES.map { ProgramReturnFigure.Suppressed(fieldOfStudyProvenance(it)) }.toTypedArray(),
   )

@@ -51,4 +51,17 @@ data class CollegeMeritAid(
   override val updatedAt: Instant,
 ) : Identifiable<CollegeMeritAidId>,
   Created,
-  Updated
+  Updated {
+  companion object {
+    /**
+     * The Common Data Set section every fact column above is read from -- the
+     * publisher's own name for these cells, as `H.209` is for a price cell.
+     *
+     * Named once, here on the row the dao maps, so the surface that says what
+     * KIND of number a merit figure is ([PublishedCell.SelfPublished] takes the
+     * publisher's variable) reads the id the dao names rather than typing it a
+     * second time (RFC 260).
+     */
+    const val CDS_SECTION: String = "H2A"
+  }
+}

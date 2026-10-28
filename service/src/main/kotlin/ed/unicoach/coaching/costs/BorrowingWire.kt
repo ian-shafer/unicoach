@@ -56,6 +56,134 @@ data class BorrowingBlock(
 }
 
 /**
+ * One school's borrowing section as ROWS: the attribution, the class, one row
+ * per loan type the filing speaks (RFC 260).
+ *
+ * The row twin of [BorrowingBlock], for a surface that lays the figures out in
+ * a table rather than in sentences. The same guarantee rides on it: the
+ * [citation] every row is claimed under travels in the same value as the rows,
+ * and [BorrowingWire.rowsOf] is the only way to reach them, so a table cannot
+ * be rendered without the filing it is read from. WHICH loan types are rows,
+ * and which absences are said aloud, are the same rules [BorrowingWire.blockOf]
+ * applies -- `BorrowingWireTest` asserts the two cannot narrate one filing
+ * differently.
+ */
+data class BorrowingRows(
+  val citation: CdsCitation,
+  /**
+   * CDS H.401, formatted by the page; null when the filing carries no count we
+   * hold. Whether that null is OUR gap -- the filing answers and we could not
+   * read it -- is said by a [BorrowingGap.GraduatingClassNotReadByUs] entry in
+   * [gaps], never by a second reading of this null.
+   */
+  val graduatingClass: Int?,
+  /** In [LoanType.SPOKEN_ORDER]; only loan types with at least one figure. */
+  val rows: List<LoanRow>,
+  /**
+   * Every absence said under the table, in the order it is said: the
+   * unread-class gap first if there is one, then each loan type with a gap in
+   * [LoanType.SPOKEN_ORDER], then the private absence last if there is one.
+   * Typed rather than worded, so a surface can tell one gap from another
+   * without parsing a sentence; [BorrowingWire.sentenceOf] says each in words.
+   */
+  val gaps: List<BorrowingGap>,
+)
+
+/**
+ * One absence a borrowing table says aloud under its rows (RFC 260): whose
+ * silence it is, kept as the typed cause rather than flattened into prose.
+ *
+ * A sealed union because the three causes are disjoint and each is spoken by
+ * its own sentence -- a list of strings beside two booleans that restated
+ * three of them made a reader pair a flag with a sentence by position.
+ * [BorrowingWire.sentenceOf] is the one place a gap becomes words.
+ */
+sealed interface BorrowingGap {
+  /** OUR gap at CDS H.401: the filing answers the class size and we could not read it, so no share is derived. */
+  data object GraduatingClassNotReadByUs : BorrowingGap
+
+  /**
+   * One loan type's value-less cell, and WHOSE silence it is. Built only from
+   * [BorrowingWire]'s `gapStatusOf`, the one filter that admits a status as a
+   * gap, so [status] is always one [BorrowingWire.gapLabel] has a sentence for
+   * -- never a value-bearing status, and never the school's own plain silence.
+   */
+  data class LoanTypeStatus(
+    val loanType: LoanType,
+    val status: FigureStatus,
+  ) : BorrowingGap
+
+  /** The filing reports no private-loan average and that silence is the school's own, not ours or the publisher's. */
+  data object PrivateNotFiled : BorrowingGap
+}
+
+/**
+ * One loan type's row: the words for the type, the average cell, and the
+ * borrowed cell (RFC 260).
+ *
+ * Each cell is ONE value whose states are disjoint, never a pair of nullables a
+ * renderer has to reconcile: a figure and the reason it is missing cannot both
+ * be set, and a borrowed count cannot reach a cell without the share it is
+ * shown with. [BorrowingWire.rowsOf] is where each is decided, once.
+ */
+data class LoanRow(
+  val loanType: LoanType,
+  /** The wire's own words for the loan type, mid-sentence form ("federal loans"). */
+  val spokenLoanType: String,
+  val averageOwed: OwedAverage,
+  /** The CONSISTENT pair's count and share, or null (not reported, a class of zero, or the school's own contradiction, D6). */
+  val borrowed: BorrowedShare?,
+)
+
+/**
+ * The average-owed cell of one loan type: the figure, the reason the filing's
+ * answer is not shown, or the filing's own silence (RFC 260).
+ *
+ * A union rather than an `Int?` beside a `FigureStatus?`, because the three are
+ * disjoint and two nullables spanned a fourth state -- a figure AND a gap -- that
+ * a renderer could only resolve by silently preferring one. [Withheld] carries
+ * its sentence resolved at construction, so a status with no sentence fails in
+ * [BorrowingWire.rowsOf], where the filing is in hand to name, and never inside
+ * a family's page render.
+ */
+sealed interface OwedAverage {
+  /** The school's own average, in whole dollars. */
+  data class Shown(
+    val usd: Int,
+  ) : OwedAverage
+
+  /**
+   * The filing answers the column and no figure is shown, for someone's reason
+   * other than the school's silence -- [status] says whose, [statement] is
+   * [FigureStatusCopy.agentlessStatementOf] for it, the frozen words the gap
+   * sentence under the table frames.
+   */
+  data class Withheld(
+    val status: FigureStatus,
+    val statement: String,
+  ) : OwedAverage
+
+  /** No average in the filing and no status saying why: the filing simply lacks it. */
+  data object NotInFiling : OwedAverage
+}
+
+/**
+ * The borrowed cell's two numbers: how many borrowed this loan type, and the
+ * share of the graduating class that is (RFC 260).
+ *
+ * The share is NON-null here, where [BorrowerCounts.Counted.share] is not (a
+ * class of zero has none): a row only carries a pair that yields one, so the
+ * "never a share without its count" rule is the type's and not every producer's
+ * filter. The class the share divides by is [BorrowingRows.graduatingClass] --
+ * the same filing's H.401 every [BorrowerCounts.Counted] is built over -- said
+ * once in the column header rather than in every cell.
+ */
+data class BorrowedShare(
+  val borrowers: Int,
+  val share: Share,
+)
+
+/**
  * The one home for the borrowing section's wire shape and its copy (RFC 175).
  *
  * Three rules hold this file together, and each of them is a defect this repo
@@ -217,8 +345,19 @@ object BorrowingWire {
         // at once: a filing that reports a federal average and hides a private
         // one behind a cell we could not read renders the first and says the
         // second.
-        coverage.gapStatusByLoanType[loanType]?.let { status ->
-          gapKey(loanType, status)?.let { key -> put(key, gapLabel(loanType, status, borrowing.source)) }
+        //
+        // The filter is [gapStatusOf]'s, the one every seam asks; the KEY is
+        // still [gapKey]'s. The `checkNotNull` cannot fire: [gapStatusOf]
+        // returns only a status [gapKey] has a key for, and it says so loudly
+        // rather than dropping the sentence if the two ever part.
+        gapStatusOf(loanType, coverage)?.let { status ->
+          put(
+            checkNotNull(gapKey(loanType, status)) {
+              "a gap status with no key: loan_type=[${loanType.slug}] status=[${status.value}] " +
+                "cited_as=[${borrowing.source.citedAs}]"
+            },
+            gapLabel(loanType, status, borrowing.source),
+          )
         }
       }
       // Said OUT LOUD for the one loan type whose silence misleads most. A
@@ -259,6 +398,131 @@ object BorrowingWire {
     )
 
   /**
+   * This section as ROWS (RFC 260): the same filing [blockOf] narrates, laid
+   * out for a table rather than for sentences.
+   *
+   * A third reading of the same rules, never a third copy of them. Which loan
+   * types are spoken is [LoanTypeBorrowing.hasFact] -- the predicate
+   * [BorrowingCoverage.of] already admits a filing on -- a pair is carried only
+   * when it yields a share (the [putLoanType] rule, D6), and every absence is
+   * the same predicate [blockOf] asks, in [blockOf]'s order, kept as a typed
+   * [BorrowingGap] that [sentenceOf] words with [blockOf]'s own labels. The
+   * average and share SENTENCES are the one thing a row does not carry: a table
+   * says the figure under a column header instead, so the words are not
+   * restated per cell. `BorrowingWireTest` holds the two seams to one story.
+   */
+  fun rowsOf(coverage: BorrowingCoverage.Reported): BorrowingRows =
+    BorrowingRows(
+      citation = coverage.figures.source,
+      graduatingClass = coverage.figures.graduatingClass,
+      rows = loanRowsOf(coverage),
+      gaps = gapsOf(coverage),
+    )
+
+  /**
+   * One gap in words: the same sentence [blockOf] says for it, so the table's
+   * paragraphs and the coach's block cannot word one absence two ways.
+   *
+   * The ONE place a [BorrowingGap] becomes prose. Exhaustive with no `else`, so
+   * a fourth kind of gap must be given its sentence here before it compiles,
+   * rather than reaching a page with none.
+   */
+  fun sentenceOf(
+    gap: BorrowingGap,
+    citation: CdsCitation,
+  ): String =
+    when (gap) {
+      BorrowingGap.GraduatingClassNotReadByUs -> graduatingClassNotReadByUsLabel()
+      is BorrowingGap.LoanTypeStatus -> gapLabel(gap.loanType, gap.status, citation)
+      BorrowingGap.PrivateNotFiled -> privateNotFiledLabel()
+    }
+
+  /**
+   * The rows: one per loan type the filing speaks, in [LoanType.SPOKEN_ORDER].
+   * A type with only a gap status gets no row -- its absence is said under the
+   * table by [gapsOf] instead -- because a row of two blanks says nothing a
+   * family can read off a column.
+   */
+  private fun loanRowsOf(coverage: BorrowingCoverage.Reported): List<LoanRow> =
+    LoanType.SPOKEN_ORDER.mapNotNull { loanType ->
+      val figures = coverage.figures.of(loanType)?.takeIf { it.hasFact } ?: return@mapNotNull null
+      LoanRow(
+        loanType = loanType,
+        spokenLoanType = loanType.spoken,
+        averageOwed = owedAverageOf(loanType, figures, coverage),
+        borrowed = borrowedShareOf(figures.borrowers),
+      )
+    }
+
+  /**
+   * The absences said under the table, in [blockOf]'s order: the unread class,
+   * each loan type's gap in [LoanType.SPOKEN_ORDER], the private absence. The
+   * same three predicates [blockOf] asks, so the two seams cannot disagree
+   * about which absences a filing has; every [BorrowingGap.LoanTypeStatus] is
+   * built from [gapStatusOf] and nowhere else.
+   */
+  private fun gapsOf(coverage: BorrowingCoverage.Reported): List<BorrowingGap> =
+    buildList {
+      if (coverage.graduatingClassNotReadByUs) add(BorrowingGap.GraduatingClassNotReadByUs)
+      LoanType.SPOKEN_ORDER.forEach { loanType ->
+        gapStatusOf(loanType, coverage)?.let { status -> add(BorrowingGap.LoanTypeStatus(loanType, status)) }
+      }
+      if (coverage.privateAverageIsUnfiled()) add(BorrowingGap.PrivateNotFiled)
+    }
+
+  /**
+   * The status this filing's value-less cell for [loanType] is said under, or
+   * null where there is nothing to say -- the [gapKey] filter, asked once by
+   * every seam that reads a gap ([objectOf]'s key, [blockOf]'s sentence, and
+   * [rowsOf]'s cell and [BorrowingGap]) so no two of them can disagree about
+   * which statuses are gaps.
+   */
+  private fun gapStatusOf(
+    loanType: LoanType,
+    coverage: BorrowingCoverage.Reported,
+  ): FigureStatus? = coverage.gapStatusByLoanType[loanType]?.takeIf { gapKey(loanType, it) != null }
+
+  /**
+   * One row's average cell, decided once: the figure where the filing has one,
+   * else the gap [gapStatusOf] says is someone's to explain, else the filing's
+   * own silence.
+   *
+   * The figure is asked first, as the page always preferred it: a gap status
+   * beside a shown average is about a cell the row does not leave blank. The
+   * sentence is resolved HERE rather than at render for [gapLabel]'s reason --
+   * a nullable spliced into family-facing copy prints the literal `null` -- and
+   * with the filing in hand, so a status with no sentence fails naming the
+   * school it came from rather than inside a page render.
+   */
+  private fun owedAverageOf(
+    loanType: LoanType,
+    figures: LoanTypeBorrowing,
+    coverage: BorrowingCoverage.Reported,
+  ): OwedAverage {
+    figures.averageDebtUsd?.let { return OwedAverage.Shown(it) }
+    val status = gapStatusOf(loanType, coverage) ?: return OwedAverage.NotInFiling
+    val statement =
+      checkNotNull(FigureStatusCopy.agentlessStatementOf(status)) {
+        "a borrowing gap reached the owed cell and its status has no sentence: " +
+          "loan_type=[${loanType.slug}] status=[${status.value}] cited_as=[${coverage.figures.source.citedAs}]"
+      }
+    return OwedAverage.Withheld(status, statement)
+  }
+
+  /**
+   * One row's borrowed cell: the CONSISTENT pair's count and its share, or
+   * null. Routed through the same exhaustive `when` [putLoanType] and
+   * [listSentencesFor] use, so the row emits nothing for the school's own
+   * contradiction (D6) and nothing for a pair over a class of zero, exactly as
+   * they do -- and a third [BorrowerCounts] state cannot fall through a cast.
+   */
+  private fun borrowedShareOf(counts: BorrowerCounts?): BorrowedShare? =
+    when (counts) {
+      is BorrowerCounts.Counted -> counts.share?.let { BorrowedShare(borrowers = counts.borrowers, share = it) }
+      is BorrowerCounts.ContradictsGraduatingClass, null -> null
+    }
+
+  /**
    * Everything one filing says about ONE loan type, in the order a family hears
    * it -- the prose twin of [putLoanType], so the two surfaces cannot come to
    * apply the same per-type policy differently.
@@ -279,9 +543,7 @@ object BorrowingWire {
         is BorrowerCounts.Counted -> counts.share?.let { add(shareLabel(loanType, counts, it)) }
         is BorrowerCounts.ContradictsGraduatingClass, null -> Unit
       }
-      coverage.gapStatusByLoanType[loanType]?.let { status ->
-        if (gapKey(loanType, status) != null) add(gapLabel(loanType, status, source))
-      }
+      gapStatusOf(loanType, coverage)?.let { status -> add(gapLabel(loanType, status, source)) }
     }
 
   /**
@@ -353,6 +615,17 @@ object BorrowingWire {
   fun blockHeader(source: CdsCitation): String = "${source.citedAs}$HEADER_TAIL"
 
   /**
+   * The two things the borrowing cohort is NOT, as one clause -- the tail of
+   * [HEADER_TAIL], and of the report page's once-per-page kinds sentence (RFC
+   * 260 K2).
+   *
+   * Its own constant so the two surfaces state the cohort's limits in one copy
+   * of the words: the page says these hedges once rather than in every school's
+   * header, and a change to the cohort definition here reaches both.
+   */
+  const val COHORT_HEDGES: String = "not this year's freshmen, and not all its undergraduates"
+
+  /**
    * Everything [blockHeader] says AFTER the claimant, as one string.
    *
    * Extracted so a surface that renders the claimant as a LINK (RFC 196) prints
@@ -360,9 +633,7 @@ object BorrowingWire {
    * one copy of these words, and [blockHeader] is built from it, so the two
    * forms cannot drift.
    */
-  const val HEADER_TAIL: String =
-    " reports these figures for the students who graduated from it that year -- not this " +
-      "year's freshmen, and not all its undergraduates"
+  const val HEADER_TAIL: String = " reports these figures for the students who graduated from it that year -- " + COHORT_HEDGES
 
   /**
    * The class every figure in the section is reported over.

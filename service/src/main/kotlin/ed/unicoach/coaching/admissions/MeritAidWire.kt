@@ -2,6 +2,9 @@ package ed.unicoach.coaching.admissions
 
 import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.common.util.Share
+import ed.unicoach.db.models.AssuranceTier
+import ed.unicoach.db.models.CollegeMeritAid
+import ed.unicoach.db.models.PublishedCell
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -42,6 +45,18 @@ object MeritAidWire {
 
   /** The keys under this section whose value is a NUMBER by contract (the RFC 143 guard's allowlist). */
   val NUMERIC_KEYS: Set<String> = setOf(FULL_TIME_FRESHMEN_KEY, RECIPIENTS_KEY, SHARE_KEY, AVERAGE_KEY)
+
+  /**
+   * What KIND of number a merit figure is: the school's own filing, unaudited
+   * (RFC 179).
+   *
+   * Read from the one type that says what a Common Data Set cell is, never
+   * typed as a tier here: [PublishedCell.SelfPublished] is how every other CDS
+   * cell on the read side resolves its tier, and the variable is the section
+   * the merit dao maps ([CollegeMeritAid.CDS_SECTION]). A surface that states
+   * this tier for a merit figure (RFC 260's report page) reads it from here.
+   */
+  val ASSURANCE: AssuranceTier = PublishedCell.SelfPublished(variable = CollegeMeritAid.CDS_SECTION).assurance
 
   /**
    * The merit section. A school that reports nothing under it never reaches

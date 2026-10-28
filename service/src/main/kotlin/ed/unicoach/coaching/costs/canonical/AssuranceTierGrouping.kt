@@ -1,5 +1,7 @@
 package ed.unicoach.coaching.costs.canonical
 
+import ed.unicoach.coaching.admissions.MeritAidWire
+import ed.unicoach.coaching.admissions.MeritPractice
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.ProgramReturnCopy
 import ed.unicoach.coaching.costs.SpokenAssurance
@@ -171,6 +173,42 @@ sealed interface FigureIdentity {
     override val spokenLabel: String get() = ProgramReturnCopy.spokenLabelOf(measure)
     override val wireName: String get() = measure.value
   }
+
+  /**
+   * One measure of a school's non-need (merit) aid filing, across every school
+   * whose merit table is shown (RFC 260, brief 0016 D10).
+   *
+   * A third variant rather than a [Cost]: the merit figures are not canonical
+   * money rows and carry no [CostField], and the tier they are on is
+   * [ed.unicoach.coaching.admissions.MeritAidWire.ASSURANCE]'s, read off the
+   * Common Data Set cell they come from.
+   */
+  data class MeritAid(
+    val measure: MeritMeasure,
+  ) : FigureIdentity {
+    override val spokenLabel: String get() = measure.spokenLabel
+    override val wireName: String get() = measure.wireName
+  }
+}
+
+/**
+ * The two merit figures a surface can show (RFC 260): [MeritPractice]'s
+ * `shareOfAllFullTimeFreshmen` and `averageNonNeedAid`.
+ *
+ * [spokenLabel] is how a family hears the figure named in a tier group's scope
+ * -- the POPULATION is in the share's label, for
+ * [ed.unicoach.coaching.admissions.MeritAidWire.shareLabel]'s reason: a share
+ * of "full-time freshmen" and a share of "students with no need" are two
+ * statistics, and only the first is reported. [wireName] is the payload key the
+ * same figure rides under, so a refusal an operator reads names the key they
+ * can find.
+ */
+enum class MeritMeasure(
+  val spokenLabel: String,
+  val wireName: String,
+) {
+  SHARE("the share of full-time freshmen who received non-need (merit) aid", MeritAidWire.SHARE_KEY),
+  AVERAGE("the average non-need (merit) aid", MeritAidWire.AVERAGE_KEY),
 }
 
 /**

@@ -1,15 +1,19 @@
 package ed.unicoach.web
 
 import ed.unicoach.coaching.admissions.CdsCitation
+import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
 import ed.unicoach.coaching.costs.BorrowingCoverage
+import ed.unicoach.coaching.costs.BorrowingRows
 import ed.unicoach.coaching.costs.BorrowingWire
 import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.LoanRow
 import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.NetPrice
+import ed.unicoach.coaching.costs.OwedAverage
 import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.coaching.costs.UcsdScorecardRow
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
@@ -23,8 +27,10 @@ import ed.unicoach.coaching.testing.NextBand
 import ed.unicoach.coaching.testing.PublishedBaseRate
 import ed.unicoach.coaching.testing.SittingScore
 import ed.unicoach.coaching.testing.StudentStanding
+import ed.unicoach.common.money.WholeDollars
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.Share
+import ed.unicoach.common.util.WholeCount
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.AssuranceTier
@@ -56,7 +62,9 @@ import ed.unicoach.db.models.ScholarshipSuperscoreRule
 import ed.unicoach.db.models.ScoreRequirement
 import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.web.render.BLENDED_IN_STATE_CLAUSE
+import ed.unicoach.web.render.NOT_IN_FILING
 import ed.unicoach.web.render.NOT_REPORTED
+import ed.unicoach.web.render.NO_SHARE_SHOWN
 import ed.unicoach.web.render.SCHOOL_BLENDED_HINT
 import ed.unicoach.web.render.SUMMARY_HINT
 import io.ktor.client.request.get
@@ -112,21 +120,6 @@ class CostReportPageTest {
       housingAndFoodOffCampus = 9000,
     )
 
-  private fun render(profile: CollegeCostProfile): String = renderResponse(profile).second
-
-  /** The page and its status: what a test of a page that must refuse itself reads. */
-  private fun renderResponse(profile: CollegeCostProfile): Pair<HttpStatusCode, String> {
-    lateinit var result: Pair<HttpStatusCode, String>
-    testApplication {
-      application {
-        testPublicWebModule(costReportSource = FakeCostReportSource(FakeReportAnswer.Live(profile)))
-      }
-      val response = client.get("/report?token=$TEST_LIVE_TOKEN")
-      result = response.status to response.bodyAsText()
-    }
-    return result
-  }
-
   /**
    * How the page states ONE Common Data Set filing since RFC 196: the claimant
    * inside an anchor pointing at the college's own file.
@@ -163,73 +156,12 @@ class CostReportPageTest {
     return text.split(Regex("\\s+")).count { it.isNotBlank() }
   }
 
-  /**
-   * The three schools the word budget is measured over: every one of them
-   * priced for all three ways of living, with a merit filing and a borrowing
-   * filing, so the fixture carries every repeating block the page can print.
-   */
-  private fun verboseState(): CollegeCost =
-    costFixture(
-      name = "Lakeshore State University",
-      control = CollegeControl.Public(TuitionApplicable.IN_STATE),
-      tuitionInState = 12000,
-      tuitionOutOfState = 34000,
-      publishedPrice = 28000,
-      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 15000),
-      housingAndFoodOnCampus = 11000,
-      housingAndFoodOffCampus = 13000,
-      booksAndSupplies = 1200,
-      otherExpensesOnCampus = 2500,
-      otherExpensesOffCampus = 2800,
-      otherExpensesWithFamily = 3000,
-      medianDebt = 21000,
-      offersOnCampusHousing = true,
-      meritAid = meritFixture("Lakeshore State University"),
-      borrowing = borrowingFixture("Lakeshore State University"),
-    )
-
-  private fun verboseCampus(): CollegeCost =
-    costFixture(
-      name = "Eastbrook University",
-      tuitionInState = 30000,
-      publishedPrice = 52000,
-      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
-      housingAndFoodOnCampus = 10000,
-      housingAndFoodOffCampus = 12000,
-      booksAndSupplies = 1000,
-      otherExpensesOnCampus = 2000,
-      otherExpensesOffCampus = 2400,
-      otherExpensesWithFamily = 2600,
-      medianDebt = 24000,
-      offersOnCampusHousing = true,
-      meritAid = meritFixture("Eastbrook University"),
-      borrowing = borrowingFixture("Eastbrook University"),
-    )
-
-  private fun verbosePrivate(): CollegeCost =
-    costFixture(
-      name = "Wynnford College",
-      tuitionInState = 41000,
-      publishedPrice = 60000,
-      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 25000),
-      housingAndFoodOnCampus = 12000,
-      housingAndFoodOffCampus = 14000,
-      booksAndSupplies = 1100,
-      otherExpensesOnCampus = 2200,
-      otherExpensesOffCampus = 2600,
-      otherExpensesWithFamily = 2900,
-      medianDebt = 27000,
-      offersOnCampusHousing = true,
-      meritAid = meritFixture("Wynnford College"),
-      borrowing = borrowingFixture("Wynnford College"),
-    )
-
   @Test
   fun `a two-school list states the six comparison assumptions in the domain's own words`() {
     val profile = costProfile(listOf(stateSchool(), privateSchool()), answeredMoney())
     val basis = requireNotNull(profile.comparisonBasis) { "two colleges must carry a comparison basis" }
 
-    val body = render(profile)
+    val body = renderedReportOf(profile)
 
     assertTrue(body.contains(basis.population.statement), "missing the population line")
     assertTrue(body.contains(basis.residency.statement), "missing the residency line")
@@ -247,7 +179,7 @@ class CostReportPageTest {
     val profile = costProfile(listOf(stateSchool()), answeredMoney())
     assertEquals(null, profile.comparisonBasis, "one college must carry no comparison basis")
 
-    val body = render(profile)
+    val body = renderedReportOf(profile)
 
     assertFalse(body.contains("class=\"report-basis\""), "a one-school report must not render the comparison block")
     assertTrue(body.contains("class=\"report-single-basis\""), "a one-school report states its own basis inline")
@@ -280,7 +212,7 @@ class CostReportPageTest {
 
   @Test
   fun `a two-school list is actually compared, in one table above the per-school detail`() {
-    val body = render(costProfile(listOf(stateSchool(), campusSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), campusSchool()), answeredMoney()))
 
     val summary = summaryOf(body)
     assertTrue(summary.contains("The schools side by side"), "the comparison the assumption lines promise must exist")
@@ -303,7 +235,7 @@ class CostReportPageTest {
     val basis = requireNotNull(profile.comparisonBasis) { "two colleges must carry a comparison basis" }
     val held = basis.livingArrangement.comparable.first()
 
-    val body = render(profile)
+    val body = renderedReportOf(profile)
 
     assertTrue(basis.livingArrangement.statement.contains(held.label), "the basis line names the arrangement it holds")
     val summary = summaryOf(body)
@@ -313,7 +245,7 @@ class CostReportPageTest {
 
   @Test
   fun `a one-school list carries no summary table, because there is nothing to compare`() {
-    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
 
     assertFalse(body.contains("report-summary"), "one school is not a comparison")
     assertFalse(body.contains("The schools side by side"), "one school is not a comparison")
@@ -323,7 +255,7 @@ class CostReportPageTest {
   fun `a summary figure a school does not publish is a labelled blank, never its neighbour's number`() {
     val silent = costFixture(name = "Quiet College", housingAndFoodOnCampus = 8000)
 
-    val body = render(costProfile(listOf(campusSchool(), silent), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(campusSchool(), silent), answeredMoney()))
 
     val summary = summaryOf(body)
     assertTrue(summary.contains("Not reported by this school"), "an unpublished figure is a labelled blank")
@@ -346,7 +278,7 @@ class CostReportPageTest {
       "the fixture must share no way of living",
     )
 
-    val summary = summaryOf(render(profile))
+    val summary = summaryOf(renderedReportOf(profile))
 
     assertFalse(summary.contains("Way of living"), "an arrangement nobody shares must not be presented as held constant")
     assertTrue(
@@ -359,7 +291,7 @@ class CostReportPageTest {
 
   @Test
   fun `a missing component renders a labelled blank and its arrangement shows no total`() {
-    val body = render(costProfile(listOf(privateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(privateSchool()), answeredMoney()))
 
     // The school publishes housing and food off campus and nothing else, so the
     // other two parts of that way of living are labelled blanks, not zeroes.
@@ -396,7 +328,7 @@ class CostReportPageTest {
     val breakdown = requireNotNull(atHomeOnly.breakdown) { "the fixture must publish one component" }
     assertEquals(listOf("living at home"), breakdown.arrangements.map { it.arrangement.label })
 
-    val body = render(costProfile(listOf(atHomeOnly), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(atHomeOnly), answeredMoney()))
 
     assertTrue(body.contains("living at home"), "the way of living must be named")
     assertTrue(body.contains("Housing and food"), "living at home now carries a food-and-housing line")
@@ -416,7 +348,7 @@ class CostReportPageTest {
     // And where a total IS settled, the whole sentence is said the same way: the
     // domain's, not the page's, reaching the parent through the same basis list
     // every other honesty statement does.
-    val withAtHomeTotal = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val withAtHomeTotal = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
     assertTrue(withAtHomeTotal.contains("\$16,200"), "the at-home total is complete: tuition, our zero, books, other expenses")
     assertTrue(
       withAtHomeTotal.contains(AT_HOME_ASSUMPTION_STATEMENT),
@@ -450,7 +382,7 @@ class CostReportPageTest {
         netPrice = NetPrice.OverallAverage(24000),
       )
 
-    val body = render(costProfile(listOf(school), UNANSWERED_MONEY))
+    val body = renderedReportOf(costProfile(listOf(school), UNANSWERED_MONEY))
 
     assertTrue(body.contains("The household income question is unanswered"), "the page must say which question is open")
     assertTrue(body.contains("an overall average across all families"), "the overall average must be labelled as one")
@@ -462,22 +394,60 @@ class CostReportPageTest {
 
   @Test
   fun `an answered profile states the family's income band in dollars`() {
-    val body = render(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney(IncomeBand.K48_TO_75K)))
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney(IncomeBand.K48_TO_75K)))
 
     assertTrue(body.contains(IncomeBand.K48_TO_75K.bracket), "the band the net price rests on must be stated in dollars")
   }
 
   @Test
   fun `merit practice is cited to the school's own Common Data Set`() {
-    val body = render(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
+    val merit = requireNotNull(stateSchool().meritAid)
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
 
-    assertTrue(body.contains("of all full-time freshmen received non-need (merit) aid"), "missing the merit share sentence")
-    assertTrue(body.contains("Riverside State University's 2024-25 Common Data Set"), "missing the CDS citation")
+    // ROWS, not sentences (RFC 260): the share is a cell under its row header,
+    // and the filing is cited once, linked, in the table's caption.
+    val table = meritTableOf(body)
+    assertTrue(table.contains("<caption>${linkedCitation(merit.source)}$MERIT_CAPTION_TAIL</caption>"), table)
+    assertTrue(table.contains(meritRowOf("Share who received it", "25%")), "the share is a cell under its row header: [$table]")
+    assertTrue(table.contains(meritRowOf("Average received", "\$12,000")), "the average is a cell under its row header: [$table]")
+    // The sentence the coach reads is NOT on the page any more; its words
+    // moved to the column header, the caption and K1.
+    assertFalse(body.contains(MeritAidWire.shareLabel(requireNotNull(merit.shareOfAllFullTimeFreshmen))), "the share sentence is gone")
+    assertFalse(body.contains(MeritAidWire.averageLabel(requireNotNull(merit.averageNonNeedAid))), "the average sentence is gone")
+    assertFalse(body.contains("Source: "), "the trailing source line is the caption now")
   }
+
+  /**
+   * The one merit table of a page with one merit school, compacted
+   * ([compactReportOf]) and with the marker ASSERTED for [kindsBlockOf]'s
+   * reason.
+   */
+  private fun meritTableOf(body: String): String {
+    val report = compactReportOf(body)
+    val opening = "<table class=\"data-table report-table report-merit-table\""
+    assertEquals(1, countOf(report, opening), "exactly one merit table must be on the page to be read: [$report]")
+    return report.substringAfter(opening).substringBefore("</table>")
+  }
+
+  /** The `tr` the merit table renders for one measure: its row header and the one value cell, labelled with the cohort column. */
+  private fun meritRowOf(
+    rowHeader: String,
+    cell: String,
+  ): String = "<tr><th scope=\"row\">$rowHeader</th><td class=\"report-value\" data-label=\"$MERIT_COHORT_COLUMN\">$cell</td></tr>"
+
+  /**
+   * The report's markup with the whitespace BETWEEN tags removed, so an
+   * assertion can state a row as one string whatever the printer's indentation.
+   * Text inside a tag is untouched, so no word is moved or lost.
+   */
+  private fun compactReportOf(body: String): String = reportSectionOf(body).replace(Regex(">\\s+<"), "><")
+
+  /** A labelled blank, in the one styled shape every blank on the page has. */
+  private fun blankOf(label: String): String = "<span class=\"report-blank\">$label</span>"
 
   @Test
   fun `the page names its sources and says what it is not`() {
-    val body = render(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
 
     // DERIVED from the rows the page actually served (RFC 177 D5). These two
     // fixtures publish Scorecard-sourced rows, so the Scorecard is what the page
@@ -519,7 +489,7 @@ class CostReportPageTest {
         pricePublisher = PublishedCell.Survey.IC_AY,
       )
 
-    val body = render(costProfile(listOf(ipedsSchool), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(ipedsSchool), answeredMoney()))
 
     // Its PRICE rows are IPEDS', and this school publishes no blended figure at
     // all -- it names no published price, no net price and no median debt -- so
@@ -573,7 +543,7 @@ class CostReportPageTest {
         pricePublisher = PublishedCell.Survey.IC_AY,
       )
 
-    val body = render(costProfile(listOf(twoPublisherSchool), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(twoPublisherSchool), answeredMoney()))
 
     assertTrue(
       body.contains(
@@ -625,7 +595,7 @@ class CostReportPageTest {
         pricePublisher = PublishedCell.Survey.IC_AY,
       )
 
-    val body = render(costProfile(listOf(ipedsPricedScorecardSilent), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(ipedsPricedScorecardSilent), answeredMoney()))
 
     assertTrue(
       body.contains(
@@ -652,7 +622,7 @@ class CostReportPageTest {
    */
   @Test
   fun `a page with no price figure names no publisher at all`() {
-    val body = render(costProfile(emptyList(), answeredMoney()))
+    val body = renderedReportOf(costProfile(emptyList(), answeredMoney()))
 
     assertFalse(body.contains("The cost, price and federal debt figures come from"), "no figure, no publisher to name")
     MoneySource.entries.forEach { source ->
@@ -662,7 +632,7 @@ class CostReportPageTest {
 
   @Test
   fun `the report renders the money vocabulary and never the words it must not say`() {
-    val body = render(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
 
     assertTrue(body.contains("Tuition and fees"), "missing the tuition and fees block")
     assertTrue(body.contains("Housing and food"), "missing the housing and food line")
@@ -677,10 +647,16 @@ class CostReportPageTest {
 
   @Test
   fun `debt context is rendered without a year, because no source dates it`() {
-    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
 
     assertTrue(body.contains("\$21,000 in federal loans"), "missing the debt figure")
-    assertTrue(body.contains("The source publishes no year for this figure"), "the debt figure must be undated on purpose")
+    // The figure is undated on purpose, and the page SAYS so -- once, for the
+    // page, in the kinds block (RFC 260 K3), never beside the figure.
+    schoolSectionsOf(body).forEach { school ->
+      assertFalse(school.contains("publishes no year"), "no per-school no-year clause: [$school]")
+    }
+    assertEquals(1, countOf(kindsBlockOf(body), DEBT_YEAR_KIND_SENTENCE), "K3 is said once in the kinds block: [${kindsBlockOf(body)}]")
+    assertEquals(0, countOf(body, "The source publishes no year for this figure"), "the old per-figure sentence is gone")
   }
 
   @Test
@@ -689,18 +665,56 @@ class CostReportPageTest {
     // the median federal debt is `GRAD_DEBT_MDN`, which the Scorecard relays
     // from the federal loan file. Until a SHOWN figure carried a note there was
     // nowhere on this page to say so, and the number read as the college's own.
-    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
+    val statement = AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)
 
-    assertTrue(
-      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)),
-      "the shown debt paragraph carries the administrative-record sentence: [$body]",
-    )
-    // Beside the figure, not instead of it, and the two sentences stay two.
-    assertTrue(
-      body.indexOf("The source publishes no year for this figure") <
-        body.indexOf(AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)),
-      "the tier sentence follows the figure's own words",
-    )
+    assertTrue(body.contains(statement), "the page carries the administrative-record sentence: [$body]")
+    // The figure's own paragraph first, in the school's section and in its own
+    // named `<p>` (RFC 260 D4); the tier sentence and K3 follow it, in the
+    // kinds block, so the two sentences stay two and neither sits beside the
+    // figure.
+    val figureAt = body.indexOf("<p class=\"report-debt-federal\">")
+    assertTrue(figureAt > 0, "the shown debt figure is in its own named paragraph: [$body]")
+    assertTrue(body.indexOf("\$21,000 in federal loans") > figureAt, "and the figure is inside it")
+    assertTrue(figureAt < body.indexOf(statement), "the tier sentence follows the figure's own words")
+    assertTrue(figureAt < body.indexOf(DEBT_YEAR_KIND_SENTENCE), "and so does the no-year sentence (K3)")
+  }
+
+  /** Each `report-school` section's markup, in page order, with the marker ASSERTED for [kindsBlockOf]'s reason. */
+  private fun schoolSectionsOf(body: String): List<String> {
+    val opening = "<section class=\"report-school\">"
+    assertTrue(body.contains(opening), "a school section must be on the page to be read")
+    return body.split(opening).drop(1).map { it.substringBefore("<section class=\"report-kinds\">") }
+  }
+
+  @Test
+  fun `K1, K2 and K3 are each said once for the page, and only when a block they are about is on it`() {
+    // All three blocks on the three-school page: each sentence exactly once.
+    val full = kindsBlockOf(renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney())))
+    assertEquals(1, countOf(full, "<p class=\"report-kind report-kind-merit\">$MERIT_KIND_SENTENCE</p>"), full)
+    assertEquals(1, countOf(full, "<p class=\"report-kind report-kind-borrowing\">$BORROWING_KIND_SENTENCE</p>"), full)
+    assertEquals(1, countOf(full, "<p class=\"report-kind report-kind-debt-year\">$DEBT_YEAR_KIND_SENTENCE</p>"), full)
+
+    // No merit table: no K1. The other two blocks are still on the page.
+    val noMerit = renderedReportOf(costProfile(listOf(costFixtureWithBorrowing()), answeredMoney()))
+    assertFalse(noMerit.contains(MERIT_KIND_SENTENCE), "K1 without a merit table: [$noMerit]")
+    assertTrue(noMerit.contains(BORROWING_KIND_SENTENCE) && noMerit.contains(DEBT_YEAR_KIND_SENTENCE))
+
+    // No borrowing table: no K2.
+    val noBorrowing = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
+    assertFalse(noBorrowing.contains(BORROWING_KIND_SENTENCE), "K2 without a borrowing table: [$noBorrowing]")
+    assertTrue(noBorrowing.contains(MERIT_KIND_SENTENCE) && noBorrowing.contains(DEBT_YEAR_KIND_SENTENCE))
+
+    // No shown debt figure: no K3.
+    val noDebt =
+      renderedReportOf(
+        costProfile(
+          listOf(costFixture(name = "Ashford College", tuitionInState = 41000, meritAid = meritFixture("Ashford College"))),
+          answeredMoney(),
+        ),
+      )
+    assertFalse(noDebt.contains(DEBT_YEAR_KIND_SENTENCE), "K3 without a shown debt figure: [$noDebt]")
+    assertTrue(noDebt.contains(MERIT_KIND_SENTENCE))
   }
 
   @Test
@@ -710,7 +724,7 @@ class CostReportPageTest {
     // reader who is told only "nobody audits it" has not been told why the cell
     // is empty.
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             oneBlankSchool(
@@ -737,7 +751,7 @@ class CostReportPageTest {
         booksAndSupplies = 1200,
       )
 
-    val body = render(costProfile(listOf(unknownResidency), UNANSWERED_MONEY))
+    val body = renderedReportOf(costProfile(listOf(unknownResidency), UNANSWERED_MONEY))
 
     assertTrue(
       body.contains("Not shown \u2014 the state the family lives in is not on file"),
@@ -749,7 +763,7 @@ class CostReportPageTest {
 
   @Test
   fun `no student identity reaches the page`() {
-    val body = render(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), privateSchool()), answeredMoney()))
 
     assertFalse(body.contains("student_id"), "the page must carry no student id")
     assertFalse(body.contains("@"), "the page must carry no email address")
@@ -768,7 +782,7 @@ class CostReportPageTest {
         housingAndFoodOffCampus = 9000,
       )
 
-    val body = render(costProfile(listOf(silentSchool), UNANSWERED_MONEY))
+    val body = renderedReportOf(costProfile(listOf(silentSchool), UNANSWERED_MONEY))
 
     val school = body.substringAfter("class=\"report-row-school\"")
     assertTrue(
@@ -791,7 +805,7 @@ class CostReportPageTest {
         netPrice = NetPrice.OverallAverage(null),
       )
 
-    val body = render(costProfile(listOf(noNetPrice), UNANSWERED_MONEY))
+    val body = renderedReportOf(costProfile(listOf(noNetPrice), UNANSWERED_MONEY))
 
     // The note is the FIGURE's basis. Under a blank it described a number that
     // is not there: "Not reported by this school" followed by a sentence about
@@ -804,7 +818,7 @@ class CostReportPageTest {
 
     // And it IS printed when there is a figure.
     val withNetPrice = costFixture(name = "Ashford College", tuitionInState = 41000, netPrice = NetPrice.OverallAverage(24000))
-    val withBody = render(costProfile(listOf(withNetPrice), UNANSWERED_MONEY))
+    val withBody = renderedReportOf(costProfile(listOf(withNetPrice), UNANSWERED_MONEY))
     assertTrue(
       withBody.contains("an overall average across all families, not a figure for this family"),
       "a figure that is an overall average must always say so",
@@ -819,7 +833,7 @@ class CostReportPageTest {
     val factless = meritFixture("Ashford College", freshmen = null, recipients = 250, averageAid = null)
     val school = costFixture(name = "Ashford College", tuitionInState = 41000, meritAid = factless)
 
-    val body = render(costProfile(listOf(school), UNANSWERED_MONEY))
+    val body = renderedReportOf(costProfile(listOf(school), UNANSWERED_MONEY))
 
     assertFalse(
       body.contains("Money this school gives for something other than financial need"),
@@ -870,7 +884,7 @@ class CostReportPageTest {
         answeredMoney(band = IncomeBand.OVER_110K, state = "WA"),
       )
 
-    val body = render(profile)
+    val body = renderedReportOf(profile)
 
     assertTrue(body.contains("\$77,102"), "the on-campus total, built from out-of-state tuition and fees")
     assertTrue(body.contains("\$77,659"), "the off-campus total")
@@ -907,7 +921,7 @@ class CostReportPageTest {
         answeredMoney(band = IncomeBand.OVER_110K, state = "CA"),
       )
 
-    val body = render(profile)
+    val body = renderedReportOf(profile)
 
     assertTrue(body.contains("\$38,701"), "the published price is theirs")
     assertTrue(body.contains("\$28,785"), "and so is the top-band price after a financial aid offer")
@@ -924,7 +938,7 @@ class CostReportPageTest {
     // to hide the only price we hold, and no answer is gated on a full profile.
     val profile = costProfile(listOf(ucSanDiego(TuitionApplicable.UNKNOWN)), UNANSWERED_MONEY)
 
-    val body = render(profile)
+    val body = renderedReportOf(profile)
 
     assertTrue(body.contains("\$38,701"), "the published price is still shown")
     assertFalse(
@@ -947,7 +961,7 @@ class CostReportPageTest {
         answeredMoney(band = IncomeBand.OVER_110K, state = "WA"),
       )
 
-    val summary = summaryOf(render(profile))
+    val summary = summaryOf(renderedReportOf(profile))
 
     assertFalse(summary.contains("\$38,701"), "the in-state published price must not reach the comparison either")
     assertTrue(
@@ -959,7 +973,7 @@ class CostReportPageTest {
 
   @Test
   fun `the blended-figure hint is said once for the whole page, with the residency it is on`() {
-    val body = render(costProfile(listOf(stateSchool(), campusSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), campusSchool()), answeredMoney()))
 
     // ONE hint, above the school sections: the warning is about the published
     // price generally (RFC 149 D-F.1 requires it be said, not said N times), and
@@ -979,7 +993,7 @@ class CostReportPageTest {
   fun `a one-school report still carries the blended-figure hint, in its own words`() {
     // There is no summary table to say it above, so the school section is the
     // only place it can be said -- and it must still be said.
-    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
 
     assertTrue(
       body.contains("$SCHOOL_BLENDED_HINT $BLENDED_IN_STATE_CLAUSE"),
@@ -992,7 +1006,7 @@ class CostReportPageTest {
   fun `the in-state clause is absent from a report with no public school on it`() {
     // It is a sentence ABOUT public schools. Under two private colleges it was
     // simply false of every table it stood under.
-    val private = render(costProfile(listOf(privateSchool(), campusSchool()), answeredMoney()))
+    val private = renderedReportOf(costProfile(listOf(privateSchool(), campusSchool()), answeredMoney()))
     // Asserted against the RENDERER's own constant, never a hand-typed copy: an
     // absence asserted against a copy passes vacuously the moment the sentence
     // is reworded, which is exactly how this defect would come back green.
@@ -1000,13 +1014,13 @@ class CostReportPageTest {
     assertTrue(private.contains(SUMMARY_HINT), "the blended-average warning itself still stands")
 
     // And it IS said where a public school is on the page, mixed or alone.
-    val mixed = render(costProfile(listOf(privateSchool(), stateSchool()), answeredMoney()))
+    val mixed = renderedReportOf(costProfile(listOf(privateSchool(), stateSchool()), answeredMoney()))
     assertEquals(1, countOf(mixed, BLENDED_IN_STATE_CLAUSE), "one public school on the page is one clause")
   }
 
   @Test
   fun `the residency sentence is said once on a one-school report, and once per school on three`() {
-    val one = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val one = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
     val statement =
       "Riverside State University is a public school, and the tuition and fees figure that applies to this " +
         "family is its in-state one."
@@ -1018,7 +1032,7 @@ class CostReportPageTest {
 
     // With two or more schools the per-school line is the ONLY place a SPECIFIC
     // school's basis is stated, so it stays.
-    val three = render(costProfile(listOf(stateSchool(), campusSchool(), privateSchool()), answeredMoney()))
+    val three = renderedReportOf(costProfile(listOf(stateSchool(), campusSchool(), privateSchool()), answeredMoney()))
     assertEquals(3, countOf(three, "class=\"report-school-residency\""), "every school states its own basis")
     assertTrue(three.contains(statement), "including the public one")
   }
@@ -1028,7 +1042,7 @@ class CostReportPageTest {
     // DERIVED, never a list of roles: the row collapses because the figures it
     // would print are equal. Tuition and books are school-wide facts in the
     // DOMAIN today, and that is their property, not this renderer's rule.
-    val body = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
     val table = body.substringAfter("class=\"report-school\"")
 
     val tuitionRow = table.substringAfter("class=\"report-row-tuition\"").substringBefore("</tr>")
@@ -1051,7 +1065,7 @@ class CostReportPageTest {
   fun `the income band the page states is not repeated at every net-price figure`() {
     val band = IncomeBand.K48_TO_75K
     val body =
-      render(costProfile(listOf(stateSchool(), campusSchool(), privateSchool()), answeredMoney(band)))
+      renderedReportOf(costProfile(listOf(stateSchool(), campusSchool(), privateSchool()), answeredMoney(band)))
 
     // Said once, in the family's own money line above every figure on the page.
     assertTrue(
@@ -1082,7 +1096,7 @@ class CostReportPageTest {
         publishedPrice = 60000,
         netPrice = NetPrice.OverallAverage(24000),
       )
-    val body = render(costProfile(listOf(stateSchool(), overall), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), overall), answeredMoney()))
     val note = "an overall average across all families, not a figure for this family"
 
     // Twice: the summary row and the school's own table -- beside BOTH of the
@@ -1104,7 +1118,7 @@ class CostReportPageTest {
     //
     // Read it out of the captured standard output of this test:
     //   grep -h MEASURE public-web/build/test-results/test/*.xml
-    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
 
     val words = visibleWordsOf(body)
     println(
@@ -1149,7 +1163,7 @@ class CostReportPageTest {
     // and the publisher withheld for privacy, is a false statement about a named
     // school printed for a family.
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             oneBlankSchool(absenceStatuses = mapOf(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER)),
@@ -1173,7 +1187,7 @@ class CostReportPageTest {
   @Test
   fun `a gap of OURS is spoken as ours, never as this school's silence`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(oneBlankSchool(absenceStatuses = mapOf(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to AbsenceStatus.NOT_COLLECTED_BY_US))),
           answeredMoney(),
@@ -1194,7 +1208,7 @@ class CostReportPageTest {
     // another year, and no total may mix years. The chat tool obeyed that rule
     // from the day it landed; this page printed "Not reported by this school".
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(oneBlankSchool(heldOnlyInOtherYear = mapOf(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to 1200))),
           answeredMoney(),
@@ -1214,7 +1228,7 @@ class CostReportPageTest {
     // The other half of the rule: [NOT_REPORTED] is not retired,
     // it is confined to the one status it is true of. A blank that stopped
     // saying anything about the school would be the opposite defect.
-    val body = render(costProfile(listOf(oneBlankSchool()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(oneBlankSchool()), answeredMoney()))
 
     assertTrue(body.contains(NOT_REPORTED), "a genuinely unreported figure is still labelled as one")
   }
@@ -1227,7 +1241,7 @@ class CostReportPageTest {
   @Test
   fun `the report says the federal debt figure undated and the school's own borrowing with its year`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             costFixtureWithBorrowing(),
@@ -1237,22 +1251,27 @@ class CostReportPageTest {
       )
 
     // The Scorecard half is unchanged: federal loans, and no year, because no
-    // source we hold dates it.
+    // source we hold dates it -- said once for the page (RFC 260 K3), not
+    // beside the figure.
     assertTrue(body.contains("carried a median of \$21,000 in federal loans"), body)
-    assertTrue(body.contains("The source publishes no year for this figure."), body)
+    assertFalse(schoolSectionsOf(body).single().contains("publishes no year"), body)
+    assertEquals(1, countOf(kindsBlockOf(body), DEBT_YEAR_KIND_SENTENCE), body)
     // The CDS half names the school as the claimant and carries its filing
     // year -- these are self-reported answers, not administrative records --
-    // in the BLOCK HEADER, once, above the figures it covers (RFC 190).
+    // in the table's CAPTION, once, above the rows it covers (RFC 190, 260).
     // ... and since RFC 196 the claimant is a LINK to that school's own file,
-    // so the sentence is an anchor followed by the rest of itself.
+    // so the caption is an anchor followed by the rest of itself.
     assertTrue(
       body.contains(
         "rel=\"noreferrer\">Borrowing College's 2024-25 Common Data Set</a>" +
-          " reports these figures for the students who",
+          ", about what the students who graduated from it that year borrowed.</caption>",
       ),
       body,
     )
-    assertTrue(body.contains("Graduates who borrowed federal loans owed"), body)
+    val report = compactReportOf(body)
+    assertTrue(report.contains("<th scope=\"row\">Federal loans</th>"), report)
+    assertTrue(report.contains("<td class=\"report-value\" data-label=\"$OWED_COLUMN\">\$20,747</td>"), report)
+    assertFalse(body.contains("Graduates who borrowed federal loans owed"), "the average SENTENCE is a cell now")
     // The two are never summed and never differenced. Neither the total nor
     // the difference of the two debt figures appears anywhere on the page.
     listOf("41,747", "64,865", "64,612", "22,865", "\$253").forEach {
@@ -1267,7 +1286,7 @@ class CostReportPageTest {
   @Test
   fun `a school that filed no private figure is said to have filed none`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             costFixtureWithBorrowing(
@@ -1297,7 +1316,7 @@ class CostReportPageTest {
   @Test
   fun `a private cell we could not read is said as OUR gap, beside the federal figure we did read`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             costFixtureWithBorrowing(
@@ -1334,7 +1353,7 @@ class CostReportPageTest {
     // as well: it is the one borrowing sentence that never says "graduated",
     // and a sweep keyed on that word would have exempted it silently.
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             costFixtureWithBorrowing(
@@ -1353,73 +1372,108 @@ class CostReportPageTest {
     // RFC 190, superseding RFC 175 D10's per-sentence rule and keeping its
     // reason: these are self-reported survey answers with no audit, so a
     // borrowing figure must never read as an administrative record. The
-    // attribution now rides on the BLOCK -- one filing, one school, one cycle
-    // -- and the page is read without a coach beside it, so the header has to
-    // be on the page, above every figure it covers. Swept by the markers of
-    // the sentences BorrowingWire can emit, never by a word one of them
-    // happens to contain -- the next sentence must join the sweep by being
-    // written, not by being remembered.
-    // The markers are pinned to the wire's own sentences FIRST: a marker that
-    // no longer appears in the sentence it stands for is one the sweep would
+    // attribution rides on the TABLE -- one filing, one school, one cycle --
+    // in its caption (RFC 260), and the page is read without a coach beside
+    // it, so the caption has to be on the page, above every row it covers.
+    // Swept by the markers of the strings BorrowingWire.rowsOf can put on the
+    // page, never by a word one of them happens to contain -- the next string
+    // must join the sweep by being written, not by being remembered.
+    // The markers are pinned to the rows' own rendered strings FIRST: a marker
+    // that no longer appears in the string it stands for is one the sweep would
     // skip in silence, which is the failure this test exists to prevent.
-    // The PAGE's own school, because these same strings are now the sweep's
-    // subject below: the block the wire builds for this filing is exactly the
-    // block the page was given to render.
+    // The PAGE's own school, because these same strings are the sweep's subject
+    // below: the rows the wire builds for this filing are exactly the rows the
+    // page was given to render.
     val coverage =
       borrowingFixture(
         "Borrowing College",
         averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
         borrowersByLoanType = mapOf(LoanType.FEDERAL to 394),
       )
-    val block = BorrowingWire.blockOf(coverage)
-    val wireSentences = listOf(block.header) + block.sentences
-    // The header's own containment is asserted in its LINKED form below (RFC
-    // 196): the page renders the claimant inside an anchor, so the flat string
-    // is no longer a substring of the markup even though it is still the
-    // sentence being said.
+    val rows = BorrowingWire.rowsOf(coverage)
+    val rendered = renderedStringsOf(rows)
     assertEquals(
       emptyList(),
-      borrowingMarkers.filterNot { marker -> wireSentences.any { it.contains(marker) } },
-      "a marker no longer matches the BorrowingWire sentence it stands for",
+      borrowingMarkers.filterNot { marker -> rendered.any { it.contains(marker) } },
+      "a marker no longer matches the rendered borrowing string it stands for: [$rendered]",
     )
+    assertTrue(rows.rows.isNotEmpty() && rows.gaps.isNotEmpty(), "rows AND a gap sentence, or this sweep is vacuous")
 
-    // Swept over the WIRE's own sentences -- the unescaped strings the page is
-    // given -- and not over text scraped back out of the markup. A hand-rolled
-    // `<[^>]+>` tag-strip is not an HTML parser and decodes no entity, so the
-    // first school name carrying `&` ("Texas A&M" renders as "Texas A&amp;M")
-    // would fail this guard for a reason that has nothing to do with
-    // attribution. The marker pin above already proves this list is the whole
-    // list.
-    val spoken = block.sentences.filter { body.contains(it) }
-    assertEquals(
-      block.sentences,
-      spoken,
-      "every borrowing sentence this school's filing supports must render: [$body]",
-    )
-    // THE BLOCK CANNOT RENDER WITHOUT ITS HEADER, and the CDS voice survives in
-    // it: the school, its cycle and its document, above every figure below.
-    assertTrue(
-      block.header.contains("Borrowing College's 2024-25 Common Data Set"),
-      "the header is the one attribution, so it must name the school, the cycle and the document: [${block.header}]",
-    )
-    assertTrue(block.sentences.isNotEmpty(), "a block with no sentences would make this sweep vacuous")
-    // The header as the PAGE says it since RFC 196: the claimant is an anchor
-    // to the school's own file, the rest of the sentence follows it.
-    val renderedHeader = linkedCitation(block.citation) + BorrowingWire.HEADER_TAIL
-    assertTrue(body.contains(renderedHeader), "the block header must render, linked: [$body]")
-    val headerAt = body.indexOf(renderedHeader)
-    assertEquals(
-      emptyList(),
-      block.sentences.filter { body.indexOf(it) < headerAt },
-      "a borrowing figure rendered ABOVE the attribution it is claimed under: [$body]",
-    )
-    // And nothing below the header re-cites the document: the section is
-    // attributed once, which is the whole of what this slice changes.
+    // THE TABLE CANNOT RENDER WITHOUT ITS CAPTION, and the CDS voice survives
+    // in it: the school, its cycle and its document, above every row below, as
+    // a link to the school's own file (RFC 196).
+    val report = compactReportOf(body)
+    val caption = "<caption>${linkedCitation(rows.citation)}$BORROWING_CAPTION_TAIL</caption>"
+    assertTrue(caption.contains("Borrowing College's 2024-25 Common Data Set"), caption)
+    assertTrue(report.contains(caption), "the caption must render, linked: [$report]")
+    val captionAt = report.indexOf(caption)
+    // Every row renders as ONE `tr` -- the row header and both cells -- after
+    // the caption. Compared as a whole string built from the row's own
+    // figures, so a cell cannot pass on another row's number.
+    val borrowedColumn = borrowedColumnOf(rows)
+    rows.rows.forEach { row ->
+      val tr = expectedRowOf(row, borrowedColumn)
+      assertTrue(report.contains(tr), "[${row.loanType.slug}] renders as a row: [$tr] in [$report]")
+      assertTrue(report.indexOf(tr) > captionAt, "[${row.loanType.slug}] rendered ABOVE the attribution it is claimed under")
+    }
+    // Each gap sentence is its own paragraph under the table, verbatim with
+    // the page's trailing period.
+    gapSentencesOf(rows).forEach { sentence ->
+      val paragraph = "<p class=\"report-borrowing-gap\">$sentence.</p>"
+      assertTrue(report.contains(paragraph), "a gap sentence must render as its own paragraph: [$paragraph] in [$report]")
+      assertTrue(report.indexOf(paragraph) > captionAt, "a gap sentence rendered above the caption")
+    }
+    // And nothing below the caption re-cites the document: the table is
+    // attributed once (RFC 190).
     assertEquals(
       emptyList(),
-      block.sentences.filter { it.contains("Common Data Set") },
-      "a figure under the header carried an attribution of its own (RFC 190)",
+      rendered.filter { it.contains("Common Data Set") },
+      "a cell or sentence under the caption carried an attribution of its own (RFC 190)",
     )
+  }
+
+  /**
+   * Every string [BorrowingWire.rowsOf] puts on the page for [rows] -- each row
+   * header, each cell's words, each gap sentence -- as the test expects the page
+   * to render them. The oracle for the marker pin and the attribution sweep.
+   */
+  private fun renderedStringsOf(rows: BorrowingRows): List<String> =
+    rows.rows.flatMap { listOf(rowHeaderOf(it), borrowedCellOf(it), owedCellOf(it)) } + gapSentencesOf(rows)
+
+  /** Each gap under the table in the wire's own words, in the rows' order: the sentences the page renders as `<p>`s. */
+  private fun gapSentencesOf(rows: BorrowingRows): List<String> = rows.gaps.map { BorrowingWire.sentenceOf(it, rows.citation) }
+
+  private fun rowHeaderOf(row: LoanRow): String = row.spokenLoanType.replaceFirstChar { it.uppercase() }
+
+  /** The borrowed column's header: the class every share divides by, or the bare verb where the filing has none. */
+  private fun borrowedColumnOf(rows: BorrowingRows): String =
+    rows.graduatingClass?.let { "Borrowed, of the ${WholeCount.spoken(it)} who graduated" } ?: "Borrowed"
+
+  private fun borrowedCellOf(row: LoanRow): String =
+    row.borrowed?.let { "${WholeCount.spoken(it.borrowers)} (${it.share.spokenPercent()})" } ?: NO_SHARE_SHOWN
+
+  /**
+   * The owed cell's words. A withheld cell's are the FROZEN agentless
+   * sentence for its status, read from [FigureStatusCopy] rather than off the
+   * row, so a row that carried other words would fail here.
+   */
+  private fun owedCellOf(row: LoanRow): String =
+    when (val owed = row.averageOwed) {
+      is OwedAverage.Shown -> WholeDollars.spoken(owed.usd)
+      is OwedAverage.Withheld -> requireNotNull(FigureStatusCopy.agentlessStatementOf(owed.status))
+      OwedAverage.NotInFiling -> NOT_IN_FILING
+    }
+
+  /** The `tr` the page is expected to render for [row]: a blank cell is the styled blank, a figure is bare text. */
+  private fun expectedRowOf(
+    row: LoanRow,
+    borrowedColumn: String,
+  ): String {
+    val borrowed = if (row.borrowed == null) blankOf(NO_SHARE_SHOWN) else borrowedCellOf(row)
+    val owed = if (row.averageOwed is OwedAverage.Shown) owedCellOf(row) else blankOf(owedCellOf(row))
+    return "<tr><th scope=\"row\">${rowHeaderOf(row)}</th>" +
+      "<td class=\"report-value\" data-label=\"$borrowedColumn\">$borrowed</td>" +
+      "<td class=\"report-value\" data-label=\"$OWED_COLUMN\">$owed</td></tr>"
   }
 
   @Test
@@ -1430,7 +1484,7 @@ class CostReportPageTest {
     // figure names its own publisher -- read off the cell it came from, never
     // typed on this page.
     val college = costFixtureWithBorrowing()
-    val body = render(costProfile(listOf(college), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(college), answeredMoney()))
 
     val note =
       requireNotNull(college.statusNoteFor(CostField.MEDIAN_DEBT_AT_COMPLETION_USD)) {
@@ -1442,17 +1496,18 @@ class CostReportPageTest {
       body.contains("$federalPublisher reports that students who finished here carried a median of \$21,000"),
       "the federal figure names the publisher its own cell came from: [$body]",
     )
-    // The school's own filing is named for the borrowing half, and only for it.
-    val borrowingBlock = BorrowingWire.blockOf(borrowingFixture("Borrowing College"))
-    val header = linkedCitation(borrowingBlock.citation) + BorrowingWire.HEADER_TAIL
-    assertTrue(body.contains(header), "the borrowing block is attributed to the school's own filing: [$body]")
-    assertTrue(header.contains("Borrowing College's 2024-25 Common Data Set"), header)
+    // The school's own filing is named for the borrowing half, and only for it,
+    // in the table's caption (RFC 260).
+    val rows = BorrowingWire.rowsOf(borrowingFixture("Borrowing College"))
+    val caption = "<caption>${linkedCitation(rows.citation)}$BORROWING_CAPTION_TAIL</caption>"
+    assertTrue(body.contains(caption), "the borrowing table is attributed to the school's own filing: [$body]")
+    assertTrue(caption.contains("Borrowing College's 2024-25 Common Data Set"), caption)
     // NEITHER STANDS FOR THE OTHER: the federal publisher is not named inside
-    // the borrowing block's header, and the CDS is not named in the federal
+    // the borrowing table's caption, and the CDS is not named in the federal
     // sentence.
-    assertFalse(header.contains(federalPublisher), "the CDS header borrowed the federal publisher's name: [$header]")
+    assertFalse(caption.contains(federalPublisher), "the CDS caption borrowed the federal publisher's name: [$caption]")
     assertTrue(
-      body.indexOf(federalPublisher) < body.indexOf(header),
+      body.indexOf(federalPublisher) < body.indexOf(caption),
       "the two publishers are two attributions in one section, the federal one first: [$body]",
     )
     // RFC 175 D9 stands: the two figures are never summed and never differenced.
@@ -1469,7 +1524,7 @@ class CostReportPageTest {
         averageDebtUsdByLoanType = mapOf(LoanType.ANY to 27202, LoanType.FEDERAL to 20747),
         borrowersByLoanType = emptyMap(),
       )
-    val body = render(costProfile(listOf(costFixtureWithBorrowing(borrowing = borrowing)), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(costFixtureWithBorrowing(borrowing = borrowing)), answeredMoney()))
 
     // Every type is spoken, and no type is spoken twice: the order is DERIVED
     // from the vocabulary, so a sixth loan type joins both surfaces by being
@@ -1478,20 +1533,25 @@ class CostReportPageTest {
     assertEquals(LoanType.entries.size, LoanType.SPOKEN_ORDER.size)
     assertEquals(listOf(LoanType.FEDERAL, LoanType.PRIVATE), LoanType.SPOKEN_ORDER.take(2))
 
-    // And the page renders exactly the wire's list, in the wire's order: the
+    // And the page renders exactly the wire's rows, in the wire's order: the
     // two surfaces used to hold two hand-written lists that disagreed, so the
     // same filing was narrated federal-first on the page and any-loan-first in
-    // the payload.
-    val sentences = BorrowingWire.blockOf(borrowing).sentences
-    assertEquals(
-      sentences,
-      sentences.sortedBy { body.indexOf(it) },
-      "the page renders the wire's sentences out of the wire's order: [$body]",
-    )
+    // the payload. Read off the row headers in BODY order (RFC 260).
+    val rows = BorrowingWire.rowsOf(borrowing)
+    val rowHeaders = Regex("<th scope=\"row\">([^<]*)</th>").findAll(borrowingTableOf(body)).map { it.groupValues[1] }.toList()
+    assertEquals(rows.rows.map { rowHeaderOf(it) }, rowHeaders, "the page renders the wire's rows out of the wire's order: [$body]")
     assertTrue(
-      body.indexOf("borrowed federal loans") < body.indexOf("borrowed a loan of any kind"),
-      "the federal figure is said first, because the point of the section is that it is half the picture",
+      rowHeaders.indexOf("Federal loans") in 0 until rowHeaders.indexOf("A loan of any kind"),
+      "the federal figure is said first, because the point of the section is that it is half the picture: [$rowHeaders]",
     )
+  }
+
+  /** The one borrowing table of a one-borrowing-school page, compacted, with the marker ASSERTED for [kindsBlockOf]'s reason. */
+  private fun borrowingTableOf(body: String): String {
+    val report = compactReportOf(body)
+    val opening = "<table class=\"data-table report-table report-borrowing-table\""
+    assertEquals(1, countOf(report, opening), "exactly one borrowing table must be on the page to be read: [$report]")
+    return report.substringAfter(opening).substringBefore("</table>")
   }
 
   @Test
@@ -1520,7 +1580,7 @@ class CostReportPageTest {
     val block = assertIs<BorrowingCoverage.NoBlock>(coverage)
     assertEquals(setOf(LoanType.FEDERAL), block.contradicted)
 
-    val body = render(costProfile(listOf(costFixtureWithBorrowing(borrowing = coverage)), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(costFixtureWithBorrowing(borrowing = coverage)), answeredMoney()))
 
     // Neither cell of the pair is spoken, and no share is derived from it.
     listOf("2,588", "2588", "39 students", "6,636%").forEach {
@@ -1536,28 +1596,152 @@ class CostReportPageTest {
   }
 
   /**
-   * One marker per string [BorrowingWire] can put on the report page, in render
-   * order: the block header, an average, a share, and the private-absence
-   * claim.
+   * One marker per kind of string [BorrowingWire.rowsOf] can put on the report
+   * page, in render order: a row header, a borrowed cell, an owed cell, and the
+   * private-absence claim under the table (RFC 260).
    *
-   * The citation is NOT a marker of its own any more (RFC 190): the block's
-   * trailing "Source: ..." line is gone, and the document it named is in the
-   * header marker above -- so a "Source:" marker here would stand for the merit
-   * block's line instead and exempt itself from this sweep.
+   * The citation is NOT a marker of its own (RFC 190): the document is in the
+   * caption, which the attribution test asserts in its linked form, so a
+   * "Common Data Set" marker here would stand for the merit caption as well and
+   * exempt itself from this sweep.
    *
-   * A LIST of markers rather than a substring guess: the sweep above keyed on
-   * the word "graduated" once, which exempted the private-absence sentence
-   * ("its graduates") without anyone noticing. The test that consumes this
-   * pins every marker to the wire sentence it stands for, so a change to the
-   * copy fails here rather than quietly narrowing the sweep.
+   * A LIST of markers rather than a substring guess: the sweep once keyed on
+   * the word "graduated", which exempted the private-absence sentence ("its
+   * graduates") without anyone noticing. The test that consumes this pins every
+   * marker to the rendered string it stands for, so a change to the copy fails
+   * here rather than quietly narrowing the sweep.
    */
   private val borrowingMarkers =
     listOf(
-      "reports these figures for the students who graduated",
-      "on average by the time they graduated",
-      "borrowed federal loans",
+      "Federal loans",
+      "394 (39.4%)",
+      "\$20,747",
       "reports no average for private loans",
     )
+
+  // ---------------------------------------------------------------------------
+  // RFC 260: the blank cells, and a dead filing's caption
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a federal average with no counted pair renders the neutral blank in the borrowed cell`() {
+    val borrowing =
+      borrowingFixture(
+        "Borrowing College",
+        averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+        borrowersByLoanType = emptyMap(),
+      )
+    val body = renderedReportOf(costProfile(listOf(costFixtureWithBorrowing(borrowing = borrowing)), answeredMoney()))
+    val row = BorrowingWire.rowsOf(borrowing).rows.single()
+
+    // The class is on file, so the column still names it; the cell says only
+    // that no share is shown, because whose silence a missing pair is must not
+    // be guessed (D-A, D6).
+    assertEquals(null, row.borrowed)
+    assertTrue(
+      borrowingTableOf(body).contains(expectedRowOf(row, "Borrowed, of the 1,000 who graduated")),
+      "the borrowed cell is the neutral blank: [${borrowingTableOf(body)}]",
+    )
+    assertEquals(1, countOf(body, NO_SHARE_SHOWN))
+  }
+
+  @Test
+  fun `a withheld private average beside a counted private share renders the frozen sentence in the owed cell and the gap below`() {
+    val borrowing =
+      borrowingFixture(
+        "Borrowing College",
+        averageDebtUsdByLoanType = mapOf(LoanType.FEDERAL to 20747),
+        borrowersByLoanType = mapOf(LoanType.FEDERAL to 394, LoanType.PRIVATE to 83),
+        gapStatusByLoanType = mapOf(LoanType.PRIVATE to FigureStatus.SUPPRESSED_BY_PUBLISHER),
+      )
+    val body = renderedReportOf(costProfile(listOf(costFixtureWithBorrowing(borrowing = borrowing)), answeredMoney()))
+    val table = borrowingTableOf(body)
+    val rows = BorrowingWire.rowsOf(borrowing)
+    val private = rows.rows.single { it.loanType == LoanType.PRIVATE }
+    val withheld = requireNotNull(FigureStatusCopy.agentlessStatementOf(FigureStatus.SUPPRESSED_BY_PUBLISHER))
+
+    // The share is a real figure and stands; the owed cell carries the frozen
+    // status sentence for the publisher's withholding, byte for byte, and the
+    // wire's framed gap sentence is the paragraph under the table.
+    assertTrue(table.contains(expectedRowOf(private, "Borrowed, of the 1,000 who graduated")), "the private row: [$table]")
+    assertTrue(table.contains(blankOf(withheld)), "the owed cell is the frozen withheld sentence: [$table]")
+    assertTrue(
+      body.contains(
+        "<p class=\"report-borrowing-gap\">${BorrowingWire.gapLabel(
+          LoanType.PRIVATE,
+          FigureStatus.SUPPRESSED_BY_PUBLISHER,
+          rows.citation,
+        )}.</p>",
+      ),
+      "the gap paragraph under the table: [$body]",
+    )
+    // And not spoken as the school's silence: the publisher withheld it.
+    assertFalse(body.contains(BorrowingWire.privateNotFiledLabel()), body)
+    assertEquals(0, countOf(table, NOT_IN_FILING), "a status beats the bare absence blank")
+  }
+
+  @Test
+  fun `a merit filing with no average renders the absence blank in that row, and both rows still print`() {
+    val merit = meritFixture("Ashford College", averageAid = null)
+    val school = costFixture(name = "Ashford College", tuitionInState = 41000, medianDebt = 21000, meritAid = merit)
+    val table = meritTableOf(renderedReportOf(costProfile(listOf(school), UNANSWERED_MONEY)))
+
+    assertTrue(table.contains(meritRowOf("Share who received it", "25%")), "the share row: [$table]")
+    assertTrue(table.contains(meritRowOf("Average received", blankOf(NOT_IN_FILING))), "the average row is a labelled blank: [$table]")
+    // Both headers, both rows: a dropped row would hide that the school filed
+    // half the section (D-A).
+    assertEquals(2, countOf(table, "<th scope=\"row\">"), table)
+  }
+
+  @Test
+  fun `a filing whose file is gone renders the caption's citation as bare text with no anchor`() {
+    val merit = meritFixture("Ashford College", url = MERIT_URL, sourceUrlStatus = SourceUrlStatus.NOT_FOUND)
+    val borrowing = borrowingFixture("Ashford College", url = BORROWING_URL, sourceUrlStatus = SourceUrlStatus.NOT_FOUND)
+    val college =
+      costFixture(
+        name = "Ashford College",
+        tuitionInState = 30000,
+        publishedPrice = 52000,
+        netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+        medianDebt = 21000,
+        meritAid = merit,
+        borrowing = borrowing,
+      )
+
+    val body = renderedReportOf(costProfile(listOf(college), answeredMoney()))
+
+    // The same words, in the same place, with only the anchor gone (RFC 200).
+    assertTrue(body.contains("<caption>${merit.source.citedAs}$MERIT_CAPTION_TAIL</caption>"), body)
+    assertTrue(body.contains("<caption>${borrowing.figures.source.citedAs}$BORROWING_CAPTION_TAIL</caption>"), body)
+    assertEquals(0, countOf(reportSectionOf(body), "<a "), "a dead filing was linked anyway: [$body]")
+    // The citation-in-link sweep, adjusted for exactly this case: a bare
+    // citation is allowed INSIDE a caption and nowhere else.
+    assertNoFilingCitedOutsideALink(body, bareCaptionsAllowed = true)
+  }
+
+  /**
+   * The citation-in-link sweep: no `"<College>'s 2024-25 Common Data Set"`
+   * outside an anchor. With [bareCaptionsAllowed] -- ONLY for a fixture whose
+   * filing is `NOT_FOUND` -- a caption's text is exempt too, because RFC 200
+   * drops that anchor on purpose and keeps the words.
+   */
+  private fun assertNoFilingCitedOutsideALink(
+    body: String,
+    bareCaptionsAllowed: Boolean = false,
+  ) {
+    // "<College>'s 2024-25 Common Data Set" -- the citation shape, whichever
+    // block states it. `[^<>]` keeps one match from spanning a tag.
+    val citation = Regex("""[^<>]*'s \d{4}-\d{2} Common Data Set""")
+    assertTrue(citation.containsMatchIn(body), "the fixture must cite at least one filing, or this sweep proves nothing: [$body]")
+
+    var swept = body.replace(Regex("""<a\b[^>]*>.*?</a>""", RegexOption.DOT_MATCHES_ALL), " ")
+    if (bareCaptionsAllowed) swept = swept.replace(Regex("""<caption>.*?</caption>""", RegexOption.DOT_MATCHES_ALL), " ")
+    assertEquals(
+      emptyList(),
+      citation.findAll(swept).map { it.value.trim() }.toList(),
+      "a filing is cited on this page without a link to it: [$swept]",
+    )
+  }
 
   /**
    * The one-blank school with a borrowing block, so the debt section carries
@@ -1584,7 +1768,7 @@ class CostReportPageTest {
     // the cells did. `median_debt_at_completion` is a COHORT figure, so it is
     // also the case a status read through the price-only door could not see.
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             oneBlankSchool(
@@ -1615,14 +1799,14 @@ class CostReportPageTest {
     // reads this page alone. It is printed off [CollegeCost.publishedTuitionTiers]
     // -- the ONE derivation of which tiers exist -- so a school that publishes no
     // tuition at all is never told to publish "one tuition price".
-    val stateBody = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val stateBody = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
     assertTrue(
       stateBody.contains(ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT.statement),
       "a school with an in-state and an out-of-state price says what it does not separate: [$stateBody]",
     )
 
     val noTuition = costFixture(name = "Silent Tuition College", housingAndFoodOnCampus = 8000)
-    val silentBody = render(costProfile(listOf(noTuition), answeredMoney()))
+    val silentBody = renderedReportOf(costProfile(listOf(noTuition), answeredMoney()))
     assertFalse(
       silentBody.contains(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.statement),
       "a school that publishes no tuition price must not be said to publish one: [$silentBody]",
@@ -1651,7 +1835,7 @@ class CostReportPageTest {
         control = CollegeControl.Public(TuitionApplicable.IN_STATE),
         tuitionInState = 9000,
       )
-    val body = render(costProfile(listOf(oneTier), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(oneTier), answeredMoney()))
 
     assertTrue(
       body.contains(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.statement),
@@ -1671,7 +1855,7 @@ class CostReportPageTest {
   fun `the tier sentence is said once for the figures it covers, not once per school`() {
     // The whole slice, measured: three schools, three federal debt figures, ONE
     // sentence saying what kind of number they are. It was printed three times.
-    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
     val statement = AssuranceTierCopy.statementOf(AssuranceTier.ADMINISTRATIVE_RECORD, FilingLink.LINKED)
 
     assertEquals(1, countOf(body, statement), "one sentence for the set of figures it covers: [$body]")
@@ -1690,7 +1874,7 @@ class CostReportPageTest {
     // Walked, not restated: the covered set is derived from the colleges'
     // own figure statuses, so a figure that escaped the block fails here.
     val colleges = listOf(verboseState(), verboseCampus(), verbosePrivate())
-    val body = render(costProfile(colleges, answeredMoney()))
+    val body = renderedReportOf(costProfile(colleges, answeredMoney()))
     val block = kindsBlockOf(body)
 
     colleges.forEach { cost ->
@@ -1707,14 +1891,27 @@ class CostReportPageTest {
         countOf(block, AssuranceTierCopy.statementOf(debt.assurance, FilingLink.LINKED)),
         "and covered by exactly one sentence, the one that is true of it: [$block]",
       )
-      AssuranceTier.entries.filter { it != debt.assurance }.forEach { other ->
-        assertFalse(block.contains(AssuranceTierCopy.statementOf(other, FilingLink.LINKED)), "and by no other: [${other.value}]")
-      }
+      assertFalse(
+        block.contains(AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)),
+        "and by no survey sentence: no figure on this page is on that tier",
+      )
     }
-    // The other two sentences are not said at all: no figure on this page is on
-    // either tier, and a sentence said over nothing describes nothing.
+    // The survey sentence is not said at all: no figure on this page is on that
+    // tier, and a sentence said over nothing describes nothing.
     assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.MANDATORY_SURVEY, FilingLink.LINKED)))
-    assertEquals(0, countOf(body, AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT, FilingLink.LINKED)))
+    // The self-report sentence IS said, once, for the merit tables' figures
+    // (RFC 260, brief 0016 D10) -- under a scope that names both measures and
+    // carries no digit, with the tier read off MeritAidWire and never typed.
+    val selfReport = AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT, FilingLink.LINKED)
+    assertEquals(1, countOf(body, selfReport), "one self-report sentence for every merit figure on the page: [$block]")
+    assertEquals(AssuranceTier.VOLUNTARY_SELF_REPORT, MeritAidWire.ASSURANCE)
+    assertTrue(
+      block.contains(
+        "<span class=\"report-kind-scope\">The share of full-time freshmen who received non-need (merit) aid and the average " +
+          "non-need (merit) aid:</span> $selfReport",
+      ),
+      "the scope names both merit measures, bare, above the one sentence: [$block]",
+    )
   }
 
   @Test
@@ -1722,7 +1919,7 @@ class CostReportPageTest {
     // RFC 166 section 7 and RFC 189's review in one test: the `$0` at-home
     // housing line is OURS. It carries no published cell, so it cannot enter the
     // covered set -- and the block must not name housing and food at all.
-    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
     val block = kindsBlockOf(body)
 
     assertTrue(body.contains(AT_HOME_ASSUMPTION_STATEMENT), "the assumption is still stated as ours")
@@ -1746,7 +1943,7 @@ class CostReportPageTest {
         medianDebt = null,
         absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
       )
-    val body = render(costProfile(listOf(suppressed), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(suppressed), answeredMoney()))
 
     assertFalse(body.contains("report-kinds"), "no shown prose figure is no block at all, not an empty heading: [$body]")
     assertTrue(
@@ -1763,7 +1960,7 @@ class CostReportPageTest {
   fun `the tier block ranks nothing and counts nothing`() {
     // RFC 179 D10. The block knows how many figures are on each tier and may
     // never say so, and it may never order the three as better or worse.
-    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
     val block = kindsBlockOf(body)
     // EVERY scope, not the first: a second group's header is exactly where a
     // count would be added ("2 figures on this tier") and never noticed.
@@ -1806,7 +2003,7 @@ class CostReportPageTest {
         medianDebt = 27000,
         debtPublisher = PublishedCell.Survey.SFA,
       )
-    val body = render(costProfile(listOf(federal, surveyed), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(federal, surveyed), answeredMoney()))
     val block = kindsBlockOf(body)
 
     assertEquals(2, countOf(block, "report-kind-scope"), "two kinds of number are two headers: [$block]")
@@ -1843,7 +2040,7 @@ class CostReportPageTest {
         debtPublisher = PublishedCell.Survey.SFA,
         absenceStatuses = mapOf(CostField.MEDIAN_DEBT_AT_COMPLETION_USD to AbsenceStatus.SUPPRESSED_BY_PUBLISHER),
       )
-    val body = render(costProfile(listOf(shown, withheld), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(shown, withheld), answeredMoney()))
     val block = kindsBlockOf(body)
 
     assertTrue(
@@ -1891,53 +2088,95 @@ class CostReportPageTest {
    */
   @Test
   fun `no Common Data Set filing is cited anywhere on this page outside a link`() {
-    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
 
-    // "<College>'s 2024-25 Common Data Set" -- the citation shape, whichever
-    // block states it. `[^<>]` keeps one match from spanning a tag.
-    val citation = Regex("""[^<>]*'s \d{4}-\d{2} Common Data Set""")
-    assertTrue(
-      citation.containsMatchIn(body),
-      "the fixture must cite at least one filing, or this sweep proves nothing: [$body]",
-    )
-
-    val withoutLinks = body.replace(Regex("""<a\b[^>]*>.*?</a>""", RegexOption.DOT_MATCHES_ALL), " ")
-    assertEquals(
-      emptyList(),
-      citation.findAll(withoutLinks).map { it.value.trim() }.toList(),
-      "a filing is cited on this page without a link to it: [$withoutLinks]",
-    )
+    // Every filing here is FOUND, so a caption's citation must be a link too
+    // (the only bare caption is a NOT_FOUND filing's, tested on its own).
+    assertNoFilingCitedOutsideALink(body)
   }
 
   /**
-   * The promise itself, as an IMPLICATION rather than a claim about today.
+   * The promise itself, LIVE since RFC 260.
    *
-   * Said plainly, because a vacuous test that is mistaken for a live one is
-   * worse than none: this assertion CANNOT FAIL on the page as it exists.
-   * `AssuranceTier.VOLUNTARY_SELF_REPORT` is reachable only from
-   * `MoneySource.COMMON_DATA_SET` (`AssuranceTierClosureTest` pins that the
-   * Scorecard and both IPEDS surveys never produce it), and no `CostField` is
-   * filled from the Common Data Set -- so the sentence cannot render here at
-   * all. Brief 0009's criterion, taken literally, was written against a surface
-   * that does not exist.
-   *
-   * It is kept because it is the exact statement of the promise, and it goes
-   * live by itself the day a Common Data Set figure reaches this page: the
-   * sentence and no link is then a failure here rather than a defect a family
-   * finds.
+   * It used to be an implication that could not fail: no Common Data Set
+   * figure was in the kinds block's covered set, so the self-report sentence
+   * never rendered here. The merit tables' figures are in that set now (brief
+   * 0016 D10), the sentence renders once for the page, and the captions are the
+   * links it promises -- so a page that said the sentence and linked nothing
+   * fails here rather than in front of a family.
    */
   @Test
   fun `the sentence that promises a link is never printed without one`() {
-    val body = render(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
 
-    if (body.contains(AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT, FilingLink.LINKED))) {
-      assertTrue(body.contains("<a href="), "we said we link to the college's own file and linked nothing: [$body]")
-    }
-    // The page states self-reported filings whether or not it states that
-    // sentence, so the links themselves are asserted unconditionally -- and
-    // EXACTLY, not at-least: three schools, a merit filing and a borrowing
-    // filing each, and a seventh link would be a filing nobody specified.
+    assertTrue(
+      body.contains(AssuranceTierCopy.statementOf(AssuranceTier.VOLUNTARY_SELF_REPORT, FilingLink.LINKED)),
+      "the self-report sentence is on the page, or this test is vacuous again: [$body]",
+    )
+    assertTrue(body.contains("<a href="), "we said we link to the college's own file and linked nothing: [$body]")
+    // The links themselves, EXACTLY, not at-least: three schools, a merit
+    // caption and a borrowing caption each, and a seventh link would be a filing
+    // nobody specified.
     assertEquals(6, countOf(body, "rel=\"noreferrer\""), "three schools, a merit filing and a borrowing filing each")
+  }
+
+  /** A school with a merit table cited from a filing whose own file is [status], under its own url. */
+  private fun meritSchoolFiled(
+    name: String,
+    url: String,
+    status: SourceUrlStatus,
+  ): CollegeCost =
+    costFixture(
+      name = name,
+      tuitionInState = 30000,
+      publishedPrice = 52000,
+      netPrice = NetPrice.BandSpecific(IncomeBand.K48_TO_75K, 22000),
+      medianDebt = 21000,
+      meritAid = meritFixture(name, url = url, sourceUrlStatus = status),
+    )
+
+  /**
+   * The promise is not made where the page cannot keep it (RFC 200, RFC 260).
+   *
+   * The merit tables' figures are the only ones the self-report sentence
+   * covers, and a gone filing's caption cites it as bare text with no anchor --
+   * so "We link to the college's own file" would be false on this page. The
+   * sentence is said WITHOUT that promise, byte for byte the frozen first two
+   * sentences, never a reword.
+   */
+  @Test
+  fun `a page whose only merit filing is gone says the self-report sentence without the link promise`() {
+    val gone = meritSchoolFiled("Ashford College", MERIT_URL, SourceUrlStatus.NOT_FOUND)
+    val body = renderedReportOf(costProfile(listOf(gone), answeredMoney()))
+    val block = kindsBlockOf(body)
+
+    assertEquals(0, countOf(body, "rel=\"noreferrer\""), "the fixture links no filing, or this test proves nothing: [$body]")
+    assertEquals(1, countOf(block, AssuranceTierCopy.SELF_REPORT_WITHOUT_LINK), "the sentence is still said, once: [$block]")
+    assertFalse(body.contains(AssuranceTierCopy.SELF_REPORT_LINK_PROMISE), "a link was promised and none is made: [$body]")
+  }
+
+  /**
+   * ONE sentence covers every school's merit figures, so it may promise the
+   * link only where EVERY one of those filings keeps it -- a single gone filing
+   * makes the promise false for the figures it covers.
+   */
+  @Test
+  fun `one gone merit filing beside a live one drops the link promise for the page`() {
+    val body =
+      renderedReportOf(
+        costProfile(
+          listOf(
+            meritSchoolFiled("Ashford College", MERIT_URL, SourceUrlStatus.NOT_FOUND),
+            meritSchoolFiled("Lakeshore State University", "https://lakeshore.example.test/cds.pdf", SourceUrlStatus.FOUND),
+          ),
+          answeredMoney(),
+        ),
+      )
+    val block = kindsBlockOf(body)
+
+    assertEquals(1, countOf(body, "rel=\"noreferrer\""), "exactly the live filing is linked: [$body]")
+    assertEquals(1, countOf(block, AssuranceTierCopy.SELF_REPORT_WITHOUT_LINK), "one sentence for both schools: [$block]")
+    assertFalse(body.contains(AssuranceTierCopy.SELF_REPORT_LINK_PROMISE), "a link was promised for a gone filing: [$body]")
   }
 
   /**
@@ -1968,7 +2207,7 @@ class CostReportPageTest {
         borrowing = borrowing,
       )
 
-    val body = render(costProfile(listOf(college), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(college), answeredMoney()))
 
     assertTrue(body.contains(linkedCitation(merit.source)), "the merit block links its own filing: [$body]")
     assertTrue(body.contains(linkedCitation(borrowing.figures.source)), "the borrowing block links its own: [$body]")
@@ -2042,7 +2281,7 @@ class CostReportPageTest {
         borrowing = borrowing,
       )
 
-    val body = render(costProfile(listOf(college), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(college), answeredMoney()))
     val report = reportSectionOf(body)
 
     // THE SAME WORDS. Built from the fixtures rather than typed, so the
@@ -2081,7 +2320,7 @@ class CostReportPageTest {
         borrowing = borrowing,
       )
 
-    val body = render(costProfile(listOf(college), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(college), answeredMoney()))
 
     assertEquals(1, countOf(body, "rel=\"noreferrer\""), "exactly the live filing keeps its link: [$body]")
     assertTrue(body.contains(linkedCitation(borrowing.figures.source)), "the live borrowing filing is linked: [$body]")
@@ -2114,7 +2353,7 @@ class CostReportPageTest {
           borrowing = borrowing,
         )
 
-      val body = render(costProfile(listOf(college), answeredMoney()))
+      val body = renderedReportOf(costProfile(listOf(college), answeredMoney()))
 
       assertTrue(body.contains(linkedCitation(merit.source)), "[$status] must link the merit filing: [$body]")
       assertTrue(body.contains(linkedCitation(borrowing.figures.source)), "[$status] must link the borrowing filing: [$body]")
@@ -2125,88 +2364,6 @@ class CostReportPageTest {
   // ---------------------------------------------------------------------------
   // RFC 239: the school's published automatic-scholarship grid
   // ---------------------------------------------------------------------------
-
-  /** A band on the SAT's own published scale -- the axis most cases here are not about. */
-  private fun sat(
-    low: Int,
-    high: Int,
-  ): BandScoreAxis = BandScoreAxis.Range(test = AdmissionTest.SAT, low = low, high = high)
-
-  /**
-   * One published cell. The award id is a placeholder: [gridAward] re-keys every
-   * band to the row it hangs off, exactly as the read hands them out, so no test
-   * can build a grid whose cells belong to another school's row.
-   */
-  private fun gridBand(
-    awardName: String = "Presidential",
-    score: BandScoreAxis = sat(1200, 1250),
-    gpaLow: BigDecimal? = null,
-    gpaHigh: BigDecimal? = null,
-    awardPerYearUsd: Int? = 6000,
-    awardAsPublished: String? = null,
-  ): AutomaticAwardBand =
-    AutomaticAwardBand(
-      id = AutomaticAwardBandId(UUID.randomUUID()),
-      awardId = AutomaticAwardId(UUID.randomUUID()),
-      awardName = awardName,
-      score = score,
-      gpaLow = gpaLow,
-      gpaHigh = gpaHigh,
-      awardPerYearUsd = awardPerYearUsd,
-      awardAsPublished = awardAsPublished,
-    )
-
-  /** One school's published grid for one entry year and one residency basis, with its cells. */
-  private fun gridAward(
-    collegeId: CollegeId,
-    bands: List<AutomaticAwardBand> = listOf(gridBand()),
-    residencyBasis: ResidencyBasis = ResidencyBasis.NOT_APPLICABLE,
-    awardKind: AutomaticAwardKind = AutomaticAwardKind.SCORE_GRID,
-    scoreDeadline: LocalDate? = GRID_DEADLINE,
-    scoreDeadlineAsPublished: String? = "Official test scores must be received by December 4.",
-  ): AutomaticAward {
-    val id = AutomaticAwardId(UUID.randomUUID())
-    return AutomaticAward(
-      id = id,
-      collegeId = collegeId,
-      entryYear = AcademicYear(2027),
-      residencyBasis = residencyBasis,
-      awardKind = awardKind,
-      scoreRequirement = ScoreRequirement.REQUIRED,
-      scoreRequirementAsPublished = GRID_REQUIREMENT,
-      superscoreRule = ScholarshipSuperscoreRule.SINGLE_SITTING_ONLY,
-      superscoreAsPublished = "Scholarship awards are based on a single test administration.",
-      scoreDeadline = scoreDeadline,
-      scoreDeadlineAsPublished = scoreDeadlineAsPublished,
-      lastSittingConsidered = null,
-      publisher = GRID_PUBLISHER,
-      sourceUrl = "https://example.test/riverside-scholarships",
-      archiveUrl = null,
-      checkedOn = GRID_READ_ON,
-      expiresOn = LocalDate.of(2027, 6, 30),
-      bands = bands.map { it.copy(awardId = id) },
-    )
-  }
-
-  /**
-   * The answer the report actually receives: a score grid, which is what
-   * `AutomaticAwardService`'s student-free door returns.
-   *
-   * IT CANNOT BE HANDED A STANDING AT ALL. It used to take one, so that a test
-   * could prove the page printed nothing from a full one; the standing now lives
-   * on the student-scoped `StudentAwardAnswer` that only the chat door builds,
-   * so the privacy ruling is a property of the TYPE this page is handed rather
-   * than of this renderer's restraint.
-   */
-  private fun scoreBands(award: AutomaticAward): AutomaticAwardAnswer =
-    AutomaticAwardAnswer.ScoreBands(
-      collegeId = award.collegeId,
-      award = award,
-      lastUsableSitting = null,
-      boundBy = emptySet(),
-      closedSittings = emptyList(),
-      quotedCutOff = null,
-    )
 
   /** A school on the report with one published grid, keyed to the same college the answer names. */
   private fun gridSchool(
@@ -2249,7 +2406,7 @@ class CostReportPageTest {
           ),
       )
 
-    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
 
     assertTrue(body.contains("report-award-grid"), "the block must be on the page: [$body]")
     assertTrue(body.contains("Automatic scholarships this school publishes"), "the block must say whose grid it is: [$body]")
@@ -2270,7 +2427,9 @@ class CostReportPageTest {
   fun `the grid is a sibling of the merit block and never inside it`() {
     val id = CollegeId(UUID.randomUUID())
     val body =
-      render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(gridAward(collegeId = id))))), answeredMoney()))
+      renderedReportOf(
+        costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(gridAward(collegeId = id))))), answeredMoney()),
+      )
 
     // A second publisher UNDER the merit heading would be attributed to that
     // school's Common Data Set filing (RFC 190), so the grid opens its own
@@ -2306,7 +2465,7 @@ class CostReportPageTest {
       )
     val answer = AutomaticAwardAnswer.NoScoreEffect(collegeId = id, award = award)
 
-    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(answer))), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(answer))), answeredMoney()))
 
     assertTrue(body.contains("report-award-grid"), "a table a score does not move is still published money: [$body]")
     assertTrue(
@@ -2341,12 +2500,12 @@ class CostReportPageTest {
       )
 
     silences.forEach { (silence, answer) ->
-      val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(answer))), answeredMoney()))
+      val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(answer))), answeredMoney()))
       assertFalse(body.contains("report-award-grid"), "[$silence] must open no section: [$body]")
       assertFalse(body.contains(AWARD_KIND_SENTENCE), "[$silence] must not say what kind of number a grid is: [$body]")
     }
 
-    val noAnswerAtAll = render(costProfile(listOf(gridSchool(collegeId = id, answers = emptyList())), answeredMoney()))
+    val noAnswerAtAll = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = emptyList())), answeredMoney()))
     assertFalse(noAnswerAtAll.contains("report-award-grid"), "a school with no grid at all opens no section: [$noAnswerAtAll]")
     assertFalse(noAnswerAtAll.contains(AWARD_KIND_SENTENCE), "and says nothing about grids: [$noAnswerAtAll]")
   }
@@ -2371,7 +2530,7 @@ class CostReportPageTest {
     val next = gridBand(awardName = "Presidential Elite", score = sat(1300, 1600), awardPerYearUsd = 10321)
     val award = gridAward(collegeId = id, bands = listOf(reached, next))
 
-    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
 
     assertTrue(body.contains("report-award-grid"), "the school's own grid is still printed: [$body]")
     // The PAGE'S OWN HEADING is "Your student's college list", so the banned
@@ -2389,7 +2548,7 @@ class CostReportPageTest {
     val first = CollegeId(UUID.randomUUID())
     val second = CollegeId(UUID.randomUUID())
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             gridSchool(name = "Riverside State University", collegeId = first, answers = listOf(scoreBands(gridAward(collegeId = first)))),
@@ -2426,7 +2585,7 @@ class CostReportPageTest {
           ),
       )
 
-    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
 
     assertTrue(
       body.contains("Presidential Elite \u2014 SAT 1500\u20131600 \u2014 tuition and fees"),
@@ -2458,7 +2617,7 @@ class CostReportPageTest {
         ),
       )
 
-    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(inState, outOfState))), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(inState, outOfState))), answeredMoney()))
 
     assertEquals(2, countOf(body, "report-award-grid"), "both published grids, and neither picked for the family: [$body]")
     assertTrue(
@@ -2498,7 +2657,7 @@ class CostReportPageTest {
           ),
       )
 
-    val body = render(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
 
     assertTrue(body.contains(SCHOOL_BAND_NAME), "the school's own name for its band, verbatim: [$body]")
     assertTrue(body.contains(SCHOOL_BAND_WORDS), "and its own words for what it pays, verbatim: [$body]")
@@ -2521,80 +2680,6 @@ class CostReportPageTest {
   // ---------------------------------------------------------------------------
   // RFC 247: the National Merit scholarships a school publishes
   // ---------------------------------------------------------------------------
-
-  /** The base rate every priced row in one read carries: 15,000 of 1,200,000 entrants, said as 1.3%. */
-  private val meritBaseRate =
-    PublishedBaseRate(
-      competitionYear = 2028,
-      funnel =
-        NationalMeritFunnel(
-          testTakers = 3_500_000,
-          metEntryRequirements = 1_200_000,
-          highScorersScreened = 50_000,
-          commended = 34_000,
-          semifinalists = 16_000,
-          finalists = 15_000,
-          winners = 6_700,
-          asPublished = "About 1.2 million entrants; some 15,000 reach Finalist.",
-        ),
-      publisher = MERIT_SPONSOR,
-      checkedOn = MERIT_BASE_RATE_READ_ON,
-    )
-
-  /** One school's paying claim, with the shape most of the corpus's rows take. */
-  private fun payingClaim(
-    guarantee: AwardGuarantee = AwardGuarantee.AUTOMATIC,
-    standing: QualifyingStanding = QualifyingStanding.FINALIST,
-    asPublished: String = MERIT_WORDS,
-    awardName: String? = null,
-    perYearUsd: Int? = 17_500,
-    totalUsd: Int? = 70_000,
-    years: Int? = 4,
-    firstChoice: FirstChoiceRule? = FirstChoiceRule.Required(deadline = MERIT_FIRST_CHOICE_BY, asPublished = MERIT_FIRST_CHOICE_WORDS),
-  ): NationalMeritClaim.Paying =
-    NationalMeritClaim.Paying(
-      guarantee = guarantee,
-      standing = standing,
-      asPublished = asPublished,
-      awardName = awardName,
-      perYearUsd = perYearUsd,
-      totalUsd = totalUsd,
-      years = years,
-      firstChoice = firstChoice,
-      applyDeadline = null,
-    )
-
-  /** One stored row, built in memory exactly as `NationalMeritAwardsDao` hands it out. */
-  private fun meritAward(
-    collegeId: CollegeId,
-    claim: NationalMeritClaim = payingClaim(),
-    residencyBasis: ResidencyBasis = ResidencyBasis.NOT_APPLICABLE,
-  ): NationalMeritAward =
-    NationalMeritAward(
-      id = NationalMeritAwardId(UUID.randomUUID()),
-      collegeId = collegeId,
-      entryYear = AcademicYear(2027),
-      residencyBasis = residencyBasis,
-      claim = claim,
-      publisher = MERIT_PUBLISHER,
-      sourceUrl = "https://example.test/riverside-national-merit",
-      archiveUrl = null,
-      checkedOn = MERIT_READ_ON,
-      expiresOn = LocalDate.of(2027, 7, 31),
-    )
-
-  /**
-   * The answer the report receives for one stored row, decided by
-   * `NationalMeritPublishedAnswer.of` -- the one home of the arm rule -- so the
-   * page is only ever tested on answers the service can produce. By default on
-   * the day the row was read, inside its belief window, and priced with
-   * [meritBaseRate]; a null [baseRate] withholds the price.
-   */
-  private fun meritAnswer(
-    award: NationalMeritAward,
-    today: LocalDate = award.checkedOn,
-    baseRate: PublishedBaseRate? = meritBaseRate,
-  ): NationalMeritPublishedAnswer = NationalMeritPublishedAnswer.of(award, today, baseRate)
 
   /** A school on the report with its National Merit answers, keyed to the same college they name. */
   private fun meritSchool(
@@ -2625,7 +2710,7 @@ class CostReportPageTest {
   @Test
   fun `an automatic row shows who it is for, that it is paid, the figures, the school's words and its first-choice rule`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, residencyBasis = ResidencyBasis.IN_STATE))) }),
           answeredMoney(),
@@ -2652,7 +2737,7 @@ class CostReportPageTest {
   @Test
   fun `a competitive row is said as considered and not promised, and never as paid`() {
     val claim = payingClaim(guarantee = AwardGuarantee.COMPETITIVE, standing = QualifyingStanding.SEMIFINALIST)
-    val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
 
     val block = meritSectionsOf(body).single()
     assertTrue(block.contains(COMPETITIVE_MERIT_LINE), "considered, and not promised: [$block]")
@@ -2666,7 +2751,7 @@ class CostReportPageTest {
     // words alone, and the school's sentence says how long it pays.
     listOf(null, 4).forEach { years ->
       val claim = payingClaim(asPublished = MERIT_WORDS_ONLY, perYearUsd = null, totalUsd = null, years = years)
-      val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+      val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
 
       val block = meritSectionsOf(body).single()
       assertTrue(block.contains(MERIT_WORDS_ONLY), "[$years years] the school's words ARE the price: [$block]")
@@ -2679,7 +2764,7 @@ class CostReportPageTest {
   fun `a National Merit row with an audience the page cannot name refuses the page rather than print it`() {
     listOf(ResidencyBasis.IN_DISTRICT, ResidencyBasis.UNKNOWN).forEach { corrupt ->
       val (status, body) =
-        renderResponse(
+        reportResponseOf(
           costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, residencyBasis = corrupt))) }), answeredMoney()),
         )
       assertEquals(HttpStatusCode.ServiceUnavailable, status, "[$corrupt] is corruption, and stops the page: [$body]")
@@ -2704,7 +2789,7 @@ class CostReportPageTest {
       )
 
     silences.forEach { (silence, answers) ->
-      val body = render(costProfile(listOf(meritSchool(answers = answers)), answeredMoney()))
+      val body = renderedReportOf(costProfile(listOf(meritSchool(answers = answers)), answeredMoney()))
       assertFalse(body.contains("report-national-merit"), "[$silence] must open no section: [$body]")
       assertFalse(body.contains(NATIONAL_MERIT_KIND_SENTENCE), "[$silence] must not say what kind of number it is: [$body]")
       assertFalse(body.contains("report-merit-base-rate"), "[$silence] must say no base rate: [$body]")
@@ -2715,7 +2800,7 @@ class CostReportPageTest {
   @Test
   fun `one stale row beside a live one prints only the live one`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             meritSchool { id ->
@@ -2739,7 +2824,7 @@ class CostReportPageTest {
     // everything it would need to say "this one is not yours" -- and it does
     // not (D2): residency for tuition is a status the school decides.
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             meritSchool { id ->
@@ -2764,7 +2849,7 @@ class CostReportPageTest {
   @Test
   fun `the National Merit block follows the grid and precedes debt`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             CollegeId(UUID.randomUUID()).let { id ->
@@ -2792,7 +2877,7 @@ class CostReportPageTest {
     // A STANDING IS NOT A SCORE (D1): that is what lets the page print the
     // package, and it never lets it print her result. The page's own heading and
     // live line say "your student", so the block itself is what is swept.
-    val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id))) }), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id))) }), answeredMoney()))
 
     val block = meritSectionsOf(body).single().lowercase()
     listOf("selection index", "your student", "scored", "psat score", "qualifies").forEach { studentWords ->
@@ -2807,7 +2892,7 @@ class CostReportPageTest {
   @Test
   fun `what kind of number a National Merit scholarship is, and the base rate, are said once for the page`() {
     val body =
-      render(
+      renderedReportOf(
         costProfile(
           listOf(
             meritSchool(name = "Riverside State University") { id -> listOf(meritAnswer(meritAward(id))) },
@@ -2828,7 +2913,7 @@ class CostReportPageTest {
     assertTrue(kinds.contains(NATIONAL_MERIT_KIND_SENTENCE), "inside the kinds block: [$kinds]")
     assertTrue(kinds.contains(baseRate), "and so is the base rate: [$kinds]")
 
-    val none = render(costProfile(listOf(stateSchool()), answeredMoney()))
+    val none = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
     assertFalse(none.contains(NATIONAL_MERIT_KIND_SENTENCE), "no National Merit row, no kind sentence: [$none]")
     assertFalse(none.contains("of entrants"), "and no base rate: [$none]")
   }
@@ -2836,7 +2921,7 @@ class CostReportPageTest {
   @Test
   fun `a school's own National Merit words are quoted verbatim, and our own prose never says the word they use`() {
     val claim = payingClaim(awardName = MERIT_SCHOOL_NAME, asPublished = MERIT_SCHOOL_WORDS)
-    val body = render(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+    val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
 
     val prose = visibleProseOf(body)
     val quotations = listOf(MERIT_SCHOOL_NAME, MERIT_SCHOOL_WORDS, MERIT_FIRST_CHOICE_WORDS)
@@ -2854,18 +2939,6 @@ class CostReportPageTest {
   }
 
   private companion object {
-    /** The day we read the school's scholarship page -- the read date every grid block cites. */
-    val GRID_READ_ON: LocalDate = LocalDate.of(2026, 8, 1)
-
-    /** The day official scores must be with the school, rendered through the one date seam as `Dec 4, 2026`. */
-    val GRID_DEADLINE: LocalDate = LocalDate.of(2026, 12, 4)
-
-    /** The school's OWN sentence about submitting a score; the page quotes it and composes none of its own. */
-    const val GRID_REQUIREMENT = "A test score is required for scholarship consideration."
-
-    /** Who published the grid, as a family would recognise them on the page. */
-    const val GRID_PUBLISHER = "Riverside State University Office of Admissions"
-
     /**
      * The standing sentence about what kind of number a published grid is (RFC
      * 191), pinned HERE and not imported: it is copy a parent reads, so a
@@ -2889,21 +2962,24 @@ class CostReportPageTest {
     /** Our mirror of the same filing -- on the wire, never on this page (RFC 196). */
     const val ARCHIVE_URL = "https://archive.example.test/ashford-cds.pdf"
 
-    /** Who published a school's National Merit row, and the day we read it, rendered as `Sep 25, 2026`. */
-    const val MERIT_PUBLISHER = "Riverside State University Office of Scholarships"
-    val MERIT_READ_ON: LocalDate = LocalDate.of(2026, 9, 25)
-
-    /** Who published the base rate, and the day we read it, rendered as `Sep 1, 2026` -- a different day, so neither date can pass for the other. */
-    const val MERIT_SPONSOR = "Example Merit Corporation"
-    val MERIT_BASE_RATE_READ_ON: LocalDate = LocalDate.of(2026, 9, 1)
-
-    /** The first-choice deadline, rendered through the date seam as `May 1, 2027`. */
-    val MERIT_FIRST_CHOICE_BY: LocalDate = LocalDate.of(2027, 5, 1)
-    const val MERIT_FIRST_CHOICE_WORDS = "Name us your first choice with NMSC."
-
-    /** A school's own sentences for what it pays, in figures and in words alone. */
-    const val MERIT_WORDS = "Finalists receive \$17,500 a year for four years."
+    /** A school's own sentence for what it pays in words alone; the priced sentence is [MERIT_WORDS]. */
     const val MERIT_WORDS_ONLY = "Finalists receive the full cost of tuition and required fees, for four years."
+
+    /**
+     * The RFC 260 copy, pinned HERE and not imported for [AWARD_KIND_SENTENCE]'s
+     * reason: a parent reads it, so a reword must fail a test rather than pass
+     * one that moved with it. The two captions' tails, the column headers the
+     * row assertions name, and K1-K3.
+     */
+    const val MERIT_CAPTION_TAIL = ", about last year's full-time freshmen."
+    const val MERIT_COHORT_COLUMN = "Last year's full-time freshmen"
+    const val BORROWING_CAPTION_TAIL = ", about what the students who graduated from it that year borrowed."
+    const val OWED_COLUMN = "Owed on average at graduation"
+    const val MERIT_KIND_SENTENCE = "Non-need (merit) aid is a grant the student never pays back."
+    const val BORROWING_KIND_SENTENCE =
+      "The borrowing figures describe the students who graduated from a school in the year of its filing -- not this " +
+        "year's freshmen, and not all its undergraduates."
+    const val DEBT_YEAR_KIND_SENTENCE = "The source publishes no year for the median federal loan debt."
     const val MERIT_ABSENCE_WORDS = "We no longer participate in offering college-sponsored National Merit scholarships."
 
     /**

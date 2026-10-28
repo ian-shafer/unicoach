@@ -45,6 +45,9 @@ dependencies {
   testImplementation(testFixtures(project(":college")))
   // The Ktor route-tree walker the route-coverage guard reads (RegisteredRoutes).
   testImplementation(testFixtures(project(":web-common")))
+  // RFC 260: the report's shape rule (CostReportShapeTest) walks nested sections
+  // and cells, and a hand-rolled tag strip is not an HTML parser. Test scope only.
+  testImplementation(libs.jsoup)
 }
 
 tasks.withType<Test> {

@@ -228,7 +228,8 @@ object CdsAdmissionsDao {
     )
 
   /**
-   * Upserts one H2A merit-aid row on `(college_id, source_year)`. On conflict
+   * Upserts one [CollegeMeritAid.CDS_SECTION] (H2A) merit-aid row on
+   * `(college_id, source_year)`. On conflict
    * every fact column is overwritten from [input] only when some value actually
    * differs; `id`/`created_at` are preserved and the `_03` trigger advances
    * `updated_at` on a real write.
@@ -407,7 +408,7 @@ object CdsAdmissionsDao {
     DEADLINES("college_deadlines", listOf("f.college_id", "f.round")),
   }
 
-  /** Each college's merit-aid row from its own latest CDS cycle; colleges with no row are absent. */
+  /** Each college's [CollegeMeritAid.CDS_SECTION] merit-aid row from its own latest CDS cycle; colleges with no row are absent. */
   fun listLatestMeritAid(
     session: SqlSession,
     collegeIds: Collection<CollegeId>,

@@ -1,6 +1,5 @@
 package ed.unicoach.web
 
-import ed.unicoach.coaching.costs.BorrowingWire
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.ProgramFigureProvenance
@@ -18,9 +17,6 @@ import ed.unicoach.college.figureComparisonWordsIn
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.ProgramMoneyMeasure
-import io.ktor.client.request.get
-import io.ktor.client.statement.bodyAsText
-import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -43,54 +39,9 @@ class CostReportProgramReturnTest {
   private val eastbrook = costFixture(name = "Eastbrook University", medianDebt = 24000)
   private val wynnford = costFixture(name = "Wynnford College", medianDebt = 27000)
 
-  private fun provenance(variable: FieldOfStudyVariable): ProgramFigureProvenance =
-    requireNotNull(ProgramFigureProvenance.ofAgreeingCohort(variable, variable.cohortFirstYear, variable.cohortLastYear))
-
-  private val earnings = ProgramReturnFigure.Reported(41200, provenance(ScorecardFieldOfStudyColumns.EARNINGS))
-  private val debt = ProgramReturnFigure.Reported(26000, provenance(ScorecardFieldOfStudyColumns.DEBT))
-  private val payment = ProgramReturnFigure.Reported(291, provenance(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT))
-
-  private fun program(
-    cip: String,
-    title: String,
-    vararg held: ProgramReturnFigure.Held,
-  ): ProgramReturnProgram = ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode(cip), title, held.associateBy { it.measure })
-
-  private fun allWithheld(
-    cip: String,
-    title: String,
-  ): ProgramReturnProgram =
-    program(
-      cip,
-      title,
-      *ScorecardFieldOfStudyColumns.VARIABLES.map { ProgramReturnFigure.Suppressed(provenance(it)) }.toTypedArray(),
-    )
-
-  private fun at(
-    college: CollegeCost,
-    vararg programs: ProgramReturnProgram,
-  ): ProgramReturnCollege =
-    if (programs.isEmpty()) {
-      ProgramReturnCollege.NoProgram(college.collegeId, college.name)
-    } else {
-      ProgramReturnCollege.WithPrograms(college.collegeId, college.name, programs.first(), programs.drop(1))
-    }
-
-  private fun subject(
-    name: String,
-    vararg colleges: ProgramReturnCollege,
-  ) = ProgramReturnSubject(name.lowercase(), name, colleges.first(), colleges.drop(1))
-
-  private fun answerOf(vararg subjects: ProgramReturnSubject) = ProgramReturn(subjects.first(), subjects.drop(1))
-
-  private fun render(profile: CollegeCostProfile): String {
-    lateinit var body: String
-    testApplication {
-      application { testPublicWebModule(costReportSource = FakeCostReportSource(FakeReportAnswer.Live(profile))) }
-      body = client.get("/report?token=$TEST_LIVE_TOKEN").bodyAsText()
-    }
-    return body
-  }
+  private val earnings = ProgramReturnFigure.Reported(41200, fieldOfStudyProvenance(ScorecardFieldOfStudyColumns.EARNINGS))
+  private val debt = ProgramReturnFigure.Reported(26000, fieldOfStudyProvenance(ScorecardFieldOfStudyColumns.DEBT))
+  private val payment = ProgramReturnFigure.Reported(291, fieldOfStudyProvenance(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT))
 
   /** Each `report-debt` section, in page order -- one per school. */
   private fun debtSectionsOf(body: String): List<String> =
@@ -106,28 +57,33 @@ class CostReportProgramReturnTest {
   private fun everyFigureArm(): CollegeCostProfile {
     val noFigures = ProgramReturnProgram.WithFigures.ofHeldFigures(CipCode("2605"), "Biochemistry.", emptyMap())
     val gaps =
-      program(
+      programFixture(
         "2613",
         "Ecology, Evolution, Systematics.",
-        ProgramReturnFigure.Suppressed(provenance(ScorecardFieldOfStudyColumns.EARNINGS)),
-        ProgramReturnFigure.NotReported(provenance(ScorecardFieldOfStudyColumns.DEBT)),
+        ProgramReturnFigure.Suppressed(fieldOfStudyProvenance(ScorecardFieldOfStudyColumns.EARNINGS)),
+        ProgramReturnFigure.NotReported(fieldOfStudyProvenance(ScorecardFieldOfStudyColumns.DEBT)),
       )
     val answer =
-      answerOf(
-        subject(
+      programReturnOf(
+        subjectFixture(
           "Biology",
-          at(lakeshore, program("2601", "Biology, General.", earnings, debt, payment), gaps, noFigures),
-          at(eastbrook),
-          at(wynnford, allWithheld("2601", "Biology, General."), allWithheld("2607", "Zoology.")),
+          programsAt(lakeshore, programFixture("2601", "Biology, General.", earnings, debt, payment), gaps, noFigures),
+          programsAt(eastbrook),
+          programsAt(wynnford, allWithheldProgram("2601", "Biology, General."), allWithheldProgram("2607", "Zoology.")),
         ),
-        subject("Chemistry", at(lakeshore, program("4005", "Chemistry.", earnings)), at(eastbrook), at(wynnford)),
+        subjectFixture(
+          "Chemistry",
+          programsAt(lakeshore, programFixture("4005", "Chemistry.", earnings)),
+          programsAt(eastbrook),
+          programsAt(wynnford),
+        ),
       )
     return costProfile(listOf(lakeshore, eastbrook, wynnford), programReturn = answer)
   }
 
   @Test
   fun `with no major answer on the profile the page says nothing about it`() {
-    val report = reportSectionOf(render(costProfile(listOf(lakeshore, eastbrook, wynnford))))
+    val report = reportSectionOf(renderedReportOf(costProfile(listOf(lakeshore, eastbrook, wynnford))))
 
     assertFalse(report.contains("report-program"), "no woven element without the answer: [$report]")
     assertFalse(proseOf(report).contains(ProgramReturnCopy.COVERAGE_SENTENCE), "no coverage sentence")
@@ -137,8 +93,8 @@ class CostReportProgramReturnTest {
 
   @Test
   fun `an answer with no matching program anywhere prints no coverage, sources or Scorecard link`() {
-    val answer = answerOf(subject("Biology", at(lakeshore), at(eastbrook), at(wynnford)))
-    val report = reportSectionOf(render(costProfile(listOf(lakeshore, eastbrook, wynnford), programReturn = answer)))
+    val answer = programReturnOf(subjectFixture("Biology", programsAt(lakeshore), programsAt(eastbrook), programsAt(wynnford)))
+    val report = reportSectionOf(renderedReportOf(costProfile(listOf(lakeshore, eastbrook, wynnford), programReturn = answer)))
     val prose = proseOf(report)
 
     assertTrue(prose.contains(ProgramReturnCopy.NO_PROGRAM_STATEMENT), "the answer must reach the page: [$prose]")
@@ -149,7 +105,7 @@ class CostReportProgramReturnTest {
 
   @Test
   fun `every subject appears in stored order, and every program by its published title in the answer's own order`() {
-    val section = debtSectionsOf(render(everyFigureArm())).first()
+    val section = debtSectionsOf(renderedReportOf(everyFigureArm())).first()
     val prose = proseOf(section)
 
     val biology = prose.indexOf(ProgramReturnCopy.subjectLeadOf("Biology"))
@@ -164,7 +120,7 @@ class CostReportProgramReturnTest {
 
   @Test
   fun `each shown figure carries its own publisher and cohort in its own sentence`() {
-    val section = debtSectionsOf(render(everyFigureArm())).first()
+    val section = debtSectionsOf(renderedReportOf(everyFigureArm())).first()
     val biologyGeneral = paragraphsOf(section, "report-program").first()
 
     listOf(earnings, debt, payment).forEach { figure ->
@@ -189,7 +145,7 @@ class CostReportProgramReturnTest {
 
   @Test
   fun `each gap renders its own mark, and a subject with every figure withheld renders one`() {
-    val sections = debtSectionsOf(render(everyFigureArm()))
+    val sections = debtSectionsOf(renderedReportOf(everyFigureArm()))
     val lakeshoreProse = proseOf(sections[0])
 
     assertTrue(
@@ -223,7 +179,7 @@ class CostReportProgramReturnTest {
 
   @Test
   fun `the coverage sentence is said once on a three-school page`() {
-    val prose = proseOf(reportSectionOf(render(everyFigureArm())))
+    val prose = proseOf(reportSectionOf(renderedReportOf(everyFigureArm())))
 
     assertEquals(1, countOf(prose, ProgramReturnCopy.COVERAGE_SENTENCE))
   }
@@ -244,8 +200,14 @@ class CostReportProgramReturnTest {
   @Test
   fun `a page with every program figure withheld and no school-wide debt says the tier sentence once, over the field-of-study figures`() {
     val noDebt = costFixture(name = "Northfield College", medianDebt = null)
-    val answer = answerOf(subject("Biology", at(noDebt, allWithheld("2601", "Biology, General."), allWithheld("2607", "Zoology."))))
-    val body = render(costProfile(listOf(noDebt), programReturn = answer))
+    val answer =
+      programReturnOf(
+        subjectFixture(
+          "Biology",
+          programsAt(noDebt, allWithheldProgram("2601", "Biology, General."), allWithheldProgram("2607", "Zoology.")),
+        ),
+      )
+    val body = renderedReportOf(costProfile(listOf(noDebt), programReturn = answer))
     val prose = proseOf(reportSectionOf(body))
 
     assertEquals(1, countOf(prose, ProgramReturnCopy.COVERAGE_SENTENCE), "the coverage is said: [$prose]")
@@ -261,8 +223,8 @@ class CostReportProgramReturnTest {
 
   @Test
   fun `a page with every program figure withheld beside a school-wide debt figure says the tier sentence once`() {
-    val answer = answerOf(subject("Biology", at(eastbrook, allWithheld("2601", "Biology, General."))))
-    val body = render(costProfile(listOf(eastbrook), programReturn = answer))
+    val answer = programReturnOf(subjectFixture("Biology", programsAt(eastbrook, allWithheldProgram("2601", "Biology, General."))))
+    val body = renderedReportOf(costProfile(listOf(eastbrook), programReturn = answer))
     val prose = proseOf(reportSectionOf(body))
 
     assertTrue(prose.contains("\$24,000"), "the fixture must show the school-wide debt figure, or this proves nothing: [$prose]")
@@ -271,20 +233,20 @@ class CostReportProgramReturnTest {
   }
 
   @Test
-  fun `every woven paragraph sits before the school's borrowing header`() {
-    val section = debtSectionsOf(render(everyFigureArm())).first()
-    val header = section.indexOf(BorrowingWire.HEADER_TAIL)
+  fun `every woven paragraph sits before the school's borrowing table`() {
+    val section = debtSectionsOf(renderedReportOf(everyFigureArm())).first()
+    val borrowing = section.indexOf("<div class=\"report-borrowing\">")
 
-    assertTrue(header > 0, "the fixture must carry a borrowing block, or this proves nothing: [$section]")
+    assertTrue(borrowing > 0, "the fixture must carry a borrowing table, or this proves nothing: [$section]")
     assertTrue(
-      section.lastIndexOf("report-program") in 0 until header,
-      "a woven figure under the header reads as the school's own: [$section]",
+      section.lastIndexOf("report-program") in 0 until borrowing,
+      "a woven figure under the borrowing caption reads as the school's own: [$section]",
     )
   }
 
   @Test
   fun `the figures by field of study are covered by the one administrative-record sentence`() {
-    val body = render(everyFigureArm())
+    val body = renderedReportOf(everyFigureArm())
     val kinds = body.substringAfter("<section class=\"report-kinds\">").substringBefore("</section>")
 
     assertEquals(1, countOf(proseOf(kinds), adminRecord), "one kind sentence for every federal-record figure: [$kinds]")
@@ -299,7 +261,7 @@ class CostReportProgramReturnTest {
 
   @Test
   fun `no figure comparison word appears anywhere on a page carrying every arm`() {
-    val prose = visibleProseOf(render(everyFigureArm()))
+    val prose = visibleProseOf(renderedReportOf(everyFigureArm()))
 
     assertEquals(emptyList(), figureComparisonWordsIn(prose), "the page narrates a relation between figures: [$prose]")
   }
@@ -311,7 +273,7 @@ class CostReportProgramReturnTest {
    */
   @Test
   fun `the page links each filing and the College Scorecard once, and nothing else`() {
-    val report = reportSectionOf(render(everyFigureArm()))
+    val report = reportSectionOf(renderedReportOf(everyFigureArm()))
     val anchors = Regex("<a ([^>]*)>").findAll(report).map { it.groupValues[1] }.toList()
     val targets = anchors.map { Regex("href=\"([^\"]*)\"").find(it)?.groupValues?.get(1) }
 
@@ -337,7 +299,7 @@ class CostReportProgramReturnTest {
   fun `every measure has a sentence and a name in the copy`() {
     ProgramMoneyMeasure.entries.forEach { measure ->
       val variable = ScorecardFieldOfStudyColumns.VARIABLES.single { it.measure == measure }
-      val sentence = ProgramReturnCopy.sentenceOf(ProgramReturnFigure.Reported(1000, provenance(variable)))
+      val sentence = ProgramReturnCopy.sentenceOf(ProgramReturnFigure.Reported(1000, fieldOfStudyProvenance(variable)))
       assertTrue(sentence.contains("\$1,000"), "[${measure.value}] does not say its amount: [$sentence]")
       val label = ProgramReturnCopy.spokenLabelOf(measure)
       assertTrue(label.endsWith("by field of study"), "[${measure.value}] label is not scoped to the field: [$label]")

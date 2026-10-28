@@ -340,6 +340,15 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+/* The table's publisher and cohort, above it: left-aligned and quiet, because
+   it names the filing rather than competing with the figures. */
+.report-table caption {
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding-bottom: 0.4rem;
+}
+
 /* The cross-school summary: rows are schools, so the school's own name leads
    the row and the figures stay right-aligned beside it. */
 .report-summary-table th[scope="row"] {
