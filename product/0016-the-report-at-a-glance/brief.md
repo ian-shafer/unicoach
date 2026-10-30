@@ -5,9 +5,9 @@
 ## Status
 
 - **Phase:** EXECUTE — gates 1 and 2 passed 2026-10-26; five slices in
-  `spec.md`; `glance/01` LANDED (RFC 260), so `glance/02`, `glance/03`,
-  `glance/04` and `glance/05` are unblocked (D12). /slice appends the ledger
-  below after each land.
+  `spec.md`; `glance/01` (RFC 260) and `glance/02` (no RFC, spec 2) LANDED;
+  `glance/03`, `glance/04` and `glance/05` are unblocked (D12). /slice appends
+  the ledger below after each land.
 - **Gate 1 (prioritisation):** **PASSED 2026-10-26 — Ian approved all eight
   defaults, verbatim: "approve all"**, after two questions and one amendment
   recorded under D3 below. D1-D8 stand as written. D8 is `standing` for the
@@ -42,6 +42,26 @@
     assertion, its `UNCAPTIONED_TABLES` exemption set and the `data-publisher`
     attribute are removed. Captions stay, each pinned by its own table's tests;
     `glance/02` no longer has an exemption set to empty.
+  - `glance/02/the-price-table-says-its-basis` LANDED without an RFC (/work
+    `ship-price-table-says-its-basis`, spec 2, `main@c11d16b5`, 2026-10-29) —
+    the side-by-side table's caption says "Per year", and each school's price
+    table opens with a caption carrying the unit and its residency basis ("Per
+    year, at the in-state tuition and fees this family would pay at this public
+    school"; out-of-state and one-price-for-everyone likewise). The separate
+    residency sentence goes, except for the two arms that state an absence (a
+    public school with no state on file; a control we cannot recognise), which
+    keep the domain's sentence above the table; on a one-school report the
+    caption is "Per year" alone, since the assumption list states the basis. The
+    at-home $0 note moves from every cell to the column header, "living at home
+    (housing and food counted as $0, our assumption)", derived from the line's
+    own origin and also used as every cell's `data-label` so a phone keeps it;
+    our assumed $0 never merges with a published $0 into one spanning cell. The
+    generic one-tuition-price sentence is dropped (D7); the other four tier
+    sentences stay. The coach and every domain sentence are untouched (D8).
+    Measured: the three-school page went from 1,299 visible words (423 in
+    tables, 67.4% prose) to 1,241 (469 in tables, 62.2% prose). 36 lenses, 2
+    should-fix findings fixed (one a plan-wording drift); 4,708 tests green;
+    module-source hook passed.
 
 ## The question
 
