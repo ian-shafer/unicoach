@@ -237,17 +237,6 @@ internal const val NOT_IN_FILING = "Not in this filing."
  */
 internal const val NO_SHARE_SHOWN = "No share is shown here."
 
-/**
- * The attribute every report table names its publisher in (RFC 260): the
- * `MoneySource.value` of the one publisher of this table's figures.
- *
- * Machine-readable, never rendered: it is what the shape rule
- * (`CostReportShapeTest`) reads to prove every table says whose figures it
- * holds, so a table added without a publisher fails a test rather than reading
- * as the page's own numbers.
- */
-internal const val DATA_PUBLISHER = "data-publisher"
-
 // The merit table's words (RFC 260, brief 0016). The caption names the filing
 // and the cohort once; the column and row headers carry what the two sentences
 // used to restate per school. "Non-need (merit) aid" and never "award" (RFC
@@ -1561,9 +1550,6 @@ private fun FlowContent.meritBlock(cost: CollegeCost) {
   section("report-merit") {
     h3 { +"Money this school gives for something other than financial need" }
     table("$DATA_TABLE_CLASS report-table report-merit-table") {
-      // WHOSE figures these are, as data: the one publisher of every cell in
-      // this table (RFC 260).
-      attributes[DATA_PUBLISHER] = MoneySource.COMMON_DATA_SET.value
       // The claimant FIRST, as the table's caption, and not again at the foot
       // (RFC 190): said before the figures it covers, so the table is scoped by
       // its attribution. AND IT IS A LINK (RFC 196) -- the one place this table
@@ -2523,7 +2509,6 @@ private fun FlowContent.borrowingBlock(cost: CollegeCost) {
   val borrowedColumn = borrowedColumnOf(rows.graduatingClass)
   div("report-borrowing") {
     table("$DATA_TABLE_CLASS report-table report-borrowing-table") {
-      attributes[DATA_PUBLISHER] = MoneySource.COMMON_DATA_SET.value
       caption {
         sourceLink(rows.citation)
         +BORROWING_CAPTION_TAIL

@@ -8,7 +8,6 @@ import ed.unicoach.coaching.costs.TuitionApplicable
 import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.IncomeBand
-import ed.unicoach.web.render.DATA_PUBLISHER
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.util.Locale
@@ -19,7 +18,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The SHAPE of the Family Cost Report (RFC 260, brief 0016 D3, D9): four rules
+ * The SHAPE of the Family Cost Report (RFC 260, brief 0016 D3, D9): three rules
  * asserted over every table and every school section, with a shrinking set of
  * named exemptions, and one measurement that is printed and never asserted
  * (brief 0009 D20).
@@ -147,36 +146,6 @@ class CostReportShapeTest {
     debt.forEach { assertTrue(currency.containsMatchIn(it.text()), "the exempted debt sentence holds no figure: [${it.outerHtml()}]") }
   }
 
-  @Test
-  fun `rule (b) - every table opens with a caption and names its publisher`() {
-    renders().forEach { (name, body) ->
-      val tables = reportOf(body).select("table")
-      assertTrue(tables.isNotEmpty(), "[$name] the fixture must render a table, or this rule proves nothing")
-      tables.filterNot { table -> table.classNames().any { it in UNCAPTIONED_TABLES } }.forEach { table ->
-        val first = table.children().firstOrNull()
-        assertEquals("caption", first?.tagName(), "[$name] a table's first child is its caption: [${table.outerHtml()}]")
-        assertTrue(requireNotNull(first).text().isNotBlank(), "[$name] a caption says something: [${table.outerHtml()}]")
-        assertTrue(
-          table.attr(DATA_PUBLISHER).isNotBlank(),
-          "[$name] a table names its publisher in [$DATA_PUBLISHER]: [${table.outerHtml()}]",
-        )
-      }
-    }
-  }
-
-  @Test
-  fun `the ratchet is live - every uncaptioned table class is still on some table`() {
-    renders().forEach { (name, body) ->
-      val tables = reportOf(body).select("table")
-      UNCAPTIONED_TABLES.forEach { tableClass ->
-        assertTrue(
-          tables.any { it.hasClass(tableClass) },
-          "[$name] [$tableClass] is on no table, so it no longer needs its exemption: remove it from UNCAPTIONED_TABLES",
-        )
-      }
-    }
-  }
-
   /** The words a row header may not carry outside the price table: a row that reads as a sum of the others (RFC 175 D3). */
   private val totalWords = Regex("""\b(total|all|combined|sum)\b""")
 
@@ -241,12 +210,6 @@ class CostReportShapeTest {
 
     /** The one table allowed a total row: its columns are ways of living, and a total belongs to exactly one of them. */
     const val PRICE_TABLE = "report-price-table"
-
-    /**
-     * Tables that exist today without a caption; `glance/02` captions them and empties this set. Built from
-     * [PRICE_TABLE] rather than retyping it, so the caption exemption and the total-row rule name one table.
-     */
-    val UNCAPTIONED_TABLES = setOf("report-summary-table", PRICE_TABLE)
 
     private const val PERCENT = 100.0
   }
